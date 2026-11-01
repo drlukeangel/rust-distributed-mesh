@@ -8,7 +8,7 @@
 
 use rdm_core::names::NodeOp;
 use crate::{BuildId, ClientError};
-use rdm_core::{IncarnationId, NodeId, PathName};
+use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::stream::StreamItem;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, RouteChoice};
 use rdm_core::outcome::RpcOutcome;
@@ -347,11 +347,10 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
-    /// The mesh-primary's call to the exact birth of its mesh, direct: hold this whole config, the row's
-    /// as written at `revision` (node-config-update.md, a caller's update, step 3: it installs the map
-    /// over an older revision).
-    pub async fn config_apply(&self, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, revision: u64, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::ApplyNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config, revision };
+    /// The mesh-primary's call to the exact birth of its mesh, direct: put this whole config through
+    /// the birth's own property writer (node-config-update.md, a caller's update, step 2).
+    pub async fn config_apply(&self, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::ApplyNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
         self.status(NodeOp::ConfigUpdate, birth, req, opts).await
     }
 

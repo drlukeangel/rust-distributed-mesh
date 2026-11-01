@@ -354,12 +354,6 @@ impl ConnectionsHeld {
         self.complete
     }
 
-    /// This node's active Proxy to `destination` on the default ALPN: `Some(None)` when it holds
-    /// none, `None` when it cannot answer (not complete, or no own source named).
-    pub(crate) fn own_proxy(&self, destination: &NodeId) -> Option<Option<&NodeConnection>> {
-        self.own_proxy_for(destination, ALPN)
-    }
-
     /// This node's active Proxy to `destination` on `alpn`: `Some(None)` when it holds none,
     /// `None` when it cannot answer (not complete, or no own source named).
     pub fn own_proxy_for(&self, destination: &NodeId, alpn: &[u8]) -> Option<Option<&NodeConnection>> {
@@ -823,14 +817,14 @@ mod tests {
 
         let mut held = ConnectionsHeld::new();
         assert_eq!(held.own_source(), None);
-        assert_eq!(held.own_proxy(&dst.node_id), None);
+        assert_eq!(held.own_proxy_for(&dst.node_id, ALPN), None);
         assert_eq!(held.active_directs_to_for(&dst.node_id, ALPN), None);
 
         held.set_own_source(src.node_id.clone());
         held.set_topology_view(topo.clone());
         held.mark_complete();
         assert_eq!(held.own_source(), Some(&src.node_id));
-        assert_eq!(held.own_proxy(&dst.node_id), Some(None));
+        assert_eq!(held.own_proxy_for(&dst.node_id, ALPN), Some(None));
         assert_eq!(held.end_superseded(&dst), Some(false));
 
         let direct_id = ConnectionId::mint();
@@ -867,7 +861,7 @@ mod tests {
             logged_at_ms: 110,
         };
         held.apply(proxy_conn.clone()).unwrap();
-        assert_eq!(held.own_proxy(&dst.node_id), Some(Some(&proxy_conn)));
+        assert_eq!(held.own_proxy_for(&dst.node_id, ALPN), Some(Some(&proxy_conn)));
 
         let via_proxy = resolve_for(
             &held,
@@ -908,7 +902,7 @@ mod tests {
             ..proxy_conn
         };
         held.apply(proxy_drop).unwrap();
-        assert_eq!(held.own_proxy(&dst.node_id), Some(None));
+        assert_eq!(held.own_proxy_for(&dst.node_id, ALPN), Some(None));
 
         let direct_failed = NodeConnection {
             id: ConnectionId::mint(),

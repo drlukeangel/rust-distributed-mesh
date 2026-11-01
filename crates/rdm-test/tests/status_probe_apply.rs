@@ -115,9 +115,9 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // apply-node-config (node-config-update.md step 3: "it applies the map"): the birth holds the
         // whole config; no digest carries it (Q203).
         let config: std::collections::BTreeMap<String, String> = [("tags".to_string(), "edge".to_string()), ("zone".to_string(), "a".to_string())].into();
-        let told = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: incarnation.clone(), config: config.clone(), revision: 1 };
+        let told = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
         assert_eq!(call(told).await, StatusReply::Applied);
-        let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default(), revision: 2 };
+        let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };
         assert_eq!(call(stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
         // The reserved Reserved6 is refused by name; node.connection.delete { All } is answered with its receipt.
         let reserved = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: rdm_core::OperationId::location("node.connection.delete", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
