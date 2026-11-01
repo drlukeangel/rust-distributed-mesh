@@ -71,6 +71,13 @@ pub trait OperationRunner: Send + Sync {
     /// mesh's drift lane, R-BI7: its receipts carry the lane); `Err` names how it ended short of
     /// complete ([`RunEnd`]).
     async fn run(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), RunEnd>;
+    /// Ready this admin to read the claim of a run whose first operation is `op` (Q320): a
+    /// `mesh.unblock`'s attempt is opened and claimed after the switch, so its records are on the
+    /// provider the change decided, and the mesh-primary moves its own stores there first. Every
+    /// other operation needs nothing.
+    async fn before_claim(&self, _op: &BuildOperation) -> Result<(), RunEnd> {
+        Ok(())
+    }
 }
 
 /// The admin that executes `op` in view `t`; `None` while no admin can.
@@ -496,7 +503,13 @@ impl BuildExecutor {
     #[allow(clippy::too_many_arguments)]
     async fn run_claimed(&self, builds: &dyn BuildStateAdapter, build_id: &BuildId, lane: Option<&str>, attempt: u32, me: &rdm_core::framing::Birth, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
         // The claim was decided (by the fabric-primary for the fabric lane, by this mesh-primary for
-        // its mesh's drift lane); this admin's own log takes the fact with it.
+        // its mesh's drift lane); this admin's own log takes the fact with it. A mesh.unblock's claim is on
+        // the provider its change decided, which this mesh-primary moves to before reading it (Q320).
+        if let Some(op) = plan.operations.first() {
+            if let Err(e) = self.runner.before_claim(op).await {
+                return Reconciled::Failed { attempt, operation: op.key(), reason: format!("before reading the committed claim of Build {build_id} attempt {attempt}: {e}"), code: rdm_core::outcome::Code::Unavailable };
+            }
+        }
         let facts = match builds.committed_facts(Some(build_id)).await {
             Ok(facts) => facts,
             Err(e) => return Reconciled::Failed { attempt, operation: rdm_core::OperationId::unscoped("build.attempt.run"), reason: format!("reading the committed claim of Build {build_id} attempt {attempt}: {e}"), code: rdm_core::outcome::Code::Unavailable },

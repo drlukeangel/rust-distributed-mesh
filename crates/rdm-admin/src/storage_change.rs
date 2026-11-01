@@ -440,6 +440,24 @@ impl StorageChanges {
         receipt(builds, build_id, attempt, unblock_operation(&change.change_id, mesh)).await
     }
 
+    /// Before a `mesh.unblock` attempt's claim is read (Q320): the attempt is opened and claimed after
+    /// the switch, on the provider the change decided. The change's `commit` record is read once on the
+    /// new provider (storage.md step 3): present, this admin moves its own stores there (the unblock's own
+    /// move then finds it moved); absent, the change is not committed and the claim is read where it is.
+    /// A read error fails the attempt by name, never as absence.
+    pub async fn move_own_to_decided(&self, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>) -> Result<(), crate::executor::RunEnd> {
+        let door = Self::door(status_door)?;
+        let decision = read_commit(&self.providers, &self.fabric_id, &change.to, &change.build_id, &change.change_id).await;
+        let span = switch_span(change);
+        record_read(&span, &decision);
+        span.in_scope(|| tracing::info!("before the unblock's claim is read, the change's decision is read from its commit record"));
+        match decision {
+            Decision::Switched => self.move_own(&door, &change.build_id, &change.change_id, &change.to).await,
+            Decision::NotSwitched => Ok(()),
+            Decision::NoAnswer(e) => Err(crate::executor::RunEnd::failed(format!("storage change {}: its commit record on {} could not be read: {e}", change.change_id, change.to))),
+        }
+    }
+
     /// This admin moved onto `provider`, its own row recording it.
     async fn move_own(&self, door: &crate::status_rpc::StatusDoor, build_id: &BuildId, change_id: &ChangeId, provider: &str) -> Result<(), crate::executor::RunEnd> {
         let own = door.own.get().and_then(|own| own.storage_moves()).ok_or_else(|| crate::executor::RunEnd::Incomplete("this admin holds no storage handle yet".into()))?;

@@ -1361,6 +1361,13 @@ impl OperationRunner for AdminRunner {
         self.refresh_view().await;
         r
     }
+
+    async fn before_claim(&self, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
+        match op {
+            BuildOperation::UnblockStorage { change, .. } => self.storage_changes.move_own_to_decided(change, self.observer.status_door.get().cloned()).await,
+            _ => Ok(()),
+        }
+    }
 }
 
 impl AdminRunner {

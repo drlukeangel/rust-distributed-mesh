@@ -119,6 +119,10 @@ It is four steps:
    learns the decision only from that record.
 4. **Unblock.** The fabric-primary sends `mesh.unblock` to every mesh-primary. Each mesh-primary moves
    its nodes to the new provider, then replies `unblocked` and issues commands again.
+   A mesh-primary told to run an unblock attempt reads the change's `commit` record on the new
+   provider first (a Build-storage read by name, Q292); present, it moves its own stores there before
+   it reads the attempt's claim; absent, the change is not committed and it reads its claim where it
+   is. A read error fails the attempt by name, never as absence.
    A node that refuses its move is re-created at its `path.name` on the new provider, an attempt of
    the change's own Build, before its mesh-primary replies `unblocked`.
 

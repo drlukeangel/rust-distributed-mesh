@@ -385,17 +385,13 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     assert!(after.iter().all(|v| v.status == NodeStatus::Ready), "every node is ready: {after:?}");
     let path: PathName = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
     // The update and the Build's own config of the node are a serial order of the two
-    // (node-config-update.md): whichever was written last on its row is the config the node carries.
+    // (node-config-update.md): whichever was written last on its own property record is the config
+    // the node carries (the node writes its own record, build.md: never a lifecycle row's copy).
     let subject_after = after.iter().find(|v| v.name == path).cloned().expect("mesh2.rpc.1 after the change");
-    let last_row: Value = std::fs::read_to_string(target_root.join(rdm_admin::store_root::NODES_FILE))
-        .unwrap()
-        .lines()
-        .rev()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .find(|l| l["key"] == subject_after.node_id.to_string())
-        .expect("mesh2.rpc.1's row is on the new provider");
-    let row_config: BTreeMap<String, String> = serde_json::from_value(last_row["record"]["config"].clone()).unwrap_or_default();
-    assert_eq!(subject_after.config, row_config, "mesh2.rpc.1 carries the config its last row on {TOPOLOGY_STORAGE_TARGET} names");
+    let last_record: Value = rdm_admin::store_log::read_record(&target_root.join(rdm_node::node_records::NODE_RECORDS_FILE), "node-properties", Some(subject_after.node_id.as_str()))
+        .expect("mesh2.rpc.1's property record is on the new provider");
+    let record_config: BTreeMap<String, String> = serde_json::from_value(last_record["record"]["config"].clone()).expect("a property record carries its whole config map");
+    assert_eq!(subject_after.config, record_config, "mesh2.rpc.1 carries the config its last property record on {TOPOLOGY_STORAGE_TARGET} names");
     let old = store_lines(&file_root);
     history_carried(&old, &store_lines(&target_root));
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -418,7 +414,7 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     assert_eq!(traces.len(), 1, "the storage steps are on one causal trace: {traces:?}");
     // The node applies the update's map only once its mesh-primary's `mesh.unblock` began.
     let unblocked = of_build(&spans, UNBLOCK, &build_id, Some("mesh2")).into_iter().filter(|sp| sp["attributes"]["outcome"] == "unblocked").map(start_ns).min().expect("mesh2's mesh-primary unblocked");
-    let applied: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| attr(sp, "node_path") == subject.name.path && attr(sp, "node_name") == subject.name.name && start_ns(sp) >= start_ns(&blocked)).collect();
+    let applied: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| [subject.node_id.as_str(), subject_after.node_id.as_str()].contains(&attr(sp, "node").as_str()) && start_ns(sp) >= start_ns(&blocked)).collect();
     assert!(!applied.is_empty(), "mesh2.rpc.1 applied the update's map");
     assert!(applied.iter().all(|sp| start_ns(sp) >= unblocked), "mesh2.rpc.1 applies the map only once its mesh-primary is unblocked: {applied:#?}");
     estate.record_trace_url(traces.iter().next().unwrap());
