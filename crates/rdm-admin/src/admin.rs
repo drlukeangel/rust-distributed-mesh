@@ -2037,7 +2037,7 @@ mod tests {
             assert_eq!(rejects.len(), 1, "{status}: the refusal is spanned once: {rejects:?}");
             let a = &rejects[0].attributes;
             assert_eq!(a.get("announced").map(String::as_str), Some(announced), "{status}: {a:?}");
-            assert!(a.get("operation").is_some_and(|o| o.contains("mesh2") || o.starts_with("mesh.delete:")), "{status}: the mesh.delete is named: {a:?}");
+            assert!(a.get("operation").is_some_and(|o| o == "mesh.delete") && a.get("operation_subject").is_some_and(|s| s.contains("Mesh(")), "{status}: the mesh.delete is named: {a:?}");
             eprintln!("span rdm.node_admin.build.reject.via-removal-announced trace_id={} {a:?}", rejects[0].trace_id);
         }
     }
@@ -3103,13 +3103,11 @@ mod tests {
         };
         let here = p.control_domain();
         assert!(take_over_blockers(&[with(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(here.clone())), with(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Some(here.clone()))], &p).is_empty());
-        let blocked = take_over_blockers(
-            &[with(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(here.clone())), with(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None), with(PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("process:another-host:1".into()))],
-            &p,
-        );
+        let (unpublished, elsewhere) = (with(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None), with(PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("process:another-host:1".into())));
+        let blocked = take_over_blockers(&[with(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(here.clone())), unpublished.clone(), elsewhere.clone()], &p);
         assert_eq!(blocked.len(), 2, "{blocked:?}");
-        assert!(blocked[0].starts_with("mesh1.rpc.2: publishes no runtime fact"), "{blocked:?}");
-        assert!(blocked[1].starts_with("mesh1.rpc.3:") && blocked[1].contains("control domain"), "{blocked:?}");
+        assert!(blocked[0].starts_with(&format!("{}: publishes no runtime fact", unpublished.node.node_id)), "{blocked:?}");
+        assert!(blocked[1].starts_with(&format!("{}:", elsewhere.node.node_id)) && blocked[1].contains("control domain"), "{blocked:?}");
     }
 
     /// CONTRACT (i143 export gate: normal joining or restarted admins cannot self-Ready; only the
@@ -3140,7 +3138,7 @@ mod tests {
         let builds = MemoryBuildStateAdapter::new();
         let blocked = node_admin_not_ready(&me, &builds, None).await.expect("blocked while it holds no Build");
         assert_eq!(blocked.kind(), "no-current-build");
-        assert!(blocked.to_string().starts_with("mesh1.admin.2: holds no current Build"), "{blocked}");
+        assert!(blocked.to_string().starts_with(&format!("{me:?}: holds no current Build")), "{blocked}");
         let id = crate::build::BuildId::parse("7wy02yhavgde").unwrap();
         let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked while the entry's Build is not held");
         assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(id.clone()), "{blocked}");
