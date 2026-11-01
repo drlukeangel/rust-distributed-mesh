@@ -156,8 +156,10 @@ pub(crate) async fn rig_pre_node_ready(tag: &str, carry: bool, pre_node_ready: O
 }
 
 /// The fields of every span named `name` the node `node` emitted.
-pub(crate) fn spans_of(spans: &crate::common::Spans, name: &str, node: &str) -> Vec<BTreeMap<String, String>> {
-    spans.0.lock().unwrap().values().filter(|(n, _, fields)| n == name && fields.get("node").map(String::as_str) == Some(node)).map(|(_, _, fields)| fields.clone()).collect()
+/// The spans named `name` of the node `node_id`: a node's own span names it by its id (`node`, or
+/// `node_id` beside its path and name).
+pub(crate) fn spans_of(spans: &crate::common::Spans, name: &str, node_id: &str) -> Vec<BTreeMap<String, String>> {
+    spans.0.lock().unwrap().values().filter(|(n, _, fields)| n == name && [fields.get("node"), fields.get("node_id")].into_iter().flatten().any(|v| v == node_id)).map(|(_, _, fields)| fields.clone()).collect()
 }
 
 #[test]
@@ -191,13 +193,13 @@ fn a_stopped_node_whose_heartbeat_view_lacks_its_commander_starts_and_joins_it_t
         .expect("the started node never answered Ready");
 
         // The start's join went to the commander, named by the key of its own call.
-        let joins = spans_of(&spans, "rdm.mesh.entry.update.via-pull-attempt", "mesh1.rpc.1");
+        let joins = spans_of(&spans, "rdm.mesh.entry.update.via-pull-attempt", node_id.as_str());
         let answered: Vec<&BTreeMap<String, String>> = joins.iter().filter(|f| f.get("outcome").map(String::as_str) == Some("answered")).collect();
         let short = commander_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
         assert!(answered.iter().any(|f| f.get("anchor") == Some(&short)), "no answered join of the start named the commander's key {short}: {answered:?}");
         // The stop and the start name the admin whose call commanded them.
         for name in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.status.update.via-start-node"] {
-            let commanded = spans_of(&spans, name, "mesh1.rpc.1");
+            let commanded = spans_of(&spans, name, node_id.as_str());
             assert!(!commanded.is_empty() && commanded.iter().all(|f| f.get("commander") == Some(&commander_id.to_string())), "{name} names the commander {commander_id}: {commanded:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -299,7 +301,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         };
         let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..CallOptions::default() }).await };
         let rest = async {
-            let at_lost = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.rpc.1") && f.get("anchor") == Some(&lost_short) && f.contains_key("outcome");
+            let at_lost = |f: &BTreeMap<String, String>| f.get("node") == Some(&node_id.to_string()) && f.get("anchor") == Some(&lost_short) && f.contains_key("outcome");
             if tokio::time::timeout(NEVER, spans.recorded("rdm.mesh.entry.update.via-pull-attempt", at_lost)).await.is_err() {
                 panic!("the start never made a join attempt at the commander that sent it");
             }
@@ -320,7 +322,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             .await
             .expect("the started node never answered Ready");
             let successor_short = successor_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
-            let joins = spans_of(&spans, "rdm.mesh.entry.update.via-pull-attempt", "mesh1.rpc.1");
+            let joins = spans_of(&spans, "rdm.mesh.entry.update.via-pull-attempt", node_id.as_str());
             assert!(
                 joins.iter().any(|f| f.get("outcome").map(String::as_str) == Some("answered") && f.get("anchor") == Some(&successor_short)),
                 "an answered join of the start names the successor's key {successor_short}: {joins:?}"
@@ -492,7 +494,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
             .await
             .expect("the started node never answered Ready");
             let successor_short = successor_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
-            let refreshed = spans_of(&spans, "rdm.mesh.node.update.via-rafka-time-refreshed", "mesh1.rpc.1");
+            let refreshed = spans_of(&spans, "rdm.mesh.node.update.via-rafka-time-refreshed", node_id.as_str());
             assert!(
                 refreshed.iter().any(|f| f.get("outcome").map(String::as_str) == Some("adopted") && f.get("served_by").is_some_and(|s| s.contains(&successor_short))),
                 "the start's rafka-time refresh is served by the later commander {successor_short}: {refreshed:?}"
