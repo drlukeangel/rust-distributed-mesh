@@ -52,11 +52,19 @@ Every choice is ruled: Q311 (one `Resend`, 3, one rule), Q312 (`on_node_investig
 Fixture: planned:crates/rdm-test/tests/resend.rs, `mod resend;` in crates/rdm-test/tests/main.rs
 Starting point: crates/rdm-test/tests/estate_handover.rs (real processes, Estate::bootstrap_on)
 Estate: one mesh, two node-admins (mesh1.admin.1 the mesh-primary and fabric-primary, mesh1.admin.2),
-        one rpc node mesh1.rpc.1, one more rpc node mesh1.rpc.2 as the caller (testkit rpc node)
-Action: mesh1.rpc.2 opens one Status call to mesh1.rpc.1 with Resend::default(); the test kills
-        mesh1.rpc.1's process (kill -9) before the call; reads the call's end, the caller's
-        on_call_failed, the mesh-primary's report receipt, the investigation and on_node_investigated
-        from Estate::spans (JSONL) and the testkit's hook recorder.
+        one testkit rpc node mesh1.rpc.1 (the receiver), one testkit rpc node mesh1.rpc.2 (the caller)
+Receiver fault: mesh1.rpc.1 is started with TESTKIT_HOLD_REQUESTS=1 (planned, e0.s1): it keeps
+        gossiping and holds every request before the acceptance boundary, so it writes no ack and no
+        answer (the `DeliverySeams` family in `delivery.rs`, today per-request: `hold_next_request_ack`;
+        the story adds the every-request form). This is Q182's own case, a node that gossips but does
+        not answer: no silence mark can form, so the spent-call path is the only one that can start
+        the investigation.
+Action: mesh1.rpc.2 opens one Status call to mesh1.rpc.1 with Resend::default(); reads the call's
+        end, the caller's on_call_failed, the mesh-primary's report receipt, the investigation and
+        on_node_investigated from Estate::spans (JSONL) and the testkit's hook recorder.
+Why not kill -9: over QUIC a dead peer may hang rather than refuse; the hung mode is 3 × TimeLimit
+        (10 s each, not cadence-scaled), and the pruner's silence mark (3 s at test cadence,
+        investigated at 4.5 s) would win the race. The kill case is its own cell (below).
 ```
 
 ### Suite assertion
@@ -64,15 +72,25 @@ Action: mesh1.rpc.2 opens one Status call to mesh1.rpc.1 with Resend::default();
 Planned cell: `resend::a_spent_call_ends_by_name_calls_on_call_failed_and_its_birth_is_investigated_on_the_next_tick`.
 
 ```rust
-/// CONTRACT (node-rpc.md §43, node-recovery.md step 2, fabric-node-hooks.md on_call_failed and
-/// on_node_investigated; Q311, Q313, Q314): a call to a killed birth ends NotSent(connect refused)
-/// after exactly 3 attempts at the schedule's instants (0, c, 3c at cadence c); the caller's
-/// on_call_failed runs once with sender = the caller's birth, receiver = the killed birth,
-/// failure = NotSent(Connection(..)), attempts = 3; the mesh-primary records the report
-/// (rdm.node_admin.node.update.via-call-failed-reported) and starts node investigation within one
-/// gossip interval of it (no half-floor wait); on_node_investigated runs once with verdict `exited`
-/// and next = `recreate`. Must NOT happen: a fourth attempt; a second on_call_failed for the same
-/// call; a second investigation of the same birth within a staleness floor; the owner resending.
+/// CONTRACT (node-rpc.md §43, node-investigation.md Q182 paragraph, node-recovery.md step 2,
+/// fabric-node-hooks.md on_call_failed and on_node_investigated; Q311, Q314): a call to a birth that
+/// gossips and holds every request unacked ends Indeterminate(no ack) after exactly 3 attempts, in
+/// order (via-resend attempt 2, via-resend attempt 3, via-attempts-spent); the caller's
+/// on_call_failed runs once with sender = the caller's birth, receiver = that birth,
+/// failure = Indeterminate(..), attempts = 3; the mesh-primary records the report
+/// (rdm.node_admin.node.update.via-call-failed-reported, outcome = marked) and starts node
+/// investigation within one gossip interval of it with no silence mark on the birth (the birth is
+/// heard by gossip throughout); on_node_investigated runs once, its verdict `running` (the runtime
+/// is alive; node-investigation.md: a tickle answered by a birth that left a command unanswered is
+/// not `reached`) and next = `recreate`. Counts and order are asserted here; the schedule's instants
+/// are asserted only in the functional cells with jitter off (e2e runs Pacing::from_cadences with
+/// jitter). Must NOT happen: a fourth attempt; a second on_call_failed for the same call; a second
+/// investigation of the same birth within a staleness floor; a silence mark; the owner resending.
+
+A second cell, `resend::a_call_to_a_killed_birth_ends_not_sent_after_three_attempts`: kill -9
+mesh1.rpc.1, then the call; asserts 3 attempts and `NotSent` with whichever reason the run gave
+(connect refused or connect timed out), records the reason and the elapsed in the artifact, and
+asserts nothing about which mark (silence or spent call) started the investigation.
 ```
 
 ### What a passing seed proves
@@ -105,8 +123,9 @@ Canary, written first: `resend::a_spent_call_mark_survives_a_mesh_primary_change
 
 ```rust
 /// CONTRACT (node-recovery.md step 1 and step 2; R-151.7 case 1, R-151.8): mesh1.rpc.2's call to
-/// the killed mesh1.rpc.1 is spent and reported to mesh1.admin.1; mesh1.admin.1 is killed (kill -9)
-/// before its watch's next tick; mesh1.admin.2 becomes mesh-primary (unheard past the floor); the
+/// the held mesh1.rpc.1 (TESTKIT_HOLD_REQUESTS=1) is spent and reported to mesh1.admin.1;
+/// mesh1.admin.1 is killed (kill -9) at any time after; mesh1.admin.2 becomes mesh-primary (unheard
+/// past the floor); the
 /// caller's next spent call to mesh1.rpc.1 is reported to mesh1.admin.2, which marks and
 /// investigates it on its next tick; exactly one investigation of mesh1.rpc.1 is recorded fabric-wide
 /// after the primary change. Must NOT happen: the report answered by a birth that is not the primary
@@ -160,13 +179,13 @@ Focused run: `scripts/cells.sh rdm-test main -- resend::`; per landing `scripts/
 
 ## Implementation plan
 
-Each story below is one issue in `drlukeangel/rust-distributed-mesh`, one lane, one agent, one landing through `lane-dispatch.sh` / `post-land-gate.sh` / `lane-land.sh`. A story's brief is its block pasted verbatim plus the proposal. A story is done when its acceptance lines hold and its cells are GREEN in the fast gate at the lane's tip; the lead reviews and lands.
+Each story below is one issue in `drlukeangel/rust-distributed-mesh`, opened by the lead at dispatch after i150 lands (none exists yet; no agent opens one), one lane, one agent, one landing through `lane-dispatch.sh` / `post-land-gate.sh` / `lane-land.sh`. A story's brief is its block pasted verbatim plus the proposal. A story is done when its acceptance lines hold and its cells are GREEN in the fast gate at the lane's tip; the lead reviews and lands.
 
 ### e0 — Proof substrate (before any behaviour change)
 
 #### i151.e0.s1 — the testkit records hooks and the estate stem exists
 - **Files:** `crates/rdm-test/src/estate.rs` (the testkit rpc node's hook wiring), `crates/rdm-test/tests/main.rs` (`mod resend;`), `planned:crates/rdm-test/tests/resend.rs`.
-- **Change:** a `HookRecord` the testkit node and node-admin append `(hook name, ctx as JSON)` to under `Estate::artifact("hooks.jsonl")`; the stem file with the canary and the seed, both RED (they assert spans and hook records that do not exist yet); `cargo test` discovers two cells under `resend::`.
+- **Change:** a `HookRecord` the testkit node and node-admin append `(hook name, ctx as JSON)` to under `Estate::artifact("hooks.jsonl")`; the testkit rpc node reads `TESTKIT_HOLD_REQUESTS=1` and sets an every-request form of the `DeliverySeams` hold (`delivery.rs`: today `hold_next_request_ack`), holding each request before the acceptance boundary so no ack and no answer is written while gossip runs on (the env var goes in CLAUDE.md's table as "Tests only"); the stem file with the canary and the seed, both RED (they assert spans and hook records that do not exist yet); `cargo test` discovers two cells under `resend::`.
 - **Spans:** asserts none yet; reads `Estate::spans`.
 - **Acceptance:** `scripts/cells.sh rdm-test main -- resend::` reports 2 cells, both failing on their first assertion, not on compile or fixture; the RED SHA and the failing assertion text in the issue.
 - **Size:** one agent, small.
@@ -181,7 +200,7 @@ Each story below is one issue in `drlukeangel/rust-distributed-mesh`, one lane, 
 
 #### i151.e1.s1 — `Resend` and `TimeLimit` replace `Budget` and `once`
 - **Files:** `crates/rdm-transport/src/client.rs` (`Budget`, `CallOptions`, `CallOptions::default`), `stream.rs` (`call_stream`), `forward.rs` (`carry_once`), every RDM site: `grep -rn 'Budget::\|once: true' crates demo --include=*.rs` (19 `Overall`, 14 `Owed`, 12 `Split`, 17 `Stream`, 1 `once`).
-- **Change:** `pub struct Resend { attempts: u8, time_limit: TimeLimit }`, `pub struct TimeLimit(Duration)`, `Resend::default()` = 3 and 10 s; `CallOptions.resend`; `Budget` and `once` deleted; each site mapped per proposal §3 (`Overall(d)` → `TimeLimit(d)`; `Split { send, reply }` → `TimeLimit(reply)` with the dial inside the attempt; `Stream { send }` → `TimeLimit(send)`; `Owed` → `Resend::default()`; the tickle's `direct` → `attempts: 1`). No behaviour change beyond the type in this story: `until_end` still ignores `attempts` (s2 counts them). The mapping table (site → value → reason) in the issue.
+- **Change:** `pub struct Resend { attempts: u8, time_limit: TimeLimit }`, `pub struct TimeLimit(Duration)`, `Resend::default()` = 3 and 10 s; `CallOptions.resend`; `Budget` and `once` deleted; each site mapped per proposal §3 and R-151.2 (`Overall(d)` → `TimeLimit(d)`; `Split { send, reply }` → `TimeLimit(reply + 10 s)`, the receiver's bound plus the transport's share: 15 s for connections delete and node.stop (`connections_delete_reply()` + 10 s), 70 s for the 60 s Build step reply in `send_command_reaching`, 40 s for `storage_change::command_reply`'s 30 s, `carry_lifecycle_reaching` by its two reply values + 10 s; `Stream { send }` → `TimeLimit(10 s)` (the first frame); `Owed` → `Resend::default()`; the tickle's `direct` → `attempts: 1`). The dial phase of an attempt is bounded by the transport's share, `min(TimeLimit, 10 s)`, never by the whole limit (R-151.2 as amended: a hung connect on a 70 s call ends that attempt at 10 s, three attempts at ~30 s, as today's `send: 5 s` ended it at 5 s; a hung connect never spends the receiver's part of the limit). No behaviour change beyond the type in this story: `until_end` still ignores `attempts` (s2 counts them). The mapping table (site → value → reason) in the issue.
 - **Spans:** none new.
 - **Cells:** existing transport cells GREEN; `a_call_options_default_is_three_attempts_and_ten_seconds`.
 - **Acceptance:** `grep -rn 'Budget\b\|once: true' crates demo --include=*.rs` empty; fast gate GREEN.
@@ -239,7 +258,7 @@ Each story below is one issue in `drlukeangel/rust-distributed-mesh`, one lane, 
 
 #### i151.e2.s4 — every caller reports, the report never reports; every `Owed` owner handles its by-name end
 - **Files:** `crates/rdm-node/src/node.rs` (`declare_once`, `declare_until_mesh_primary_moves`), the transport client's owner on every node (`rdm-node`, `rdm-admin` `send_command_reaching`, `carry_lifecycle_reaching`, `storage_change::command_reply`), `recovery.rs`, `fabric_handover.rs`, `build_op.rs`, `investigate.rs` (the 14 former `Owed` sites from e1.s1's table).
-- **Change:** after a call ends `Spent`, the owner sends `ReportCallFailed` to the primary above the receiver per R-151.7 (a node of a mesh → its mesh-primary; mesh-primary → the fabric-primary; fabric-primary or `Endpoint` → nothing); the report itself carries a flag in the client (`CallOptions.is_report: true`, or the op) so its own spent end is spanned and dropped, never reported, marked or hooked; each former-`Owed` owner's by-name end is handled (the node's declaration: the next declaration goes, the spent one is the mesh-primary's to recover from the node's record at its next join, states.md; the admin's check-ins: the same). The table owner → handling in the issue, all 14 rows.
+- **Change:** after a call ends `Spent`, the owner sends `ReportCallFailed` to the primary above the receiver per R-151.7 (a node of a mesh → its mesh-primary; mesh-primary → the fabric-primary; fabric-primary or `Endpoint` → nothing); the report itself carries a flag in the client (`CallOptions.is_report: true`, or the op) so its own spent end is spanned and dropped, never reported, marked or hooked; each former-`Owed` owner's by-name end is handled. The table owner → handling in the issue, all 14 rows, and **each row quotes the page sentence that says what happens when that message is lost** (the declaration's page, the check-in's page, the report's page); a row whose page is silent files a numbered question with the ruling-packet skill and the story stops at that row; no handling is invented from memory of what a page probably says.
 - **Cells:** `a_node_whose_call_is_spent_reports_it_to_its_mesh_primary_and_a_spent_report_is_dropped_by_name`; `a_mesh_primary_whose_call_to_a_member_is_spent_marks_without_a_report`; `an_admin_whose_call_to_a_mesh_primary_is_spent_reports_it_to_the_fabric_primary`; `a_spent_call_to_the_fabric_primary_reports_nothing`.
 - **Acceptance:** GREEN; no `Report` of a report in any span of the cells' JSONL.
 - **Size:** one agent, medium-large; split into s4a (reporting) and s4b (the 14 owners) at dispatch if the owner table exceeds a day.

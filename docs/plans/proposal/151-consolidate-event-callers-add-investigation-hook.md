@@ -101,9 +101,13 @@ pub struct TimeLimit(pub Duration);
 - **R-151.2 What an attempt is and which clock runs inside it (verified against `until_end`).** An
   attempt is one send of the request: direct, or through the carrier the route policy names (#7),
   each counted. Inside an attempt the wait for the ack is the schedule's delay for that attempt
-  (existing, `until_end`, `ack_by`); the `TimeLimit` bounds the attempt's resolve, dial and complete send
-  (a connect that hangs ends the attempt at the limit, `NotSent(Deadline)`), and once the request is
-  acked, the reply, counted from the ack (today's `Split.reply`, `call_stream`). The next attempt
+  (existing, `until_end`, `ack_by`); the `TimeLimit` bounds the attempt: its resolve, dial and complete send are bounded by the
+  transport's share of it, `min(TimeLimit, 10 s)` (a connect that hangs ends the attempt at 10 s,
+  `NotSent(Deadline)`, never after the receiver's part of a long limit: a hung connect on a 70 s Build
+  step call ends its attempt at 10 s, as today's `Split.send` of 5 s ended it), and once the request
+  is acked, the reply is bounded by the whole `TimeLimit`, counted from the ack (today's
+  `Split.reply`, `call_stream`). The 10 s is the "plus 10 s for the transport" of §3, not a second
+  knob: a caller sets one `TimeLimit`; a limit under 10 s bounds the dial too. The next attempt
   starts at the schedule's next delay from the previous attempt's start (existing, `until_end`, `next_at`),
   or at the previous attempt's end when the limit ran past it. A receiver this view does not hold yet
   ends that attempt `NotSent(Resolve(Unknown))` (#5 removed: an attempt, not a wait). Between
@@ -133,7 +137,7 @@ pub struct TimeLimit(pub Duration);
 ## 3. The time limit (lead's pick, Q311)
 
 One rule: **an attempt's `TimeLimit` is how long the receiver takes to answer, plus 10 s for the
-transport.**
+transport.** The transport's 10 s is also the most an attempt's dial may take (R-151.2).
 
 - Every call whose handler answers at once (a status read, a declaration, a config apply): **10 s**,
   the default today (`CallOptions::default`).
