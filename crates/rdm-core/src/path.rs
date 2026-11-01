@@ -222,4 +222,90 @@ mod tests {
             assert!(PathName::new(path, name).is_err(), "{path}/{name}");
         }
     }
+
+    /// CONTRACT (i150 R1, e1; node-identity-and-state.md "A path is a path": "A path has dotted
+    /// free-text segments with no mesh or type encoded in their meaning ... Replacement renames the
+    /// predecessor to `<name>-old` at the same path"): the pair is two fields in every shape that
+    /// carries it, and each shape gives back the same two fields: the pair's own JSON, an operation's
+    /// `Location` subject, the node.get `path`/`name` filter and the launch environment's
+    /// `RDM_NODE_PATH`/`RDM_NODE_NAME`. A free-text path is never parsed for a mesh, a kind or an
+    /// ordinal; the dot-free name is refused by name when it holds a dot, is empty or is too long; the
+    /// replacement move keeps the path and changes only the name. Must NOT happen: a joined string read
+    /// as a pair, or a pair whose path and name trade bytes across the dot.
+    #[test]
+    fn separate_path_and_name_read_back_as_written() {
+        let pairs = [
+            PathName::new("mesh1.rpc", "north").unwrap(),
+            PathName::new("production.east.apps", "north-1").unwrap(),
+            PathName::new("apps", "1").unwrap(),
+            PathName::new("a.b", "c").unwrap(),
+            PathName::new("a", "b.c".replace('.', "~")).unwrap(),
+            PathName::numbered("mesh2", NodeKind::Broker, 7),
+        ];
+        // Two pairs whose joined string would be the same bytes stay two pairs.
+        assert_ne!(PathName::new("a.b", "c").unwrap(), PathName::new("a", "b~c").unwrap());
+        assert_ne!(PathName::new("a.b", "c").unwrap().physical_index_key(), PathName::new("a", "bc").unwrap().physical_index_key());
+        for pair in &pairs {
+            let json = serde_json::to_value(pair).unwrap();
+            assert_eq!(json, serde_json::json!({"path": pair.path, "name": pair.name}), "the pair is two fields: {json}");
+            assert_eq!(serde_json::from_value::<PathName>(json).unwrap(), *pair);
+            // An operation's location subject carries the same two fields.
+            let op = crate::OperationId::location("node.create", pair);
+            let back: crate::OperationId = serde_json::from_value(serde_json::to_value(&op).unwrap()).unwrap();
+            assert_eq!(back.subject, Some(crate::OperationSubject::Location(pair.clone())), "the Location subject round-trips: {back:?}");
+            // The node.get filter selects by the two fields, and neither alone is the pair.
+            let filter = crate::filter::Filter::new().eq("path", [pair.path.clone()]).eq("name", [pair.name.clone()]);
+            assert_eq!(filter.refusal(crate::filter::Entity::Nodes), None, "path and name are node.get fields");
+            let filter: crate::filter::Filter = serde_json::from_value(serde_json::to_value(&filter).unwrap()).unwrap();
+            assert_eq!(filter, crate::filter::Filter::new().eq("path", [pair.path.clone()]).eq("name", [pair.name.clone()]), "the filter's two pairs round-trip");
+            // The launch environment carries the two fields under their own names.
+            let env = std::collections::BTreeMap::from([
+                (crate::launch::ENV_FABRIC.to_string(), "fabric1".to_string()),
+                (crate::launch::ENV_FABRIC_ID.to_string(), crate::FabricId::mint().to_string()),
+                (crate::launch::ENV_NODE_PATH.to_string(), pair.path.clone()),
+                (crate::launch::ENV_NODE_NAME.to_string(), pair.name.clone()),
+                (crate::launch::ENV_MESH.to_string(), "mesh1".to_string()),
+                (crate::launch::ENV_NODE_KIND.to_string(), "rpc_node".to_string()),
+                (crate::launch::ENV_NODE_ID.to_string(), crate::NodeId::mint().to_string()),
+                (crate::launch::ENV_INCARNATION.to_string(), crate::IncarnationId::mint().to_string()),
+                (crate::launch::ENV_TRANSPORT_ADDR.to_string(), "127.0.0.1:0".to_string()),
+                (crate::launch::ENV_DATA_DIR.to_string(), "/tmp/x".to_string()),
+                (crate::launch::ENV_STORE_DIR.to_string(), "/tmp/store".to_string()),
+            ]);
+            let launch = crate::launch::Launch::from_env(|k| env.get(k).cloned()).expect("a launch naming the pair");
+            assert_eq!(launch.name, *pair, "the launch reads the pair from its two variables");
+            let written = launch.to_env();
+            assert_eq!((written[crate::launch::ENV_NODE_PATH].as_str(), written[crate::launch::ENV_NODE_NAME].as_str()), (pair.path.as_str(), pair.name.as_str()), "the launch writes the two variables back unjoined");
+            assert_eq!(crate::launch::Launch::from_env(|k| written.get(k).cloned()).unwrap().name, *pair);
+            // The replacement move keeps the path and changes only the name.
+            let moved = pair.renamed().unwrap();
+            assert_eq!((moved.path.as_str(), moved.name.clone()), (pair.path.as_str(), format!("{}-old", pair.name)), "the predecessor moves to <name>-old at the same path");
+            assert_eq!(serde_json::from_value::<PathName>(serde_json::to_value(&moved).unwrap()).unwrap(), moved);
+        }
+        // The path is free text: nothing reads a mesh, a kind or an ordinal out of it.
+        let free = PathName::new("not.a.mesh.path", "x").unwrap();
+        assert_eq!((free.path(), free.name()), ("not.a.mesh.path".to_string(), "x".to_string()));
+        // Grammar: refused by name, the refused field named.
+        for (path, name, field) in [("", "a", "path"), ("bad..path", "a", "path"), ("Upper", "a", "path"), (".lead", "a", "path"), ("trail.", "a", "path"), ("valid", "", "name"), ("valid", "has.dot", "name"), ("valid", "Upper", "name")] {
+            match (PathName::new(path, name), field) {
+                (Err(PathNameError::Path(p)), "path") => assert_eq!(p, path),
+                (Err(PathNameError::Name(n)), "name") => assert_eq!(n, name),
+                (other, _) => panic!("{path}/{name}: refused naming the {field}, not {other:?}"),
+            }
+        }
+        assert!(matches!(PathName::new("valid", "a".repeat(65)), Err(PathNameError::Name(_))), "a name over 64 characters is refused");
+        // A decode is checked: an invalid pair, an extra field or a joined string is no pair.
+        for bad in [serde_json::json!({"path": "valid", "name": "has.dot"}), serde_json::json!({"path": "valid", "name": "a", "mesh": "mesh1"}), serde_json::json!("mesh1.rpc.north"), serde_json::json!({"path": "mesh1.rpc"})] {
+            assert!(serde_json::from_value::<PathName>(bad.clone()).is_err(), "{bad} is not a pair");
+        }
+        let env_err = crate::launch::Launch::from_env(|k| match k {
+            crate::launch::ENV_NODE_PATH => Some("mesh1.rpc".into()),
+            crate::launch::ENV_NODE_NAME => Some("has.dot".into()),
+            crate::launch::ENV_FABRIC => Some("fabric1".into()),
+            crate::launch::ENV_FABRIC_ID => Some(crate::FabricId::mint().to_string()),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(env_err.starts_with(&format!("{}/{}", crate::launch::ENV_NODE_PATH, crate::launch::ENV_NODE_NAME)), "the launch refuses the pair by its two variables' names: {env_err}");
+    }
 }
