@@ -307,7 +307,10 @@ fn a_replacement_launches_from_its_entry_and_a_recovery_from_its_predecessors_ac
         let mut claimed = Vec::new();
         for of in [ClaimFor::Replacement, ClaimFor::Recovery] {
             let storage = Arc::new(MemoryNodesStorage::default());
-            storage.write_record(&NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::Gateway, old.clone(), NodeStatus::Deleted)).await.unwrap();
+            // The predecessor's Deleted row holds its birth: the claim names it exactly (Allocation.predecessor).
+            let mut deleted = NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::Gateway, old.clone(), NodeStatus::Deleted);
+            deleted.births.push(rdm_admin::storage::BirthFacts::new(acknowledged.birth.incarnation_id.clone(), name.clone()));
+            storage.write_record(&deleted).await.unwrap();
             let records = Arc::new(MemoryNodeRecords::default());
             records.put_properties(&acknowledged).await.unwrap();
             let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -319,7 +322,8 @@ fn a_replacement_launches_from_its_entry_and_a_recovery_from_its_predecessors_ac
             let me_id = t.node(&me).expect("the mesh primary is in the view").node_id.clone();
             let rows = NodeRows::new(me, me_id, Arc::new(RwLock::new(t)), storage.clone()).with_configs(slot);
             let build_b = BuildId::mint();
-            let allocated = rdm_admin::storage::Allocation { predecessor: None, build_id: build_b.clone(), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
+            let predecessor = rdm_admin::storage::BirthRef { node_id: old.clone(), incarnation_id: acknowledged.birth.incarnation_id.clone() };
+            let allocated = rdm_admin::storage::Allocation { predecessor: Some(predecessor), build_id: build_b.clone(), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
             let born = NodeId::mint();
             let row = match rows.claim_spec(&name, "mesh1", rdm_core::NodeKind::Gateway, &born, &rdm_core::OperationId::location("node.create", &name), Some(&allocated), None, &Default::default(), &BTreeMap::new(), None, of).await.expect("the Deleted row holds no name") {
                 rdm_admin::node_rows::Claimed::Written { row, .. } => row,
@@ -381,7 +385,9 @@ fn an_applied_entry_whose_reply_was_lost_survives_a_later_own_update_and_recover
         drop(old_writer);
         // The node is lost; recovery claims the name over its Deleted row under a new node ID.
         let storage = Arc::new(MemoryNodesStorage::default());
-        storage.write_record(&NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::Gateway, old.clone(), NodeStatus::Deleted)).await.unwrap();
+        let mut deleted = NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::Gateway, old.clone(), NodeStatus::Deleted);
+        deleted.births.push(rdm_admin::storage::BirthFacts::new(acknowledged.birth.incarnation_id.clone(), name.clone()));
+        storage.write_record(&deleted).await.unwrap();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
         let configs = crate::bound_configs_on(records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await;
@@ -390,7 +396,8 @@ fn an_applied_entry_whose_reply_was_lost_survives_a_later_own_update_and_recover
         let me_id = t.node(&me).expect("the mesh primary is in the view").node_id.clone();
         let rows = NodeRows::new(me, me_id, Arc::new(RwLock::new(t)), storage.clone()).with_configs(Arc::new(std::sync::OnceLock::from(Arc::new(configs))));
         let recovered = NodeId::mint();
-        let allocated = rdm_admin::storage::Allocation { predecessor: None, build_id: BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
+        let predecessor = rdm_admin::storage::BirthRef { node_id: old.clone(), incarnation_id: acknowledged.birth.incarnation_id.clone() };
+        let allocated = rdm_admin::storage::Allocation { predecessor: Some(predecessor), build_id: BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
         let initial = match rows.claim_spec(&name, "mesh1", rdm_core::NodeKind::Gateway, &recovered, &rdm_core::OperationId::location("node.create", &name), Some(&allocated), None, &Default::default(), &BTreeMap::new(), None, ClaimFor::Recovery).await.expect("the Deleted row holds no name") {
             rdm_admin::node_rows::Claimed::Written { row, .. } => row.initial_properties.expect("the claim retains its launch snapshot"),
             other => panic!("the recovery claim writes: {other:?}"),
