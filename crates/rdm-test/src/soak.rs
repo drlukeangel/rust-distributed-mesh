@@ -1665,7 +1665,7 @@ impl Driver {
                     // `os-stopped` read while held, is the one decision: node-investigation.md, Q273) replaced
                     // it: a recreate read late, never silence replacing a running runtime.
                     HeldBirth::Replaced => {
-                        let late = acted_rows(&acted_on(&before, &(self.read)(&self.estate, &self.build_id).await, path));
+                        let late = acted_rows(&acted_on(&before, &(self.read)(&self.estate, &self.build_id).await, path, inc));
                         if late.is_empty() {
                             return Err(broken("silence-is-not-death", format!("{path:?} came back as another birth than {inc:?}: silence replaced a running runtime")));
                         }
