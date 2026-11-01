@@ -21,6 +21,11 @@ is never built here.
 
 ## Vocabulary
 
+Name things what they are. Never make up a word, and never use a name that hides what the thing
+does or calls it something it is not. Rule of thumb: if you have to describe what something does to
+understand it, its name uses a word from that description (`TimeLimit`, not `Budget`; `Resend`, not
+`Owed`; `copy`, not `snapshot`).
+
 The primaries are the fabric-primary, each mesh's mesh-primary and each node type's node-type primary in its mesh; a primary changes by `node.primary.update` or, unheard past the staleness floor, by the leadership election. `id` / `index` / `name` are three things; `key` is none of them. `target`, never fence. `revision`,
 never epoch. Connections are deleted (`node.connections.delete`), never drained. `forward` is the
 control plane's word (Forward 0x1A, `build.attempt.run`); `proxy` is the data plane's (a `Proxy`
