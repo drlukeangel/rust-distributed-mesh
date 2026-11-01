@@ -186,7 +186,7 @@ async fn topology_rides_mesh_channels_and_the_admin_backbone() {
         for e in mine.iter().filter(|e| e.3 == "start") {
             let role = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
                 .into_iter()
-                .filter(|sp| attr(sp, "observer") == *n && start(sp) <= e.0)
+                .filter(|sp| attr(sp, "observer_node_id") == *n && start(sp) <= e.0)
                 .max_by_key(|sp| start(sp))
                 .map(|sp| attr(sp, "winner_node_id"));
             assert_eq!(role.as_deref(), Some(n.as_str()), "{n} started publishing {} only while it held the mesh-primary role: {mine:?}", e.2);
@@ -407,7 +407,7 @@ async fn gossip_repairs_a_lost_push_and_an_isolated_admin_refuses_builds_and_hea
             let marked = named(&spans, "rdm.mesh.topology.update.via-member-stale").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "member_id") == fp_name && start(sp) >= cut_at);
             let elected = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
                 .into_iter()
-                .filter(|sp| attr(sp, "observer") == lone_name && attr(sp, "mesh") == "mesh1" && start(sp) >= cut_at)
+                .filter(|sp| attr(sp, "observer_node_id") == lone_name && attr(sp, "mesh") == "mesh1" && start(sp) >= cut_at)
                 .max_by_key(|sp| start(sp))
                 .map(|sp| attr(sp, "winner_node_id"));
             (marked && elected.is_some_and(|w| w.is_empty())).then_some(())

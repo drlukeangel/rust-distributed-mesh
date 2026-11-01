@@ -202,7 +202,8 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
         .unwrap_or_else(|| panic!("{recovery_admin:?}'s create claimed its name for a node id"));
     let joined: Vec<&Value> = named(&spans, "rdm.node.mesh.update.via-joining").into_iter().filter(|j| rdm_test::estate::of_node(j, &recovery_admin, &recovery_admin_id) && at(j) > at(first)).collect();
     assert!(!joined.is_empty() && joined.iter().all(|j| attr(j, "mesh_id") == lost_mesh_id), "{recovery_admin:?} joined under {lost}'s own MeshId: it never minted: {joined:?}");
-    let adopted = named(&spans, "rdm.node_admin.mesh.update.via-held-state-adopted").into_iter().filter(|a| attr(a, "publisher") == recovery_admin_id && attr(a, "mesh_id") == lost_mesh_id && at(a) > at(first)).count();
+    // The adopter is the admin the span names; the held state's publisher is the mesh's lost primary.
+    let adopted = named(&spans, "rdm.node_admin.mesh.update.via-held-state-adopted").into_iter().filter(|a| rdm_test::estate::at_location(a, &recovery_admin) && attr(a, "mesh_id") == lost_mesh_id && at(a) > at(first)).count();
     assert!(adopted > 0, "{recovery_admin:?} adopted {lost}'s held state as its successor primary");
     let handed: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| attr(h, "mesh") == lost && at(h) > at(first)).collect();
     assert!(handed.is_empty(), "no Pending is handed to a node-admin joining a live mesh: {handed:?}");

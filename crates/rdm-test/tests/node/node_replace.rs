@@ -2513,11 +2513,12 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_ends_on_its_departure_and_t
                         && s(&sp["attributes"]["attempt"]) == lost_attempt.to_string()
                         && sp["attributes"]["outcome"] == "ended"
                 });
+            // The drift run names its reporting executor by node id.
             let at_run = named(&spans, "rdm.node_admin.build.update.via-drift-run")
                 .into_iter()
                 .find(|sp| {
                     at_location(sp, &fp_at)
-                        && sp["attributes"]["executor"] == p_birth.to_string().as_str()
+                        && sp["attributes"]["executor"] == p["node_id"]
                         && sp["attributes"]["lane"] == "mesh2"
                         && s(&sp["attributes"]["attempt"]) == lost_attempt.to_string()
                         && sp["attributes"]["outcome"] == "failed"

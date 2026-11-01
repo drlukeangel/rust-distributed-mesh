@@ -1032,6 +1032,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     // node id, the hook's reason and its retry event.
     assert_eq!((operation.action.as_str(), operation.subject.clone()), ("node.create", Some(rdm_core::OperationSubject::Location(blocked.clone()))), "the frame names the birth's create: {operation:?}");
     assert!(reason.contains(": pre_node_ready is blocked: ") && reason.contains(A) && reason.contains("primary-addressed"), "the frame names the birth, the hook's reason and its retry event: {reason}");
+    let blocked_id = reason.split(':').next().expect("the reason opens with the birth's node id").to_string();
     assert!(!before_a.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })));
 
     // Reruns blocked for the same reason: the executor's probes address the birth, so its hook runs
@@ -1053,7 +1054,8 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     estate.stop().await;
     let spans = estate.spans();
     // The flame: the blocked birth's probe answers, each naming its blocker.
-    let probes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node_path"]) == blocked.path && s(&sp["attributes"]["node_name"]) == blocked.name && s(&sp["attributes"]["state"]) == "blocked").collect();
+    // The node's own probe answers name it by node id.
+    let probes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == blocked_id && s(&sp["attributes"]["state"]) == "blocked").collect();
     assert!(probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(A)) && probes.iter().any(|sp| s(&sp["attributes"]["blocker"]).contains(B)), "the birth answered both blockers Blocked");
     assert!(probes.iter().all(|sp| s(&sp["attributes"]["retry_on"]) == "primary-addressed"), "every Blocked answer names the hook's retry event");
     estate.artifact("blocked-probes", &json!({ "a_reruns": a_reruns, "blocked_probe_answers": probes.len() }));

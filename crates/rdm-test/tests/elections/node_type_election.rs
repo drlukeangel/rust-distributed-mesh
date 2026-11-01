@@ -258,7 +258,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
         _ => None,
     }).collect();
     let stop_operation = stop_operations.first().expect("stop has a receipt").clone();
-    assert!(stop_operations.iter().all(|operation| *operation == stop_operation), "one admitted stop operation");
+    assert!(stop_operations.iter().all(|operation| *operation == stop_operation), "one admitted stop operation: {stop_operations:?}");
     estate.until_stopped_at_the_fabric_primary(&location_of(&nodes, &rpc_p)).await;
     complete(&format!("node.start of {rpc_p}"), estate.nodes_obj().await.start(&location_of(&nodes, &rpc_p)).await).await;
     let nodes = settle(&estate, &admin1, "restart primary").await;
@@ -340,7 +340,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
                 let spans = estate.spans();
                 let found = named(&spans, "rdm.mesh.election.resolve.via-recompute")
                     .into_iter()
-                    .find(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_ns && sp["attributes"]["observer"] == admin_p.as_str() && sp["attributes"]["election_level"] == "node_type" && sp["attributes"]["kind"] == "rpc_node" && sp["attributes"]["winner_node_id"] == lone_rpc.as_str())
+                    .find(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_ns && sp["attributes"]["observer_node_id"] == admin_p.as_str() && sp["attributes"]["election_level"] == "node_type" && sp["attributes"]["kind"] == "rpc_node" && sp["attributes"]["winner_node_id"] == lone_rpc.as_str())
                     .cloned();
                 async move { found }
             })
@@ -409,7 +409,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let own = |name: &str, level: &str| {
         named(&spans, name).iter().any(|sp| {
             let a = &sp["attributes"];
-            a["election_level"] == level && a["observer"] == boot.1.as_str() && a["winner_node_id"] == boot.1.as_str() && a["previous_node_id"] == ""
+            a["election_level"] == level && a["observer_node_id"] == boot.1.as_str() && a["winner_node_id"] == boot.1.as_str() && a["previous_node_id"] == ""
         })
     };
     assert!(own("rdm.mesh.election.resolve.via-recompute", "node_type"), "day 0: node-admin type");

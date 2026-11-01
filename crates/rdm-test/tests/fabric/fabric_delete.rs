@@ -28,11 +28,6 @@ fn owner(test: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "fabric-lifecycle".into(), subfeature: "fabric-delete".into(), rung: "MM".into(), provider: "process".into(), test: test.into() }
 }
 
-/// The node id of the birth at `node`, as the admin the estate asks holds it.
-async fn id_at(estate: &Estate, node: &PathName) -> String {
-    estate.node_value(node).await["node_id"].as_str().unwrap_or_else(|| panic!("{node:?} has a node id")).to_string()
-}
-
 /// Whether receipt operation `o` is `action` on the mesh `mesh_id`.
 fn on_mesh(o: &OperationId, action: &str, mesh_id: &str) -> bool {
     o.action == action && matches!(&o.subject, Some(OperationSubject::Mesh(m)) if m.as_str() == mesh_id)
@@ -243,7 +238,8 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
     let until = tokio::time::Instant::now() + SETTLE;
     loop {
         match tokio::time::timeout_at(until, held.next()).await {
-            Ok(Some(Ok(BuildFrame::Blocked { reason, .. }))) if reason.contains("mesh1.rpc.1") => break,
+            // The frame's operation is the birth's create at its (path, name); its reason names the birth by node id.
+            Ok(Some(Ok(BuildFrame::Blocked { operation, .. }))) if operation.subject == Some(rdm_core::OperationSubject::Location(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())) => break,
             Ok(Some(Ok(frame @ (BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. })))) => panic!("the growth {first} ended {frame:?} before mesh1.rpc.1 was held"),
             Ok(Some(Ok(_))) => {}
             other => panic!("the growth {first} reported no Blocked naming mesh1.rpc.1 within {SETTLE:?}: {other:?}"),
@@ -609,11 +605,11 @@ fn bare(id: &str) -> String {
     id.trim_start_matches("bid_").replace('-', "")
 }
 
-/// The pid of `node`'s launched runtime, the one the estate reads running.
-async fn runtime_pid(estate: &Estate, node: &PathName) -> u32 {
-    let id = id_at(estate, node).await;
-    let pids: Vec<u32> = estate.live_runtimes().into_iter().filter(|(dir, _)| of_node(dir, &id)).map(|(_, pid)| pid).collect();
-    assert_eq!(pids.len(), 1, "{node:?} has one running runtime: {:?}", estate.live_runtimes());
+/// The one running runtime of the node `id` (its data dir is named by its node id), read from the
+/// host: the node id is the one the cell settled, so no admin has to answer a read for it.
+fn runtime_pid(estate: &Estate, id: &str) -> u32 {
+    let pids: Vec<u32> = estate.live_runtimes().into_iter().filter(|(dir, _)| of_node(dir, id)).map(|(_, pid)| pid).collect();
+    assert_eq!(pids.len(), 1, "{id} has one running runtime: {:?}", estate.live_runtimes());
     pids[0]
 }
 
@@ -751,7 +747,7 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
     assert_eq!(midway["hit"]["build_id"].as_str(), Some(id.as_str()), "the backbone executor is held midway, at the Complete of mesh1's last member's delete: {midway}");
     let first = receipts_at(&estate, &Estate::path("mesh2.admin", "1"), &id).await;
     assert_eq!(count(&first, |_| true, "PrimariesTaken"), 1, "the backbone executor recorded its transition: {:?}", listed(&first));
-    estate.kill_pid(runtime_pid(&estate, &Estate::path("mesh2.admin", "1")).await);
+    estate.kill_pid(runtime_pid(&estate, &id_in(&ids, "mesh2.admin", "1")));
 
     let fp = delete_followed(&estate, delete, &Estate::path("mesh2.admin", "2")).await;
     assert_eq!(fp.0, Estate::path("mesh2.admin", "2"), "the next executor is the fabric-primary that finishes the delete");
