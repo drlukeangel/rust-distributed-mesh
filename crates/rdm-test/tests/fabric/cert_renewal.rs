@@ -12,6 +12,7 @@
 //! to fail cuts its admin's calls to it (the client's admission block, its pooled connection to the
 //! member closed): the member gossips on, so nothing but the renewal is told about it.
 
+use rdm_core::PathName;
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::certs::CertChoice;
 use rdm_admin::wiring::{FabricHooks, Wiring};
@@ -94,14 +95,14 @@ async fn boot_root(dir: &Path, policy: &[(&'static str, String)]) -> Running {
 
 /// The launch of a birth at `name` deployed by `by` (the admin that answers its JoinNode), with the
 /// testkit's root set, on the fabric's shared `store`.
-fn launch_by(by: &Running, store: &Path, dir: &Path, name: &str, kind: rdm_core::NodeKind) -> Launch {
+fn launch_by(by: &Running, store: &Path, dir: &Path, name: &PathName, kind: rdm_core::NodeKind) -> Launch {
     let d = by.digest.lock().unwrap().clone();
     Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         kind: kind,
-        name: name.parse().unwrap(),
+        name: name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -138,22 +139,23 @@ fn deployed(by: &Running, launch: &Launch) {
     });
 }
 
-/// A member at `name`, deployed by `by`, with the product ALPN registered, started and joined.
-async fn member(by: &Running, store: &Path, name: &str) -> RunningNode {
-    let dir = cell_dir(name);
-    let launch = launch_by(by, store, &dir, name, rdm_core::NodeKind::RpcNode);
+/// mesh1's rpc node `ordinal`, deployed by `by`, with the product ALPN registered, started and joined.
+async fn member(by: &Running, store: &Path, ordinal: &str) -> RunningNode {
+    let dir = cell_dir(&format!("rpc-{ordinal}"));
+    let name = PathName::new("mesh1.rpc", ordinal).unwrap();
+    let launch = launch_by(by, store, &dir, &name, rdm_core::NodeKind::RpcNode);
     deployed(by, &launch);
     rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
         .await
-        .unwrap_or_else(|e| panic!("{name} starts: {e}"))
+        .unwrap_or_else(|e| panic!("{name:?} starts: {e}"))
 }
 
 /// `mesh1.admin.2`, launched by `root` with its mesh's issuing material and the root beside it, the
 /// testkit's root set and the fabric's shared store. Its environment is its launch's alone: it holds
 /// no cert policy but the one its entry pull carries. Returns it with that environment.
 async fn launched_admin(root: &Running, store: &Path) -> (Running, BTreeMap<String, String>) {
-    let dir = cell_dir("mesh1.admin.2");
-    let mut launch = launch_by(root, store, &dir, "mesh1.admin.2", rdm_core::NodeKind::NodeAdmin);
+    let dir = cell_dir("admin-2");
+    let mut launch = launch_by(root, store, &dir, &PathName::new("mesh1.admin", "2").unwrap(), rdm_core::NodeKind::NodeAdmin);
     launch.listeners = vec![("control".into(), "127.0.0.1:0".parse().unwrap())];
     launch.issuing = root.runner.issuer.issuing_material("mesh1").expect("the root holder hands mesh1's issuing material");
     deployed(root, &launch);
@@ -286,7 +288,7 @@ fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("row");
         let root = boot_root(&dir, &[]).await;
-        let a = member(&root, &dir, "mesh1.rpc.1").await;
+        let a = member(&root, &dir, "1").await;
         let issued = join_issue(&spans, "mesh1.rpc.1");
         let held = signed(&a.member_cert);
         let issued_at = num(&issued, "issued_at_rafka_ms");
@@ -298,8 +300,8 @@ fn a_join_writes_the_births_cert_row_and_node_get_shows_it() {
         let birth = record.birth(&a.digest.node.incarnation).unwrap_or_else(|| panic!("no facts of the exact birth on mesh1.rpc.1's record: {record:?}"));
         let row = birth.cert.clone().unwrap_or_else(|| panic!("no cert dates on mesh1.rpc.1's record: {record:?}"));
         assert_eq!(
-            (birth.name.to_string(), row.issued_at, row.expires_at, row.issuer_expires_at),
-            ("mesh1.rpc.1".to_string(), issued_at, held.cert.expiry_ms, held.issuer.cert.expiry_ms),
+            (birth.name.clone(), row.issued_at, row.expires_at, row.issuer_expires_at),
+            (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), issued_at, held.cert.expiry_ms, held.issuer.cert.expiry_ms),
             "the record names the exact birth and its cert"
         );
         let life = row.expires_at - row.issued_at;
@@ -355,8 +357,8 @@ fn a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admi
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("renewed");
         let root = boot_root(&dir, &policy(&[])).await;
-        let a = member(&root, &dir, "mesh1.rpc.1").await;
-        let b = member(&root, &dir, "mesh1.rpc.2").await;
+        let a = member(&root, &dir, "1").await;
+        let b = member(&root, &dir, "2").await;
         let first = signed(&a.member_cert);
         let issued_at = num(&join_issue(&spans, "mesh1.rpc.1"), "issued_at_rafka_ms");
         assert_eq!(first.cert.expiry_ms - issued_at, MEMBER_TTL_SECS * 1000, "the join's cert lives the policy's member TTL");
@@ -401,8 +403,8 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("control");
         let root = boot_root(&dir, &policy(&[])).await;
-        let a = member(&root, &dir, "mesh1.rpc.1").await;
-        let b = member(&root, &dir, "mesh1.rpc.2").await;
+        let a = member(&root, &dir, "1").await;
+        let b = member(&root, &dir, "2").await;
         let (opener, _) = a.connections(ALPN).unwrap().split();
         let (_, mut accepts) = b.connections(ALPN).unwrap().split();
         // One open, paired with its accept by the connection row's id (the same at both ends). An open
@@ -520,7 +522,7 @@ fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
         // A 24 s TTL: the renewal is retried from its point to the held cert's expiry, which leaves
         // seconds to send it again once the calls reach the member.
         let root = boot_root(&dir, &policy(&[(certs::ENV_MEMBER_CERT_TTL_SECS, 24)])).await;
-        let b = member(&root, &dir, "mesh1.rpc.1").await;
+        let b = member(&root, &dir, "1").await;
         cut_calls(&root, &b);
         let tries = until("two not-sent renewals of mesh1.rpc.1", BOUND, async || {
             let not_sent: Vec<_> = renewals_of(&spans, "mesh1.rpc.1").into_iter().filter(|f| f["outcome"] == "not-sent").collect();
@@ -562,8 +564,8 @@ fn a_cert_for_another_birth_is_refused_by_name() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = cell_dir("another-birth");
         let root = boot_root(&dir, &[]).await;
-        let a = member(&root, &dir, "mesh1.rpc.1").await;
-        let b = member(&root, &dir, "mesh1.rpc.2").await;
+        let a = member(&root, &dir, "1").await;
+        let b = member(&root, &dir, "2").await;
         let to_a = |cert: Vec<u8>| StatusRequest::RenewCert { node_id: a.digest.node.node_id.clone(), incarnation: a.digest.node.incarnation.clone(), cert };
 
         match call(&root, &a, &to_a(b.member_cert.clone())).await {
@@ -624,7 +626,7 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
     const TTL_SECS: u64 = 60;
     let mut estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_MEMBER_CERT_TTL_SECS, "60")]).await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
-    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"].into_iter().map(str::to_string).collect();
+    let names: std::collections::BTreeSet<rdm_core::PathName> = [Estate::path("mesh1.admin", "1"), Estate::path("mesh1.admin", "2"), Estate::path("mesh1.rpc", "1")].into_iter().collect();
     estate.settles_to_named(&names, Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let member = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
@@ -641,8 +643,8 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
 
     // The issue the member held at the move: its join's, or the newest renewal it received.
     let held = |spans: &[serde_json::Value]| -> (u64, u64) {
-        let joined = named(spans, "rdm.node_admin.cert.create.via-join").into_iter().filter(|sp| attr(sp, "node") == "mesh1.rpc.1" && attr(sp, "incarnation_id") == incarnation.to_string() && attr(sp, "outcome") == "issued").map(|sp| (attr_num(sp, "issued_at_rafka_ms"), attr_num(sp, "expires_at_rafka_ms")));
-        let renewed = named(spans, "rdm.node_admin.cert.update.via-renewal").into_iter().filter(|sp| attr(sp, "node") == "mesh1.rpc.1" && attr(sp, "outcome") == "installed" && sp["start_unix_nano"].as_u64().unwrap_or(0) < moved_at_ns).map(|sp| (attr_num(sp, "issued_at"), attr_num(sp, "expires_at")));
+        let joined = named(spans, "rdm.node_admin.cert.create.via-join").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &rdm_test::estate::Estate::path("mesh1.rpc", "1")) && attr(sp, "incarnation_id") == incarnation.to_string() && attr(sp, "outcome") == "issued").map(|sp| (attr_num(sp, "issued_at_rafka_ms"), attr_num(sp, "expires_at_rafka_ms")));
+        let renewed = named(spans, "rdm.node_admin.cert.update.via-renewal").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &rdm_test::estate::Estate::path("mesh1.rpc", "1")) && attr(sp, "outcome") == "installed" && sp["start_unix_nano"].as_u64().unwrap_or(0) < moved_at_ns).map(|sp| (attr_num(sp, "issued_at"), attr_num(sp, "expires_at")));
         joined.chain(renewed).max().expect("the member was issued a cert")
     };
     let next = wait_for_renewal(&estate, moved_at_ns, Duration::from_secs(TTL_SECS + 30)).await;
@@ -664,7 +666,7 @@ async fn wait_for_renewal(estate: &rdm_test::estate::Estate, moved_at_ns: u64, w
     let deadline = tokio::time::Instant::now() + within;
     loop {
         let spans = estate.spans();
-        if let Some(sp) = rdm_test::estate::named(&spans, "rdm.node_admin.cert.update.via-renewal").into_iter().find(|sp| attr(sp, "node") == "mesh1.rpc.1" && attr(sp, "outcome") == "installed" && sp["start_unix_nano"].as_u64().unwrap_or(0) > moved_at_ns) {
+        if let Some(sp) = rdm_test::estate::named(&spans, "rdm.node_admin.cert.update.via-renewal").into_iter().find(|sp| rdm_test::estate::at_location(sp, &rdm_test::estate::Estate::path("mesh1.rpc", "1")) && attr(sp, "outcome") == "installed" && sp["start_unix_nano"].as_u64().unwrap_or(0) > moved_at_ns) {
             return sp.clone();
         }
         assert!(tokio::time::Instant::now() < deadline, "mesh1.admin.2 renewed mesh1.rpc.1 within {within:?} of taking the roles");
@@ -739,7 +741,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         let dir = cell_dir("rotation");
         let root = boot_root(&dir, &policy(&[(certs::ENV_ISSUING_CERT_TTL_SECS, ISSUING_TTL_SECS), (certs::ENV_MEMBER_CERT_TTL_SECS, 120)])).await;
         // The mesh's first join mints its issuer (`mesh.issuer.create`) and puts the issuer row.
-        let first = member(&root, &dir, "mesh1.rpc.3").await;
+        let first = member(&root, &dir, "3").await;
         let (admin2, env) = launched_admin(&root, &dir).await;
         let old = certs::decode_issuing_cert(&env[rdm_core::launch::ENV_ISSUING_CERT]).expect("mesh1's issuing cert");
         let minted_at = old.cert.expiry_ms - ISSUING_TTL_SECS * 1000;
@@ -749,7 +751,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         // the issuer's expiry, is renewed at 67-72 % of what is left (84-86 % of the issuer's life),
         // after its calls are cut below.
         until("rafka-time is 50 % into the old issuer's life", BOUND, async || (root.rafka_time.now_ms() >= minted_at + ISSUING_TTL_SECS * 500).then_some(())).await;
-        let holder = member(&root, &dir, "mesh1.rpc.1").await;
+        let holder = member(&root, &dir, "1").await;
         assert_eq!(signed(&holder.member_cert).issuer, old, "it joined under the old issuer");
 
         let rotated = until("the fabric-primary re-mints mesh1's issuer", BOUND, async || named(&spans, "rdm.node_admin.issuer.create.via-renewal").into_iter().find(|f| f.get("mesh").map(String::as_str) == Some("mesh1") && f.contains_key("outcome"))).await;
@@ -763,7 +765,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         .await;
         assert_eq!(num(&update, "issuer_expires_at"), num(&rotated, "issuer_expires_at"));
 
-        let newer = member(&admin2, &dir, "mesh1.rpc.2").await;
+        let newer = member(&admin2, &dir, "2").await;
         let new_issuer = signed(&newer.member_cert).issuer;
         assert_ne!(new_issuer.cert.issuer_pub, old.cert.issuer_pub, "mesh1.admin.2 signs with the new issuing key");
         assert_eq!((new_issuer.cert.expiry_ms, new_issuer.cert.mesh.as_str()), (num(&rotated, "issuer_expires_at"), "mesh1"));
@@ -798,8 +800,8 @@ fn two_admins_read_the_same_policy_from_the_entry_pull() {
         for k in [certs::ENV_MEMBER_CERT_TTL_SECS, certs::ENV_ISSUING_CERT_TTL_SECS, certs::ENV_CA_CERT_TTL_SECS, certs::ENV_CERT_RENEW_AT] {
             assert!(!env.contains_key(k), "mesh1.admin.2's launch names no policy ({k})");
         }
-        let by_root = member(&root, &dir, "mesh1.rpc.1").await;
-        let by_admin2 = member(&admin2, &dir, "mesh1.rpc.2").await;
+        let by_root = member(&root, &dir, "1").await;
+        let by_admin2 = member(&admin2, &dir, "2").await;
         for (node, by) in [("mesh1.rpc.1", "mesh1.admin.1"), ("mesh1.rpc.2", "mesh1.admin.2")] {
             let issued = join_issue(&spans, node);
             assert_eq!(num(&issued, "expires_at_rafka_ms") - num(&issued, "issued_at_rafka_ms"), MEMBER_TTL_SECS * 1000, "{by} issued {node} a cert of the bootstrap admin's member TTL: {issued:?}");
@@ -832,7 +834,7 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         // A 40 s TTL: the stall shows one floor past the renew point, and the renewal is still retried
         // until the held cert expires, seconds later.
         let root = boot_root(&dir, &policy(&[(certs::ENV_MEMBER_CERT_TTL_SECS, 40)])).await;
-        let b = member(&root, &dir, "mesh1.rpc.1").await;
+        let b = member(&root, &dir, "1").await;
         let joined = signed(&b.member_cert).cert.expiry_ms;
         let mesh1 = |f: &FabricView| f.meshes.iter().find(|m| m.name == "mesh1").map(|m| m.renewals.clone());
         let me = root.birth();
@@ -906,22 +908,22 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
     const CELL: &str = "the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_through_that_meshs_door";
     let estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_MEMBER_CERT_TTL_SECS, "30")]).await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 0)]).await;
-    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh2.admin.1"].into_iter().map(str::to_string).collect();
+    let names: std::collections::BTreeSet<rdm_core::PathName> = [Estate::path("mesh1.admin", "1"), Estate::path("mesh2.admin", "1")].into_iter().collect();
     estate.settles_to_named(&names, Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let primary = estate.node_view(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await;
     assert!(primary.is_primary && !primary.is_fabric_primary, "mesh2.admin.1 is mesh2's primary and not the fabric's: {primary:?}");
 
-    let renewed = estate_span(&estate, "rdm.node_admin.cert.update.via-renewal", "the fabric-primary renews mesh2.admin.1", Duration::from_secs(60), |sp| attr(sp, "node") == "mesh2.admin.1" && attr(sp, "outcome") == "installed").await;
+    let renewed = estate_span(&estate, "rdm.node_admin.cert.update.via-renewal", "the fabric-primary renews mesh2.admin.1", Duration::from_secs(60), |sp| rdm_test::estate::at_location(sp, &rdm_test::estate::Estate::path("mesh2.admin", "1")) && attr(sp, "outcome") == "installed").await;
     let (issued_at, expires_at) = (attr_num(&renewed, "issued_at"), attr_num(&renewed, "expires_at"));
-    for at in ["mesh1.admin.1", "mesh2.admin.1"] {
+    for at in [Estate::path("mesh1.admin", "1"), Estate::path("mesh2.admin", "1")] {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
-            let shown = estate.node_views_at(&Estate::path(at)).await.and_then(|vs| vs.into_iter().find(|v| v.name == Estate::path("mesh2.admin", "1"))).and_then(|v| v.cert);
+            let shown = estate.node_views_at(&at).await.and_then(|vs| vs.into_iter().find(|v| v.name == Estate::path("mesh2.admin", "1"))).and_then(|v| v.cert);
             if shown.as_ref().is_some_and(|c| (c.issued_at, c.expires_at) == (issued_at, expires_at)) {
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "node.get at {at} shows mesh2.admin.1's renewed issue's dates ({issued_at}, {expires_at}): {shown:?}");
+            assert!(tokio::time::Instant::now() < deadline, "node.get at {at:?} shows mesh2.admin.1's renewed issue's dates ({issued_at}, {expires_at}): {shown:?}");
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
@@ -990,27 +992,29 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     const CELL: &str = "an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary";
     let estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_ISSUING_CERT_TTL_SECS, "45")]).await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 0)]).await;
-    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh2.admin.1", "mesh2.admin.2"].into_iter().map(str::to_string).collect();
+    let names: std::collections::BTreeSet<rdm_core::PathName> = [Estate::path("mesh1.admin", "1"), Estate::path("mesh2.admin", "1"), Estate::path("mesh2.admin", "2")].into_iter().collect();
     let views = estate.settles_to_named(&names, Duration::from_secs(30)).await;
     let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2").collect();
     let primary = mesh2_admins.iter().find(|v| v.is_primary).cloned().expect("mesh2 holds a primary");
     let secondary = mesh2_admins.iter().find(|v| !v.is_primary).cloned().expect("mesh2 holds a secondary admin");
-    let (primary_name, secondary_name) = (primary.name.to_string(), secondary.name.to_string());
+    let (primary_name, secondary_name) = (primary.name.clone(), secondary.name.clone());
     let (primary_id, secondary_id) = (primary.node_id.to_string(), secondary.node_id.to_string());
+    let fp_id = views.iter().find(|v| v.name == Estate::path("mesh1.admin", "1")).map(|v| v.node_id.to_string()).expect("the fabric-primary's view");
 
     let rotated = estate_span(&estate, "rdm.node_admin.issuer.create.via-renewal", "the fabric-primary re-mints mesh2's issuer", Duration::from_secs(90), |sp| attr(sp, "mesh") == "mesh2" && attr(sp, "outcome") == "minted").await;
     let expiry = attr(&rotated, "issuer_expires_at");
-    let installed = |node: String, sender: String| {
+    // An issuer span names its node by location and its sender by node id.
+    let installed = |node: rdm_core::PathName, sender: String| {
         let expiry = expiry.clone();
-        move |sp: &serde_json::Value| attr(sp, "node") == node && attr(sp, "sender") == sender && attr(sp, "issuer_expires_at") == expiry
+        move |sp: &serde_json::Value| rdm_test::estate::at_location(sp, &node) && attr(sp, "sender_node_id") == sender && attr(sp, "issuer_expires_at") == expiry
     };
-    let received_from_the_fabric_primary = |node: String| {
-        let expiry = expiry.clone();
-        move |sp: &serde_json::Value| attr(sp, "node") == node && attr(sp, "sender") == "mesh1.admin.1" && attr(sp, "outcome") == "installed" && attr(sp, "issuer_expires_at") == expiry
+    let received_from_the_fabric_primary = |node: rdm_core::PathName| {
+        let (expiry, fp_id) = (expiry.clone(), fp_id.clone());
+        move |sp: &serde_json::Value| rdm_test::estate::at_location(sp, &node) && attr(sp, "sender_node_id") == fp_id && attr(sp, "outcome") == "installed" && attr(sp, "issuer_expires_at") == expiry
     };
-    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's primary installs the update the fabric-primary sent", Duration::from_secs(30), installed(primary_name.clone(), "mesh1.admin.1".into())).await;
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's primary installs the update the fabric-primary sent", Duration::from_secs(30), installed(primary_name.clone(), fp_id.clone())).await;
     estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "the fabric-primary records mesh2's primary's receipt", Duration::from_secs(30), received_from_the_fabric_primary(primary_name.clone())).await;
-    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's secondary installs the update its primary carried", Duration::from_secs(30), installed(secondary_name.clone(), primary_name.clone())).await;
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's secondary installs the update its primary carried", Duration::from_secs(30), installed(secondary_name.clone(), primary_id.clone())).await;
     let to_secondary = estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "the fabric-primary records the secondary's receipt", Duration::from_secs(30), received_from_the_fabric_primary(secondary_name.clone())).await;
     let trace = to_secondary["trace_id"].as_str().unwrap_or_default().to_string();
     // Each process writes its own spans: the carrier's are on disk when it flushes them, not when the
@@ -1024,13 +1028,13 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     // The carrier is the secondary's writer: the dates its IssuerUpdated answered are written on the
     // secondary's record by mesh2's primary as they return through it (node-issuer-update.md step 4).
     estate_span(&estate, "rdm.node_admin.issuer.update.via-carried", "mesh2's primary writes the dates the secondary answered on its record", Duration::from_secs(10), {
-        let (secondary_name, primary_name, expiry) = (secondary_name.clone(), primary_name.clone(), expiry.clone());
-        move |sp: &serde_json::Value| attr(sp, "node") == secondary_name && attr(sp, "carrier") == primary_name && attr(sp, "issuer_expires_at") == expiry && attr(sp, "outcome") == "written"
+        let (secondary_name, primary_id, expiry) = (secondary_name.clone(), primary_id.clone(), expiry.clone());
+        move |sp: &serde_json::Value| rdm_test::estate::at_location(sp, &secondary_name) && attr(sp, "carrier_node_id") == primary_id && attr(sp, "issuer_expires_at") == expiry && attr(sp, "outcome") == "written"
     }).await;
     let spans = estate.spans();
-    let alone: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().filter(|sp| attr(sp, "node") == secondary_name && attr(sp, "sender") != "mesh1.admin.1").collect();
+    let alone: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &secondary_name) && attr(sp, "sender_node_id") != fp_id).collect();
     assert!(alone.is_empty(), "no update to the secondary is originated by anyone but the fabric-primary: {alone:#?}");
-    let direct: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().filter(|sp| attr(sp, "node") == secondary_name && attr(sp, "sender") == "mesh1.admin.1").collect();
+    let direct: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &secondary_name) && attr(sp, "sender_node_id") == fp_id).collect();
     assert!(direct.is_empty(), "the fabric-primary never calls mesh2's secondary admin directly: {direct:#?}");
     estate.record_trace_url(&trace);
     let mut estate = estate;
@@ -1109,7 +1113,7 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         let dir = cell_dir("root-rotation");
         let root = boot_root(&dir, &policy(&[])).await;
         let (second, second_env) = launched_admin(&root, &dir).await;
-        let a = member(&root, &dir, "mesh1.rpc.1").await;
+        let a = member(&root, &dir, "1").await;
         let door = root.status_door().expect("the fabric-primary's Status door");
         let new = certs::mint_key();
         let hex = |k: &certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
