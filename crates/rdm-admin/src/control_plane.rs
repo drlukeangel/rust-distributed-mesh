@@ -292,8 +292,13 @@ impl ControlPlane {
             (Some(mesh.to_owned()), held.attempt, held.executor.as_ref(), held.claimant.as_ref())
         };
         let (Some(executor), Some(claimant)) = (executor, claimant) else { return Ok(false) };
-        // An attempt this admin claimed is its own to run, never ended on a departure (main's rule).
-        if self.node_id.get() == Some(&executor.node_id) { return Ok(false) }
+        // An attempt this admin claimed is its own to run, never ended on a departure here: the fabric
+        // lane's attempt by its claimant, the fabric-primary, whose drive claims the next attempt for the
+        // successor once the lost executor's exit is proven (build.md §5.2: "Claims are the claimant's
+        // (the fabric-primary's for a topology attempt, the mesh's mesh-primary's for a drift attempt
+        // inside its mesh)"); a drift lane's by its executor.
+        let own = if fabric_holds { claimant } else { &executor.node_id };
+        if self.node_id.get() == Some(own) { return Ok(false) }
         if !self.departure_of(executor).await { return Ok(false) }
         let me = self.held_name().await;
         let reason = format!("executor node {}, incarnation {} exited with attempt {attempt} of Build {} unfinished in scope {:?}; its departure is proven", executor.node_id, executor.incarnation, current.build_id, lane);
