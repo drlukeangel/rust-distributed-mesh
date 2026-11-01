@@ -117,7 +117,7 @@ async fn stop_then_start(test: &str, node: &PathName) {
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     // Every other node reports that it dropped the stopped birth and holds the stop overlay.
     for peer in &others {
-        peers.fact(peer, "mesh1", "NodeStopped: the stopped birth is dropped and its stop overlay is held", |v| v.birth(&before.node_id).is_none() && v.overlay(&before.node_id, "node.stop:").is_some()).await;
+        peers.fact(peer, "mesh1", "NodeStopped: the stopped birth is dropped and its stop overlay is held", |v| v.birth(&before.node_id).is_none() && v.overlay(&before.node_id, "node.stop").is_some()).await;
     }
     // node.get shows it stopped: the same birth, the same process, alive.
     let stopped = view_of(&estate.nodes_obj().await, &path).await;
@@ -134,7 +134,7 @@ async fn stop_then_start(test: &str, node: &PathName) {
     for peer in &others {
         peers
             .fact(peer, "mesh1", "the rejoined birth is held again as the same incarnation and the stop overlay is gone", |v| {
-                v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation_id.as_ref().unwrap()) && v.overlay(&before.node_id, "node.stop:").is_none()
+                v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation_id.as_ref().unwrap()) && v.overlay(&before.node_id, "node.stop").is_none()
             })
             .await;
     }
@@ -454,8 +454,8 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
 /// `mesh1.rpc.1` at its mesh-primary ends `node.config.updated`: the stopped process, still bound, is
 /// sent `ApplyNodeConfig` once and its own writer puts the map (the via-config span says
 /// `apply=direct`, no `answered`; one `via-apply-node-config` at the node). Then `node.start` makes the
-/// same process rejoin (`via-join` admitted), and `node.get` lists the same birth `ready` carrying the
-/// config. What must NOT happen: `ConfigNotApplied` for a stopped node, or the started birth without
+/// same process rejoin (`via-join` admitted; its own record, not the join answer, holds the config),
+/// and `node.get` lists the same birth `ready` carrying the config. What must NOT happen: `ConfigNotApplied` for a stopped node, or the started birth without
 /// the config.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_start_carries_it() {
@@ -515,8 +515,8 @@ async fn a_stopped_nodes_config_update_is_applied_by_its_bound_process_and_its_s
     assert_eq!(applied, 1, "one ApplyNodeConfig reached the stopped, still bound node");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && at_location(sp, &path)).expect("the start command was sent");
     let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");
-    assert!(rdm_test::estate::names_location(&join, "admitted", &path) && join["attributes"]["config_keys"] == "1", "the join answer hands the row's config: {join:#?}");
-    eprintln!("trace {}: via-config outcome=config-updated apply=direct; trace {}: via-join admitted at {path:?} config_keys=1", s(&update["trace_id"]), s(&join["trace_id"]));
+    assert!(rdm_test::estate::names_location(&join, "admitted", &path), "the start's rejoin is admitted at its path and name: {join:#?}");
+    eprintln!("trace {}: via-config outcome=config-updated apply=direct; trace {}: via-join admitted at {path:?}", s(&update["trace_id"]), s(&join["trace_id"]));
     estate.record_trace_url(update["trace_id"].as_str().unwrap_or(""));
 }
 

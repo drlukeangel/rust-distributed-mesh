@@ -208,8 +208,8 @@ fn cut_calls(admin: &Running, to: &RunningNode) {
     admin.node_rpc.client.close_pooled_to(&key, "the cell cuts this admin's calls");
 }
 
-/// Every span named `name` with its fields, in the order they began; an admin span's `node_path` and
-/// `node_name` are also read as `node` = `path.name`, the way a cell names a node.
+/// Every span named `name` with its fields, in the order they began; each `<x>_path` and `<x>_name`
+/// pair is also read as `<x>` = `path.name`, the way a cell names a node.
 fn named(spans: &crate::common::Spans, name: &str) -> Vec<BTreeMap<String, String>> {
     let held = spans.0.lock().unwrap();
     let mut found: Vec<(u64, BTreeMap<String, String>)> = held.iter().filter(|(_, (n, _, _))| n == name).map(|(k, (_, _, f))| (*k, f.clone())).collect();
@@ -217,8 +217,9 @@ fn named(spans: &crate::common::Spans, name: &str) -> Vec<BTreeMap<String, Strin
     found
         .into_iter()
         .map(|(_, mut f)| {
-            if let (Some(path), Some(name)) = (f.get("node_path").cloned(), f.get("node_name").cloned()) {
-                f.entry("node".into()).or_insert(format!("{path}.{name}"));
+            let pairs: Vec<(String, String)> = f.iter().filter_map(|(k, path)| k.strip_suffix("_path").and_then(|x| f.get(&format!("{x}_name")).map(|name| (x.to_string(), format!("{path}.{name}"))))).collect();
+            for (x, dotted) in pairs {
+                f.entry(x).or_insert(dotted);
             }
             f
         })

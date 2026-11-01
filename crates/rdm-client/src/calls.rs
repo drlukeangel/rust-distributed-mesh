@@ -217,10 +217,10 @@ impl HeldView {
         self.members.iter().find(|d| &d.node.node_id == node_id)
     }
 
-    /// The overlay the node holds for `node_id` whose operation starts with `prefix`
-    /// (`node.stop:`, `node.delete:`), if it holds one.
-    pub fn overlay(&self, node_id: &NodeId, prefix: &str) -> Option<&rdm_core::LifecycleOp> {
-        self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.action == prefix)
+    /// The overlay the node holds for `node_id` whose operation's action is `action` (`node.stop`,
+    /// `node.delete`), if it holds one.
+    pub fn overlay(&self, node_id: &NodeId, action: &str) -> Option<&rdm_core::LifecycleOp> {
+        self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.action == action)
     }
 }
 
