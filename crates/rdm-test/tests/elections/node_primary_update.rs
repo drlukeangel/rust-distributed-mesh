@@ -39,7 +39,7 @@ fn num(sp: &Value, k: &str) -> Option<i64> {
     attr(sp, k).parse().ok()
 }
 
-fn names() -> BTreeSet<String> {
+fn names() -> BTreeSet<PathName> {
     ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| Estate::path(&format!("{m}.admin"), &i.to_string())).chain((1..=3).map(move |i| Estate::path(&format!("{m}.rpc"), &i.to_string())))).collect()
 }
 
@@ -67,7 +67,7 @@ struct Followed {
 }
 
 /// The admin a stream ended `FabricPrimaryMoved` names, when it did.
-fn fabric_primary_moved_to(frames: &[rdm_client::Frame]) -> Option<Option<String>> {
+fn fabric_primary_moved_to(frames: &[rdm_client::Frame]) -> Option<Option<rdm_core::NodeId>> {
     match frames.last() {
         Some(rdm_client::Frame::FabricPrimaryMoved { fabric_primary }) => Some(fabric_primary.clone()),
         _ => None,
@@ -85,7 +85,7 @@ impl Caller {
         let mut streams = Vec::new();
         let mut at = None;
         while let Some(named) = moved {
-            let to: rdm_core::PathName = named.ok_or_else(|| format!("a stream ended FabricPrimaryMoved naming no fabric-primary: {first:?} {streams:?}"))?.parse().map_err(|e| format!("FabricPrimaryMoved names {e:?}, which is not a path.name"))?;
+            let to: rdm_core::NodeId = named.ok_or_else(|| format!("a stream ended FabricPrimaryMoved naming no fabric-primary: {first:?} {streams:?}"))?;
             let carrier = self.peers.carrier_following(&self.entry, &to).await.map_err(|e| format!("the caller cannot reach {to:?}, the fabric-primary FabricPrimaryMoved names: {e}"))?;
             let mut stream = Nodes::new(carrier.clone()).resume(self.kind.clone(), &self.accepted).await.map_err(|e| format!("Build {} was not resumed at {to:?}: {e}", self.accepted.build_id))?;
             let mut frames: Vec<Frame> = Vec::new();
@@ -118,7 +118,7 @@ impl Caller {
 /// the caller's reply stream read to its end on a task of its own: its frames, how a stream that
 /// broke before its terminal ended, and, when the stream ended `FabricPrimaryMoved`, the Build followed on at
 /// the admin it named as soon as it is named.
-async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
+async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &PathName) -> (String, tokio::task::JoinHandle<Followed>) {
     use rdm_client::Nodes;
     let peers = estate.peers().await;
     let nodes = Nodes::new(peers.carrier_at(entry.clone()));
@@ -127,7 +127,7 @@ async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &str
             peers.learn_known(&held);
         }
     }
-    let node: rdm_core::PathName = p.parse().unwrap();
+    let node = p.clone();
     let subject = estate.node_view(p).await;
     let mut stream = nodes.steps(rdm_test::steps::replace(&node, &subject.mesh, subject.kind).expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
     let build = stream.accepted().build_id.to_string();
@@ -183,16 +183,26 @@ async fn born(estate: Estate, skewed: Option<&rdm_core::PathName>) -> (Estate, V
     (estate, nodes)
 }
 
-fn node<'a>(nodes: &'a [Value], name: &str) -> &'a Value {
-    nodes.iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("{name} is not in the view"))
+fn node<'a>(nodes: &'a [Value], name: &PathName) -> &'a Value {
+    nodes.iter().find(|n| location(n) == *name).unwrap_or_else(|| panic!("{name:?} is not in the view"))
 }
 
-fn fabric_primary(nodes: &[Value]) -> Option<String> {
+/// The sibling admin of `admin` in its mesh of two: `1` and `2` stand for each other.
+fn sibling(admin: &PathName) -> PathName {
+    admin.with_name(if admin.name == "1" { "2" } else { "1" }).expect("a sibling admin's location")
+}
+
+/// The mesh a location belongs to: its path's first segment.
+fn mesh_of(at: &PathName) -> String {
+    at.path.split('.').next().unwrap_or_default().to_string()
+}
+
+fn fabric_primary(nodes: &[Value]) -> Option<PathName> {
     nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n))
 }
 
-async fn kill(estate: &mut Estate, name: &str) {
-    if name == "mesh1.admin.1" {
+async fn kill(estate: &mut Estate, name: &PathName) {
+    if *name == Estate::path("mesh1.admin", "1") {
         estate.kill_bootstrap();
     } else {
         estate.kill_node(name).await;
@@ -211,15 +221,15 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     // the primaries and no stamp of any node reads the OS clock.
     let (mut estate, nodes) = fabric_skewing("a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_mesh", Some(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap())).await;
     let old = fabric_primary(&nodes).expect("one fabric primary");
-    let mesh = old.split('.').next().unwrap().to_string();
-    let heir = if old.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
+    let mesh = mesh_of(&old);
+    let heir = sibling(&old);
     let other_mesh = if mesh == "mesh1" { "mesh2" } else { "mesh1" };
     let other_primary = nodes.iter().find(|n| n["mesh"] == other_mesh && n["is_primary"] == true).map(|n| (location(&n), s(&n["node_id"]))).unwrap();
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     let discriminating = other_primary.1 < heir_id;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter(&heir).await;
-    let mut stop = estate.nodes_obj().await.stop(&old.parse().unwrap()).await.expect("node.stop of old");
+    let mut stop = estate.nodes_obj().await.stop(&old).await.expect("node.stop of old");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
@@ -228,19 +238,19 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     let seen = estate
         .until_view("the surviving admin of the fabric-primary's mesh is fabric-primary", Duration::from_secs(90), |views| {
             let ns = Estate::values(views);
-            (fabric_primary(&ns).as_deref() == Some(heir.as_str())).then_some(ns)
+            (fabric_primary(&ns).as_ref() == Some(&heir)).then_some(ns)
         })
         .await;
     // The heir stays fabric-primary: the other mesh's primary does not take it from it.
     tokio::time::sleep(Duration::from_secs(8)).await;
     let later = estate.node_values().await;
     estate.stop().await;
-    assert_eq!(fabric_primary(&later).as_deref(), Some(heir.as_str()), "the heir stays fabric-primary: {later:#?}");
+    assert_eq!(fabric_primary(&later).as_ref(), Some(&heir), "the heir stays fabric-primary: {later:#?}");
     assert_eq!(seen.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1);
     let spans: Vec<Value> = estate.spans();
     assert!(
-        named(&spans, "rdm.node_admin.primary.update.via-primary-updated").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "outcome") == "held" && attr(sp, "primaries").contains("fabric ") && attr(sp, "primaries").contains(&format!("-> {heir_id}/")))
-            || named(&spans, "rdm.mesh.primary.update.via-announcement").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "role") == "fabric-primary" && attr(sp, "primary").contains(&heir_id)),
+        named(&spans, "rdm.node_admin.primary.update.via-primary-updated").iter().any(|sp| rdm_test::estate::of_node(sp, &heir, &heir_id) && attr(sp, "outcome") == "held" && attr(sp, "primaries").contains("fabric ") && attr(sp, "primaries").contains(&format!("-> {heir_id}/")))
+            || named(&spans, "rdm.mesh.primary.update.via-announcement").iter().any(|sp| rdm_test::estate::of_node(sp, &heir, &heir_id) && attr(sp, "role") == "fabric-primary" && attr(sp, "primary").contains(&heir_id)),
         "the heir installed the fabric-primary from the update's call or from its own election (the other mesh's primary id is {} the heir's: {})",
         if discriminating { "below" } else { "above" },
         other_primary.1
@@ -251,33 +261,35 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     // The Day-0 root adopted its own OS clock, once, and says why.
     let own: Vec<&&Value> = adopted.iter().filter(|sp| attr(sp, "source") == "own-clock").collect();
     assert_eq!(own.len(), 1, "exactly one own-clock adoption in the fabric: {own:?}");
-    assert_eq!((attr(own[0], "node").as_str(), attr(own[0], "reason").as_str()), ("mesh1.admin.1", "day0-root"));
+    let root_id = s(&node(&nodes, &Estate::path("mesh1.admin", "1"))["node_id"]);
+    assert_eq!((attr(own[0], "node").as_str(), attr(own[0], "reason").as_str()), (root_id.as_str(), "day0-root"));
     // Every other node adopted from the answer to the join it made, served by the admin that deployed it.
     let joined: BTreeSet<String> = adopted.iter().filter(|sp| attr(sp, "source") == "pull" && attr(sp, "via") == "join").map(|sp| attr(sp, "node")).collect();
-    let expected: BTreeSet<String> = names().into_iter().filter(|n| n != "mesh1.admin.1").collect();
+    // Adoption spans name the node by its node id.
+    let expected: BTreeSet<String> = names().into_iter().filter(|n| *n != Estate::path("mesh1.admin", "1")).map(|n| s(&node(&nodes, &n)["node_id"])).collect();
     assert!(expected.is_subset(&joined), "every node but the root adopted at its join; missing {:?}", expected.difference(&joined).collect::<Vec<_>>());
     // The skewed node ran an hour ahead (its boot span says so), and every heartbeat of every node
     // carries rafka-time less the host clock: none is off by the skew, and the nodes stay within a
     // second of one another.
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment");
     assert!(
-        boot.iter().any(|sp| attr(sp, "node") == "mesh2.rpc.1" && num(sp, "os_clock_skew_ms") == Some(OS_CLOCK_SKEW_MS)),
+        boot.iter().any(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh2.rpc", "1")) && num(sp, "os_clock_skew_ms") == Some(OS_CLOCK_SKEW_MS)),
         "mesh2.rpc.1 ran on an OS clock {OS_CLOCK_SKEW_MS} ms ahead"
     );
     let beats = named(&spans, "rdm.mesh.node.update.via-heartbeat");
     let skew_of = |sp: &&Value| num(sp, "clock_skew_ms").unwrap_or(i64::MAX);
-    assert!(beats.iter().any(|sp| attr(sp, "node") == "mesh2.rpc.1"), "mesh2.rpc.1 published heartbeats");
+    assert!(beats.iter().any(|sp| rdm_test::estate::at_location(sp, &Estate::path("mesh2.rpc", "1"))), "mesh2.rpc.1 published heartbeats");
     let (lo, hi) = (beats.iter().map(skew_of).min().unwrap(), beats.iter().map(skew_of).max().unwrap());
     assert!(lo > -1_000 && hi < 1_000, "every node's rafka-time stands within 1 s of the host clock (the skewed node's OS clock was {OS_CLOCK_SKEW_MS} ms ahead): {lo}..{hi} ms over {} heartbeats", beats.len());
     // The fabric-primary moved to the heir: the other mesh's primary pulled once from it and adopted
     // its time under the mesh-primary rule.
-    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-primary-changed").into_iter().filter(|sp| attr(sp, "node") == other_primary.0).collect();
+    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-primary-changed").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &other_primary.0)).collect();
     assert_eq!(moved.len(), 1, "the other mesh's primary pulled once when the fabric-primary moved: {moved:?}");
     assert_eq!((attr(moved[0], "outcome").as_str(), attr(moved[0], "to").as_str()), ("adopted", heir_id.as_str()), "{:?}", moved[0]);
     let child = adopted.iter().find(|a| rdm_test::estate::descends_from(&spans, a, moved[0])).expect("the adoption is a child of the pull");
     assert_eq!(
         (attr(child, "source").as_str(), attr(child, "via").as_str(), attr(child, "kind").as_str(), attr(child, "served_by").as_str(), attr(child, "node").as_str()),
-        ("pull", "get-topology", "fabric-primary", heir.as_str(), other_primary.0.as_str())
+        ("pull", "get-topology", "fabric-primary", heir_id.as_str(), other_primary.1.as_str())
     );
 }
 
@@ -298,10 +310,10 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
 async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_a_hand_over() {
     let (mut estate, nodes) = fabric("a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_a_hand_over").await;
     let old = fabric_primary(&nodes).expect("one fabric primary");
-    let mesh = old.split('.').next().unwrap().to_string();
-    let successor = if old.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
+    let mesh = mesh_of(&old);
+    let successor = sibling(&old);
     let other_mesh = if mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let subject_name = format!("{other_mesh}.rpc.1");
+    let subject_name = Estate::path(&format!("{other_mesh}.rpc"), "1");
     let subject = node(&nodes, &subject_name).clone();
     let node_id = rdm_core::NodeId::parse(&s(&subject["node_id"])).expect("a node id");
     let incarnation = rdm_core::IncarnationId::parse(&s(&subject["incarnation_id"])).expect("a live birth");
@@ -311,7 +323,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let carrier = estate.carrier().await;
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
     assert!(matches!(&reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: n, incarnation: i, config, revision } if *n == node_id && *i == incarnation && *config == told && *revision > 0), "the fabric-primary sent it down and the node applied it, the row as written carried back: {reply:?}");
-    let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name.to_string() == subject_name).unwrap_or_else(|| panic!("{subject_name} is answered"));
+    let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name == subject_name).unwrap_or_else(|| panic!("{subject_name:?} is answered"));
     let at_once = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("node.get [mesh] at the fabric-primary"));
     assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from its atlas");
     // The fabric-primary's process is killed below: its evidence is read once its span reached it
@@ -320,14 +332,14 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let old_for = old.clone();
     wait_for("the fabric-primary's node.config.update span in its evidence", Duration::from_secs(10), || {
         let spans = estate.spans();
-        let found = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().any(|sp| attr(sp, "node") == old_for && attr(sp, "subject") == subject_for);
+        let found = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().any(|sp| rdm_test::estate::at_location(sp, &old_for) && rdm_test::estate::names_location(sp, "subject", &subject_for));
         async move { found.then_some(()) }
     })
     .await;
 
     // The hand-over: the fabric-primary is stopped and killed; the surviving admin of its mesh becomes the fabric-primary.
     estate.enter(&successor).await;
-    let mut stop = estate.nodes_obj().await.stop(&old.parse().unwrap()).await.expect("node.stop of the fabric-primary");
+    let mut stop = estate.nodes_obj().await.stop(&old).await.expect("node.stop of the fabric-primary");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
@@ -336,7 +348,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     estate
         .until_view("the surviving admin of the fabric-primary's mesh is fabric-primary", Duration::from_secs(90), |views| {
             let ns = Estate::values(views);
-            (fabric_primary(&ns).as_deref() == Some(successor.as_str())).then_some(())
+            (fabric_primary(&ns).as_ref() == Some(&successor)).then_some(())
         })
         .await;
     let after = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("node.get [mesh] at the new fabric-primary"));
@@ -344,16 +356,16 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     assert_eq!(after.config, told, "the new fabric-primary answers the config from the atlas it filled at the hand-over");
 
     let spans: Vec<Value> = estate.spans();
-    let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().filter(|sp| attr(sp, "node") == old && attr(sp, "subject") == subject_name).collect();
+    let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-fabric-primary").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &old) && rdm_test::estate::names_location(sp, "subject", &subject_name)).collect();
     assert_eq!(sent.len(), 1, "one node.config.update at the fabric-primary: {sent:?}");
     // The fabric-primary's atlas holds the row as written at the completion's revision: installed from the
     // completion, or already held from the mesh-primary's push of the same row (Q235 P1, P3).
     let revision = attr(sent[0], "revision");
     assert_eq!(attr(sent[0], "outcome"), "config-updated", "{:?}", sent[0]);
     assert!(attr(sent[0], "atlas") == "installed" || attr(sent[0], "atlas") == format!("held:{revision}"), "the atlas holds the completion's revision {revision}: {:?}", sent[0]);
-    let filled: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-filled").into_iter().filter(|sp| attr(sp, "node") == successor).collect();
+    let filled: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-filled").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &successor)).collect();
     assert!(filled.iter().any(|sp| attr(sp, "outcome") == "filled"), "the successor filled its atlas as it became the fabric-primary: {filled:?}");
-    println!("trace {}: rdm.node_admin.node.update.via-fabric-primary node={old} subject={subject_name} outcome=config-updated route={}", s(&sent[0]["trace_id"]), attr(sent[0], "route"));
+    println!("trace {}: rdm.node_admin.node.update.via-fabric-primary node={old:?} subject={subject_name:?} outcome=config-updated route={}", s(&sent[0]["trace_id"]), attr(sent[0], "route"));
 }
 
 /// CONTRACT (lifecycles/node-primary-update.md step 4: the successor's next `Digest` carries the change,
@@ -364,22 +376,22 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
 async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     let (mut estate, nodes) = fabric("a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone").await;
     let fp = fabric_primary(&nodes).expect("one fabric primary");
-    let mesh = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+    let mesh = if mesh_of(&fp) == "mesh1" { "mesh2" } else { "mesh1" };
     let old = nodes.iter().find(|n| n["mesh"] == mesh && n["is_primary"] == true).map(|n| location(&n)).unwrap();
-    let heir = if old.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
+    let heir = sibling(&old);
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     kill(&mut estate, &old).await;
     estate.until_view("the surviving admin is its mesh's primary", Duration::from_secs(90), |views| views.iter().any(|n| n.name == heir && n.is_primary).then_some(())).await;
     let watcher = nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != mesh).map(|n| location(&n)).expect("an admin of the other mesh");
     let heard = estate
-        .until_view_at(&watcher, &format!("{watcher} names {heir} {mesh}'s primary"), Duration::from_secs(60), |views| {
+        .until_view_at(&watcher, &format!("{watcher:?} names {heir:?} {mesh}'s primary"), Duration::from_secs(60), |views| {
             let ns = Estate::values(views);
-            ns.iter().any(|n| n["name"] == heir.as_str() && n["node_id"] == heir_id.as_str() && n["is_primary"] == true).then_some(ns)
+            ns.iter().any(|n| location(n) == heir && n["node_id"] == heir_id.as_str() && n["is_primary"] == true).then_some(ns)
         })
         .await;
     estate.stop().await;
     let primaries: Vec<PathName> = heard.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).collect();
-    assert_eq!(primaries, vec![heir.clone()], "{watcher} names one {mesh} primary, {heir}: {heard:#?}");
+    assert_eq!(primaries, vec![heir.clone()], "{watcher:?} names one {mesh} primary, {heir:?}: {heard:#?}");
 }
 
 /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:13
@@ -403,11 +415,12 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
     let (mut estate, nodes) = fabric("a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_converges_on_the_fabric_primarys_path_name").await;
     let fp = fabric_primary(&nodes).expect("one fabric primary");
     let fp_node = node(&nodes, &fp).clone();
-    let (mine, theirs): (Vec<String>, Vec<String>) = {
+    let (mine, theirs): (Vec<PathName>, Vec<PathName>) = {
         let side = |incumbent: bool| nodes.iter().filter(|n| (n["mesh"] == fp_node["mesh"]) == incumbent).map(|n| location(&n)).collect::<Vec<_>>();
         (side(true), side(false))
     };
-    let other_primary = s(&nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != fp_node["mesh"] && n["is_primary"] == true).expect("the other mesh's primary")["name"]);
+    let other_primary_row = nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] != fp_node["mesh"] && n["is_primary"] == true).cloned().expect("the other mesh's primary");
+    let (other_primary, other_primary_id) = (location(&other_primary_row), s(&other_primary_row["node_id"]));
     let floor = rdm_transport::topology::staleness_floor();
     // The ladder's decision step stands at twice the floor (mesh-investigation.md; rungs 20/30/40/60 s by default).
     let decision = floor * 2;
@@ -447,22 +460,22 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
         let mut healed = 0;
         let mut last = Vec::new();
         for at in [&fp, &other_primary] {
-            match estate.node_views_at(&Estate::path(at)).await {
+            match estate.node_views_at(at).await {
                 Some(v) => {
                     let ns = Estate::values(&v);
-                    let all = everyone.iter().all(|name| ns.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready"));
-                    if all && fabric_primary(&ns).as_deref() == Some(fp.as_str()) {
+                    let all = everyone.iter().all(|name| ns.iter().any(|n| location(n) == *name && n["status"] == "ready"));
+                    if all && fabric_primary(&ns).as_ref() == Some(&fp) {
                         healed += 1;
                     }
-                    last.push(format!("{at}: fabric-primary {:?}, ready-at-every-path {all}", fabric_primary(&ns)));
+                    last.push(format!("{at:?}: fabric-primary {:?}, ready-at-every-path {all}", fabric_primary(&ns)));
                 }
-                None => last.push(format!("{at}: no answer")),
+                None => last.push(format!("{at:?}: no answer")),
             }
         }
         if healed == 2 {
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "both pre-cut admins name the node at {fp} fabric-primary after the heal: {last:?}");
+        assert!(tokio::time::Instant::now() < deadline, "both pre-cut admins name the node at {fp:?} fabric-primary after the heal: {last:?}");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     estate.stop().await;
@@ -471,8 +484,8 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
     // fabric-primary's side, which hears its own mesh, re-creates mesh2's unanswered node-admin first
     // (mesh-investigation.md step 5), ending the runtime of the executor before its workflow does.
     let ran: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at_ns(sp) >= cut_ns).collect();
-    for sp in ran.iter().filter(|sp| attr(sp, "node") == other_primary) {
-        assert_eq!(attr(sp, "arm"), "backbone", "{other_primary} ran fabric recovery from the backbone: {sp}");
+    for sp in ran.iter().filter(|sp| rdm_test::estate::at_location(sp, &other_primary)) {
+        assert_eq!(attr(sp, "arm"), "backbone", "{other_primary:?} ran fabric recovery from the backbone: {sp}");
     }
     // Recovery follows node investigation's verdict: nothing is re-created on `reached`.
     for sp in named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| at_ns(sp) >= cut_ns) {
@@ -483,11 +496,11 @@ async fn a_mesh_cut_from_the_backbone_is_recovered_at_a_decision_step_and_conver
     // A side decided only after probing the other mesh twice, each unanswered by a node-admin of it: its
     // decision step is the unreachable verdict.
     let decided = named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().find(|sp| at_ns(sp) >= cut_ns && at_ns(sp) <= at_ns(&started) && attr(sp, "outcome") == "unreachable").cloned().unwrap_or_else(|| panic!("a side decided the other unreachable before the recovery started: {started}"));
-    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == attr(&decided, "node") && attr(sp, "mesh") == attr(&decided, "mesh") && at_ns(sp) >= cut_ns && at_ns(sp) <= at_ns(&decided)).collect();
+    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| (attr(sp, "node") == attr(&decided, "node") || nodes.iter().any(|n| rdm_test::estate::at_location(&decided, &location(n)) && attr(sp, "node") == s(&n["node_id"]))) && attr(sp, "mesh") == attr(&decided, "mesh") && at_ns(sp) >= cut_ns && at_ns(sp) <= at_ns(&decided)).collect();
     assert!(probes.len() >= 2, "the deciding side probed the other mesh twice before deciding: {probes:#?}");
     assert!(probes.iter().all(|sp| attr(sp, "outcome") != "admin-alive"), "no node-admin of the cut-off mesh answered the deciding side's probes: {probes:#?}");
     let recomputes = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
-    assert!(!recomputes.iter().any(|sp| at_ns(sp) >= cut_ns && attr(sp, "winner_path") == other_primary), "{other_primary} was never elected fabric-primary");
+    assert!(!recomputes.iter().any(|sp| at_ns(sp) >= cut_ns && rdm_test::estate::names_location(sp, "winner", &other_primary)), "{other_primary:?} was never elected fabric-primary");
     estate.record_trace_url(&s(&started["trace_id"]));
 }
 
@@ -519,9 +532,9 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let p_id = s(&p_node["node_id"]);
     let mesh = s(&p_node["mesh"]);
     // H is the other admin of P's mesh; control stays on it.
-    let h_name = if p.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
+    let h_name = sibling(&p);
     let h_id = s(&node(&nodes, &h_name)["node_id"]);
-    let h_path = Estate::path(&h_name);
+    let h_path = h_name.clone();
     estate.enter(&h_path).await;
     let (build, outer) = replace_by_steps(&estate, &h_path, &p).await;
     // Sampled while the hand-over runs: no admin's view ever shows two fabric primaries.
@@ -533,11 +546,11 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
         let r = Estate::values(&views);
         let held = r.iter().filter(|x| x["is_fabric_primary"] == true).count();
         worst = worst.max(held);
-        successor_id = r.iter().find(|x| x["name"] == p.as_str() && x["incarnation_id"] != p_node["incarnation_id"] && x["status"] == "ready").filter(|_| held == 1).map(|x| s(&x["node_id"]));
+        successor_id = r.iter().find(|x| location(x) == p && x["incarnation_id"] != p_node["incarnation_id"] && x["status"] == "ready").filter(|_| held == 1).map(|x| s(&x["node_id"]));
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let successor_id = successor_id.expect("the replaced admin's path is ready again under a new birth");
-    let p_old = p.parse::<rdm_core::PathName>().unwrap().renamed().unwrap().to_string();
+    let p_old = p.renamed().unwrap();
     assert_ne!(successor_id, p_id, "P's path holds a new birth");
     assert!(worst <= 1, "a view showed {worst} fabric primaries");
     // The fabric is ready once its planned births are all ready, set by the new
@@ -559,7 +572,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("{h_name} records is_primary and is_fabric_primary on its own row within 30 s; its row in nodes.jsonl last read: {:?}", last.lock().unwrap()));
+    .unwrap_or_else(|_| panic!("{h_name:?} records is_primary and is_fabric_primary on its own row within 30 s; its row in nodes.jsonl last read: {:?}", last.lock().unwrap()));
     estate.stop().await;
     let spans = estate.spans();
     let one = |name: &str, f: &dyn Fn(&Value) -> bool| -> Value {
@@ -568,38 +581,38 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
         found[0].clone()
     };
     // Steps 2-3 at P: the election named H, its issued writes finished.
-    let updating = one("rdm.node_admin.primary.update.via-update-primary", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
-    assert_eq!((attr(&updating, "moving").as_str(), attr(&updating, "successor").as_str(), attr(&updating, "outcome").as_str()), ("mesh-primary+fabric-primary", h_name.as_str(), "updated"), "P moved both its primaries to H ({h_name}): {updating:#?}");
+    let updating = one("rdm.node_admin.primary.update.via-update-primary", &|sp| rdm_test::estate::at_location(sp, &p) && attr(sp, "build_id") == build);
+    assert_eq!((attr(&updating, "moving").as_str(), attr(&updating, "successor").as_str(), attr(&updating, "outcome").as_str()), ("mesh-primary+fabric-primary", h_id.as_str(), "updated"), "P moved both its primaries to H ({h_name:?}): {updating:#?}");
     let transfer_attempt = num(&updating, "attempt").expect("the update's attempt");
-    let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
+    let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished", &|sp| rdm_test::estate::at_location(sp, &p) && attr(sp, "build_id") == build);
     // Step 4: H installs the election's result and answers node.primary.updated, under P's call.
-    let installed = one("rdm.node_admin.primary.update.via-primary-updated", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && attr(sp, "outcome") == "held");
+    let installed = one("rdm.node_admin.primary.update.via-primary-updated", &|sp| rdm_test::estate::at_location(sp, &h_name) && attr(sp, "build_id") == build && attr(sp, "outcome") == "held");
     let entries = attr(&installed, "primaries");
     assert!(
         entries.contains(&format!("node-admin {p_id}/")) && entries.contains(&format!("fabric {p_id}/")) && entries.matches(&format!("-> {h_id}/")).count() == 2,
-        "H installed both entries moving P's primaries to H ({h_name}, {h_id}): {installed:#?}"
+        "H installed both entries moving P's primaries to H ({h_name:?}, {h_id}): {installed:#?}"
     );
     assert!(descends_from(&spans, &installed, &updating), "H installs under P's node.primary.update call: {installed:#?}");
     assert!(named(&spans, "rdm.node_admin.primary.reject.via-primary-update").is_empty(), "no node.primary.update was refused");
     // Step 1: the update is a step of the attempt P claimed for itself.
-    let p_claim = one("rdm.node_admin.build.update.via-claim-decision", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt));
-    assert_eq!((attr(&p_claim, "outcome").as_str(), attr(&p_claim, "executor").as_str()), ("won", p.as_str()), "P claimed the attempt its update runs in for itself: {p_claim:#?}");
+    let p_claim = one("rdm.node_admin.build.update.via-claim-decision", &|sp| rdm_test::estate::at_location(sp, &p) && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt));
+    assert!(attr(&p_claim, "outcome") == "won" && attr(&p_claim, "executor").starts_with(&format!("{p_id}/")), "P claimed the attempt its update runs in for itself: {p_claim:#?}");
     assert!(sp_end(&p_claim) <= at_ns(&updating), "P claimed its attempt before its update: {p_claim:#?}");
-    let p_attempt = one("rdm.node_admin.build.update.via-dispatch", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt));
-    assert_eq!((attr(&p_attempt, "executor").as_str(), attr(&p_attempt, "outcome").as_str()), (p.as_str(), "handed-off"), "P's own attempt ended handed off: {p_attempt:#?}");
+    let p_attempt = one("rdm.node_admin.build.update.via-dispatch", &|sp| rdm_test::estate::at_location(sp, &p) && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt));
+    assert!(attr(&p_attempt, "executor").starts_with(&format!("{p_id}/")) && attr(&p_attempt, "outcome") == "handed-off", "P's own attempt ended handed off: {p_attempt:#?}");
     assert!(descends_from(&spans, &updating, &p_attempt), "P's update runs under its own attempt: {updating:#?}");
     // The order of the sequence (steps 3, 4, 6).
     assert!(sp_end(&finished) <= at_ns(&installed), "P finished its issued writes before H installed");
     assert!(sp_end(&installed) <= sp_end(&updating) && sp_end(&updating) <= sp_end(&p_attempt), "P's update ended on H's answer, and P's attempt after it");
     // Step 6: the Build continues on H's direct answer: H claims the next attempt and dispatches the replace.
-    let h_claim = one("rdm.node_admin.build.update.via-claim-decision", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt + 1) && attr(sp, "outcome") == "won");
-    assert_eq!(attr(&h_claim, "executor"), h_name, "H claimed the attempt after P's: {h_claim:#?}");
+    let h_claim = one("rdm.node_admin.build.update.via-claim-decision", &|sp| rdm_test::estate::at_location(sp, &h_name) && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt + 1) && attr(sp, "outcome") == "won");
+    assert!(attr(&h_claim, "executor").starts_with(&format!("{h_id}/")), "H claimed the attempt after P's: {h_claim:#?}");
     assert!(sp_end(&installed) <= at_ns(&h_claim), "H claimed only after it answered: {h_claim:#?}");
-    let h_dispatch = one("rdm.node_admin.build.update.via-dispatch", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt + 1));
+    let h_dispatch = one("rdm.node_admin.build.update.via-dispatch", &|sp| rdm_test::estate::at_location(sp, &h_name) && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt + 1));
     assert!(sp_end(&installed) <= at_ns(&h_dispatch), "H dispatched the replace only after it answered: {h_dispatch:#?}");
     // The replace's steps on P and at its path (node-replace.md steps 1-3) all run in H's attempt, after
     // H answered: P's successor is no primary, so nothing moves again.
-    let mut p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && (attr(sp, "node") == p || attr(sp, "node") == p_old) && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
+    let mut p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && (rdm_test::estate::at_location(sp, &p) || rdm_test::estate::at_location(sp, &p_old)) && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
     p_steps.sort_by_key(|sp| at_ns(sp));
     assert!(!p_steps.is_empty(), "the Build's steps on P ran: {p_steps:#?}");
     for sp in &p_steps {
@@ -608,13 +621,13 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     }
     // P was the fabric-primary driving the Build: the caller's stream attached there ends with
     // FabricPrimaryMoved naming H, and H drives the rest of the Build.
-    assert!(matches!(first.last(), Some(rdm_client::Frame::FabricPrimaryMoved { fabric_primary: Some(to) }) if *to == h_name), "the caller's stream ends FabricPrimaryMoved naming H: {first:?}, broke: {broke:?}");
+    assert!(matches!(first.last(), Some(rdm_client::Frame::FabricPrimaryMoved { fabric_primary: Some(to) }) if to.as_str() == h_id), "the caller's stream ends FabricPrimaryMoved naming H: {first:?}, broke: {broke:?}");
     // A planned move leaves no fault anywhere in the run (the fault span of a handler is a root of its
     // own trace, so the whole run is read).
     let faults = named(&spans, "rdm.node_rpc.handler.reject.via-internal-rpc-failure");
     assert!(faults.is_empty(), "a planned node.primary.update left a handler fault: {faults:#?}");
     // No attempt after the update's is claimed for P, and the driver never dispatches to a lost executor.
-    let stale: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "won" && num(sp, "attempt").is_some_and(|a| a > transfer_attempt) && attr(sp, "executor") == p).collect();
+    let stale: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "won" && num(sp, "attempt").is_some_and(|a| a > transfer_attempt) && attr(sp, "executor").starts_with(&format!("{p_id}/"))).collect();
     assert!(stale.is_empty(), "an attempt after the update was claimed for the stopped P: {stale:#?}");
     let lost: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "executor-lost").collect();
     assert!(lost.is_empty(), "the drive dispatched to a lost executor: {lost:#?}");
@@ -623,31 +636,29 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     assert!(matches!(followed.last().and_then(|frames| frames.last()), Some(rdm_client::Frame::Complete)), "the caller's resubmitted stream ends Complete: {followed:?}");
     assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "build.get: the steps' Build is complete: {receipts:?}");
     let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the Build's steps");
-    let step_keys: Vec<String> = {
-        let p = p.parse::<rdm_core::PathName>().unwrap();
-        vec![format!("node.connection.delete:{p:?}"), format!("node.mesh.leave:{p:?}"), format!("node.update:{p:?}"), format!("node.stop:{p_old}"), format!("node.create:{p:?}"), format!("node.delete:{p_old}")]
-    };
-    for key in &step_keys {
-        assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "build.get holds the Complete receipt of {key}: {resume:?}");
+    // The replace's steps, each keyed by its action and its position in the accepted steps.
+    let step_keys = ["node.connection.delete", "node.mesh.leave", "node.update", "node.stop", "node.create", "node.delete"];
+    for (i, action) in step_keys.iter().enumerate() {
+        assert!(resume.completed.iter().any(|(op, step)| op.action == *action && op.recipe_step == Some(i as u32 + 1) && step == "Complete"), "build.get holds the Complete receipt of step {} ({action}): {resume:?}", i + 1);
     }
     // Step 3: P issues no write once it finished its issued writes: it decides no claim after.
-    let late: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) > sp_end(&finished) && matches!(attr(sp, "outcome").as_str(), "won" | "lost" | "not-open")).collect();
+    let late: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &p) && at_ns(sp) > sp_end(&finished) && matches!(attr(sp, "outcome").as_str(), "won" | "lost" | "not-open")).collect();
     assert!(late.is_empty(), "P decided a claim after it finished its issued writes: {late:#?}");
     // One winner per attempt; no birth made twice.
     let mut won: std::collections::BTreeMap<(String, String), BTreeSet<String>> = Default::default();
-    let mut made: std::collections::BTreeMap<(String, String, String), u32> = Default::default();
+    let mut made: std::collections::BTreeMap<(String, String, String, String), u32> = Default::default();
     for sp in &spans {
         match sp["name"].as_str() {
             Some("rdm.node_admin.build.update.via-claim-decision") if attr(sp, "outcome") == "won" => {
                 won.entry((attr(sp, "build_id"), attr(sp, "attempt"))).or_default().insert(attr(sp, "executor"));
             }
-            Some("rdm.node_admin.node.create.via-build") => *made.entry((attr(sp, "build_id"), attr(sp, "attempt"), attr(sp, "node"))).or_default() += 1,
+            Some("rdm.node_admin.node.create.via-build") => *made.entry((attr(sp, "build_id"), attr(sp, "attempt"), attr(sp, "node_path"), attr(sp, "node_name"))).or_default() += 1,
             _ => {}
         }
     }
     assert!(won.values().all(|w| w.len() == 1), "conflicting winners: {won:#?}");
     assert!(made.values().all(|c| *c == 1), "a birth made twice: {made:#?}");
-    eprintln!("{h_name}'s own row records both primaries on its newest birth: {recorded}");
+    eprintln!("{h_name:?}'s own row records both primaries on its newest birth: {recorded}");
     estate.record_trace_url(updating["trace_id"].as_str().unwrap_or(""));
 }
 
