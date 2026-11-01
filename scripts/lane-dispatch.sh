@@ -55,7 +55,12 @@ gh issue comment "$ISSUE" --repo "$REPO" -b "Dispatched to RDM lane $LANE ($d), 
 echo "DISPATCHED lane $LANE issue #$ISSUE branch $B"
 echo "PLAN $s/plan.md"
 if [ "$state" = NEW ]; then
-  echo "SEAT TYPE $SEAT: NEW, written to $f. DO NOT LAUNCH YET: launch only after Claude Code's notice \"New agent types are now available ... $SEAT\" (Agent subagent_type: $SEAT, description: \"lane $LANE $SLUG\"). No notice after 2 min: touch $f and wait again."
+  echo "SEAT TYPE $SEAT: NEW, written to $f. Launch only after Claude Code's notice \"New agent types are now available ... $SEAT\" (no notice after 2 min: touch $f and wait again); then:"
 else
-  echo "SEAT TYPE $SEAT: registered; launch NOW (Agent subagent_type: $SEAT, description: \"lane $LANE $SLUG\")"
+  echo "SEAT TYPE $SEAT: registered; launch NOW:"
 fi
+# A seat starts in the session's working directory: launched from the main checkout it runs every
+# command it does not cd in the main tree. The lead session switches into the lane, launches, returns.
+echo "  1. EnterWorktree path: $d"
+echo "  2. Agent subagent_type: $SEAT, description: \"lane $LANE $SLUG\""
+echo "  3. ExitWorktree action: keep"
