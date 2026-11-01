@@ -18,24 +18,26 @@ L="${1:?usage: post-land-gate.sh <lane>}"; d=$(lane_dir "$L")
 [ "$(lane_busy "$L")" -eq 0 ] || { echo "REFUSED: lane $L is busy"; exit 3; }
 [ "$(lane_dirty "$L")" -eq 0 ] || { echo "REFUSED: lane $L has uncommitted changes"; exit 6; }
 git -C "$d" fetch -q origin
+# The unit's base: origin/main, or the lead lane's branch it was prepped on (lane-prep.sh --base).
+ON=$(lane_base "$L")
 GENERATED='docs/reference/rdm/[^/]+\.md'
-if ! git -C "$d" merge-base --is-ancestor origin/main HEAD && ! git -C "$d" rebase -q origin/main; then
+if ! git -C "$d" merge-base --is-ancestor "$ON" HEAD && ! git -C "$d" rebase -q "$ON"; then
   while :; do
     u=$(git -C "$d" diff --name-only --diff-filter=U)
     other=$(printf '%s\n' "$u" | grep -vxE "$GENERATED" | grep . | tr '\n' ' ')
     if [ -z "$u" ] || [ -n "$other" ]; then
-      git -C "$d" rebase --abort; echo "REFUSED: rebase on origin/main conflicts${other:+ in ${other% }}"; exit 4
+      git -C "$d" rebase --abort; echo "REFUSED: rebase on $ON conflicts${other:+ in ${other% }}"; exit 4
     fi
     at=$(git -C "$d" rev-parse --short REBASE_HEAD 2>/dev/null)
     if ! regenerate_pages "$d"; then
-      git -C "$d" rebase --abort; echo "REFUSED: rebase on origin/main conflicts in $(echo $u); $d/target/debug/rdm-docgen did not regenerate them"; exit 4
+      git -C "$d" rebase --abort; echo "REFUSED: rebase on $ON conflicts in $(echo $u); $d/target/debug/rdm-docgen did not regenerate them"; exit 4
     fi
     echo "rebase: regenerated docs/reference/rdm with rdm-docgen at $at ($(echo $u))"
     GIT_EDITOR=true git -C "$d" rebase --continue >/dev/null 2>&1 && break
   done
 fi
 lane_target_at_path "$L" || exit 7
-BASE=$(git -C "$d" rev-parse origin/main); HEAD_SHA=$(git -C "$d" rev-parse HEAD)
+BASE=$(git -C "$d" rev-parse "$ON"); HEAD_SHA=$(git -C "$d" rev-parse HEAD)
 PATCH=$(git -C "$d" diff "$BASE" HEAD -- . ':(exclude)docs/reference/rdm/*.md' | git -C "$d" patch-id --stable | cut -d' ' -f1); PATCH=${PATCH:-empty}
 out=$(bash "$d/scripts/rdm-gate-at.sh" "$d" fast 2>&1); echo "$out" | grep -E "^FAIL|^DONE|^TIMINGS" | tail -12
 T=$(git -C "$d" rev-parse HEAD^{tree})

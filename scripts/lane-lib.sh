@@ -64,4 +64,9 @@ lane_warm() {
 }
 # The repo a lane's issues are in: this repo's, the RDM issues and the i143 milestone (CLAUDE.md), unless
 # the lane's state names another.
+# The branch a lane's unit is built on and rebased on: the lead lane's branch when lane-prep.sh --base
+# recorded one in $HOME/lane-queue/rdm/<n>/base, origin/main otherwise.
+lane_base() { local b; b=$(cat "$(state_dir "$1")/base" 2>/dev/null); echo "${b:-origin/main}"; }
+# The lead lane a --base unit lands onto (lane-land.sh fast-forwards its branch); empty for a unit on main.
+lane_lead() { cat "$(state_dir "$1")/lead" 2>/dev/null; }
 lane_repo() { cat "$(state_dir "$1")/repo" 2>/dev/null || echo drlukeangel/rust-distributed-mesh; }

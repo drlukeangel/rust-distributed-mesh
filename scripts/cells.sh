@@ -17,6 +17,27 @@ pkg=${1:?usage: cells.sh <package> [<test target>|lib] [-- args]}; shift
 target=main; if [ $# -gt 0 ] && [ "$1" != "--" ]; then target=$1; shift; fi
 [ "${1:-}" = "--" ] && shift
 lane=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); cd "$lane"; out=$lane/target/cells; mkdir -p $out
+# A unit prepped on the lead lane's branch (lane-prep.sh --base <lead lane>) rebases on it before the
+# run and after it (Luke, 2026-11-01): the branch is in $HOME/lane-queue/rdm/<n>/base. A lane with no
+# base (the lead's own, a unit landing on main) is not rebased here; its gate rebases on origin/main.
+# A tree with uncommitted changes runs as it stands: a rebase never stashes a seat's edits.
+basef=${RDM_LANE_STATE_ROOT:-$HOME/lane-queue/rdm}/$(basename "$lane")/base
+base_moved=0
+rebase_on_base() {
+  [ -s "$basef" ] || return 0
+  local b; b=$(cat "$basef")
+  git merge-base --is-ancestor "$b" HEAD && return 0
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    echo "cells: not rebased on $b: uncommitted changes (a proof runs on a commit)" >&2; return 0
+  fi
+  if git rebase -q "$b"; then
+    echo "cells: rebased on $b at $(git rev-parse --short "$b"), tip $(git rev-parse --short HEAD)" >&2; base_moved=1
+  else
+    local u; u=$(git diff --name-only --diff-filter=U | tr '\n' ' '); git rebase --abort
+    echo "cells: REFUSED: rebase on $b conflicts in ${u% }" >&2; exit 4
+  fi
+}
+rebase_on_base; base_moved=0
 # This run's own build output: parallel runs in one lane each read the executables their own build
 # named, never a file another run is writing.
 art=$out/artifacts.$$.json; berr=$out/build.$$.err; trap 'rm -f "$art" "$berr"' EXIT
@@ -81,4 +102,10 @@ python3 -c 'import json,sys; print(json.dumps({"lane":sys.argv[1],"start":int(sy
 # this run has ended, waited for at most 60 s.
 for _ in $(seq 300); do pgrep -f "estate-reaper [0-9]+ $TMPDIR/" > /dev/null || break; sleep 0.2; done
 rm -rf "$TMPDIR"
+# After the run: a base that moved meanwhile is taken now, and this run proved the tip before it.
+cd "$lane"; rebase_on_base
+if [ $base_moved -eq 1 ]; then
+  echo "cells: $(cat "$basef") moved during the run; the lane is rebased onto it: rerun this proof on the new tip" >&2
+  [ $rc -eq 0 ] && rc=3
+fi
 exit $rc
