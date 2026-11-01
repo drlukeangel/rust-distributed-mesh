@@ -2122,11 +2122,7 @@ impl View {
     /// version per source, whichever channel or read it arrives by). A node-admin hears a peer mesh on
     /// the backbone and, forwarded, on its mesh channel; a forwarded frame the backbone already moved
     /// past is ignored, so the mesh channel's copy can stay behind the version the node holds (rdm#154).
-    fn held_sources(&self) -> Vec<SourceSnapshot> {
-        self.held_sources_of(None)
-    }
-
-    /// [`Self::held_sources`] of `mesh` alone when one is named: no other mesh's source is copied.
+    /// `mesh`'s alone when one is named: no other mesh's source is copied.
     fn held_sources_of(&self, mesh: Option<&str>) -> Vec<SourceSnapshot> {
         if self.primary.load(Ordering::Relaxed) {
             return self.forwarder.lock().unwrap().snapshots_of(mesh);
@@ -3379,12 +3375,6 @@ impl TopologyView {
         let f = &authored;
         let _ = self.view.take(f, &self.fabric, "mesh-channel");
         self.mesh.broadcast(f).await
-    }
-
-    /// The baselines of the source meshes this node holds: while it is its Mesh's primary, what
-    /// it last published into its Mesh; otherwise what it holds from its primary.
-    fn held_sources(&self) -> Vec<SourceSnapshot> {
-        self.view.held_sources()
     }
 
     /// The topology this node holds, one snapshot per mesh (Node RPC op `0x1E` serves it), each at
@@ -5251,7 +5241,7 @@ impl DigestView {
     /// birth or a predecessor at its own (path, name), a deleted or stopped birth, or another birth of
     /// the node this view holds. `Ok` carries
     /// the status held before.
-    pub fn adopt_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &rdm_core::PathName, mesh: &str, status: rdm_core::MemberStatus) -> Result<Option<rdm_core::MemberStatus>, &'static str> {
+    pub fn adopt_status(&self, node_id: &NodeId, incarnation: &IncarnationId, mesh: &str, status: rdm_core::MemberStatus) -> Result<Option<rdm_core::MemberStatus>, &'static str> {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         if own_mesh.is_empty() || mesh != own_mesh {
             return Err("another-mesh");
@@ -6768,21 +6758,20 @@ mod tests {
         *digest_view.own_mesh.lock().unwrap() = "mesh1".into();
         *digest_view.observer_name.lock().unwrap() = "mesh1.admin.1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let rpc1: rdm_core::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-        assert_eq!(digest_view.adopt_status(&id, &inc, &rpc1, "mesh1", MemberStatus::Ready), Ok(None), "held before its heartbeat");
+        assert_eq!(digest_view.adopt_status(&id, &inc, "mesh1", MemberStatus::Ready), Ok(None), "held before its heartbeat");
         assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready));
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 10)));
         assert_eq!(digest_view.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Ready), "the heartbeat heard after takes the adopted status");
-        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &IncarnationId::mint(), &rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", MemberStatus::Ready), Err("another-mesh"));
+        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &IncarnationId::mint(), "mesh2", MemberStatus::Ready), Err("another-mesh"));
         // The holder's own predecessor is known by its exact birth, never by a path it stood at.
         let predecessor = IncarnationId::mint();
         *digest_view.own_predecessor.lock().unwrap() = Some(predecessor.clone());
-        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &predecessor, &rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", MemberStatus::Ready), Err("own-predecessor-birth"));
-        assert_eq!(digest_view.adopt_status(&id, &IncarnationId::mint(), &rpc1, "mesh1", MemberStatus::Leaving), Err("another-birth-held"), "an earlier birth of a node held at a later one");
+        assert_eq!(digest_view.adopt_status(&NodeId::mint(), &predecessor, "mesh1", MemberStatus::Ready), Err("own-predecessor-birth"));
+        assert_eq!(digest_view.adopt_status(&id, &IncarnationId::mint(), "mesh1", MemberStatus::Leaving), Err("another-birth-held"), "an earlier birth of a node held at a later one");
         assert_eq!(digest_view.member_status(&id, &inc), Some(MemberStatus::Ready), "and the held birth's status stands");
         let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(digest_view.depart(op(&gone, &gone_inc, "node.delete")));
-        assert_eq!(digest_view.adopt_status(&gone, &gone_inc, &rpc1, "mesh1", MemberStatus::Ready), Err("deleted"));
+        assert_eq!(digest_view.adopt_status(&gone, &gone_inc, "mesh1", MemberStatus::Ready), Err("deleted"));
     }
 
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): a `NodeStopped`
@@ -8553,7 +8542,7 @@ mod tests {
         assert!(hears(&full(10, vec![a1.clone()], None), Side::Backbone));
         assert!(!hears(&full(9, vec![a1.clone(), a2.clone()], Some("mesh3.admin.1")), Side::MeshChannel), "the forwarded v9 is earlier than the held v10");
 
-        let served: Vec<_> = admin.held_sources().into_iter().filter(|s| s.mesh == "mesh1").collect();
+        let served: Vec<_> = admin.held_sources_of(None).into_iter().filter(|s| s.mesh == "mesh1").collect();
         assert_eq!(served.len(), 1, "one source of mesh1 is served: {served:#?}");
         let names: Vec<rdm_core::PathName> = served[0].digests.iter().map(|d| d.node.name.clone()).collect();
         assert_eq!((served[0].publisher.clone(), served[0].topology_version, names.clone()), (p.clone(), 10, vec![rdm_core::PathName::new("mesh1.admin", "1").unwrap()]), "the read serves the version this node holds, v10, with the last admin its only member: {names:?} at v{}", served[0].topology_version);

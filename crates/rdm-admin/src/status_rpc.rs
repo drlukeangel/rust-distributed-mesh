@@ -507,7 +507,7 @@ pub fn set_member_status(digest_view: &rdm_transport::topology::DigestView, rece
         MemberStatusReceipt::NodeJoined { op, already: None } => Ok(digest_view.joined(op)),
         MemberStatusReceipt::StopAdmitted(op) => Ok(digest_view.admitted(op, M::Leaving)),
         MemberStatusReceipt::ConnectionsDeleting { node_id, incarnation } => Ok(digest_view.reported(node_id, incarnation, M::ConnectionsDeleting)),
-        MemberStatusReceipt::RoleFold { mesh, node_id, incarnation, name, state } => digest_view.adopt_status(node_id, incarnation, name, mesh, member_of_declared(state)).map(|_| true),
+        MemberStatusReceipt::RoleFold { mesh, node_id, incarnation, state, .. } => digest_view.adopt_status(node_id, incarnation, mesh, member_of_declared(state)).map(|_| true),
     }
 }
 
