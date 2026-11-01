@@ -1280,9 +1280,17 @@ pub fn released_its_name(row: &NodeRow) -> bool {
 /// location says nothing about the old node: it may have been renamed and still be live.
 /// An absent exact-ID record is unknown, not deletion evidence. `name` is diagnostic only.
 pub async fn deleted_birth(storage: &dyn NodesStorage, name: &PathName, node_id: &NodeId) -> Result<Option<String>, crate::storage_error::StorageError> {
-    Ok(storage.node(node_id).await?.filter(released_its_name).map(|row| {
-        format!("path {:?}, name {:?} (node {node_id}) is a deleted birth: its exact record is {:?}", name.path, name.name, row.status)
-    }))
+    if let Some(row) = storage.node(node_id).await?.filter(released_its_name) {
+        return Ok(Some(format!("path {:?}, name {:?} (node {node_id}) is a deleted birth: its exact record is {:?}", name.path, name.name, row.status)));
+    }
+    // Re-created at its path and name (a fabric recovery whose old writer never wrote the record
+    // Deleted): another node's live claim holds the name (Q181).
+    if let Some(by) = storage.name_claim(name).await?.filter(|by| by != node_id) {
+        if !storage.node(&by).await?.is_some_and(|r| released_its_name(&r)) {
+            return Ok(Some(format!("path {:?}, name {:?} (node {node_id}) is a deleted birth: node {by} holds the name", name.path, name.name)));
+        }
+    }
+    Ok(None)
 }
 
 /// Why a `Deleted` record was not written.

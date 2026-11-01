@@ -292,6 +292,8 @@ impl ControlPlane {
             (Some(mesh.to_owned()), held.attempt, held.executor.as_ref(), held.claimant.as_ref())
         };
         let (Some(executor), Some(claimant)) = (executor, claimant) else { return Ok(false) };
+        // An attempt this admin claimed is its own to run, never ended on a departure (main's rule).
+        if self.node_id.get() == Some(&executor.node_id) { return Ok(false) }
         if !self.departure_of(executor).await { return Ok(false) }
         let me = self.held_name().await;
         let reason = format!("executor node {}, incarnation {} exited with attempt {attempt} of Build {} unfinished in scope {:?}; its departure is proven", executor.node_id, executor.incarnation, current.build_id, lane);
@@ -1105,13 +1107,23 @@ impl ControlPlane {
                 // Only the exact committed executor birth can prove this claim's attempt gone.
                 // The claimant ID names the in-flight row; it is not the executor's incarnation.
                 let committed = crate::build_state::committed_claim(&*self.builds, &held.build_id, held.lane.as_deref(), held.attempt).await.map_err(Refusal::State)?;
-                let departed = if let Some(claim) = committed.filter(|claim| claim.claimant.as_ref() == Some(&held.claimant) && claim.claimed_mesh.as_deref() == Some(mesh.as_str())) {
-                    held.lane.as_deref() == Some(mesh.as_str()) && claim.executor != me_birth && self.departure_of(&claim.executor).await
-                } else {
-                    false
+                let departed = match committed {
+                    Some(claim) if claim.claimant.as_ref() == Some(&held.claimant) && claim.claimed_mesh.as_deref() == Some(mesh.as_str()) => {
+                        held.lane.as_deref() == Some(mesh.as_str()) && claim.executor != me_birth && self.departure_of(&claim.executor).await
+                    }
+                    // An attempt its opener took the row for and never claimed has no committed
+                    // executor: the opener is the row's claimant, its exact birth this view's.
+                    None if held.lane.as_deref() == Some(mesh.as_str()) && held.claimant != *me_id => {
+                        let opener = t.own(&held.claimant).and_then(|n| Some(rdm_core::framing::Birth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone()? }));
+                        match opener {
+                            Some(birth) => self.departure_of(&birth).await,
+                            None => false,
+                        }
+                    }
+                    _ => false,
                 };
                 if departed {
-                    let release = tracing::info_span!("rdm.node_admin.build.update.via-executor-departure", build_id = %held.build_id.log(), lane = %mesh, attempt = held.attempt, claimant = %held.claimant, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty);
+                    let release = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %held.build_id.log(), lane = %mesh, attempt = held.attempt, claimant = %held.claimant, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty);
                     if let Err(e) = self.claims.release_in_flight(&mesh, &held).await {
                         release.record("outcome", "in-flight-unreleased");
                         return Err(Refusal::Unavailable(format!("node_id={me_id}: mesh {mesh}'s in-flight row of attempt {} could not be released: {e}", held.attempt)));
