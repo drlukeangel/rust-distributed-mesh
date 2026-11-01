@@ -38,7 +38,7 @@
 //!   ([`NodeRows::arrivals`]); an admin that takes a mesh's role writes every member's row of that
 //!   mesh, its own included, and a row a node already holds is never overwritten.
 
-use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
+use crate::model::{FabricId, IncarnationId, MeshId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::storage::{Allocation, NameHeld, NodeRow, NodesStorage};
 use crate::topology::Topology;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -73,6 +73,119 @@ pub struct NodeRows {
     /// storage before it writes any of them (storage-whole-records.md: the cache is filled whenever
     /// write ownership is acquired, never kept from before).
     to_fill: Mutex<Vec<String>>,
+    /// Per mesh whose lifecycle writing this birth is taking, the takeover snapshot: the mesh's records
+    /// as read once, after this birth's earlier issued writes settled (node-primary-update.md: "finishes
+    /// the frozen takeover snapshot"). A preparation that did not complete keeps it, and the next
+    /// preparation of the same take persists it as frozen, never a read of the records again; it goes
+    /// once the preparation completes, or once an installed view no longer gives this birth the mesh.
+    frozen: Mutex<BTreeMap<String, Vec<NodeRow>>>,
+    /// The meshes whose takeover preparation completed in this tenure of their writing.
+    prepared: Mutex<std::collections::BTreeSet<String>>,
+    /// One takeover preparation at a time.
+    preparing: tokio::sync::Mutex<()>,
+    /// Where this writer's lifecycle records and election results are persisted, and what settles every
+    /// write this birth issued (`crate::fabric_handover::FinishWrites`): an admin given none writes no
+    /// lifecycle record and has no takeover to prepare.
+    lifecycle: Option<(Arc<dyn rdm_node::node_records::NodeRecordsStorage>, crate::fabric_handover::FinishWrites)>,
+}
+
+/// What a takeover preparation persists before the role it prepares is installed or published
+/// (node-primary-update.md: "Before installing or publishing a role that writes lifecycle records,
+/// the candidate settles earlier issued writes of its writer birth and finishes the frozen takeover
+/// snapshot. Only then does it admit the role's commands and record boolean role flags under its own
+/// lifecycle writer identity"; build.md §5.3).
+#[derive(Debug, Clone, Default)]
+pub struct Takeover {
+    /// The meshes whose lifecycle writing the candidate takes and has not prepared in this tenure.
+    pub meshes: std::collections::BTreeSet<String>,
+    /// The fabric the records are of.
+    pub fabric_id: Option<FabricId>,
+    /// The id of each mesh the candidate view names, by name.
+    pub mesh_ids: BTreeMap<String, MeshId>,
+    /// The candidate election's boolean role flags of each birth it names a primary,
+    /// `(is_primary, is_fabric_primary)`: none for a birth it names no primary.
+    pub roles: HashMap<(NodeId, IncarnationId), (bool, bool)>,
+    /// The existing election's results the candidate takes, persisted at their own identities before
+    /// the role is installed (node-primary-update.md step 5).
+    pub results: Vec<(rdm_core::PrimaryRole, rdm_core::Primary)>,
+}
+
+impl Takeover {
+    /// The takeover the candidate view `t` makes the writer born as `me_id` take: the meshes whose
+    /// lifecycle writing `t` gives it ([`writes_for`]) that `prepared` does not hold, the role flags `t`
+    /// holds, and `results`, the election's results for the roles it takes.
+    pub fn of_view(t: &Topology, me_id: &NodeId, prepared: &std::collections::BTreeSet<String>, results: Vec<(rdm_core::PrimaryRole, rdm_core::Primary)>) -> Self {
+        let meshes = t.births().map(|n| n.mesh.clone()).chain(t.meshes.iter().map(|m| m.name.clone())).filter(|m| writes_for(t, me_id, m) && !prepared.contains(m)).collect();
+        let roles = t.births().filter(|n| n.is_primary || n.is_fabric_primary).filter_map(|n| Some(((n.node_id.clone(), n.incarnation_id.clone()?), (n.is_primary, n.is_fabric_primary)))).collect();
+        let mesh_ids = t.meshes.iter().filter_map(|m| Some((m.name.clone(), m.id.clone()?))).collect();
+        Self { meshes, fabric_id: Some(t.fabric.id.clone()), mesh_ids, roles, results }
+    }
+
+    /// Whether the takeover has nothing to persist.
+    pub fn is_empty(&self) -> bool {
+        self.meshes.is_empty() && self.results.is_empty()
+    }
+}
+
+/// `t` as the election's results `incoming` would leave it: each result's birth holds its role, and
+/// every other birth of the same role in the same mesh (the fabric for the fabric-primary) does not.
+/// The candidate view a successor computes its takeover from before it installs the results.
+pub fn with_results(t: &Topology, incoming: &[(rdm_core::PrimaryRole, rdm_core::Primary)]) -> Topology {
+    let mut t = t.clone();
+    for (role, p) in incoming {
+        for n in t.nodes.iter_mut() {
+            let is = n.node_id == p.node_id && n.incarnation_id.as_ref() == Some(&p.incarnation);
+            match role {
+                rdm_core::PrimaryRole::FabricPrimary => n.is_fabric_primary = is,
+                rdm_core::PrimaryRole::MeshPrimary if n.mesh == p.mesh && n.kind == NodeKind::NodeAdmin => n.is_primary = is,
+                rdm_core::PrimaryRole::NodeTypePrimary(kind) if n.mesh == p.mesh && n.kind == *kind => n.is_primary = is,
+                _ => {}
+            }
+        }
+    }
+    t
+}
+
+/// The lifecycle record of `row`'s current birth (its newest birth's, else its claim's allocated
+/// incarnation) that the writer born as `writer` persists at `(row's node id, writer)`: the row's
+/// lifecycle facts (proposal node-record.md R-NR3), `flags` its boolean role flags. `None` when the row
+/// names no birth or no mesh id is known for it: nothing is invented for a key.
+pub(crate) fn lifecycle_record(row: &NodeRow, fabric_id: &FabricId, mesh_id: Option<&MeshId>, node_type: String, writer: &crate::storage::BirthRef, flags: (bool, bool)) -> Option<rdm_node::node_records::NodeLifecycle> {
+    let birth = row.newest_birth();
+    let incarnation_id = birth.map(|b| b.incarnation_id.clone()).or_else(|| row.allocated.as_ref().map(|a| a.incarnation.clone()))?;
+    let mesh_id = row.mesh_id.clone().or_else(|| mesh_id.cloned())?;
+    let record_birth = |b: &crate::storage::BirthRef| rdm_node::node_records::RecordBirth { node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone() };
+    Some(rdm_node::node_records::NodeLifecycle {
+        node_id: row.node_id.clone(),
+        writer: record_birth(writer),
+        path: row.name.path.clone(),
+        name: row.name.name.clone(),
+        kind: row.kind,
+        node_type,
+        fabric_id: fabric_id.clone(),
+        mesh_id,
+        incarnation_id,
+        status: row.status,
+        declared: birth.map(|b| b.declared.clone()).unwrap_or_default(),
+        operations: birth.map(|b| b.operations.clone()).unwrap_or_default(),
+        silence: birth.and_then(|b| b.silence),
+        data_dir_lost: birth.and_then(|b| b.data_dir_lost.clone()),
+        data_dir_unreadable: birth.and_then(|b| b.data_dir_unreadable.clone()),
+        cert: birth.and_then(|b| b.cert.clone()),
+        signing_cert: birth.and_then(|b| b.signing_cert.clone()),
+        is_primary: flags.0,
+        is_fabric_primary: flags.1,
+        executable: row.executable.clone(),
+        storage_persistence: row.storage_persistence.clone(),
+        placement: row.placement.clone(),
+        topology_storage_provider: row.topology_storage_provider.clone(),
+        allocated: row.allocated.clone(),
+        initial_properties: row.initial_properties.clone(),
+        predecessor: row.predecessor.as_ref().map(record_birth),
+        renamed_from: row.renamed_from.as_ref().map(|r| (r.path.clone(), r.name.clone())),
+        replacement_from: row.replacement_from.clone(),
+        inherited_by: row.inherited_by.clone(),
+    })
 }
 
 /// The node records this admin writes, as it holds them (storage-whole-records.md, "The rule"): per
@@ -249,6 +362,12 @@ impl WrittenRows {
         Ok(listed.len())
     }
 
+    /// `mesh`'s records are held from a takeover snapshot ([`NodeRows::prepare_takeover`]): filled for
+    /// this tenure of its writing.
+    pub fn filled_from_snapshot(&self, mesh: &str) {
+        self.filled.lock().unwrap().insert(mesh.to_string());
+    }
+
     /// Whether `mesh`'s records were filled in this tenure of its writing.
     pub fn filled(&self, mesh: &str) -> bool {
         self.filled.lock().unwrap().contains(mesh)
@@ -326,6 +445,11 @@ impl WrittenRows {
         }
         Ok(Some(r))
     }
+}
+
+/// The election's results `results` as a span or an error names them: `role=primary`, comma-joined.
+pub(crate) fn entries_of(results: &[(rdm_core::PrimaryRole, rdm_core::Primary)]) -> String {
+    results.iter().map(|(r, p)| format!("{}={p}", r.name())).collect::<Vec<_>>().join(",")
 }
 
 /// `tags` as a span carries them: the labels, comma-joined.
@@ -421,7 +545,7 @@ impl NodeRows {
     /// The writer of the admin `me`, born as `me_id`, deciding over its view `view`, writing to
     /// `storage`, its nodes store.
     pub fn new(me: PathName, me_id: NodeId, view: Arc<RwLock<Topology>>, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, me_id, view, storage, configs: None, held: Mutex::new(BTreeMap::new()), written: Arc::new(WrittenRows::default()), fabric_recovery: None, to_fill: Mutex::new(Vec::new()) }
+        Self { me, me_id, view, storage, configs: None, held: Mutex::new(BTreeMap::new()), written: Arc::new(WrittenRows::default()), fabric_recovery: None, to_fill: Mutex::new(Vec::new()), frozen: Mutex::new(BTreeMap::new()), prepared: Mutex::new(Default::default()), preparing: tokio::sync::Mutex::new(()), lifecycle: None }
     }
 
     /// Read fabric recovery through `read`: while this admin runs it, it writes the target mesh's rows its
@@ -441,6 +565,118 @@ impl NodeRows {
     pub fn with_configs(mut self, configs: crate::node_config::NodeConfigsSlot) -> Self {
         self.configs = Some(configs);
         self
+    }
+
+    /// Persist this writer's lifecycle records and election results to `records`, its takeover's
+    /// issued writes settled by `finish_writes`.
+    pub fn with_lifecycle(mut self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>, finish_writes: crate::fabric_handover::FinishWrites) -> Self {
+        self.lifecycle = Some((records, finish_writes));
+        self
+    }
+
+    /// Whether this writer persists lifecycle records ([`Self::with_lifecycle`]).
+    pub fn writes_lifecycle(&self) -> bool {
+        self.lifecycle.is_some()
+    }
+
+    /// The meshes whose takeover preparation completed in this tenure of their writing.
+    pub fn prepared(&self) -> std::collections::BTreeSet<String> {
+        self.prepared.lock().unwrap().clone()
+    }
+
+    /// The takeover preparation of `take` (node-primary-update.md "Before installing or publishing a
+    /// role that writes lifecycle records, the candidate settles earlier issued writes of its writer
+    /// birth and finishes the frozen takeover snapshot"; steps 4-5; proposal node-record.md R-NR8),
+    /// run before the role is installed or published, never under the view's lock:
+    ///
+    /// 1. `finish_writes` settles every write this birth issued (the store's issued operations end:
+    ///    a deadline is not absence);
+    /// 2. the election's results the candidate takes are persisted at their own identities;
+    /// 3. per mesh taken, the takeover snapshot is read once and frozen (a preparation that did not
+    ///    complete leaves it frozen, and its retry persists the same snapshot), then each record of it
+    ///    is persisted under this writer birth with the candidate's boolean role flags, under the
+    ///    subject's own lock, the serialized path every write of the subject takes, and held as the
+    ///    writer's copy; the mesh is then prepared for this tenure.
+    ///
+    /// `Err` names what did not complete; nothing of the role is installed on it, and what completed
+    /// stands. One `rdm.node_admin.primary.update.via-takeover-prepared` span.
+    pub async fn prepare_takeover(&self, take: &Takeover) -> Result<usize, String> {
+        let Some((records, finish_writes)) = &self.lifecycle else { return Ok(0) };
+        let _one_at_a_time = self.preparing.lock().await;
+        let prepared = self.prepared();
+        let meshes: Vec<String> = take.meshes.iter().filter(|m| !prepared.contains(*m)).cloned().collect();
+        if meshes.is_empty() && take.results.is_empty() {
+            return Ok(0);
+        }
+        let me = self.held_name().await;
+        let writer = self.written.writer().cloned();
+        let span = tracing::info_span!(
+            "rdm.node_admin.primary.update.via-takeover-prepared",
+            node_path = %me.path, node_name = %me.name,
+            node_id = %self.me_id,
+            writer_incarnation_id = writer.as_ref().map(|w| w.incarnation_id.as_str().to_string()).unwrap_or_default(),
+            meshes = %meshes.join(","),
+            primaries = %take.results.iter().map(|(r, p)| format!("{}={p}", r.name())).collect::<Vec<_>>().join(","),
+            settled = tracing::field::Empty,
+            frozen = tracing::field::Empty,
+            records = tracing::field::Empty,
+            unkeyed = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            error = tracing::field::Empty,
+            "otel.kind" = "internal",
+        );
+        let r: Result<usize, String> = async {
+            let writer = writer.ok_or_else(|| format!("path {:?}, name {:?} ({}) holds no writer birth: it writes no lifecycle record", me.path, me.name, self.me_id))?;
+            let fabric_id = take.fabric_id.clone().ok_or_else(|| "the candidate view names no fabric".to_string())?;
+            // 1. Every write this birth issued has ended, whatever its caller's wait did.
+            (finish_writes)().await;
+            span.record("settled", true);
+            // 2. The election's results the candidate takes, at their own identities.
+            if !take.results.is_empty() {
+                let batch = rdm_node::node_records::PrimaryRecordBatch { fabric_id: fabric_id.clone(), writer: rdm_node::node_records::RecordBirth { node_id: writer.node_id.clone(), incarnation_id: writer.incarnation_id.clone() }, records: take.results.clone() };
+                records.put_primary_records(&batch).await.map_err(|e| format!("the node records did not acknowledge the election's results {}: {e}", entries_of(&take.results)))?;
+            }
+            // 3. Per mesh: the frozen snapshot, persisted under this writer birth.
+            let (mut written, mut unkeyed, mut frozen_now) = (0usize, 0usize, 0usize);
+            for mesh in &meshes {
+                let held = self.frozen.lock().unwrap().get(mesh).cloned();
+                let snapshot = match held {
+                    Some(rows) => rows,
+                    None => {
+                        let read = self.storage.nodes(mesh).await.map_err(|e| format!("nodes.storage could not read mesh {mesh}'s records for the takeover snapshot: {e}"))?;
+                        let rows = fold_records("takeover-snapshot", read);
+                        self.frozen.lock().unwrap().insert(mesh.clone(), rows.clone());
+                        frozen_now += 1;
+                        rows
+                    }
+                };
+                for row in &snapshot {
+                    let _subject = self.written.lock(&row.node_id).await;
+                    let flags = row.newest_birth().and_then(|b| take.roles.get(&(row.node_id.clone(), b.incarnation_id.clone()))).copied().unwrap_or((false, false));
+                    let node_type = self.written.node_type_of(&row.node_id).unwrap_or_else(|| row.node_type().to_string());
+                    match lifecycle_record(row, &fabric_id, take.mesh_ids.get(mesh), node_type, &writer, flags) {
+                        Some(record) => {
+                            records.put_lifecycle(&record).await.map_err(|e| format!("the node records did not acknowledge node {}'s lifecycle record under writer {}: {e}", row.node_id, writer.node_id))?;
+                            written += 1;
+                        }
+                        None => unkeyed += 1,
+                    }
+                    self.written.hold(row);
+                }
+                self.written.filled_from_snapshot(mesh);
+                self.frozen.lock().unwrap().remove(mesh);
+                self.prepared.lock().unwrap().insert(mesh.clone());
+            }
+            span.record("frozen", frozen_now as u64).record("records", written as u64).record("unkeyed", unkeyed as u64);
+            Ok(written)
+        }
+        .await;
+        match &r {
+            Ok(_) => span.record("outcome", "prepared"),
+            Err(e) => span.record("outcome", "outstanding").record("error", e.as_str()),
+        };
+        span.in_scope(|| tracing::info!("the takeover preparation: this birth's issued writes settled, the election's results and the frozen snapshot persisted under its writer birth, before the role is installed"));
+        r
     }
 
     /// The records this writer holds, the copy every write of a node's record starts from.
@@ -882,10 +1118,13 @@ impl NodeRows {
         let me = &self.me_id;
         let mut held = self.held.lock().unwrap();
         held.retain(|mesh, _| writes_for(now, me, mesh));
-        // A mesh whose writing this admin gave up: its next take reads its records again.
+        // A mesh whose writing this admin gave up: its next take reads its records again, and prepares
+        // again from a new snapshot.
         for mesh in self.written.filled_meshes().into_iter().filter(|m| !writes_for(now, me, m)) {
             self.written.release(&mesh);
         }
+        self.prepared.lock().unwrap().retain(|m| writes_for(now, me, m));
+        self.frozen.lock().unwrap().retain(|m, _| writes_for(now, me, m));
         let births = |t: &Topology, mesh: &str| t.members().filter(|n| n.mesh == mesh).filter_map(|n| n.incarnation_id.clone().map(|inc| (n.node_id.clone(), inc))).collect::<HashSet<_>>();
         let meshes: std::collections::BTreeSet<String> = now.members().map(|n| n.mesh.clone()).filter(|m| writes_for(now, me, m)).collect();
         let mut out = Vec::new();

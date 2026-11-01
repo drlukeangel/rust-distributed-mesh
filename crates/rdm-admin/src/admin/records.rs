@@ -836,13 +836,62 @@ impl Records {
     /// The view's read phase runs first, before its write lock is taken: no disk read holds a
     /// reader of the view. Each birth the digest view holds deleted leaves these records
     /// ([`Self::remove_deleted`]).
-    pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
+    pub async fn install_projected(&self, topology: &RwLock<Topology>, mut project: impl FnMut() -> Topology) -> Topology {
         if let Some(digest_view) = self.digest_view.get() {
             self.remove_deleted(digest_view);
         }
-        let held = topology.write().await;
-        let t = project();
+        let mut held = topology.write().await;
+        let mut t = project();
+        while self.takes_lifecycle_writing(&t) {
+            drop(held);
+            if self.prepare_takeover(&t).await.is_err() {
+                return topology.read().await.clone();
+            }
+            held = topology.write().await;
+            t = project();
+        }
         self.install(held, t).await
+    }
+
+    /// Whether the candidate view `t` gives this admin the lifecycle writing of a mesh whose takeover it
+    /// has not prepared in this tenure (`crate::node_rows::NodeRows::prepare_takeover`).
+    fn takes_lifecycle_writing(&self, t: &Topology) -> bool {
+        let (Some(rows), Some(me)) = (self.rows.get(), self.me.get()) else { return false };
+        rows.writes_lifecycle() && !crate::node_rows::Takeover::of_view(t, me, &rows.prepared(), Vec::new()).meshes.is_empty()
+    }
+
+    /// The takeover preparation of the candidate view `t` (node-primary-update.md: "Before installing or
+    /// publishing a role that writes lifecycle records, the candidate settles earlier issued writes of its
+    /// writer birth and finishes the frozen takeover snapshot"): the meshes whose lifecycle writing `t`
+    /// gives this admin, with the election's results of the roles it takes in its own mesh
+    /// ([`role_announcements`](super::projection::role_announcements) over the results held now).
+    /// Run with no lock of the view held; the candidate is projected again under the lock after it.
+    pub(crate) async fn prepare_takeover(&self, t: &Topology) -> Result<(), String> {
+        let (Some(rows), Some(me)) = (self.rows.get(), self.me.get()) else { return Ok(()) };
+        let results = match (rows.written().writer(), t.own(me), self.digest_view.get()) {
+            (Some(w), Some(own), Some(digest_view)) => super::projection::role_announcements(t, &own.mesh, (me, &w.incarnation_id), &super::projection::incumbency_of(digest_view, self)),
+            _ => Vec::new(),
+        };
+        let take = crate::node_rows::Takeover::of_view(t, me, &rows.prepared(), results);
+        if take.meshes.is_empty() {
+            return Ok(());
+        }
+        rows.prepare_takeover(&take).await.map(|_| ())
+    }
+
+    /// The takeover preparation of the election's results `incoming` before they are installed
+    /// (node-primary-update.md step 4: "When this transfers lifecycle writing, required takeover
+    /// preparation finishes earlier issued writes and the frozen snapshot before installation and command
+    /// admission"): the candidate is this admin's view `held` as `incoming` would leave it.
+    pub(crate) async fn prepare_takeover_of(&self, held: &Topology, incoming: &[(rdm_core::PrimaryRole, rdm_core::Primary)]) -> Result<(), String> {
+        let (Some(rows), Some(me)) = (self.rows.get(), self.me.get()) else { return Ok(()) };
+        let candidate = crate::node_rows::with_results(held, incoming);
+        let mine: Vec<_> = incoming.iter().filter(|(_, p)| &p.node_id == me).cloned().collect();
+        let take = crate::node_rows::Takeover::of_view(&candidate, me, &rows.prepared(), mine);
+        if take.meshes.is_empty() {
+            return Ok(());
+        }
+        rows.prepare_takeover(&take).await.map(|_| ())
     }
 
     /// [`Self::install_projected`] of the admin `me`'s projection from what the stores hold: the
@@ -850,11 +899,22 @@ impl Records {
     /// only then is the view's write lock taken and `project` handed the reads: no disk read holds a
     /// reader of the view. A read older than the view it replaces is replaced at the next rebuild. A
     /// birth the view lists at a moved row's name for the first time is one span.
-    pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, digest_view: &DigestView, fabric_id: &FabricId, project: impl FnOnce(&ViewReads) -> Topology) -> Topology {
+    pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, digest_view: &DigestView, fabric_id: &FabricId, mut project: impl FnMut(&ViewReads) -> Topology) -> Topology {
         let me = digest_view.held_path_name().unwrap_or_else(|| me.clone());
         let reads = ViewReads::read(&me, digest_view, self, fabric_id).await;
-        let held = topology.write().await;
-        let t = project(&reads);
+        let mut held = topology.write().await;
+        let mut t = project(&reads);
+        // The takeover barrier: a view that gives this admin a mesh's lifecycle writing is installed only
+        // once its preparation completed, prepared with the view's lock released and projected again
+        // under it (the candidate revalidated). An outstanding preparation installs nothing new.
+        while self.takes_lifecycle_writing(&t) {
+            drop(held);
+            if self.prepare_takeover(&t).await.is_err() {
+                return topology.read().await.clone();
+            }
+            held = topology.write().await;
+            t = project(&reads);
+        }
         for (node_id, incarnation, published, name) in reads.rows.moved() {
             let listed = |v: &Topology| v.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation) && &n.name == name);
             if listed(&t) && !listed(&held) {
@@ -937,6 +997,146 @@ impl TopologySink for Records {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::FailingLifecycle;
+    use rdm_node::node_records::{MemoryNodeRecords, NodeRecordsStorage, RecordBirth};
+
+    /// One birth of mesh1: its node in a view, `primary` its node-type primary and fabric-primary flags.
+    fn member(name: &str, kind: NodeKind, primary: bool) -> Node {
+        let path = format!("mesh1.{}", if kind == NodeKind::NodeAdmin { "admin" } else { "rpc" });
+        let mut n = Node::allocated(PathName::new(path, name).unwrap(), "mesh1", kind);
+        n.node_id = NodeId::mint();
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.status = crate::model::NodeStatus::Ready;
+        n.is_primary = primary;
+        n.is_fabric_primary = primary && kind == NodeKind::NodeAdmin;
+        n
+    }
+
+    /// A view of `nodes` in mesh1 (id `mesh_id`) of the fabric `fabric_id`.
+    fn view_of(fabric_id: &FabricId, mesh_id: &MeshId, nodes: Vec<Node>) -> Topology {
+        Topology {
+            fabric: crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![crate::model::Mesh { id: Some(mesh_id.clone()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready }],
+            nodes,
+        }
+    }
+
+    /// The row of `n` its mesh-primary wrote, at `status`.
+    async fn row_of(storage: &dyn crate::storage::NodesStorage, n: &Node, mesh_id: &MeshId, status: crate::model::NodeStatus) {
+        let mut row = crate::storage::NodeRow::new(n.name.clone(), "mesh1", n.kind, n.node_id.clone(), status);
+        row.mesh_id = Some(mesh_id.clone());
+        row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name).declared.insert(rdm_core::status::NodeState::Ready);
+        crate::node_rows::write_record(storage, &row).await.unwrap().unwrap();
+    }
+
+    /// An admin `me` whose records write mesh rows to `nodes` and lifecycle records to `lifecycle`, its
+    /// issued writes settled by `finish_writes`, over the installed view `topology`.
+    fn admin_over(me: &Node, topology: &Arc<RwLock<Topology>>, nodes: Arc<dyn crate::storage::NodesStorage>, lifecycle: Arc<dyn NodeRecordsStorage>, finish_writes: crate::fabric_handover::FinishWrites) -> Records {
+        let rows = crate::node_rows::NodeRows::new(me.name.clone(), me.node_id.clone(), topology.clone(), nodes).with_lifecycle(lifecycle, finish_writes);
+        rows.written().writes_as(crate::storage::BirthRef { node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone().unwrap() });
+        let records = Records::default();
+        records.set_me(me.node_id.clone());
+        records.set_rows(Arc::new(rows));
+        records.set_digest_view(DigestView::default());
+        records
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-primary-update.md:13-16 "Before installing or
+    /// publishing a role that writes lifecycle records, the candidate settles earlier issued writes of
+    /// its writer birth and finishes the frozen takeover snapshot. Only then does it admit the role's
+    /// commands and record boolean role flags under its own lifecycle writer identity." The admin's view
+    /// rebuild names it its mesh's primary while a write it issued earlier is still outstanding: the view
+    /// naming it primary is not installed until that write settled; then the election's results and every
+    /// record of the mesh are persisted under its own writer birth, its own with both role flags, the
+    /// member's with none, and only then is the view naming it primary installed. Must NOT happen: the
+    /// role installed (the view naming it primary) while the earlier write is outstanding, or before its
+    /// mesh's records are persisted under its writer birth.
+    #[tokio::test]
+    async fn a_view_naming_this_admin_mesh_primary_installs_only_after_its_issued_writes_settled_and_its_snapshot_persisted() {
+        let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
+        let me = member("1", NodeKind::NodeAdmin, true);
+        let rpc = member("1", NodeKind::RpcNode, true);
+        let nodes: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::MemoryNodesStorage::default());
+        row_of(&*nodes, &me, &mesh_id, crate::model::NodeStatus::Ready).await;
+        row_of(&*nodes, &rpc, &mesh_id, crate::model::NodeStatus::Ready).await;
+        let lifecycle = Arc::new(MemoryNodeRecords::default());
+        // The earlier write this birth issued: outstanding until the cell lets it end.
+        let (entered, release) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let finish_writes: crate::fabric_handover::FinishWrites = {
+            let (entered, release) = (entered.clone(), release.clone());
+            Arc::new(move || {
+                let (entered, release) = (entered.clone(), release.clone());
+                Box::pin(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                })
+            })
+        };
+        let topology = Arc::new(RwLock::new(view_of(&fabric_id, &mesh_id, Vec::new())));
+        let records = Arc::new(admin_over(&me, &topology, nodes.clone(), lifecycle.clone(), finish_writes));
+        let candidate = view_of(&fabric_id, &mesh_id, vec![me.clone(), rpc.clone()]);
+        let install = {
+            let (records, topology, candidate) = (records.clone(), topology.clone(), candidate.clone());
+            tokio::spawn(async move { records.install_projected(&topology, || candidate.clone()).await })
+        };
+        entered.notified().await;
+        let writer = RecordBirth { node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone().unwrap() };
+        assert!(!topology.read().await.is_mesh_primary("mesh1", &me.node_id), "the view naming this admin primary is installed while its earlier write is outstanding");
+        assert!(lifecycle.lifecycles(&mesh_id).await.unwrap().is_empty(), "a lifecycle record is written before the earlier write settled");
+        release.notify_one();
+        let installed = tokio::time::timeout(Duration::from_secs(10), install).await.expect("the install completes once the write settled").unwrap();
+        assert!(installed.is_mesh_primary("mesh1", &me.node_id) && topology.read().await.is_mesh_primary("mesh1", &me.node_id), "the view naming this admin primary is installed after the preparation");
+        let own = lifecycle.lifecycle(&me.node_id, &writer).await.unwrap().expect("the admin's own lifecycle record under its writer birth");
+        assert_eq!((own.is_primary, own.is_fabric_primary, own.mesh_id.clone(), own.fabric_id.clone()), (true, true, mesh_id.clone(), fabric_id.clone()), "its own record carries both boolean role flags: {own:?}");
+        let theirs = lifecycle.lifecycle(&rpc.node_id, &writer).await.unwrap().expect("the member's lifecycle record under the new writer birth");
+        assert_eq!((theirs.status, theirs.incarnation_id.clone()), (crate::model::NodeStatus::Ready, rpc.incarnation_id.clone().unwrap()), "the member's record is the snapshot's: {theirs:?}");
+        let results: Vec<(rdm_core::PrimaryRole, rdm_core::Primary)> = lifecycle.primary_records().await.unwrap().into_iter().flat_map(|b| b.records).collect();
+        assert!(results.iter().any(|(role, p)| *role == rdm_core::PrimaryRole::MeshPrimary && p.is_birth(&me.node_id, me.incarnation_id.as_ref().unwrap()) && p.revision == 1), "the election's result is persisted at its own identity: {results:?}");
+        assert!(records.rows.get().unwrap().written().filled("mesh1"), "the writer's copy of the mesh is the snapshot");
+    }
+
+    /// CONTRACT: docs/architecture/lifecycles/node-primary-update.md:76-80 "Preparation fails or remains
+    /// outstanding. The candidate does not install or publish the lifecycle-writing role, answer
+    /// completion, or admit its commands. Preserve earlier issued work and the frozen snapshot across
+    /// caller cancellation; settle it before another preparation uses the same writer birth. Named
+    /// storage errors remain visible, and a deadline is not absence." The store refuses the new
+    /// writer's lifecycle puts: the view naming it primary is not installed. The predecessor then writes
+    /// the member's row late (Stopped). Once the store answers, the next rebuild persists the frozen
+    /// snapshot, the member Ready as frozen, and installs the view. Must NOT happen: the role installed
+    /// over a failed preparation, or the late predecessor write promoted under the new writer's key.
+    #[tokio::test]
+    async fn an_outstanding_takeover_installs_nothing_and_its_retry_persists_the_frozen_snapshot_not_a_later_write() {
+        let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
+        let me = member("2", NodeKind::NodeAdmin, true);
+        let rpc = member("1", NodeKind::RpcNode, true);
+        let nodes: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::MemoryNodesStorage::default());
+        row_of(&*nodes, &me, &mesh_id, crate::model::NodeStatus::Ready).await;
+        row_of(&*nodes, &rpc, &mesh_id, crate::model::NodeStatus::Ready).await;
+        let lifecycle = Arc::new(FailingLifecycle::default());
+        lifecycle.failing.store(true, std::sync::atomic::Ordering::SeqCst);
+        let topology = Arc::new(RwLock::new(view_of(&fabric_id, &mesh_id, Vec::new())));
+        let records = admin_over(&me, &topology, nodes.clone(), lifecycle.clone(), Arc::new(|| Box::pin(async {})));
+        let candidate = view_of(&fabric_id, &mesh_id, vec![me.clone(), rpc.clone()]);
+        let capture = crate::span_capture::Capture::new("takeover-outstanding");
+        let first = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            records.install_projected(&topology, || candidate.clone()).await
+        };
+        assert!(!first.is_mesh_primary("mesh1", &me.node_id) && !topology.read().await.is_mesh_primary("mesh1", &me.node_id), "the role is installed over an outstanding preparation");
+        let spans = capture.named("rdm.node_admin.primary.update.via-takeover-prepared");
+        assert!(spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("outstanding") && s.attributes.get("error").is_some_and(|e| e.contains("refused for the cell"))), "the outstanding preparation is one span naming the storage error: {spans:?}");
+        // The predecessor's late write of the member's row, after the snapshot froze.
+        let mut late = nodes.node(&rpc.node_id).await.unwrap().unwrap();
+        late.status = crate::model::NodeStatus::Stopped;
+        nodes.put_node(&late).await.unwrap();
+        lifecycle.failing.store(false, std::sync::atomic::Ordering::SeqCst);
+        let second = records.install_projected(&topology, || candidate.clone()).await;
+        assert!(second.is_mesh_primary("mesh1", &me.node_id), "the view naming this admin primary is installed once the preparation completed");
+        let writer = RecordBirth { node_id: me.node_id.clone(), incarnation_id: me.incarnation_id.clone().unwrap() };
+        let theirs = lifecycle.lifecycle(&rpc.node_id, &writer).await.unwrap().expect("the member's lifecycle record under the new writer birth");
+        assert_eq!(theirs.status, crate::model::NodeStatus::Ready, "the retry persists the frozen snapshot, not the predecessor's later write: {theirs:?}");
+    }
+
 
     /// CONTRACT: docs/architecture/lifecycles/fabric-recovery.md:172 "No node-admin is alive, the fabric's other nodes alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a node-admin at the lost fabric-primary's path and name, with no launcher, given the fabric id, its mesh and the store root, which must hold that fabric or the start is refused by name. It adopts what the store holds and mints no fabric or mesh id; it is a new birth with its own node.id."
     #[test]

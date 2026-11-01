@@ -1765,7 +1765,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = records.node_records.set(topology_storage.node_records());
                                 let _ = control.node_id.set(node_id.clone());
                                 let _ = control.incarnation.set(incarnation.clone());
-                                records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone())));
+                                records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone()).with_lifecycle(topology_storage.node_records(), topology_storage.finish_writes())));
                                 let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, primaries: topology_view.primaries().clone(), incarnation: incarnation.clone() }));
                                 env
                             };

@@ -3924,7 +3924,7 @@ fn one_view_install_runs_one_reconcile_pass_which_claims_the_next_attempt() {
             n.status = NodeStatus::PendingReconnect;
             n.is_primary = false;
         }
-        wakes.records.install_projected(&r.env.topology, || moved).await;
+        wakes.records.install_projected(&r.env.topology, || moved.clone()).await;
         tokio::time::sleep(SETTLE).await;
         task.abort();
         let passes = passes.lock().unwrap().clone();
