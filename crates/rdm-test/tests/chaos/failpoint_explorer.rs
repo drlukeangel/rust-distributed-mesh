@@ -290,16 +290,24 @@ impl Run {
 
     /// The admin that executes the operations on `mesh`'s members: the mesh's admin primary.
     async fn member_door(&self, mesh: &str) -> Door {
-        let nodes = self.estate.node_views().await;
-        let primary = nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == mesh && n.is_primary).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
-        self.door_of(&primary.name).await
+        let primary = self.primary_where(&format!("{mesh} has an admin primary"), |n| n.kind == NodeKind::NodeAdmin && n.mesh == mesh && n.is_primary).await;
+        self.door_of(&primary).await
+    }
+
+    /// The node `is` names in the views, once a read answers it: a read refused not-ready while a node
+    /// has no property record yet answers nothing (`node_views`), and is read again.
+    async fn primary_where(&self, what: &str, is: impl Fn(&rdm_client::NodeView) -> bool) -> PathName {
+        rdm_test::estate::wait_for(what, Duration::from_secs(30), || {
+            let found = async { self.estate.node_views().await.into_iter().find(|n| is(n)).map(|n| n.name) };
+            found
+        })
+        .await
     }
 
     /// The admin that executes everything else (mesh creation and deletion): the fabric primary.
     async fn fabric_door(&self) -> Door {
-        let nodes = self.estate.node_views().await;
-        let primary = nodes.iter().find(|n| n.is_fabric_primary).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
-        self.door_of(&primary.name).await
+        let primary = self.primary_where("the fabric has a primary", |n| n.is_fabric_primary).await;
+        self.door_of(&primary).await
     }
 
     fn push(&self, v: Value) {

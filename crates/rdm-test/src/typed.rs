@@ -412,7 +412,16 @@ impl Estate {
         let path = name.clone();
         let entry = self.entry().await;
         // A mesh the admin does not hold is the empty list (Q167 R-RD3).
-        let views = self.nodes_obj().await.get(&rdm_client::Filter::new().eq("path", [&path.path]).eq("name", [&path.name])).await.unwrap_or_else(|e| panic!("node.get [{path:?}] at {entry:?}: {e}"));
+        // A read refused not-ready (a node whose own property record is not written yet answers its
+        // properties unavailable) is read again, bounded; past the bound the refusal is the panic.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let views = loop {
+            match self.nodes_obj().await.get(&rdm_client::Filter::new().eq("path", [&path.path]).eq("name", [&path.name])).await {
+                Ok(views) => break views,
+                Err(e) if not_yet(&e) && tokio::time::Instant::now() < deadline => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                Err(e) => panic!("node.get [{path:?}] at {entry:?}: {e}"),
+            }
+        };
         self.learn(&views).await;
         views.into_iter().find(|n| n.name == path)
     }
