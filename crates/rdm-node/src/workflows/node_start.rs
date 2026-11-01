@@ -356,7 +356,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             match driver.attempt().await {
                 Step::Passed => rest.run_inline(Some(driver)).await.map_err(Into::into),
                 Step::Failed(why) => {
-                    let failed = StartFailed { step: "node.pre-node-ready", reason: format!("{name} failed pre_node_ready: {why}") };
+                    let failed = StartFailed { step: "node.pre-node-ready", reason: format!("{} failed pre_node_ready: {why}", rest.node_id) };
                     rest.after.start_failed(&failed, true).await;
                     Err(failed.into())
                 }

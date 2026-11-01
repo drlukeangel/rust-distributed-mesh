@@ -274,7 +274,6 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
             return rdm_core::reply::status::bounded_rejected_filter(&reason);
         }
         let mut nodes = nodes(view, &loads(), records, &planned);
-        nodes.iter_mut().for_each(amend);
         if let Some(properties) = properties {
             // Resolve stable identity pairs first: an exact read must not touch another node's
             // property record. Property-dependent pairs still match the complete current value.
@@ -301,6 +300,9 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                 }
             }
         }
+        // What the answering admin's own channels hold now, over the join-time declaration a property
+        // record carries: a node-admin's `held` grows as members join (gossip.md §8).
+        nodes.iter_mut().for_each(amend);
         nodes.retain(|n| filter.matches(n));
         let count = nodes.len();
         span.record("nodes", count as u64);

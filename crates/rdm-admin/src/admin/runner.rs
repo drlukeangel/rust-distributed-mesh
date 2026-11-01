@@ -1059,6 +1059,9 @@ impl AdminRunner {
         if record.node_id != pin.node_id {
             return Err(crate::executor::RunEnd::failed(crate::build::BirthReplaced { operation: operation.clone(), node: node.clone(), expected: pin.clone(), observed: crate::build::PinnedBirth::of(&record) }.to_string()));
         }
+        // Its row's name is the operation's path, as `standalone` takes it: a predecessor this Build
+        // renamed `<name>-old` is deleted there, never at the name it was launched at (node-replace.md).
+        let record = Node { name: node.clone(), ..record };
         let template = self.template_for(record.kind, &record.mesh).await?;
         let req = DeleteRequest { operation: operation.clone(), build_id: build_id.clone(), attempt, node: record.clone(), handle, unreached: false };
         self.pipeline(&template).delete_stopped(&req).await.map_err(crate::executor::RunEnd::from)?;
@@ -1237,10 +1240,12 @@ impl AdminRunner {
         };
         // The record handed back with the runtime is the one this admin deployed; whether the birth
         // is stopped is the view's, as `stopped_birth` takes it: a stopped birth's delete
-        // goes straight to its exact runtime's exited verdict.
+        // goes straight to its exact runtime's exited verdict. Its row's name is the operation's path,
+        // as `standalone` takes it: a predecessor renamed `<name>-old` by this Build is deleted there,
+        // never at the name it was deployed at (node-replace.md).
         let record = match &seen {
-            Some(n) => Node { stopped: n.stopped, ..record },
-            None => record,
+            Some(n) => Node { name: node.clone(), stopped: n.stopped, ..record },
+            None => Node { name: node.clone(), ..record },
         };
         if record.node_id == self.node_id {
             self.delete_own(build_id, attempt, record.clone(), handle, operation).await?;

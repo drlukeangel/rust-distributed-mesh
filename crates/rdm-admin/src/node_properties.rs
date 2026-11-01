@@ -58,18 +58,7 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
             // This admin holds the node's mesh-primary now, or no longer holds the birth: served here.
         }
     }
-    let span = match &change {
-        Change::Create(labels) => tracing::info_span!(
-            "rdm.node_admin.tag.create.via-writer",
-            node_path = %me.path, node_name = %me.name, subject_path = tracing::field::Empty, subject_name = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), labels = %crate::node_rows::labels(labels),
-            arrived = tracing::field::Empty, already_carried = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
-        ),
-        Change::Delete(scope) => tracing::info_span!(
-            "rdm.node_admin.tag.delete.via-writer",
-            node_path = %me.path, node_name = %me.name, subject_path = tracing::field::Empty, subject_name = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), scope = scope.name(), labels = %match scope { TagScope::All => String::new(), TagScope::Labels(l) => crate::node_rows::labels(l) },
-            left = tracing::field::Empty, not_carried = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
-        ),
-    };
+    let span = writer_span(me, req);
     let reply = tracing::Instrument::instrument(
         async {
             // A snapshot of the view: no read lock is held across the row write's I/O.
@@ -79,9 +68,43 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
         span.clone(),
     )
     .await;
+    decided(&span, req, &reply);
+    reply
+}
+
+/// The `rdm.node_admin.tag.create.via-writer` or `rdm.node_admin.tag.delete.via-writer` span of the
+/// `CreateTags` or `DeleteTags` `req` the admin `me` decides: the labels it names, its outcome and what
+/// the node's own property writer answered ([`decided`]).
+pub(crate) fn writer_span(me: &PathName, req: &StatusRequest) -> tracing::Span {
+    match req {
+        StatusRequest::CreateTags { node_id, incarnation, labels } => tracing::info_span!(
+            "rdm.node_admin.tag.create.via-writer",
+            node_path = %me.path, node_name = %me.name, subject_path = tracing::field::Empty, subject_name = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), labels = %crate::node_rows::labels(labels),
+            already_carried = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
+        ),
+        StatusRequest::DeleteTags { node_id, incarnation, scope } => tracing::info_span!(
+            "rdm.node_admin.tag.delete.via-writer",
+            node_path = %me.path, node_name = %me.name, subject_path = tracing::field::Empty, subject_name = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), scope = scope.name(), labels = %match scope { TagScope::All => String::new(), TagScope::Labels(l) => crate::node_rows::labels(l) },
+            not_carried = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
+        ),
+        _ => unreachable!("a tags writer span is opened for CreateTags and DeleteTags only"),
+    }
+}
+
+/// Close a [`writer_span`] on `reply`: the node's own property writer decided the labels
+/// (node-rpc-envelope.md node.tags), and its reply names those already carried or not carried.
+pub(crate) fn decided(span: &tracing::Span, req: &StatusRequest, reply: &StatusReply) {
+    match reply {
+        StatusReply::TagsCreated { already_carried, .. } => {
+            span.record("already_carried", crate::node_rows::labels(already_carried).as_str());
+        }
+        StatusReply::TagsDeleted { not_carried, .. } => {
+            span.record("not_carried", crate::node_rows::labels(not_carried).as_str());
+        }
+        _ => {}
+    }
     span.record("outcome", reply.name());
     span.in_scope(|| tracing::info!("{} decided", req.op()));
-    reply
 }
 
 /// What a tags command changes.

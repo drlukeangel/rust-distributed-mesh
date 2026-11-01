@@ -1209,6 +1209,9 @@ impl StatusDoor {
             let Some(configs) = self.configs.get() else {
                 return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} has no own property writer yet", me_name_path = &me_name.path, me_name_name = &me_name.name));
             };
+            // A tags command on this admin's own record is decided by its own writer, on the span every
+            // tags command's writer opens.
+            let tags = matches!(req, StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. }).then(|| crate::node_properties::writer_span(&me_name, req));
             let result = match req {
                 StatusRequest::ApplyNodeConfig { config, .. } => configs.own_config(subject, config.clone()).await,
                 StatusRequest::ApplyNodeProperties { entry, .. } => configs.own_entry(subject, entry.clone()).await,
@@ -1216,11 +1219,16 @@ impl StatusDoor {
                 StatusRequest::DeleteTags { scope, .. } => configs.own_tags(subject, rdm_node::node_records::TagChange::Delete(scope.clone())).await,
                 _ => unreachable!("selected own property commands only"),
             };
-            return match result {
+            let reply = match result {
                 Some(Ok(reply)) => if matches!(req, StatusRequest::ApplyNodeConfig { .. }) { rdm_core::reply::applied() } else { reply },
                 Some(Err(error)) => rdm_core::reply::status::bounded_node_row_refused(self.node_id.as_str(), &error.to_string()),
                 None => rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} has no own property writer yet", me_name_path = &me_name.path, me_name_name = &me_name.name)),
             };
+            if let Some(span) = tags {
+                span.record("subject_path", subject.name.path.as_str()).record("subject_name", subject.name.name.as_str());
+                crate::node_properties::decided(&span, req, &reply);
+            }
+            return reply;
         }
         match req {
             StatusRequest::Reserved34 { .. } | StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::LeaveMesh { .. } => return crate::node_commands::refuse_reserved(self.node_id.as_str(), &sender.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), req),
