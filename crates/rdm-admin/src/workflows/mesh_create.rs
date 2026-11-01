@@ -132,6 +132,8 @@ mod tests {
             time.clone(),
         );
         cp_pending.topology = Arc::new(tokio::sync::RwLock::new(day0_view));
+        // Boot sets the admin's own node id once it is minted; the fabric-primary role is checked by it.
+        let _ = cp_pending.node_id.set(cp_pending.topology.read().await.fabric_primary().expect("the view holds the fabric-primary").node_id.clone());
         let add_mesh2 = TopologyChange::CreateMesh {
             desired: MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]),
         };
@@ -158,6 +160,8 @@ mod tests {
             time,
         );
         cp.topology = Arc::new(tokio::sync::RwLock::new(settled_view.clone()));
+        // Boot sets the admin's own node id once it is minted; the fabric-primary role is checked by it.
+        let _ = cp.node_id.set(cp.topology.read().await.fabric_primary().expect("the view holds the fabric-primary").node_id.clone());
 
         let current_build_id = settled_builds
             .current_build()

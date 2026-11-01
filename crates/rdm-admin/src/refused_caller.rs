@@ -850,7 +850,11 @@ mod tests {
         let before = fp_builds.current().await.unwrap().unwrap();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(1_000);
-        let cp = Arc::new(crate::control_plane::ControlPlane::new(fp_builds.clone(), fp_accepted, fp.name.clone(), planned.clone(), time));
+        let cp = crate::control_plane::ControlPlane::new(fp_builds.clone(), fp_accepted, fp.name.clone(), planned.clone(), time);
+        // Boot sets the admin's own node id once it is minted; the fabric-primary role is checked by it.
+        let _ = cp.node_id.set(fp.node_id.clone());
+        let _ = cp.node_rows.set(rows.clone());
+        let cp = Arc::new(cp);
 
         let fp_key = iroh::SecretKey::generate();
         let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
