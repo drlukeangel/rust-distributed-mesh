@@ -138,6 +138,14 @@ pub fn is_valid_mesh_name(m: &str) -> bool {
 }
 
 impl PathName {
+    /// The pair a caller asked for, decoded unchecked: the deserializer of a request field whose
+    /// receiver refuses an invalid pair by name (node-name-update.md Validation: `RejectedName {
+    /// reason }`), never a decode failure. Every other decode checks the pair ([`Self::new`]).
+    pub fn deserialize_asked<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let PathFields { path, name } = PathFields::deserialize(d)?;
+        Ok(Self { path, name })
+    }
+
     /// Validate the two fields at ingress.
     pub fn new(path: impl Into<String>, name: impl Into<String>) -> Result<Self, PathNameError> {
         let (path, name) = (path.into(), name.into());

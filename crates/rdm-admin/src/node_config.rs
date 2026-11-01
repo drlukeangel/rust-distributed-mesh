@@ -334,6 +334,7 @@ impl NodeConfigs {
         };
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-forward",
+            node_path = %me.path, node_name = %me.name,
             receiver_node_id = %me_id,
             op = req.op(),
             subject_path = ?subject.as_ref().map(|location| location.path.as_str()), subject_name = ?subject.as_ref().map(|location| location.name.as_str()),
@@ -576,8 +577,9 @@ impl NodeConfigs {
         let StatusRequest::UpdateNodeConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateNodeConfig only") };
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-config",
+            node_path = %me.path, node_name = %me.name,
             receiver_node_id = %me_id,
-            subject = tracing::field::Empty,
+            subject_path = tracing::field::Empty, subject_name = tracing::field::Empty,
             node_id = %node_id,
             incarnation_id = %incarnation.as_str(),
             keys = config.len(),
@@ -608,7 +610,7 @@ impl NodeConfigs {
             span.record("detail", format!("{me_id}: node {node_id} holds no birth in this admin's view; its config cannot be put").as_str());
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         };
-        span.record("subject", subject.node_id.to_string().as_str());
+        span.record("subject_path", subject.name.path.as_str()).record("subject_name", subject.name.name.as_str());
         span.record("row_status", format!("{:?}", subject.status).as_str());
         // The writer of the row is the mesh-primary of the node's mesh, and no other admin
         // (fabric-node-lifecycle §4.3); a caller that sent it elsewhere is told whose role it needs.
@@ -627,19 +629,31 @@ impl NodeConfigs {
             Some(_) => {}
         }
         if self.records().is_some() {
+            // The node's own property writer puts the map: this admin's in-process, any other node's
+            // through `ApplyNodeConfig`, called directly.
             let applied = if node_id == me_id {
+                span.record("apply", "in-process");
                 match self.own_config(subject, config.clone()).await {
-                    Some(result) => result.map_err(|error| error.to_string()),
+                    Some(Ok(reply)) => Ok(reply),
+                    Some(Err(error)) => {
+                        span.record("detail", error.to_string().as_str());
+                        return rdm_core::reply::status::bounded_config_row_refused(subject.node_id.as_str(), &error.to_string());
+                    }
                     None => return rdm_core::reply::status::not_ready(format!("{me_id} has no own property writer yet")),
                 }
             } else {
+                span.record("apply", "direct");
                 let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-                NodeRpc::new(&self.client).config_apply(&birth, config.clone(), 0, &CallOptions::default()).await.map_err(|error| error.to_string())
+                NodeRpc::new(&self.client).config_apply(&birth, config.clone(), 0, &CallOptions::default()).await
             };
-            match applied {
-                Ok(StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::ConfigUpdated { .. }) => {}
-                Ok(reply) => return reply,
-                Err(error) => return rdm_core::reply::status::bounded_config_not_applied(&subject.node_id.to_string(), "unanswered", &error),
+            let (answered, detail) = match applied {
+                Ok(StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::ConfigUpdated { .. }) => (None, String::new()),
+                Ok(refused) => (Some(refused.name()), format!("{me_id}: the birth answered {refused:?}")),
+                Err(end) => (Some(end.outcome()), format!("{me_id}: apply-node-config ended {}", describe(&end))),
+            };
+            if let Some(answered) = answered {
+                span.record("answered", answered).record("detail", detail.as_str());
+                return rdm_core::reply::status::bounded_config_not_applied(subject.node_id.as_str(), answered, &detail);
             }
             if let Some((storage_persistence, placement)) = onto_row {
                 match self.written.update(storage, node_id, None, |row| {

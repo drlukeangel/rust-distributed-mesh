@@ -55,6 +55,11 @@ pub async fn bound_configs(configs: rdm_admin::node_config::NodeConfigs) -> rdm_
 
 /// [`bound_configs`] over `records`, the store a cell reads the written properties back from.
 pub async fn bound_configs_on(records: std::sync::Arc<rdm_node::node_records::MemoryNodeRecords>, configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
+    bound_configs_over(records, configs).await
+}
+
+/// [`bound_configs`] over any node records store: a cell's own (one that refuses a write, say).
+pub async fn bound_configs_over(records: std::sync::Arc<dyn rdm_node::node_records::NodeRecordsStorage>, configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &rdm_core::FabricId::mint(), "mesh1", &rdm_core::MeshId::mint(), rdm_core::NodeId::mint().as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();

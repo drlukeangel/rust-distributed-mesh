@@ -451,7 +451,8 @@ pub enum StatusRequest {
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The new path and name.
+        /// The new path and name, as asked: an invalid pair is refused `RejectedName` by the writer.
+        #[serde(deserialize_with = "crate::PathName::deserialize_asked")]
         name: crate::PathName,
     },
     /// `node.connection.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
