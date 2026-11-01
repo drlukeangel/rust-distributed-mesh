@@ -385,7 +385,6 @@ impl JoinDoor {
             served_by_path = %self.me.path, served_by_name = %self.me.name,
             caller = tracing::field::Empty,
             admitted_path = tracing::field::Empty, admitted_name = tracing::field::Empty,
-            config_keys = tracing::field::Empty,
             outcome = tracing::field::Empty,
             build_id = tracing::field::Empty,
             attempt = tracing::field::Empty,
@@ -418,8 +417,8 @@ impl JoinDoor {
                 // startup"), never a copy a lifecycle row carries. Another node's row at a first start's
                 // name (a create that wrote no claim, a predecessor's row) refuses nothing; a held birth's
                 // join is reconciled to its row, and another node's row there is refused by name.
-                let config: Option<std::collections::BTreeMap<String, String>> = match self.atlas.as_ref().and_then(|a| a.record_for_join(&d.node.name, &d.node.node_id)) {
-                    None => None,
+                match self.atlas.as_ref().and_then(|a| a.record_for_join(&d.node.name, &d.node.node_id)) {
+                    None => {}
                     // The caller's own record deleted: a caller whose record is deleted is deleted, its
                     // runtime terminated, never re-admitted (node-investigation.md; Q217). Refused by name
                     // and decided as every refused caller is (Q207), never issued a cert or admitted.
@@ -439,9 +438,8 @@ impl JoinDoor {
                                 return rdm_core::reply::join::join_mismatch("types".into(), format!("{:?}", held.types), format!("{types:?}"));
                             }
                         }
-                        None
-                    },
-                    Some(_) if !held => None,
+                    }
+                    Some(_) if !held => {}
                     Some(row) => {
                         span.record("outcome", "mismatch");
                         let m = Mismatch { field: "node_id", deployed: row.node_id.to_string(), reported: d.node.node_id.to_string() };
@@ -456,7 +454,6 @@ impl JoinDoor {
                         return rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported);
                     }
                 };
-                span.record("config_keys", config.as_ref().map_or(0, |c| c.len()) as u64);
                 // The member cert is issued for this exact birth BEFORE it is admitted: a refused
                 // issuance leaves nothing installed for its key and completes no report.
                 let birth = crate::certs::BirthIdentity { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), mesh: d.node.mesh.clone(), endpoint_key: d.node.endpoint_id.clone() };
@@ -516,7 +513,7 @@ impl JoinDoor {
                 self.joins.report(&JoinReport { digest: d.clone(), listeners });
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
-                self.joined(&d.node.name, cert, config).await
+                self.joined(&d.node.name, cert).await
             }
             Standing::Abandoned(a) => {
                 span.record("outcome", "deployment-abandoned");
@@ -535,12 +532,11 @@ impl JoinDoor {
         }
     }
 
-    async fn joined(&self, node: &PathName, member_cert: Vec<u8>, config: Option<std::collections::BTreeMap<String, String>>) -> JoinReply {
+    async fn joined(&self, node: &PathName, member_cert: Vec<u8>) -> JoinReply {
         let answer = match (self.answer)().await {
             Ok(mut a) => {
                 a.control.member_cert = member_cert;
                 a.control.name = Some(node.clone());
-                a.control.config = config;
                 a
             }
             Err(why) => return rdm_core::reply::join::not_ready(format!("admin at path {:?}, name {:?}: not ready to answer a join: {why}", self.me.path, self.me.name)),
@@ -827,7 +823,6 @@ mod tests {
                                 rafka_time_ms: 5_000_000,
                                 member_cert: Vec::new(),
                                 name: None,
-                                config: None,
                                 cert_policy: None,
                             },
                             statuses: Vec::new(),

@@ -17,7 +17,6 @@ fn answer() -> JoinAnswer {
             rafka_time_ms: 1_700_000_000_123,
             member_cert: vec![0xca, 0xfe],
             name: Some(rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap()),
-            config: Some([("tier".to_string(), "gold".to_string())].into()),
         },
         statuses: vec![],
     }
@@ -35,7 +34,7 @@ fn a_join_request_and_its_answer_round_trip_through_postcard() {
     assert_eq!(back.control.fabric, a.control.fabric);
     assert_eq!(back.control.rafka_time_ms, 1_700_000_000_123);
     assert_eq!(back.control.member_cert, vec![0xca, 0xfe], "the member cert travels as opaque bytes");
-    assert_eq!((back.control.name, back.control.config), (a.control.name, a.control.config), "the row's name and config the joiner installs");
+    assert_eq!(back.control.name, a.control.name, "the row's name the joiner installs");
     assert_eq!(back.control.build.map(|b| (b.build_id, b.attempt)), a.control.build.map(|b| (b.build_id, b.attempt)));
 }
 
@@ -49,23 +48,22 @@ fn a_truncated_answer_is_refused_by_name_not_decoded_partially() {
 
 // @feature: node-lifecycle
 #[test]
-fn the_answers_member_cert_name_config_and_cert_policy_are_the_control_frames_last_fields_before_the_statuses() {
+fn the_answers_member_cert_name_and_cert_policy_are_the_control_frames_last_fields_before_the_statuses() {
     let mut a = answer();
     a.control.rafka_time_ms = 300;
     a.control.member_cert = vec![0xca, 0xfe];
     a.control.name = None;
-    a.control.config = Some([("k".to_string(), "v".to_string())].into());
     let bytes = answer_to_wire(&a).unwrap();
-    // postcard varint 300 = ac 02, the cert's length 02 and its bytes ca fe, no name = 00, the
-    // config Some = 01 with one entry 01 ("k" = 01 6b, "v" = 01 76), no cert policy = 00 (i145 e3),
-    // then the empty statuses = 00: the control frame carries no executable (proposal
-    // executable-bindings-at-create.md rule 7; the removed per-kind set's field is gone, durable format moved).
-    assert_eq!(&bytes[bytes.len() - 14..], &[0xac, 0x02, 0x02, 0xca, 0xfe, 0x00, 0x01, 0x01, 0x01, 0x6b, 0x01, 0x76, 0x00, 0x00], "{bytes:02x?}");
-    // An authority configured with no certs sends an empty cert, and no row hands no config.
+    // postcard varint 300 = ac 02, the cert's length 02 and its bytes ca fe, no name = 00, no cert
+    // policy = 00 (i145 e3), then the empty statuses = 00: the control frame carries no executable
+    // (proposal executable-bindings-at-create.md rule 7; the removed per-kind set's field is gone,
+    // durable format moved) and no config (i150 D10: a node's properties are its own record; durable
+    // format moved).
+    assert_eq!(&bytes[bytes.len() - 8..], &[0xac, 0x02, 0x02, 0xca, 0xfe, 0x00, 0x00, 0x00], "{bytes:02x?}");
+    // An authority configured with no certs sends an empty cert.
     a.control.member_cert = vec![];
-    a.control.config = None;
     let bytes = answer_to_wire(&a).unwrap();
-    assert_eq!(&bytes[bytes.len() - 7..], &[0xac, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00], "{bytes:02x?}");
+    assert_eq!(&bytes[bytes.len() - 6..], &[0xac, 0x02, 0x00, 0x00, 0x00, 0x00], "{bytes:02x?}");
     // The fabric's cert policy: member TTL 12 = 0c, issuing 2592000 = 80 9a 9e 01, CA 31536000 =
     // 80 e7 84 0f, renew point 670 = 9e 05; then the empty statuses = 00.
     a.control.cert_policy = Some(rdm_core::certs::CertPolicy { member_ttl_secs: 12, ..Default::default() });

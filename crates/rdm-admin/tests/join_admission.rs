@@ -141,7 +141,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                 Box::pin(async {
                     Ok(rdm_admin::wire::JoinAnswer {
                         served_by: NodeId::parse("0123456789ab").unwrap(),
-                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
                         statuses: vec![],
                     })
                 })
@@ -223,7 +223,7 @@ fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row:
             Box::pin(async {
                 Ok(rdm_admin::wire::JoinAnswer {
                     served_by: NodeId::parse("0123456789ab").unwrap(),
-                    control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                    control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
                     statuses: vec![],
                 })
             })
@@ -264,13 +264,12 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_name_and_no_
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into(), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
-        assert_eq!(answer.control.config, None, "a join hands no config: the node's properties are its own record: {answer:?}");
-        assert_eq!(answer.control.name.as_ref(), Some(&dep.name), "and its row's name");
+        assert_eq!(answer.control.name.as_ref(), Some(&dep.name), "its row's name: the answer carries no config, the node's properties are its own record");
         json!({ "cell": cell, "joined": format!("{joined:?}") })
     });
     let spans = cap.spans();
     let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
-    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["config_keys"].as_str()), (Some("installed"), Some("0")), "{join}");
+    assert_eq!(join["attributes"]["outcome"].as_str(), Some("installed"), "{join}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
@@ -367,7 +366,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
                 Box::pin(async {
                     Ok(rdm_admin::wire::JoinAnswer {
                         served_by: NodeId::parse("0123456789ab").unwrap(),
-                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                        control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
                         statuses: vec![],
                     })
                 })
@@ -388,8 +387,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         let good = digest_of(&dep, "127.0.0.1:34568");
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into(), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("a first start is admitted under its create spec's name over its predecessor's row: {joined:?}") };
-        let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
-        assert_eq!(answer.control.config, None, "another node's row hands the first start no config: {answer:?}");
+        rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(*installed.lock().unwrap(), vec![good.node.transport_addr], "the reported address is installed for the key");
         assert_eq!(reported.borrow().as_ref().map(|d| d.digest.node.node_id.clone()), Some(dep.node_id.clone()), "WaitForBind receives the new node's own report");
         json!({ "cell": cell, "joined": format!("{joined:?}"), "predecessor": predecessor.as_str() })
@@ -426,14 +424,13 @@ fn a_first_start_whose_row_is_its_own_claim_is_installed_once_and_handed_no_conf
         let good = digest_of(&dep, "127.0.0.1:34570");
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into(), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
-        let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
-        assert_eq!(answer.control.config, None, "a join hands no config: the node's properties are its own record: {answer:?}");
+        rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(*installed.lock().unwrap(), vec![dep.node_id.to_string()], "the birth is installed once");
         json!({ "cell": cell, "joined": format!("{joined:?}") })
     });
     let spans = cap.spans();
     let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
-    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["config_keys"].as_str()), (Some("installed"), Some("0")), "{join}");
+    assert_eq!(join["attributes"]["outcome"].as_str(), Some("installed"), "{join}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
@@ -630,14 +627,13 @@ fn a_join_is_admitted_from_the_atlas_with_the_store_unreadable() {
         let good = digest_of(&dep, "127.0.0.1:34571");
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into(), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("the join was refused with the store unreadable: {joined:?}") };
-        let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
-        assert_eq!(answer.control.config, None, "the birth is admitted from the atlas and handed no config: {answer:?}");
+        rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         let _ = std::fs::remove_dir_all(&store);
         json!({ "cell": cell, "joined": format!("{joined:?}") })
     });
     let spans = cap.spans();
     let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
-    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["config_keys"].as_str()), (Some("installed"), Some("0")), "{join}");
+    assert_eq!(join["attributes"]["outcome"].as_str(), Some("installed"), "{join}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }

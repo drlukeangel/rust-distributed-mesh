@@ -3294,7 +3294,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: NodeId::mint(),
-                        control: crate::wire::JoinControl { cert_policy: None, provider: crate::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                        control: crate::wire::JoinControl { cert_policy: None, provider: crate::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None },
                         statuses: vec![],
                     })
                 })

@@ -1200,7 +1200,6 @@ mod tests {
                 rafka_time_ms: 5_000,
                 member_cert: Vec::new(),
                 name: Some(me.clone()),
-                config: None,
                 cert_policy: None,
             },
             statuses: vec![rdm_transport::topology::Frame::MeshStatus {

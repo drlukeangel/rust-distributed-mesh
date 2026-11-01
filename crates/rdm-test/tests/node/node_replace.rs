@@ -1161,9 +1161,9 @@ async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_it
     let m = &mark["attributes"];
     assert_eq!((s(&m["original_path"]), s(&m["original_name"]), s(&m["inherited_by"]), s(&m["outcome"])), (node_path.path.clone(), node_path.name.clone(), s(&after["node_id"]), "inherited".to_string()), "the retained row says who inherited it (its tag stays in its own property record, read below): {mark}");
     assert_eq!(mark["parent_span_id"], claim["span_id"], "the mark is the claim's last write: {mark} under {claim}");
-    // The successor's join under the name hands it the row's config, its entry's: none (node-start.md step 2).
+    // The successor's join under the name is installed (node-start.md step 2); the answer carries no config.
     let joined = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["admitted_path"] == node_path.path && sp["attributes"]["admitted_name"] == node_path.name).expect("the successor's join under the name").clone();
-    assert_eq!((s(&joined["attributes"]["outcome"]), s(&joined["attributes"]["config_keys"])), ("installed".to_string(), "0".to_string()), "the successor's join answer under {node_path:?} hands its row's config, none of the predecessor's: {joined}");
+    assert_eq!(s(&joined["attributes"]["outcome"]), "installed".to_string(), "the successor's join under {node_path:?} is installed: {joined}");
     let carried = estate.node_value(node_path).await;
     assert_eq!((carried["node_id"].clone(), carried["config"].clone()), (after["node_id"].clone(), json!({})), "the successor carries its entry's config, not the predecessor's {told_json}");
     assert!(estate.node_view(node_path).await.tags.is_empty(), "the successor's row carries none of the predecessor's tags");
@@ -1183,7 +1183,7 @@ async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_it
     assert_eq!(retained_record["record"]["tags"], json!(labels), "the retained row keeps its tags after leaving the active index");
     assert_eq!(retained_record["record"]["config"], told_json, "the retained row keeps its own config");
     assert_eq!(retained["node_id"], before["node_id"], "the retained {old_name:?} is the predecessor: {retained}");
-    eprintln!("trace {}: successor={} predecessor={} path={:?} name={:?}; inherited_by={}; trace {}: join config_keys={}", s(&claim["trace_id"]), s(&after["node_id"]), s(&before["node_id"]), node_path.path, node_path.name, s(&m["inherited_by"]), s(&joined["trace_id"]), s(&joined["attributes"]["config_keys"]));
+    eprintln!("trace {}: successor={} predecessor={} path={:?} name={:?}; inherited_by={}; trace {}: join", s(&claim["trace_id"]), s(&after["node_id"]), s(&before["node_id"]), node_path.path, node_path.name, s(&m["inherited_by"]), s(&joined["trace_id"]));
     estate.shutdown().await;
 }
 
@@ -2232,8 +2232,7 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClien
 /// mesh-primary (not the fabric-primary), the node carries them, then its runtime is killed: the
 /// mesh-primary's recovery writes the exited birth's Deleted row with that config and tag, the new
 /// node's name claim is seeded from it (`via-node-row` moment `claim`, `seeded_from` the exited node,
-/// one key, `tags` rabbit), the new node's join answer hands it that config (`via-join`
-/// `config_keys` 1), the new node (new node.id, same (path, name)) carries the config and the tag, and
+/// one key, `tags` rabbit), the new node (new node.id, same (path, name)) carries the config and the tag, and
 /// `node.get` by the tag names the new node and not the exited one. Nothing copies them after the
 /// create: no node.update runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

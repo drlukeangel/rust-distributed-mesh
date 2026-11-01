@@ -378,16 +378,13 @@ impl AdminSession {
         let s = self;
         step.record("mesh_id", tracing::field::display(&s.mesh_id));
         if let Some(joined) = joined {
-            // The row's name and config the join handed are held on this admin's digest and by its
-            // the topology view before it re-enters its topic or says anything (R-JN1).
+            // The row's name the join handed is held on this admin's digest and by its topology view
+            // before it re-enters its topic or says anything (R-JN1).
             {
                 let mut d = s.digest.lock().unwrap();
                 if let Some(n) = &joined.control.name {
                     s.topology_view.set_name(n.clone());
                     d.node.name = n.clone();
-                }
-                if let Some(c) = &joined.control.config {
-                    s.topology_view.set_config(c.clone());
                 }
             }
             // The member cert this join was issued, as at every join (Q87).
@@ -863,7 +860,7 @@ impl EntryState {
         let current = e.builds.current().await.map_err(|err| format!("{me}: its builds store cannot be read for the current Build: {err}"))?;
         let build = current.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
         let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
-        let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
+        let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None };
         let me_str = e.node_id.to_string();
         Ok(crate::wire::JoinAnswer { served_by: e.node_id.clone(), control, statuses: e.topology_view.status_frames(&me_str) })
     }
