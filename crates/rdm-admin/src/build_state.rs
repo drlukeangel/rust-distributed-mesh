@@ -1162,7 +1162,7 @@ pub struct UnrecognisedStep {
 #[async_trait]
 pub trait BuildStateAdapter: Send + Sync {
     /// The explicit receipt lane this adapter projects and writes; `None` is the fabric lane.
-    fn receipt_lane(&self) -> Option<String> { None }
+    fn receipt_mesh(&self) -> Option<String> { None }
 
     /// Record an accepted Build. Insert-and-fail on its id.
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError>;
@@ -3094,7 +3094,7 @@ mod tests {
         let mut nested = first.clone();
         nested.operation = rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::FabricPrimary, &first.operation);
         variants.push(nested.clone());
-        nested.operation = rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::FabricPrimary, &first.operation.clone().in_recipe(Some(3)));
+        nested.operation = rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::FabricPrimary, &first.operation.clone().at_step(Some(3)));
         variants.push(nested);
         let keys: std::collections::BTreeSet<_> = variants.iter().map(receipt_key).collect();
         assert_eq!(keys.len(), variants.len());

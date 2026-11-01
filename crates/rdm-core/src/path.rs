@@ -208,7 +208,7 @@ mod tests {
 
     /// CONTRACT: path and name are stored separately and do not encode mesh or type.
     #[test]
-    fn separate_path_and_name_round_trip() {
+    fn separate_path_and_name_survive_serialization() {
         let pair = PathName::new("production.east.apps", "north-1").unwrap();
         assert!(serde_json::from_value::<PathName>(serde_json::json!("production.east.apps.north-1")).is_err(), "a joined string is not a node location");
         let json = serde_json::to_value(&pair).unwrap();

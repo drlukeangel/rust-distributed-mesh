@@ -2261,11 +2261,11 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                rdm_core::OperationId::node("node.connection.delete", &pin.node_id).in_recipe(Some(1)),
-                rdm_core::OperationId::node("node.mesh.leave", &pin.node_id).in_recipe(Some(2)),
-                rdm_core::OperationId::node("node.update", &pin.node_id).in_recipe(Some(3)),
-                rdm_core::OperationId::node("node.stop", &pin.node_id).in_recipe(Some(4)),
-                rdm_core::OperationId::location("node.create", &path).in_recipe(Some(5)),
+                rdm_core::OperationId::node("node.connection.delete", &pin.node_id).at_step(Some(1)),
+                rdm_core::OperationId::node("node.mesh.leave", &pin.node_id).at_step(Some(2)),
+                rdm_core::OperationId::node("node.update", &pin.node_id).at_step(Some(3)),
+                rdm_core::OperationId::node("node.stop", &pin.node_id).at_step(Some(4)),
+                rdm_core::OperationId::location("node.create", &path).at_step(Some(5)),
             ]
         );
         assert!(!keys.iter().any(|k| k.action == "replace-node"));

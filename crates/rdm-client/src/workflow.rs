@@ -186,7 +186,7 @@ fn step_rows(step: &Step, recipe_step: u32) -> Vec<Row> {
     };
     for r in &mut rows {
         r.terminal = false;
-        r.key = Some(rdm_core::OperationId::location(r.operation, step.node()).in_recipe(Some(recipe_step)));
+        r.key = Some(rdm_core::OperationId::location(r.operation, step.node()).at_step(Some(recipe_step)));
     }
     rows
 }
@@ -690,11 +690,11 @@ mod tests {
     }
 
     #[test]
-    fn recipe_resume_retains_each_positions_admitted_subject() {
+    fn step_resume_retains_each_positions_admitted_subject() {
         let location = PathName::new("services.rpc", "north").unwrap();
         let kind = WorkflowKind::Steps(vec![Step::Stop { node: location.clone() }, Step::Stop { node: location }]);
-        let first = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).in_recipe(Some(1));
-        let second = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).in_recipe(Some(2)).in_occurrence(rdm_core::OperationOccurrenceId::mint());
+        let first = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).at_step(Some(1));
+        let second = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).at_step(Some(2)).in_occurrence(rdm_core::OperationOccurrenceId::mint());
         let receipt = |operation: &rdm_core::OperationId, step: &str| StepView { attempt: 1, operation: operation.clone(), step: step.into(), outcome: serde_json::json!("complete") };
         let receipts = vec![receipt(&first, "StopNode"), receipt(&first, "AwaitNodeLeft"), receipt(&first, "Complete"), receipt(&second, "StopNode")];
         assert_eq!(fold_steps(&kind, &receipts, 1).unwrap().next, Some((second, "AwaitNodeLeft".into())));

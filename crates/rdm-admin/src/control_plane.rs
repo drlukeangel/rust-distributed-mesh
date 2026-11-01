@@ -1107,7 +1107,7 @@ impl ControlPlane {
                 // Only the exact committed executor birth can prove this claim's attempt gone.
                 // The claimant ID names the in-flight row; it is not the executor's incarnation.
                 let committed = crate::build_state::committed_claim(&*self.builds, &held.build_id, held.lane.as_deref(), held.attempt).await.map_err(Refusal::State)?;
-                let departed = match committed {
+                let gone = match committed {
                     Some(claim) if claim.claimant.as_ref() == Some(&held.claimant) && claim.claimed_mesh.as_deref() == Some(mesh.as_str()) => {
                         held.lane.as_deref() == Some(mesh.as_str()) && claim.executor != me_birth && self.departure_of(&claim.executor).await
                     }
@@ -1122,7 +1122,7 @@ impl ControlPlane {
                     }
                     _ => false,
                 };
-                if departed {
+                if gone {
                     let release = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %held.build_id.log(), lane = %mesh, attempt = held.attempt, claimant = %held.claimant, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty);
                     if let Err(e) = self.claims.release_in_flight(&mesh, &held).await {
                         release.record("outcome", "in-flight-unreleased");

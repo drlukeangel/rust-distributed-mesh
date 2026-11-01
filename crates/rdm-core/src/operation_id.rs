@@ -81,7 +81,7 @@ impl OperationId {
     }
 
     /// Preserve the accepted recipe position through allocation, commands and replay.
-    pub fn in_recipe(mut self, step: Option<u32>) -> Self {
+    pub fn at_step(mut self, step: Option<u32>) -> Self {
         self.recipe_step = step;
         self
     }
@@ -90,7 +90,7 @@ impl OperationId {
     /// its own action and exact node ID, while retaining the admitted step position.
     pub fn command(&self, action: &str, node_id: &NodeId) -> Self {
         if self.action == action { return self.clone(); }
-        let mut command = Self::node(action, node_id).in_recipe(self.recipe_step);
+        let mut command = Self::node(action, node_id).at_step(self.recipe_step);
         command.occurrence = self.occurrence.clone();
         command
     }
@@ -137,16 +137,16 @@ mod tests {
     #[test]
     fn primary_update_retains_structured_predecessor_and_role() {
         let node = NodeId::mint();
-        let stop = OperationId::node("node.stop", &node).in_recipe(Some(3));
+        let stop = OperationId::node("node.stop", &node).at_step(Some(3));
         let update = OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &stop);
-        let delete = OperationId::node("node.delete", &node).in_recipe(Some(3));
+        let delete = OperationId::node("node.delete", &node).at_step(Some(3));
         let variants = [
             update.clone(),
             OperationId::primary_update(crate::PrimaryRole::FabricPrimary, &stop),
             OperationId::primary_update(crate::PrimaryRole::NodeTypePrimary(crate::NodeKind::RpcNode), &stop),
             OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &delete),
-            OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &stop.clone().in_recipe(Some(4))),
-            OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &OperationId::node("node.stop", &NodeId::mint()).in_recipe(Some(3))),
+            OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &stop.clone().at_step(Some(4))),
+            OperationId::primary_update(crate::PrimaryRole::MeshPrimary, &OperationId::node("node.stop", &NodeId::mint()).at_step(Some(3))),
         ];
         assert_eq!(variants.iter().cloned().collect::<std::collections::BTreeSet<_>>().len(), variants.len());
         assert_eq!(variants.iter().cloned().collect::<std::collections::HashSet<_>>().len(), variants.len());
@@ -161,15 +161,15 @@ mod tests {
     #[test]
     fn command_keeps_admitted_subject_and_scopes_nested_primitive() {
         let location = PathName::new("arbitrary.location", "worker").unwrap();
-        let admitted = OperationId::location("node.stop", &location).in_recipe(Some(7));
+        let admitted = OperationId::location("node.stop", &location).at_step(Some(7));
         let allocated = NodeId::mint();
         assert_eq!(admitted.command("node.stop", &allocated), admitted);
         assert_eq!(admitted.command("node.stop", &NodeId::mint()), admitted);
         assert_eq!(
             admitted.command("node.connection.delete", &allocated),
-            OperationId::node("node.connection.delete", &allocated).in_recipe(Some(7)),
+            OperationId::node("node.connection.delete", &allocated).at_step(Some(7)),
         );
-        let pinned = OperationId::node("node.stop", &allocated).in_recipe(Some(8));
+        let pinned = OperationId::node("node.stop", &allocated).at_step(Some(8));
         assert_eq!(pinned.command("node.stop", &NodeId::mint()), pinned);
     }
     /// CONTRACT: each standalone cycle is distinct; retries and child commands retain it.

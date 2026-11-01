@@ -983,12 +983,12 @@ async fn a_replace_runs_as_one_build_of_node_primitives_in_order() {
         }
     }
     let keys = [
-        rdm_core::OperationId::node("node.connection.delete", &before.node_id).in_recipe(Some(1)),
-        rdm_core::OperationId::node("node.mesh.leave", &before.node_id).in_recipe(Some(2)),
-        rdm_core::OperationId::node("node.update", &before.node_id).in_recipe(Some(3)),
-        rdm_core::OperationId::node("node.stop", &before.node_id).in_recipe(Some(4)),
-        rdm_core::OperationId::location("node.create", &path).in_recipe(Some(5)),
-        rdm_core::OperationId::node("node.delete", &before.node_id).in_recipe(Some(6)),
+        rdm_core::OperationId::node("node.connection.delete", &before.node_id).at_step(Some(1)),
+        rdm_core::OperationId::node("node.mesh.leave", &before.node_id).at_step(Some(2)),
+        rdm_core::OperationId::node("node.update", &before.node_id).at_step(Some(3)),
+        rdm_core::OperationId::node("node.stop", &before.node_id).at_step(Some(4)),
+        rdm_core::OperationId::location("node.create", &path).at_step(Some(5)),
+        rdm_core::OperationId::node("node.delete", &before.node_id).at_step(Some(6)),
     ];
     assert_eq!(operations, keys.to_vec(), "the Build's operations, in order: {b:#}");
 
@@ -1241,7 +1241,7 @@ async fn a_replace_rollback_ends_with_the_predecessor_ready_under_its_name() {
         ("node.update", &before.node_id),
         ("node.stop", &before.node_id),
         ("node.start", &before.node_id),
-    ].into_iter().enumerate().map(|(index, (action, id))| rdm_core::OperationId::node(action, id).in_recipe(Some(index as u32 + 1))).collect();
+    ].into_iter().enumerate().map(|(index, (action, id))| rdm_core::OperationId::node(action, id).at_step(Some(index as u32 + 1))).collect();
     assert_eq!(operations, keys.to_vec(), "the rollback's operations, in order: {b:#}");
 
     let after = estate.until_node(&path, "the predecessor is ready under its original name", SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id == before.node_id).map(|n| serde_json::to_value(n).unwrap())).await;

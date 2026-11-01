@@ -2622,15 +2622,15 @@ mod tests {
     fn completion_replay_keeps_operation_fields_and_attempt_separate() {
         let drive = Drive::detached(BuildId::mint());
         let location = PathName::new("arbitrary.location", "worker").unwrap();
-        let operation = rdm_core::OperationId::location("node.create", &location).in_recipe(Some(2));
+        let operation = rdm_core::OperationId::location("node.create", &location).at_step(Some(2));
         let frame = BuildReply::Step { build_id: drive.build_id.to_string(), attempt: 3, operation: operation.clone(), step: "Complete".into(), receipt: None };
         assert!(drive.push(frame.clone()));
         assert!(!drive.push(frame));
-        assert!(drive.push(BuildReply::Step { build_id: drive.build_id.to_string(), attempt: 3, operation: operation.clone().in_recipe(Some(4)), step: "Started".into(), receipt: None }));
+        assert!(drive.push(BuildReply::Step { build_id: drive.build_id.to_string(), attempt: 3, operation: operation.clone().at_step(Some(4)), step: "Started".into(), receipt: None }));
         assert!(drive.completed_in(&operation, |attempt| attempt == 3));
         assert!(!drive.completed_in(&operation, |attempt| attempt == 4));
-        assert!(!drive.completed_in(&operation.clone().in_recipe(Some(4)), |_| true));
-        let other = rdm_core::OperationId::location("node.create", &PathName::new("arbitrary", "location-worker").unwrap()).in_recipe(Some(2));
+        assert!(!drive.completed_in(&operation.clone().at_step(Some(4)), |_| true));
+        let other = rdm_core::OperationId::location("node.create", &PathName::new("arbitrary", "location-worker").unwrap()).at_step(Some(2));
         assert!(!drive.completed_in(&other, |_| true));
         drive.state.lock().unwrap().seen.insert(FrameKey::Blocked { attempt: 4, operation: other.clone(), step: "Complete".into(), reason: "waiting".into() });
         assert!(!drive.completed_in(&other, |_| true));
@@ -2646,7 +2646,7 @@ mod tests {
         let marker = rdm_core::OperationId::unscoped("attempt");
         assert!(crate::build_run::is_attempt_publication_failure(&marker, "attempt"));
         assert!(!crate::build_run::is_attempt_publication_failure(&marker, "Complete"));
-        assert!(!crate::build_run::is_attempt_publication_failure(&marker.clone().in_recipe(Some(2)), "attempt"));
+        assert!(!crate::build_run::is_attempt_publication_failure(&marker.clone().at_step(Some(2)), "attempt"));
         assert!(!crate::build_run::is_attempt_publication_failure(&rdm_core::OperationId::node("attempt", &rdm_core::NodeId::mint()), "attempt"));
         let operation = rdm_core::OperationId::unscoped("fabric.delete");
         assert_eq!(failure(Some(operation.clone())).key(), (Some(operation), None));
@@ -2659,7 +2659,7 @@ mod tests {
         assert!(drive.completed_in(&operation, |_| true));
         assert!(drive.stall_is_new(StallKey::NoOwner { operation: operation.clone() }));
         assert!(!drive.stall_is_new(StallKey::NoOwner { operation: operation.clone() }));
-        assert!(drive.stall_is_new(StallKey::NoOwner { operation: operation.in_recipe(Some(2)) }));
+        assert!(drive.stall_is_new(StallKey::NoOwner { operation: operation.at_step(Some(2)) }));
     }
 
     /// CONTRACT (R-BI4; proposal node-primary-update Part C1 step 8: the commanding Build continues

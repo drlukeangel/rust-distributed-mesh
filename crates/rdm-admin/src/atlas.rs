@@ -1050,7 +1050,7 @@ impl crate::control_plane::ControlPlane {
     pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, operation: &rdm_core::OperationId) {
         let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, recipe_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
         let taken = match builds.read_build(build_id).await {
-            Ok(p) => self.atlas.take_receipt(&p, attempt, operation, &builds.receipt_lane()),
+            Ok(p) => self.atlas.take_receipt(&p, attempt, operation, &builds.receipt_mesh()),
             Err(e) => {
                 span.record("outcome", "build-unread").record("detail", format!("Build {build_id} could not be read for the receipt: {e}").as_str());
                 span.in_scope(|| tracing::info!("a streamed receipt was not taken into the atlas"));

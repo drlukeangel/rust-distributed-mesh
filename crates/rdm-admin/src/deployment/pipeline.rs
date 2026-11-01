@@ -1262,7 +1262,7 @@ impl DeploymentPipeline<'_> {
         // writer, runs on in the same attempt (mesh-delete.md "Resume after the primary's loss" steps 1 and 3:
         // "Completed member receipts stand").
         let me = self.template.executor_birth();
-        let lane = self.builds.receipt_lane();
+        let lane = self.builds.receipt_mesh();
         let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.build_id == *build_id && r.mesh == lane && r.operation == operation && (r.attempt < attempt || (r.attempt == attempt && r.executor.as_ref().is_some_and(|e| e != &me)))).collect();
         let ended = crate::build_state::operation_reuse_boundary(&earlier.iter().collect::<Vec<_>>(), build_id, &lane, &operation, attempt);
         let handed_on: Vec<BuildStepReceipt> = earlier.into_iter().filter(|r| r.attempt > ended && r.outcome == StepOutcome::Complete).collect();
@@ -2035,7 +2035,7 @@ impl DeploymentPipeline<'_> {
             // Ready only over committed prerequisites: each has a Complete
             // receipt in the Build's state, not merely a step that ran.
             let receipts = self.builds.read_build(run_build).await.map_err(|e| format!("reading {run_build}'s receipts before Ready: {e}"))?.steps;
-            let missing = ready_prerequisites_missing(&receipts, run_build, &self.builds.receipt_lane(), &run_operation, run_attempt);
+            let missing = ready_prerequisites_missing(&receipts, run_build, &self.builds.receipt_mesh(), &run_operation, run_attempt);
             if !missing.is_empty() {
                 return Err(format!("path {:?}, name {:?} cannot be Ready: no Complete receipt for {}", &req.node.path, &req.node.name, missing.join(", ")).into());
             }
@@ -2767,7 +2767,7 @@ impl DeploymentPipeline<'_> {
         let operation = rdm_core::OperationId::node("node.properties.apply", node_id);
         let view = self.builds.read_build(build_id).await.map_err(|error| PipelineError { step: "PinPropertyTarget", reason: error.to_string(), code: rdm_core::outcome::Code::FailedPrecondition })?;
         let mut pin = None;
-        for receipt in view.steps.iter().filter(|receipt| receipt.build_id == *build_id && receipt.mesh == self.builds.receipt_lane() && receipt.attempt <= attempt && receipt.operation == operation && receipt.step == "PinPropertyTarget" && receipt.outcome == StepOutcome::Complete) {
+        for receipt in view.steps.iter().filter(|receipt| receipt.build_id == *build_id && receipt.mesh == self.builds.receipt_mesh() && receipt.attempt <= attempt && receipt.operation == operation && receipt.step == "PinPropertyTarget" && receipt.outcome == StepOutcome::Complete) {
             let birth: crate::build::PinnedBirth = serde_json::from_value(receipt.output.clone().unwrap_or(serde_json::Value::Null))
                 .map_err(|error| PipelineError { step: "PinPropertyTarget", reason: format!("{operation:?}: invalid target receipt: {error}"), code: rdm_core::outcome::Code::FailedPrecondition })?;
             if birth.node_id != *node_id {

@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn acknowledged_update_keeps_build_run_and_preceding_operation_separate() {
         let memo = UpdateMemo::default();
-        let stop = rdm_core::OperationId::node("node.stop", &NodeId::mint()).in_recipe(Some(1));
+        let stop = rdm_core::OperationId::node("node.stop", &NodeId::mint()).at_step(Some(1));
         let update = update_operation(PrimaryRole::MeshPrimary, &stop);
         memo.acknowledge("build-a", 1, &update, true);
         assert_eq!(memo.acknowledged("build-a", 1, &update), Some(true));

@@ -2945,7 +2945,7 @@ mod tests {
         let effect = OperationEffect {
             node_id: id.clone(), incarnation_id: IncarnationId::mint(),
             name: rdm_core::PathName::new("arbitrary.location", "worker").unwrap(),
-            operation: DeclaredOperation { build_id: "build-a".into(), attempt: 2, operation: rdm_core::OperationId::node("node.stop", &id).in_recipe(Some(3)) },
+            operation: DeclaredOperation { build_id: "build-a".into(), attempt: 2, operation: rdm_core::OperationId::node("node.stop", &id).at_step(Some(3)) },
             state: NodeState::Pending,
         };
         let mut renamed = effect.clone();
@@ -4148,7 +4148,7 @@ mod tests {
         let unknown_incarnation = IncarnationId::mint();
         let effects: Vec<_> = [exited.name.clone(), exited.name.renamed().unwrap()].into_iter().enumerate().map(|(position, name)| OperationEffect {
             node_id: unknown.clone(), incarnation_id: unknown_incarnation.clone(), name,
-            operation: DeclaredOperation { build_id: "historical".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &unknown).in_recipe(Some(position as u32 + 1)) },
+            operation: DeclaredOperation { build_id: "historical".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &unknown).at_step(Some(position as u32 + 1)) },
             state: NodeState::Ready,
         }).collect();
         for effect in &effects { door.declared.lock().unwrap().operations.insert(effect.key(), effect.clone()); }

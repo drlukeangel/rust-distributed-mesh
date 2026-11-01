@@ -489,7 +489,7 @@ impl LaneBuilds {
 
 #[async_trait::async_trait]
 impl BuildStateAdapter for LaneBuilds {
-    fn receipt_lane(&self) -> Option<String> { self.lane() }
+    fn receipt_mesh(&self) -> Option<String> { self.lane() }
 
     async fn publish_accepted(&self, accepted: &crate::build_state::BuildAccepted) -> Result<(), BuildStateError> {
         self.inner.publish_accepted(accepted).await
@@ -1677,7 +1677,7 @@ mod report_scope_tests {
     #[test]
     fn reported_evidence_preserves_every_scope_field() {
         let id = BuildId::mint();
-        let operation = rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::mint()).in_recipe(Some(2));
+        let operation = rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::mint()).at_step(Some(2));
         let receipt = crate::build_state::BuildStepReceipt {
             build_id: id.clone(), attempt: 3, mesh: Some("mesh-a".into()), operation: operation.clone(),
             step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete, output: None, executor: None,
@@ -1688,8 +1688,8 @@ mod report_scope_tests {
         let mut changed = receipt.clone(); changed.attempt += 1; assert!(!matches(&changed));
         let mut changed = receipt.clone(); changed.mesh = None; assert!(!matches(&changed));
         let mut changed = receipt.clone(); changed.mesh = Some("mesh-b".into()); assert!(!matches(&changed));
-        let mut changed = receipt.clone(); changed.operation = operation.clone().in_recipe(Some(1)); assert!(!matches(&changed));
-        let mut changed = receipt.clone(); changed.operation = rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::mint()).in_recipe(Some(2)); assert!(!matches(&changed));
+        let mut changed = receipt.clone(); changed.operation = operation.clone().at_step(Some(1)); assert!(!matches(&changed));
+        let mut changed = receipt.clone(); changed.operation = rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::mint()).at_step(Some(2)); assert!(!matches(&changed));
         let mut changed = receipt.clone(); changed.step = "TerminateRuntime".into(); assert!(!matches(&changed));
         for frame in [
             BuildReply::Complete { build_id: id.to_string(), attempt: 3 },

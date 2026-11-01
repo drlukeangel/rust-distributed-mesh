@@ -474,7 +474,7 @@ pub fn step_key(step: &rdm_core::build::Step) -> rdm_core::OperationId {
 /// Stable identity chosen for a step at admission, shared by execution and completion replay.
 pub(crate) fn admitted_step_key(step: &rdm_core::build::Step, birth: Option<&PinnedBirth>, position: Option<u32>) -> rdm_core::OperationId {
     let key = step_key(step);
-    birth.map_or(key.clone(), |birth| rdm_core::OperationId::node(key.action.clone(), &birth.node_id)).in_recipe(position)
+    birth.map_or(key.clone(), |birth| rdm_core::OperationId::node(key.action.clone(), &birth.node_id)).at_step(position)
 }
 
 /// The exact birth an operation on an existing birth carries (build.md §4.4): the node id and incarnation
