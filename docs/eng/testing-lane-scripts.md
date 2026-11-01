@@ -21,7 +21,7 @@ Every script lives in this repo's one `scripts/` folder, with the helpers it cal
 | what | where | source |
 |---|---|---|
 | a lane | `$HOME/rdm-lanes/<n>`, a folder holding a checkout of this repo, reused for every unit | `scripts/lane-lib.sh` (`LANES_ROOT`) |
-| the lane's lead-side files: `plan.md`, `inbox/`, `seat-rules.md`, `branch`, `issue` | `$HOME/lane-queue/rdm/<n>/`, never inside the lane, so the lane stays clean for its gate | `lane-lib.sh` (`STATE_ROOT`) |
+| the lane's lead-side files: `plan.md`, `inbox/`, `seat-rules.md`, `branch`, `issue`, and for a unit on a lead lane `base` (the lead lane's branch) and `lead` (its number) | `$HOME/lane-queue/rdm/<n>/`, never inside the lane, so the lane stays clean for its gate | `lane-lib.sh` (`STATE_ROOT`) |
 | the main checkout | `$HOME/rust-distributed-mesh`: holds `main`, is not a lane | `lane-lib.sh` (`MAIN`) |
 | gate logs, `green-trees`, `green-ranges`, `red-trees`, `timings-ledger.txt`, `discovery-<sha>.json`, `kept/` | `$HOME/rust-distributed-mesh-deploy/` | `lane-lib.sh` (`DEPLOY_ROOT`), `rdm-gate-at.sh` (`DEPLOY`) |
 | the agent types the lead launches | the main checkout's `.claude/agents/i143-<issue>.md` | `lane-lib.sh` (`AGENTS_DIR`) |
@@ -37,11 +37,11 @@ target was built (`target/.lane-path`) and cleans the workspace crates once on a
 | step | who | command |
 |---|---|---|
 | Is the lane free? | lead | `scripts/lane-status.sh [lane…]`: one row per lane with its branch, commits ahead of `origin/main`, dirty files, live processes, last commit age, issue and agent type. No lane named: every numbered lane under `$HOME/rdm-lanes`. |
-| Claim the lane on a fresh branch | lead | `scripts/lane-prep.sh <lane> <branch>`: `git switch -c <branch> origin/main`. Refuses a busy lane (exit 3), a dirty lane (exit 6) or a branch name that exists (exit 4). A prep is the branch alone and takes seconds: it builds nothing (rdm#139); the seat's first `cells.sh` run builds the lane. It moves the previous unit's numbered inbox files to `inbox/done-<previous branch>/` and clears its `plan.md`, agent type and issue. |
+| Claim the lane on a fresh branch | lead | `scripts/lane-prep.sh <lane> <branch> [--base <lead lane>]`: `git switch -c <branch> origin/main`, or from the lead lane's branch with `--base` (§1.1). Refuses a busy lane (exit 3), a dirty lane (exit 6) or a branch name that exists (exit 4). A prep is the branch alone and takes seconds: it builds nothing (rdm#139); the seat's first `cells.sh` run builds the lane. It moves the previous unit's numbered inbox files to `inbox/done-<previous branch>/` and clears its `plan.md`, agent type and issue. |
 | Hand the unit over | lead | `scripts/lane-dispatch.sh --lane <n> --issue <N> --name <name> --title <title> --design <file> [--model opus\|sonnet]`. Refuses a lane not prepped, a lane on another branch, a lane that already has an agent type (prep it again), or an issue that is not open. It writes `plan.md` (a header naming the issue, lane, branch and base commit, then the design file), writes `seat-rules.md` (the standing rules the agent reads first; item 7: the agent ends its unit with its own evidence), writes the agent type `i143-<issue>` with the model, and comments the issue with the lane and branch. |
 | Launch the agent | lead | Only after `lane-dispatch.sh` returns: the Agent tool with `subagent_type: i143-<issue>` and `description: "lane <n> i143-<issue>-<name>"`, as its `SEAT TYPE` line prints. A type it calls `registered` launches at once; a `NEW` type launches only after Claude Code's "New agent types are now available" notice names it (no notice after 2 min: `touch` the file and wait again). Never headless, never in a terminal multiplexer. |
 | Send the agent a note | lead | `scripts/lane-note.sh <lane> <note-file\|->`: the one way an update reaches the agent. Each note is its own numbered file `inbox/NNNN.md` (the next number after the highest), headed `# LEAD update NNNN — <date>`, written to a temporary file and moved into place. An empty note, or a lane not prepped, is refused. The agent reads every inbox file above the last one it acted on and names that number in its `STATUS` line. |
-| Run cells | agent in the lane | `scripts/cells.sh <package> lib\|main -- <filter>` (§3), with no lock; independent runs go in parallel. Never `cargo test -p` in a lane, never an exported `CARGO_TARGET_DIR`. A unit's proof is its cells and the fast gate: no release, chaos, export or consumer-build run per unit. |
+| Run cells | agent in the lane | `scripts/cells.sh <package> lib\|main -- <filter>` (§3), with no lock; a unit on a lead lane is rebased on its branch before and after the run (§1.1); independent runs go in parallel. Never `cargo test -p` in a lane, never an exported `CARGO_TARGET_DIR`. A unit's proof is its cells and the fast gate: no release, chaos, export or consumer-build run per unit. |
 | Check names before committing | agent in the lane | `python3 scripts/name-check.py origin/main HEAD` (§5). |
 | Prove the tip | agent in the lane | `bash $HOME/rdm-lanes/<lane>/scripts/post-land-gate.sh <lane>` (§2), not under the turn lock, at the end of its unit. Its `GREEN` line is the landing's proof. |
 | Land and close the issue | lead | `scripts/lane-land.sh <lane> <branch> <issue> <close-comment-file>` (§2). `LAND_NOCLOSE=1` comments on the issue instead of closing it. |
@@ -52,12 +52,28 @@ evidence, which the lead reviews before anything lands: its own `post-land-gate.
 the cells it ran with their results, and the Jaeger links of the traces that show the fix working
 (the rules `lane-dispatch.sh` writes into `seat-rules.md`, item 7).
 
+### 1.1 A unit on a lead lane
+
+An initiative the lead integrates in its own lane (the **lead lane**) before it lands on main gives each
+seat a unit on that lane's branch: `lane-prep.sh <lane> <branch> --base <lead lane>` branches from the
+lead lane's branch and records it in the lane's `base` and `lead` files. Every script then takes that
+branch where it would take `origin/main` (`lane-lib.sh::lane_base`):
+
+- `cells.sh` rebases a clean tree on it before the run and again after it. A base that moved during
+  the run is taken and the run exits 3: rerun the proof on the new tip. A tree with uncommitted
+  changes runs as it stands and is never stashed. A conflict aborts the rebase and is refused, naming
+  the files (exit 4);
+- `post-land-gate.sh` rebases on it and proves the tip against it;
+- `lane-land.sh` stands the `GREEN` on it and fast-forwards the lead lane's branch in the lead lane
+  (refusing a lead lane that is busy, dirty or on another branch), never main; the lead lands the
+  lead lane on main through the ordinary landing.
+
 ## 2. Proving and landing
 
 **`scripts/post-land-gate.sh <lane>`** proves the tip that will land, in the lane:
 
 1. refuses a busy lane (exit 3) or a dirty one (exit 6);
-2. rebases on `origin/main` unless the branch already contains it. A conflict only in the
+2. rebases on `origin/main` (a lead lane's branch for a unit on one, §1.1) unless the branch already contains it. A conflict only in the
    generated reference pages (`docs/reference/rdm/*.md`) is resolved by regenerating them with the
    lane's `target/debug/rdm-docgen` over the commit being applied, leaving only the pages it writes
    (spans.md, config.md), and the rebase continues; a conflict in any other file aborts the rebase
@@ -81,7 +97,8 @@ the cells it ran with their results, and the Jaeger links of the traces that sho
    tree>`) and `green-ranges`, and goes on without a second gate. Otherwise it refuses, naming the
    files both moved where that is why: "prove it again" (exit 8);
 3. runs origin/main's `scripts/rebase-gate-land.sh <lane> <branch>`, which finds the green entry
-   and pushes without gating again;
+   and pushes without gating again; a unit on a lead lane instead fast-forwards the lead lane's
+   branch in the lead lane (§1.1);
 4. closes the issue with the comment file, `@SHA@` replaced by the landed commit
    (`LAND_NOCLOSE=1`: comments instead), and clears the lane's agent type.
 
