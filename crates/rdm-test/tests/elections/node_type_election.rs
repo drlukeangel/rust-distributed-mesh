@@ -254,7 +254,9 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let stopped_build = complete(&format!("node.stop of {rpc_p}"), estate.nodes_obj().await.stop(&location_of(&nodes, &rpc_p)).await).await;
     let facts = crate::build_log::log_read(&estate, stopped_build.as_str()).await.expect("completed stop receipts");
     let stop_operations: Vec<_> = facts.iter().filter_map(|fact| match fact {
-        rdm_admin::build_state::BuildFact::Step(receipt) if receipt.operation.action == "node.stop" => Some(receipt.operation.clone()),
+        // The primary's own stop: a standalone stop is an attempt of the accepted Build, whose log also
+        // holds the earlier stop of the non-primary above.
+        rdm_admin::build_state::BuildFact::Step(receipt) if receipt.operation.action == "node.stop" && receipt.operation.subject == Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse(&rpc_p).expect("the primary's node id"))) => Some(receipt.operation.clone()),
         _ => None,
     }).collect();
     let stop_operation = stop_operations.first().expect("stop has a receipt").clone();
