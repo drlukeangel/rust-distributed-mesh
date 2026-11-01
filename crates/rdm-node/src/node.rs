@@ -1369,7 +1369,7 @@ impl OwnConfig {
         }
         span.record("outcome", "durable");
         Ok(rdm_core::status::StatusReply::ConfigUpdated {
-            node_id: self.digest.node.node_id.clone(), incarnation: self.digest.node.incarnation.clone(), config, revision: 0,
+            node_id: self.digest.node.node_id.clone(), incarnation: self.digest.node.incarnation.clone(), config,
         })
     }
 }
@@ -1944,11 +1944,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             &me.topology_view.node_name().to_string(), &error.to_string())),
                     }
                 }
-                StatusRequest::ApplyNodeConfig { config, revision, .. } => {
-                    // node-config-update.md, a caller's update, step 3: the node installs the map over an
-                    // older revision (P1), held for the application (`TopologyView::config`); no digest
-                    // carries it (Q203). A map at the revision held or an older one is dropped and still
-                    // answered `Applied`: the newer map stands.
+                StatusRequest::ApplyNodeConfig { config, .. } => {
+                    // node-config-update.md, a caller's update, steps 2 and 3: the node's property writer
+                    // puts the whole map and answers once the put is durable, held for the application
+                    // (`TopologyView::config`); no digest carries it (Q203).
                     let initial = property_snapshot(&me.topology_view, &me.digest, config.clone());
                     let (changed, topology) = (config.clone(), me.topology_view.clone());
                     if let Err(error) = me.property_writer.update(initial, None,
@@ -1958,8 +1957,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             &me.topology_view.node_name().to_string(), &error.to_string()));
                     }
                     let installed = true;
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), revision, held_revision = me.topology_view.config_revision(), installed, outcome = "applied", "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the config its mesh-primary wrote is held over an older revision"));
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), installed, outcome = "applied", "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the config its mesh-primary sent is durable on its property record"));
                     Ok(rdm_core::reply::applied())
                 }
                 request @ (StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. }) => {

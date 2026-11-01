@@ -149,7 +149,7 @@ impl NodeConfigs {
         Some(writer.update(initial, None, move |record| record.config = config,
             move |record| channels.set_config(record.config.clone())).await.map(|written| StatusReply::ConfigUpdated {
                 node_id: written.record.birth.node_id, incarnation: written.record.birth.incarnation_id,
-                config: written.record.config, revision: 0,
+                config: written.record.config,
             }))
     }
 
@@ -277,7 +277,6 @@ impl NodeConfigs {
             node_id = %node_id,
             keys = config.len(),
             mesh_primary = tracing::field::Empty,
-            revision = tracing::field::Empty,
             route = tracing::field::Empty,
             sends = tracing::field::Empty,
             outcome = tracing::field::Empty,
@@ -584,7 +583,6 @@ impl NodeConfigs {
             keys = config.len(),
             tags = tracing::field::Empty,
             row_status = tracing::field::Empty,
-            revision = tracing::field::Empty,
             apply = tracing::field::Empty,
             outcome = tracing::field::Empty,
             answered = tracing::field::Empty,
@@ -642,7 +640,7 @@ impl NodeConfigs {
             } else {
                 span.record("apply", "direct");
                 let birth = ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
-                NodeRpc::new(&self.client).config_apply(&birth, config.clone(), 0, &CallOptions::default()).await
+                NodeRpc::new(&self.client).config_apply(&birth, config.clone(), &CallOptions::default()).await
             };
             let (answered, detail) = match applied {
                 Ok(StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::ConfigUpdated { .. }) => (None, String::new()),
@@ -663,7 +661,7 @@ impl NodeConfigs {
                     Err(error) => return rdm_core::reply::status::bounded_node_row_refused(&subject.node_id.to_string(), &error),
                 }
             }
-            return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), config: config.clone(), revision: 0 };
+            return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
         }
         rdm_core::reply::status::not_ready(format!("{me_id}: node records are not bound; no property was written"))
     }

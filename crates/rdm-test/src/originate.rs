@@ -361,8 +361,8 @@ pub enum OriginateReply {
         /// Whether Direct dials toward it are now blocked.
         blocked: bool,
     },
-    /// The node's own config update answered by its mesh-primary: the reply by name, and the row as
-    /// written it carries (its config and revision) where it carries one. Appended last.
+    /// The node's own config update answered by its property writer: the reply by name, and the
+    /// config it carries where it carries one. Appended last.
     ///
     /// Position 17 on the wire.
     OwnConfigUpdated {
@@ -370,10 +370,8 @@ pub enum OriginateReply {
         by: AnsweredBy,
         /// The mesh-primary's reply by name, or how the call ended.
         outcome: String,
-        /// The row's config the reply carries.
+        /// The config the reply carries.
         config: std::collections::BTreeMap<String, String>,
-        /// The row's revision the reply carries; 0 when it carries none.
-        revision: u64,
     },
     /// The data plane measured toward `destination` ([`OriginateRequest::Throughput`]).
     ///
@@ -480,14 +478,14 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                     None => OriginateReply::NotReady { reason: format!("{own:?}: the node does not run yet; its own config has no door") },
                     Some(door) => {
                         use rdm_core::status::StatusReply as R;
-                        let (outcome, config, revision) = match door.update(config).await {
+                        let (outcome, config) = match door.update(config).await {
                             Ok(reply) => match &reply {
-                                R::ConfigUpdated { config, revision, .. } | R::ConfigRowRefused { config, revision, .. } => (reply.name().to_string(), config.clone(), *revision),
-                                other => (format!("{other:?}"), Default::default(), 0),
+                                R::ConfigUpdated { config, .. } | R::ConfigRowRefused { config, .. } => (reply.name().to_string(), config.clone()),
+                                other => (format!("{other:?}"), Default::default()),
                             },
-                            Err(end) => (format!("{end:?}"), Default::default(), 0),
+                            Err(end) => (format!("{end:?}"), Default::default()),
                         };
-                        OriginateReply::OwnConfigUpdated { by, outcome, config, revision }
+                        OriginateReply::OwnConfigUpdated { by, outcome, config }
                     }
                 },
                 OriginateRequest::StopTransport { reason } => {
@@ -797,7 +795,7 @@ mod tests {
             (OriginateReply::StreamFailed { by: by(), reason: s() }, "0e01690170016e01630172", "stream-failed", Code::Ok),
             (OriginateReply::TransportStopMarked { by: by(), reason: s() }, "0f01690170016e01630172", "transport-stop-marked", Code::Ok),
             (OriginateReply::DirectBlocked { by: by(), destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), blocked: false }, "1001690170016e01630c64646464646464646464646400", "direct-blocked", Code::Ok),
-            (OriginateReply::OwnConfigUpdated { by: by(), outcome: "o".into(), config: [("a".to_string(), "b".to_string())].into(), revision: 9 }, "1101690170016e0163016f010161016209", "own-config-updated", Code::Ok),
+            (OriginateReply::OwnConfigUpdated { by: by(), outcome: "o".into(), config: [("a".to_string(), "b".to_string())].into() }, "1101690170016e0163016f0101610162", "own-config-updated", Code::Ok),
             (OriginateReply::Measured { by: by(), kind: "k".into(), open_us: 1, streams_us: 2, bytes: 3 }, "1201690170016e0163016b010203", "measured", Code::Ok),
         ];
         let off = pinned::<Originate>(&requests, &replies);

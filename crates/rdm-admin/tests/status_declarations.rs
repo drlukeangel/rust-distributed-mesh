@@ -621,10 +621,9 @@ fn updated_of(b: &Birth, config: &BTreeMap<String, String>) -> (NodeId, Incarnat
 
 /// CONTRACT (`docs/architecture/lifecycles/node-config-update.md:5` — "`node.config.update` replaces a
 /// node's application config, the whole map: a PUT, never a patch. It is a single call, not a Build."
-/// and `docs/architecture/lifecycles/node-config-update.md:23` — "3. A live node is sent
-/// `ApplyNodeConfig` with the map and its revision; it installs the map over an older revision. The
-/// command completes after `Applied` or `AlreadyApplied`."; ops-naming "Node data": a config update is
-/// a single call, not a Build; the node's
+/// and `docs/architecture/lifecycles/node-config-update.md`, a caller's update, step 3 — "Completion
+/// follows durable persistence. The completion carries no node-record revision"; ops-naming "Node
+/// data": a config update is a single call, not a Build; the node's
 /// mesh-primary is the only writer and writes the whole row): a caller's `node.config.update` to
 /// mesh1's primary ends `node.config.updated` (`ConfigUpdated` naming the exact birth); the node's
 /// record at its path.name holds the config; the birth was told the whole map exactly once
@@ -648,7 +647,7 @@ fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
         assert_eq!((row.node_id.clone(), row_config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.rpc.1 is this node with the whole config");
         assert_eq!(
             node.seen.lock().unwrap().clone(),
-            vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config, revision: 0 }],
+            vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
             "the birth was told the whole config once, before the update was answered"
         );
     });
@@ -713,7 +712,7 @@ fn a_stopped_nodes_config_update_is_applied_by_its_bound_writer_and_keeps_its_ta
         assert_eq!(props(&rig, &stopped.node.node_id).await, (config.clone(), labels(&["edge"])), "its own record holds the whole config and keeps its tags");
         assert_eq!(
             node.seen.lock().unwrap().clone(),
-            vec![StatusRequest::ApplyNodeConfig { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), config, revision: 0 }],
+            vec![StatusRequest::ApplyNodeConfig { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), config }],
             "the stopped birth, still bound, is told once"
         );
     });
@@ -875,7 +874,7 @@ fn a_config_update_is_refused_by_name_at_an_admin_that_is_neither_primary_and_wr
         assert_eq!(config_of(&m2rpc.node.node_id).await, config, "the node's own record holds the whole config");
         assert_eq!(
             node.seen.lock().unwrap().clone(),
-            vec![StatusRequest::ApplyNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config, revision: 0 }],
+            vec![StatusRequest::ApplyNodeConfig { node_id: m2rpc.node.node_id.clone(), incarnation: m2rpc.node.incarnation_id.clone().unwrap(), config }],
             "the birth was told once, by its mesh's primary"
         );
     });
@@ -916,7 +915,7 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
         // mesh2.admin.1: elected in the fabric-primary's view, not holding it until `landed`.
         let mp = serve_node_with(m2admin, move |req| match req {
             StatusRequest::UpdateNodeConfig { .. } if !holds.load(Ordering::SeqCst) => rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() }),
-            StatusRequest::UpdateNodeConfig { config, .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone(), config: config.clone(), revision: 0 },
+            StatusRequest::UpdateNodeConfig { config, .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone(), config: config.clone() },
             other => panic!("only the config command reaches mesh2's primary: {other:?}"),
         })
         .await;
@@ -937,7 +936,7 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
             tick.send_modify(|t| *t += 1);
         };
         let (reply, ()) = tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(serve, land) }).await.expect("the owed command completes once mesh2.admin.1 holds the primary");
-        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone(), revision: 0 }, "the caller is answered once the primary is held");
+        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone(), config: told.clone() }, "the caller is answered once the primary is held");
         let sent: Vec<StatusRequest> = mp.seen.lock().unwrap().clone();
         assert!(sent.len() >= 2 && sent.iter().all(|r| *r == req), "the same command, sent down again to mesh2.admin.1: {sent:?}");
         let held = atlas.record(&node_id).expect("the atlas holds mesh2.rpc.1");
@@ -983,7 +982,7 @@ fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_a
         assert_eq!(row_config, config);
         assert_eq!(
             node.seen.lock().unwrap().clone(),
-            vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config, revision: 0 }],
+            vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config }],
             "the birth was told once, by its mesh's primary"
         );
         m2admin.node.node_id.to_string()
@@ -1175,7 +1174,7 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
         let (n, i) = (rpc2.node.node_id.clone(), rpc2.node.incarnation_id.clone().unwrap());
         let fp = serve_node_with(m2admin, move |req| match req {
             StatusRequest::UpdateNodeConfig { .. } if !holds.load(Ordering::SeqCst) => rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed: "the fabric-primary".into() }),
-            StatusRequest::UpdateNodeConfig { config, .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone(), config: config.clone(), revision: 3 },
+            StatusRequest::UpdateNodeConfig { config, .. } => StatusReply::ConfigUpdated { node_id: n.clone(), incarnation: i.clone(), config: config.clone() },
             other => panic!("only the config command reaches the fabric-primary: {other:?}"),
         })
         .await;
@@ -1195,7 +1194,7 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
             tick.send_modify(|t| *t += 1);
         };
         let (reply, ()) = tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(call, land) }).await.expect("the carried command completes once the fabric-primary is held");
-        assert_eq!(reply.expect("a typed reply"), StatusReply::ConfigUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap(), config: config.clone(), revision: 3 });
+        assert_eq!(reply.expect("a typed reply"), StatusReply::ConfigUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap(), config: config.clone() });
         let sent = fp.seen.lock().unwrap().clone();
         let req = StatusRequest::UpdateNodeConfig { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap(), config };
         assert!(sent.len() >= 2 && sent.iter().all(|r| *r == req), "the same command, carried up again: {sent:?}");
@@ -1388,7 +1387,7 @@ fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
         let later: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:10".to_string())].into();
         let me = &rig.admin.node;
-        let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation, config, revision: 0 };
+        let told = |incarnation: IncarnationId, config: BTreeMap<String, String>| StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation, config };
         assert_eq!(reply(&call(&rig, admin2, &told(me.incarnation_id.clone().unwrap(), config.clone())).await), StatusReply::Applied);
         assert_eq!(props(&rig, &me.node_id).await.0, config, "the admin's own record holds the whole config it was told");
         assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), later.clone())).await), StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().unwrap() });
@@ -1421,7 +1420,7 @@ fn a_sender_rebound_on_its_key_while_its_old_connection_is_held_reaches_the_mesh
         let me = &rig.admin.node;
         let fp = NodeTarget::ExactNode(me.node_id.clone());
         // A told config naming another birth of the authority: answered by name, nothing held.
-        let stale = StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), config: BTreeMap::new(), revision: 1 };
+        let stale = StatusRequest::ApplyNodeConfig { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), config: BTreeMap::new() };
         let first = client_of(&rig, admin2).await;
         assert!(matches!(first.call::<Status>(&fp, &stale, &CallOptions::default()).await.0, RpcOutcome::Reply(_)), "the first endpoint is answered");
         // The process ends without a close: the authority keeps the old connection until it idles out.
@@ -2015,7 +2014,7 @@ fn node_tags_commands_and_a_config_update_before_the_fabric_first_reaches_ready_
         let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone.clone() };
         assert_eq!(updated(&reply(&call(&rig, &b["admin2"], &config).await)), updated_of(rpc1, &zone), "node.config.update is admitted before the first ready");
         assert_eq!(props(&rig, &rpc1.node.node_id).await, (zone.clone(), Default::default()), "the node's own record carries the map and no tag");
-        assert_eq!(node.seen.lock().unwrap().drain(..).collect::<Vec<_>>(), vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone, revision: 0 }], "the birth is sent the map");
+        assert_eq!(node.seen.lock().unwrap().drain(..).collect::<Vec<_>>(), vec![StatusRequest::ApplyNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: zone }], "the birth is sent the map");
 
         let (id, birth) = (rpc1.node.node_id.clone(), rpc1.node.incarnation_id.clone().unwrap());
         let created = |already: &[&str]| StatusReply::TagsCreated { node_id: id.clone(), incarnation: birth.clone(), already_carried: labels(already) };

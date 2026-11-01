@@ -569,7 +569,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             OriginateReply::StreamFailed { by, reason } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "streamed": false, "reason": reason}),
             OriginateReply::Measured { by, kind, open_us, streams_us, bytes } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "measured": true, "kind": kind, "open_us": open_us, "streams_us": streams_us, "bytes": bytes}),
             OriginateReply::DirectBlocked { by, destination, blocked } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "direct_blocked": blocked, "destination": destination}),
-            OriginateReply::OwnConfigUpdated { by, outcome, config, revision } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "own_config": outcome, "config": config, "revision": revision}),
+            OriginateReply::OwnConfigUpdated { by, outcome, config } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "own_config": outcome, "config": config}),
             OriginateReply::ProxyRecorded { by, destination_node_id, destination_incarnation, carrier_node_id, carrier_incarnation, failed_attempts } => json!({
                 "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,
                 "carrier_node_id": carrier_node_id, "carrier_incarnation": carrier_incarnation, "failed_attempts": failed_attempts,

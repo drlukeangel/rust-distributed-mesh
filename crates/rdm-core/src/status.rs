@@ -400,9 +400,9 @@ pub enum StatusRequest {
         /// The whole config: a put replaces, it never merges.
         config: BTreeMap<String, String>,
     },
-    /// Downward: the birth's mesh-primary tells the exact birth its config, the row's as written, and
-    /// the row's revision; the birth installs it over an older revision (P1) and holds it on its own
-    /// entry. Answered `Applied`.
+    /// Downward: the birth's mesh-primary tells the exact birth its whole config; the birth's own
+    /// property writer puts it on its record, written whole (node-config-update.md, a caller's
+    /// update, step 3). Answered `Applied` once the put is durable.
     ///
     /// Position 18 on the wire.
     ApplyNodeConfig {
@@ -412,8 +412,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The whole config.
         config: BTreeMap<String, String>,
-        /// The row's revision the config was written at.
-        revision: u64,
     },
     /// Downward: the node's mesh-primary, having written the renamed row, tells the exact birth
     /// its name (proposal node-properties-own-commands.md §2.2 step 6; R12: the node owns its name and
@@ -1418,10 +1416,9 @@ pub enum StatusReply {
         /// The answering birth's incarnation.
         incarnation: IncarnationId,
     },
-    /// The reply of an `UpdateNodeConfig`: the birth's mesh-primary wrote the node's row and the exact
-    /// birth holds the config (`node.config.updated`). It carries the row as written, its config and
-    /// revision: a node's own update installs it over an older revision, and the fabric-primary writes
-    /// it into its atlas over an older revision (P1, P2).
+    /// The reply of an `UpdateNodeConfig`: the exact birth's property record holds the config, its
+    /// put durable (`node.config.updated`). It carries the config as written and no node-record
+    /// revision (node-config-update.md step 3).
     ///
     /// Position 21 on the wire.
     ConfigUpdated {
@@ -1429,10 +1426,8 @@ pub enum StatusReply {
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The row's config as written.
+        /// The config as written.
         config: BTreeMap<String, String>,
-        /// The row's revision as written.
-        revision: u64,
     },
     /// Reserved position (Q203): never sent.
     ///
@@ -2411,7 +2406,7 @@ mod tests {
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::CurrentStopped { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
-            (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default(), revision: 1 }, ReplyKind::Success),
+            (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() }, ReplyKind::Success),
             (StatusReply::Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into(), config: Default::default(), revision: 0 }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
@@ -2488,7 +2483,7 @@ mod tests {
             StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
             StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.start", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
-            StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default(), revision: 1 },
+            StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::Reserved34 { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", "1").unwrap() },
             StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc.old", "1").unwrap() },

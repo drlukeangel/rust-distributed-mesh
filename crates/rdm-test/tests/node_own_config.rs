@@ -58,7 +58,7 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         admin.observer.resolver.insert(rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), kind: launch.kind, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), incarnation: launch.incarnation.clone(), transport_addr: addr });
         let target = rdm_transport::NodeTarget::ExactNode(launch.node_id.clone());
         let caller: BTreeMap<String, String> = [("source".into(), "caller".into())].into();
-        let apply = StatusRequest::ApplyNodeConfig { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), config: caller.clone(), revision: 0 };
+        let apply = StatusRequest::ApplyNodeConfig { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), config: caller.clone() };
         let (out, _) = admin.observer.client.call::<rdm_core::status::Status>(&target, &apply, &rdm_transport::CallOptions::default()).await;
         assert!(matches!(out, rdm_core::outcome::RpcOutcome::Reply(ref r) if *r.value() == StatusReply::Applied), "{out:?}");
         assert_eq!(running.topology_view.config(), Some(caller));

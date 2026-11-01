@@ -377,7 +377,6 @@ mod tests {
             node_id: admin_id.clone(),
             incarnation: admin_inc.clone(),
             config: BTreeMap::from([("zone".to_string(), "eu-1".to_string())]),
-            revision: 1,
         };
         let config_reply = door.apply(Some(admin_node.clone()), &config_req).await;
         assert_eq!(config_reply, StatusReply::Applied);

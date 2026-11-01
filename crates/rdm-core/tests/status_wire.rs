@@ -64,7 +64,7 @@ fn requests_match_the_frozen_thirty_eight_variant_wire_schema() {
         (StartNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("start-node:mesh1.rpc.1") }, "100c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011673746172742d6e6f64653a6d657368312e7270632e31000000"),
         (UpdateNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c3031323334353637383961620c39776370726667777674687901016b0176"),
         // node_id | incarnation | config (len 1: "k" "v") | revision 3 (P1)
-        (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into(), revision: 3 }, "120c3031323334353637383961620c39776370726667777674687901016b017603"),
+        (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c3031323334353637383961620c39776370726667777674687901016b0176"),
         (ApplyNodeName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }, "130c3031323334353637383961620c397763707266677776746879096d657368312e7270630131"),
         // node_id | incarnation | name "1.old" (the name only, never its path)
         (UpdateName { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap() }, "140c3031323334353637383961620c397763707266677776746879096d657368312e72706305312d6f6c64"),
@@ -135,7 +135,7 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
         (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
         (CurrentStopped { node_id: node(), incarnation: birth() }, "140c3031323334353637383961620c397763707266677776746879"),
         // node_id | incarnation | the row as written: config (len 1: "k" "v") | revision 3 (P1)
-        (ConfigUpdated { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into(), revision: 3 }, "150c3031323334353637383961620c39776370726667777674687901016b017603"),
+        (ConfigUpdated { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "150c3031323334353637383961620c39776370726667777674687901016b0176"),
         (Reserved22 { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 }, "16210a208010"),
         // node | reason | the row as it stands: config (len 0) | revision 0 (P2)
         (ConfigRowRefused { node: "n".into(), reason: "r".into(), config: Default::default(), revision: 0 }, "17016e01720000"),
