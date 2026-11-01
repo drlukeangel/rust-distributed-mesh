@@ -68,8 +68,13 @@ fn status_word(status: ScopeStatus) -> String {
     s(&serde_json::to_value(status).expect("a status serializes"))
 }
 
-fn births(nodes: &[Value]) -> BTreeMap<String, String> {
+fn births(nodes: &[Value]) -> BTreeMap<PathName, String> {
     nodes.iter().map(|n| (location(&n), s(&n["incarnation_id"]))).collect()
+}
+
+/// Whether a checklist's `missing` names the birth at `at` whose node id is `node_id`.
+fn names_missing(missing: &str, at: &PathName, node_id: &str) -> bool {
+    missing.contains(&format!("node_id={node_id}")) || missing.contains(&format!("path={:?}, name={:?}", at.path, at.name))
 }
 
 fn signal(pid: u32, sig: &str) {
@@ -81,7 +86,8 @@ struct Fixture {
     estate: Estate,
     accepted: String,
     attempt_before: u64,
-    fabric_primary: String,
+    fabric_primary: PathName,
+    fabric_primary_id: String,
     lost: String,
     lost_mesh_id: String,
     before: Vec<Value>,
@@ -93,8 +99,9 @@ async fn fixture(cell: &str) -> Fixture {
     let built = estate.reconcile_shape("fabric1", &shape).await;
     let accepted = built.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
-    let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
-    let lost = if fabric_primary.starts_with("mesh1.") { "mesh2" } else { "mesh1" }.to_string();
+    let fabric_primary_row = before.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric primary");
+    let (fabric_primary, fabric_primary_id) = (location(&fabric_primary_row), s(&fabric_primary_row["node_id"]));
+    let lost = if fabric_primary.path.starts_with("mesh1.") { "mesh2" } else { "mesh1" }.to_string();
     let lost_mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let attempt_before = estate.attempt_of_build(&accepted).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
@@ -105,49 +112,54 @@ async fn fixture(cell: &str) -> Fixture {
     // The fault falls on a mesh whose status is published: the fabric is ready at the
     // fabric-primary's apply of the mesh's ready, the moment the mesh's primary sends it (states.md), so
     // the fixture waits for that send and its first repeat in the primary's own spans.
-    let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the lost mesh has a primary node-admin");
+    let primary = before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh has a primary node-admin");
     wait_for("the lost mesh's primary has sent its ready status and repeated it", Duration::from_secs(60), || {
         let spans = estate.spans();
         let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == format!("mesh:{lost}") && attr(sp, "node") == primary && attr(sp, "status") == "ready").count();
         async move { (sends >= 2).then_some(()) }
     })
     .await;
-    Fixture { estate, accepted, attempt_before, fabric_primary, lost, lost_mesh_id, before }
+    Fixture { estate, accepted, attempt_before, fabric_primary, fabric_primary_id, lost, lost_mesh_id, before }
 }
 
 impl Fixture {
-    /// The runtimes of the peer mesh whose path starts with `prefix`, by node name.
-    fn runtimes(&self, prefix: &str) -> Vec<(String, u32)> {
-        let mut out: Vec<(String, u32)> = self
-            .estate
-            .live_runtimes()
-            .into_iter()
-            .filter_map(|(p, pid)| {
-                let name = p.file_name().unwrap().to_string_lossy().to_string();
-                name.starts_with(prefix).then(|| (name.split('-').next().unwrap_or(&name).to_string(), pid))
-            })
-            .collect();
+    /// The runtimes of the settled nodes at `path`, by location: a runtime's data dir is named by its
+    /// birth's node id.
+    fn runtimes(&self, path: &str) -> Vec<(PathName, u32)> {
+        let at: BTreeMap<String, PathName> = self.before.iter().map(|n| (s(&n["node_id"]), location(n))).filter(|(_, l)| l.path == path).collect();
+        let mut out: Vec<(PathName, u32)> = self.estate.live_runtimes().into_iter().filter_map(|(p, pid)| at.get(p.file_name().unwrap().to_string_lossy().as_ref()).map(|l| (l.clone(), pid))).collect();
         // The bootstrap admin is the mesh1 admin.1 and has no provider deployment.json.
-        if prefix.starts_with("mesh1.admin") {
+        if path == "mesh1.admin" {
             if let Some(pid) = self.estate.bootstrap_pid() {
-                out.push(("mesh1.admin.1".into(), pid));
+                out.push((Estate::path("mesh1.admin", "1"), pid));
             }
         }
         out
     }
 
-    fn lost_admins(&self) -> Vec<(String, u32)> {
-        self.runtimes(&format!("{}.admin.", self.lost))
+    fn lost_admins(&self) -> Vec<(PathName, u32)> {
+        self.runtimes(&format!("{}.admin", self.lost))
     }
 
-    fn lost_members(&self) -> Vec<(String, u32)> {
-        self.runtimes(&format!("{}.rpc.", self.lost))
+    fn lost_members(&self) -> Vec<(PathName, u32)> {
+        self.runtimes(&format!("{}.rpc", self.lost))
+    }
+
+    /// The node id settled at `at`.
+    fn id_of(&self, at: &PathName) -> String {
+        self.before.iter().find(|n| location(n) == *at).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{at:?} is settled"))
+    }
+
+    /// The node ids of `mesh`'s node-admins, settled and as the view holds them now.
+    async fn admin_ids(&self, mesh: &str) -> std::collections::BTreeSet<String> {
+        let now = self.estate.node_values().await;
+        self.before.iter().chain(now.iter()).filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin").map(|n| s(&n["node_id"])).collect()
     }
 
     /// The unix nanoseconds of the last backbone receipt of the peer mesh the fabric primary
     /// names in its first `via-unheard` span, as `at` (unix ms).
     fn unheard_since_ms(&self, spans: &[Value]) -> Option<u64> {
-        named(spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && attr(sp, "node") == self.fabric_primary).filter_map(|sp| attr(sp, "at").parse::<u64>().ok()).min()
+        named(spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && rdm_test::estate::of_node(sp, &self.fabric_primary, &self.fabric_primary_id)).filter_map(|sp| attr(sp, "at").parse::<u64>().ok()).min()
     }
 
     /// Stop the estate; the instant (unix ns) the cell's story ended, taken before the shutdown began.
@@ -167,20 +179,20 @@ impl Fixture {
     }
 
     fn probes<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
-        let mut p: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && attr(sp, "node") == self.fabric_primary).collect();
+        let mut p: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && rdm_test::estate::of_node(sp, &self.fabric_primary, &self.fabric_primary_id)).collect();
         p.sort_by_key(|sp| at_ns(sp));
         p
     }
 
     fn verdicts<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
-        let mut p: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && attr(sp, "node") == self.fabric_primary).collect();
+        let mut p: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && rdm_test::estate::of_node(sp, &self.fabric_primary, &self.fabric_primary_id)).collect();
         p.sort_by_key(|sp| at_ns(sp));
         p
     }
 
     /// The node.create of a node-admin into the lost mesh the fabric primary opened on a verdict.
     fn admin_creates<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
-        named(spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && attr(sp, "node") == self.fabric_primary).collect()
+        named(spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && rdm_test::estate::of_node(sp, &self.fabric_primary, &self.fabric_primary_id)).collect()
     }
 
     async fn fabric_status(&self) -> String {
@@ -247,8 +259,9 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_l
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
-    let lost_births: BTreeMap<String, String> = births(&f.before).into_iter().filter(|(n, _)| n.starts_with(&format!("{}.admin.", f.lost))).collect();
-    let survivors: Vec<String> = (1..=3).map(|i| format!("{}.rpc.{i}", f.lost)).collect();
+    let lost_births: BTreeMap<PathName, String> = births(&f.before).into_iter().filter(|(n, _)| n.path == format!("{}.admin", f.lost)).collect();
+    let survivors: Vec<PathName> = (1..=3).map(|i| Estate::path(&format!("{}.rpc", f.lost), &i.to_string())).collect();
+    let survivor_ids: Vec<String> = survivors.iter().map(|m| f.id_of(m)).collect();
     let before_births = births(&f.before);
 
     let admins = f.lost_admins();
@@ -303,14 +316,14 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_l
     // holds the role: the mesh, its node-admin created, can take the role (the election is the lowest ready NodeId), and
     // a publisher that loses the role ends the sends still to come.
     let degraded_ms = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or(0);
-    let fp_for_sends = f.fabric_primary.clone();
+    let (fp_for_sends, fp_for_sends_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
     let role_lost_or_five = |spans: &[Value]| {
         let sent = named(spans, "rdm.mesh.fabric.update.via-status-send")
             .into_iter()
-            .filter(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms)
+            .filter(|sp| rdm_test::estate::of_node(sp, &fp_for_sends, &fp_for_sends_id) && attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms)
             .count();
         let any_sent = named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().any(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms);
-        let role_lost = any_sent && named(spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().any(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "role") == "stop" && at_ns(sp) / 1_000_000 > degraded_ms);
+        let role_lost = any_sent && named(spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().any(|sp| rdm_test::estate::of_node(sp, &fp_for_sends, &fp_for_sends_id) && attr(sp, "role") == "stop" && at_ns(sp) / 1_000_000 > degraded_ms);
         (sent, role_lost)
     };
     wait_for("the return to ready is sent five times or the role moves", Duration::from_secs(30), || {
@@ -323,13 +336,14 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_l
     assert_eq!(f.estate.mesh_view(&f.lost).await.id.expect("the lost mesh still has its id").to_string(), f.lost_mesh_id, "{} keeps its own MeshId", f.lost);
     let new_births = births(&after);
     for m in &survivors {
-        assert_eq!(new_births[m], before_births[m], "{m} answered the probes and is never created again");
+        assert_eq!(new_births[m], before_births[m], "{m:?} answered the probes and is never created again");
     }
 
-    let fp = f.fabric_primary.clone();
+    let lost_admin_ids = f.admin_ids(&f.lost).await;
+    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
     let story_end = f.stop().await;
     let spans = f.estate.spans();
-    let last_heard_ms = f.unheard_since_ms(&spans).unwrap_or_else(|| panic!("{fp} tracked {} as unheard (via-unheard names the last backbone receipt)", f.lost));
+    let last_heard_ms = f.unheard_since_ms(&spans).unwrap_or_else(|| panic!("{fp:?} tracked {} as unheard (via-unheard names the last backbone receipt)", f.lost));
     let unheard = |sp: &Value| Duration::from_millis((at_ns(sp) / 1_000_000).saturating_sub(last_heard_ms));
 
     let probes = f.probes_before(&spans, story_end);
@@ -341,7 +355,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_l
         // which is the connection-lost answer. Probe 2 is the one that decides.
         let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
         assert!(attr(p, "outcome") == "connection-lost" || stale_pool, "the member cannot reach its own node-admin: {p:#?}");
-        assert!(attr(p, "member").split(',').all(|m| survivors.contains(&m.to_string())) && survivors.contains(&attr(p, "carrier")), "members of {} were asked and one carried it: {p:#?}", f.lost);
+        assert!(attr(p, "member").split(',').all(|m| survivor_ids.contains(&m.to_string())) && survivor_ids.contains(&attr(p, "carrier")), "members of {} were asked and one carried it: {p:#?}", f.lost);
         // iroh's local view of each node-admin asked is a diagnostic on the probe span (R-CK1:
         // observation stays, separate from the decision); nothing decides on it.
         for asked in attr(p, "target").split(',').filter_map(|t| t.split('=').next()) {
@@ -371,17 +385,17 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_l
     // checklist, after it.
     let heard_again = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
         .into_iter()
-        .filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "channel") == "backbone" && at_ns(sp) >= at_ns(verdict))
+        .filter(|sp| attr(sp, "mesh") == f.lost && rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "channel") == "backbone" && at_ns(sp) >= at_ns(verdict))
         .map(at_ns)
-        .chain(named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "outcome") == "heard-again").map(at_ns))
-        .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(verdict)).map(at_ns))
+        .chain(named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "outcome") == "heard-again").map(at_ns))
+        .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(verdict)).map(at_ns))
         .min()
-        .unwrap_or_else(|| panic!("{fp} heard {} again after its node-admin was created, or gave up the role", f.lost));
-    let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-connection-lost").into_iter().filter(|sp| attr(sp, "primary") == fp && attr(sp, "mesh") == f.lost).collect();
+        .unwrap_or_else(|| panic!("{fp:?} heard {} again after its node-admin was created, or gave up the role", f.lost));
+    let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-connection-lost").into_iter().filter(|sp| attr(sp, "primary_node_id") == fp_id && attr(sp, "mesh") == f.lost).collect();
     let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(verdict) && at_ns(sp) < heard_again).collect();
     assert_eq!(while_unheard.len(), 1, "one attempt while {} is held unheard, for its first recovering node-admin: {while_unheard:#?}", f.lost);
-    assert!(attr(while_unheard[0], "node") == format!("{}.admin.1", f.lost) && attr(while_unheard[0], "action") == "steps" && attr(while_unheard[0], "reason") == "steps", "the verdict runs node.create of the first node-admin in path order, a single step of the same Build: {:#?}", while_unheard[0]);
-    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().all(|sp| !attr(sp, "scope").starts_with(&format!("{}.", f.lost))), "the verdict is no proven drift: nothing of {} is repaired from an exited verdict", f.lost);
+    assert!(rdm_test::estate::at_location(while_unheard[0], &Estate::path(&format!("{}.admin", f.lost), "1")) && attr(while_unheard[0], "action") == "steps" && attr(while_unheard[0], "reason") == "steps", "the verdict runs node.create of the first node-admin in path order, a single step of the same Build: {:#?}", while_unheard[0]);
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().all(|sp| !f.before.iter().filter(|n| n["mesh"] == f.lost.as_str()).any(|n| attr(sp, "scope").contains(&s(&n["node_id"])))), "the verdict is no proven drift: nothing of {} is repaired from an exited verdict", f.lost);
 
     // FabricStatus: never degraded before the verdict; degraded from it; ready again after.
     let degraded_at = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or_else(|| panic!("the fabric primary showed degraded: {statuses:?}"));
@@ -392,22 +406,22 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_l
     // fabric's two changes are five identical sends each.
     // The marks of the story: the estate shutdown that follows it (`Fixture::stop`) stops the members of the
     // mesh one by one and leaves it unheard, which opens a new interval and a new mark at the fabric primary.
-    let marks: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == f.lost && attr(sp, "mark") == "true" && at_ns(sp) < story_end).collect();
+    let marks: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "mesh") == f.lost && attr(sp, "mark") == "true" && at_ns(sp) < story_end).collect();
     assert_eq!(marks.len(), 1, "the silent mark is made once before the story ends: {marks:#?}");
     assert!(unheard(marks[0]) >= rungs().mark, "the mark is at {:?} unheard, not before: {:?}", rungs().mark, unheard(marks[0]));
     // A probe in flight never holds the ladder (R-CK1: a delayed tick never moves a threshold):
     // the mark is stepped at its rung, before probe 2's, however long probe 1 runs.
     assert!(unheard(marks[0]) < rungs().probe2, "the mark is stepped at its rung, before probe 2's at {:?}, not when probe 1 ends: {:?}", rungs().probe2, unheard(marks[0]));
     let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
-    let authored_for_peer_before_verdict: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope") == format!("mesh:{}", f.lost) && at_ns(sp) < at_ns(verdict)).collect();
+    let authored_for_peer_before_verdict: Vec<&&Value> = sends.iter().filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "scope") == format!("mesh:{}", f.lost) && at_ns(sp) < at_ns(verdict)).collect();
     assert!(authored_for_peer_before_verdict.is_empty(), "the fabric primary sends no MeshStatus for {} during probing: {authored_for_peer_before_verdict:#?}", f.lost);
-    let authored_for_peer: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope") == format!("mesh:{}", f.lost)).collect();
+    let authored_for_peer: Vec<&&Value> = sends.iter().filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "scope") == format!("mesh:{}", f.lost)).collect();
     assert!(!authored_for_peer.is_empty() && authored_for_peer.iter().all(|sp| attr(sp, "status") == "degraded"), "the fabric primary authors {}'s MeshStatus degraded at the verdict and no lifecycle status: {authored_for_peer:#?}", f.lost);
     // Degraded is the fabric primary's alone. The return to ready is the primary's: the fabric
     // primary's while it holds the role, else the admin that took it (the election is the lowest ready NodeId).
     let sent_by = |status: &str, from_ms: u64, only_fp: bool| -> BTreeMap<(String, String), usize> {
         let mut by_change: BTreeMap<(String, String), usize> = BTreeMap::new();
-        for sp in sends.iter().filter(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= from_ms && (!only_fp || attr(sp, "node") == fp)) {
+        for sp in sends.iter().filter(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= from_ms && (!only_fp || rdm_test::estate::of_node(sp, &fp, &fp_id))) {
             *by_change.entry((attr(sp, "node"), attr(sp, "changed_at_rafka_ms"))).or_default() += 1;
         }
         by_change
@@ -429,7 +443,7 @@ async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_l
     let republished = mesh_sends_after(&spans, &f.lost, created_at);
     assert!(!republished.is_empty(), "the new primary of {} sends the adopted MeshStatus once established (a new via-status-send for mesh:{}): none", f.lost, f.lost);
     for ((sender, changed_at), (n, _)) in &republished {
-        assert!(sender.starts_with(&format!("{}.admin.", f.lost)), "the mesh's status is authored by its own primary, not {sender}");
+        assert!(lost_admin_ids.contains(sender), "the mesh's status is authored by its own primary, not {sender}");
         assert_eq!(*changed_at, status_before, "the lifecycle state did not change: the republish keeps the old changed_at ({sender}, {n} sends)");
     }
     assert!(republished.values().any(|(n, _)| *n == 5), "the republished fact is five identical sends (R-S1): {republished:?}");
@@ -489,7 +503,7 @@ async fn an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stop
     tokio::time::sleep(rungs().decide).await;
     let fabric = f.fabric_status().await;
     drop(cut);
-    let fp = f.fabric_primary.clone();
+    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
     let story_end = f.stop().await;
     let spans = f.estate.spans();
     let probes = f.probes_before(&spans, story_end);
@@ -543,7 +557,7 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     .await;
     tokio::time::sleep(rungs().decide).await;
     let fabric = f.fabric_status().await;
-    let fp = f.fabric_primary.clone();
+    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
     let story_end = f.stop().await;
     let spans = f.estate.spans();
     assert_eq!(f.probes_before(&spans, story_end).len(), 1, "a mesh heard again is not probed a second time: {:#?}", f.probes(&spans));
@@ -565,7 +579,7 @@ async fn a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_o
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
-    let all: Vec<(String, u32)> = f.lost_admins().into_iter().chain(f.lost_members()).collect();
+    let all: Vec<(PathName, u32)> = f.lost_admins().into_iter().chain(f.lost_members()).collect();
     assert_eq!(all.len(), 5, "every runtime of {}: {all:?}", f.lost);
 
     for (_, pid) in &all {
@@ -594,7 +608,7 @@ async fn a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_o
     for (_, pid) in &all {
         signal(*pid, "-CONT");
     }
-    let fp = f.fabric_primary.clone();
+    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
     f.stop().await;
     let spans = f.estate.spans();
     // The investigation the verdict closed made two probes (mesh-investigation.md: probe 1 "At 20 s",
@@ -610,7 +624,7 @@ async fn a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_o
     // per-member clock beside it (node-identity-and-state.md §7.3, R-CK1).
     let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.update.via-true-offline")
         .into_iter()
-        .filter(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost)) && !attr(sp, "observer").starts_with(&format!("{}.", f.lost)))
+        .filter(|sp| attr(sp, "node_path") == format!("{}.admin", f.lost) && !f.before.iter().any(|n| n["mesh"] == f.lost.as_str() && attr(sp, "observer") == s(&n["node_id"])))
         .collect();
     assert!(tickled.is_empty(), "no other mesh tickles {}'s node-admins beside the investigation: {tickled:#?}", f.lost);
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "verdict": verdict["attributes"], "created": created["attributes"]}));
@@ -662,7 +676,7 @@ async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones
     tokio::time::sleep(rungs().decide).await;
     let fabric = f.fabric_status().await;
     drop(cut);
-    let fp = f.fabric_primary.clone();
+    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
     let story_end = f.stop().await;
     let spans = f.estate.spans();
     // A frozen node-admin keeps its sockets, so a member's pooled connection to it closes only when the
@@ -711,7 +725,7 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
     let before = values(&estate.settled_views(&shape).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
     let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
-    let fp_mesh = fp.split('.').next().unwrap().to_string();
+    let fp_mesh = fp.path.split('.').next().unwrap().to_string();
     let lost: Vec<String> = ["mesh1", "mesh2", "mesh3"].iter().filter(|m| **m != fp_mesh).map(|m| m.to_string()).collect();
     let mut mesh_ids = BTreeMap::new();
     for m in &lost {
@@ -719,9 +733,10 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
     }
     estate.enter(&fp).await;
     let old = births(&before);
+    // A runtime's data dir is named by its birth's node id.
+    let lost_admin_ids: Vec<String> = before.iter().filter(|n| n["kind"] == "node_admin" && lost.iter().any(|m| n["mesh"] == m.as_str())).map(|n| s(&n["node_id"])).collect();
     for (path, pid) in estate.live_runtimes() {
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if lost.iter().any(|m| name.starts_with(&format!("{m}.admin."))) {
+        if lost_admin_ids.contains(&path.file_name().unwrap().to_string_lossy().to_string()) {
             estate.kill_pid(pid);
         }
     }
@@ -740,7 +755,8 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
     for m in &lost {
         assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} keeps its own MeshId");
     }
-    let _ = after;
+    // Every birth's node id by location, settled and after: a decider may be an admin created since.
+    let ids_at = |at: &PathName| -> Vec<String> { before.iter().filter(|n| location(n) == *at).map(|n| s(&n["node_id"])).chain(after.iter().filter(|n| n.name == *at).map(|n| n.node_id.to_string())).collect() };
     estate.stop().await;
     let spans = estate.spans();
     for m in &lost {
@@ -752,11 +768,11 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
         let creates: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();
         assert!(!creates.is_empty(), "{m}: a node-admin created: {creates:#?}");
         for r in &creates {
-            assert_eq!(creates.iter().filter(|o| attr(o, "node") == attr(r, "node")).count(), 1, "{m}: one node.create per fabric primary: {creates:#?}");
+            assert_eq!(creates.iter().filter(|o| (attr(o, "node_path"), attr(o, "node_name")) == (attr(r, "node_path"), attr(r, "node_name"))).count(), 1, "{m}: one node.create per fabric primary: {creates:#?}");
         }
         let first = creates.iter().min_by_key(|sp| at_ns(sp)).unwrap();
-        let decider = attr(first, "node");
-        let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == decider && attr(sp, "mesh") == *m && at_ns(sp) <= at_ns(first)).collect();
+        let decider = ids_at(&PathName::new(attr(first, "node_path"), attr(first, "node_name")).expect("a create names its decider's location"));
+        let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| decider.contains(&attr(sp, "node")) && attr(sp, "mesh") == *m && at_ns(sp) <= at_ns(first)).collect();
         probes.sort_by_key(|sp| attr(sp, "probe"));
         assert_eq!(probes.len(), 2, "{m}: two probes: {probes:#?}");
         for (i, p) in probes.iter().enumerate() {
@@ -766,7 +782,7 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
             let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
             assert!(attr(p, "outcome") == "connection-lost" || stale_pool, "{m}: {p:#?}");
             assert!(i == 0 || attr(p, "outcome") == "connection-lost", "{m}: the latest probe decides the node.create: {p:#?}");
-            assert!(attr(p, "carrier").starts_with(&format!("{m}.rpc.")), "{m} is probed through its own members only: {p:#?}");
+            assert!(before.iter().any(|n| n["mesh"] == m.as_str() && n["kind"] == "rpc_node" && attr(p, "carrier") == s(&n["node_id"])), "{m} is probed through its own members only: {p:#?}");
         }
     }
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "meshes": lost, "mesh_ids": mesh_ids}));
@@ -791,21 +807,22 @@ async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republi
     let primary = f.before.iter().find(|n| n["mesh"] == f.lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| location(&n)).expect("the peer mesh has a primary node-admin");
     let survivor = f.before.iter().filter(|n| n["mesh"] == f.lost.as_str() && n["kind"] == "node_admin").map(|n| location(&n)).find(|n| *n != primary).expect("the peer mesh has a second node-admin");
     let fault_ms = now_ms();
-    let (_, pid) = f.runtimes(&format!("{}.admin.", f.lost)).into_iter().find(|(n, _)| *n == primary).unwrap_or_else(|| panic!("{primary:?} is running"));
+    let (_, pid) = f.runtimes(&format!("{}.admin", f.lost)).into_iter().find(|(n, _)| *n == primary).unwrap_or_else(|| panic!("{primary:?} is running"));
     f.estate.kill_pid(pid);
-    if primary == "mesh1.admin.1" {
+    if primary == Estate::path("mesh1.admin", "1") {
         f.estate.kill_bootstrap();
     }
-    let (lost, sv, killed) = (f.lost.clone(), survivor.clone(), primary.clone());
+    let (lost, sv, killed, killed_id) = (f.lost.clone(), survivor.clone(), primary.clone(), f.id_of(&primary));
     wait_for("the elected primary names the killed primary as missing from its checklist", Duration::from_secs(120), || {
         let spans = f.estate.spans();
-        let held = named(&spans, "rdm.node_admin.mesh.update.via-checklist-held").into_iter().any(|sp| attr(sp, "node") == sv && attr(sp, "mesh") == lost && attr(sp, "missing").contains(&killed) && at_ns(sp) / 1_000_000 >= fault_ms);
+        let held = named(&spans, "rdm.node_admin.mesh.update.via-checklist-held").into_iter().any(|sp| rdm_test::estate::at_location(sp, &sv) && attr(sp, "mesh") == lost && names_missing(&attr(sp, "missing"), &killed, &killed_id) && at_ns(sp) / 1_000_000 >= fault_ms);
         async move { held.then_some(()) }
     })
     .await;
     // The report is its own declaration, owed once the checklist completed and sent on the declarer's
     // cadence: it follows the checklist, and the republish does not wait for it. The estate is stopped
     // only once the fabric primary of the moment has it, or the stop outruns the declaration.
+    let lost_admin_ids = f.admin_ids(&f.lost).await;
     wait_for("a checklist of the mesh completes after the fault, its adopted status is republished and the mesh primary's checklist-complete report reaches the fabric primary", Duration::from_secs(120), || {
         let spans = f.estate.spans();
         let complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete").into_iter().filter(|sp| attr(sp, "mesh") == lost && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).min();
@@ -813,23 +830,23 @@ async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republi
         let reported = complete.is_some_and(|c| {
             named(&spans, "rdm.node_admin.status.update.via-declaration")
                 .into_iter()
-                .any(|sp| attr(&sp, "op") == "declare-mesh-state" && attr(&sp, "sender").starts_with(&format!("{lost}.admin.")) && matches!(attr(&sp, "outcome").as_str(), "applied" | "already-applied") && at_ns(&sp) / 1_000_000 >= c)
+                .any(|sp| attr(&sp, "op") == "declare-mesh-state" && lost_admin_ids.contains(&attr(&sp, "sender")) && matches!(attr(&sp, "outcome").as_str(), "applied" | "already-applied") && at_ns(&sp) / 1_000_000 >= c)
         });
         async move { (sent && reported).then_some(()) }
     })
     .await;
-    let fp = f.fabric_primary.clone();
+    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
     f.estate.stop().await;
     let spans = f.estate.spans();
     let before = mesh_status_change_before(&spans, &f.lost, fault_ms).expect("the mesh published its status before the fault");
     let sends = mesh_sends_after(&spans, &f.lost, fault_ms);
     for ((sender, changed_at), _) in &sends {
-        assert!(sender.starts_with(&format!("{}.admin.", f.lost)), "the mesh's status is authored by its own primary, not {sender}");
+        assert!(lost_admin_ids.contains(sender), "the mesh's status is authored by its own primary, not {sender}");
         assert_eq!(*changed_at, before, "the republish keeps the old changed_at: the lifecycle state did not change ({sender})");
     }
     let first_send_ms = sends.values().map(|(_, first)| *first).min().expect("the adopted status was republished");
-    let after_fault = |name: &str, node: Option<&str>| -> Vec<u64> {
-        named(&spans, name).into_iter().filter(|sp| attr(sp, "mesh") == f.lost && node.is_none_or(|n| attr(sp, "node") == n) && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).collect()
+    let after_fault = |name: &str, node: Option<&PathName>| -> Vec<u64> {
+        named(&spans, name).into_iter().filter(|sp| attr(sp, "mesh") == f.lost && node.is_none_or(|n| rdm_test::estate::at_location(sp, n)) && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).collect()
     };
     let held = after_fault("rdm.node_admin.mesh.update.via-checklist-held", Some(&survivor));
     let down = after_fault("rdm.node_admin.mesh.update.via-state-down", Some(&survivor));
@@ -840,7 +857,7 @@ async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republi
     let republisher = sends.keys().map(|(sender, _)| sender.clone()).next().unwrap();
     let reports: Vec<u64> = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
-        .filter(|sp| attr(sp, "op") == "declare-mesh-state" && attr(sp, "sender").starts_with(&format!("{}.admin.", f.lost)) && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied"))
+        .filter(|sp| attr(sp, "op") == "declare-mesh-state" && lost_admin_ids.contains(&attr(sp, "sender")) && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied"))
         .map(|sp| at_ns(sp) / 1_000_000)
         .collect();
     assert!(reports.iter().any(|at| *at >= complete_ms), "the fabric primary of the moment received a checklist-complete report from the mesh's primary after the checklist completed: {reports:?} vs {complete_ms}");
@@ -863,9 +880,9 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
-    let frozen = format!("{}.rpc.1", f.lost);
-    let frozen_id = f.before.iter().find(|n| location(&n) == frozen).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{frozen} in the view"));
-    let (_, frozen_pid) = f.lost_members().into_iter().find(|(n, _)| *n == frozen).unwrap_or_else(|| panic!("{frozen} is running"));
+    let frozen = Estate::path(&format!("{}.rpc", f.lost), "1");
+    let frozen_id = f.id_of(&frozen);
+    let (_, frozen_pid) = f.lost_members().into_iter().find(|(n, _)| *n == frozen).unwrap_or_else(|| panic!("{frozen:?} is running"));
     let admins = f.lost_admins();
     assert_eq!(admins.len(), 2, "both admins of {} are running: {admins:?}", f.lost);
     for (_, pid) in &admins {
@@ -880,7 +897,7 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
     let lost = f.lost.clone();
     wait_for("the new primary names the frozen planned birth as missing", Duration::from_secs(240), || {
         let spans = f.estate.spans();
-        let held = named(&spans, "rdm.node_admin.mesh.update.via-checklist-held").into_iter().any(|sp| attr(sp, "mesh") == lost && attr(sp, "missing").contains(&frozen));
+        let held = named(&spans, "rdm.node_admin.mesh.update.via-checklist-held").into_iter().any(|sp| attr(sp, "mesh") == lost && names_missing(&attr(sp, "missing"), &frozen, &frozen_id));
         async move { held.then_some(()) }
     })
     .await;
@@ -902,11 +919,11 @@ async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degra
         async move { reported.then_some(()) }
     })
     .await;
-    let fp = f.fabric_primary.clone();
+    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
     f.estate.stop().await;
     let spans = f.estate.spans();
     let created_ms = admin_created_at(&spans, &f.lost);
-    let rejoined = named(&spans, "rdm.mesh.topology.update.from-node-started").into_iter().filter(|sp| attr(sp, "member") == frozen && attr(sp, "node_id") != frozen_id).map(|sp| at_ns(sp) / 1_000_000).min().expect("the re-created birth started");
+    let rejoined = named(&spans, "rdm.mesh.topology.update.from-node-started").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "member", &frozen) && attr(sp, "node_id") != frozen_id).map(|sp| at_ns(sp) / 1_000_000).min().expect("the re-created birth started");
     let complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the new primary's checklist completed");
     assert!(complete >= rejoined, "the checklist completes only after the re-created birth checks in: {complete} vs {rejoined}");
     let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, created_ms).values().map(|(_, first)| *first).collect();
