@@ -244,12 +244,10 @@ fn rows_taken(spans: &[Value], node: &PathName, from: u64) -> Vec<(String, Strin
 }
 
 /// `rows`, `rdm.node_admin.node.update.via-row-status` spans of one record, in the order its writer
-/// made the writes: by the record's `revision` once each write finished, a write that moved the record
-/// to a revision before every write that found it there, then by start. Each span follows its write, so
-/// a write made first may report last; the revision is what the write records.
+/// made the writes: by start. The record carries no revision (node-identity-and-state.md §2.5); its
+/// writes are made one at a time under the node's lock, each span following its write.
 pub(crate) fn in_write_order(rows: &mut [&Value]) {
-    let revision = |sp: &Value| attr(sp, "revision").parse::<u64>().unwrap_or_else(|_| panic!("a held record's row-status span carries its revision: {sp}"));
-    rows.sort_by_key(|sp| (revision(sp), attr(sp, "outcome") != "written", start_ns(sp)));
+    rows.sort_by_key(|sp| start_ns(sp));
 }
 
 /// Every order a stop's row writes can take at its mesh-primary, each `(status, outcome)`: the stop

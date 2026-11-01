@@ -210,7 +210,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         })
         .await
         .expect("the executor's ready_blocker names the blocked admin's blocker");
-        assert!(named.contains("mesh1.admin.2") && named.contains(&hook_reason) && named.contains("primary-ready"), "the blocker names the birth, the hook's reason and its retry event: {named}");
+        assert!(named.contains(subject.node_id.as_str()) && named.contains(&hook_reason) && named.contains("primary-ready"), "the blocker names the birth by its node id, the hook's reason and its retry event: {named}");
         assert!(!named.contains("(attempt "), "no attempt counter: {named}");
         // The Ready check reports a changed blocker list on its own cadence.
         let ready_blockers = tokio::time::timeout(WRONG, async {
@@ -220,7 +220,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
                     .lock()
                     .unwrap()
                     .values()
-                    .filter(|(n, _, f)| n == "rdm.node_admin.runtime.reject.via-not-ready" && f.get("node").is_some_and(|n| n.contains("mesh1.admin.2")))
+                    .filter(|(n, _, f)| n == "rdm.node_admin.runtime.reject.via-not-ready" && f.get("node_path").map(String::as_str) == Some("mesh1.admin") && f.get("node_name").map(String::as_str) == Some("2"))
                     .filter_map(|(_, _, f)| f.get("detail").cloned())
                     .collect();
                 if found.iter().any(|d| d.contains("pre_node_ready is blocked")) {

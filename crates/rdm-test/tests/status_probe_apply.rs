@@ -97,13 +97,15 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         assert_eq!(call(downward_declare).await, StatusReply::RequestNotHandled { request: "declare-node-state".into() }, "a request the node has no handler for is answered not handled here");
         // node-left is never sent: refused by name as no command, as a node-admin refuses it, never
         // sent on to "a node-admin" that would refuse it too.
-        let left = StatusRequest::NodeLeft { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) };
+        let stop = rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
+        let left = StatusRequest::NodeLeft { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: stop.clone() };
         assert_eq!(
             call(left).await,
             StatusReply::RejectedUnmatchedCompletion {
                 field: "command".into(),
                 expected: "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call".into(),
-                reported: "node-left node.stop:mesh1.rpc.1 (build 08zd8rg6hhjh, attempt 1)".into(),
+                // The operation is structured (action, subject), reported as it is held.
+                reported: format!("node-left {stop:?} (build 08zd8rg6hhjh, attempt 1)"),
             }
         );
         // ApplyNodeState sets no state: refused with the held state, nothing moves.

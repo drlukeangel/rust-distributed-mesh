@@ -66,7 +66,7 @@ fn snapshot_of(frames: &[Value], mesh: &str) -> (Vec<String>, String, u64, usize
     assert_eq!(ids.len(), 1, "one snapshot per mesh");
     let mut members: Vec<String> = chunks.iter().flat_map(|c| c["members"].as_array().unwrap().iter().map(s)).collect();
     members.sort();
-    (members, s(&chunks[0]["publisher_node"]), chunks[0]["topology_version"].as_u64().unwrap(), count)
+    (members, s(&chunks[0]["publisher_node_id"]), chunks[0]["topology_version"].as_u64().unwrap(), count)
 }
 
 fn kinds(frames: &[Value]) -> Vec<String> {
@@ -122,17 +122,15 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     assert!(mesh1_v >= 1 && mesh2_v >= 1);
     let incarnation = s(&frames.iter().find(|f| f["frame"] == "snapshot" && f["mesh"] == "mesh2").unwrap()["publisher_incarnation"]);
 
-    let publisher_node_id = s(&frames.iter().find(|f| f["frame"] == "snapshot" && f["mesh"] == "mesh2").unwrap()["publisher_node_id"]);
-
     // The version it holds: Unchanged, no snapshot.
-    let since = format!("{mesh2_pub}|{publisher_node_id}|{incarnation}|{mesh2_v}");
+    let since = format!("{mesh2_pub}|{incarnation}|{mesh2_v}");
     let held = estate.probe(&["topology", "--target", &target, "--mesh", "mesh2", "--since", &since]);
     let held_frames = topology_frames(held["frames"].as_array().unwrap());
     assert_eq!(kinds(&held_frames), vec!["started", "unchanged", "end"], "{held_frames:?}");
     assert_eq!(held_frames[1]["topology_version"], mesh2_v);
     assert_eq!(held_frames[2]["meshes"], 1, "End counts Unchanged");
     // One version behind: the snapshot.
-    let behind = format!("{mesh2_pub}|{publisher_node_id}|{incarnation}|{}", mesh2_v - 1);
+    let behind = format!("{mesh2_pub}|{incarnation}|{}", mesh2_v - 1);
     let b = estate.probe(&["topology", "--target", &target, "--mesh", "mesh2", "--since", &behind]);
     assert!(kinds(b["frames"].as_array().unwrap()).contains(&"snapshot".to_string()), "{b}");
     // A mesh it does not hold.

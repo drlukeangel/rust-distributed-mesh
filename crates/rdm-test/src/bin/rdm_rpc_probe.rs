@@ -6,7 +6,7 @@
 //! rdm-rpc-probe --admin-birth <birth> put    --target ... --key <k> --value <v>
 //! rdm-rpc-probe --admin-birth <birth> delete --target ... --key <k>
 //! rdm-rpc-probe --admin-birth <birth> cas    --target ... --key <k> [--expected <v>] [--value <v>]
-//! rdm-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]
+//! rdm-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node_id>|<incarnation>|<version>]
 //! rdm-rpc-probe --admin-birth <birth> fabric-delete --target path:<the entry admin>
 //! rdm-rpc-probe --admin-birth <birth> node-delete   --target path:<JSON object with path and name>
 //! ```
@@ -551,27 +551,27 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     Ok(match &out {
         RpcOutcome::Reply(r) => match r.value() {
             OriginateReply::Called { by, destination_node_id, route, carrier, deleted, outcome, reply, pooled } => json!({
-                "outcome": "Reply", "by": by.node, "destination_node_id": destination_node_id, "route": route, "carrier": carrier,
+                "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "destination_node_id": destination_node_id, "route": route, "carrier": carrier,
                 "deleted": deleted, "call_outcome": outcome, "reply": reply.as_ref().map(self::reply), "pooled": pooled,
             }),
-            OriginateReply::FaultArmed { by, refuse_index, refuse_history } => json!({"outcome": "Reply", "by": by.node, "fault": "armed", "refuse_index": refuse_index, "refuse_history": refuse_history}),
-            OriginateReply::FaultReleased { by, refused } => json!({"outcome": "Reply", "by": by.node, "fault": "released", "refused": refused}),
+            OriginateReply::FaultArmed { by, refuse_index, refuse_history } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "fault": "armed", "refuse_index": refuse_index, "refuse_history": refuse_history}),
+            OriginateReply::FaultReleased { by, refused } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "fault": "released", "refused": refused}),
             OriginateReply::Snapshot { by, own_active_proxies, own_latest_directs, active_len, active_directs, owed, fault_refused } => json!({
-                "outcome": "Reply", "by": by.node, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
+                "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
                 "active_len": active_len, "active_directs": active_directs, "owed": owed, "fault_refused": fault_refused,
             }),
-            OriginateReply::TransportStopMarked { by, reason } => json!({"outcome": "Reply", "by": by.node, "transport_stop_marked": reason}),
-            OriginateReply::Dialed { by, destination_node_id, outcome } => json!({"outcome": "Reply", "by": by.node, "dialed": outcome, "destination_node_id": destination_node_id}),
+            OriginateReply::TransportStopMarked { by, reason } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "transport_stop_marked": reason}),
+            OriginateReply::Dialed { by, destination_node_id, outcome } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "dialed": outcome, "destination_node_id": destination_node_id}),
             OriginateReply::Streamed { by, peer, kind, connection_id, answered } => json!({
-                "outcome": "Reply", "by": by.node, "streamed": true, "kind": kind, "connection_id": connection_id, "peer": peer.node, "peer_node_id": peer.node_id,
+                "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "streamed": true, "kind": kind, "connection_id": connection_id, "peer": peer.node, "peer_node_id": peer.node_id,
                 "peer_incarnation": peer.incarnation_id, "answered": String::from_utf8_lossy(answered),
             }),
-            OriginateReply::StreamFailed { by, reason } => json!({"outcome": "Reply", "by": by.node, "streamed": false, "reason": reason}),
-            OriginateReply::Measured { by, kind, open_us, streams_us, bytes } => json!({"outcome": "Reply", "by": by.node, "measured": true, "kind": kind, "open_us": open_us, "streams_us": streams_us, "bytes": bytes}),
-            OriginateReply::DirectBlocked { by, destination, blocked } => json!({"outcome": "Reply", "by": by.node, "direct_blocked": blocked, "destination": destination}),
-            OriginateReply::OwnConfigUpdated { by, outcome, config, revision } => json!({"outcome": "Reply", "by": by.node, "own_config": outcome, "config": config, "revision": revision}),
+            OriginateReply::StreamFailed { by, reason } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "streamed": false, "reason": reason}),
+            OriginateReply::Measured { by, kind, open_us, streams_us, bytes } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "measured": true, "kind": kind, "open_us": open_us, "streams_us": streams_us, "bytes": bytes}),
+            OriginateReply::DirectBlocked { by, destination, blocked } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "direct_blocked": blocked, "destination": destination}),
+            OriginateReply::OwnConfigUpdated { by, outcome, config, revision } => json!({"outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "own_config": outcome, "config": config, "revision": revision}),
             OriginateReply::ProxyRecorded { by, destination_node_id, destination_incarnation, carrier_node_id, carrier_incarnation, failed_attempts } => json!({
-                "outcome": "Reply", "by": by.node, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,
+                "outcome": "Reply", "by": by.node, "by_node_id": by.node_id, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,
                 "carrier_node_id": carrier_node_id, "carrier_incarnation": carrier_incarnation, "failed_attempts": failed_attempts,
             }),
             other => json!({"outcome": "Reply", "refused": format!("{other:?}")}),
@@ -583,7 +583,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     })
 }
 
-/// `topology --target <node> [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]`: one
+/// `topology --target <node> [--mesh <name>] [--since <node_id>|<incarnation>|<version>]`: one
 /// `GetTopology` (op `0x1E`) read, every frame of the stream reported in order. The probe installs
 /// nothing: it has no topology view.
 /// `fabric-delete`: fabric.delete at the entry admin, its stream read to the terminal (`Complete`,
@@ -664,7 +664,7 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         None => None,
         Some(s) => {
             let parts: Vec<&str> = s.split('|').collect();
-            let [node, node_id, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node>|<node_id>|<incarnation>|<version>")) };
+            let [node_id, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node_id>|<incarnation>|<version>")) };
             Some(SourceVersion {
                 publisher: rdm_core::PublisherId { incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))?, node_id: rdm_core::NodeId::parse(node_id).map_err(|e| format!("--since node_id: {e}"))? },
                 topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))?,

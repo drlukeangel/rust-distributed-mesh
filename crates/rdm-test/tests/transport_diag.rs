@@ -43,7 +43,7 @@ fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {
 /// a noq or iroh line in either process's span evidence (R-TL1), or a side with no file. The
 /// dialler's connect failure names the trace of its exported dial span. The maker is launched as the
 /// estate launches the bootstrap admin (a mesh and a data dir, no node name), and its header still
-/// names it: `node="mesh1.admin.1"`, `mesh="mesh1"`.
+/// names it: `name="mesh1.admin.1"`, `mesh="mesh1"`.
 #[test]
 fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs() {
     let cell = "a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs";
@@ -114,9 +114,11 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     let read = |dir: &std::path::Path| std::fs::read_to_string(dir.join(DIAG)).unwrap_or_else(|e| panic!("{} has no {DIAG}: {e}", dir.display()));
     let (maker, dialler) = (read(&maker_dir), read(&dialler_dir));
     let run_field = format!("run={:?}", run.display().to_string());
-    for (side, file, node) in [("maker", &maker, "mesh1.admin.1"), ("dialler", &dialler, "mesh1.rpc.9")] {
+    // The dialler is named by its launch's path and name (RDM_NODE_PATH, RDM_NODE_NAME); the maker, launched
+    // with neither, by its node log directory's name, in `name`.
+    for (side, file, node) in [("maker", &maker, " name=\"mesh1.admin.1\""), ("dialler", &dialler, " path=\"mesh1.rpc\" name=\"9\"")] {
         let header = file.lines().next().unwrap_or_default();
-        assert!(header.starts_with("transport-diag ") && header.contains(&run_field) && header.contains(&format!(" node={node:?}")), "the {side}'s header names another run or node: {header}");
+        assert!(header.starts_with("transport-diag ") && header.contains(&run_field) && header.contains(node), "the {side}'s header names another run or node: {header}");
         assert!(line_with(file, &["step=\"endpoint-bound\"", "endpoint_id=", "bound="]).is_some(), "the {side} logged no bound endpoint:\n{file}");
     }
     assert!(maker.lines().next().unwrap_or_default().contains(" mesh=\"mesh1\""), "the maker's header names no mesh: {}", maker.lines().next().unwrap_or_default());

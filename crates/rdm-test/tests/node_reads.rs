@@ -369,13 +369,15 @@ fn nodes_get_matches_a_nodes_tags_all_of_and_any_of_and_its_config_by_key() {
     });
     let named = |name: &str| spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, parent, f)| (parent.clone(), f.clone())).collect::<Vec<_>>();
     let at = |f: &std::collections::BTreeMap<String, String>, k: &str| f.get(k).cloned().unwrap_or_default();
-    let creates: Vec<(String, String, String)> = named("rdm.node_admin.tag.create.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "arrived"), at(f, "already_carried"))).collect();
-    assert!(creates.contains(&("tags-created".into(), "gold,ssd".into(), "".into())), "the first create's labels arrived: {creates:?}");
-    assert!(creates.contains(&("tags-created".into(), "".into(), "ssd".into())), "the second create wrote nothing new: {creates:?}");
+    // The admin's span holds each command whole: the labels it named, and what the node's own property
+    // writer answered already carried or not carried (node-rpc-envelope.md node.tags).
+    let creates: Vec<(String, String, String)> = named("rdm.node_admin.tag.create.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "labels"), at(f, "already_carried"))).collect();
+    assert!(creates.contains(&("tags-created".into(), "gold,ssd".into(), "".into())), "the first create carried none of its labels already: {creates:?}");
+    assert!(creates.contains(&("tags-created".into(), "ssd".into(), "ssd".into())), "the second create's label was carried already: {creates:?}");
     assert!(creates.iter().any(|(o, _, _)| o == "rejected-tags"), "the non-label create was refused: {creates:?}");
-    let deletes: Vec<(String, String, String)> = named("rdm.node_admin.tag.delete.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "left"), at(f, "not_carried"))).collect();
-    assert!(deletes.contains(&("tags-deleted".into(), "gold".into(), "green".into())), "the named delete removed gold: {deletes:?}");
-    assert!(deletes.contains(&("tags-deleted".into(), "ssd".into(), "".into())), "the All delete removed ssd: {deletes:?}");
+    let deletes: Vec<(String, String, String)> = named("rdm.node_admin.tag.delete.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "scope"), at(f, "not_carried"))).collect();
+    assert!(deletes.contains(&("tags-deleted".into(), "labels".into(), "green".into())), "the named delete found green not carried: {deletes:?}");
+    assert!(deletes.contains(&("tags-deleted".into(), "all".into(), "".into())), "the All delete: {deletes:?}");
     let reads: Vec<(String, String)> = named("rdm.node_admin.node.serve.via-get").iter().map(|(_, f)| (at(f, "pairs"), at(f, "nodes"))).collect();
     for (pairs, count) in [
         ("(config.zone, [eu-1])", "1"),

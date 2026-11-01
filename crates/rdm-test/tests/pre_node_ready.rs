@@ -397,7 +397,7 @@ fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
             }
             Err(e) => e.to_string(),
         };
-        assert!(why.contains("mesh1.rpc.1") && why.contains("pre_node_ready") && why.contains("is not complete at its boundary"), "the end names the node and the reason: {why}");
+        assert!(why.contains(b.launch.node_id.as_str()) && why.contains("pre_node_ready") && why.contains("is not complete at its boundary"), "the end names the node by its id and the reason: {why}");
         let failed = spans_named(&spans, "rdm.mesh.node.update.via-pre-node-ready-attempt");
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0]["outcome"], "failed");
@@ -437,7 +437,7 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
             }
             Err(e) => e.to_string(),
         };
-        assert!(why.contains("mesh1.rpc.1") && why.contains("pre_node_ready") && why.contains("no reason"), "the end names the node, the hook and that it gave no reason: {why}");
+        assert!(why.contains(b.launch.node_id.as_str()) && why.contains("pre_node_ready") && why.contains("no reason"), "the end names the node by its id, the hook and that it gave no reason: {why}");
         let attempts = spans_named(&spans, "rdm.mesh.node.update.via-pre-node-ready-attempt");
         assert_eq!(attempts.len(), 1, "the hook ran once: {attempts:?}");
         assert_eq!(attempts[0]["outcome"], "failed");
@@ -459,7 +459,7 @@ fn the_hook_is_handed_the_accepting_mesh_primary_of_its_exact_birth() {
         let b = birth(MemberStatus::Ready).await;
         let pre_node_ready = TestPreNodeReady::new(Mode::Local);
         let running = start(&b, &pre_node_ready).await.unwrap().expect("the node comes up");
-        assert_eq!(*pre_node_ready.contexts.lock().unwrap(), vec![(1, Some("mesh1.admin.1".to_string()), None)]);
+        assert_eq!(*pre_node_ready.contexts.lock().unwrap(), vec![(1, Some(b.admin.launcher.node_id.to_string()), None)], "the accepting mesh-primary is named by its node id");
         assert_eq!(running.pre_node_ready().expect("handle").state(), PreNodeReadyState::Passed);
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -492,7 +492,7 @@ fn the_launchers_ready_waits_for_the_births_own_ready_not_a_ping() {
         assert!(matches!(b.admin.observer.echo(&target).await, RpcOutcome::Reply(_)), "the Pending node answers Ping");
         let ready = b.admin.observer.ready(&node).await;
         let why = ready.expect_err("a Pending birth is not ready");
-        assert!(why.contains("mesh1.rpc.1") && why.contains("Pending"), "the refusal names the birth and its Pending: {why}");
+        assert!(why.contains(b.launch.node_id.as_str()) && why.contains("Pending"), "the refusal names the birth by its node id and its Pending: {why}");
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })

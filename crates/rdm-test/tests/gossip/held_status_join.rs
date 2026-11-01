@@ -167,11 +167,13 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     // publishes mesh2's status. The Build is the node-admin's rectifier; nothing is killed.
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
-    estate.settled_views(&shape).await;
+    // mesh2's primary is named by its node id on the frames it authors and on its own spans.
+    let mesh2_admin: String = estate.settled_views(&shape).await.into_iter().find(|n| n.name == rdm_core::PathName::new("mesh2.admin", "1").unwrap()).expect("mesh2.admin.1 is settled").node_id.to_string();
+    let mesh2_admin = mesh2_admin.as_str();
 
     // The change's frames: mesh2's status, authored by mesh2's admin, on the backbone.
     let authored = |o: &Observer| -> Vec<Seen> {
-        o.statuses().into_iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshStatus { mesh, publisher, forwarded_by: None, .. } if mesh == "mesh2" && publisher == "mesh2.admin.1")).collect()
+        o.statuses().into_iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshStatus { mesh, publisher, forwarded_by: None, .. } if mesh == "mesh2" && publisher == mesh2_admin)).collect()
     };
     until_arrival("the early observer heard mesh2's status", Duration::from_secs(30), &early.arrivals, || (!authored(&early).is_empty()).then_some(())).await;
     // A member joins while the sends are still running (the first was just heard; the second is due
@@ -244,10 +246,10 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let told_mesh2: Vec<&Seen> = told.iter().filter(|x| matches!(x.frame.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).collect();
     for x in &told_mesh2 {
         let p = parts(&x.frame);
-        assert_eq!(p.3, "mesh2.admin.1", "the replay keeps mesh2's primary as publisher: {:?}", row(&late, x));
+        assert_eq!(p.3, mesh2_admin, "the replay keeps mesh2's primary as publisher: {:?}", row(&late, x));
         assert_eq!(p.5, held_at["mesh2"], "the replay carries the original instant of the change");
         assert_eq!(p.2, "ready");
-        assert!(p.4.as_deref() != Some("mesh2.admin.1"), "a holder never names the author as its forwarder");
+        assert!(p.4.as_deref() != Some(mesh2_admin), "a holder never names the author as its forwarder");
     }
     for x in &told {
         let p = parts(&x.frame);
@@ -266,7 +268,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     // and no sixth however long the estate ran afterwards.
     let mut every_send: Vec<(u64, u64)> = named(&spans, "rdm.mesh.fabric.update.via-status-send")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == "mesh2.admin.1" && sp["attributes"]["scope"] == "mesh:mesh2")
+        .filter(|sp| sp["attributes"]["node"] == mesh2_admin && sp["attributes"]["scope"] == "mesh:mesh2")
         .map(|sp| (sp["start_unix_nano"].as_u64().unwrap(), s(&sp["attributes"]["changed_at_rafka_ms"]).parse::<u64>().unwrap()))
         .collect();
     every_send.sort();
@@ -295,7 +297,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let rel_ms = |ns: u64| -> i64 { (ns as i128 - sender_sends[0].0 as i128).div_euclid(1_000_000) as i64 };
     let author_neighbour_up_ms: Vec<i64> = named(&spans, "rdm.mesh.connection.update.via-neighbour-up")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == "mesh2.admin.1" && s(&sp["attributes"]["peer"]) == joiner_short)
+        .filter(|sp| sp["attributes"]["node"] == mesh2_admin && s(&sp["attributes"]["peer"]) == joiner_short)
         .map(|sp| rel_ms(sp["start_unix_nano"].as_u64().unwrap()))
         .collect();
     let joiner_heard_ms = rel_ms(unix_ns(joiner_heard_at));
@@ -307,7 +309,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
         "fabric_id": fabric.to_string(),
         "mesh1_id": mesh1_id.to_string(),
         "early_observer_status_frames": early_rows,
-        "mesh2_status_sends_at_the_sender": { "count": sender_sends.len(), "offsets_ms_from_first": send_offsets_ms, "changed_at_rafka_ms": instants[0], "publisher": "mesh2.admin.1" },
+        "mesh2_status_sends_at_the_sender": { "count": sender_sends.len(), "offsets_ms_from_first": send_offsets_ms, "changed_at_rafka_ms": instants[0], "publisher": mesh2_admin },
         "early_observer_mesh2_copies_held": early_copies.len(),
         "mid_window_joiner": { "joined_ms_after_first_send": joiner_joined_ms, "first_heard_ms_after_first_send": joiner_heard_ms, "author_neighbour_up_ms_after_first_send": author_neighbour_up_ms, "copies_held": joiner_copies.len(), "same_bytes_as_early_observer": true },
         "quiet_window": {

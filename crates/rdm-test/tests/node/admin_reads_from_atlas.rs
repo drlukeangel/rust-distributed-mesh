@@ -91,6 +91,11 @@ pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
     tokio::time::timeout(WRONG, waited).await.unwrap_or_else(|_| panic!("{what} never published Ready"));
 }
 
+/// Whether an admin span's fields name mesh1.admin.`name` as its node (`node_path`, `node_name`).
+fn at_admin(f: &std::collections::BTreeMap<String, String>, name: &str) -> bool {
+    f.get("node_path").map(String::as_str) == Some("mesh1.admin") && f.get("node_name").map(String::as_str) == Some(name)
+}
+
 /// The fabric's nodes store under `store`: `<store>/<fabric id>/nodes.jsonl`.
 fn nodes_file(store: &std::path::Path, root: &Running) -> std::path::PathBuf {
     let fabric = root.digest.lock().unwrap().fabric_id.clone();
@@ -148,10 +153,9 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
             assert!(read.rafka_time.is_some() && !read.primaries.is_empty(), "the rafka-time and the primaries are served ({mesh:?})");
             let own = read.own_row.as_ref().unwrap_or_else(|| panic!("its mesh-primary answers the reader its own row ({mesh:?})"));
             assert_eq!(own.0.node_id, launch.node_id, "the own row is the reader's ({mesh:?}): {own:?}");
-            assert!(own.1 > 0, "the own row carries the row's revision ({mesh:?}): {own:?}");
         }
-        let served: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.topology.serve.via-read" && f.get("node").map(String::as_str) == Some("mesh1.admin.1")).map(|(_, _, f)| f.clone()).collect();
-        assert!(served.iter().all(|f| f.get("outcome").map(String::as_str) == Some("served")), "every read the primary served was served: {served:?}");
+        let served: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.topology.serve.via-read" && at_admin(f, "1")).map(|(_, _, f)| f.clone()).collect();
+        assert!(!served.is_empty() && served.iter().all(|f| f.get("outcome").map(String::as_str) == Some("served")), "every read the primary served was served: {served:?}");
 
         admin.leave().await;
         root.leave().await;
@@ -321,7 +325,7 @@ fn a_launched_admin_is_ready_with_its_fabric_meshes_and_nodes_stores_unreadable(
         assert_eq!((fabric.node_id.clone(), fabric.incarnation.clone()), (root_birth.node_id.clone(), root_birth.incarnation.clone()), "the record names the Day-0 admin's birth: {fabric:?}");
         let mesh1 = admin.topology_view.primaries().meshes().get("mesh1").cloned().expect("mesh1.admin.2 holds mesh1's mesh-primary record from its hydration sync");
         assert_eq!(mesh1.node_id, root_birth.node_id, "mesh1's record names the Day-0 admin: {mesh1:?}");
-        let of_admin = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans.0.lock().unwrap().values().filter(|(n, _, f)| n == name && f.get("node").map(String::as_str) == Some("mesh1.admin.2")).map(|(_, _, f)| f.clone()).collect() };
+        let of_admin = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans.0.lock().unwrap().values().filter(|(n, _, f)| n == name && at_admin(f, "2")).map(|(_, _, f)| f.clone()).collect() };
         let read = of_admin("rdm.node_admin.build.update.via-read-committed");
         assert!(read.iter().any(|f| f.get("outcome").map(String::as_str) == Some("absorbed")), "the floor's Build is read from the Build storage and absorbed: {read:?}");
         // The admin's digest goes Ready before its Ready span is emitted (admin/boot.rs: set_own_status, then

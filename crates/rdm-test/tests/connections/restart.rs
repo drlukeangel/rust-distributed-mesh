@@ -84,7 +84,7 @@ async fn a_recovered_source_holds_no_connection_and_reads_none_back() {
     let after = recovered(&estate, &source()).await;
     let recovered_id: NodeId = serde_json::from_value(after["node_id"].clone()).expect("recovered ID");
     let held = snapshot(&estate, &recovered_id);
-    assert_eq!(held["by"], recovered_id.as_str(), "the recovered node answers: {held}");
+    assert_eq!(held["by_node_id"], recovered_id.as_str(), "the recovered node answers: {held}");
     assert!(held["own_latest_directs"].as_array().expect("snapshot includes Direct array").is_empty(), "the recovered source holds no Direct: {held}");
     assert!(held["own_active_proxies"].as_array().expect("snapshot includes Proxy array").is_empty(), "nor any Proxy: {held}");
     assert!(estate.connection_history(&source_id).iter().any(|r| r["id"] == fifth["id"]), "the store keeps the first birth's rows as written");

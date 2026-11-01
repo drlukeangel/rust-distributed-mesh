@@ -86,7 +86,7 @@ fn probe(estate: &Estate, args: &[&str]) -> (Value, u64, u64) {
 fn snapshot(estate: &Estate, node: &NodeId) -> Value {
     let (out, _, _) = probe(estate, &["snapshot", "--target", &format!("exact:{node}"), "--key", "x"]);
     assert_eq!(out["outcome"], "Reply", "{node} answers the snapshot door: {out}");
-    assert_eq!(out["by"], node.as_str(), "the exact node answered: {out}");
+    assert_eq!(out["by_node_id"], node.as_str(), "the exact node answered: {out}");
     out
 }
 

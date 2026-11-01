@@ -60,7 +60,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
         let ready_spans = spans.0.lock().unwrap().values().filter(|(name, _, _)| name == "rdm.mesh.node.update.via-ready").count();
         let _ = std::fs::remove_dir_all(&dir);
         let why = outcome.expect("a node whose join was never taken must end, not come up");
-        assert!(why.contains("mesh1.admin.1") && why.contains("unreached"), "the end names the launcher and the cause: {why}");
+        assert!(why.contains(admin.launcher.node_id.as_str()) && why.contains("unreached"), "the end names the launcher by its node id and the cause: {why}");
         assert_eq!(ready_spans, 0, "no via-ready span is emitted");
         assert!(!heard_ready, "Ready is never published");
     })
@@ -100,6 +100,6 @@ fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
         let started = node::start(&launch, |b, _| b).await;
         let _ = std::fs::remove_dir_all(&dir);
         let why = started.err().expect("a launch with no launcher must be refused").to_string();
-        assert!(why.contains("mesh1.rpc.1") && why.contains("no launcher"), "the refusal names the node and the missing launcher: {why}");
+        assert!(why.contains(launch.node_id.as_str()) && why.contains("no launcher"), "the refusal names the node by its id and the missing launcher: {why}");
     })
 }

@@ -145,7 +145,9 @@ fn a_nodes_start_opens_no_nodes_store_and_its_first_read_does() {
         let gw1 = node::start(&launch, |b, _| b).await.expect("gw1 starts over a nodes store it cannot fold");
         assert!(nodes_folds(&seen).is_empty(), "gw1's start folds no nodes.jsonl (Q227)");
 
-        let refused = gw1.node_row(rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await.expect_err("the first read folds the store and meets the line");
+        // A read by id folds the records; a (path, name) resolves through its name claim first, and
+        // a name no node claims reads no record (node-identity-and-state.md §2).
+        let refused = gw1.node_row(NodeId::mint()).await.expect_err("the first read folds the store and meets the line");
         assert!(matches!(&refused, StorageError::Unrecognised { file: f, .. } if f.ends_with("nodes.jsonl")), "refused by name, naming the file: {refused:?}");
         assert_eq!(nodes_folds(&seen), vec![Some(READ.to_string())], "the one fold is the read's");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), line, "the read leaves the file as it is");
@@ -172,42 +174,40 @@ fn estate_owner(test: &str) -> rdm_test::estate::Owner {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT (query.md §1, Q237), on real node processes: mesh1.rpc.2 puts its own config and its
-/// mesh-primary, mesh1.admin.1, writes its row to the nodes storage. mesh1.admin.1, the fabric's only
-/// node-admin and so every primary, is then killed. mesh1.rpc.1 reads mesh1.rpc.2's row from the nodes
-/// storage by separate `path` and `name` (the testkit's node-row knob, `RunningNode::node_row`) and answers the config
-/// mesh1.rpc.2 put. Spans: mesh1.rpc.1's `rdm.node.row.resolve.via-store` is `found`; the store's fold
-/// of `nodes.jsonl` in that trace is the read's own, under it; no Node RPC call descends from it. Must
-/// NOT happen: the read needing a primary, or answering a row older than the one written.
+/// CONTRACT (query.md §1, Q237), on real node processes: mesh1.rpc.2's mesh-primary, mesh1.admin.1, has
+/// written its row to the nodes storage. mesh1.admin.1, the fabric's only node-admin and so every
+/// primary, is then killed. mesh1.rpc.1 reads mesh1.rpc.2's row from the nodes storage by its node id
+/// (the testkit's node-row knob, `RunningNode::node_row`) and answers it. Spans: mesh1.rpc.1's
+/// `rdm.node.row.resolve.via-store` is `found`; the store's fold of `nodes.jsonl` in that trace is the
+/// read's own, under it; no Node RPC call descends from it. Must NOT happen: the read needing a primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_nodes_row_is_read_from_the_nodes_storage_by_another_node_process_with_no_primary_alive() {
     let cell = "a_nodes_row_is_read_from_the_nodes_storage_by_another_node_process_with_no_primary_alive";
     let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
-    estate.settled_views(&[("mesh1", 1, 2)]).await;
+    let views = estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
-    let out = estate.probe(&["own-config", "--target", &rdm_test::estate::path_target(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), "--value", "listener.data=127.0.0.1:45007"]);
-    assert_eq!(out["own_config"], "config-updated", "mesh1.rpc.2's mesh-primary writes its row: {out}");
+    let id_at = |name: &str| views.iter().find(|v| v.name == PathName::new("mesh1.rpc", name).unwrap()).unwrap_or_else(|| panic!("mesh1.rpc.{name} is settled: {views:?}")).node_id.to_string();
+    let (reader, read_id) = (id_at("1"), id_at("2"));
 
     // Every primary is gone: the fabric's one node-admin is killed.
     estate.kill_bootstrap();
     let dir = rdm_test::node::node_row_knob_dir(&estate.root);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("mesh1.rpc.1.staged"), "mesh1.rpc.2").unwrap();
-    std::fs::rename(dir.join("mesh1.rpc.1.staged"), dir.join("mesh1.rpc.1")).unwrap();
+    std::fs::write(dir.join(format!("{reader}.staged")), &read_id).unwrap();
+    std::fs::rename(dir.join(format!("{reader}.staged")), dir.join(&reader)).unwrap();
     let answer: serde_json::Value = rdm_test::estate::wait_for("mesh1.rpc.1 answers its read of mesh1.rpc.2's row", std::time::Duration::from_secs(30), || {
-        let file = dir.join("mesh1.rpc.1.answer");
+        let file = dir.join(format!("{reader}.answer"));
         async move { std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()) }
     })
     .await;
-    assert_eq!(answer["outcome"], "found", "{answer}");
-    assert_eq!(answer["config"], serde_json::json!({"listener.data": "127.0.0.1:45007"}), "the config mesh1.rpc.2 put, as its mesh-primary wrote it: {answer}");
+    assert_eq!((&answer["outcome"], &answer["node_id"]), (&serde_json::json!("found"), &serde_json::json!(read_id)), "mesh1.rpc.2's row, as its mesh-primary wrote it: {answer}");
 
     estate.stop().await;
     let spans = estate.spans();
     let attr = |sp: &serde_json::Value, k: &str| sp["attributes"][k].as_str().map(str::to_string).unwrap_or_else(|| sp["attributes"][k].to_string());
-    let read = rdm_test::estate::named(&spans, READ).into_iter().find(|sp| attr(sp, "node") == "mesh1.rpc.1").unwrap_or_else(|| panic!("mesh1.rpc.1's {READ}"));
-    assert_eq!((attr(read, "by"), attr(read, "at"), attr(read, "outcome")), ("name".to_string(), "mesh1.rpc.2".to_string(), "found".to_string()), "{read}");
+    let read = rdm_test::estate::named(&spans, READ).into_iter().find(|sp| attr(sp, "node") == reader).unwrap_or_else(|| panic!("mesh1.rpc.1's {READ}"));
+    assert_eq!((attr(read, "by"), attr(read, "subject_id"), attr(read, "outcome")), ("id".to_string(), format!("{:?}", Some(NodeId::parse(&read_id).unwrap())), "found".to_string()), "{read}");
     let folds: Vec<_> = rdm_test::estate::named(&spans, FOLD).into_iter().filter(|sp| sp["trace_id"] == read["trace_id"] && attr(sp, "file").ends_with("nodes.jsonl")).collect();
     assert_eq!(folds.len(), 1, "the read's trace holds one fold of nodes.jsonl: {folds:?}");
     assert!(rdm_test::estate::descends_from(&spans, folds[0], read), "the store is opened by the read: {}", folds[0]);
