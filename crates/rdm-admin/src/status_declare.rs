@@ -239,16 +239,6 @@ impl Declarer {
             .in_scope(|| tracing::info!("a start begins this birth's next cycle: its own state is owed afresh at node.started"));
     }
 
-    /// The open start stream reports Ready to this receiver; a later role move still owes it.
-    pub(crate) fn own_on_stream(&self, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId, operation: &DeclaredOperation, receiver: &rdm_core::MeshDigest) {
-        let key = Key::OwnState(incarnation.to_string(), NodeState::Ready);
-        let request = StatusRequest::DeclareNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Ready, operation: Some(operation.clone()) };
-        let at = self.owed_next();
-        self.requests.lock().unwrap().insert(key.clone(), (Receiver::MeshPrimaryOf(mesh.to_owned()), request, None, at));
-        self.done.lock().unwrap().insert(key.clone(), ("command-stream".into(), receiver.node.node_id.clone(), Some(receiver.node.incarnation.clone())));
-        self.pending.lock().unwrap().remove(&key);
-    }
-
     /// The operation that produced this birth's own `state` in its current cycle, if one did.
     pub(crate) fn own_operation(&self, state: NodeState) -> Option<DeclaredOperation> {
         self.own_operations.lock().unwrap().get(&state).cloned()
