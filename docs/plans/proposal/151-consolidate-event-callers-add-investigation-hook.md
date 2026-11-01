@@ -1,6 +1,6 @@
 # i151 proposal: one `Resend` for every Node RPC call, and the `on_node_investigated` hook
 
-Status: ruled by Luke 2026-11-01 (Q311 to Q316); reviewed against the code and pages by the lead
+Status: approved by Luke 2026-11-01; the build is planned in [the i151 PRD](../i151-resend-and-call-failed.md). Ruled Q311 to Q316; reviewed against the code and pages by the lead
 2026-11-01 (R-151.1 to R-151.13 below; R-151.6 ruled A by Luke, Q313; R-151.1 rewritten and R-151.13
 added by Q314, Q315, Q316). A new initiative,
 i151: nothing is broken today, so it starts after i150 (rdm#245) lands and never rides inside i150.
