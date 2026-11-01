@@ -1498,6 +1498,11 @@ impl AdminRunner {
         };
         let template = self.template_for(kind, mesh).await?;
         let pipeline = self.pipeline(&template);
+        // A planned node this admin's view does not hold yet is the next attempt's: the step ends
+        // Incomplete, never Failed (its put needs the held birth whatever target is pinned).
+        if self.topology.read().await.own(node_id).is_none() {
+            return Err(crate::executor::RunEnd::Incomplete(format!("{key:?}: planned node {node_id} is not in this admin's view yet")));
+        }
         // The durable decision is read before this future performs any topology lookup.
         let birth = pipeline.property_target(build_id, attempt, node, node_id, async {
             let view = self.topology.read().await;

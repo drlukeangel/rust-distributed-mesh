@@ -839,16 +839,16 @@ mod tests {
         t3.nodes.push(node(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false));
         let (p2, m2) = (PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2").unwrap());
         assert_eq!(who(&BuildOperation::DeleteLiveNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: m2.clone(), exited: None, birth: None }, &t3), expected(&t3, &p2), "a non-primary admin's delete is its mesh primary's");
-        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: m2.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t3), expected(&t3, &p2), "a non-primary admin's stop is its mesh primary's");
+        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: m2.clone(), node_id: t3.node(&m2).unwrap().node_id.clone(), from_incarnation: t3.node(&m2).unwrap().incarnation_id.clone().unwrap() }, &t3), expected(&t3, &p2), "a non-primary admin's stop is its mesh primary's");
         // R-MT1: a mesh primary's own operation waits for node.primary.update; no admin executes it
         // while it holds the role, and once the role moved its mesh's new primary does.
-        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: p2.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t3), "", "a mesh primary's own stop waits for its role to move");
+        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: p2.clone(), node_id: t3.node(&p2).unwrap().node_id.clone(), from_incarnation: t3.node(&p2).unwrap().incarnation_id.clone().unwrap() }, &t3), "", "a mesh primary's own stop waits for its role to move");
         assert_eq!(who(&BuildOperation::DeleteLiveNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: p2.clone(), exited: None, birth: None }, &t3), "", "a mesh primary's own delete waits for its role to move");
         let mut moved = t3.clone();
         for n in moved.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin) {
             n.is_primary = n.name.clone() == m2;
         }
-        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: p2.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the former primary's stop");
+        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: p2.clone(), node_id: moved.node(&p2).unwrap().node_id.clone(), from_incarnation: moved.node(&p2).unwrap().incarnation_id.clone().unwrap() }, &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the former primary's stop");
         let rename = |n: PathName, mesh: &str, kind: NodeKind| {
             let node: PathName = n.clone();
             BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, mesh: mesh.to_owned(), kind: kind, step: rdm_core::build::Step::Update { name: node.renamed().unwrap(), node }, birth: None, entry: None }
@@ -862,14 +862,14 @@ mod tests {
         assert_eq!(who(&steps_connections(p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), "", "a Build's node.connection.delete of a mesh primary waits for its role to move");
         assert!(role_move(&steps_connections(p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3).is_some_and(|m| m.mesh_role && !m.fabric_role), "a Build's node.connection.delete of mesh2's primary moves its mesh-primary role first");
         assert_eq!(who(&steps_connections(p2.clone(), "mesh2", NodeKind::NodeAdmin), &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the Build's node.connection.delete");
-        let connections = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::DeleteConnections { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
-        let stop = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::StopNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
-        assert_eq!(who(&connections(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a member's node.connection.delete is its mesh primary's");
-        assert_eq!(who(&stop(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a member's stop is its mesh primary's");
-        assert_eq!(who(&connections(m2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), expected(&t3, &p2), "a non-primary admin's node.connection.delete is its mesh primary's");
-        assert_eq!(who(&stop(p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), "", "a mesh primary's own stop waits for its role to move");
-        assert_eq!(who(&stop(p2.clone(), "mesh2", NodeKind::NodeAdmin), &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the stop");
-        assert!(role_move(&stop(p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3).is_some_and(|m| m.mesh_role && !m.fabric_role), "the stop of mesh2's primary moves its mesh-primary role first");
+        let connections = |t: &Topology, n: PathName, mesh: &str, kind: NodeKind| BuildOperation::DeleteConnections { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: t.node(&n).map(|x| x.node_id.clone()).unwrap_or_else(crate::model::NodeId::mint), from_incarnation: t.node(&n).and_then(|x| x.incarnation_id.clone()).unwrap_or_else(crate::model::IncarnationId::mint) };
+        let stop = |t: &Topology, n: PathName, mesh: &str, kind: NodeKind| BuildOperation::StopNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: t.node(&n).map(|x| x.node_id.clone()).unwrap_or_else(crate::model::NodeId::mint), from_incarnation: t.node(&n).and_then(|x| x.incarnation_id.clone()).unwrap_or_else(crate::model::IncarnationId::mint) };
+        assert_eq!(who(&connections(&t, PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a member's node.connection.delete is its mesh primary's");
+        assert_eq!(who(&stop(&t, PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a member's stop is its mesh primary's");
+        assert_eq!(who(&connections(&t3, m2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), expected(&t3, &p2), "a non-primary admin's node.connection.delete is its mesh primary's");
+        assert_eq!(who(&stop(&t3, p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), "", "a mesh primary's own stop waits for its role to move");
+        assert_eq!(who(&stop(&moved, p2.clone(), "mesh2", NodeKind::NodeAdmin), &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the stop");
+        assert!(role_move(&stop(&t3, p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3).is_some_and(|m| m.mesh_role && !m.fabric_role), "the stop of mesh2's primary moves its mesh-primary role first");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }, &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()));
         assert_eq!(who(&shutdown("mesh2"), &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()));
     }
@@ -910,10 +910,10 @@ mod tests {
     #[test]
     fn the_fabric_primary_never_executes_its_own_delete_or_stop() {
         let delete = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::DeleteLiveNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), exited: None, birth: None };
-        let stop = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::StopNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
+        let stop = |t: &Topology, n: PathName, mesh: &str, kind: NodeKind| BuildOperation::StopNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: t.node(&n).map(|x| x.node_id.clone()).unwrap_or_else(crate::model::NodeId::mint), from_incarnation: t.node(&n).and_then(|x| x.incarnation_id.clone()).unwrap_or_else(crate::model::IncarnationId::mint) };
         // mesh1.admin.1 holds the fabric-primary role, mesh1.rpc.1 beside it.
         let t = elected(PathName::new("mesh1.admin", "1").unwrap());
-        for op in [delete(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), stop(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin)] {
+        for op in [delete(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), stop(&t, PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin)] {
             assert_eq!(executor_for(&op, &t), None, "{op:?}: never the fabric primary; no admin until its roles moved");
             assert!(role_move(&op, &t).is_some_and(|m| m.mesh_role && m.fabric_role), "{op:?}: both roles move first: {:?}", role_move(&op, &t));
         }
@@ -926,7 +926,7 @@ mod tests {
             "the delete of its mesh's only node moves the fabric-primary role alone: {:?}",
             role_move(&delete(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t)
         );
-        assert!(role_move(&stop(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t).is_some_and(|m| m.mesh_role && m.fabric_role), "its stop moves both roles");
+        assert!(role_move(&stop(&t, PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t).is_some_and(|m| m.mesh_role && m.fabric_role), "its stop moves both roles");
         assert_eq!(who(&delete(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), &t), "", "mesh1's primary, beside mesh1.rpc.1, waits for its own role to move");
         let mut moved = t.clone();
         for n in moved.nodes.iter_mut() {

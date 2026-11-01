@@ -1619,7 +1619,7 @@ mod tests {
             other => panic!("{action} of {path:?} is refused last-admin: {other:?}"),
         };
         assert_eq!(refusal(PathName::new("mesh1.admin", "1").unwrap(), "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
-        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node: only.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
+        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node: only.clone(), node_id: t.node(&only).unwrap().node_id.clone(), from_incarnation: t.node(&only).unwrap().incarnation_id.clone().unwrap() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
         assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the role move");
         assert_eq!(refusal(PathName::new("mesh2.admin", "1").unwrap(), "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
