@@ -1299,11 +1299,13 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
             let Some(entry) = topology.node_spec(p) else { continue };
             let binding = entry.executable.as_ref();
             let held = observed.node(p).filter(|n| (n.status.is_live() || n.stopped) && n.incarnation_id.is_some());
-            // On its entry: its live row is this birth's and records what the entry names; with no row
-            // written at the path, only an entry that names no executable (as `paths_owed_replacement`).
+            // On its entry: its live row is this birth's and records what the entry names. A row of
+            // another birth at the path (a recovery's create mid-run), or no row, says nothing of this
+            // birth: only an entry naming an executable replaces it then (main's rule; as
+            // `paths_owed_replacement`).
             let on_entry = |n: &crate::model::Node| match recorded.get(p) {
-                Some(r) => r.node_id == n.node_id && !replaced_by_target(entry, Some(r)),
-                None => binding.is_none(),
+                Some(r) if r.node_id == n.node_id => !replaced_by_target(entry, Some(r)),
+                _ => binding.is_none(),
             };
             match (replacement_progress(steps, p, recorded), held) {
                 // The successor its create launched is live on its entry's sha, its receipt never written:

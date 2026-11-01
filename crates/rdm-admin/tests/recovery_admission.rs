@@ -9,6 +9,7 @@ use rdm_admin::build_state::{AttemptOutcome, AttemptReason, BuildAttemptClaim, B
 use rdm_admin::control_plane::{ControlPlane, Recovery, Refusal};
 use rdm_admin::model::*;
 use rdm_admin::storage::MeshStorage as _;
+use rdm_admin::storage::NodesStorage as _;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
@@ -106,6 +107,7 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     let fp_birth = t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &fp_birth, "mesh1").await.unwrap();
     let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
+    let _ = cp.node_rows.set(crate::records_of(&*cp.topology.read().await).await);
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     // `mesh1.rpc.2` has gone silent since: TRUE OFFLINE, Dead in the view.
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
@@ -155,7 +157,10 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     // Another Build's attempt runs in mesh1 (claimed by the fabric-primary): the recovery waits for it.
     let other = cp.submit("build.create", crate::named_request(&cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await).await.expect("a topology change is accepted");
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: Some(fp_birth.node_id.clone()), mesh: None, build_id: other.build_id.clone(), attempt: other.attempt, executor: fp_birth.clone() }).await.unwrap();
-    let later = cp.open_recovery("build.create", path.clone(), NodeId::mint(), IncarnationId::mint()).await;
+    // Another birth at the path, under its own record.
+    let other_birth = NodeId::mint();
+    cp.node_rows.get().unwrap().put_node(&rdm_admin::storage::NodeRow::new(path.clone(), "mesh1", NodeKind::RpcNode, other_birth.clone(), NodeStatus::Ready)).await.unwrap();
+    let later = cp.open_recovery("build.create", path.clone(), other_birth, IncarnationId::mint()).await;
     assert!(matches!(&later, Err(Refusal::BuildInProgress(held)) if held.current_build_id == other.build_id && held.mesh.as_deref() == Some("mesh1")), "{later:?}");
 
     // The topology Build settles and is the accepted Build now: the exited birth's recovery lives in
@@ -204,6 +209,7 @@ async fn a_recovery_submit_for_a_birth_a_delete_deleted_is_answered_already_appl
     let fp_birth = t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &fp_birth, "mesh1").await.unwrap();
     let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
+    let _ = cp.node_rows.set(crate::records_of(&*cp.topology.read().await).await);
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt: 1, executor: fp_birth.clone() }).await.unwrap();
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
@@ -334,12 +340,14 @@ async fn a_mesh_primary_that_is_not_the_fabric_primary_writes_no_drift_attempt_a
     let fp_birth = t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
     let accepted = AcceptedStore::seeded(&*fp, t.fabric.id.clone(), FabricTopology::of_observed(&t), &fp_birth, "mesh1").await.unwrap();
     let fp_cp = Arc::new(crate::control_plane(fp.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time()));
+    let _ = fp_cp.node_rows.set(crate::records_of(&*fp_cp.topology.read().await).await);
     let b0 = fp_cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     fp.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: Some(fp_birth.node_id.clone()), mesh: None, build_id: b0.clone(), attempt: 1, executor: fp_birth.clone() }).await.unwrap();
     fp.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
     until("the mesh-primary holds the birth Build settled", &*mp, &b0, |p| p.state == rdm_admin::build_state::BuildState::Complete && p.attempt == 1).await;
     let mp_accepted = Arc::new(AcceptedStore::new(Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()), mp_birth.node_id.as_str()));
     let mp_cp = Arc::new(crate::control_plane(mp.clone(), mp_accepted, rdm_core::PathName::new("mesh2.admin", "1").unwrap(), t, crate::adopted_time()));
+    let _ = mp_cp.node_rows.set(crate::records_of(&*mp_cp.topology.read().await).await);
     for cp in [&fp_cp, &mp_cp] {
         cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
     }
@@ -398,7 +406,9 @@ async fn fabric_of_two_meshes() -> (Arc<ControlPlane>, Arc<ControlPlane>, Arc<Me
     let fp_birth = t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &fp_birth, "mesh1").await.unwrap();
     let fp = Arc::new(crate::control_plane(builds.clone(), accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time()));
+    let _ = fp.node_rows.set(crate::records_of(&*fp.topology.read().await).await);
     let mp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh2.admin", "1").unwrap(), t, crate::adopted_time()));
+    let _ = mp.node_rows.set(crate::records_of(&*mp.topology.read().await).await);
     let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0, &fp_birth).await;
     for cp in [&fp, &mp] {
@@ -449,7 +459,7 @@ async fn a_recovery_in_mesh2_is_opened_by_its_mesh_primary_while_a_node_create_r
     assert_eq!((p.attempt, p.executor.as_ref(), p.state), (create.attempt, Some(&fp_birth), rdm_admin::build_state::BuildState::Running), "the node.create's attempt in mesh1 still runs: {p:?}");
 
     let claims = capture.spans("rdm.node_admin.build.update.via-claim-decision");
-    let mine: Vec<_> = claims.iter().filter(|(_, a)| a.get("node").map(String::as_str) == Some("mesh2.admin.1")).collect();
+    let mine: Vec<_> = claims.iter().filter(|(_, a)| a.get("node_path").map(String::as_str) == Some("mesh2.admin") && a.get("node_name").map(String::as_str) == Some("1")).collect();
     assert_eq!(mine.len(), 1, "mesh2's mesh-primary decides its recovery's claim itself: {claims:?}");
     let (_, claim) = mine[0];
     assert_eq!((claim["mesh"].as_str(), claim["outcome"].as_str(), claim["build_id"].as_str()), ("mesh2", "won", create.build_id.log().to_string().as_str()), "claimed on mesh2's rows: {claim:?}");
@@ -586,6 +596,8 @@ async fn a_mesh_primary_runs_its_members_recovery_to_complete_and_its_mesh_admit
 
     // The node the recovery created exits as well: mesh2 admits its recovery.
     let (node2, birth2) = (NodeId::mint(), IncarnationId::mint());
+    // The recovery created it under a record of its own.
+    mp.node_rows.get().unwrap().put_node(&rdm_admin::storage::NodeRow::new(path.clone(), "mesh2", NodeKind::RpcNode, node2.clone(), NodeStatus::Ready)).await.unwrap();
     match run_recovery(&mp, &door, "node-recovery", path.clone(), node2, birth2).await {
         Ok(Recovered::Ran { opened, terminal }) => {
             assert_eq!((opened.mesh.as_deref(), opened.attempt), (Some("mesh2"), 2), "attempt 2 of mesh2's lane");
@@ -691,6 +703,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
 
     // mesh2's primary opens and claims its member's recovery, then leaves mid-run.
     let lost = Arc::new(crate::control_plane(builds.clone(), accepted.clone(), rdm_core::PathName::new("mesh2.admin", "1").unwrap(), before.clone(), crate::adopted_time()).with_claims(claims.clone()));
+    let _ = lost.node_rows.set(crate::records_of(&*lost.topology.read().await).await);
     let first = match lost.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await {
         Ok(Recovery::Opened(o)) => o,
         other => panic!("mesh2's primary opens its member's recovery: {other:?}"),
@@ -714,6 +727,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
         crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh2.admin", "2").unwrap(), after, crate::adopted_time())
             .with_claims(claims.clone()),
     );
+    let _ = heir.node_rows.set(crate::records_of(&*heir.topology.read().await).await);
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
     let incarnation = deleted_birth.incarnation_id.clone().unwrap();
@@ -723,7 +737,7 @@ async fn a_recovery_whose_mesh_primary_is_lost_mid_run_is_ended_by_the_new_mesh_
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while the lost primary is only silent, mesh2 stays held by its attempt: {other:?}"),
     };
-    assert_eq!((silent["current_build_id"].as_str(), silent["mesh"].as_str(), silent["held_by"].as_str()), (Some(b0.as_str()), Some("mesh2"), Some("mesh2.admin.1")), "named by the Build, the mesh and the claimant: {silent}");
+    assert_eq!((silent["current_build_id"].as_str(), silent["mesh"].as_str(), silent["held_by"].as_str()), (Some(b0.as_str()), Some("mesh2"), Some(lost.topology.read().await.node(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).unwrap().node_id.to_string().as_str())), "named by the Build, the mesh and the claimant: {silent}");
 
     // The lost primary's departure is proven (its exact runtime reads exited), then the new primary
     // submits its recovery.
@@ -787,6 +801,7 @@ async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released
 
     // mesh2's primary runs its member's recovery to its verdict and is lost before the release.
     let lost = Arc::new(crate::control_plane(builds.clone(), accepted.clone(), rdm_core::PathName::new("mesh2.admin", "1").unwrap(), before.clone(), crate::adopted_time()).with_claims(claims.clone()));
+    let _ = lost.node_rows.set(crate::records_of(&*lost.topology.read().await).await);
     let Ok(Recovery::Opened(first)) = lost.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await else { panic!("mesh2's primary opens its member's recovery") };
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     assert_eq!(claims.in_flight("mesh2").await.unwrap().map(|r| (r.attempt, r.claimant)), Some((1, lost_executor.node_id.clone())), "the row the lost primary never released");
@@ -803,6 +818,7 @@ async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released
         crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh2.admin", "2").unwrap(), after, crate::adopted_time())
             .with_claims(claims.clone()),
     );
+    let _ = heir.node_rows.set(crate::records_of(&*heir.topology.read().await).await);
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
     let incarnation = deleted_birth.incarnation_id.clone().unwrap();
@@ -810,7 +826,7 @@ async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while the lost primary is only silent, its row holds mesh2: {other:?}"),
     };
-    assert_eq!((silent["mesh"].as_str(), silent["held_by"].as_str()), (Some("mesh2"), Some("mesh2.admin.1")), "{silent}");
+    assert_eq!((silent["mesh"].as_str(), silent["held_by"].as_str()), (Some("mesh2"), Some(lost.topology.read().await.node(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).unwrap().node_id.to_string().as_str())), "{silent}");
 
     departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
     let second = match heir.open_recovery("node-recovery", deleted.clone(), deleted_birth.node_id.clone(), incarnation).await {
@@ -819,7 +835,7 @@ async fn an_in_flight_row_a_lost_mesh_primary_left_after_its_verdict_is_released
     };
     assert_eq!((second.mesh.as_deref(), second.attempt), (Some("mesh2"), 2), "attempt 2 of mesh2's lane");
     let held = claims.in_flight("mesh2").await.unwrap().expect("mesh2's in-flight row");
-    assert_eq!((held.attempt, held.claimant.as_str()), (2, "mesh2.admin.2"), "the row names attempt 2 and its claimant");
+    assert_eq!((held.attempt, held.claimant.as_str()), (2, heir.node_id.get().unwrap().as_str()), "the row names attempt 2 and its claimant");
 }
 
 /// CONTRACT (build.md :365 as the approved proposal A4 words it: "The next attempt is claimed after
@@ -890,6 +906,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
         crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh2.admin", "2").unwrap(), after, crate::adopted_time())
             .with_claims(claims.clone()),
     );
+    let _ = heir.node_rows.set(crate::records_of(&*heir.topology.read().await).await);
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
     let deleted_incarnation = deleted_birth.incarnation_id.clone().unwrap();
@@ -998,6 +1015,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     // Attempt 1: opened and claimed by mesh2's primary; its node.delete departs the birth and its
     // create fails; the run releases mesh2's in-flight row at its verdict.
     let lost = Arc::new(crate::control_plane(builds.clone(), accepted.clone(), rdm_core::PathName::new("mesh2.admin", "1").unwrap(), before.clone(), crate::adopted_time()).with_claims(claims.clone()));
+    let _ = lost.node_rows.set(crate::records_of(&*lost.topology.read().await).await);
     let Ok(Recovery::Opened(first)) = lost.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), birth.clone()).await else { panic!("mesh2's primary opens its member's recovery") };
     assert_eq!((first.mesh.as_deref(), first.attempt), (Some("mesh2"), 1), "attempt 1 of mesh2's lane");
     for r in deletion_receipts(Some("mesh2"), "node.delete", &b0, 1, &member, &exited.node_id, &birth, &lost_executor) {
@@ -1035,6 +1053,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
         crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh2.admin", "2").unwrap(), after, crate::adopted_time())
             .with_claims(claims.clone()),
     );
+    let _ = heir.node_rows.set(crate::records_of(&*heir.topology.read().await).await);
     let departure = Arc::new(Departure::default());
     let _ = heir.departure.set(departure.clone());
     departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1044,7 +1063,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("while attempt 2 is open for the member, mesh2 refuses another birth's recovery: {other:?}"),
     };
-    assert_eq!((refused["mesh"].as_str(), refused["held_by"].as_str()), (Some("mesh2"), Some("mesh2.admin.1")), "named by the mesh and the opener the row names: {refused}");
+    assert_eq!((refused["mesh"].as_str(), refused["held_by"].as_str()), (Some("mesh2"), Some(deleted_birth.node_id.as_str())), "named by the mesh and the opener the row names: {refused}");
 
     // The member stays owed from attempt 1's Failed verdict: the open no one claimed ran nothing.
     let owed = builds.exits_owed(&b0, "mesh2").await.unwrap();
@@ -1118,10 +1137,12 @@ async fn a_recovery_opened_by_a_deleted_birth_is_refused_by_name_and_writes_noth
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
     let before = opened(&builds.facts().await.unwrap());
 
-    // Its own row is Deleted: its node recovery re-created it, and this is the old birth.
+    // The exited birth's own record stands; this admin's row is Deleted: its node recovery
+    // re-created it, and this is the old birth.
+    rows.put_node(&NodeRow::new(path.clone(), "mesh1", rdm_core::NodeKind::RpcNode, node_id.clone(), NodeStatus::Ready)).await.unwrap();
     rows.put_node(&NodeRow::new(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, me_id.clone(), NodeStatus::Deleted)).await.unwrap();
     let deleted = cp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
-    assert!(matches!(&deleted, Err(Refusal::Conflict(why)) if why.contains("deleted birth") && why.contains("mesh1.admin.1")), "a birth whose own row is Deleted opens nothing, refused by name: {deleted:?}");
+    assert!(matches!(&deleted, Err(Refusal::Conflict(why)) if why.contains("deleted birth") && why.contains(me_id.as_str())), "a birth whose own row is Deleted opens nothing, refused by name: {deleted:?}");
 
     // Its own row reads live, but a new birth's claim holds its path.name: it was re-created there.
     let successor = NodeId::mint();
@@ -1203,6 +1224,7 @@ async fn the_fabric_primary_opens_no_recovery_of_an_unheard_mesh_primary_until_t
     let fp_birth = accepted_view.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), &fp_birth, "mesh1").await.unwrap();
     let fp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time()));
+    let _ = fp.node_rows.set(crate::records_of(&*fp.topology.read().await).await);
     // Its primaries already hold the election's record (the investigation woke on it), the view not yet.
     election_replaced(&fp, &t, &PathName::new("mesh2.admin", "1").unwrap(), &PathName::new("mesh2.admin", "2").unwrap());
     let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
@@ -1212,13 +1234,14 @@ async fn the_fabric_primary_opens_no_recovery_of_an_unheard_mesh_primary_until_t
     // The election has not named mesh2's new primary in this view.
     let unnamed = fp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
     let claimed = builds.read_build(&b0).await.unwrap().attempt_executors;
-    assert!(matches!(&unnamed, Err(Refusal::Unavailable(why)) if why.contains("mesh2") && why.contains("mesh2.admin.2")), "refused by name while the election has not named mesh2's primary, naming the admin it waits for: {unnamed:?}; claims: {claimed:?}");
+    assert!(matches!(&unnamed, Err(Refusal::Unavailable(why)) if why.contains("mesh2") && why.contains(fp.topology.read().await.node(&rdm_core::PathName::new("mesh2.admin", "2").unwrap()).unwrap().node_id.to_string().as_str())), "refused by name while the election has not named mesh2's primary, naming the admin it waits for: {unnamed:?}; claims: {claimed:?}");
     assert_eq!(opened(&builds.facts().await.unwrap()), before, "nothing is opened before the election names mesh2's primary");
     assert!(fp.claims.in_flight("mesh2").await.unwrap().is_none(), "mesh2's in-flight row is not taken");
     let refusals = capture.spans("rdm.node_admin.build.reject.via-mesh-primary-not-named");
     assert_eq!(refusals.len(), 1, "the refusal is spanned by name: {refusals:?}");
     let (_, r) = &refusals[0];
-    assert_eq!((r["node"].as_str(), r["mesh"].as_str(), r["member"].as_str(), r["admins"].as_str()), ("mesh1.admin.1", "mesh2", "mesh2.admin.1", "mesh2.admin.2"), "{r:?}");
+    let admin2 = t.node(&PathName::new("mesh2.admin", "2").unwrap()).unwrap().node_id.to_string();
+    assert_eq!((r["node_path"].as_str(), r["node_name"].as_str(), r["mesh"].as_str(), r["member_path"].as_str(), r["member_name"].as_str(), r["admins"].as_str()), ("mesh1.admin", "1", "mesh2", "mesh2.admin", "1", admin2.as_str()), "{r:?}");
 
     for (trace_id, attrs) in &refusals {
         eprintln!("span rdm.node_admin.build.reject.via-mesh-primary-not-named trace_id={trace_id} {attrs:?}");
@@ -1247,6 +1270,7 @@ async fn the_fabric_primary_claims_an_unheard_mesh_primarys_recovery_for_the_mes
     let fp_birth = accepted_view.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), &fp_birth, "mesh1").await.unwrap();
     let fp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time()));
+    let _ = fp.node_rows.set(crate::records_of(&*fp.topology.read().await).await);
     election_replaced(&fp, &t, &PathName::new("mesh2.admin", "1").unwrap(), &PathName::new("mesh2.admin", "2").unwrap());
     let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0, &fp_birth).await;
@@ -1263,7 +1287,8 @@ async fn the_fabric_primary_claims_an_unheard_mesh_primarys_recovery_for_the_mes
         eprintln!("span trace_id={trace_id} {attrs:?}");
     }
     let won = decisions.iter().find(|(_, a)| a["attempt"] == o.attempt.to_string() && a["outcome"] == "won").unwrap_or_else(|| panic!("the claim is decided once: {decisions:?}"));
-    assert_eq!(won.1["executor"].as_str(), "mesh2.admin.2", "{:?}", won.1);
+    let elected = t.node(&PathName::new("mesh2.admin", "2").unwrap()).unwrap().birth().unwrap().to_string();
+    assert_eq!(won.1["executor"].as_str(), elected, "{:?}", won.1);
 }
 
 /// CONTRACT (node-identity-and-state.md: "The fabric-primary writes a row only as acting primary of a
@@ -1280,6 +1305,7 @@ async fn the_fabric_primary_claims_the_recovery_of_a_meshs_only_node_admin_for_i
     let fp_birth = accepted_view.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), &fp_birth, "mesh1").await.unwrap();
     let fp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
+    let _ = fp.node_rows.set(crate::records_of(&*fp.topology.read().await).await);
     let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0, &fp_birth).await;
     let o = match fp.open_recovery("node-recovery", path, unheard.node_id.clone(), unheard.incarnation_id.clone().unwrap()).await {
@@ -1897,6 +1923,7 @@ fn node_recovery_step_faults_recover_or_fail_as_the_page_specifies() {
             submit_view,
             crate::adopted_time(),
         );
+        let _ = cp.node_rows.set(crate::records_of(&*cp.topology.read().await).await);
         let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
         settle_other(&submit_builds, &b0, &fp_birth).await;
         cp.topology
@@ -1981,12 +2008,13 @@ async fn a_recovery_answered_build_in_progress_is_opened_owed_to_its_mesh_and_cl
     let fp_birth = _fp.topology.read().await.node(&_fp.me).unwrap().birth().unwrap();
     let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let mp = Arc::new(crate::control_plane(mp.builds.clone(), mp.accepted.clone(), mp.me.clone(), mp.topology.read().await.clone(), crate::adopted_time()).with_claims(claims.clone()));
+    let _ = mp.node_rows.set(crate::records_of(&*mp.topology.read().await).await);
     let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
     // The fabric lane's attempt that acts on mesh2's birth holds mesh2's row.
     let holder = InFlight { build_id: b0.clone(), lane: None, attempt: 7, claimant: fp_birth.node_id.clone(), };
     assert_eq!(claims.take_in_flight("mesh2", &holder).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
 
-    let action = AttemptAction::Recover { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false };
+    let action = AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: false };
     for submit in 0..2 {
         match mp.open_recovery("node-recovery", path.clone(), node_id.clone(), incarnation.clone()).await {
             Err(Refusal::BuildInProgress(held)) => assert_eq!((held.mesh.as_deref(), held.held_by.as_ref()), (Some("mesh2"), Some(&fp_birth.node_id)), "submit {submit}"),
@@ -2033,6 +2061,7 @@ async fn a_fabric_recovery_waits_for_the_running_fabric_attempt_and_is_opened_at
     let fp_birth = accepted_view.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), &fp_birth, "mesh1").await.unwrap();
     let fp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time()));
+    let _ = fp.node_rows.set(crate::records_of(&*fp.topology.read().await).await);
     election_replaced(&fp, &t, &PathName::new("mesh2.admin", "1").unwrap(), &PathName::new("mesh2.admin", "2").unwrap());
     let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
     settle_other(&builds, &b0, &fp_birth).await;
