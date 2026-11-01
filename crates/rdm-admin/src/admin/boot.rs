@@ -1502,9 +1502,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // The record the writer of this admin's mesh rows holds, shared with its config door: a config
                                 // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
                                 let written = records.caches.nodes.clone();
-                                // Every record the writer holds is this admin's atlas's too (Q203).
-                                written.feeds(control.atlas.clone()).await;
-                                control.atlas.writes(&own_mesh);
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), written.clone());
                                 configs.uses_records(topology_storage.node_records(), topology_view.clone());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
@@ -1962,26 +1959,28 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }),
                                     primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.node_id.clone())),
                                     issuer: issuer.clone(),
+                                    // A joiner's row is read from the records this admin's writer holds, never the store
+                                    // (Q227, Q234).
                                     nodes: Some((nodes_storage.clone(), records.caches.nodes.clone())),
-                                    // A joiner's row is read from this admin's atlas, never the store (Q227, Q234).
                                     atlas: Some(control.atlas.clone()),
                                 });
                                 let _ = join_slot.set(door);
                                 // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
                                 let own = digest.clone();
-                                // For a mesh it holds no snapshot of, this admin answers from the records its atlas holds
-                                // (the meshes it is primary for) and the births its view holds now, never from the store
-                                // (Q227): a read is never refused because the store is mid-write.
-                                let (atlas, held_digest_view, held_fabric, held_me, held_ids) = (control.atlas.clone(), digest_view.clone(), cfg.fabric_id.clone(), node_id.clone(), records.clone());
+                                // For a mesh it holds no snapshot of, this admin answers from the records it writes and the
+                                // births its view holds now (its durable topology included), never from the store (Q227;
+                                // node-rpc-envelope.md Topology, Stored): a read is never refused because the store is
+                                // mid-write.
+                                let (written, held_digest_view, held_fabric, held_me, held_ids) = (records.caches.nodes.clone(), digest_view.clone(), cfg.fabric_id.clone(), node_id.clone(), records.clone());
                                 let stored: crate::topology_read::StoredSource = Arc::new(move || {
-                                    let (atlas, held_digest_view, held_fabric, held_me, held_ids) = (atlas.clone(), held_digest_view.clone(), held_fabric.clone(), held_me.clone(), held_ids.clone());
+                                    let (written, held_digest_view, held_fabric, held_me, held_ids) = (written.clone(), held_digest_view.clone(), held_fabric.clone(), held_me.clone(), held_ids.clone());
                                     Box::pin(async move {
                                         // The id this admin holds for each mesh it knows, a deleted mesh's none.
                                         let mut ids = held_ids.meshes.lock().unwrap().clone();
                                         let deleted = held_ids.deleted_meshes.lock().unwrap().clone();
                                         ids.retain(|_, id| !deleted.contains(id));
-                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = atlas
-                                            .records()
+                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = written
+                                            .rows()
                                             .iter()
                                             .filter(|r| r.status != NodeStatus::Deleted)
                                             .filter_map(crate::reenter::MapNode::of_record)
@@ -2001,22 +2000,53 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     Arc::new(move || incumbency_of(&digest_view, &records).lost)
                                 };
                                 // The hydration sync's own row (Q234): a node of this admin's mesh reading its mesh-primary
-                                // is answered its whole row from this admin's atlas, never the store; any other
-                                // caller, or this admin while it is not its mesh's primary, is answered none.
+                                // is answered from its selected lifecycle and property records (Q237; node-rpc-envelope.md
+                                // Topology: "OwnRow is served from the selected lifecycle and property records"), read
+                                // through the reader (query.md §1), never an atlas copy; any other caller, or this admin
+                                // while it is not its mesh's primary, is answered none.
                                 let own_row: crate::topology_read::OwnRowSource = {
-                                    let (atlas, view, mesh, me) = (control.atlas.clone(), control.topology.clone(), cfg.mesh.clone(), node_id.clone());
+                                    let (atlas, control, written, view, mesh, me, me_name) = (control.atlas.clone(), Arc::downgrade(&control), records.caches.nodes.clone(), control.topology.clone(), cfg.mesh.clone(), node_id.clone(), name.clone());
                                     Arc::new(move |caller: String| {
-                                        let (atlas, view, mesh, me) = (atlas.clone(), view.clone(), mesh.clone(), me.clone());
+                                        let (atlas, control, written, view, mesh, me, me_name) = (atlas.clone(), control.clone(), written.clone(), view.clone(), mesh.clone(), me.clone(), me_name.clone());
                                         Box::pin(async move {
                                             let view = view.read().await;
                                             if !view.is_mesh_primary(&mesh, &me) {
                                                 return None;
                                             }
-                                            let held = view.births().find(|n| n.endpoint_id.as_ref().is_some_and(|e| e.0 == caller)).and_then(|n| atlas.record(&n.node_id));
-                                            let row = held.or_else(|| atlas.record_of_endpoint(&caller)).filter(|r| r.mesh == mesh && r.node_id != me)?;
+                                            // The caller's node: the birth the view holds at its endpoint, else the record this
+                                            // writer holds at it (a birth the view does not hold yet).
+                                            let node_id = view.births().find(|n| n.endpoint_id.as_ref().is_some_and(|e| e.0 == caller)).map(|n| n.node_id.clone()).or_else(|| written.record_of_endpoint(&caller).map(|r| r.node_id))?;
+                                            let stores = control.upgrade()?.record_stores()?;
+                                            let reader = stores.reader();
+                                            let read = async {
+                                                let Some(row) = reader.row(&view, &node_id).await? else { return Ok(None) };
+                                                let predecessor = match row.predecessor.as_ref() {
+                                                    Some(p) => reader.row(&view, &p.node_id).await?,
+                                                    None => None,
+                                                };
+                                                let properties = stores.records.properties(&node_id).await.map_err(|e| format!("the property record of node {node_id} could not be read: {e}"))?;
+                                                Ok::<_, String>(Some((row, predecessor, properties)))
+                                            };
+                                            let (row, predecessor, properties) = match read.await {
+                                                Ok(Some(read)) => read,
+                                                Ok(None) => return None,
+                                                Err(e) => {
+                                                    tracing::info_span!("rdm.node_admin.node.serve.via-own-row", node_path = %me_name.path, node_name = %me_name.name, node_id = %node_id, outcome = "unread", detail = %e)
+                                                        .in_scope(|| tracing::info!("the caller's selected records could not be read: no own row is answered"));
+                                                    return None;
+                                                }
+                                            };
+                                            if row.mesh != mesh || row.node_id == me {
+                                                return None;
+                                            }
+                                            let mut v = crate::views::own_row_view(&view, &atlas, &row, predecessor.as_ref());
+                                            if let Some(own) = properties {
+                                                v.config = own.config;
+                                                v.tags = own.tags;
+                                            }
                                             // A lifecycle row has no revision (node-identity-and-state.md §2.5); the
                                             // OwnRow frame still carries one on the wire, sent as 0.
-                                            Some((crate::views::own_row_view(&view, &atlas, &row), 0))
+                                            Some((v, 0))
                                         })
                                     })
                                 };
@@ -2487,7 +2517,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // through this recovery submitter's terminate report and the heard-again door.
                                                 // Its verification at the root is owed to the fabric-primary the view names, sent again
                                                 // on each view installed (rdm#177).
-                                                let callers = Arc::new(crate::refused_caller::RefusedCallers::new(node_id.clone(), recovery.clone(), heard_again_slot.clone()));
+                                                let stores: crate::current_record::RecordStoresSource = {
+                                                    let control = Arc::downgrade(&control);
+                                                    Arc::new(move || control.upgrade()?.record_stores())
+                                                };
+                                                let callers = Arc::new(crate::refused_caller::RefusedCallers::new(node_id.clone(), recovery.clone(), heard_again_slot.clone(), stores));
                                                 callers.watch_views(records.subscribe_view());
                                                 control.atlas.refused_callers(callers);
                                                 // Fabric recovery (Q122): started by the primary watch in the fabric-primary's own mesh, and by mesh
@@ -2953,7 +2987,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // (states.md "The check-in checklist"): node start's Build floor read again, the current Build's
                                         // committed records from the Build storage (Q292), owed until read.
                                         let (build_read_store, build_read_log) = (control.builds.clone(), journal.clone());
-                                        let (atlas, atlas_rows) = (control.atlas.clone(), nodes_storage.clone());
+                                        let atlas = control.atlas.clone();
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
@@ -3081,11 +3115,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     records.set_adopted_degraded(adopted);
                                                 }
                                                 // The atlas covers the meshes this admin is primary for (Q207): every mesh its view and
-                                                // the current Build name as the fabric-primary, its own as a mesh-primary, none else. A
-                                                // mesh this admin writes holds its writer's rows, read once from the store as its writing
-                                                // was taken (storage-whole-records.md); any other mesh taken (the fabric-primary's start or
-                                                // hand-over) is filled once from its node records (Q204); a mesh handed away is narrowed off.
-                                                atlas.writing(written.clone());
+                                                // the current Build name as the fabric-primary, its own as a mesh-primary, none else;
+                                                // a mesh handed away is narrowed off. It holds no node record: each is read through the
+                                                // reader (query.md §1).
                                                 let scope: std::collections::BTreeSet<String> = if fabric_primary {
                                                     t.members().map(|n| n.mesh.clone()).chain(current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names().into_iter().collect::<Vec<_>>()).unwrap_or_default()).collect()
                                                 } else if mesh_primary {
@@ -3093,24 +3125,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 } else {
                                                     Default::default()
                                                 };
-                                                match atlas.scope(&*atlas_rows, scope.clone()).await {
-                                                    Ok((taken, handed)) if taken.is_empty() && handed.is_empty() => {}
-                                                    filled => {
-                                                        let (taken, handed) = filled.as_ref().map(|(t, h)| (t.join(","), h.join(","))).unwrap_or_default();
-                                                        tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-filled", node_path = %me.path, node_name = %me.name, meshes = %scope.iter().map(String::as_str).collect::<Vec<_>>().join(","), taken = %taken, handed = %handed, fabric_primary, mesh_primary, outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().unwrap_or_default(), "otel.kind" = "internal")
-                                                            .in_scope(|| tracing::info!("the atlas holds the node records of the meshes this admin is primary for: those it writes from its writer, each other read once as it was taken"));
-                                                    }
-                                                }
-                                                if !scope.is_empty() {
-                                                    // A birth first heard in one of its meshes this admin does not write (another
-                                                    // mesh-primary's self-healing among them) has its record read once into the atlas
-                                                    // (Q197, Q203); a mesh it writes holds its writer's rows.
-                                                    let births: Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> = t.births().filter(|n| scope.contains(&n.mesh) && !written.contains(&n.mesh)).filter_map(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))).collect();
-                                                    let read = atlas.read_new_births(&*atlas_rows, births).await;
-                                                    if read > 0 {
-                                                        tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-births-read", node_path = %me.path, node_name = %me.name, records = read as u64, "otel.kind" = "internal")
-                                                            .in_scope(|| tracing::info!("the records of births first heard are the atlas's"));
-                                                    }
+                                                let (taken, handed) = atlas.scope(scope.clone());
+                                                if !taken.is_empty() || !handed.is_empty() {
+                                                    tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-scope", node_path = %me.path, node_name = %me.name, meshes = %scope.iter().map(String::as_str).collect::<Vec<_>>().join(","), taken = %taken.join(","), handed = %handed.join(","), fabric_primary, mesh_primary, "otel.kind" = "internal")
+                                                        .in_scope(|| tracing::info!("the atlas covers the meshes this admin is primary for"));
                                                 }
                                                 if fabric_primary {
                                                     records.set_published_degraded(false);

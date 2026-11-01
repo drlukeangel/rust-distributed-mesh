@@ -2259,7 +2259,7 @@ mod refused_caller_terminate {
         let me: PathName = e.fabric_primary().await.expect("a fabric-primary");
         let mut cp = crate::control_plane(e.builds.clone(), e.accepted.clone(), me.clone(), e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
-        crate::bind_records(&cp, &[&*e.view.read().await]).await;
+        let rows = crate::bind_records(&cp, &[&*e.view.read().await]).await;
         let cp = Arc::new(cp);
         let before = e.builds.current().await.unwrap().unwrap();
         let path: PathName = secondary_rpc(&e, &e.view.read().await.node(&me).unwrap().mesh).await;
@@ -2271,7 +2271,11 @@ mod refused_caller_terminate {
         // Its recovery's node.delete wrote its record deleted; the re-create has not completed.
         let mut row = rdm_admin::storage::NodeRow::new(path.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Deleted);
         row.birth_mut(&incarnation, &path);
-        cp.atlas.write_record(&row);
+        {
+            use rdm_admin::storage::NodesStorage as _;
+            rows.put_node(&row).await.unwrap();
+        }
+        crate::bind_store(&cp, rows.clone(), &*e.view.read().await).await;
         let opened = match cp.open_terminate(tracing::Span::none(), "returned-birth", path.clone(), n.node_id.clone(), incarnation.clone()).await {
             Ok(Recovery::Opened(o)) => o,
             other => panic!("the deleted birth's node.terminate is admitted as the next attempt: {other:?}"),

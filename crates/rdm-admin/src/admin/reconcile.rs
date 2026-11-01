@@ -124,16 +124,26 @@ impl crate::build_drive::Gate for RoleGate {
 
     /// The completed lifecycle receipts of the Build, taken into the fabric-primary's atlas
     /// before the caller is answered `Complete` (fabric-atlas.md R-FA2): the atlas, never the gossip
-    /// view, is what Build acceptance reads them from (Q197).
+    /// view, is what Build acceptance reads them from (Q197). The receipts' subjects are read through the
+    /// reader (query.md §1), what names a receipt's birth its attempt pinned none of.
     async fn attempt_completed(&self, build_id: &crate::build::BuildId, attempt: u32) {
         if let Ok(p) = self.builds.read_build(build_id).await {
-            self.control.atlas.receipts(&p, attempt);
-            // The records the attempt's ops wrote on every mesh the Build names, its result (Q197, Q203).
-            if let Some(rows) = self.control.node_rows.get() {
-                let filled = self.control.atlas.fill(&**rows, p.topology.meshes.keys().cloned()).await;
-                tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-filled", build_id = %build_id.log(), attempt, meshes = p.topology.meshes.len() as u64, records = filled.as_ref().map(|n| *n as u64).unwrap_or(0), outcome = if filled.is_ok() { "filled" } else { "fill-refused" }, detail = %filled.err().unwrap_or_default(), "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the records the attempt's ops wrote are the atlas's"));
-            }
+            let rows = match self.control.current_records() {
+                Some(records) => {
+                    let observed = self.control.topology.read().await.clone();
+                    let operations: Vec<rdm_core::OperationId> = p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete).map(|s| s.operation.clone()).collect();
+                    match crate::atlas::subject_rows(&records, &observed, operations.iter()).await {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, outcome = "subjects-unread", detail = %e, "otel.kind" = "internal")
+                                .in_scope(|| tracing::info!("the receipts' subjects could not be read: a receipt its attempt pinned no birth of takes no effect"));
+                            Vec::new()
+                        }
+                    }
+                }
+                None => Vec::new(),
+            };
+            self.control.atlas.receipts(&p, attempt, &rows);
         }
     }
 

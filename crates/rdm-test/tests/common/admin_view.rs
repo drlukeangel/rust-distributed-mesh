@@ -20,7 +20,7 @@ pub fn admin_location() -> PathName { PathName::new("mesh1.admin", "9").unwrap()
 /// One node of a served view: `endpoint`, `addr` and `incarnation` are `None` for a node the admin holds
 /// and that is not born yet.
 pub fn node(name: PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
-    NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         kind,
         mesh: mesh.to_owned(),
         name,

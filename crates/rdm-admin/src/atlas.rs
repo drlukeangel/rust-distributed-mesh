@@ -5,8 +5,9 @@
 //!
 //! Its sources are ops, never a gossip frame (Q197: "nothing starts or stops or does any action through
 //! gossip"):
-//! - the birth at a path is the one its node row names current (the store record its mesh-primary
-//!   writes, a recovery's or a re-create's new birth included);
+//! - the birth at a path is the one the current-pair lookup names (query.md §1: its name claim, then its
+//!   lifecycle record under its mesh's current writer, read through the reader, never a copy held here;
+//!   a recovery's or a re-create's new birth included);
 //! - an operation accepted on a node and not yet complete is written at its acceptance;
 //! - a completed lifecycle operation is written from the receipts the fabric-primary's own attempts
 //!   returned (directly, or streamed up `build.attempt.run` for a peer mesh), before the caller is
@@ -17,11 +18,9 @@
 //! Nothing moves backward: an effect is taken only over an older one (the Build's acceptance stamp,
 //! then its attempt). Gossip is context (`observed`) and decides nothing.
 //!
-//! It holds every node record too (Q203, Q204): the fabric-primary fills them from the node records
-//! once, at its start or hand-over, and each op writes them from then on: a record this admin writes
-//! or holds as a writer (`crate::node_rows::WrittenRows`), the config `node.config.update` puts, and
-//! the records of the meshes a Build names once its attempt completes (an op's result, Q197).
-//! `node.get`, `mesh.nodes.get` and `fabric.nodes.get` answer from them and never read the node store.
+//! It holds no node record (query.md §1: "Node rows and property maps are not copied into an atlas to
+//! serve `node.get` or acceptance"): every record it decides on is read through the reader
+//! (`crate::current_record::CurrentRecords`).
 
 use std::collections::{BTreeMap, HashMap};
 use rdm_core::framing::Birth;
@@ -31,7 +30,7 @@ use crate::accepted::AttemptAction;
 use crate::build_state::{BuildProjection, BuildStateAdapter, StepOutcome};
 use crate::model::{IncarnationId, NodeId, NodeStatus, PathName};
 use crate::topology::Topology;
-use crate::storage::{NodeRow, NodesStorage};
+use crate::storage::NodeRow;
 
 /// Effect order: Build admission, original step position, then attempt within that step.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -69,22 +68,17 @@ struct Accepted {
 
 #[derive(Debug, Default)]
 struct Held {
-    /// Every node record, by node id (Q203): what the node reads answer from.
-    records: BTreeMap<NodeId, NodeRow>,
-    /// The births whose record the atlas holds as it stood once the birth was heard: each record's
-    /// births, and each birth read once when it was first heard (`read_new_births`).
-    births_read: std::collections::BTreeSet<(NodeId, String)>,
+    /// The births a create this admin took the receipt of made (an op's result, Q197): in the view
+    /// acceptance decides from before the gossip view hears them, their records read through the reader
+    /// ([`Atlas::apply`]). Each goes once the view holds its node.
+    created: std::collections::HashSet<Birth>,
     /// The completed lifecycle effect of each exact node birth.
     effects: HashMap<Birth, Effect>,
     /// The operation accepted on each explicit subject, using node IDs when admitted.
     accepted: BTreeMap<rdm_core::OperationSubject, Accepted>,
     /// The meshes this admin is primary for (Q207): its own mesh as a mesh-primary, every mesh as the
-    /// fabric-primary; empty for an admin that holds no primary. Each was filled once as it was taken.
+    /// fabric-primary; empty for an admin that holds no primary.
     meshes: std::collections::BTreeSet<String>,
-    /// The mesh whose rows this admin's writer writes, every write fed here as it is made
-    /// ([`crate::node_rows::WrittenRows::feeds`]): its records are the rows as written. Another mesh's
-    /// records are read at a fill and moved by this atlas's own receipts only.
-    written: std::collections::BTreeSet<String>,
 }
 
 /// Q207's decision on a caller birth a primary refused as one it does not hold (a status declaration
@@ -220,7 +214,6 @@ impl AtlasRow {
 #[derive(Debug, Default)]
 pub struct Atlas {
     held: Mutex<Held>,
-    writer: std::sync::OnceLock<std::sync::Weak<crate::node_rows::WrittenRows>>,
     /// What a refused caller's decision acts through (Q207), installed once this admin's recovery
     /// submitter and heard-again door exist.
     callers: std::sync::OnceLock<Arc<crate::refused_caller::RefusedCallers>>,
@@ -245,7 +238,7 @@ fn accepted_on(action: &AttemptAction) -> Vec<rdm_core::OperationId> {
 
 /// Recover the exact admitted birth from explicit metadata and the original step position.
 /// A receipt payload must belong to this Build, attempt and operation before it can supply a birth.
-fn birth_of_step(held: &Held, p: &BuildProjection, receipt: &crate::build_state::BuildStepReceipt) -> Option<Birth> {
+fn birth_of_step(rows: &[NodeRow], p: &BuildProjection, receipt: &crate::build_state::BuildStepReceipt) -> Option<Birth> {
     use rdm_core::OperationSubject;
     let (attempt, operation) = (receipt.attempt, &receipt.operation);
     let expected = match p.attempt_actions.get(&attempt) {
@@ -277,7 +270,7 @@ fn birth_of_step(held: &Held, p: &BuildProjection, receipt: &crate::build_state:
             Some(OperationSubject::Location(_)) => true,
             _ => false,
         };
-        let mut targets = held.records.values().filter(|row| subject_matches(&row.node_id)).flat_map(|row| row.births.iter().map(move |birth| (row, birth))).filter(|(row, birth)| {
+        let mut targets = rows.iter().filter(|row| subject_matches(&row.node_id)).flat_map(|row| row.births.iter().map(move |birth| (row, birth))).filter(|(row, birth)| {
             birth.operations.iter().any(|op| crate::build_state::validate_carried_declaration(p, receipt, &op.operation, (&row.node_id, &birth.incarnation_id)).is_some())
         }).map(|(row, birth)| (row.node_id.clone(), birth.incarnation_id.clone()));
         let target = targets.next()?;
@@ -290,25 +283,43 @@ fn birth_of_step(held: &Held, p: &BuildProjection, receipt: &crate::build_state:
     Some(Birth { node_id: expected.0, incarnation: expected.1 })
 }
 
+/// The current records of the subjects of `operations` (query.md §1, read through `records` over
+/// `observed`): a node or birth subject by its node ID, a location by the current-pair lookup. What names
+/// a receipt's birth when its attempt pinned none ([`birth_of_step`]). `Err` names a read that failed.
+pub(crate) async fn subject_rows<'a>(records: &crate::current_record::CurrentRecords<'_>, observed: &Topology, operations: impl IntoIterator<Item = &'a rdm_core::OperationId>) -> Result<Vec<NodeRow>, String> {
+    let mut out: Vec<NodeRow> = Vec::new();
+    for operation in operations {
+        let row = match &operation.subject {
+            Some(rdm_core::OperationSubject::Node(id) | rdm_core::OperationSubject::Birth { node_id: id, .. }) => records.row(observed, id).await?,
+            Some(rdm_core::OperationSubject::Location(at)) => records.row_at(observed, at).await?,
+            _ => None,
+        };
+        if let Some(r) = row.filter(|r| !out.iter().any(|o| o.node_id == r.node_id)) {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
 /// What a streamed receipt wrote in the atlas ([`Atlas::take_receipt`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Taken {
     /// The Build's journal holds no completed receipt of the operation in the attempt.
     NoReceipt,
-    /// The operation changes nothing the atlas holds (a connections delete, a mesh leave), or the
-    /// atlas holds no record of its node.
+    /// The operation changes nothing the atlas holds (a connections delete, a mesh leave).
     Nothing,
-    /// The lifecycle effect of its birth only (the atlas holds no record of the node).
+    /// The lifecycle effect of its birth only (no current record names the birth).
     Effect(Option<&'static str>),
-    /// The lifecycle effect and the record's status.
+    /// The lifecycle effect, its birth named by its current record.
     Status(NodeStatus),
     /// The record's new name.
     Renamed(PathName),
     /// The record's config or tags.
     Property,
-    /// A create completed at the path: its record is read once.
+    /// A create completed at the path: its birth is held until the view holds it ([`Atlas::apply`]).
     Created(Birth),
-    /// The admitted existing node whose current durable record must be published.
+    /// The admitted existing node whose record the operation changed: its current record is what any
+    /// later read reads (query.md §1).
     Refresh(NodeId),
 }
 
@@ -330,9 +341,9 @@ impl Taken {
 
 /// The completed lifecycle receipt `s` of `p` taken over an older effect of its birth; the lifecycle's
 /// name when it is one.
-fn take_effect(held: &mut Held, p: &BuildProjection, s: &crate::build_state::BuildStepReceipt) -> Option<&'static str> {
+fn take_effect(held: &mut Held, rows: &[NodeRow], p: &BuildProjection, s: &crate::build_state::BuildStepReceipt) -> Option<&'static str> {
     let lifecycle = lifecycle_of(&s.operation)?;
-    let birth = birth_of_step(held, p, s)?;
+    let birth = birth_of_step(rows, p, s)?;
     let stamp = Stamp { submitted_at_ms: p.submitted_at_ms, build_id: p.build_id.to_string(), recipe_step: s.operation.recipe_step, attempt: s.attempt };
     if held.effects.get(&birth).is_none_or(|e| e.stamp < stamp) {
         held.effects.insert(birth, Effect { lifecycle, stamp });
@@ -364,209 +375,36 @@ impl Atlas {
         self.callers.get()
     }
 
-    pub(crate) fn bind_writer(&self, writer: &Arc<crate::node_rows::WrittenRows>) {
-        self.writer.set(Arc::downgrade(writer)).expect("the atlas writer is installed once");
+    /// Whether the atlas holds the birth `(node_id, incarnation)` deleted: `row`, its node's record under its
+    /// mesh's current writer (query.md §1), deleted or withdrawn with that birth, or a node.delete of that
+    /// birth completed (Q217: such a birth that comes back is deleted, its runtime terminated).
+    pub(crate) fn holds_deleted(&self, node_id: &NodeId, incarnation: &IncarnationId, row: Option<&NodeRow>) -> bool {
+        let recorded = row.is_some_and(|r| r.node_id == *node_id && matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && r.birth(incarnation).is_some());
+        recorded || self.deleted_by_op(node_id, incarnation)
     }
 
-    /// Publish the current durable row by ID under the writer's existing per-node lock.
-    /// A historical receipt or delayed reply supplies a target, never replacement row values.
-    pub(crate) async fn refresh_record(&self, rows: &dyn NodesStorage, node_id: &NodeId) -> Result<bool, String> {
-        self.refresh_record_from(rows, node_id, &HashMap::new()).await
+    /// Whether `row` (its node's current record) is `Deleted` with the birth `(node_id, incarnation)`, or
+    /// a node.delete of that birth completed. A withdrawn claim is not a delete: its birth may still
+    /// live, surplus, until a removal deletes it (node-investigation.md: "a caller whose record is
+    /// deleted is deleted"; Q217).
+    pub(crate) fn holds_deleted_by_delete(&self, node_id: &NodeId, incarnation: &IncarnationId, row: Option<&NodeRow>) -> bool {
+        let recorded = row.is_some_and(|r| r.node_id == *node_id && r.status == NodeStatus::Deleted && r.birth(incarnation).is_some());
+        recorded || self.deleted_by_op(node_id, incarnation)
     }
 
-    async fn refresh_record_from(&self, rows: &dyn NodesStorage, node_id: &NodeId, predecessors: &HashMap<crate::storage::BirthRef, NodeId>) -> Result<bool, String> {
-        let writer = self.writer.get().and_then(std::sync::Weak::upgrade)
-            .ok_or_else(|| "atlas row publication requires its installed writer".to_string())?;
-        let _one = writer.lock(node_id).await;
-        let Some(row) = rows.node(node_id).await.map_err(|e| format!("nodes.storage: node {node_id} could not be read: {e}"))? else {
-            let mut held = self.held.lock().unwrap();
-            held.records.remove(node_id);
-            held.births_read.retain(|(id, _)| id != node_id);
-            return Ok(false);
-        };
+    /// A node.delete of the birth completed.
+    fn deleted_by_op(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        self.held.lock().unwrap().effects.get(&Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
+    }
+
+    /// The atlas's meshes set to `meshes`, the meshes this admin is primary for now (Q207): a mesh taken
+    /// as it takes that primary, a mesh handed away narrowed off. The meshes taken and handed away.
+    pub fn scope(&self, meshes: std::collections::BTreeSet<String>) -> (Vec<String>, Vec<String>) {
         let mut held = self.held.lock().unwrap();
-        if let Some(w) = &row.writer {
-            let successor = predecessors.get(w).cloned().or_else(|| held.records.values().find(|r| r.predecessor.as_ref() == Some(w)).map(|r| r.node_id.clone()));
-            if w.node_id == row.node_id && successor.is_some() {
-                crate::node_rows::ignored_version("atlas-refresh", &row, w, &format!("node {} re-created this birth", successor.unwrap()));
-                if held.records.get(node_id).is_some_and(|kept| kept.writer == row.writer) {
-                    held.records.remove(node_id);
-                    held.births_read.retain(|(id, _)| id != node_id);
-                }
-                return Ok(false);
-            }
-            if Self::deleted_writer(&held, w) && held.records.get(node_id).is_some_and(|kept| kept.writer != row.writer) {
-                return Ok(false);
-            }
-        }
-        held.births_read.extend(row.births.iter().map(|b| (node_id.clone(), b.incarnation_id.to_string())));
-        held.records.insert(node_id.clone(), row);
-        Ok(true)
-    }
-
-    /// Hold `row` as its node's record: a write an op made (a writer's record, an op's result).
-    pub fn write_record(&self, row: &NodeRow) {
-        let mut held = self.held.lock().unwrap();
-        held.births_read.extend(row.births.iter().map(|b| (row.node_id.clone(), b.incarnation_id.as_str().to_string())));
-        held.records.insert(row.node_id.clone(), row.clone());
-    }
-
-    /// The record of each birth of `births` the atlas has not read since the birth was first heard
-    /// (a mesh-primary's self-healing, a recovery's or a re-create's new birth: an op the
-    /// fabric-primary did not run, whose result reaches it through the view and the store's record,
-    /// Q197), read once: one point read per such birth, never per request. The number read.
-    pub(crate) async fn read_new_births(&self, rows: &dyn NodesStorage, births: Vec<(NodeId, IncarnationId)>) -> usize {
-        let new: Vec<(NodeId, IncarnationId)> = {
-            let held = self.held.lock().unwrap();
-            births.into_iter().filter(|(n, i)| !held.births_read.contains(&(n.clone(), i.as_str().to_string()))).collect()
-        };
-        let mut read = 0;
-        for (node_id, incarnation) in new {
-            if self.refresh_record(rows, &node_id).await == Ok(true) {
-                // refresh_record marks only births actually present in the durable row.
-                let _ = incarnation;
-                read += 1;
-            }
-        }
-        read
-    }
-
-    /// Apply `change` to the record the atlas holds for `node_id`: an op's result on a record another
-    /// admin writes (Q197). `false` when the atlas holds no record of the node.
-    pub(crate) fn update_record(&self, node_id: &NodeId, change: impl FnOnce(&mut NodeRow)) -> bool {
-        match self.held.lock().unwrap().records.get_mut(node_id) {
-            Some(r) => {
-                change(r);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// The node `node_id` holds no record any more (a withdrawn claim).
-    pub(crate) fn forget_record(&self, node_id: &NodeId) {
-        self.held.lock().unwrap().records.remove(node_id);
-    }
-
-    /// The record the atlas holds for `node_id`.
-    pub fn record(&self, node_id: &NodeId) -> Option<NodeRow> {
-        self.held.lock().unwrap().records.get(node_id).cloned()
-    }
-
-    /// Whether the atlas holds the birth `(node_id, incarnation)` deleted: its node's record deleted
-    /// with that birth, or a node.delete of that birth completed (Q217: such a birth that comes back is
-    /// deleted, its runtime terminated).
-    pub(crate) fn holds_deleted(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        let held = self.held.lock().unwrap();
-        let recorded = held.records.get(node_id).is_some_and(|r| matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && r.birth(incarnation).is_some());
-        recorded || held.effects.get(&Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
-    }
-
-    /// Whether the atlas holds the birth `(node_id, incarnation)` deleted by a delete: its node's record
-    /// `Deleted` with that birth, or a node.delete of that birth completed. A withdrawn claim is not a
-    /// delete: its birth may still live, surplus, until a removal deletes it (node-investigation.md: "a
-    /// caller whose record is deleted is deleted"; Q217).
-    pub(crate) fn holds_deleted_by_delete(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        let held = self.held.lock().unwrap();
-        let recorded = held.records.get(node_id).is_some_and(|r| r.status == NodeStatus::Deleted && r.birth(incarnation).is_some());
-        recorded || held.effects.get(&Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
-    }
-
-    /// `mesh` is the mesh whose rows this admin's writer writes and feeds to this atlas.
-    pub fn writes(&self, mesh: &str) {
-        self.held.lock().unwrap().written.insert(mesh.to_string());
-    }
-
-    /// `meshes` are the meshes whose rows this admin's writer writes now (its own as its mesh-primary,
-    /// a mesh with no primary as the fabric-primary, `crate::node_rows::writes_for`): the writer read each
-    /// whole once as it took its writing and feeds this atlas every row of it, so a fill reads none of
-    /// them ([`Self::fill`]).
-    pub fn writing(&self, meshes: std::collections::BTreeSet<String>) {
-        self.held.lock().unwrap().written = meshes;
-    }
-
-    /// The records the atlas holds of `mesh`'s nodes, a mesh this admin is primary for (Q224; none
-    /// otherwise): what `fabric.get`'s cert summary folds (fabric-certs.md §Tracking), never a store read.
-    pub fn records_of(&self, mesh: &str) -> Vec<NodeRow> {
-        let held = self.held.lock().unwrap();
-        if !held.meshes.contains(mesh) {
-            return Vec::new();
-        }
-        held.records.values().filter(|r| r.mesh == mesh).cloned().collect()
-    }
-
-    /// The record the atlas holds at `path`: the one whose node holds the name now.
-    pub fn record_at(&self, path: &PathName) -> Option<NodeRow> {
-        self.held.lock().unwrap().records.values().find(|r| r.name == *path).cloned()
-    }
-
-    /// The record a join at `path` of the node `node_id` is reconciled to (Q234; never the store,
-    /// Q227): the live record at `path` (the node's own first), else a `Deleted` one there (the node's
-    /// own first): a live claim of another node at the name stands over the joiner's deleted record, as
-    /// the store's `(path, name)` index names the last record written there. A `Withdrawn` record names
-    /// nothing (a withdrawn claim).
-    pub fn record_for_join(&self, path: &PathName, node_id: &NodeId) -> Option<NodeRow> {
-        let held = self.held.lock().unwrap();
-        let at: Vec<&NodeRow> = held.records.values().filter(|r| r.name == *path && r.status != NodeStatus::Withdrawn).collect();
-        let (live, deleted): (Vec<&NodeRow>, Vec<&NodeRow>) = at.into_iter().partition(|r| r.status != NodeStatus::Deleted);
-        let own_first = |rows: &[&NodeRow]| rows.iter().find(|r| r.node_id == *node_id).or_else(|| rows.first()).map(|r| (*r).clone());
-        own_first(&live).or_else(|| own_first(&deleted))
-    }
-
-    /// Every record the atlas holds, in node id order.
-    pub fn records(&self) -> Vec<NodeRow> {
-        self.held.lock().unwrap().records.values().cloned().collect()
-    }
-
-    /// The record of the node whose birth holds the endpoint key `endpoint_id`, its newest birth first.
-    pub fn record_of_endpoint(&self, endpoint_id: &str) -> Option<NodeRow> {
-        let held = self.held.lock().unwrap();
-        let of = |r: &&NodeRow| r.newest_birth().and_then(|b| b.endpoint_id.as_ref()).is_some_and(|e| e.0 == endpoint_id);
-        held.records.values().find(of).cloned()
-    }
-
-    /// Fill the records of each mesh in `meshes` from the node records, read whole (one listing per
-    /// mesh): at the fabric-primary's start or hand-over (Q204), and once a Build's attempt completed
-    /// (its op results on every mesh it names, Q197). A mesh this admin writes is not read: its records
-    /// are its writer's, fed here as they are filled and written ([`Self::writing`]). The number of
-    /// records held after.
-    pub async fn fill(&self, rows: &dyn NodesStorage, meshes: impl IntoIterator<Item = String>) -> Result<usize, String> {
-        let written = self.held.lock().unwrap().written.clone();
-        for mesh in meshes.into_iter().filter(|m| !written.contains(m)) {
-            let listed = rows.nodes(&mesh).await.map_err(|e| format!("nodes.storage: the node records of {mesh} could not be read: {e}"))?;
-            let predecessors = crate::node_rows::re_created(&listed);
-            let mut ids: std::collections::BTreeSet<NodeId> = listed.into_iter().map(|row| row.node_id).collect();
-            ids.extend(self.held.lock().unwrap().records.values().filter(|row| row.mesh == mesh).map(|row| row.node_id.clone()));
-            for node_id in ids {
-                self.refresh_record_from(rows, &node_id, &predecessors).await?;
-            }
-        }
-        Ok(self.held.lock().unwrap().records.len())
-    }
-
-    /// The atlas's meshes set to `meshes`, the meshes this admin is primary for now (Q207): a mesh
-    /// taken (a mesh-primary's own at its start or hand-over, every mesh at the fabric-primary's) is
-    /// filled once from its node records ([`Self::fill`], Q204), a mesh this admin writes from its
-    /// writer's rows, never the store, and a mesh handed away is narrowed off,
-    /// its records no longer held. A mesh whose records could not be read is not taken, so the next
-    /// call fills it. The meshes taken and handed away.
-    pub async fn scope(&self, rows: &dyn NodesStorage, meshes: std::collections::BTreeSet<String>) -> Result<(Vec<String>, Vec<String>), String> {
-        let (taken, handed): (Vec<String>, Vec<String>) = {
-            let held = self.held.lock().unwrap();
-            (meshes.difference(&held.meshes).cloned().collect(), held.meshes.difference(&meshes).cloned().collect())
-        };
-        if taken.is_empty() && handed.is_empty() {
-            return Ok((taken, handed));
-        }
-        let filled = self.fill(rows, taken.iter().cloned()).await;
-        let mut held = self.held.lock().unwrap();
-        for mesh in &handed {
-            held.records.retain(|_, r| r.mesh != *mesh);
-            held.meshes.remove(mesh);
-        }
-        filled?;
-        held.meshes.extend(taken.iter().cloned());
-        Ok((taken, handed))
+        let taken: Vec<String> = meshes.difference(&held.meshes).cloned().collect();
+        let handed: Vec<String> = held.meshes.difference(&meshes).cloned().collect();
+        held.meshes = meshes;
+        (taken, handed)
     }
 
     /// The meshes this admin is primary for, as the atlas holds them.
@@ -574,15 +412,17 @@ impl Atlas {
         self.held.lock().unwrap().meshes.clone()
     }
 
-    /// Q207: the caller birth `(node_id, incarnation)` a primary refused as one it does not hold, decided
-    /// from this atlas alone (its records and the ops executing; never the gossip view, never a store
-    /// read): another birth at the caller's `(path, name)`, or an op executing that fills it, deletes the
-    /// caller; nothing there and the caller's record deleted deletes it, never re-admitted (Q217);
-    /// nothing there, its record live and `planned` (the current Build's topology, by mesh) naming the
-    /// path re-admits it; nothing there and the topology not naming it deletes it.
-    pub(crate) fn refused_caller(&self, node_id: &NodeId, incarnation: &IncarnationId, planned: &BTreeMap<String, Vec<PathName>>) -> CallerDecision {
+    /// Q207: the caller birth of `caller`'s node, `incarnation`, a primary refused as one it does not hold,
+    /// decided from `caller` (its record under its mesh's current writer, query.md §1), `at_path` (the
+    /// record the current-pair lookup names at `caller`'s `(path, name)`) and the ops executing (never the
+    /// gossip view): another birth at the caller's `(path, name)`, or an op executing that fills it,
+    /// deletes the caller; nothing there and the caller's record deleted deletes it, never re-admitted
+    /// (Q217); nothing there, its record live and `planned` (the current Build's topology, by mesh) naming
+    /// the path re-admits it; nothing there and the topology not naming it deletes it.
+    pub(crate) fn refused_caller(&self, caller: Option<&NodeRow>, at_path: Option<&NodeRow>, incarnation: &IncarnationId, planned: &BTreeMap<String, Vec<PathName>>) -> CallerDecision {
         let held = self.held.lock().unwrap();
-        let Some(caller) = held.records.get(node_id) else { return CallerDecision::NoRecord };
+        let Some(caller) = caller else { return CallerDecision::NoRecord };
+        let node_id = &caller.node_id;
         let path = caller.name.clone();
         if !held.meshes.contains(&caller.mesh) {
             return CallerDecision::NotMine { path };
@@ -590,7 +430,7 @@ impl Atlas {
         let gone = |r: &NodeRow| matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn);
         // Another birth at the path now: another node's live record there, or a newer birth of the
         // caller's own node.
-        let other = held.records.values().find(|r| r.name == path && r.node_id != *node_id && !gone(r)).and_then(|r| r.newest_birth().map(|b| format!("{}@{}", r.node_id, b.incarnation_id.as_str())));
+        let other = at_path.filter(|r| r.name == path && r.node_id != *node_id && !gone(r)).and_then(|r| r.newest_birth().map(|b| format!("{}@{}", r.node_id, b.incarnation_id.as_str())));
         let newer = (!gone(caller)).then(|| caller.newest_birth()).flatten().filter(|b| b.incarnation_id != *incarnation).map(|b| format!("{}@{}", node_id, b.incarnation_id.as_str()));
         if let Some(by) = other.or(newer) {
             return CallerDecision::DeleteHeld { path, by };
@@ -627,7 +467,7 @@ impl Atlas {
     }
 
     /// The paths this atlas holds a create of Build `build` at (fabric-atlas.md R-FA1, R-FA2): accepted and
-    /// executing, or completed, its birth's record naming the create among its operations. A birth the
+    /// executing, or completed, its Complete receipt in the Build's own log. A birth the
     /// Build's own op created is not surplus to its accepted topology, which a recipe's `Create` step does
     /// not change (Luke 2026-10-30: drift is decided from the atlas, not the topology), whichever mesh's
     /// section ran it: the fabric-primary's atlas takes every section's receipts.
@@ -643,12 +483,6 @@ impl Atlas {
         };
         let mut out: std::collections::BTreeSet<PathName> = held.accepted.values().filter(|a| a.build_id == build.as_str()).filter_map(|a| location(&a.operation)).collect();
         out.extend(p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete).filter_map(|s| location(&s.operation)));
-        for r in held.records.values().filter(|r| !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn)) {
-            let created = r.newest_birth().is_some_and(|b| b.operations.iter().any(|o| o.operation.operation.action == "node.create" && crate::build::BuildId::parse(&o.operation.build_id).ok().as_ref() == Some(build)));
-            if created {
-                out.insert(r.name.clone());
-            }
-        }
         out
     }
 
@@ -659,11 +493,12 @@ impl Atlas {
 
     /// Attempt `attempt` of `p` completed: every completed lifecycle receipt of the Build is taken over
     /// an older effect of its birth, and what the attempt accepted is no longer executing. Called before
-    /// the caller is answered `Complete` (R-FA2).
-    pub(crate) fn receipts(&self, p: &BuildProjection, attempt: u32) {
+    /// the caller is answered `Complete` (R-FA2). `rows` are the current records of the receipts'
+    /// subjects ([`receipt_subject_rows`]), what names an unpinned receipt's birth.
+    pub(crate) fn receipts(&self, p: &BuildProjection, attempt: u32, rows: &[NodeRow]) {
         let mut held = self.held.lock().unwrap();
         for s in p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete) {
-            take_effect(&mut held, p, s);
+            take_effect(&mut held, rows, p, s);
         }
         held.accepted.retain(|_, a| !(a.build_id == p.build_id.as_str() && a.attempt <= attempt));
     }
@@ -673,10 +508,10 @@ impl Atlas {
     /// progress writes it from each attempt's receipts as they stream up `build.attempt.run`, before
     /// the caller is answered `Complete`"): the lifecycle it leaves its birth in (stop, start, delete)
     /// and what it changed on the node's record (a rename's name, a stop's or a delete's status, the
-    /// config and tags the Build applied in place). What it took, for its span; a create's is
-    /// [`Taken::Created`], whose record its mesh-primary wrote and the caller reads once
-    /// ([`Self::refresh_record`]).
-    pub(crate) fn take_receipt(&self, p: &BuildProjection, attempt: u32, operation: &rdm_core::OperationId, lane: &Option<String>) -> Taken {
+    /// config and tags the Build applied in place, read from its record through the reader). What it
+    /// took, for its span; a create's is [`Taken::Created`], its birth held for [`Self::apply`]. `rows`
+    /// are the current records of the receipt's subject, what names an unpinned receipt's birth.
+    pub(crate) fn take_receipt(&self, p: &BuildProjection, attempt: u32, operation: &rdm_core::OperationId, lane: &Option<String>, rows: &[NodeRow]) -> Taken {
         let Some(s) = p.steps.iter().rev().find(|s| s.mesh == *lane && s.build_id == p.build_id && s.attempt == attempt && &s.operation == operation && s.step == "Complete" && s.outcome == StepOutcome::Complete) else {
             return Taken::NoReceipt;
         };
@@ -687,7 +522,7 @@ impl Atlas {
             Some(rdm_core::OperationSubject::Node(_) | rdm_core::OperationSubject::Birth { .. }) => None,
             _ => return Taken::Nothing,
         };
-        let lifecycle = take_effect(&mut held, p, s);
+        let lifecycle = take_effect(&mut held, rows, p, s);
         let node_of = || -> Option<NodeId> {
             if let Some(rdm_core::OperationSubject::Node(id) | rdm_core::OperationSubject::Birth { node_id: id, .. }) = &operation.subject { return Some(id.clone()); }
             if let (Some(position), Some(AttemptAction::Steps { steps, pinned, .. })) = (operation.recipe_step, p.attempt_actions.get(&attempt)) {
@@ -707,16 +542,9 @@ impl Atlas {
         match op {
             "node.stop" | "node.delete" => {
                 let to = if op == "node.stop" { NodeStatus::Stopped } else { NodeStatus::Deleted };
-                let birth = birth_of_step(&held, p, s);
-                match birth {
-                    Some(birth) => match held.records.get_mut(&birth.node_id) {
-                        Some(r) => {
-                            r.set_status(&birth.incarnation, to);
-                            Taken::Status(to)
-                        }
-                        None => Taken::Effect(lifecycle),
-                    },
-                    _ => Taken::Effect(lifecycle),
+                match birth_of_step(rows, p, s) {
+                    Some(_) => Taken::Status(to),
+                    None => Taken::Effect(lifecycle),
                 }
             }
             "node.start" => Taken::Effect(lifecycle),
@@ -735,28 +563,51 @@ impl Atlas {
                     if identity.as_ref().is_some_and(|prior| prior != &found) { return Taken::Nothing; }
                     identity = Some(found);
                 }
-                identity.map(|identity| Taken::Created(identity.birth())).unwrap_or(Taken::Nothing)
+                match identity {
+                    Some(identity) => {
+                        let birth = identity.birth();
+                        held.created.insert(birth.clone());
+                        Taken::Created(birth)
+                    }
+                    None => Taken::Nothing,
+                }
             },
             _ => Taken::Nothing,
         }
     }
 
-    /// `t`, a view an acceptance decides from, with each of its births as this atlas holds it
-    /// ([`Self::answer`]; R-FA1: the fabric-primary accepts or denies from the atlas, the gossip view
-    /// context only): a birth an op deleted is not in it.
-    pub(crate) fn apply(&self, t: &mut Topology) {
-        t.nodes.retain_mut(|n| self.answer(n));
-        // A birth an op created whose record this atlas holds (a create's completion, `refresh_record`)
-        // is in the view acceptance decides from before the gossip view hears it (R-FA1: accepted or
-        // denied from the atlas, the gossip view context only), in place of a birth at its path and name
-        // that is no longer live: a node action on a path node recovery just re-created is decided on
-        // the replacement, never refused `node-not-live` on the deleted birth (rdm#239).
-        let held = self.held.lock().unwrap();
-        for r in held.records.values() {
+    /// `t`, a view an acceptance decides from, with each of its births as its record (read through
+    /// `records`, query.md §1) and the ops left it ([`Self::answer`]; R-FA1: the fabric-primary accepts or
+    /// denies from the atlas, the gossip view context only): a birth an op deleted is not in it. A birth a
+    /// create this atlas took the receipt of made is in it before the gossip view hears it, from its
+    /// record, in place of a birth at its path and name that is no longer live: a node action on a path
+    /// node recovery just re-created is decided on the replacement, never refused `node-not-live` on the
+    /// deleted birth (rdm#239). With no `records` (none open yet) only the ops' effects are applied.
+    /// `Err` names a record that could not be read.
+    pub(crate) async fn apply(&self, t: &mut Topology, records: Option<&crate::current_record::CurrentRecords<'_>>) -> Result<(), String> {
+        let observed = t.clone();
+        let mut kept = Vec::with_capacity(t.nodes.len());
+        for mut n in std::mem::take(&mut t.nodes) {
+            let row = match records {
+                Some(records) => records.row(&observed, &n.node_id).await?,
+                None => None,
+            };
+            if self.answer(&mut n, row.as_ref()) {
+                kept.push(n);
+            }
+        }
+        t.nodes = kept;
+        let Some(records) = records else { return Ok(()) };
+        let created: Vec<Birth> = {
+            let mut held = self.held.lock().unwrap();
+            held.created.retain(|b| !observed.births().any(|n| n.node_id == b.node_id));
+            held.created.iter().cloned().collect()
+        };
+        for b in created {
+            let Some(r) = records.row(&observed, &b.node_id).await? else { continue };
             let live = r.status.is_live() || r.status == NodeStatus::Starting;
-            let Some(b) = r.newest_birth().filter(|_| live) else { continue };
-            let deleted = held.effects.get(&Birth { node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone() }).is_some_and(|e| e.lifecycle == Lifecycle::Deleted);
-            if deleted || t.nodes.iter().any(|n| n.node_id == r.node_id || (n.name == r.name && n.status.is_live())) {
+            let Some(nb) = r.newest_birth().filter(|nb| live && nb.incarnation_id == b.incarnation) else { continue };
+            if self.deleted_by_op(&b.node_id, &b.incarnation) || t.nodes.iter().any(|n| n.node_id == r.node_id || (n.name == r.name && n.status.is_live())) {
                 continue;
             }
             t.nodes.retain(|n| n.name != r.name);
@@ -767,8 +618,8 @@ impl Atlas {
                 node_type: r.node_type().to_string(),
                 mesh: r.mesh.clone(),
                 node_id: r.node_id.clone(),
-                endpoint_id: b.endpoint_id.clone(),
-                incarnation_id: Some(b.incarnation_id.clone()),
+                endpoint_id: nb.endpoint_id.clone(),
+                incarnation_id: Some(nb.incarnation_id.clone()),
                 deployment_id: None,
                 provider: None,
                 data_dir: None,
@@ -776,26 +627,27 @@ impl Atlas {
                 is_primary: false,
                 is_fabric_primary: false,
                 admin_api_base: None,
-                transport_addr: b.transport_addr,
-                listeners: b.listeners.clone(),
+                transport_addr: nb.transport_addr,
+                listeners: nb.listeners.clone(),
                 routable: false,
                 declared: None,
                 stopped: false,
             });
         }
+        Ok(())
     }
 
     /// `n`, a birth Build acceptance decides from ([`Self::apply`]; a node read answers [`Self::read`],
-    /// the row's status as written), as this atlas holds it: the name its record holds, and the lifecycle the
-    /// ops left it in (a completed stop: stopped; a completed start: ready over every state
-    /// its stop and its start pass through, the gossip view's stopped birth and its `Starting` and
-    /// `Pending` before the mesh-primary's Ready, node-start.md "Completion", so a projection
-    /// published before the start completed never moves it backward, R-FA3). `false` when an op deleted
-    /// the birth: it is not answered. The gossip view's status stands where no op moved the birth, and
-    /// over a completed start where it is a state after ready (R-FA3: context).
-    pub(crate) fn answer(&self, n: &mut crate::model::Node) -> bool {
+    /// the row's status as written), as `row`, its node's record, and the ops left it: the name its
+    /// record holds, and the lifecycle the ops left it in (a completed stop: stopped; a completed start:
+    /// ready over every state its stop and its start pass through, the gossip view's stopped birth and its
+    /// `Starting` and `Pending` before the mesh-primary's Ready, node-start.md "Completion", so a
+    /// projection published before the start completed never moves it backward, R-FA3). `false` when an
+    /// op deleted the birth: it is not answered. The gossip view's status stands where no op moved the
+    /// birth, and over a completed start where it is a state after ready (R-FA3: context).
+    pub(crate) fn answer(&self, n: &mut crate::model::Node, row: Option<&NodeRow>) -> bool {
         let held = self.held.lock().unwrap();
-        if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {
+        if let Some(r) = row.filter(|r| r.node_id == n.node_id && r.status != NodeStatus::Withdrawn) {
             n.name = r.name.clone();
             n.renamed_from = r.replacement_from.clone();
         }
@@ -816,38 +668,31 @@ impl Atlas {
         true
     }
 
-    /// `n`, a birth `node.get` answers, as this atlas holds it (query.md §1; Q233, states.md "Who sets
-    /// each state": "A query answers the state the row last took from the node's frame or the
-    /// mesh-primary's receipt"): the name its record holds, and, where the record is of this birth (its
-    /// newest, or a record with no birth yet) in a mesh this admin is primary for (only a primary's
-    /// atlas holds a mesh's records, Q224), the row's status, `stopped` exactly when that is stopped:
-    /// every status of the mesh whose rows this admin writes ([`Self::writes`]); in another mesh, the
-    /// states an operation sets (stopping through deleted, connections-deleting and connections-deleted
-    /// included), which reach this atlas with the operation (its receipt, [`Self::take_receipt`], or the
-    /// fill at its attempt's completion, before the caller hears `Complete`, R-FA2). A birth's create-time
-    /// progress (starting, pending, ready) is its report to its own mesh-primary, which
-    /// another mesh's record holds only as of this atlas's last fill: that birth answers the view's status
-    /// until its mesh-primary feeds this atlas. Never a lifecycle effect laid over the view: a
-    /// command the node has not acknowledged moved the row nowhere, so it moves the answer nowhere.
-    /// Silence is not a state a command sets: a birth its row holds live (starting through
-    /// connections-deleted) that the view holds silent (`PendingReconnect`, `Dead`, observer-inferred,
-    /// node-identity-and-state.md §7.3) is answered as the view holds it, cleared the moment it is
-    /// heard; a birth its row holds leaving, stopped or deleting is silent as expected (Q58) and answers
-    /// its row. A birth no such record is of answers the view's status. `false` when an op deleted the
-    /// birth: it is not answered. Build acceptance reads [`Self::answer`], not this.
-    pub(crate) fn read(&self, n: &mut crate::model::Node) -> bool {
+    /// `n`, a birth `node.get` answers, as `row` carries it and the ops left it (query.md §1; Q233,
+    /// states.md "Who sets each state": "A query answers the state the row last took from the node's frame
+    /// or the mesh-primary's receipt"): `row` is the node's lifecycle record under its mesh's current
+    /// writer ([`crate::current_record::CurrentRecords::row`]), whose name and replacement provenance the
+    /// birth takes, and, where it is of this birth (its newest, or a record with no birth yet), its status,
+    /// `stopped` exactly when that is stopped. Never a lifecycle effect laid over the view: a command the
+    /// node has not acknowledged moved the row nowhere, so it moves the answer nowhere. Silence is not a
+    /// state a command sets: a birth its row holds live (starting through connections-deleted) that the
+    /// view holds silent (`PendingReconnect`, `Dead`, observer-inferred, node-identity-and-state.md §7.3)
+    /// is answered as the view holds it, cleared the moment it is heard; a birth its row holds leaving,
+    /// stopped or deleting is silent as expected (Q58) and answers its row. A birth with no record answers
+    /// the view's status. `false` when an op deleted the birth: it is not answered. Build acceptance reads
+    /// [`Self::answer`], not this.
+    pub(crate) fn read(&self, n: &mut crate::model::Node, row: Option<&NodeRow>) -> bool {
         let held = self.held.lock().unwrap();
         if n.incarnation_id.as_ref().and_then(|i| held.effects.get(&Birth { node_id: n.node_id.clone(), incarnation: i.clone() })).is_some_and(|e| e.lifecycle == Lifecycle::Deleted) {
             return false;
         }
-        if let Some(r) = held.records.get(&n.node_id).filter(|r| r.status != NodeStatus::Withdrawn) {
+        if let Some(r) = row.filter(|r| r.node_id == n.node_id && r.status != NodeStatus::Withdrawn) {
             n.name = r.name.clone();
             n.renamed_from = r.replacement_from.clone();
             let of_birth = r.newest_birth().is_none_or(|b| Some(&b.incarnation_id) == n.incarnation_id.as_ref());
             let live = matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::Ready | NodeStatus::ConnectionsDeleting | NodeStatus::ConnectionsDeleted);
             let silent = live && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead);
-            let current = held.written.contains(&r.mesh) || !matches!(r.status, NodeStatus::Starting | NodeStatus::Pending | NodeStatus::Ready);
-            if of_birth && held.meshes.contains(&r.mesh) && current && !silent {
+            if of_birth && !silent {
                 n.status = r.status;
                 n.stopped = r.status == NodeStatus::Stopped;
             }
@@ -937,11 +782,6 @@ impl Atlas {
         Ok(Some(AtlasRow { mesh: row.mesh.clone(), kind: row.kind, renamed_from, moved_from, name: row.name.clone(), node_id: row.node_id.clone(), incarnation: birth, status, stopped, live, accepted, observed: observed_status, birth_source: "node-row" }))
     }
 
-    fn deleted_writer(held: &Held, writer: &crate::storage::BirthRef) -> bool {
-        held.records.get(&writer.node_id).is_some_and(|r| matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && r.birth(&writer.incarnation_id).is_some())
-            || held.effects.get(&Birth { node_id: writer.node_id.clone(), incarnation: writer.incarnation_id.clone() }).is_some_and(|e| e.lifecycle == Lifecycle::Deleted)
-    }
-
     /// `fabric.atlas.get`: one row for every node `paths` names (the current Build's topology), in
     /// `(path, name)` order.
     pub(crate) async fn view(&self, paths: impl IntoIterator<Item = PathName>, records: &crate::current_record::CurrentRecords<'_>, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<rdm_core::views::AtlasView, String> {
@@ -977,30 +817,31 @@ impl crate::control_plane::ControlPlane {
     /// `rdm.node_admin.fabric.update.via-atlas-receipt` span.
     pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, operation: &rdm_core::OperationId) {
         let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, recipe_step = ?operation.recipe_step, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
-        let taken = match builds.read_build(build_id).await {
-            Ok(p) => self.atlas.take_receipt(&p, attempt, operation, &builds.receipt_mesh()),
+        let p = match builds.read_build(build_id).await {
+            Ok(p) => p,
             Err(e) => {
                 span.record("outcome", "build-unread").record("detail", format!("Build {build_id} could not be read for the receipt: {e}").as_str());
                 span.in_scope(|| tracing::info!("a streamed receipt was not taken into the atlas"));
                 return;
             }
         };
-        span.record("outcome", taken.name().as_str());
-        let target = match &taken {
-            Taken::Created(birth) => Some(&birth.node_id),
-            Taken::Refresh(node_id) => Some(node_id),
-            _ => None,
-        };
-        if let Some(node_id) = target {
-            match self.node_rows.get() {
-                Some(rows) => match self.atlas.refresh_record(&**rows, node_id).await {
-                    Ok(true) => {},
-                    Ok(false) => { span.record("detail", format!("no current record published for node {node_id}").as_str()); },
-                    Err(e) => { span.record("detail", e.as_str()); },
-                },
-                None => { span.record("detail", "no nodes.storage is open yet"); },
+        // The receipt's subject as its current record holds it (query.md §1): what names its birth when
+        // the attempt pinned none.
+        let rows = match self.current_records() {
+            Some(records) => {
+                let observed = self.topology.read().await.clone();
+                subject_rows(&records, &observed, [operation]).await.unwrap_or_else(|e| {
+                    span.record("detail", e.as_str());
+                    Vec::new()
+                })
             }
-        }
+            None => {
+                span.record("detail", "no node records are open yet");
+                Vec::new()
+            }
+        };
+        let taken = self.atlas.take_receipt(&p, attempt, operation, &builds.receipt_mesh(), &rows);
+        span.record("outcome", taken.name().as_str());
         span.in_scope(|| tracing::info!("a streamed receipt is the atlas's"));
     }
 
@@ -1043,6 +884,18 @@ impl crate::control_plane::ControlPlane {
         Some(crate::current_record::CurrentRecords { claims: &**self.node_rows.get()?, meshes: &*self.claims, records: &**self.node_records.get()? })
     }
 
+    /// `t` as this fabric-primary's atlas holds its births ([`crate::atlas::Atlas::apply`]), their records
+    /// read through the reader: a record that cannot be read refuses the acceptance, named.
+    pub(crate) async fn apply_atlas(&self, t: &mut Topology) -> Result<(), crate::control_plane::Refusal> {
+        let records = self.current_records();
+        self.atlas.apply(t, records.as_ref()).await.map_err(crate::control_plane::Refusal::Unavailable)
+    }
+
+    /// [`Self::current_records`]' stores, held, once they are open.
+    pub(crate) fn record_stores(&self) -> Option<crate::current_record::RecordStores> {
+        Some(crate::current_record::RecordStores { claims: self.node_rows.get()?.clone(), meshes: self.claims.clone(), records: self.node_records.get()?.clone() })
+    }
+
     /// The atlas row of `path` Build acceptance reads (fabric-atlas.md R-FA1): the current-pair lookup over
     /// this admin's records once they are open (query.md §1), else none.
     pub(crate) async fn atlas_row(&self, path: &PathName, observed: &Topology) -> Result<Option<AtlasRow>, crate::control_plane::Refusal> {
@@ -1064,56 +917,20 @@ impl crate::control_plane::ControlPlane {
 mod tests {
     //! Q207: a refused caller birth is deleted or re-admitted by its `(path, name)` and the atlas.
     use super::*;
-    use crate::storage::{MemoryNodesStorage, MeshStorage};
+    use crate::storage::{MemoryNodesStorage, MeshStorage, NodesStorage};
     use rdm_node::node_records::NodeRecordsStorage;
 
     struct TestAtlas {
         atlas: Atlas,
-        _writer: Arc<crate::node_rows::WrittenRows>,
     }
     impl TestAtlas {
         fn new() -> Self {
-            let atlas = Atlas::default();
-            let writer = Arc::new(crate::node_rows::WrittenRows::default());
-            atlas.bind_writer(&writer);
-            Self { atlas, _writer: writer }
+            Self { atlas: Atlas::default() }
         }
     }
     impl std::ops::Deref for TestAtlas {
         type Target = Atlas;
         fn deref(&self) -> &Atlas { &self.atlas }
-    }
-
-    #[tokio::test]
-    async fn refresh_keeps_current_name_and_later_birth_visible_across_refill() {
-        let store = MemoryNodesStorage::default();
-        let atlas = TestAtlas::new();
-        let (mut row, first) = record(path("opaque.location", "alpha"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-        store.put_node(&row).await.unwrap();
-        atlas.fill(&store, ["mesh1".into()]).await.unwrap();
-        row.name.name = "beta".into();
-        store.put_node(&row).await.unwrap();
-        atlas.refresh_record(&store, &row.node_id).await.unwrap();
-        row.name.name = "alpha".into();
-        row.status = NodeStatus::Leaving;
-        store.put_node(&row).await.unwrap();
-        atlas.refresh_record(&store, &row.node_id).await.unwrap();
-        assert_eq!(atlas.record(&row.node_id).unwrap().name, row.name);
-        assert_eq!(atlas.record(&row.node_id).unwrap().status, row.status);
-        let later = IncarnationId::mint();
-        atlas.read_new_births(&store, vec![(row.node_id.clone(), later.clone())]).await;
-        assert!(!atlas.held.lock().unwrap().births_read.contains(&(row.node_id.clone(), later.to_string())));
-        row.birth_mut(&later, &row.name.clone());
-        store.put_node(&row).await.unwrap();
-        atlas.read_new_births(&store, vec![(row.node_id.clone(), later.clone())]).await;
-        assert!(atlas.record(&row.node_id).unwrap().birth(&later).is_some());
-        let restarted = TestAtlas::new();
-        restarted.fill(&store, ["mesh1".into()]).await.unwrap();
-        assert_eq!(restarted.record(&row.node_id).unwrap().name, row.name);
-        assert!(restarted.record(&row.node_id).unwrap().birth(&first).is_some());
-        let empty = MemoryNodesStorage::default();
-        restarted.fill(&empty, ["mesh1".into()]).await.unwrap();
-        assert!(restarted.record(&row.node_id).is_none(), "durable absence removes the old cached ID");
     }
 
     #[test]
@@ -1126,8 +943,8 @@ mod tests {
             lifecycle: Lifecycle::Deleted,
             stamp: Stamp { submitted_at_ms: 1, build_id: "fixture".into(), recipe_step: None, attempt: 1 },
         });
-        assert!(atlas.holds_deleted(&first, &incarnation));
-        assert!(!atlas.holds_deleted(&second, &incarnation));
+        assert!(atlas.holds_deleted(&first, &incarnation, None));
+        assert!(!atlas.holds_deleted(&second, &incarnation, None));
     }
 
 
@@ -1216,15 +1033,17 @@ mod tests {
         }
     }
 
-    /// An atlas primary for `meshes`, filled once from `rows` at the moment it took them.
-    async fn atlas_of(rows: &[&NodeRow], meshes: &[&str]) -> TestAtlas {
-        let store = MemoryNodesStorage::default();
-        for r in rows {
-            store.put_node(r).await.unwrap();
-        }
+    /// An atlas primary for `meshes`; the records a decision reads are handed to it.
+    async fn atlas_of(_rows: &[&NodeRow], meshes: &[&str]) -> TestAtlas {
         let atlas = TestAtlas::new();
-        atlas.scope(&store, meshes.iter().map(|m| m.to_string()).collect()).await.unwrap();
+        atlas.scope(meshes.iter().map(|m| m.to_string()).collect());
         atlas
+    }
+
+    /// The record the current-pair lookup names at `name` among `rows`: the one whose node holds the
+    /// name's claim, the live record there (a released one holds no claim).
+    fn claimant<'a>(rows: &[&'a NodeRow], name: &PathName) -> Option<&'a NodeRow> {
+        rows.iter().copied().find(|r| r.name == *name && !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn))
     }
 
     fn planned(paths: &[(PathName, &str)]) -> BTreeMap<String, Vec<PathName>> {
@@ -1301,7 +1120,7 @@ mod tests {
         let (old, old_inc) = record(path("mesh2.compute", "2"), "mesh2", rdm_core::NodeKind::Compute, NodeStatus::Deleted);
         let (new, new_inc) = record(path("mesh2.compute", "2"), "mesh2", rdm_core::NodeKind::Compute, NodeStatus::Ready);
         let atlas = atlas_of(&[&old, &new], &["mesh2"]).await;
-        let decided = atlas.refused_caller(&old.node_id, &old_inc, &planned(&[(path("mesh2.compute", "2"), "mesh2")]));
+        let decided = atlas.refused_caller(Some(&old), claimant(&[&old, &new], &old.name), &old_inc, &planned(&[(path("mesh2.compute", "2"), "mesh2")]));
         assert_eq!(decided, CallerDecision::DeleteHeld { path: path("mesh2.compute", "2"), by: format!("{}@{}", new.node_id, new_inc.as_str()) });
     }
 
@@ -1312,7 +1131,7 @@ mod tests {
     async fn nothing_at_a_needed_path_re_admits_a_caller_whose_record_is_live() {
         let (live, live_inc) = record(path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
         let atlas = atlas_of(&[&live], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "1") });
+        assert_eq!(atlas.refused_caller(Some(&live), claimant(&[&live], &live.name), &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "1") });
     }
 
     /// CONTRACT (Q217, Luke: "delete a caller deletes the caller, not just from the record but
@@ -1324,8 +1143,8 @@ mod tests {
     async fn a_caller_whose_record_is_deleted_is_deleted_needed_or_not() {
         let (gone, gone_inc) = record(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Deleted);
         let atlas = atlas_of(&[&gone], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: true });
-        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: false });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: true });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: false });
     }
 
     /// CONTRACT (Q207): nothing is at the caller's path and name, its record is live, and the topology does
@@ -1334,7 +1153,7 @@ mod tests {
     async fn nothing_at_an_unneeded_path_deletes_the_caller() {
         let (live, live_inc) = record(path("mesh1.rpc", "3"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
         let atlas = atlas_of(&[&live], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteUnneeded { path: path("mesh1.rpc", "3") });
+        assert_eq!(atlas.refused_caller(Some(&live), claimant(&[&live], &live.name), &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteUnneeded { path: path("mesh1.rpc", "3") });
     }
 
     /// CONTRACT (Q207, the atlas is topology and in-flight ops): an op accepted on the caller's path that
@@ -1345,7 +1164,7 @@ mod tests {
         let atlas = atlas_of(&[&gone], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
         atlas.note_accepted(&build, 1, &AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path("mesh1.rpc", "2"), from_incarnation: gone_inc.clone(), node_id: gone.node_id.clone(), backbone: false });
-        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "2"), by: format!("Build {} attempt 1 action node.create", build) });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "2"), by: format!("Build {} attempt 1 action node.create", build) });
     }
 
     /// CONTRACT (Q207): a create executing at the path of a caller whose record is live is that caller's
@@ -1357,7 +1176,7 @@ mod tests {
         let atlas = atlas_of(&[&born], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
         atlas.note_accepted(&build, 1, &AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path("mesh1.rpc", "2"), from_incarnation: IncarnationId::mint(), node_id: NodeId::mint(), backbone: false });
-        assert_eq!(atlas.refused_caller(&born.node_id, &born_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "2") });
+        assert_eq!(atlas.refused_caller(Some(&born), claimant(&[&born], &born.name), &born_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "2") });
     }
 
     /// CONTRACT (Q207): an older birth of a node whose newer birth is current at the path is deleted.
@@ -1367,7 +1186,7 @@ mod tests {
         let newer = IncarnationId::mint();
         r.birth_mut(&newer, &path("mesh1.rpc", "1"));
         let atlas = atlas_of(&[&r], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&r.node_id, &older, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "1"), by: format!("{}@{}", r.node_id, newer.as_str()) });
+        assert_eq!(atlas.refused_caller(Some(&r), claimant(&[&r], &r.name), &older, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "1"), by: format!("{}@{}", r.node_id, newer.as_str()) });
     }
 
     /// CONTRACT (Q207, one atlas for every node-admin): an admin decides only for the meshes it is
@@ -1376,15 +1195,15 @@ mod tests {
     async fn a_caller_outside_the_atlas_meshes_or_unrecorded_is_not_decided() {
         let (other, other_inc) = record(path("mesh2.rpc", "1"), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Deleted);
         let atlas = atlas_of(&[&other], &["mesh1"]).await;
-        atlas.write_record(&other);
-        assert_eq!(atlas.refused_caller(&other.node_id, &other_inc, &planned(&[(path("mesh2.rpc", "1"), "mesh2")])), CallerDecision::NotMine { path: path("mesh2.rpc", "1") });
-        assert_eq!(atlas.refused_caller(&NodeId::mint(), &IncarnationId::mint(), &planned(&[])), CallerDecision::NoRecord);
+        assert_eq!(atlas.refused_caller(Some(&other), None, &other_inc, &planned(&[(path("mesh2.rpc", "1"), "mesh2")])), CallerDecision::NotMine { path: path("mesh2.rpc", "1") });
+        assert_eq!(atlas.refused_caller(None, None, &IncarnationId::mint(), &planned(&[])), CallerDecision::NoRecord);
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:39
     /// "A node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for,
-    ///  its own mesh as a mesh-primary and every mesh as the fabric-primary, each filled once from the node
-    ///  records as it takes that primary and narrowed off as it hands it away. A node-admin that is not the
+    ///  its own mesh as a mesh-primary and every mesh as the fabric-primary, taken as it takes that primary
+    ///  and narrowed off as it hands it away; the caller's record and the record at its path.name are read
+    ///  through the current-pair lookup. A node-admin that is not the
     ///  fabric-primary verifies its decision at the root with `fabric.atlas.get` before it acts, and the
     ///  root's answer wins, except that a caller whose record it holds deleted stays deleted (Q217)."
     /// CONTRACT (Q207, "call home and verify at the root"): the fabric-primary's `fabric.atlas.get`
@@ -1417,23 +1236,16 @@ mod tests {
 
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:39
     /// "A node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for,
-    ///  its own mesh as a mesh-primary and every mesh as the fabric-primary, each filled once from the node
-    ///  records as it takes that primary and narrowed off as it hands it away."
-    #[tokio::test]
-    async fn a_mesh_taken_is_filled_once_and_a_mesh_handed_away_is_narrowed() {
-        let (a, _) = record(path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-        let (b, _) = record(path("mesh2.rpc", "1"), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-        let store = MemoryNodesStorage::default();
-        store.put_node(&a).await.unwrap();
-        store.put_node(&b).await.unwrap();
+    ///  its own mesh as a mesh-primary and every mesh as the fabric-primary, taken as it takes that primary
+    ///  and narrowed off as it hands it away": the meshes taken and handed away, and no node record held.
+    #[test]
+    fn a_mesh_taken_is_scoped_and_a_mesh_handed_away_is_narrowed() {
         let atlas = TestAtlas::new();
-        assert_eq!(atlas.scope(&store, ["mesh2".to_string()].into()).await.unwrap(), (vec!["mesh2".to_string()], vec![]), "a secondary of mesh2 takes its primary");
-        assert!(atlas.record(&b.node_id).is_some() && atlas.record(&a.node_id).is_none());
-        assert_eq!(atlas.scope(&store, ["mesh1".to_string(), "mesh2".to_string()].into()).await.unwrap(), (vec!["mesh1".to_string()], vec![]), "mesh2's primary takes the fabric-primary: every mesh");
-        assert!(atlas.record(&a.node_id).is_some());
-        assert_eq!(atlas.scope(&store, ["mesh1".to_string(), "mesh2".to_string()].into()).await.unwrap(), (vec![], vec![]), "nothing taken, nothing read");
-        assert_eq!(atlas.scope(&store, ["mesh2".to_string()].into()).await.unwrap(), (vec![], vec!["mesh1".to_string()]), "the fabric-primary handed away");
-        assert!(atlas.record(&a.node_id).is_none() && atlas.record(&b.node_id).is_some());
+        assert_eq!(atlas.scope(["mesh2".to_string()].into()), (vec!["mesh2".to_string()], vec![]), "a secondary of mesh2 takes its primary");
+        assert_eq!(atlas.scope(["mesh1".to_string(), "mesh2".to_string()].into()), (vec!["mesh1".to_string()], vec![]), "mesh2's primary takes the fabric-primary: every mesh");
+        assert_eq!(atlas.scope(["mesh1".to_string(), "mesh2".to_string()].into()), (vec![], vec![]), "nothing taken");
+        assert_eq!(atlas.scope(["mesh2".to_string()].into()), (vec![], vec!["mesh1".to_string()]), "the fabric-primary handed away");
+        assert_eq!(atlas.meshes(), ["mesh2".to_string()].into());
     }
 
     // @feature: fabric-atlas-read
@@ -1570,7 +1382,7 @@ mod tests {
                 event_at_rafka_ms: 0, traceparent: None, tracestate: None,
             };
             {
-                let held = atlas.held.lock().unwrap();
+                let held: Vec<NodeRow> = Vec::new();
                 assert_eq!(birth_of_step(&held, &stop_proj, &crate::build_state::BuildStepReceipt { output: Some(serde_json::to_value(&payload).unwrap()), ..stop_proj.steps[0].clone() }), None, "a payload cannot override the admitted incarnation");
                 payload.incarnation = inc1.clone();
                 assert_eq!(birth_of_step(&held, &stop_proj, &crate::build_state::BuildStepReceipt { output: Some(serde_json::to_value(&payload).unwrap()), ..stop_proj.steps[0].clone() }), Some(Birth { node_id: row1.node_id.clone(), incarnation: inc1.clone() }));
@@ -1593,13 +1405,13 @@ mod tests {
                 let mut topology_action = stop_proj.clone();
                 topology_action.attempt_actions.clear();
                 topology_action.topology.pinned.push((row1.name.clone(), crate::build::PinnedBirth { node_id: row1.node_id.clone(), incarnation: inc1.clone(), mesh: row1.mesh.clone(), kind: row1.kind }));
-                assert_eq!(birth_of_step(&atlas.held.lock().unwrap(), &topology_action, &topology_action.steps[0]), Some(Birth { node_id: row1.node_id.clone(), incarnation: inc1.clone() }), "topology-driven operations retain their pinned birth without an AttemptAction");
+                assert_eq!(birth_of_step(&[], &topology_action, &topology_action.steps[0]), Some(Birth { node_id: row1.node_id.clone(), incarnation: inc1.clone() }), "topology-driven operations retain their pinned birth without an AttemptAction");
             }
             assert_eq!(
-                atlas.take_receipt(&stop_proj, 1, &rdm_core::OperationId::node("node.stop", &row1.node_id), &None),
+                atlas.take_receipt(&stop_proj, 1, &rdm_core::OperationId::node("node.stop", &row1.node_id), &None, &[]),
                 Taken::Status(NodeStatus::Stopped)
             );
-            atlas.receipts(&stop_proj, 1);
+            atlas.receipts(&stop_proj, 1, &[]);
 
             let view_stopped = atlas
                 .view(
@@ -1649,7 +1461,7 @@ mod tests {
                 ..stop_proj.clone()
             };
             assert_eq!(
-                atlas.take_receipt(&start_proj, 1, &rdm_core::OperationId::node("node.start", &row1.node_id), &None),
+                atlas.take_receipt(&start_proj, 1, &rdm_core::OperationId::node("node.start", &row1.node_id), &None, &[]),
                 Taken::Effect(Some("started"))
             );
 
@@ -1679,7 +1491,7 @@ mod tests {
                 ..stop_proj
             };
             assert_eq!(
-                atlas.take_receipt(&del_proj, 1, &rdm_core::OperationId::node("node.delete", &row2.node_id), &None),
+                atlas.take_receipt(&del_proj, 1, &rdm_core::OperationId::node("node.delete", &row2.node_id), &None, &[]),
                 Taken::Status(NodeStatus::Deleted)
             );
             row2.set_status(&inc2, NodeStatus::Deleted);

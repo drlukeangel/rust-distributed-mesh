@@ -5,7 +5,8 @@
 //! One decision for every primary and every door a caller birth it does not hold comes through (a
 //! status declaration refused `SubjectUnknown`, a deleted birth's Digest heard again, a join report
 //! refused `JoinMismatch` because the row at its path and name holds another node): decided from
-//! this admin's own atlas ([`crate::atlas::Atlas::refused_caller`]), and, at an admin that
+//! the caller's record and the record at its `(path, name)`, read through the reader (query.md §1), and
+//! the ops this admin's atlas holds executing ([`crate::atlas::Atlas::refused_caller`]), and, at an admin that
 //! is not the fabric-primary, verified at the root through `fabric.atlas.get` before anything acts (the
 //! root's answer wins: this admin may have missed an op). The read is owed to the root (node-rpc.md §43,
 //! rdm#177): sent to the fabric-primary this admin's view names, and sent again when a view is
@@ -34,6 +35,8 @@ pub struct RefusedCallers {
     pub(crate) recovery: crate::admin::RecoverySubmitter,
     pub(crate) heard_again: crate::heard_again::HeardAgainSlot,
     in_flight: Mutex<BTreeSet<(String, String)>>,
+    /// Where the caller's record and the record at its `(path, name)` are read through (query.md §1).
+    stores: crate::current_record::RecordStoresSource,
     /// The tick of this admin's installed view ([`Self::watch_views`]).
     views: std::sync::OnceLock<tokio::sync::watch::Receiver<u64>>,
 }
@@ -45,8 +48,8 @@ impl std::fmt::Debug for RefusedCallers {
 }
 
 impl RefusedCallers {
-    pub(crate) fn new(node_id: NodeId, recovery: crate::admin::RecoverySubmitter, heard_again: crate::heard_again::HeardAgainSlot) -> Self {
-        Self { node_id, recovery, heard_again, in_flight: Mutex::default(), views: Default::default() }
+    pub(crate) fn new(node_id: NodeId, recovery: crate::admin::RecoverySubmitter, heard_again: crate::heard_again::HeardAgainSlot, stores: crate::current_record::RecordStoresSource) -> Self {
+        Self { node_id, recovery, heard_again, in_flight: Mutex::default(), stores, views: Default::default() }
     }
 
     /// Hold `views`, the tick of this admin's installed view.
@@ -95,7 +98,7 @@ impl RefusedCallers {
         };
         // Taken again over what this admin holds once the root answered: the wait for it may have spanned
         // a view, a Build or this admin's primary moving.
-        let (own, path, planned) = match self.own_decision(atlas, span, node_id, incarnation).await {
+        let (own, path, planned, record) = match self.own_decision(atlas, span, node_id, incarnation).await {
             Ok(own) => own,
             Err(done) => return done,
         };
@@ -126,9 +129,6 @@ impl RefusedCallers {
             },
             CallerDecision::ReAdmit { .. } => match self.heard_again.get() {
                 Some(heard_again) => {
-                    let Some(record) = atlas.record(node_id) else {
-                        return (decided, "subject-record-unavailable".into());
-                    };
                     let mut caller = crate::model::Node::allocated(path.clone(), record.mesh, record.kind);
                     caller.node_id = node_id.clone();
                     caller.incarnation_id = Some(incarnation.clone());
@@ -143,10 +143,11 @@ impl RefusedCallers {
         (decided, outcome)
     }
 
-    /// This admin's own decision on the caller birth `(node_id, incarnation)`, with its `(path, name)` and
-    /// the current Build's paths by mesh; `Err` with the decision's end when there is nothing to act on:
-    /// the Build unread, no record of the caller, or a mesh this admin is not primary for.
-    async fn own_decision(&self, atlas: &Atlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> Result<(CallerDecision, PathName, BTreeMap<String, Vec<PathName>>), (CallerDecision, String)> {
+    /// This admin's own decision on the caller birth `(node_id, incarnation)`, with its `(path, name)`, the
+    /// current Build's paths by mesh and the caller's record; `Err` with the decision's end when there is
+    /// nothing to act on: the Build unread, the records unread, no record of the caller, or a mesh this
+    /// admin is not primary for.
+    async fn own_decision(&self, atlas: &Atlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> Result<(CallerDecision, PathName, BTreeMap<String, Vec<PathName>>, crate::storage::NodeRow), (CallerDecision, String)> {
         // The topology's need: the current Build's paths, by mesh.
         let planned: BTreeMap<String, Vec<PathName>> = match self.recovery.builds.current().await {
             Ok(Some(b)) => b.topology.meshes.iter().map(|(m, t)| (m.clone(), t.nodes.iter().cloned().collect())).collect(),
@@ -156,20 +157,38 @@ impl RefusedCallers {
                 return Err((CallerDecision::NoRecord, "build-unread".into()));
             }
         };
-        let own = atlas.refused_caller(node_id, incarnation, &planned);
+        // The caller's record under its mesh's current writer, and the record the current-pair lookup names
+        // at its (path, name) (query.md §1), over this admin's installed view.
+        let read = async {
+            let stores = (self.stores)().ok_or_else(|| "this admin's node records are not open".to_string())?;
+            let view = self.recovery.topology.read().await.clone();
+            let reader = stores.reader();
+            let Some(caller) = reader.row(&view, node_id).await? else { return Ok((None, None)) };
+            let at_path = reader.row_at(&view, &caller.name).await?;
+            Ok::<_, String>((Some(caller), at_path))
+        };
+        let (caller, at_path) = match read.await {
+            Ok(read) => read,
+            Err(e) => {
+                span.record("outcome", "record-unread").record("detail", format!("the caller's record could not be read: {e}").as_str());
+                return Err((CallerDecision::NoRecord, "record-unread".into()));
+            }
+        };
+        let own = atlas.refused_caller(caller.as_ref(), at_path.as_ref(), incarnation, &planned);
         span.record("own", own.name());
         if let Some(path) = own.path() {
             span.record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
         }
         let Some(path) = own.path().cloned() else {
-            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", "this admin's atlas holds no record of the caller: it has no recorded path and name to decide on");
+            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", "no record of the caller stands: it has no recorded path and name to decide on");
             return Err((own, "nothing-done".into()));
         };
         if matches!(own, CallerDecision::NotMine { .. }) {
             span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", format!("this admin is not primary for the recorded owner of path {:?}, name {:?}", path.path, path.name).as_str());
             return Err((own, "nothing-done".into()));
         }
-        Ok((own, path, planned))
+        let record = caller.expect("a decision that names a path holds the caller's record");
+        Ok((own, path, planned, record))
     }
 
     /// The root's atlas to verify a decision against: `fabric.atlas.get` owed to the fabric-primary this
@@ -219,7 +238,7 @@ mod tests {
     use crate::storage::{NodeRow, NodesStorage as _};
     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest};
 
-    /// The fabric-primary `admin`'s atlas over mesh1's `rows`, filled, deciding its refused callers
+    /// The fabric-primary `admin`'s atlas scoped to its mesh, deciding its refused callers over mesh1's `rows`
     /// through a recovery submitter that holds no Build door and no client: the decision's terminate
     /// report is spanned and its open refused naming the missing door.
     async fn atlas_deciding(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> Arc<Atlas> {
@@ -230,10 +249,8 @@ mod tests {
     /// refused callers it installed.
     async fn atlas_deciding_over(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>, client: Option<Arc<rdm_transport::NodeRpcClient>>) -> (Arc<Atlas>, Arc<RefusedCallers>) {
         let atlas = Arc::new(Atlas::default());
-        // The admin's row writer feeds its atlas, as boot wires it: the atlas publishes rows under that writer.
         let written: Arc<crate::node_rows::WrittenRows> = Default::default();
-        written.feeds(atlas.clone()).await;
-        atlas.scope(&**rows, [admin.mesh.clone()].into()).await.unwrap();
+        atlas.scope([admin.mesh.clone()].into());
         let recovery = crate::admin::RecoverySubmitter {
             me: admin.name.clone(),
             me_id: admin.node_id.clone(),
@@ -249,9 +266,21 @@ mod tests {
             gone_dirs: Default::default(),
             resubmits: Default::default(),
         };
-        let callers = Arc::new(RefusedCallers::new(admin.node_id.clone(), recovery, Default::default()));
+        // The records the decision reads (query.md §1): mesh1's rows under its writer in the view.
+        let stores = crate::current_record::stores_over(rows.clone(), &*topology.read().await).await;
+        let callers = Arc::new(RefusedCallers::new(admin.node_id.clone(), recovery, Default::default(), Arc::new(move || Some(stores.clone()))));
         atlas.refused_callers(callers.clone());
         (atlas, callers)
+    }
+
+    /// The records the writer of `mesh` holds (its rows in `rows`): what a join at its mesh-primary is
+    /// reconciled to ([`crate::node_rows::WrittenRows::record_for_join`]).
+    async fn writer_holding(rows: &crate::storage::MemoryNodesStorage, mesh: &str) -> Arc<crate::node_rows::WrittenRows> {
+        let written = Arc::new(crate::node_rows::WrittenRows::default());
+        for r in rows.nodes(mesh).await.unwrap() {
+            written.hold(&r);
+        }
+        written
     }
 
     /// The one `rdm.node_admin.node.update.via-refused-caller` span's attributes, once the decision's
@@ -430,7 +459,7 @@ mod tests {
         };
         let _commanded = joins.expect(deployed.clone());
         let door = crate::join::JoinDoor {
-            nodes: None,
+            nodes: Some((rows.clone(), writer_holding(&rows, &admin.mesh).await)),
             me: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
@@ -537,7 +566,7 @@ mod tests {
         };
         let _commanded = joins.expect(deployed.clone());
         let door = crate::join::JoinDoor {
-            nodes: None,
+            nodes: Some((rows.clone(), writer_holding(&rows, &admin.mesh).await)),
             me: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),

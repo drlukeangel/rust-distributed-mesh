@@ -204,9 +204,6 @@ pub struct WrittenRows {
     /// open and again each time a storage change moves it: a name claim it writes records it on the
     /// claimed row, the provider the node it launches writes.
     topology_storage_provider: std::sync::RwLock<Option<String>>,
-    /// This admin's atlas: every record the writer holds is written to it (Q203: each op
-    /// writes the atlas), so a node read answers what this writer wrote without reading the store.
-    atlas: std::sync::OnceLock<Arc<crate::atlas::Atlas>>,
     /// The meshes whose records were filled from storage in this admin's tenure of their writing
     /// ([`Self::fill`]): each is read once when its writing is taken, never again before it is given up
     /// ([`Self::release`]).
@@ -261,19 +258,6 @@ impl LifecycleWrites {
 }
 
 impl WrittenRows {
-    /// Write every record this writer holds from now on to `atlas` as well, the ones it holds now
-    /// included.
-    pub async fn feeds(self: &Arc<Self>, atlas: Arc<crate::atlas::Atlas>) {
-        atlas.bind_writer(self);
-        self.atlas.set(atlas.clone()).expect("the writer feeds one atlas");
-        for listed in self.rows.all() {
-            let _one = self.lock(&listed.node_id).await;
-            if let Some(current) = self.rows.get(&listed.node_id) {
-                atlas.write_record(&current);
-            }
-        }
-    }
-
     /// Hold `provider` as the `topology_storage_provider` this admin writes: at its boot, and at each
     /// move a storage change makes.
     pub fn writes_to(&self, provider: &str) {
@@ -348,17 +332,9 @@ impl WrittenRows {
         self.topology_storage_provider.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// The atlas this writer feeds, once [`Self::feeds`] named it.
-    pub fn atlas(&self) -> Option<&Arc<crate::atlas::Atlas>> {
-        self.atlas.get()
-    }
-
     /// Hold `row` as the writer's record of its node.
     pub fn hold(&self, row: &NodeRow) {
         self.rows.hold(row.node_id.clone(), row.clone());
-        if let Some(atlas) = self.atlas.get() {
-            atlas.write_record(row);
-        }
     }
 
     /// Hold `node_type` as the writer's record of `node_id`'s immutable `node_type`.
@@ -382,9 +358,6 @@ impl WrittenRows {
             self.names.send_modify(|v| *v += 1);
         }
         self.rows.forget(node_id);
-        if let Some(atlas) = self.atlas.get() {
-            atlas.forget_record(node_id);
-        }
         self.node_types.lock().unwrap().remove(node_id);
     }
 
@@ -394,9 +367,31 @@ impl WrittenRows {
         self.rows.get(node_id)
     }
 
+    /// Every record the writer holds.
+    pub fn rows(&self) -> Vec<NodeRow> {
+        self.rows.all()
+    }
+
     /// Every record the writer holds of `mesh`.
     pub fn rows_of(&self, mesh: &str) -> Vec<NodeRow> {
         self.rows.all().into_iter().filter(|r| r.mesh == mesh).collect()
+    }
+
+    /// The record this writer holds of the node whose newest birth holds the endpoint key `endpoint_id`.
+    pub fn record_of_endpoint(&self, endpoint_id: &str) -> Option<NodeRow> {
+        self.rows.all().into_iter().find(|r| r.newest_birth().and_then(|b| b.endpoint_id.as_ref()).is_some_and(|e| e.0 == endpoint_id))
+    }
+
+    /// The record a join at `path` of the node `node_id` is reconciled to, from this writer's own copy
+    /// (Q234; never a store read, Q227; never an atlas copy, query.md §1): the live record at `path` (the
+    /// node's own first), else a `Deleted` one there (the node's own first): a live claim of another node
+    /// at the name stands over the joiner's deleted record. A `Withdrawn` record names nothing (a
+    /// withdrawn claim).
+    pub fn record_for_join(&self, path: &PathName, node_id: &NodeId) -> Option<NodeRow> {
+        let at: Vec<NodeRow> = self.rows.all().into_iter().filter(|r| r.name == *path && r.status != NodeStatus::Withdrawn).collect();
+        let (live, deleted): (Vec<NodeRow>, Vec<NodeRow>) = at.into_iter().partition(|r| r.status != NodeStatus::Deleted);
+        let own_first = |rows: &[NodeRow]| rows.iter().find(|r| r.node_id == *node_id).or_else(|| rows.first()).cloned();
+        own_first(&live).or_else(|| own_first(&deleted))
     }
 
     /// `node_id`'s own lock, held by a mutation of its record from the read of the copy through the

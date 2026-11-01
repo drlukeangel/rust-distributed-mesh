@@ -67,16 +67,6 @@ pub async fn bound_configs_over(records: std::sync::Arc<dyn rdm_node::node_recor
     configs
 }
 
-/// An atlas with its writer installed, as boot installs it (`WrittenRows::feeds`): the writer lives
-/// as long as the cell.
-pub async fn fed_atlas() -> std::sync::Arc<rdm_admin::atlas::Atlas> {
-    let atlas = std::sync::Arc::new(rdm_admin::atlas::Atlas::default());
-    let writer = std::sync::Arc::new(rdm_admin::node_rows::WrittenRows::default());
-    writer.feeds(atlas.clone()).await;
-    std::mem::forget(writer);
-    atlas
-}
-
 /// One application notice of a Build's opening or ending, as a cell's application recorded it.
 #[derive(Debug, Clone)]
 pub enum Notice {
@@ -227,19 +217,28 @@ pub async fn bind_records(cp: &rdm_admin::control_plane::ControlPlane, views: &[
 /// no writer of has none written. Called again after a fixture rewrites a record in `rows`, it writes
 /// that record's lifecycle record again.
 pub async fn bind_store(cp: &rdm_admin::control_plane::ControlPlane, rows: std::sync::Arc<rdm_admin::storage::MemoryNodesStorage>, t: &rdm_admin::topology::Topology) {
-    use rdm_admin::storage::{MeshStorage as _, NodesStorage as _};
-    use rdm_node::node_records::NodeRecordsStorage as _;
     let _ = cp.node_rows.set(rows.clone());
     let records = cp.node_records.get_or_init(|| std::sync::Arc::new(rdm_node::node_records::MemoryNodeRecords::default()) as std::sync::Arc<dyn rdm_node::node_records::NodeRecordsStorage>).clone();
-    let meshes: std::collections::BTreeSet<String> = t.nodes.iter().map(|n| n.mesh.clone()).chain(t.meshes.iter().map(|m| m.name.clone())).collect();
-    for mesh in meshes {
+    write_lifecycles(&rows, t, &*cp.claims, &*records).await;
+}
+
+/// For every record `rows` holds of a mesh `t` names, its lifecycle record written to `records` under
+/// that mesh's writer in `t` (its installed mesh-primary, else the fabric-primary,
+/// `current_record::writer_of`), each mesh given its Mesh record and name claim in `meshes` (the one
+/// `meshes` holds by name, else `t`'s id for it, else a minted one). A mesh `t` names no writer of has none written:
+/// the records a reader (`current_record::CurrentRecords`) reads over `rows`' name claims.
+pub async fn write_lifecycles(rows: &rdm_admin::storage::MemoryNodesStorage, t: &rdm_admin::topology::Topology, meshes: &dyn rdm_admin::storage::MeshStorage, records: &dyn rdm_node::node_records::NodeRecordsStorage) {
+    use rdm_admin::storage::NodesStorage as _;
+    let names: std::collections::BTreeSet<String> = t.nodes.iter().map(|n| n.mesh.clone()).chain(t.meshes.iter().map(|m| m.name.clone())).collect();
+    for mesh in names {
         let Ok(writer) = rdm_admin::current_record::writer_of(t, &mesh) else { continue };
         let writer = rdm_admin::storage::BirthRef { node_id: writer.node_id, incarnation_id: writer.incarnation_id };
-        let mesh_id = match cp.claims.mesh_named(&mesh).await.expect("the mesh store reads") {
+        let mesh_id = match meshes.mesh_named(&mesh).await.expect("the mesh store reads") {
             Some(m) => m.mesh_id,
             None => {
                 let id = t.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone()).unwrap_or_else(rdm_admin::model::MeshId::mint);
-                cp.claims.put_mesh(&rdm_admin::storage::MeshRecord::new(id.clone(), mesh.clone())).await.expect("the Mesh record is written");
+                meshes.put_mesh(&rdm_admin::storage::MeshRecord::new(id.clone(), mesh.clone())).await.expect("the Mesh record is written");
+                meshes.claim_mesh_name(&mesh, &id).await.expect("the mesh store writes").expect("the mesh's name is free");
                 id
             }
         };

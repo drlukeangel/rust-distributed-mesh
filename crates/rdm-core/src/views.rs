@@ -234,6 +234,29 @@ pub struct NodeView {
     /// schema moves by one trailing field).
     #[serde(default)]
     pub placement: Option<crate::meta::PlacementMeta>,
+    /// Whether the node's own property record was read (query.md §1: "Properties are read separately at
+    /// the subject node ID. A missing current-writer record is unavailable"; Q318): a node with no
+    /// property record yet is listed with its lifecycle facts and `Unavailable`, its config and tags
+    /// empty, and no pair on them matches it. Appended last.
+    #[serde(default)]
+    pub properties: PropertyRecord,
+}
+
+/// Whether `node.get` read a node's own property record (Q318).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PropertyRecord {
+    /// The record was read: the node's config, tags, bound addresses and declarations are its own.
+    ///
+    /// Position 0 on the wire.
+    #[default]
+    Read,
+    /// The node holds no property record yet: its properties are unavailable, named.
+    ///
+    /// Position 1 on the wire.
+    Unavailable {
+        /// Why, naming the node.
+        reason: String,
+    },
 }
 
 /// A birth's member cert as `node.get` surfaces it (fabric-certs.md §Tracking: `cert { issued_at,

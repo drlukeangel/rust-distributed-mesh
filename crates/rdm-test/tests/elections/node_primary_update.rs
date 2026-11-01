@@ -295,17 +295,17 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
 
 /// CONTRACT (node-config-update.md step 1: "The caller sends `node.config.update` to the
 /// fabric-primary. It writes the map to the node in its atlas and sends the command to the
-/// node's mesh-primary"; node-rpc-envelope.md node.get: "node.get, mesh.nodes.get and fabric.nodes.get
-/// are answered by the fabric-primary from its atlas, never from the node store: it fills the
-/// atlas from the node records once, at its start or hand-over, and each op writes it after that";
-/// Q203, Q204): a caller's `node.config.update` of a node of the other mesh, sent to the
-/// fabric-primary, ends `node.config.updated`, and the fabric-primary's `mesh.nodes.get` answers the
-/// node's config at once. The fabric-primary is then stopped and its process killed; the surviving
-/// admin of its mesh, the new fabric-primary, fills its atlas from the node records as it becomes the
-/// fabric-primary and answers the same config. Spans: the old fabric-primary's
-/// `rdm.node_admin.node.update.via-fabric-primary` (`config-updated`, sent to the node's mesh-primary)
-/// and the successor's `rdm.node_admin.fabric.update.via-atlas-filled` (`filled`). Must NOT happen: the read
-/// answering the config the node had before, at once or after the hand-over.
+/// node's mesh-primary"; query.md §1: "Node rows and property maps are not copied into an atlas to
+/// serve `node.get` or acceptance ... Properties are read separately at the subject node ID"): a
+/// caller's `node.config.update` of a node of the other mesh, sent to the fabric-primary, ends
+/// `node.config.updated`, and the fabric-primary's `mesh.nodes.get` answers the node's config at once,
+/// from the node's own property record. The fabric-primary is then stopped and its process killed; the
+/// surviving admin of its mesh, the new fabric-primary, takes every mesh into its atlas's scope as it
+/// becomes the fabric-primary and answers the same config from the same record. Spans: the old
+/// fabric-primary's `rdm.node_admin.node.update.via-fabric-primary` (`config-updated`, sent to the
+/// node's mesh-primary) and the successor's `rdm.node_admin.fabric.update.via-atlas-scope` (the other
+/// mesh taken). Must NOT happen: the read answering the config the node had before, at once or after
+/// the hand-over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_a_hand_over() {
     let (mut estate, nodes) = fabric("a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_a_hand_over").await;
@@ -325,7 +325,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     assert!(matches!(&reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: n, incarnation: i, config, .. } if *n == node_id && *i == incarnation && *config == told), "the fabric-primary sent it down and the node applied it, the config as written carried back: {reply:?}");
     let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name == subject_name).unwrap_or_else(|| panic!("{subject_name:?} is answered"));
     let at_once = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("node.get [mesh] at the fabric-primary"));
-    assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from its atlas");
+    assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from the node's own record");
     // The fabric-primary's process is killed below: its evidence is read once its span reached it
     // (the exporter writes in batches), so the kill never decides what the cell can read.
     let subject_for = subject_name.clone();
@@ -353,7 +353,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
         .await;
     let after = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("node.get [mesh] at the new fabric-primary"));
     estate.stop().await;
-    assert_eq!(after.config, told, "the new fabric-primary answers the config from the atlas it filled at the hand-over");
+    assert_eq!(after.config, told, "the new fabric-primary answers the config from the node's own record after the hand-over");
 
     let spans: Vec<Value> = estate.spans();
     // The receiving fabric-primary is named by its node id on this span.
@@ -362,8 +362,8 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     // The config is the node's own property record, read at the subject node id (query.md); no atlas
     // copy of it is written.
     assert_eq!(attr(sent[0], "outcome"), "config-updated", "{:?}", sent[0]);
-    let filled: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-filled").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &successor)).collect();
-    assert!(filled.iter().any(|sp| attr(sp, "outcome") == "filled"), "the successor filled its atlas as it became the fabric-primary: {filled:?}");
+    let scoped: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-atlas-scope").into_iter().filter(|sp| rdm_test::estate::at_location(sp, &successor)).collect();
+    assert!(scoped.iter().any(|sp| attr(sp, "taken").split(',').any(|m| m == other_mesh)), "the successor took the other mesh into its atlas's scope as it became the fabric-primary: {scoped:?}");
     println!("trace {}: rdm.node_admin.node.update.via-fabric-primary node={old:?} subject={subject_name:?} outcome=config-updated route={}", s(&sent[0]["trace_id"]), attr(sent[0], "route"));
 }
 

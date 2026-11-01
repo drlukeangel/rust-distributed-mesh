@@ -94,7 +94,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         let dir = std::env::temp_dir().join(format!("node-reads-{}", NodeId::mint()));
         let running = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         let me = running.digest.lock().unwrap().clone();
-        // The reads answer the births the admin's view holds, each with its row's status as the atlas
+        // The reads answer the births the admin's view holds, each with its row's status as its record
         // holds it (query.md §1 "Status": "a node's `status` is its row's as written: the state the row
         // last took from the node's frame or the mesh-primary's receipt", Q233). The view holds the
         // admin ready and primary of its mesh and of the fabric at its own Ready; its row takes
@@ -103,7 +103,15 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         tokio::time::timeout(WRONG, async {
             loop {
                 let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::Ready && n.is_primary && n.is_fabric_primary);
-                let row_ready = running.control.atlas.record(&me.node.node_id).is_some_and(|r| r.status == rdm_admin::model::NodeStatus::Ready);
+                // Its record under its mesh's current writer, read through the reader (query.md §1).
+                let row_ready = match (running.control.node_rows.get(), running.control.node_records.get()) {
+                    (Some(claims), Some(records)) => {
+                        let reader = rdm_admin::current_record::CurrentRecords { claims: &**claims, meshes: &*running.control.claims, records: &**records };
+                        let t = running.control.topology.read().await.clone();
+                        reader.row(&t, &me.node.node_id).await.ok().flatten().is_some_and(|r| r.status == rdm_admin::model::NodeStatus::Ready)
+                    }
+                    _ => false,
+                };
                 if ready && row_ready {
                     return;
                 }
@@ -111,7 +119,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
             }
         })
         .await
-        .expect("the admin's view never held it ready and primary of its mesh and of the fabric, with its row ready in its atlas");
+        .expect("the admin's view never held it ready and primary of its mesh and of the fabric, with its record ready");
         let admin = ResolvedNode { mesh: me.node.mesh.clone(), kind: me.node.kind, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let carrier = BuildCarrier::at_node(client.clone(), me.node.node_id.clone());

@@ -50,19 +50,16 @@ pub enum Routed {
 }
 
 /// The route of a `node.name.update` at the admin `me` (born `me_id`) sent by `sent_by`, over the view
-/// `view` holds (node-name-update.md step 1; Q197, Q203, Q204: each op writes the fabric-primary's
-/// atlas; commands go down): a caller's at an admin that is not the fabric-primary is carried up
+/// `view` holds (node-name-update.md step 1; commands go down): a caller's at an admin that is not the fabric-primary is carried up
 /// to the fabric-primary its view names, owed until it answers, and that answer is handed back
 /// ([`crate::node_config::NodeConfigs::forward_up`]); at the fabric-primary, a node whose row another
 /// admin writes (its mesh-primary) is sent the command down, owed until that mesh-primary answers
-/// ([`crate::node_config::NodeConfigs::send_down`]), and an answer naming its row moved (`NameUpdated`,
-/// or `NameNotApplied`: the row moved, its apply unresolved) moves the node's record in `atlas` to the
-/// new name, so the fabric-primary's node reads answer it at once. Every other command, and a node
-/// whose row this admin writes, is served here ([`Routed::Here`]): the row writer's own write feeds
-/// its atlas (`crate::node_rows::WrittenRows`). A node.update step of a Build is served at its
+/// ([`crate::node_config::NodeConfigs::send_down`]): the record that mesh-primary writes is what the
+/// fabric-primary's node reads read next (query.md §1). Every other command, and a node whose row this
+/// admin writes, is served here ([`Routed::Here`]). A node.update step of a Build is served at its
 /// executor and never routed: its receipt is the atlas's.
 #[allow(clippy::too_many_arguments)]
-pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, storage: &dyn NodesStorage, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::atlas::Atlas>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> Routed {
+pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> Routed {
     let StatusRequest::UpdateName { node_id, name, .. } = req else { unreachable!("routed is called for UpdateName only") };
     let Some(door) = configs else { return Routed::Here };
     let mut first = view.read().await.clone();
@@ -89,14 +86,6 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, storage: &dyn Nodes
         span.in_scope(|| tracing::info!("node.name.update at the fabric-primary is served here"));
         return Routed::Here;
     };
-    if matches!(reply, StatusReply::NameUpdated { .. } | StatusReply::NameNotApplied { .. }) {
-        if let Some(atlas) = atlas {
-            match atlas.refresh_record(storage, node_id).await {
-                Ok(written) => { span.record("atlas", if written { "current-row" } else { "no-record" }); },
-                Err(error) => { span.record("detail", error.as_str()); },
-            }
-        }
-    }
     span.record("outcome", reply.name());
     span.in_scope(|| tracing::info!("node.name.update at the fabric-primary decided"));
     Routed::Answered(reply)

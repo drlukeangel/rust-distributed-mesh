@@ -355,13 +355,12 @@ pub struct JoinDoor {
     pub issuer: Arc<crate::certs::CertIssuer>,
     /// Where each admitted birth's cert dates are written on its node record before it is admitted
     /// (fabric-certs.md §Tracking), and a node-admin birth's signing cert dates when this admin minted
-    /// the key it holds, through the records this admin holds; `None` for a door that keeps no records
-    /// (a testkit admin side).
+    /// the key it holds, through the records this admin holds, and the row a joiner's `(path, name)` is
+    /// reconciled to ([`crate::node_rows::WrittenRows::record_for_join`]); `None` for a door that keeps no
+    /// records (a testkit admin side): no row is held at any name.
     pub nodes: Option<(Arc<dyn crate::storage::NodesStorage>, Arc<crate::node_rows::WrittenRows>)>,
-    /// The atlas this admin holds its rows in (Q234; every row its writer claims or writes is held
-    /// there): the row at a joiner's `(path, name)` is read from it, never from the store (Q227). The join
-    /// answer hands the row's config beside its name. `None` for a door that keeps no records (a
-    /// testkit admin side): no row is held at any name.
+    /// This admin's atlas: a refused joiner is decided through its refused callers (Q207). `None` for a
+    /// door that keeps no records (a testkit admin side).
     pub atlas: Option<Arc<crate::atlas::Atlas>>,
 }
 
@@ -412,13 +411,13 @@ impl JoinDoor {
                 // reported name, when it is the last accepted one, is never admitted (R-JN1).
                 d.node.name = name;
                 span.record("admitted_path", d.node.name.path.as_str()).record("admitted_name", d.node.name.name.as_str());
-                // The join is reconciled to the row as this admin's atlas holds it (Q234), never read from
-                // the store (Q227). The joiner is handed no config: its properties are its own record,
+                // The join is reconciled to the row as this admin, its mesh's writer, holds it (Q234), never
+                // read from the store (Q227) or an atlas copy (query.md §1). The joiner is handed no config: its properties are its own record,
                 // initialized from its launch snapshot (node-config-update.md "Deferred application and
                 // startup"), never a copy a lifecycle row carries. Another node's row at a first start's
                 // name (a create that wrote no claim, a predecessor's row) refuses nothing; a held birth's
                 // join is reconciled to its row, and another node's row there is refused by name.
-                let config: Option<std::collections::BTreeMap<String, String>> = match self.atlas.as_ref().and_then(|a| a.record_for_join(&d.node.name, &d.node.node_id)) {
+                let config: Option<std::collections::BTreeMap<String, String>> = match self.nodes.as_ref().and_then(|(_, written)| written.record_for_join(&d.node.name, &d.node.node_id)) {
                     None => None,
                     // The caller's own record deleted: a caller whose record is deleted is deleted, its
                     // runtime terminated, never re-admitted (node-investigation.md; Q217). Refused by name

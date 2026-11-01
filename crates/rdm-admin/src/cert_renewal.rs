@@ -81,16 +81,17 @@ fn births_of<'a>(view: &'a Topology, mesh: &str) -> HashMap<(NodeId, Incarnation
     view.births().filter(|n| n.mesh == mesh).filter_map(|n| Some(((n.node_id.clone(), n.incarnation_id.clone()?), n))).collect()
 }
 
-/// What `fabric.get` shows of the cert dates (fabric-certs.md §Tracking), folded from the node records
-/// `records` (this admin's atlas) holds, never a store read: the next expiry across the births the view
-/// holds, and each mesh's births whose renewal stalls at `now_ms`.
-pub fn fabric_watch(view: &Topology, records: &crate::atlas::Atlas, now_ms: Option<u64>) -> (Option<u64>, BTreeMap<String, Vec<PathName>>) {
+/// What `fabric.get` shows of the cert dates (fabric-certs.md §Tracking), folded from `records`, the
+/// current node records the read read: the next expiry across the births the view holds, and each
+/// mesh's births whose renewal stalls at `now_ms`.
+pub fn fabric_watch(view: &Topology, records: &[crate::storage::NodeRow], now_ms: Option<u64>) -> (Option<u64>, BTreeMap<String, Vec<PathName>>) {
     let floor = rdm_core::cadence::staleness_floor().as_millis() as u64;
     let mut next: Option<u64> = None;
     let mut stalls: BTreeMap<String, Vec<PathName>> = BTreeMap::new();
     let meshes: BTreeSet<String> = view.births().map(|n| n.mesh.clone()).collect();
     for mesh in meshes {
-        let folded = fold_of(&records.records_of(&mesh));
+        let of_mesh: Vec<crate::storage::NodeRow> = records.iter().filter(|r| r.mesh == mesh).cloned().collect();
+        let folded = fold_of(&of_mesh);
         let births = births_of(view, &mesh);
         for (birth, cert) in folded {
             let Some(node) = births.get(&birth) else { continue };
@@ -337,17 +338,13 @@ async fn renew_one(r: &Renewals, n: &Node, birth: &BirthIdentity, held: &CertDat
 }
 
 /// Keep the dates of a renewal its birth holds: on the birth's record, written whole, when this admin
-/// writes it (the written expiry is the receipt, Q141); else in this fabric-primary's own copy, the
-/// mesh-primary writing its own record as it installs the cert. A write refused leaves the record as
+/// writes it (the written expiry is the receipt, Q141); else held as issued here, the mesh-primary
+/// writing its own record as it installs the cert. A write refused leaves the record as
 /// it was, so the next tick renews again.
 async fn written(r: &Renewals, n: &Node, birth: &BirthIdentity, dates: &CertDates, writes: bool) -> Outcome {
     if !writes {
+        // The record is the writer of `n`'s mesh's: it writes the dates as its member installs the cert.
         r.issued.lock().unwrap().insert((n.node_id.clone(), birth.incarnation.clone()), dates.clone());
-        // The renewal is this admin's op: its result is its atlas's at once (Q197, Q203); the
-        // record is the writer of `n`'s mesh's.
-        if let Some(atlas) = r.caches.nodes.atlas() {
-            atlas.update_record(&n.node_id, |rec| rec.birth_mut(&birth.incarnation, &birth.name).cert = Some(dates.clone()));
-        }
         return Outcome::Installed;
     }
     let base = crate::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);

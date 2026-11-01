@@ -283,11 +283,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         }
 
         // 2. Install the atlas and verify GetAtlas answers live nodes in path.name order and omits deleted ones.
-        let atlas = Arc::new(Atlas::default());
-        atlas.write_record(&admin_row);
-        atlas.write_record(&rpc_row);
-        atlas.write_record(&deleted_row);
-        let _ = atlas_slot.set(atlas);
+        let _ = atlas_slot.set(Arc::new(Atlas::default()));
 
         let (after_out, _) = client
             .call::<Status>(

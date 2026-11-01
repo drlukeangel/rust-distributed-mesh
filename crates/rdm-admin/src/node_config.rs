@@ -246,7 +246,7 @@ impl NodeConfigs {
     /// not fail the caller: the owning workflow retargets it to the mesh-primary the view names when the
     /// view next changes, or after the resend schedule's next delay, whichever is first.
     #[allow(clippy::too_many_arguments)]
-    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, topology: &Arc<tokio::sync::RwLock<Topology>>, storage: &dyn crate::storage::NodesStorage, _atlas: Option<&crate::atlas::Atlas>, sent_by: SentBy, req: &StatusRequest) -> StatusReply {
+    pub async fn serve(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, topology: &Arc<tokio::sync::RwLock<Topology>>, storage: &dyn crate::storage::NodesStorage, sent_by: SentBy, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, config, .. } = req else { unreachable!("serve is called for UpdateNodeConfig only") };
         let mut held = None;
         if sent_by == SentBy::Caller && !view.is_fabric_primary(me_id) {
@@ -768,7 +768,7 @@ mod tests {
         door.uses_records(records.clone(), channels.clone());
         door.bound_own(&admin, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into(), applied: Default::default() }).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(view.clone()));
-        assert!(matches!(door.serve(&admin.name, &admin.node_id, &view, &topology, &storage, None, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
+        assert!(matches!(door.serve(&admin.name, &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));
         let caller = records.properties(&admin.node_id).await.unwrap().unwrap();
         assert_eq!(caller.config, [("source".into(), "caller".into())].into());
         assert_eq!(caller.tags, ["kept".into()].into());
