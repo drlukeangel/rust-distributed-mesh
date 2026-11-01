@@ -326,13 +326,33 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn path(name: &str) -> PathName {
-    name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"))
+/// An operation as its receipts are keyed: its action and its admitted subject.
+#[derive(Clone, Debug)]
+struct Op {
+    action: &'static str,
+    subject: Value,
+}
+
+impl Op {
+    /// A create, keyed by the location it creates at.
+    fn create(node: &PathName) -> Self {
+        Op { action: "node.create", subject: json!({"Location": node}) }
+    }
+
+    /// A delete, keyed by the node id it deletes.
+    fn delete(node_id: &str) -> Self {
+        Op { action: "node.delete", subject: json!({"Node": node_id}) }
+    }
+
+    /// Whether receipt `r` is one of this operation.
+    fn keys(&self, r: &Value) -> bool {
+        r["operation"]["action"] == self.action && r["operation"]["subject"] == self.subject
+    }
 }
 
 /// The steps of `operation` at `attempt` the Build holds a `complete` receipt for, in order.
-fn done_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
-    build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["outcome"] == "complete" && r["attempt"] == attempt).map(|r| s(&r["step"])).collect()
+fn done_steps(build: &Value, operation: &Op, attempt: u64) -> Vec<String> {
+    build["steps"].as_array().into_iter().flatten().filter(|r| operation.keys(r) && r["outcome"] == "complete" && r["attempt"] == attempt).map(|r| s(&r["step"])).collect()
 }
 
 /// How many receipts each step of `operation` holds at `attempt`.
@@ -348,9 +368,9 @@ fn run_alone_stepped(build: &Value) -> bool {
     build["steps"].as_array().into_iter().flatten().all(|r| r["attempt"] == 1)
 }
 
-fn step_counts(build: &Value, operation: &str, attempt: u64) -> BTreeMap<String, usize> {
+fn step_counts(build: &Value, operation: &Op, attempt: u64) -> BTreeMap<String, usize> {
     let mut m = BTreeMap::new();
-    for r in build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["attempt"] == attempt) {
+    for r in build["steps"].as_array().into_iter().flatten().filter(|r| operation.keys(r) && r["attempt"] == attempt) {
         *m.entry(s(&r["step"])).or_default() += 1;
     }
     m
@@ -384,13 +404,13 @@ fn cpu_ticks(pid: u64) -> u64 {
 /// What a cut is expected to leave in the public view, and where it looks.
 enum Watch {
     /// Any node not in the view when the cut was armed: it must not be Ready (or must be).
-    NewNodes(Vec<String>),
-    Node(String),
+    NewNodes(Vec<PathName>),
+    Node(PathName),
 }
 
 enum Trigger {
     Spawn,
-    Delete(String),
+    Delete(PathName),
     /// The accepting request itself holds until release; it is made from a task.
     SpawnRequest,
     /// A new mesh with one node-admin: a membership change, so the fabric primary may move.
@@ -407,14 +427,14 @@ enum Triggered {
 
 /// Which pipeline's documented receipts the Build holds.
 enum Shape {
-    Create { node: Option<String> },
-    Delete { node: String },
+    Create { node: Option<PathName> },
+    Delete { node: PathName, node_id: String },
 }
 
 struct Run {
     estate: Estate,
     root: PathBuf,
-    doors: Mutex<BTreeMap<String, Door>>,
+    doors: Mutex<BTreeMap<PathName, Door>>,
     evidence: Mutex<Vec<Evidence>>,
     rows: Mutex<Vec<Value>>,
     /// Cuts whose hold span the exported spans must show: (cut id, door admin).
@@ -445,25 +465,25 @@ impl Run {
         build_log::projection(&facts, id).map(|held| u64::from(held.attempt)).unwrap_or(0)
     }
 
-    async fn door_of(&self, name: &str) -> Door {
+    async fn door_of(&self, name: &PathName) -> Door {
         if let Some(d) = self.doors.lock().unwrap().get(name) {
             return d.clone();
         }
         let d = Door::at(&self.estate, name).await;
-        self.doors.lock().unwrap().insert(name.to_string(), d.clone());
+        self.doors.lock().unwrap().insert(name.clone(), d.clone());
         d
     }
 
     async fn member_door(&self, mesh: &str) -> Door {
         let nodes = self.estate.node_views().await;
         let primary = nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == mesh && n.is_primary).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
-        self.door_of(&primary.name.to_string()).await
+        self.door_of(&primary.name).await
     }
 
     async fn fabric_door(&self) -> Door {
         let nodes = self.estate.node_views().await;
         let primary = nodes.iter().find(|n| n.is_fabric_primary).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
-        self.door_of(&primary.name.to_string()).await
+        self.door_of(&primary.name).await
     }
 
     /// The workflow's stream to its `Complete`, and then Build `id` complete in the log of the admin the
@@ -496,44 +516,49 @@ impl Run {
     }
 
     /// `node.delete` of `node`, accepted: the stream of the Build that runs it.
-    async fn delete(&self, node: &str) -> WorkflowStream {
-        self.estate.nodes_obj().await.delete(&path(node)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {node}: {e}"))
+    async fn delete(&self, node: &PathName) -> WorkflowStream {
+        self.estate.nodes_obj().await.delete(node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {node:?}: {e}"))
     }
 
-    async fn names(&self) -> Vec<String> {
+    async fn names(&self) -> Vec<PathName> {
         self.estate.node_views().await.iter().map(|n| n.name.clone()).collect()
     }
 
     /// `node` once the admin the estate asks lists it ready.
-    async fn node_ready(&self, node: &str) -> Value {
-        let ready = self.estate.until_node(node, &format!("{node} ready"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
+    async fn node_ready(&self, node: &PathName) -> Value {
+        let ready = self.estate.until_node(node, &format!("{node:?} ready"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
         serde_json::to_value(ready).expect("a view serializes")
     }
 
     /// Wait until the admin the estate asks lists no `node`.
-    async fn node_gone(&self, node: &str) {
-        self.estate.until_node(node, &format!("{node} left the view"), Duration::from_secs(60), |v| v.is_none().then_some(())).await
+    async fn node_gone(&self, node: &PathName) {
+        self.estate.until_node(node, &format!("{node:?} left the view"), Duration::from_secs(60), |v| v.is_none().then_some(())).await
     }
 
     /// An unarmed create: the node it makes, once ready.
-    async fn plain_create(&self, kind: NodeKind) -> String {
+    async fn plain_create(&self, kind: NodeKind) -> PathName {
         let before = self.names().await;
         let mut stream = self.spawn(kind).await;
         self.complete(&mut stream).await;
         self.estate
-            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name.to_string()) && n.status == NodeStatus::Ready).map(|n| n.name.clone()))
+            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name) && n.status == NodeStatus::Ready).map(|n| n.name.clone()))
             .await
     }
 
-    fn runtimes(&self, node: &str) -> usize {
-        self.estate.live_runtimes().iter().filter(|(dir, _)| dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{node}-")))).count()
+    /// Runtimes of `node` alive now. A data dir is named by its birth's node id: a live runtime of no
+    /// other node of the view is `node`'s.
+    async fn runtimes(&self, node: &PathName) -> usize {
+        let others: std::collections::BTreeSet<String> = self.estate.node_values().await.iter().filter(|n| location(n) != *node).map(|n| s(&n["node_id"])).collect();
+        self.estate.live_runtimes().iter().filter(|(dir, _)| dir.file_name().is_some_and(|n| !others.contains(n.to_string_lossy().as_ref()))).count()
     }
 
-    fn admin_pid(&self, name: &str) -> Option<u64> {
-        if name == "mesh1.admin.1" {
+    /// The pid of the admin at `name`: the bootstrap admin's, or its data dir's (named by its node id).
+    async fn admin_pid(&self, name: &PathName) -> Option<u64> {
+        if *name == Estate::path("mesh1.admin", "1") {
             return self.estate.bootstrap_pid().map(u64::from);
         }
-        self.estate.live_runtimes().iter().find(|(dir, _)| dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{name}-")))).map(|(_, pid)| u64::from(*pid))
+        let id = self.estate.node_values().await.iter().find(|n| location(n) == *name).map(|n| s(&n["node_id"]))?;
+        self.estate.live_runtimes().iter().find(|(dir, _)| dir.file_name().is_some_and(|n| n.to_string_lossy() == id.as_str())).map(|(_, pid)| u64::from(*pid))
     }
 
     /// Whether the nodes `watch` names are routable in the public view now, and what it showed.
@@ -542,18 +567,18 @@ impl Run {
         match watch {
             Watch::NewNodes(before) => {
                 let new: Vec<&Value> = nodes.iter().filter(|n| !before.contains(&location(&n))).collect();
-                (new.iter().any(|n| n["status"] == "ready"), if new.is_empty() { "absent from the view".into() } else { new.iter().map(|n| format!("{}={}", n["name"], n["status"])).collect::<Vec<_>>().join(",") })
+                (new.iter().any(|n| n["status"] == "ready"), if new.is_empty() { "absent from the view".into() } else { new.iter().map(|n| format!("{:?}={}", location(n), n["status"])).collect::<Vec<_>>().join(",") })
             }
-            Watch::Node(name) => match nodes.iter().find(|n| n["name"] == name.as_str()) {
-                Some(n) => (n["status"] == "ready", format!("{name}={}", n["status"])),
-                None => (false, format!("{name} absent from the view")),
+            Watch::Node(name) => match nodes.iter().find(|n| location(n) == *name) {
+                Some(n) => (n["status"] == "ready", format!("{name:?}={}", n["status"])),
+                None => (false, format!("{name:?} absent from the view")),
             },
         }
     }
 }
 
 /// One progress read of the Build a cut holds.
-async fn read(run: &Run, build_id: &str, op: &Option<String>) -> (String, bool, u64) {
+async fn read(run: &Run, build_id: &str, op: &Option<Op>) -> (String, bool, u64) {
     let b = run.build_if_held(build_id).await;
     let attempt = b["attempt"].as_u64().unwrap_or(0);
     let done = op.as_ref().map(|o| done_steps(&b, o, attempt)).unwrap_or_default();
@@ -567,10 +592,10 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let mut ev = Evidence::new(family, id);
     let nodes_before = run.estate.node_values().await;
     let (roles_before, roles_detail_before) = primaries(&nodes_before);
-    let admin_view = |nodes: &[Value]| nodes.iter().find(|n| n["name"] == door.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
+    let admin_view = |nodes: &[Value]| nodes.iter().find(|n| location(n) == door.name).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), admin_view(&nodes_before));
     let current_before = run.fabric_build_id().await;
-    let pid_before = run.admin_pid(&door.name);
+    let pid_before = run.admin_pid(&door.name).await;
     let may_move = matches!(trigger, Trigger::CreateMesh(_));
 
     // Arm: the injector's own success, which proves nothing alone.
@@ -590,7 +615,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
             (stream.build_id().to_string(), Triggered::Build(stream))
         }
         Trigger::SpawnRequest => {
-            let nodes = Nodes::new(run.estate.carrier_at(&path(&door.name)).await);
+            let nodes = Nodes::new(run.estate.carrier_at(&door.name).await);
             let (based_on, request) = run.estate.create_node_request("mesh1", NodeKind::RpcNode).await;
             let task = tokio::spawn(async move { nodes.create_named(based_on, request).await });
             (String::new(), Triggered::Request(task))
@@ -604,8 +629,8 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         assert_eq!(held["hit"]["build_id"], build_id.as_str(), "`{id}` holds a call of the Build that triggered it: {held}");
     }
     let op = match &shape {
-        Shape::Create { node: Some(n) } => Some(format!("node.create:{n}")),
-        Shape::Delete { node } => Some(format!("node.delete:{node}")),
+        Shape::Create { node: Some(n) } => Some(Op::create(n)),
+        Shape::Delete { node_id, .. } => Some(Op::delete(node_id)),
         Shape::Create { node: None } => None,
     };
 
@@ -635,7 +660,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let nodes_during = run.estate.node_values().await;
     let (roles_during, roles_detail_during) = primaries(&nodes_during);
     let (fp_during, inc_during) = (fabric_primary(&nodes_during), admin_view(&nodes_during));
-    let held_pid = run.admin_pid(&door.name);
+    let held_pid = run.admin_pid(&door.name).await;
     let alive = held_pid.and_then(proc_state).is_some_and(|c| c != 'Z');
     let replaced = pid_before != held_pid || inc_before != inc_during || attempts[0] != attempts[1];
     let during_marker_attempt = attempts[1];
@@ -682,13 +707,14 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     rec.check("the Build is current, not the previous Build", current_before != build_id, format!("previous {current_before}"));
     match &shape {
         Shape::Create { .. } => create_checks(run, &mut rec, &done).await,
-        Shape::Delete { node } => {
+        Shape::Delete { node, node_id } => {
             let order: Vec<String> = DeleteStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-            let op = format!("node.delete:{node}");
+            let op = Op::delete(node_id);
             let counts = step_counts(&done, &op, 1);
             rec.check("every documented delete step has one receipt, in order", done_steps(&done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
             run.node_gone(node).await;
-            rec.check("no runtime of the node is left", run.runtimes(node) == 0, format!("{}", run.runtimes(node)));
+            let left = run.runtimes(node).await;
+            rec.check("no runtime of the node is left", left == 0, format!("{left}"));
         }
     }
     rec.check("the advertised primaries equal the public candidates' after the release", roles_after, primaries_detail_after_str(&nodes_after));
@@ -701,14 +727,17 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
 
 /// The reconciled final state of a create: every documented step once, the node serving, one runtime.
 async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
-    let node = s(&done["steps"].as_array().and_then(|a| a.iter().find(|r| r["step"] == "AllocateIdentity")).map(|r| r["operation"].clone()).unwrap_or(Value::Null)).trim_start_matches("node.create:").to_string();
+    // The create is keyed by the location it creates at.
+    let allocated = done["steps"].as_array().and_then(|a| a.iter().find(|r| r["step"] == "AllocateIdentity")).map(|r| r["operation"]["subject"]["Location"].clone()).unwrap_or(Value::Null);
+    let node: PathName = serde_json::from_value(allocated).unwrap_or_else(|e| panic!("the create's AllocateIdentity names its location: {e}: {done}"));
     let order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    let op = format!("node.create:{node}");
+    let op = Op::create(&node);
     let counts = step_counts(done, &op, 1);
     rec.check("every documented create step has one receipt, in order", done_steps(done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
     let view = run.node_ready(&node).await;
     rec.check("the node serves", view["status"] == "ready", s(&view["status"]));
-    rec.check("exactly one runtime serves the node", run.runtimes(&node) == 1, format!("{}", run.runtimes(&node)));
+    let serving = run.runtimes(&node).await;
+    rec.check("exactly one runtime serves the node", serving == 1, format!("{serving}"));
 }
 
 /// A joining node-admin held at a boot cut (armed from `<root>/faults/<name>.boot.json`, before its
@@ -726,7 +755,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let exec = run.fabric_door().await;
     let nodes_before = run.estate.node_values().await;
     let (roles_before, detail_before) = primaries(&nodes_before);
-    let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
+    let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| location(n) == exec.name).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
     let current_before = run.fabric_build_id().await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
@@ -734,7 +763,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let build_id = Run::id_of(&stream);
     let door = Door::at(&run.estate, admin).await;
     let held = door.wait_held(id).await;
-    let op = format!("node.create:{admin:?}");
+    let op = Op::create(admin);
     let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
     build_log::build_fact(&run.estate, &build_id, &format!("the Build reaches the held admin (complete receipts exactly {want:?})"), Duration::from_secs(60), |b| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, 1) == want)
@@ -757,12 +786,12 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     }
     ev.fault = Some(FaultAck { held: held["held"] == true, names: (!held["hit"].is_null()).then(|| held["hit"].clone()), held_at_last_read: door.cut(id).await["held"] == true });
     ev.progress = Some(Progress { reads, complete_while_held });
-    let (routable, shown) = run.routable(&Watch::Node(admin.into())).await;
+    let (routable, shown) = run.routable(&Watch::Node(admin.clone())).await;
     ev.routing = Some(Routing { expected_routable: false, observed_routable: routable, observed: shown });
     let nodes_during = run.estate.node_values().await;
     let (roles_during, detail_during) = primaries(&nodes_during);
-    let alive = run.admin_pid(admin).and_then(proc_state).is_some_and(|c| c != 'Z');
-    let inc_during = nodes_during.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
+    let alive = run.admin_pid(admin).await.and_then(proc_state).is_some_and(|c| c != 'Z');
+    let inc_during = nodes_during.iter().find(|n| location(n) == exec.name).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let fp_during = fabric_primary(&nodes_during);
 
     let rel = door.release(id).await;
@@ -779,7 +808,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
         fabric_primary: [fp_before.clone(), fp_during, fabric_primary(&nodes_after)],
         fabric_home: fp_before,
         primary_may_move: true,
-        incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
+        incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| location(n) == exec.name).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
         attempts,
         exact_runtime_alive: alive,
         replaced_during: inc_before != inc_during || attempts[0] != attempts[1],
@@ -848,7 +877,7 @@ async fn silent_case(run: &Run) {
     // budget (two serial probe processes took 6 s under an export batch and held past the decision).
     let nodes_during = run.estate.node_values().await;
     let (roles_during, detail_during) = primaries(&nodes_during);
-    let during_node = nodes_during.iter().find(|n| n["name"] == name.as_str()).cloned();
+    let during_node = nodes_during.iter().find(|n| location(n) == name).cloned();
     let attempt_during = attempt_of(&build_log::build_value(&run.estate, &fabric_build).await);
     let alive = proc_state(pid).is_some_and(|c| c != 'Z');
     let inc_during = during_node.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default();
@@ -895,7 +924,8 @@ async fn silent_case(run: &Run) {
     rec.check("the value stored before the freeze is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-freeze"}), kept.to_string());
     rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == incarnation.as_str() && kept["reply"]["executing_node"] == node_id.as_str(), kept.to_string());
     rec.check("the node keeps its process and its data dir", run.estate.pid_of(&name).await == pid && run.estate.data_dir(&name).await == data_dir, format!("pid {pid}, {data_dir}"));
-    rec.check("exactly one runtime serves the node", run.runtimes(&name) == 1, format!("{}", run.runtimes(&name)));
+    let serving = run.runtimes(&name).await;
+    rec.check("exactly one runtime serves the node", serving == 1, format!("{serving}"));
     rec.check("the current build_id is the Build it was and that Build gained no attempt", run.fabric_build_id().await == fabric_build && attempt_of(&build_log::build_value(&run.estate, &fabric_build).await) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
     rec.check("the advertised primaries equal the public candidates' after the thaw", roles_after, detail_after);
     ev.reconciliation = Some(rec);
@@ -938,7 +968,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
-    let node = "mesh1.rpc.1";
+    let node = &Estate::path("mesh1.rpc", "1");
     // The healthy control, in the same capture: an unarmed create and removal of the same node
     // complete with every documented receipt once. Every cut below is judged against what they did.
     let mut control_stream = run.spawn(NodeKind::RpcNode).await;
@@ -946,13 +976,13 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     let control_door = run.member_door("mesh1").await;
     let b = run.complete(&mut control_stream).await;
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    assert_eq!(done_steps(&b, &format!("node.create:{node}"), 1), create_order, "the healthy create runs every documented step once: {b}");
-    run.node_ready(node).await;
+    assert_eq!(done_steps(&b, &Op::create(node), 1), create_order, "the healthy create runs every documented step once: {b}");
+    let control_id = s(&run.node_ready(node).await["node_id"]);
     let mut control_stream = run.delete(node).await;
     let control_delete = Run::id_of(&control_stream);
     let b = run.complete(&mut control_stream).await;
     let delete_order: Vec<String> = DeleteStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), 1), delete_order, "the healthy removal runs every documented step once: {b}");
+    assert_eq!(done_steps(&b, &Op::delete(&control_id), 1), delete_order, "the healthy removal runs every documented step once: {b}");
     run.node_gone(node).await;
     run.rows.lock().unwrap().push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "delete_build_id": control_delete, "delete_steps": delete_order, "door_admin": control_door.name}));
 
@@ -965,10 +995,10 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         &run,
         Family::DeploymentStep,
         &format!("create:{step}"),
-        json!({"kind": "receipt", "step": step, "operation": "node.create", "node": node}),
+        json!({"kind": "receipt", "step": step, "operation": "node.create", "node": Op::create(node).subject}),
         &door,
         Trigger::Spawn,
-        Shape::Create { node: Some(node.into()) },
+        Shape::Create { node: Some(node.clone()) },
         Watch::NewNodes(before),
         true,
     )
@@ -977,15 +1007,16 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     // (states.md "Who sets each state": node deleting), and deleting is a routing stop from the moment a
     // peer holds it (states.md "Routing"), so the cut's position implies the node is not routable.
     let step = DeleteStep::NodeDeleting.name();
+    let node_id = s(&run.node_ready(node).await["node_id"]);
     door_case(
         &run,
         Family::BuildStep,
         &format!("delete:{step}"),
-        json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": node}),
+        json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": Op::delete(&node_id).subject}),
         &door,
-        Trigger::Delete(node.into()),
-        Shape::Delete { node: node.into() },
-        Watch::Node(node.into()),
+        Trigger::Delete(node.clone()),
+        Shape::Delete { node: node.clone(), node_id: node_id.clone() },
+        Watch::Node(node.clone()),
         false,
     )
     .await;
@@ -1014,16 +1045,16 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     // A mesh's first admin, born by the fabric primary: stalled before the step that publishes it,
     // so its mesh's Pending has not been applied. The admin is not routable until the release.
     let step = CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name();
-    let admin = "mesh2.admin.1";
+    let admin = &Estate::path("mesh2.admin", "1");
     let before = run.names().await;
     door_case(
         &run,
         Family::PendingBeforeBuild,
         "pending:mesh-first-admin",
-        json!({"kind": "receipt", "step": step, "operation": "node.create", "node": admin}),
+        json!({"kind": "receipt", "step": step, "operation": "node.create", "node": Op::create(admin).subject}),
         &fdoor,
         Trigger::CreateMesh("mesh2".into()),
-        Shape::Create { node: Some(admin.into()) },
+        Shape::Create { node: Some(admin.clone()) },
         Watch::NewNodes(before),
         false,
     )
