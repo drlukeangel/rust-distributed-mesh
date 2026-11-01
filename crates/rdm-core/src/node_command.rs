@@ -131,7 +131,9 @@ pub enum NodeCommandRequest {
         /// The operation's declared identity.
         operation: crate::OperationId,
     },
-    /// Freeze this exact birth's property writer before a storage copy. Appended at wire position 5.
+    /// Freeze this exact birth's property writer before a storage copy.
+    ///
+    /// Position 5 on the wire.
     StorageBlock {
         /// The commanded node.
         node_id: NodeId,
@@ -354,7 +356,8 @@ pub enum NodeCommandReply {
         connections: Vec<ConnectionId>,
     },
     /// Property admission is closed and earlier writes are finished for this change.
-    /// Appended at wire position 23.
+    ///
+    /// Position 23 on the wire.
     StorageBlocked,
 
 }

@@ -637,7 +637,9 @@ pub enum StatusRequest {
         /// The pairs every answered row matches.
         filter: crate::filter::Filter,
     },
-    /// Removed upward property-copy request. Position 34 remains reserved.
+    /// Removed upward property-copy request; the position stays reserved.
+    ///
+    /// Position 34 on the wire.
     Reserved34 {
         /// The node whose row was written.
         node_id: NodeId,
@@ -678,6 +680,7 @@ pub enum StatusRequest {
     },
     /// Apply one complete Build entry at the exact birth. Recognition and properties are
     /// persisted together by the node. Repeating this application preserves later changes.
+    ///
     /// Position 37 on the wire.
     ApplyNodeProperties {
         /// The node instance.
@@ -1080,8 +1083,12 @@ pub fn create_tags_refusal(labels: &BTreeSet<String>) -> Option<String> {
 #[serde(rename_all = "snake_case")]
 pub enum ManifestScope {
     /// Every member except the final mesh-primary.
+    ///
+    /// Position 0 on the wire.
     OtherMembersExited,
     /// Every member, including the final mesh-primary.
+    ///
+    /// Position 1 on the wire.
     AllMembersExited,
 }
 

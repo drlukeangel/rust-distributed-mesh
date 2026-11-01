@@ -8,8 +8,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OperationSubject {
     /// An admitted existing node.
+    ///
+    /// Position 0 on the wire.
     Node(NodeId),
     /// An exact admitted birth, for operations that distinguish incarnations.
+    ///
+    /// Position 1 on the wire.
     Birth {
         /// The globally unique node ID.
         node_id: NodeId,
@@ -17,15 +21,25 @@ pub enum OperationSubject {
         incarnation: IncarnationId,
     },
     /// A create or an accepted reference to a not-yet-created entry.
+    ///
+    /// Position 2 on the wire.
     Location(PathName),
     /// An existing mesh.
+    ///
+    /// Position 3 on the wire.
     Mesh(MeshId),
     /// An existing fabric.
+    ///
+    /// Position 4 on the wire.
     Fabric(FabricId),
     /// A non-node operation's explicit name, such as a storage change.
+    ///
+    /// Position 5 on the wire.
     Named(String),
     /// A primary update that precedes an exact admitted operation. Build and run
     /// remain separate fields on the enclosing protocol and memo records.
+    ///
+    /// Position 6 on the wire.
     PrimaryUpdate {
         /// The explicitly selected role to update.
         role: crate::PrimaryRole,
