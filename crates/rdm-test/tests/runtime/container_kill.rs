@@ -114,7 +114,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
 
     estate.stop().await;
-    assert_eq!(estate.live_containers(), Vec::<(String, String)>::new(), "no container of the fabric is left running");
+    assert_eq!(estate.live_containers(), Vec::<(rdm_core::PathName, String)>::new(), "no container of the fabric is left running");
 }
 
 fn gate_dir(tag: &str) -> std::path::PathBuf {

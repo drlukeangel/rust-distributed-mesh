@@ -668,7 +668,7 @@ async fn a_connections_delete_by_id_closes_that_connection_and_names_the_rest() 
     })
     .await;
     assert!(listed(&after, &dest_id).contains(&to_dest), "the connection not named stays open: {after:?}");
-    assert_eq!(s(&drop["source"]["name"]), &*SOURCE, "{drop}");
+    assert_eq!(drop["source"]["name"], json!(&*SOURCE), "{drop}");
     assert_ne!(s(&drop["id"]), to_carrier, "the drop is a new entry: {drop}");
     let again = connections_delete_ids(&estate, &*SOURCE, &[to_carrier.clone()]).await;
     assert!(matches!(&again, rdm_core::status::StatusReply::ConnectionsDeleted { closed, not_open, .. } if closed.is_empty() && not_open.iter().any(|c| c.to_string() == to_carrier)), "the same id again is not open: {again:?}");

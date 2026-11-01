@@ -39,5 +39,5 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     }
     assert!(report.ok(), "seed {seed}: {:#?} / ledger {:#?}", report.violations, report.ledger.violations);
     assert!(left.is_empty(), "seed {seed}: no runtime of the estate is left running: {left:?}");
-    assert_eq!(estate.live_containers(), Vec::<(String, String)>::new(), "seed {seed}: no container of the estate is left running");
+    assert_eq!(estate.live_containers(), Vec::<(rdm_core::PathName, String)>::new(), "seed {seed}: no container of the estate is left running");
 }

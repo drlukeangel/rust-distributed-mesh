@@ -786,7 +786,7 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     if let Some(v) = &view {
         assert_ne!(v["status"], "ready", "`{id}`: the held admin is not Ready: {v}");
     }
-    let during = json!({"build_state": b["state"], "attempt": 1, "operation": op, "done_steps": done, "admin_in_view": view.map(|v| json!({"status": v["status"]})), "cut_still_held": door.cut(id).await["held"]});
+    let during = json!({"build_state": b["state"], "attempt": 1, "operation": op.value(), "done_steps": done, "admin_in_view": view.map(|v| json!({"status": v["status"]})), "cut_still_held": door.cut(id).await["held"]});
     let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), attempt: 1, during };
     let rel = door.release(id).await;
     run.complete(&mut stream).await;

@@ -405,7 +405,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     // What kept the cut admin alive: mesh2's primary's recovery of it, opened by the fabric-primary and
     // claimed by mesh2's primary, held before its dispatch.
     let claimed = fp_door.wait_held("cut-admin-recovery").await;
-    assert_eq!(s(&claimed["hit"]["executor"]), mesh2_primary, "the held claim is mesh2's primary's: {claimed}");
+    assert_eq!(s(&claimed["hit"]["executor"]["node_id"]), mesh2_primary_id, "the held claim is mesh2's primary's: {claimed}");
     let bare = |id: String| id.replace('-', "").trim_start_matches("bid_").to_string();
     let spans_now = estate.spans();
     let opened: Vec<&Value> = named(&spans_now, "rdm.node_admin.build.update.via-recovery")
