@@ -302,11 +302,11 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let admin_client = Arc::new(
             NodeRpcClient::new(admin_ep.clone(), admin_resolver).with_caller_system("rdm"),
         );
-        let configs = Arc::new(NodeConfigs::new(
+        let configs = Arc::new(crate::bound_configs(NodeConfigs::new(
             admin_client,
             Default::default(),
             Default::default(),
-        ));
+        )).await);
         let configs_slot = Arc::new(OnceLock::new());
         let _ = configs_slot.set(configs);
 

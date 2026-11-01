@@ -1510,11 +1510,21 @@ pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Durat
 pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
 
 /// What a reserved Status position is refused with: none is ever a call (R-CR4).
-pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), 12 to 15, 16 (StartNode) and 29 (LeaveMesh) are reserved, never executed; lifecycle commands and node.mesh.leave use NodeCommand 0x22";
+pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), 12 to 15, 16 (StartNode), 29 (LeaveMesh) and 34 are reserved, never executed; lifecycle commands and node.mesh.leave use NodeCommand 0x22";
 
 /// A reserved Status position at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
 pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
+    // Position 34, the removed upward property copy, names no operation: refused by name, nothing written.
+    if let StatusRequest::Reserved34 { node_id, .. } = req {
+        let reported = format!("{} of {node_id}", req.op());
+        tracing::info_span!(
+            "rdm.node_admin.status.reject.via-reserved-position",
+            node = %receiver, op = req.op(), subject = %node_id, caller = %caller, field = "command", expected = RETIRED_PAIR_IS_RESERVED, reported = %reported, "otel.kind" = "internal"
+        )
+        .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
+        return rdm_core::reply::status::rejected_unmatched_completion("command".into(), RETIRED_PAIR_IS_RESERVED.into(), reported);
+    }
     let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::LeaveMesh { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
         unreachable!("refuse_reserved is called for the reserved positions only")
     };
