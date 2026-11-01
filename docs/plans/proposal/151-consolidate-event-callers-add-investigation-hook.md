@@ -33,21 +33,21 @@ A call is "reach the node, send, get its answer, try again". Today that is five 
 
 | # | Where | What it repeats or bounds |
 |---|---|---|
-| 1 | `rdm-transport/src/client.rs` `Budget` `Budget` | four ways to bound one call's time: `Overall(d)` (resolve, dial, send and reply in one deadline; the default, 10 s, `CallOptions::default`), `Split { send, reply }` (reply counted from the commit cut), `Stream { send }` (no reply bound: the connection the request committed on is the bound), `Owed` (no bound at all) |
+| 1 | `rdm-transport/src/client.rs` `Budget` | four ways to bound one call's time: `Overall(d)` (resolve, dial, send and reply in one deadline; the default, 10 s, `CallOptions::default`), `Split { send, reply }` (reply counted from the commit cut), `Stream { send }` (no reply bound: the connection the request committed on is the bound), `Owed` (no bound at all) |
 | 2 | `CallOptions` `CallOptions.once` | "asked once": a request whose connect fails or whose stream is lost is not resent (the tickle's direct probe, `rdm-admin/src/offline.rs` `TickleClient::direct`; ten Rafka call sites) |
-| 3 | `CallOptions.unsent_is_final` `CallOptions.unsent_is_final` | a carrier's one inner call ends `NotSent` from its first unsent attempt (`forward.rs` `carry_once`) |
-| 4 | `until_end` `until_end` | the attempt loop: resends an unsent or unacked request on the resend schedule; re-dials when no connection is held; `receiver_gone()` checked before every attempt (`until_end`) |
-| 5 | `until_resolved` `until_resolved` | an `Owed` request whose receiver this view does not hold yet: reads the view again on the schedule and on every change of the view |
-| 6 | `hold_connection` `hold_connection` | acked, response incomplete, stream gone: keeps a connection so the responder can resend |
+| 3 | `CallOptions.unsent_is_final` | a carrier's one inner call ends `NotSent` from its first unsent attempt (`forward.rs` `carry_once`) |
+| 4 | `until_end` | the attempt loop: resends an unsent or unacked request on the resend schedule; re-dials when no connection is held; `receiver_gone()` checked before every attempt (`until_end`) |
+| 5 | `until_resolved` | an `Owed` request whose receiver this view does not hold yet: reads the view again on the schedule and on every change of the view |
+| 6 | `hold_connection` | acked, response incomplete, stream gone: keeps a connection so the responder can resend |
 | 7 | `until_end`, `leg` + `RoutePolicy` (`RoutePolicy`) | the next attempt through a carrier once an attempt sent nothing (i146 Q52) |
 | 8 | `rdm-admin/src/node_config.rs` `owed` `owed()` | a workflow loop over #4: sends a Status request again to the primary the view names next on `RejectedNotPrimary`, `NotReady` (root) or a call that ended with no reply |
-| 9 | `rdm-admin/src/admin/recovery.rs` `report_terminate` `report_terminate` | a workflow loop with two kinds of turn: a domain answer that keeps the report owed (`BuildInProgress`, `unknown-node`, `NotFabricPrimary`) and a call that ended with no reply, sent again to the fabric-primary the view names |
+| 9 | `rdm-admin/src/admin/recovery.rs` `report_terminate` | a workflow loop with two kinds of turn: a domain answer that keeps the report owed (`BuildInProgress`, `unknown-node`, `NotFabricPrimary`) and a call that ended with no reply, sent again to the fabric-primary the view names |
 
-The responder (`delivery.rs` `push_loop` `push_loop`, `server.rs` `answer_refusal` `answer_refusal`) resends its response
+The responder (`delivery.rs` `push_loop`, `server.rs` `answer_refusal`) resends its response
 on the same schedule until it is acked, the response is caught up, or the receiver is gone: the same
 rule in the other direction, with no attempt count.
 
-The schedule (`delivery.rs` `Pacing` `Pacing`, `rdm-core/src/delivery.rs` `resend_after` `resend_after`): the first delay
+The schedule (`delivery.rs` `Pacing`, `rdm-core/src/delivery.rs` `resend_after`): the first delay
 is the publish cadence, each next one doubles, each carries ±25 % jitter, capped at the staleness floor.
 Inside one attempt the wait for the ack is that attempt's delay (`until_end`, `ack_by`: `ack_by = now +
 pacing.after(attempt)`), and the next attempt starts at `started + pacing.after(attempt)`
@@ -168,11 +168,12 @@ transport.**
   reads it so an answer from such a birth is not `reached`, `TickleClient::command_unanswered`). Under i151 the record is
   fed by two writers: this admin's own call whose attempts ended unanswered, and a report. One new
   Status request on the upward path the declarations use (node-rpc-envelope.md Status, `0x1B`):
-  `ReportCallFailed { sender, receiver, op, failure }` (the same facts `on_call_failed` carries, Q314,
+  `ReportCallFailed { sender, receiver, owner, op, failure }` (the same facts `on_call_failed` carries, Q314,
   so the primary stores the reason, not only the fact; `failure: CallFailure`, the typed reason only),
   sent with `Resend::default()` to the primary above the
-  birth, answered at once (`Accepted`, or `SubjectUnknown` for a birth the primary does not hold, which
-  ends the report by name). The primary writes the report into the same record; the watch's tick
+  birth, answered at once (`Applied`, or `RejectedNotPrimary { why: NotPrimary::SubjectUnknown }` for a
+  birth the primary does not hold, which ends the report by name; both existing replies, no new
+  position). The primary writes the report into the same record; the watch's tick
   investigates each birth there as it does today, "once per silence (not again within a staleness
   floor, nor until it is heard ready or unheard again)" (node-recovery.md step 3): fifty callers that
   cannot reach one broker in the same second produce one investigation, not fifty, and the record is
@@ -299,10 +300,11 @@ Two moments, two places, two hooks (Luke, 2026-11-01):
 | `on_node_investigated` | the primary above the birth | the verdict is recorded | Rafka's node-admin: `write -> none` on `recreate` |
 
 - **R-151.13 `on_call_failed`.** Called on the calling node, on a task of its own, once per spent call,
-  after the call has ended to its owner; a notice, gates nothing. `CallFailedCtx { sender, receiver, op,
+  after the call has ended to its owner; a notice, gates nothing. `CallFailedCtx { sender, receiver, owner, op,
   failure, attempts, elapsed, context }`: `sender` and `receiver` each `(node_id, incarnation, path,
   name)` (the receiver's birth the one the call was addressed to; under Q313 the last birth resolved;
-  none for a `NodeTarget::Endpoint` call, which names no birth); `op` the request's op; `failure: CallFailure`, the
+  none for a `NodeTarget::Endpoint` call, which names no birth); `owner` and `op` the op ledger's key (`OpOwner` and the number: a bare number cannot say whose op
+  failed); `failure: CallFailure`, the
   reason the call's span stores and nothing more (never `RpcOutcome`, which can carry a reply):
   `NotSent(NotSentReason)` (connect refused, connect timed out,
   endpoint unresolved, no active route, `rdm-core/src/outcome.rs`; today's `node_commands.rs` names
@@ -323,7 +325,7 @@ and a new section:
 > ## on_call_failed
 >
 > When a call this node opened ends with its attempts spent ([node-rpc.md §43](node-rpc.md#43-resend-delivery-is-the-runtimes)),
-> RDM calls `on_call_failed` once, with `CallFailedCtx { sender, receiver, op, failure, attempts,
+> RDM calls `on_call_failed` once, with `CallFailedCtx { sender, receiver, owner, op, failure, attempts,
 > elapsed, context }`, on a task of its own, after the call has ended to its owner. `sender` and
 > `receiver` are each the birth's `(node_id, incarnation, path, name)`; `failure` is the call's stored
 > reason, `NotSent` with its reason (nothing reached the receiver) or `Indeterminate` with its reason
@@ -508,11 +510,15 @@ node-rpc-envelope.md, Status (`0x1B`): one new request variant, **appended at po
 and no existing position moves; its golden in `crates/rdm-core/tests/status_wire.rs` is written by
 hand and its codec cell added.
 
-> `ReportCallFailed { sender: Birth, receiver: Birth, op: u8, failure: CallFailure }` (`Birth` the
-> `(node_id, incarnation, path, name)` of each end; `CallFailure` = `NotSent(NotSentReason)` or
+> `ReportCallFailed { sender: Birth, receiver: Birth, owner: OpOwner, op: u8, failure: CallFailure }`
+> (`Birth` the `(node_id, incarnation, path, name)` of each end; `owner` and `op` the op ledger's own
+> key (`catalog.rs` `LedgerEntry`: `OpOwner::Core`, `OpOwner::Product("rafka")`), since op numbers are
+> scoped by their owner and a bare number cannot say whose op failed; `CallFailure` = `NotSent(NotSentReason)` or
 > `Indeterminate(IndeterminateReason)`, the typed reason only, never a reply payload): a caller's
 > report that its call to this exact birth ended with its attempts spent and no answer (node-rpc.md
-> §43); answered `Accepted`, or `SubjectUnknown` for a birth the receiver is not the primary above.
+> §43); answered `Applied` (the existing reply, no new position), or
+> `RejectedNotPrimary { why: NotPrimary::SubjectUnknown }` (the existing refusal) for a birth the
+> receiver is not the primary above.
 > The report is itself never reported: its own spent attempts are spanned and end it.
 
 Code identifiers that name this mechanism are renamed with the pages (CLAUDE.md naming canon), the
