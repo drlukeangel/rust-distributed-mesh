@@ -1159,7 +1159,9 @@ mod tests {
     }
 
     fn end(name: PathName, mesh: &str, kind: rdm_core::NodeKind) -> ConnectionEnd {
-        ConnectionEnd { mesh: mesh.to_owned(), kind, name: name.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
+        // One fixed birth per (path, name): the facts of one connection name the same two ends.
+        let fixed = |what: &str| rdm_core::fixture_crockford60(&format!("{what}-{}-{}", name.path, name.name));
+        ConnectionEnd { mesh: mesh.to_owned(), kind, name: name.clone(), node_id: NodeId::parse(&fixed("node")).unwrap(), incarnation: Some(IncarnationId::parse(&fixed("birth")).unwrap()) }
     }
 
     fn fact(state: ConnectionState) -> NodeConnection {
@@ -1365,7 +1367,7 @@ mod tests {
         let (ids1, ids2) = tokio::join!(writes(&n1, &m1, "mesh1"), writes(&n2, &m2, "mesh2"));
         let records = crate::store_log::latest_in(&root.dir().join(crate::store_root::NODES_FILE)).unwrap();
         for (mesh, ids) in [("mesh1", ids1), ("mesh2", ids2)] {
-            let of_mesh: Vec<String> = records.iter().filter(|((kind, _), l)| kind == "node-record" && l.record["name"].as_str().is_some_and(|n| n.starts_with(&format!("{mesh}.")))).map(|((_, key), _)| key.clone()).collect();
+            let of_mesh: Vec<String> = records.iter().filter(|((kind, _), l)| kind == "node-record" && l.record["mesh"] == mesh).map(|((_, key), _)| key.clone()).collect();
             assert_eq!(of_mesh, ids, "{mesh}'s records, keyed by node id, in the root's nodes.jsonl");
         }
         assert_eq!(crate::store_log::keys_in(&root.dir().join(crate::store_root::MESHES_FILE), "mesh-record").unwrap().len(), 2, "one record per mesh");

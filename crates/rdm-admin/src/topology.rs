@@ -366,7 +366,8 @@ mod tests {
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
         if n.kind == NodeKind::NodeAdmin {
-            n.admin_api_base = Some(format!("http://127.0.0.1:{}", 18000));
+            // Each admin its own port in the fixture: mesh1.admin.1 serves 18001, mesh1.admin.2 18002.
+            n.admin_api_base = Some(format!("http://127.0.0.1:{}", 18000 + n.name.name.parse::<u16>().expect("the fixture's admins are numbered")));
         }
         n
     }
