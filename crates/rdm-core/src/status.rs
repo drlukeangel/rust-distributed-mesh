@@ -1979,12 +1979,7 @@ impl StatusReply {
     /// `ConfigRowRefused` for `node`, the store's refusal `reason`, each within its budget so the
     /// reply always fits the Status reply bound.
     pub fn config_row_refused(node: &str, reason: &str) -> Self {
-        Self::config_row_refused_at(node, reason, BTreeMap::new(), 0)
-    }
-
-    /// [`Self::config_row_refused`] carrying the row as it stands, its `config` at `revision` (P2).
-    pub fn config_row_refused_at(node: &str, reason: &str, config: BTreeMap<String, String>, revision: u64) -> Self {
-        Self::ConfigRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES), config, revision }
+        Self::ConfigRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES), config: BTreeMap::new(), revision: 0 }
     }
 
     /// `ConfigNotApplied` for `node`: the birth `answered` (a reply or call-end name), and why, each

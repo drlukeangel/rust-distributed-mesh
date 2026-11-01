@@ -92,8 +92,6 @@ pub fn busy_holding_connections(connections: Vec<ConnectionId>) -> StatusReply {
 pub fn request_not_handled(request: String) -> StatusReply { StatusReply::RequestNotHandled { request } }
 /// Construct the bounded config-row-refused outcome.
 pub fn bounded_config_row_refused(node: &str, reason: &str) -> StatusReply { StatusReply::config_row_refused(node, reason) }
-/// Construct the bounded config-row-refused outcome carrying the row as it stands, its config at its revision (P2).
-pub fn bounded_config_row_refused_at(node: &str, reason: &str, config: std::collections::BTreeMap<String, String>, revision: u64) -> StatusReply { StatusReply::config_row_refused_at(node, reason, config, revision) }
 /// Construct the bounded config-not-applied outcome.
 pub fn bounded_config_not_applied(node: &str, answered: &str, reason: &str) -> StatusReply { StatusReply::config_not_applied(node, answered, reason) }
 /// Construct the bounded blocked outcome.
