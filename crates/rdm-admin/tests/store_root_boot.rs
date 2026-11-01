@@ -342,8 +342,6 @@ impl Prepared {
                 name: own.name.clone(),
                 node_id: node_id.clone(),
                 status: rdm_admin::model::NodeStatus::Ready,
-                config: INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-                tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
                 allocated: None,
                 renamed_from: None,
                 app_types: None, inherited_by: None,
@@ -352,9 +350,17 @@ impl Prepared {
                 predecessor: None,
                 mesh_id: Some(mesh_id.clone()),
                 storage_persistence: None,
-                placement: None, revision: 0,
+                placement: None,
             };
             nodes.write_record(&row).await.unwrap();
+            // The birth's own property record, as its own writer put it.
+            use rdm_node::node_records::NodeRecordsStorage as _;
+            rdm_node::node_records::FileNodeRecords::open(&root).await.unwrap().put_properties(&rdm_node::node_records::NodeProperties {
+                birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
+                config: INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
+                endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+            }).await.unwrap();
             let mut launched = Vec::new();
             for (path, name, kind) in launched_names {
                 let location = rdm_core::PathName::new(*path, *name).unwrap();
@@ -365,8 +371,6 @@ impl Prepared {
                     name: location.clone(),
                     node_id: node_id.clone(),
                     status: rdm_admin::model::NodeStatus::Ready,
-                    config: Default::default(),
-                    tags: Default::default(),
                     allocated: None,
                     renamed_from: None,
                     app_types: None, inherited_by: None,
@@ -375,7 +379,7 @@ impl Prepared {
                     predecessor: None,
                     mesh_id: Some(mesh_id.clone()),
                     storage_persistence: None,
-                    placement: None, revision: 0,
+                    placement: None,
                 };
                 nodes.write_record(&row).await.unwrap();
                 launched.push((location, node_id));
@@ -632,9 +636,10 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     let (row, contacts) = root.rows_after();
     let row = row.expect("a row at mesh1.admin.1");
     assert_eq!(row.node_id.to_string(), node_id, "mesh1.admin.1 is held by the new node.id: {row:?}");
-    let config: Vec<(String, String)> = row.config.into_iter().collect();
-    let tags: Vec<String> = row.tags.into_iter().collect();
-    assert_eq!((config, tags), (INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), INHERITED_TAGS.iter().map(|t| t.to_string()).collect()), "config and tags seeded from the Deleted row");
+    let snapshot = row.initial_properties.clone().expect("the claim's launch snapshot");
+    let config: Vec<(String, String)> = snapshot.config.into_iter().collect();
+    let tags: Vec<String> = snapshot.tags.into_iter().collect();
+    assert_eq!((config, tags), (INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), INHERITED_TAGS.iter().map(|t| t.to_string()).collect()), "the launch snapshot is the inherited birth's own acknowledged properties");
     assert!(!contacts.contains(&root.node_id.to_string()), "the inherited birth is no node to reach: its record is Deleted: {contacts:?}");
     println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
 }

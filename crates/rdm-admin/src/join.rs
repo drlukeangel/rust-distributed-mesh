@@ -412,16 +412,13 @@ impl JoinDoor {
                 // reported name, when it is the last accepted one, is never admitted (R-JN1).
                 d.node.name = name;
                 span.record("admitted_path", d.node.name.path.as_str()).record("admitted_name", d.node.name.name.as_str());
-                // The row's config, handed beside its name and installed on the digest: the row as this
-                // admin's atlas holds it (Q234), never read from the store (Q227). A first start
-                // is admitted under its create spec's name (R-JN1 item 6), and its row there is its own
-                // create's claim, written before it was launched (node-create.md step 1) and seeded
-                // from the previous row at that path and name (node-recovery.md step 4): it is handed that
-                // config at its join, before it publishes anything or declares readiness (node-start.md
-                // step 2). Another node's row at a first start's name (a create that wrote no claim, a
-                // predecessor's row) is handed nothing and refuses nothing; a held birth's join is
-                // reconciled to its row, and another node's row there is refused by name.
-                let config = match self.atlas.as_ref().and_then(|a| a.record_for_join(&d.node.name, &d.node.node_id)) {
+                // The join is reconciled to the row as this admin's atlas holds it (Q234), never read from
+                // the store (Q227). The joiner is handed no config: its properties are its own record,
+                // initialized from its launch snapshot (node-config-update.md "Deferred application and
+                // startup"), never a copy a lifecycle row carries. Another node's row at a first start's
+                // name (a create that wrote no claim, a predecessor's row) refuses nothing; a held birth's
+                // join is reconciled to its row, and another node's row there is refused by name.
+                let config: Option<std::collections::BTreeMap<String, String>> = match self.atlas.as_ref().and_then(|a| a.record_for_join(&d.node.name, &d.node.node_id)) {
                     None => None,
                     // The caller's own record deleted: a caller whose record is deleted is deleted, its
                     // runtime terminated, never re-admitted (node-investigation.md; Q217). Refused by name
@@ -442,7 +439,7 @@ impl JoinDoor {
                                 return rdm_core::reply::join::join_mismatch("types".into(), format!("{:?}", held.types), format!("{types:?}"));
                             }
                         }
-                        Some(row.config)
+                        None
                     },
                     Some(_) if !held => None,
                     Some(row) => {

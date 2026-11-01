@@ -887,7 +887,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         .await
                         .map_err(|e| format!("{node_id} cannot terminate the lost birth {} ({}) at path {:?}, name {:?}: {e}", lost.node_id, lost.incarnation_id.as_str(), lost.name.path, lost.name.name))?;
                 }
-                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, &*journal).await
+                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, Some(&*topology_storage.node_records()), &*journal).await
             }
             .instrument(boot.clone())
             .await
@@ -941,7 +941,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 .map_err(|e| format!("refusing to start: {}: {} cannot terminate the inherited birth {} ({}) at path {:?}, name {:?}: {e}", cfg.data_dir.display(), node_id, own.node_id, own.incarnation_id.as_str(), own.name.path, own.name.name))?;
         }
         // A name another node holds refuses the start by name.
-        crate::node_rows::take_inherited_name(&*nodes_storage, &caches.nodes, &own, &node_id)
+        crate::node_rows::take_inherited_name(&*nodes_storage, &caches.nodes, Some(&*topology_storage.node_records()), &own, &node_id)
             .instrument(step.clone())
             .await
             .map_err(|e| format!("refusing to start: {}: {} takes path {:?}, name {:?} over the inherited birth {}: {e}", cfg.data_dir.display(), node_id, own.name.path, own.name.name, own.node_id))?;
@@ -2012,7 +2012,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                             let held = view.births().find(|n| n.endpoint_id.as_ref().is_some_and(|e| e.0 == caller)).and_then(|n| atlas.record(&n.node_id));
                                             let row = held.or_else(|| atlas.record_of_endpoint(&caller)).filter(|r| r.mesh == mesh && r.node_id != me)?;
-                                            Some((crate::views::own_row_view(&view, &atlas, &row), row.revision))
+                                            // A lifecycle row has no revision (node-identity-and-state.md §2.5); the
+                                            // OwnRow frame still carries one on the wire, sent as 0.
+                                            Some((crate::views::own_row_view(&view, &atlas, &row), 0))
                                         })
                                     })
                                 };

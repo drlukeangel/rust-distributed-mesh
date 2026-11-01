@@ -21,7 +21,6 @@ use rdm_admin::model::{
 };
 use rdm_admin::node_commands::NodeCommand;
 use rdm_admin::node_rows::WriteRecord as _;
-use rdm_admin::storage::NodesStorage as _;
 use rdm_admin::topology::Topology;
 use rdm_core::{MemberStatus, MeshDigest, MeshNode, RuntimeFact, RuntimeLocator};
 use std::collections::BTreeMap;
@@ -515,9 +514,9 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             "executable sha256 recorded on the row at claim"
         );
         assert_eq!(
-            written_row.config.get("role").map(String::as_str),
+            written_row.initial_properties.as_ref().and_then(|p| p.config.get("role")).map(String::as_str),
             Some("worker"),
-            "create spec config recorded on the row at claim"
+            "create spec config recorded in the claim's launch snapshot"
         );
 
         // Hooks contract (node-create.md:5-6, 20): FirstStart is the start_kind for node.create's

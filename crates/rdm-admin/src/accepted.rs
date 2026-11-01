@@ -1182,16 +1182,18 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, prope
     let mut out = Recorded::new();
     for p in topology.meshes.values().flat_map(|m| m.nodes.iter()) {
         let row = crate::node_rows::record_at(rows, p).await.map_err(|e| format!("the row at path {:?}, name {:?} could not be read for its executable: {e}", p.path, p.name))?;
-        if let Some(mut row) = row.filter(|r| r.status != NodeStatus::Deleted) {
-            let mut applied = BTreeSet::new();
+        if let Some(row) = row.filter(|r| r.status != NodeStatus::Deleted) {
+            // The path's config and tags are its node's own property record, never a lifecycle row's:
+            // a node that wrote none carries none known.
+            let (mut applied, mut config, mut tags) = (BTreeSet::new(), None, None);
             if let Some(properties) = properties {
                 if let Some(own) = properties.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))? {
-                    row.config = own.config;
-                    row.tags = own.tags;
+                    config = Some(own.config);
+                    tags = Some(own.tags);
                     applied = own.applied;
                 }
             }
-            out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, applied, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config: Some(row.config), tags: Some(row.tags), storage_persistence: row.storage_persistence, placement: row.placement });
+            out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, applied, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config, tags, storage_persistence: row.storage_persistence, placement: row.placement });
         }
     }
     Ok(out)

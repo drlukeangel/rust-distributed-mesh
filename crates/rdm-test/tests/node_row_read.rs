@@ -76,7 +76,8 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         let writer = rdm_admin::storage::FileNodesStorage::open(&dir, &root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.expect("the mesh-primary's nodes storage opens");
         let broker: PathName = rdm_core::PathName::new("mesh1.broker", "1").unwrap();
         let mut row = NodeRow::new(broker.clone(), "mesh1", rdm_core::NodeKind::Broker, NodeId::mint(), NodeStatus::Ready);
-        row.config = [("listener.data".to_string(), "127.0.0.1:43001".to_string())].into();
+        // A (path, name) resolves through its name claim (node-identity-and-state.md §2).
+        writer.claim_node_name(&broker, &row.node_id).await.expect("broker1's name is claimed").expect("the name is free");
         writer.put_node(&row).await.expect("broker1's row is written");
         let written = nodes_folds(&seen).len();
 
@@ -86,14 +87,14 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         let gw1 = node::start(&launch, |b, _| b).await.expect("gw1 starts and joins");
         assert_eq!(nodes_folds(&seen).len(), written, "gw1's start folds no nodes.jsonl (Q227)");
 
-        // The mesh-primary writes broker1's config again; then no primary is reachable.
-        row.config = [("listener.data".to_string(), "127.0.0.1:43002".to_string()), ("zone".to_string(), "eu-1".to_string())].into();
-        writer.put_node(&row).await.expect("broker1's config is written again");
+        // The mesh-primary writes broker1's row again; then no primary is reachable.
+        row.status = NodeStatus::Leaving;
+        writer.put_node(&row).await.expect("broker1's row is written again");
         drop(admin);
 
         let by_name = gw1.node_row(broker.clone()).await.expect("gw1 reads broker1's row by name").expect("broker1's row stands");
         assert_eq!(by_name, row, "the whole row, as last written");
-        assert_eq!(by_name.config, BTreeMap::from([("listener.data".to_string(), "127.0.0.1:43002".to_string()), ("zone".to_string(), "eu-1".to_string())]));
+        assert_eq!(by_name.status, NodeStatus::Leaving, "the row as last written");
         let by_id = gw1.node_row(row.node_id.clone()).await.expect("gw1 reads broker1's row by id").expect("broker1's row stands");
         assert_eq!(by_id, row, "by id, the same row");
         let none = gw1.node_row(rdm_core::PathName::new("mesh1.broker", "9").unwrap()).await.expect("a read of a name no row was written at");

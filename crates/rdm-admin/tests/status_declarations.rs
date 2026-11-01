@@ -941,7 +941,7 @@ fn a_config_update_sent_down_while_the_meshs_primary_changes_completes_once_the_
         let sent: Vec<StatusRequest> = mp.seen.lock().unwrap().clone();
         assert!(sent.len() >= 2 && sent.iter().all(|r| *r == req), "the same command, sent down again to mesh2.admin.1: {sent:?}");
         let held = atlas.record(&node_id).expect("the atlas holds mesh2.rpc.1");
-        assert!(held.config.is_empty(), "no copy of the map is installed in the fabric-primary's atlas: {:?}", held.config);
+        let _ = held;
         m2admin.node.node_id.to_string()
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-fabric-primary");
@@ -1270,7 +1270,7 @@ fn a_node_admins_own_config_update_is_written_by_its_own_writer_and_nothing_trav
         let reply = tokio::time::timeout(Duration::from_secs(20), joined.status.own_config_update(admin2.node.incarnation_id.clone().unwrap(), config.clone())).await.expect("the command completes");
         assert_eq!(updated(&reply), updated_of(admin2, &config));
         assert_eq!(config_of(&admin2.node.node_id).await, config, "mesh1.admin.2's own record holds the whole config");
-        assert!(fp_atlas.record(&admin2.node.node_id).is_some_and(|r| r.config.is_empty()), "no copy of the map is installed in the fabric-primary's atlas");
+        assert!(fp_atlas.record(&admin2.node.node_id).is_some(), "the fabric-primary's atlas holds mesh1.admin.2's lifecycle record, which carries no config");
         assert!(rdm_admin::node_rows::record_at(&*joined.status.nodes_storage, &admin2.node.name).await.unwrap().is_none(), "mesh1.admin.2 writes no row");
     });
     for name in ["rdm.node_admin.node.update.via-config", "rdm.node_admin.node.update.via-forward", "rdm.node_admin.node.update.via-fabric-primary"] {
@@ -1509,7 +1509,7 @@ async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
         (n.stopped, n.status) = (true, NodeStatus::Leaving);
     }
-    let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: b.node.kind, mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+    let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: b.node.kind, mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
 }
 
@@ -1531,7 +1531,7 @@ async fn hold_left(rig: &Rig, b: &Birth) {
 async fn left_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     hold_left(rig, b).await;
     own_tags(b, tags).await;
-    let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: b.node.kind, mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+    let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: b.node.kind, mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
     let node = serve_node(b).await;
     configs_door(rig, &node).await;
@@ -1708,7 +1708,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         hold_left(&rig, &succ).await;
         let holder = NodeId::mint();
         let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
-        rig.nodes.write_record(&rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None }).await.unwrap();
+        rig.nodes.write_record(&rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(held, StatusReply::NameHeld { path: taken.path.clone(), name: taken.name.clone(), by: holder.clone() });
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
@@ -2072,7 +2072,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
 
         hold_left(&rig, rpc2).await;
         own_tags(rpc2, &["red"]).await;
-        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rpc2.node.kind, mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(&["red"]), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rpc2.node.kind, mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         rig.nodes.write_record(&row).await.unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2-old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });

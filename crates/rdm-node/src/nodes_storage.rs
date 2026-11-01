@@ -9,7 +9,7 @@ use crate::storage_error::StorageError;
 use async_trait::async_trait;
 use rdm_core::status::NodeState;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// A row written before `topology_storage_provider` was recorded reads as `file`, the one backend there
 /// was.
@@ -192,11 +192,12 @@ impl RuntimeRow {
     }
 }
 
-/// The record of one node (storage-whole-records.md, "The objects"): kept at its minted node id and
-/// written whole by its writer, the node's mesh-primary (the fabric-primary only as the acting primary
-/// of a mesh with none, `rdm_admin::node_rows`), from the copy it caches: its `(path, name)`, status, config,
-/// tags and executable, and the facts of its current birth and of the one a restart replaced. A
-/// `Deleted` record stands. Beside it: the node's name claim (`NodesStorage::claim_node_name`), through
+/// The lifecycle record of one node (storage-whole-records.md, "The objects"): kept at its minted node
+/// id and written whole by its writer, the node's mesh-primary (the fabric-primary only as the acting
+/// primary of a mesh with none, `rdm_admin::node_rows`), from the copy it caches: its `(path, name)`,
+/// status and executable, and the facts of its current birth and of the one a restart replaced. Its
+/// config and tags are not here: the node writes them in its own property record
+/// (`crate::node_records::NodeProperties`). A `Deleted` record stands. Beside it: the node's name claim (`NodesStorage::claim_node_name`), through
 /// which a `(path, name)` resolves to the node holding it ([`NodeRowsStorage::node_at`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRow {
@@ -210,12 +211,6 @@ pub struct NodeRow {
     pub node_id: NodeId,
     /// The node's status: `Deleted` once its runtime exit is proven.
     pub status: crate::model::NodeStatus,
-    /// The application's own key/values on the node; RDM never reads it.
-    pub config: BTreeMap<String, String>,
-    /// The node's tag labels (R-TG1), set through `node.tag.create` / `node.tag.delete`. A `Deleted`
-    /// row keeps them, as it keeps the config; a row written before tags existed carries none.
-    #[serde(default)]
-    pub tags: BTreeSet<String>,
     /// What the create that claimed the name allocated (lifecycles/node-create.md step 1: the claim
     /// precedes everything prepared or launched for the birth): the claim row only. The claim is the
     /// one write of the create that outlives a lost executor (its Build receipts are in that
@@ -289,12 +284,6 @@ pub struct NodeRow {
     /// The node's placement as its create spec names it, beside `storage_persistence` and written as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<rdm_core::meta::PlacementMeta>,
-    /// The row's revision (node-config-update.md; Q235 P1): stepped by its one writer, the node's
-    /// mesh-primary, on every write of the row (`rdm_admin::node_rows::WrittenRows::put`). Every carrier of
-    /// the row's config names it, and every install, at the node and in each atlas, is made only over
-    /// an older revision. A row written before the field reads 0.
-    #[serde(default)]
-    pub revision: u64,
     /// The birth that wrote this version of the record (Q109: "the row's key names its writer's
     /// birth"), stamped by its writer on every write (`rdm_admin::node_rows::WrittenRows::put`): a reader
     /// ignores a version written by a birth its fold holds deleted (build.md: "a deleted birth whose
@@ -335,7 +324,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, mesh: impl Into<String>, kind: rdm_core::NodeKind, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, mesh: mesh.into(), kind, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, revision: 0, writer: None }
+        Self { name, mesh: mesh.into(), kind, node_id, status, allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, writer: None }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets

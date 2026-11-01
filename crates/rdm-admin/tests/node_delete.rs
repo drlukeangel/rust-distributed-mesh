@@ -320,9 +320,6 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
 
         let store = Arc::new(MemoryNodesStorage::default());
         let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, target_id.clone(), NodeStatus::Ready);
-        initial_row
-            .config
-            .insert("retention.role".into(), "rpc-worker".into());
         initial_row.birth_mut(&target_incarnation, &target_name);
         store.write_record(&initial_row).await.unwrap();
 
@@ -571,11 +568,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             .unwrap()
             .expect("deleted row must remain in store");
         assert_eq!(deleted_row.status, NodeStatus::Deleted);
-        assert_eq!(
-            deleted_row.config.get("retention.role").map(String::as_str),
-            Some("rpc-worker"),
-            "deleted row must keep its config"
-        );
+        assert_eq!(deleted_row.births.last().map(|b| b.incarnation_id.clone()), Some(target_incarnation.clone()), "the deleted row keeps its record, its birth included");
         let successor_id = NodeId::mint();
         rows.claim(&target_name, "mesh1", rdm_core::NodeKind::RpcNode, &successor_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), None, None, ClaimFor::Create)
         .await

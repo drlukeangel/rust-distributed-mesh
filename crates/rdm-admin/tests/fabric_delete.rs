@@ -158,8 +158,6 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::Ready,
-                config: BTreeMap::from([("role".to_string(), n.kind.node_type().to_owned())]),
-                tags: Default::default(),
                 allocated: None,
                 renamed_from: None,
                 app_types: None, inherited_by: None,
@@ -168,7 +166,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 predecessor: None,
                 mesh_id: None,
                 storage_persistence: None,
-                placement: None, revision: 0,
+                placement: None,
             };
         if let Some(incarnation) = &n.incarnation_id {
             row.birth_mut(incarnation, &n.name);

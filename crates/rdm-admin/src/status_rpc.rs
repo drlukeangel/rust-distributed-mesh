@@ -1730,7 +1730,7 @@ impl StatusDoor {
         };
         let base = crate::storage::NodeRow::new(row.name.clone(), row.mesh.clone(), row.kind, row.node_id.clone(), crate::model::NodeStatus::Pending);
         let status = node_status_of(row.state);
-        let written = self.caches.nodes.update_at_revision(&*self.nodes_storage, &row.node_id, Some(base), |r| {
+        let written = self.caches.nodes.update(&*self.nodes_storage, &row.node_id, Some(base), |r| {
             let birth = r.birth_mut(&row.incarnation_id, &row.name);
             birth.declared.insert(row.state);
             if let Some(o) = operation {
@@ -1748,7 +1748,7 @@ impl StatusDoor {
     /// states.md "Who sets each state" names ([`crate::storage::NodeRow::set_status`]); a node with no
     /// record held anywhere is written nothing. One `rdm.node_admin.node.update.via-row-status` span.
     pub(crate) async fn put_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &crate::model::PathName, status: crate::model::NodeStatus) -> Result<(), String> {
-        let written = self.caches.nodes.update_at_revision(&*self.nodes_storage, node_id, None, |r| r.set_status(incarnation, status)).await;
+        let written = self.caches.nodes.update(&*self.nodes_storage, node_id, None, |r| r.set_status(incarnation, status)).await;
         row_status_span(&self.me, name, node_id, incarnation, status, &written);
         written.map(|_| ())
     }
@@ -2471,32 +2471,29 @@ pub type Rename = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName) -> std::pin::Pin<B
 /// This mesh-primary's view taking a row `node.name.update` moved: `(from, node_id, incarnation, to)`.
 pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName, NodeId, rdm_core::IncarnationId, rdm_core::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
-/// The one `rdm.node_admin.node.update.via-row-status` span of a status write on `subject`'s record by
-/// `me`: `written` when the status moved, `unchanged` when the record's status stands (states.md's
-/// order, [`crate::storage::NodeRow::set_status`]), `no-record` when no record is held, `refused` with
-/// the store's error. A held record's `revision` is the one it carries once the write finished (the
-/// revision written, else the one found): the span follows the write, so the record's writes are read
-/// in the order they were made by their revisions, never by when each span began.
-pub(crate) fn row_status_span(me: &crate::model::PathName, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, written: &Result<Option<(bool, u64)>, String>) {
-    let (outcome, revision) = match written {
-        Ok(Some((true, revision))) => ("written", Some(*revision)),
-        Ok(Some((false, revision))) => ("unchanged", Some(*revision)),
-        Ok(None) => ("no-record", None),
-        Err(_) => ("refused", None),
+/// The `rdm.node_admin.node.update.via-row-status` span of a status write: `written` when the record
+/// moved, `unchanged` when it already stood there, `no-record` when no record of the node is held,
+/// `refused` naming the store's error. The record carries no revision (node-identity-and-state.md
+/// §2.5): its writes are made one at a time under the node's lock, in the order the spans follow.
+pub(crate) fn row_status_span(me: &crate::model::PathName, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, written: &Result<Option<bool>, String>) {
+    let outcome = match written {
+        Ok(Some(true)) => "written",
+        Ok(Some(false)) => "unchanged",
+        Ok(None) => "no-record",
+        Err(_) => "refused",
     };
-    row_status_span_as(me, subject, node_id, incarnation, status, outcome, revision, written.as_ref().err().map(String::as_str).unwrap_or(""));
+    row_status_span_as(me, subject, node_id, incarnation, status, outcome, written.as_ref().err().map(String::as_str).unwrap_or(""));
 }
 
 /// The `rdm.node_admin.node.update.via-row-status` span of a status `me` refused before any write
 /// ([`crate::node_rows::NodeRows::status`]): its outcome names the refusal (`not-mesh-primary`), its
 /// `error` why, naming the writer.
 pub(crate) fn row_status_refused_span(me: &crate::model::PathName, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, refused: &crate::node_rows::RowRefused) {
-    row_status_span_as(me, subject, node_id, incarnation, status, refused.outcome(), None, &refused.to_string());
+    row_status_span_as(me, subject, node_id, incarnation, status, refused.outcome(), &refused.to_string());
 }
 
-#[allow(clippy::too_many_arguments)]
-fn row_status_span_as(me: &crate::model::PathName, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, outcome: &str, revision: Option<u64>, error: &str) {
-    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node_path = %me.path, node_name = %me.name, subject_path = %subject.path, subject_name = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), status = ?status, outcome, revision, error = %error, "otel.kind" = "internal")
+fn row_status_span_as(me: &crate::model::PathName, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, outcome: &str, error: &str) {
+    tracing::info_span!("rdm.node_admin.node.update.via-row-status", node_path = %me.path, node_name = %me.name, subject_path = %subject.path, subject_name = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), status = ?status, outcome, error = %error, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the node's status is written on its record"));
 }
 
@@ -4116,7 +4113,7 @@ mod tests {
         recovered.incarnation_id = Some(IncarnationId::mint());
         // The records of the recovery: the exited birth's row is Deleted (it released the path and name),
         // and the new node's row claims the name over it.
-        assert!(crate::node_rows::write_deleted(&*status, &door.caches.nodes, &exited.name, &exited.node_id, None).await.is_ok(), "the exited birth's Deleted row is written");
+        assert!(crate::node_rows::write_deleted(&*status, &door.caches.nodes, &exited.name, &exited.node_id).await.is_ok(), "the exited birth's Deleted row is written");
         assert_eq!(crate::node_rows::write_record(&*status, &crate::storage::NodeRow::new(recovered.name.clone(), recovered.mesh.clone(), recovered.kind, recovered.node_id.clone(), recovered.status)).await, Ok(Ok(())), "the new node's row claims the (path, name)");
         let digest_view = rdm_transport::topology::DigestView::default();
         digest_view.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
@@ -4206,7 +4203,7 @@ mod tests {
         // The records: the predecessor's row is Deleted (it released the path and name), and the current
         // birth's row claims the name over it.
         claimed(&status, &[&predecessor]).await;
-        let deleted = crate::node_rows::write_deleted(&*status, &door.caches.nodes, &predecessor.name, &predecessor.node_id, None).await;
+        let deleted = crate::node_rows::write_deleted(&*status, &door.caches.nodes, &predecessor.name, &predecessor.node_id).await;
         assert!(deleted.is_ok(), "the predecessor's Deleted row is written: {deleted:?}");
         let declare = StatusRequest::DeclareNodeState { node_id: current.node_id.clone(), incarnation: current.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         assert_eq!(door.apply(Some(current.clone()), &declare).await, R::Applied);

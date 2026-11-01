@@ -749,7 +749,7 @@ async fn an_os_stopped_executor_resumed_after_the_next_attempts_claim_lands_no_r
     let born = versions.iter().find_map(|r| r.newest_birth().map(|b| b.incarnation_id.clone())).expect("the resumed birth's record keeps its birth");
     let own_writes: Vec<&rdm_admin::storage::NodeRow> = versions.iter().filter(|r| r.writer.as_ref().is_some_and(|w| w.node_id.as_str() == node_id)).collect();
     for r in &versions {
-        println!("version of {:?} ({node_id}): {:?} revision {} written by {:?}", r.name, r.status, r.revision, r.writer.as_ref().map(|w| format!("{}@{}", w.node_id, w.incarnation_id.as_str())));
+        println!("version of {:?} ({node_id}): {:?} written by {:?}", r.name, r.status, r.writer.as_ref().map(|w| format!("{}@{}", w.node_id, w.incarnation_id.as_str())));
     }
     let successor = records.iter().find(|r| r.node_id.as_str() == s(&recovered["node_id"])).cloned().expect("the re-created birth's record reads");
     // A read of mesh2's records that met a version the resumed birth wrote after its delete (its own,

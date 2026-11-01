@@ -121,7 +121,7 @@ impl NodeConfigs {
         let row = channels.own_row();
         Some(rdm_node::node_records::NodeProperties {
             birth: rdm_node::node_records::RecordBirth { node_id: subject.node_id.clone(), incarnation_id: subject.incarnation_id.clone()? },
-            config, tags: row.as_ref().map(|r| r.tags.clone()).or_else(|| self.written.row_of(&subject.node_id).map(|r| r.tags)).unwrap_or_default(),
+            config, tags: row.as_ref().map(|r| r.tags.clone()).unwrap_or_default(),
             endpoint_id: subject.endpoint_id.clone(), transport_addr: subject.transport_addr, listeners: subject.listeners.clone(),
             app_types: Some(rdm_node::nodes_storage::AppTypes { incarnation: subject.incarnation_id.clone()?, types: channels.app_types() }),
             held: channels.held_types(), applied: Default::default(),

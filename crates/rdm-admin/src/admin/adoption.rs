@@ -512,8 +512,8 @@ pub async fn take_new_name(me: &PathName, mesh: &str, me_id: &NodeId, nodes: &dy
 /// ([`crate::node_rows::take_inherited_name`]: the lost birth's row written `Deleted`, then this node's
 /// claim of the path and name), then the deletion's receipt (`node.delete:<path>` `NodeDeleted`, naming the
 /// exact birth) on the journal.
-pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, builds: &dyn BuildStateAdapter) -> Result<(), String> {
-    crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.name.path, c.lost.name.name, c.lost.node_id))?;
+pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, properties: Option<&dyn rdm_node::node_records::NodeRecordsStorage>, builds: &dyn BuildStateAdapter) -> Result<(), String> {
+    crate::node_rows::take_inherited_name(nodes, written, properties, &c.lost, me_id).await.map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.name.path, c.lost.name.name, c.lost.node_id))?;
     let receipt = BuildStepReceipt {
         build_id: c.row.build_id.clone(),
         attempt: c.row.attempt,
@@ -882,7 +882,7 @@ mod tests {
             assert_eq!(finding, Finding::Exited { code: Some(0) });
 
             let written = WrittenRows::default();
-            release_name(&claimed_3, &me_3, &nodes_store, &written, &builds_store)
+            release_name(&claimed_3, &me_3, &nodes_store, &written, None, &builds_store)
                 .await
                 .expect("release_name marks lost birth Deleted and claims path for me_3");
 

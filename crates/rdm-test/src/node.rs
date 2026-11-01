@@ -145,7 +145,7 @@ pub fn watch_node_row_knob(launch: &Launch, read: rdm_node::node::NodeRowRead) {
                 let answer = match rdm_core::NodeId::parse(text.trim()) {
                     Err(e) => serde_json::json!({"outcome": "refused", "cause": format!("the knob names no node ID ({:?}): {e}", text.trim())}),
                     Ok(target) => match read.read(target).await {
-                        Ok(Some(row)) => serde_json::json!({"outcome": "found", "node_id": row.node_id.to_string(), "config": row.config}),
+                        Ok(Some(row)) => serde_json::json!({"outcome": "found", "node_id": row.node_id.to_string()}),
                         Ok(None) => serde_json::json!({"outcome": "none"}),
                         Err(e) => serde_json::json!({"outcome": "refused", "cause": e.to_string()}),
                     },

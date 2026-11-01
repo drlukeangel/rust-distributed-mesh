@@ -21,6 +21,23 @@ fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node 
     n
 }
 
+/// The node property records the reads below answer config and tags from (node-config-update.md step 4:
+/// "A reader that needs config reads the node's property record at its node ID"): one store for every
+/// cell of this file, each node's record at its own minted id.
+fn properties() -> &'static rdm_node::node_records::MemoryNodeRecords {
+    static RECORDS: std::sync::OnceLock<rdm_node::node_records::MemoryNodeRecords> = std::sync::OnceLock::new();
+    RECORDS.get_or_init(Default::default)
+}
+
+/// `node_id`'s own property record carrying `config` and `tags`, as its own writer put it.
+async fn own(node_id: &NodeId, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>) {
+    use rdm_node::node_records::NodeRecordsStorage as _;
+    properties().put_properties(&rdm_node::node_records::NodeProperties {
+        birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: IncarnationId::mint() },
+        config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+    }).await.unwrap();
+}
+
 fn path(path: &str, name: &str) -> PathName {
     PathName::new(path, name).unwrap()
 }
@@ -40,7 +57,7 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
     let atlas = crate::fed_atlas().await;
     let meshes: Vec<String> = view.meshes.iter().map(|m| m.name.clone()).collect();
     atlas.fill(status, meshes).await.expect("the records are read");
-    rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin", "1"), view, &loads, &atlas, planned, filter, &|_| {}, None).await
+    rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin", "1"), view, &loads, &atlas, planned, filter, &|_| {}, Some(properties())).await
 }
 
 /// CONTRACT (`docs/architecture/lifecycles/node-recovery.md:152` — "It writes the birth's durable
@@ -91,8 +108,6 @@ async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
     exited_node.node_id = exited_id.clone();
     exited_node.incarnation_id = Some(exited_birth.clone());
     let mut exited = NodeRow::new(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, exited_id.clone(), NodeStatus::Ready);
-    exited.config = BTreeMap::from([("region".into(), "eu-west".into())]);
-    exited.tags = std::collections::BTreeSet::from(["tier-a".to_string()]);
     exited.birth_mut(&exited_birth, &path("mesh1.rpc", "2")).data_dir_lost = Some(lost.clone());
     status.write_record(&exited).await.unwrap();
     rows.deleted_unreached(&exited_node, &rdm_core::OperationId::node("node.delete", &exited_id)).await.unwrap();
@@ -103,8 +118,6 @@ async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
         rdm_admin::node_rows::Claimed::Written { row, seeded_from } => {
             assert_eq!(seeded_from, Some(exited_id.clone()));
             assert_eq!(row.predecessor, Some(BirthRef { node_id: exited_id.clone(), incarnation_id: exited_birth.clone() }));
-            assert_eq!(row.config.get("region").map(String::as_str), Some("eu-west"));
-            assert!(row.tags.contains("tier-a"));
         }
         other => panic!("expected Written claim for recovery, got {other:?}"),
     }
@@ -114,6 +127,11 @@ async fn node_get_answers_data_dir_facts_from_the_atlas_at_their_path_name() {
     unreadable.birth_mut(&held_birth, &path("mesh1.rpc", "3")).data_dir_unreadable = Some(held.clone());
     status.write_record(&unreadable).await.unwrap();
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::from([("mesh1".to_string(), [path("mesh1.admin", "1"), path("mesh1.rpc", "1"), path("mesh1.rpc", "2"), path("mesh1.rpc", "3")].to_vec())]));
+    // Each birth answered wrote its own property record; the recovered one's holds what it inherited.
+    for id in [&admin.node_id, &plain.node_id, &held_id] {
+        own(id, BTreeMap::new(), Default::default()).await;
+    }
+    own(&recovered.node_id, BTreeMap::from([("region".into(), "eu-west".into())]), ["tier-a".to_string()].into()).await;
 
     let nodes = answer(&view, status, &planned, Filter::new().eq("mesh", ["mesh1"])).await;
     let at = |id: &NodeId| nodes.iter().find(|n| &n.node_id == id).unwrap_or_else(|| panic!("{id} answered: {nodes:#?}"));
@@ -167,10 +185,9 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
         (&broker, &["silver"][..], &[("zone", "eu-1"), ("rack", "7")][..]),
         (&gw2, &["gold"][..], &[("rack", "7")][..]),
     ] {
-        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
-        row.tags = tags.iter().map(|t| t.to_string()).collect();
-        row.config = config.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
         status.write_record(&row).await.unwrap();
+        own(&n.node_id, config.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), tags.iter().map(|t| t.to_string()).collect()).await;
     }
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
     let names = |nodes: Vec<rdm_core::views::NodeView>| nodes.into_iter().map(|n| n.name.clone()).collect::<Vec<_>>();
@@ -223,11 +240,11 @@ async fn a_retained_predecessors_labels_stay_at_its_own_id_and_the_current_pair_
     let rabbit: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
     let status = MemoryNodesStorage::default();
     status.write_record(&NodeRow::new(admin.name.clone(), admin.mesh.clone(), admin.kind, admin.node_id.clone(), NodeStatus::Ready)).await.unwrap();
-    let mut s = NodeRow::new(successor.name.clone(), successor.mesh.clone(), successor.kind, successor.node_id.clone(), NodeStatus::Ready);
-    s.tags = rabbit.clone();
-    status.write_record(&s).await.unwrap();
+    own(&admin.node_id, BTreeMap::new(), Default::default()).await;
+    status.write_record(&NodeRow::new(successor.name.clone(), successor.mesh.clone(), successor.kind, successor.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+    own(&successor.node_id, BTreeMap::new(), rabbit.clone()).await;
+    own(&predecessor.node_id, BTreeMap::new(), rabbit.clone()).await;
     let mut p = NodeRow::new(predecessor.name.clone(), predecessor.mesh.clone(), predecessor.kind, predecessor.node_id.clone(), NodeStatus::Ready);
-    p.tags = rabbit.clone();
     p.inherited_by = Some(successor.node_id.clone());
     status.write_record(&p).await.unwrap();
     let planned: rdm_admin::views::Planned = Ok(BTreeMap::new());
@@ -338,7 +355,7 @@ fn get(entity: rdm_core::filter::Entity, filter: Filter) -> rdm_core::status::Re
 /// CONTRACT (query.md §1; node-rpc-envelope.md node.get: "answered by the fabric-primary from its
 /// atlas, never from the node store"; fabric-certs.md §Tracking): at a fabric-primary whose atlas was
 /// filled from its node records, with its nodes store failing every call from then on, `node.get`
-/// answers every node matching the filter, config and tags and cert included, from the atlas, and
+/// answers every node matching the filter, its cert included, from the atlas, and
 /// `fabric.get` answers the fabric with its `next_expiry`, the soonest member cert expiry the atlas's
 /// records hold; neither makes one call to the nodes store. Must NOT happen: a read refused or answered
 /// short because the store failed, the cert summary read from the store (and silently dropped when the
@@ -358,8 +375,6 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
     let expiries = [(&admin, 9_000_000u64), (&gw, 7_000_000u64)];
     for (n, expires_at) in expiries {
         let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
-        row.config = BTreeMap::from([("zone".to_string(), "eu-1".to_string())]);
-        row.tags = ["gold".to_string()].into();
         row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name).cert = Some(rdm_admin::storage::CertDates { issued_at: 1_000_000, expires_at, issuer_expires_at: 20_000_000, renew_at: expires_at - 1_000 });
         records.write_record(&row).await.unwrap();
     }
@@ -368,7 +383,7 @@ async fn nodes_get_and_fabrics_get_answer_from_the_atlas_while_the_nodes_store_f
     let store = Arc::new(Unreadable::default());
     let fp = fabric_primary_at(&admin, view, atlas, store.clone());
 
-    match fp.read_rows(&get(rdm_core::filter::Entity::Nodes, Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold"]))).await {
+    match fp.read_rows(&get(rdm_core::filter::Entity::Nodes, Filter::new().eq("mesh", ["mesh1"]))).await {
         Ok(rdm_core::read::Rows::Nodes(nodes)) => {
             assert_eq!(nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), [path("mesh1.admin", "1"), path("mesh1.gateway", "1")], "{nodes:#?}");
             assert_eq!(nodes[1].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the atlas record's");
@@ -485,10 +500,9 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_atlas_and_from_the_topolo
         n.is_primary = primary;
         n.endpoint_id = Some(EndpointId(format!("key-{}", n.node_id)));
         n.transport_addr = Some(format!("127.0.0.1:{}", 21_000 + i).parse().unwrap());
-        let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);
-        row.tags = ["gold".to_string()].into();
-        row.config = BTreeMap::from([("zone".to_string(), "eu-1".to_string())]);
+        let row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);
         records.write_record(&row).await.unwrap();
+        own(&n.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
         let d = MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric.clone(),

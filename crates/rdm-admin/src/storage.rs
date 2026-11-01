@@ -830,8 +830,8 @@ mod tests {
         let written = WrittenRows::default();
         let (name, node_id, inc): (PathName, NodeId, IncarnationId) = (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeId::mint(), IncarnationId::mint());
         let mut held = NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, node_id.clone(), crate::model::NodeStatus::Ready);
-        held.config.insert("tier".into(), "gold".into());
-        held.tags.insert("red".into());
+        held.storage_persistence = Some(rdm_core::meta::StorageMeta::Ephemeral);
+        held.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/bin/rpc".into(), sha256: "1".repeat(64), image: None });
         written.hold(&held);
         written.update(&store, &node_id, None, |r| { r.birth_mut(&inc, &name).declared.insert(NodeState::Ready); }).await.unwrap();
         written.update(&store, &node_id, None, |r| r.birth_mut(&inc, &name).silence = Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
@@ -839,7 +839,7 @@ mod tests {
         assert_eq!(*store.log.lock().unwrap(), ["put", "put", "put"], "three writes, no read before any of them");
         let puts = store.puts.lock().unwrap().clone();
         let last = puts.last().unwrap();
-        assert_eq!((last.config.get("tier").map(String::as_str), last.tags == ["red".to_string()].into()), (Some("gold"), true), "the record's own fields go with every put");
+        assert_eq!((last.storage_persistence, last.executable.is_some()), (Some(rdm_core::meta::StorageMeta::Ephemeral), true), "the record's own fields go with every put");
         let b = last.birth(&inc).unwrap();
         assert!(b.declared.contains(&NodeState::Ready) && b.silence.is_some() && b.cert.is_some(), "the last put carries every fact the copy held: {b:?}");
         assert!(puts[1].birth(&inc).unwrap().declared.contains(&NodeState::Ready), "the second put carries the first's fact too");
@@ -1065,7 +1065,7 @@ mod tests {
             assert_eq!(crate::node_rows::take_name(n, &a.name, &a.node_id).await.unwrap(), Ok(()), "the node's own claim is its own again");
             let other = row(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
             assert_eq!(crate::node_rows::take_name(n, &a.name, &other.node_id).await.unwrap(), Err(NameHeld { name: a.name.clone(), by: a.node_id.clone() }), "another node's live claim holds the name");
-            crate::node_rows::write_deleted(n, &w, &a.name, &a.node_id, None).await.ok().expect("the delete's record");
+            crate::node_rows::write_deleted(n, &w, &a.name, &a.node_id).await.ok().expect("the delete's record");
             assert_eq!(n.name_claim(&a.name).await.unwrap(), None, "a delete releases the name");
             assert_eq!(crate::node_rows::record_at(n, &a.name).await.unwrap(), None, "a released name resolves to no record: the last record written there is not its current one");
             assert_eq!(crate::node_rows::take_name(n, &a.name, &other.node_id).await.unwrap(), Ok(()), "the next node takes the name");

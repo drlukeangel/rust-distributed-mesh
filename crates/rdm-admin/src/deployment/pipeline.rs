@@ -1588,13 +1588,12 @@ impl DeploymentPipeline<'_> {
             deployment_id = %identity.deployment_id,
             executor = %self.template.executor(),
             read_status = tracing::field::Empty,
-            read_revision = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
         );
-        // What the claim's read returned at the name: the row's status and revision.
+        // What the claim's read returned at the name: the row's status.
         if let Some(r) = &read {
-            span.record("read_status", format!("{:?}", r.status).as_str()).record("read_revision", r.revision);
+            span.record("read_status", format!("{:?}", r.status).as_str());
         }
         match self.provider.find(&spec, super::deadline::Deadline::step()).instrument(span.clone()).await {
             Ok(Found::Exited(_)) => {

@@ -150,7 +150,9 @@ fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<Gos
     let mut out: Vec<NodeView> = births.iter().map(|n| {
         let row = records.record(&n.node_id);
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-        let mut v = node_view(n, load, gossip, row.as_ref().map(|r| r.tags.clone()).unwrap_or_default(), row.as_ref().map(|r| r.config.clone()).unwrap_or_default());
+        // Its config and tags are its own property record's, read by the answering read; a lifecycle
+        // row carries neither.
+        let mut v = node_view(n, load, gossip, Default::default(), Default::default());
         // What this birth runs, as its row records it (proposal executable-bindings-at-create.md rule 7).
         v.executable = row.as_ref().and_then(|r| r.executable.clone());
         // Its storage_persistence and the topology_storage_provider it writes, as its row records them
@@ -183,7 +185,7 @@ fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<Gos
             n.provider = Some(view.fabric.provider);
             n.data_dir = Some(unreadable.path.clone());
             n.status = crate::model::NodeStatus::Dead;
-            let mut v = node_view(&n, None, None, r.tags.clone(), r.config.clone());
+            let mut v = node_view(&n, None, None, Default::default(), Default::default());
             v.executable = r.executable.clone();
             v.storage_persistence = r.storage_persistence;
             v.placement = r.placement;
@@ -213,7 +215,7 @@ pub fn own_row_view(view: &Topology, records: &Atlas, row: &crate::storage::Node
         n.transport_addr = b.transport_addr;
         n.listeners = b.listeners.clone();
     }
-    let mut v = node_view(&n, None, None, row.tags.clone(), row.config.clone());
+    let mut v = node_view(&n, None, None, Default::default(), Default::default());
     v.executable = row.executable.clone();
     v.storage_persistence = row.storage_persistence;
     v.placement = row.placement;
@@ -292,7 +294,9 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                         node.held_hash = rdm_core::app_types::hash(&node.held);
                         if let Some(declared) = own.app_types { node.types = declared.types; }
                     }
-                    Ok(None) => {}
+                    // A node whose current property record is absent has no properties to answer: they
+                    // are unavailable, named, never a lifecycle row's copy (node-config-update.md step 4).
+                    Ok(None) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: node {} has no property record: its properties are unavailable", me.path, me.name, node.node_id)),
                     Err(error) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: node record {} could not be read: {error}", me.path, me.name, node.node_id)),
                 }
             }
@@ -534,9 +538,17 @@ mod tests {
             admin_row.births.push(BirthFacts::new(admin_inc.clone(), me.clone()));
             atlas.write_record(&admin_row);
 
+            // Each node's config and tags are its own property record (node-config-update.md step 4).
+            let properties = rdm_node::node_records::MemoryNodeRecords::default();
+            let own = |node_id: &NodeId, incarnation: &IncarnationId, config: BTreeMap<String, String>, tags: BTreeSet<String>| rdm_node::node_records::NodeProperties {
+                birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
+                config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+            };
+            use rdm_node::node_records::NodeRecordsStorage as _;
+            properties.put_properties(&own(&admin_id, &admin_inc, BTreeMap::new(), BTreeSet::new())).await.unwrap();
+            properties.put_properties(&own(&rpc_succ_id, &rpc_succ_inc, BTreeMap::from([("region".to_string(), "eu-west".to_string())]), BTreeSet::from(["tier-a".to_string()]))).await.unwrap();
+            properties.put_properties(&own(&rpc_pred_id, &rpc_pred_inc, BTreeMap::new(), BTreeSet::from(["tier-a".to_string()]))).await.unwrap();
             let mut succ_row = NodeRow::new(rpc_path.clone(), "mesh1", NodeKind::RpcNode, rpc_succ_id.clone(), ModelNodeStatus::Ready);
-            succ_row.tags = BTreeSet::from(["tier-a".to_string()]);
-            succ_row.config = BTreeMap::from([("region".to_string(), "eu-west".to_string())]);
             let mut succ_birth = BirthFacts::new(rpc_succ_inc.clone(), rpc_path.clone());
             succ_birth.cert = Some(CertDates {
                 issued_at: 1_000,
@@ -547,9 +559,9 @@ mod tests {
             succ_row.births.push(succ_birth);
             atlas.write_record(&succ_row);
 
-            // Retained predecessor row keeps its tags at its own id (node-replace.md:41): `inherited_by` hides none of them.
+            // The retained predecessor's tags stay in its own record at its own id (node-replace.md:41):
+            // `inherited_by` hides none of them.
             let mut pred_row = NodeRow::new(rpc_pred_path.clone(), "mesh1", NodeKind::RpcNode, rpc_pred_id.clone(), ModelNodeStatus::Ready);
-            pred_row.tags = BTreeSet::from(["tier-a".to_string()]);
             pred_row.inherited_by = Some(rpc_succ_id.clone());
             pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));
             atlas.write_record(&pred_row);
@@ -557,7 +569,11 @@ mod tests {
             let loads: Loads = Arc::new(BTreeMap::new);
 
             // 1. A tag query reads each node's own labels: the successor and the retained predecessor both carry tier-a.
-            let tag_reply = nodes_answer(&me, &view, &loads, &atlas, &Filter::new().eq("tags", ["tier-a"])).await;
+            let read = |filter: Filter| {
+                let (me, view, loads, atlas, properties) = (&me, &view, &loads, &atlas, &properties);
+                async move { nodes_answer_with_status(me, view, loads, atlas, &Ok(BTreeMap::new()), &filter, &|_| {}, Some(properties)).await }
+            };
+            let tag_reply = read(Filter::new().eq("tags", ["tier-a"])).await;
             match tag_reply {
                 StatusReply::Nodes { nodes } => {
                     assert_eq!(nodes.len(), 2);
@@ -570,7 +586,7 @@ mod tests {
             }
 
             // 2. Querying the predecessor by id returns its row with its retained tags intact.
-            let pred_reply = nodes_answer(&me, &view, &loads, &atlas, &Filter::new().eq("id", [rpc_pred_id.to_string()])).await;
+            let pred_reply = read(Filter::new().eq("id", [rpc_pred_id.to_string()])).await;
             match pred_reply {
                 StatusReply::Nodes { nodes } => {
                     assert_eq!(nodes.len(), 1);

@@ -9,7 +9,6 @@
 //! attempt sees the view as the first one left it: neither ordinary node is live any more.
 
 use rdm_admin::node_rows::WriteRecord as _;
-use rdm_admin::node_rows::RecordAt as _;
 use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshId, NodeId};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter};
@@ -344,9 +343,6 @@ async fn node_delete_receipts(builds: &dyn BuildStateAdapter, key: &MeshDeleteKe
     }
 }
 
-fn tier_of(name: &str) -> BTreeMap<String, String> {
-    BTreeMap::from([("tier".to_string(), format!("tier-of-{name}"))])
-}
 
 /// The view of a writer of mesh2's rows: `records`, with `primary` the mesh's primary node-admin (a
 /// live role) and `fabric_primary` holding the fabric-primary role.
@@ -366,7 +362,7 @@ fn writer_view(records: &[Node], primary: Option<&NodeId>, fabric_primary: Optio
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, config: tier_of(n.node_id.as_str()), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None }).await.unwrap();
+        storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
         assert!(matches!(rows.claim(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
     }
 }
@@ -507,8 +503,8 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let recorded = named("rdm.node_admin.mesh.update.via-exit-manifest-recorded");
     assert!(recorded.iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["receipts"] == "3" && s["attributes"]["roster"] == "4"), "{recorded:?}");
 
-    // R-MN1 step 3: every other member's row is Deleted, readable by its node id
-    // and config, each written by its own node.delete's NodeDeleted step; the exited node's in attempt
+    // R-MN1 step 3: every other member's row is Deleted, readable by its node id,
+    // each written by its own node.delete's NodeDeleted step; the exited node's in attempt
     // 1, which attempt 2 kept. The final primary's own row is not the mesh-primary's to delete (step 7
     // is the fabric-primary's).
     let read = |node_id: &NodeId| {
@@ -518,13 +514,13 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     };
     for n in records.iter().filter(|n| n.node_id != final_admin.node_id) {
         let row = read(&n.node_id).unwrap_or_else(|| panic!("{:?} has a row", n.name));
-        assert_eq!((row.status, &row.node_id, &row.config), (NodeStatus::Deleted, &n.node_id, &tier_of(n.node_id.as_str())), "{:?}'s row is Deleted with its node id and config: {row:?}", n.name);
+        assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &n.node_id), "{:?}'s row is Deleted with its node id: {row:?}", n.name);
     }
     let last = read(&final_admin.node_id).unwrap();
     assert_ne!(last.status, NodeStatus::Deleted, "the final primary's row is not deleted at step 3: {last:?}");
     let deleted = named("rdm.node_admin.node.delete.via-node-row");
     let exited_row: Vec<&Value> = deleted.iter().filter(|s| s["attributes"]["node_id"] == exiting.node_id.as_str()).collect();
-    assert!(exited_row.iter().any(|s| s["attributes"]["outcome"] == "row-deleted" && s["attributes"]["config_from"] == "writer-record"), "attempt 2 writes the retained member's row Deleted from the writer's record: {deleted:#?}");
+    assert!(exited_row.iter().any(|s| s["attributes"]["outcome"] == "row-deleted"), "attempt 2 writes the retained member's row Deleted from the writer's record: {deleted:#?}");
     for node_id in [&failing.node_id, &other_admin.node_id] {
         assert!(deleted.iter().any(|s| s["attributes"]["node_id"] == node_id.as_str() && s["attributes"]["outcome"] == "row-deleted"), "{node_id}'s row is written Deleted: {deleted:#?}");
     }
@@ -814,14 +810,14 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     stopped.unwrap_or_else(|e| panic!("once stopped, the fabric-primary writes the final primary's row Deleted as acting primary: {e}"));
     after.unwrap_or_else(|e| panic!("mesh-left writes its rows: {e}"));
     let row = row.expect("the final primary's row stays, readable by its node id");
-    assert_eq!((row.status, &row.node_id, &row.config), (NodeStatus::Deleted, &last.node_id, &tier_of(last.node_id.as_str())), "{row:?}");
+    assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &last.node_id), "{row:?}");
     assert!(dead_held, "the mesh's status is Dead on mesh2 (mesh.storage, R-MD1)");
     assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Dead), "mesh2's one status fact is its Dead, on mesh2: {statuses:?}");
     assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Dead), "and held as applied");
     match &again {
         Ok(Claimed::Written { row, seeded_from }) => {
             assert_eq!(seeded_from.as_ref(), None, "a plain create names no seed: the Deleted row's location is not provenance");
-            assert_eq!(row.config, Default::default(), "its create spec's config, none: a plain create inherits no config (Q166)");
+            assert_eq!(row.initial_properties.as_ref().map(|p| p.config.clone()), Some(Default::default()), "its create spec's config, none: a plain create inherits no config (Q166)");
         }
         other => panic!("the recreated mesh's admin claims path `mesh2.admin`, name `1` over the Deleted row: {other:?}"),
     }
@@ -1672,7 +1668,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, config: tier_of(n.node_id.as_str()), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None }).await.unwrap();
+            storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
         }
         for n in &records {
             assert!(matches!(rows.claim(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
@@ -1708,7 +1704,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
     let worked = ran.iter().find(|n| n.node_id == failing.node_id).expect("the stopped roster birth's workflow ran");
     assert_eq!(RosterBirth::of(worked).unwrap(), stopped, "its workflow is handed exactly the roster birth");
     let row = cap.run(async { rdm_admin::storage::NodesStorage::node(storage.as_ref(), &failing.node_id).await.unwrap() }).expect("the stopped birth's row stays at its node id");
-    assert_eq!((row.status, row.node_id.to_string(), row.config.clone()), (NodeStatus::Deleted, stopped.node_id.clone(), tier_of(&stopped.node_id)), "its row is written Deleted with the config its node held: {row:?}");
+    assert_eq!((row.status, row.node_id.to_string()), (NodeStatus::Deleted, stopped.node_id.clone()), "its row is written Deleted: {row:?}");
     let spans = cap.spans();
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();
     let from_roster = named("rdm.node_admin.mesh.resolve.via-roster-birth");
@@ -1716,7 +1712,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
     let read = named("rdm.node_admin.mesh.resolve.via-roster-row");
     assert_eq!(read.iter().map(|s| (s["attributes"]["member"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>(), vec![(failing.node_id.to_string(), "held".to_string())], "{read:#?}");
     let deleted = named("rdm.node_admin.node.delete.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == failing.node_id.as_str()).collect::<Vec<_>>();
-    assert!(deleted.iter().any(|s| s["attributes"]["outcome"] == "row-deleted" && s["attributes"]["config_from"] == "writer-record"), "{deleted:#?}");
+    assert!(deleted.iter().any(|s| s["attributes"]["outcome"] == "row-deleted"), "{deleted:#?}");
     println!("trace_id={trace_id} via-roster-birth={} via-roster-row={}", from_roster[0]["trace_id"], read[0]["trace_id"]);
 }
 

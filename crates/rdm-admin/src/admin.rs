@@ -259,7 +259,7 @@ mod tests {
             successor.node.endpoint_id = EndpointId("key-mesh1.rpc.2-successor".into());
             // The records: the predecessor's node deleted by the recovery, the successor's claim at the name.
             claimed(&*nodes, &predecessor).await;
-            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &predecessor.node.name, &predecessor.node.node_id, None).await.ok().expect("the predecessor's Deleted record");
+            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &predecessor.node.name, &predecessor.node.node_id).await.ok().expect("the predecessor's Deleted record");
             claimed(&*nodes, &successor).await;
             // The view: the predecessor's digest held, the successor heard and then stopped.
             assert!(digest_view.record(predecessor.clone()));
@@ -357,7 +357,7 @@ mod tests {
             let mut mesh2 = MeshRowsWriter::new("mesh2.admin.1", "mesh2", mesh_id("mesh2"), nodes.clone(), meshes.clone(), Default::default());
             mesh1.sweep(&[admin.clone(), rpc.clone(), deleted.clone()], &writing(&["mesh1"]), |_| false).await;
             mesh2.sweep(std::slice::from_ref(&other), &writing(&["mesh2"]), |_| false).await;
-            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &deleted.node.name, &deleted.node.node_id, None).await.ok().expect("the deleted node's record");
+            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &deleted.node.name, &deleted.node.node_id).await.ok().expect("the deleted node's record");
             // The live records of every mesh: no Deleted one.
             let live: std::collections::BTreeSet<PathName> = crate::storage::live_records(&*meshes, &*nodes, "mesh1").await.unwrap().into_iter().map(|r| r.name.clone()).collect();
             assert_eq!(live, [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh2.admin", "1").unwrap()].into_iter().collect(), "{backend}: the live records of every mesh");
@@ -412,7 +412,7 @@ mod tests {
             let seeds = rows_writer::recorded_births(&*meshes, &*nodes, "mesh1").await.unwrap();
             assert!(seeds.iter().any(|b| b.node_id == rpc.node.node_id && b.incarnation == restarted.node.incarnation), "{backend}: the new birth is the seed once its address is recorded: {seeds:?}");
             // mesh1.admin.1 is deleted: its record is Deleted.
-            crate::node_rows::write_deleted(&*nodes, &written.nodes, &admin.node.name, &admin.node.node_id, None).await.ok().expect("the deleted node's record");
+            crate::node_rows::write_deleted(&*nodes, &written.nodes, &admin.node.name, &admin.node.node_id).await.ok().expect("the deleted node's record");
             assert_eq!(births_named(&*meshes, &*nodes).await, vec![rpc.node.node_id.clone()], "{backend}: the deleted node's birth is no seed");
             assert_eq!(primaries_recorded(&*meshes, &*nodes).await, 1, "{backend}: its recorded primary stays an input until a newer revision supersedes it");
         }
@@ -553,7 +553,7 @@ mod tests {
             }
             let mut writer = MeshRowsWriter::new("200000000000", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), Default::default());
             writer.sweep(&[former.clone(), successor.clone(), other.clone()], &writing(&["mesh1"]), |_| false).await;
-            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &former.node.name, &former.node.node_id, None).await.ok().expect("the former primary's Deleted record");
+            crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &former.node.name, &former.node.node_id).await.ok().expect("the former primary's Deleted record");
             let digest_view = DigestView::default();
             rows_writer::take_recorded_primaries(&*meshes, &*nodes, "mesh1", &digest_view.primaries).await.unwrap();
             assert_eq!(digest_view.primaries.meshes().get("mesh1").map(|p| (p.node_id.clone(), p.revision)), Some((successor.node.node_id.clone(), 2)), "{backend}: the successor's later revision is held");
@@ -837,7 +837,7 @@ mod tests {
         let mesh_rows = crate::store_log::keys_in(&root.dir().join(crate::store_root::MESHES_FILE), "mesh-record").unwrap();
         assert_eq!(mesh_rows, [mesh_id("mesh1").to_string()], "mesh1's primary writes mesh1's record alone");
         // Q becomes mesh1's primary; mesh1.rpc.1 is replaced by a new node at its path and name.
-        crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &rpc.node.name, &rpc.node.node_id, None).await.ok().expect("the replaced node's record is Deleted");
+        crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &rpc.node.name, &rpc.node.node_id).await.ok().expect("the replaced node's record is Deleted");
         let recovered = digest(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, MemberStatus::Ready);
         claimed(&*claims, &recovered).await;
         let held = vec![p.clone(), q.clone(), recovered.clone(), other.clone()];
@@ -1339,7 +1339,7 @@ mod tests {
         assert_eq!(crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap(), None, "its Dead record released the name");
         assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), records_before, "nor any record");
         // The removed mesh's admin's node.delete wrote its record Deleted; the recreated mesh's admin claimed the name.
-        crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &a_admin.node.name, &a_admin.node.node_id, None).await.ok().expect("the removed mesh's admin's record is Deleted");
+        crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &a_admin.node.name, &a_admin.node.node_id).await.ok().expect("the removed mesh's admin's record is Deleted");
         claimed(&*claims, &b_admin).await;
         let mut bw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", recreated.clone(), b_nodes.clone(), meshes.clone(), Default::default());
         bw.sweep(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
@@ -1851,7 +1851,7 @@ mod tests {
         crate::fabric_storage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
         // The exited birth's node record stays in the store, Deleted (a delete appends its status, never removes it).
         let nodes_storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let row = crate::storage::NodeRow { replacement_from: None, kind: NodeKind::RpcNode, mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: NodeKind::RpcNode, mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         crate::node_rows::write_record(&*nodes_storage, &row).await.unwrap().unwrap();
         let recovery = RecoverySubmitter {
             me: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
@@ -3296,7 +3296,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         crate::node_rows::move_row(&primary, &Default::default(), &rdm_core::PathName::new("mesh1.admin", "1").unwrap(), &record, &held.node.name, &to).await.unwrap();
         // This admin: the same view, its own store on the same root, no rename of its own.
@@ -3705,7 +3705,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         let (me, base) = (rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
         crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &held.node.name, &base).await.unwrap();

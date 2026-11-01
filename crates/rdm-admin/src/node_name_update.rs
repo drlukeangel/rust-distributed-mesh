@@ -116,7 +116,7 @@ pub(crate) async fn update_in_build_context(me: &PathName, me_id: &rdm_core::Nod
     let span = tracing::info_span!(
         "rdm.node_admin.name.update.via-writer",
         node_path = %me.path, node_name = %me.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), requested_path = %name.path, requested_name = %name.name, from_path = tracing::field::Empty, from_name = tracing::field::Empty, to_path = tracing::field::Empty, to_name = tracing::field::Empty,
-        keys = tracing::field::Empty, tags = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, mesh = tracing::field::Empty, apply = tracing::field::Empty,
+        traffic = tracing::field::Empty, connections = tracing::field::Empty, mesh = tracing::field::Empty, apply = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
     let reply = tracing::Instrument::instrument(
@@ -253,8 +253,6 @@ async fn rename(
         let Some(moved) = doors.moved.get() else {
             return rdm_core::reply::status::not_ready(format!("{me_id}: its view does not take a moved row yet; the rename of {} to path={to_path:?} name={to_name:?} is refused and nothing is written", held.node_id));
         };
-        let (keys, tags) = known.map(|r| (r.config.len(), r.tags)).unwrap_or_default();
-        span.record("keys", keys as u64).record("tags", crate::node_rows::labels(&tags).as_str());
         let moved_row = crate::node_rows::move_row_with_intent(storage, door.written(), me, &held, &from, &to, intent).await;
         let pending = match moved_row {
             Ok((m, _)) => {
