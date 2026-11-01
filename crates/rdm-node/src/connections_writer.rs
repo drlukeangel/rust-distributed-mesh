@@ -128,7 +128,7 @@ fn local_now_ms() -> u64 {
 }
 
 fn end_of(node: &ResolvedNode) -> ConnectionEnd {
-    ConnectionEnd { name: node.name.clone(), node_id: node.node_id.clone(), incarnation: Some(node.incarnation.clone()) }
+    ConnectionEnd { mesh: node.mesh.clone(), kind: node.kind, name: node.name.clone(), node_id: node.node_id.clone(), incarnation: Some(node.incarnation.clone()) }
 }
 
 /// This node's open routes in `held`: its own latest Direct entries that are `connected`, then its
@@ -136,6 +136,8 @@ fn end_of(node: &ResolvedNode) -> ConnectionEnd {
 /// The connections a node holds, as one read of its writer sees them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldConnections {
+    /// The globally unique ID of the node whose connections were read.
+    pub node_id: rdm_core::NodeId,
     /// The name the node holds, and writes its rows under.
     pub name: PathName,
     /// Whether its held set is complete.
@@ -171,7 +173,7 @@ impl ConnectionsWriter {
     pub fn new(own: ConnectionEnd, storage: Arc<dyn ConnectionsStorage>, held: Arc<Mutex<ConnectionsHeld>>) -> Self {
         {
             let mut h = held.lock().unwrap();
-            h.set_own_source(own.name.clone());
+            h.set_own_source(own.node_id.clone());
             h.mark_complete();
         }
         let runtime = tokio::runtime::Handle::current();
@@ -216,12 +218,12 @@ impl ConnectionsWriter {
 
     /// Read this node's name from `held`, the one place the process holds the name it publishes
     /// (its topology view's, R12): from then on every row this writer writes names it as the source
-    /// (node-identity-and-state.md §8: `source` is the end's path.name), so a name the node takes
+    /// (node-identity-and-state.md §8: `source` is the end's path and name), so a name the node takes
     /// (`ApplyNodeName`, or the name its join answer hands it) is the source of its next row.
     /// Until then the source is the birth's name, which is the name the node holds while nothing
     /// can have given it another. Bound once, at boot; a second binding is refused by name.
     pub fn follow_held_name(&self, held: impl Fn() -> PathName + Send + Sync + 'static) -> Result<(), String> {
-        self.inner.held_name.set(Arc::new(held)).map_err(|_| format!("{}: this connections writer already reads its name from the process's held name", self.inner.own.name))
+        self.inner.held_name.set(Arc::new(held)).map_err(|_| format!("{}: this connections writer already reads its name from the process's held name", self.inner.own.node_id))
     }
 
     /// This node, as the source every row it writes now names: the name it holds, its node id and
@@ -231,22 +233,10 @@ impl ConnectionsWriter {
         ConnectionEnd { name, ..self.inner.own.clone() }
     }
 
-    /// [`Self::own`], with the held projection's own source following it: the rows this node
-    /// writes under the name it holds are its own facts from here on, and the facts of a name it
-    /// gave up are kept as written, no longer its own (connections.md §4.2: a node holds the
-    /// overrides whose source is itself). Called inside the write gate, before a row is built.
+    /// Snapshot the current descriptive name. The held route projection stays keyed by
+    /// this node's ID across rename, preserving its connection and recovery facts.
     fn own_now(&self) -> ConnectionEnd {
-        let own = self.own();
-        let mut held = self.inner.held.lock().unwrap();
-        let before = held.own_source().cloned();
-        if before.as_ref() != Some(&own.name) {
-            held.set_own_source(own.name.clone());
-            if let Some(from) = before {
-                tracing::info_span!("rdm.node_admin.connection.update.via-held-name", node_id = %own.node_id, from = %from, to = %own.name)
-                    .in_scope(|| tracing::info!("this node took another name: its rows name it as their source from here on, and the rows it wrote before stay as written"));
-            }
-        }
-        own
+        self.own()
     }
 
     /// Owed connection writes that have not yet landed. The raw log, the index, the held projection
@@ -279,7 +269,7 @@ impl ConnectionsWriter {
             let mut last = self.inner.last_stamp.lock().unwrap();
             *last = (*last).max(row.logged_at_ms);
         }
-        let pair = (row.destination.name.clone(), row.alpn.clone());
+        let pair = (row.destination.node_id.clone(), row.alpn.clone());
         let _ = self.inner.held.lock().unwrap().apply(row);
         self.sync_recovery(&pair.0, &pair.1);
         Ok(())
@@ -325,7 +315,7 @@ impl ConnectionsWriter {
     pub async fn held_connections(&self) -> HeldConnections {
         let own = self.own_now();
         let held = self.inner.held.lock().unwrap();
-        HeldConnections { name: own.name, complete: held.is_complete(), routes: open_routes(&held) }
+        HeldConnections { node_id: own.node_id, name: own.name, complete: held.is_complete(), routes: open_routes(&held) }
     }
 
     /// The connections this node has open now (R-CR1; Q169), whatever their rows: each Direct the
@@ -421,8 +411,8 @@ impl ConnectionsWriter {
                 parent: span,
                 "rdm.node_admin.connection.reject.via-refused-write",
                 entry = %row.id,
-                source = %row.source.name,
-                destination = %row.destination.name,
+                source_id = %row.source.node_id, source_path = %row.source.name.path, source_name = %row.source.name.name,
+                destination_id = %row.destination.node_id, destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
                 destination_node_id = %row.destination.node_id,
                 kind = kind_name(row.kind),
                 state = state_name(row.state),
@@ -450,7 +440,7 @@ impl ConnectionsWriter {
 
     /// The latest Direct row this node holds toward `destination` on `alpn`, if any.
     pub fn latest_direct_for(&self, destination: &ConnectionEnd, alpn: &[u8]) -> Option<NodeConnection> {
-        self.inner.held.lock().unwrap().own_latest_directs().into_iter().find(|d| d.destination.name == destination.name && d.alpn.as_slice() == alpn).cloned()
+        self.inner.held.lock().unwrap().own_latest_directs().into_iter().find(|d| d.destination.node_id == destination.node_id && d.alpn.as_slice() == alpn).cloned()
     }
 
     fn direct(own: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, reason: Option<String>) -> NodeConnection {
@@ -488,9 +478,9 @@ impl ConnectionsWriter {
             let span = tracing::info_span!(
                 "rdm.node_admin.connection.delete.via-direct-restored",
                 entry = %row.id,
-                source = %row.source.name,
-                destination = %row.destination.name,
-                carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
+                source_id = %row.source.node_id, source_path = %row.source.name.path, source_name = %row.source.name.name,
+                destination_id = %row.destination.node_id, destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+                carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
                 kind = kind_name(row.kind),
                 state = state_name(row.state),
                 reason = %row.reason.clone().unwrap_or_default(),
@@ -545,7 +535,7 @@ impl ConnectionsWriter {
     /// Arm (or spend) the one pending recovery attempt of the pair `(destination, alpn)` of a row
     /// just applied, from this node's own latest Direct row of that pair in `held` (connections.md
     /// §9.4, §9.5, Q7): another pair's attempt is never touched.
-    fn sync_recovery(&self, destination: &PathName, alpn: &[u8]) {
+    fn sync_recovery(&self, destination: &rdm_core::NodeId, alpn: &[u8]) {
         crate::connection_reconnect::sync_recovery(self, destination, alpn);
     }
 
@@ -595,9 +585,9 @@ impl ConnectionsWriter {
                     parent: &parent,
                     "rdm.node_admin.connection.update.via-observed",
                     entry = %row.id,
-                    source = %row.source.name,
-                    destination = %row.destination.name,
-                    carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
+                    source_id = %row.source.node_id, source_path = %row.source.name.path, source_name = %row.source.name.name,
+                    destination_id = %row.destination.node_id, destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+                    carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
                     peer = %peer,
                     kind = kind_name(row.kind),
                     state = state_name(row.state),
@@ -612,9 +602,9 @@ impl ConnectionsWriter {
                 Origin::Drop { closed_entry, reason } => tracing::info_span!(
                     parent: &parent,
                     "rdm.node_admin.connection.update.via-connection-delete",
-                    source = %row.source.name,
-                    destination = %row.destination.name,
-                    carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
+                    source_id = %row.source.node_id, source_path = %row.source.name.path, source_name = %row.source.name.name,
+                    destination_id = %row.destination.node_id, destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+                    carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
                     kind = kind_name(row.kind),
                     state = state_name(row.state),
                     closed_entry = %closed_entry,
@@ -631,7 +621,7 @@ impl ConnectionsWriter {
                 Some((attempts, gate)) => {
                     span.record("attempts", attempts);
                     let _ = w.inner.held.lock().unwrap().apply(row.clone());
-                    w.sync_recovery(&row.destination.name, &row.alpn);
+                    w.sync_recovery(&row.destination.node_id, &row.alpn);
                     span.record("outcome", "landed");
                     drop(gate);
                     true
@@ -725,7 +715,7 @@ impl rdm_transport::CarrierConnections for ConnectionsWriter {
     /// The carrier's dial to `node` just failed: the connection is Failed by that very outcome, and the
     /// text is the one the fact carries, named without waiting for the fact's write.
     async fn connection_after_dial(&self, node: &ResolvedNode, reason: &str) -> Option<String> {
-        Some(format!("{} -> {} Direct {} ({reason})", self.own().name, node.name, state_name(ConnectionState::Failed)))
+        Some(format!("{} -> {} Direct {} ({reason})", self.own().node_id, node.node_id, state_name(ConnectionState::Failed)))
     }
 
     async fn connection_not_active(&self, target: &rdm_core::NodeId) -> Option<String> {
@@ -736,8 +726,8 @@ impl rdm_transport::CarrierConnections for ConnectionsWriter {
         (latest.state != ConnectionState::Connected).then(|| {
             format!(
                 "{} -> {} Direct {}{}",
-                latest.source.name,
-                latest.destination.name,
+                latest.source.node_id,
+                latest.destination.node_id,
                 state_name(latest.state),
                 latest.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default()
             )
@@ -749,7 +739,7 @@ impl rdm_transport::CarrierConnections for ConnectionsWriter {
 impl rdm_transport::connections::ConnectionsSink for ConnectionsWriter {
     fn own_birth(&self) -> rdm_transport::connections::Birth {
         let own = self.own();
-        rdm_transport::connections::Birth {
+        rdm_transport::connections::Birth { mesh: own.mesh.clone(), kind: own.kind,
             name: own.name,
             node_id: own.node_id,
             incarnation: own.incarnation.unwrap_or_else(IncarnationId::mint),
@@ -786,8 +776,8 @@ mod tests {
     /// "Node-base runs one scheduler/reconciler per node process, with at most one pending direct-reconnect item per:"
     #[tokio::test]
     async fn opened_to_direct_closed_latest_direct_for_reconnect_state_and_runtime_handle_track_live_and_held_facts() {
-        let own = ConnectionEnd {
-            name: "mesh1.rpc.1".parse().unwrap(),
+        let own = ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: Some(IncarnationId::mint()),
         };
@@ -803,8 +793,8 @@ mod tests {
         let secret = iroh::SecretKey::from_bytes(&[7u8; 32]);
         let peer_key = secret.public();
         let peer_inc = IncarnationId::mint();
-        let peer_node = ResolvedNode {
-            name: "mesh1.rpc.2".parse().unwrap(),
+        let peer_node = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
             node_id: NodeId::mint(),
             incarnation: peer_inc.clone(),
             endpoint_id: peer_key,

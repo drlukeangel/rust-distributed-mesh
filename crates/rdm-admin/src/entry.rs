@@ -19,7 +19,7 @@ pub async fn run(service: &str) {
 /// refuses to start by name.
 pub fn material_or_exit(service: &str, cfg: &AdminConfig) -> crate::certs::CertChoice {
     crate::certs::CertChoice::from_config(cfg).unwrap_or_else(|why| {
-        tracing::info_span!("rdm.node_admin.cert.reject.via-no-material", node = %cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| cfg.mesh.clone()), reason = %why)
+        tracing::info_span!("rdm.node_admin.cert.reject.via-no-material", node_id = %cfg.node_id, mesh = %cfg.mesh, reason = %why)
             .in_scope(|| tracing::error!("this node-admin holds no usable cert material: it refuses to start"));
         eprintln!("{service}: refusing to start: {why}");
         rdm_transport::flush_before_exit();
@@ -78,7 +78,7 @@ pub async fn run_on_started(
         rdm_transport::set_parent(&boot, &tp);
     }
     if let Some(l) = &cfg.launch {
-        boot.record("node", l.name.to_string().as_str());
+        boot.record("node", l.node_id.as_str());
         boot.record("incarnation_id", l.incarnation.as_str());
     }
     // The runtime's long-lived tasks (endpoint, gossip, control API) must not
@@ -118,7 +118,7 @@ pub async fn run_on_started(
         () = stop_requested() => {}
         // A hook that failed ends the node by name, as an unaccepted join does.
         why = running.pre_node_ready_failed() => {
-            let node = running.digest.lock().unwrap().node.name.to_string();
+            let node = running.digest.lock().unwrap().node.node_id.to_string();
             tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node = %node, reason = %why)
                 .in_scope(|| tracing::error!("pre_node_ready failed; this node-admin ends"));
             eprintln!("{service}: {node} failed pre_node_ready: {why}");

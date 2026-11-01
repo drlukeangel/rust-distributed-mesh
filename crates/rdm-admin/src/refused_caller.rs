@@ -1,10 +1,10 @@
 //! A refused caller (Q207, Luke 2026-10-27): "in general a FP/MP looks to see if something at that
-//! path.name exists currently; if it does it should delete the caller; if it doesn't it should check
+//! path and name exists currently; if it does it should delete the caller; if it doesn't it should check
 //! atlas; if it's needed it should re-admit; if it's not it should delete."
 //!
 //! One decision for every primary and every door a caller birth it does not hold comes through (a
 //! status declaration refused `SubjectUnknown`, a deleted birth's Digest heard again, a join report
-//! refused `JoinMismatch` because the row at its path.name holds another node): decided from
+//! refused `JoinMismatch` because the row at its path and name holds another node): decided from
 //! this admin's own atlas ([`crate::atlas::Atlas::refused_caller`]), and, at an admin that
 //! is not the fabric-primary, verified at the root through `fabric.atlas.get` before anything acts (the
 //! root's answer wins: this admin may have missed an op). The read is owed to the root (node-rpc.md §43,
@@ -18,7 +18,7 @@
 //! Q217 (Luke, 2026-10-27): "delete a caller deletes the caller, not just from the record but
 //! literally as well: if they come back and they are deleted they get actually deleted." A caller whose
 //! record is deleted is deleted, its runtime terminated, its record left deleted: never re-admitted. A
-//! path the current Build still needs is recovered by a re-create at that path.name, a new birth, by
+//! path the current Build still needs is recovered by a re-create at that path and name, a new birth, by
 //! node recovery (the mesh-primary's owed resubmit, `RecoverySubmitter::owed_submits`), never here.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -66,14 +66,14 @@ impl RefusedCallers {
         let me = self.recovery.held_name();
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-refused-caller",
-            node = %me, door, node_id = %node_id, incarnation_id = %incarnation.as_str(),
-            subject = tracing::field::Empty, decision = tracing::field::Empty, own = tracing::field::Empty,
+            node_path = %me.path, node_name = %me.name, door, node_id = %node_id, incarnation_id = %incarnation.as_str(),
+            subject_path = tracing::field::Empty, subject_name = tracing::field::Empty, decision = tracing::field::Empty, own = tracing::field::Empty,
             root = tracing::field::Empty, fabric_primary = tracing::field::Empty, sends = tracing::field::Empty,
             needed = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
         let decided = tracing::Instrument::instrument(self.decide_and_act(atlas, &span, node_id, incarnation), span.clone()).await;
         self.in_flight.lock().unwrap().remove(&key);
-        span.in_scope(|| tracing::info!("a caller birth this primary does not hold was decided by its path.name and the atlas"));
+        span.in_scope(|| tracing::info!("a caller birth this primary does not hold was decided by its (path, name) and the atlas"));
         Some(decided)
     }
 
@@ -105,7 +105,7 @@ impl RefusedCallers {
                 own
             }
             Some(root) => {
-                let needed = planned.get(&path.mesh).is_some_and(|p| p.contains(&path));
+                let needed = planned.values().any(|p| p.contains(&path));
                 let verified = own.clone().verified((node_id, incarnation), &root, needed);
                 span.record("root", if verified == own { "agrees" } else { "differs" });
                 verified
@@ -126,7 +126,10 @@ impl RefusedCallers {
             },
             CallerDecision::ReAdmit { .. } => match self.heard_again.get() {
                 Some(heard_again) => {
-                    let mut caller = crate::model::Node::allocated(path.clone());
+                    let Some(record) = atlas.record(node_id) else {
+                        return (decided, "subject-record-unavailable".into());
+                    };
+                    let mut caller = crate::model::Node::allocated(path.clone(), record.mesh, record.kind);
                     caller.node_id = node_id.clone();
                     caller.incarnation_id = Some(incarnation.clone());
                     caller.status = NodeStatus::Pending;
@@ -140,7 +143,7 @@ impl RefusedCallers {
         (decided, outcome)
     }
 
-    /// This admin's own decision on the caller birth `(node_id, incarnation)`, with its `path.name` and
+    /// This admin's own decision on the caller birth `(node_id, incarnation)`, with its `(path, name)` and
     /// the current Build's paths by mesh; `Err` with the decision's end when there is nothing to act on:
     /// the Build unread, no record of the caller, or a mesh this admin is not primary for.
     async fn own_decision(&self, atlas: &Atlas, span: &tracing::Span, node_id: &NodeId, incarnation: &IncarnationId) -> Result<(CallerDecision, PathName, BTreeMap<String, Vec<PathName>>), (CallerDecision, String)> {
@@ -156,14 +159,14 @@ impl RefusedCallers {
         let own = atlas.refused_caller(node_id, incarnation, &planned);
         span.record("own", own.name());
         if let Some(path) = own.path() {
-            span.record("subject", path.to_string().as_str());
+            span.record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
         }
         let Some(path) = own.path().cloned() else {
-            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", "this admin's atlas holds no record of the caller: it has no path.name to decide on");
+            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", "this admin's atlas holds no record of the caller: it has no recorded path and name to decide on");
             return Err((own, "nothing-done".into()));
         };
         if matches!(own, CallerDecision::NotMine { .. }) {
-            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", format!("{} is not a mesh this admin is primary for", path.mesh).as_str());
+            span.record("decision", own.name()).record("outcome", "nothing-done").record("detail", format!("this admin is not primary for the recorded owner of path {:?}, name {:?}", path.path, path.name).as_str());
             return Err((own, "nothing-done".into()));
         }
         Ok((own, path, planned))
@@ -227,9 +230,10 @@ mod tests {
     /// refused callers it installed.
     async fn atlas_deciding_over(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>, client: Option<Arc<rdm_transport::NodeRpcClient>>) -> (Arc<Atlas>, Arc<RefusedCallers>) {
         let atlas = Arc::new(Atlas::default());
-        atlas.scope(&**rows, [admin.name.mesh.clone()].into()).await.unwrap();
+        atlas.scope(&**rows, [admin.mesh.clone()].into()).await.unwrap();
         let recovery = crate::admin::RecoverySubmitter {
             me: admin.name.clone(),
+            me_id: admin.node_id.clone(),
             topology: topology.clone(),
             digest_view: Default::default(),
             provider: Arc::new(crate::deployment::process::ProcessDeploymentProvider::new()),
@@ -302,11 +306,11 @@ mod tests {
         }
     }
 
-    fn birth(path: &str, kind: NodeKind) -> Node {
-        let mut n = Node::allocated(path.parse().unwrap());
+    fn birth(path: rdm_core::PathName, mesh: &str, fixture_kind: rdm_core::NodeKind, kind: NodeKind) -> Node {
+        let mut n = Node::allocated(path, mesh, kind);
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(IncarnationId::mint());
-        n.mesh = n.name.mesh.clone();
+        n.mesh = n.mesh.clone();
         n.kind = kind;
         n.status = NodeStatus::Ready;
         n
@@ -315,8 +319,8 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:31
     /// "A caller birth a primary does not hold (its Digest refused by name under [gossip.md §3.1 receiver
     ///  rules](../gossip.md#31-frame-catalog), its status declaration refused `SubjectUnknown`, or its join
-    ///  report refused `JoinMismatch` because the row at its path.name holds another node) is decided by
-    ///  its path.name and the primary's atlas, one decision for the fabric-primary and every mesh-primary (Q207)"
+    ///  report refused `JoinMismatch` because the row at its path and name holds another node) is decided by
+    ///  its path and name and the primary's atlas, one decision for the fabric-primary and every mesh-primary (Q207)"
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:43
     /// "A deleted caller is reported to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`),
     ///  which terminates its runtime under `node.terminate:<path>@<incarnation>`; each decision is one
@@ -326,10 +330,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-declaration").expect("the cell's evidence file can be created");
-        let mut admin = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        let mut admin = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         admin.is_primary = true;
         admin.is_fabric_primary = true;
-        let caller = birth("mesh1.rpc.2", NodeKind::RpcNode);
+        let caller = birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeKind::RpcNode);
         let caller_inc = caller.incarnation_id.clone().unwrap();
         let fabric_id = rdm_core::FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process };
@@ -337,13 +341,13 @@ mod tests {
         // The current Build names both paths: the deleted caller's path is still needed.
         let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone(), caller.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().birth().unwrap(), "mesh1").await.unwrap();
         // This admin's view holds itself only: the caller's Digest is refused as a deleted birth.
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone()] }));
         // The node records: the admin's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), status);
+            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();
         }
@@ -357,7 +361,7 @@ mod tests {
         let (d, spans) = decided(&capture).await;
         let d = d.unwrap_or_else(|| panic!("the declaration door decided the caller: {spans:?}"));
         assert_eq!(d["door"], "declaration", "{d}");
-        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's path.name: {d}");
+        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's (path, name): {d}");
         assert_eq!(d["own"], "delete-deleted-birth", "{d}");
         assert_eq!(d["decision"], "delete-deleted-birth", "a caller whose record is deleted is deleted, never re-admitted (Q217): {d}");
         assert_eq!(d["needed"], "true", "the current Build still needs the path: node recovery re-creates it: {d}");
@@ -371,12 +375,12 @@ mod tests {
     }
 
     /// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is such a
-    /// caller: its re-created birth is at its path.name, and it is deleted"; Q207, Q217; rdm#153, gate
+    /// caller: its re-created birth is at its path and name, and it is deleted"; Q207, Q217; rdm#153, gate
     /// gates-6-9af200cc4): a birth of mesh1.rpc.2 that its mesh-primary commanded back through
     /// node.mesh.join (a held deployment) is deleted and re-created while it is os-stopped. Resumed, it
-    /// answers the command with its join report: the row at its path.name now holds the re-created
+    /// answers the command with its join report: the row at its path and name now holds the re-created
     /// birth, so the join is refused `JoinMismatch` by name at once, and the join door decides the
-    /// caller by its path.name and the atlas: another birth is at its path.name, so it is deleted
+    /// caller by its path and name and the atlas: another birth is at its path and name, so it is deleted
     /// (`delete-path-held`), decided at the root itself, and reported for
     /// `node.terminate` (`via-returned-reported` naming the exact birth; the rig builds no Build door,
     /// so the open is refused naming it).
@@ -387,23 +391,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-join").expect("the cell's evidence file can be created");
-        let mut admin = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        let mut admin = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         admin.is_primary = true;
         admin.is_fabric_primary = true;
-        let caller = birth("mesh1.rpc.2", NodeKind::RpcNode);
+        let caller = birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeKind::RpcNode);
         let caller_inc = caller.incarnation_id.clone().unwrap();
-        let recreated = birth("mesh1.rpc.2", NodeKind::RpcNode);
+        let recreated = birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeKind::RpcNode);
         let fabric_id = rdm_core::FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process };
         let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready };
         let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone(), recreated.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().birth().unwrap(), "mesh1").await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone(), recreated.clone()] }));
         // The node records: the admin's and the re-created birth's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&recreated, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), status);
+            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();
         }
@@ -473,8 +477,8 @@ mod tests {
         let d = d.unwrap_or_else(|| panic!("the join door decided the caller: {spans:?}"));
         assert_eq!(d["door"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
-        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's path.name: {d}");
-        assert_eq!(d["decision"], "delete-path-held", "another birth is at the caller's path.name: the caller is deleted (Q207): {d}");
+        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's (path, name): {d}");
+        assert_eq!(d["decision"], "delete-path-held", "another birth is at the caller's (path, name): the caller is deleted (Q207): {d}");
         assert_eq!(d["root"], "self", "the fabric-primary decides from its own atlas: {d}");
         assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some("mesh1.admin.1: its Build door is not built yet")), "{d}");
         let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the caller was reported for node.terminate: {spans:?}"));
@@ -487,7 +491,7 @@ mod tests {
     /// executor admitted at its join while its row was deleted and no re-created birth was written yet):
     /// a birth of mesh1.rpc.2 commanded back through node.mesh.join is deleted while it is os-stopped, and
     /// nothing is re-created at its path yet. Resumed, it answers the command with its join report: the row
-    /// at its path.name is its own, deleted, so the join is refused `JoinMismatch` on `status` by name at
+    /// at its path and name is its own, deleted, so the join is refused `JoinMismatch` on `status` by name at
     /// once, and the join door decides it `delete-deleted-birth` and reports it for `node.terminate`.
     /// Must NOT happen: the deleted birth issued a cert and admitted (the red), or re-admitted.
     #[tokio::test]
@@ -495,22 +499,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-join-own-deleted").expect("the cell's evidence file can be created");
-        let mut admin = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        let mut admin = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         admin.is_primary = true;
         admin.is_fabric_primary = true;
-        let caller = birth("mesh1.rpc.2", NodeKind::RpcNode);
+        let caller = birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeKind::RpcNode);
         let caller_inc = caller.incarnation_id.clone().unwrap();
         let fabric_id = rdm_core::FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process };
         let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready };
         let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().birth().unwrap(), "mesh1").await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone()] }));
         // The node records: the admin's live, the caller's deleted, and no re-created birth yet.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), status);
+            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();
         }
@@ -580,7 +584,7 @@ mod tests {
         let d = d.unwrap_or_else(|| panic!("the join door decided the caller: {spans:?}"));
         assert_eq!(d["door"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
-        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's path.name: {d}");
+        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's (path, name): {d}");
         assert_eq!(d["decision"], "delete-deleted-birth", "the caller's own record is deleted: it is deleted, never re-admitted (Q217): {d}");
         assert_eq!(d["root"], "self", "the fabric-primary decides from its own atlas: {d}");
         assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some("mesh1.admin.1: its Build door is not built yet")), "{d}");
@@ -608,12 +612,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-root").expect("the cell's evidence file can be created");
-        let mut admin = birth("mesh2.admin.2", NodeKind::NodeAdmin);
+        let mut admin = birth(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         admin.is_primary = true;
-        let mut fp = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        let mut fp = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
-        let mut caller = birth("mesh2.admin.1", NodeKind::NodeAdmin);
+        let mut caller = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         caller.status = NodeStatus::Pending;
         let caller_inc = caller.incarnation_id.clone().unwrap();
         let fabric_id = rdm_core::FabricId::mint();
@@ -622,13 +626,13 @@ mod tests {
         // The current Build names the caller's path: it is needed.
         let planned = Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![fp.clone(), admin.clone(), caller.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().birth().unwrap(), "mesh1").await.unwrap();
         // mesh2.admin.2's view across the cut: itself only, no fabric-primary.
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes, nodes: vec![admin.clone()] }));
         // The node records of mesh2: the admin's and the caller's, both live.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for n in [&admin, &caller] {
-            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), n.status);
+            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();
         }
@@ -657,7 +661,7 @@ mod tests {
             .unwrap();
         let _router = iroh::protocol::Router::builder(fp_ep).accept(rdm_transport::ALPN, server).spawn();
         let resolver = Arc::new(rdm_transport::StaticResolver::new());
-        resolver.insert(rdm_transport::ResolvedNode { node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        resolver.insert(rdm_transport::ResolvedNode { mesh: fp.mesh.clone(), kind: fp.kind, node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, resolver));
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;
@@ -687,10 +691,10 @@ mod tests {
         assert_eq!(decisions.len(), 1, "one decision of the birth: {decisions:?}");
         let d = &decisions[0];
         assert_eq!(d["door"], "declaration", "{d}");
-        assert_eq!(d["subject"], "mesh2.admin.1", "decided at the caller's path.name: {d}");
+        assert_eq!(d["subject"], "mesh2.admin.1", "decided at the caller's (path, name): {d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that declared: {d}");
         assert_eq!(d["root"], "agrees", "verified at the fabric-primary once a view names it: {d}");
-        assert_eq!(d["decision"], "re-admit", "nothing else at its path.name, its record live and the Build needing it: re-admitted (Q207): {d}");
+        assert_eq!(d["decision"], "re-admit", "nothing else at its (path, name), its record live and the Build needing it: re-admitted (Q207): {d}");
         assert_eq!(d["outcome"], "no-heard-again", "the rig builds no heard-again door: {d}");
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1, "the root was read once");
         let _ = std::fs::remove_dir_all(&dir);
@@ -701,7 +705,7 @@ mod tests {
     /// birth that comes back after it was re-created is a deleted birth ... it is reported to the
     /// fabric-primary, which terminates its runtime"; build.md: "an os-stopped executor that resumes
     /// after the next attempt is claimed is a deleted birth"; rdm#179, gate gates-3-072e4f3a0): mesh2's
-    /// primary, mesh2.admin.2, decides a returned birth of mesh2.admin.1 whose path.name holds its
+    /// primary, mesh2.admin.2, decides a returned birth of mesh2.admin.1 whose path and name holds its
     /// re-created birth (`delete-path-held`, root `agrees`) while the recovery that re-created it still
     /// holds mesh2, so the fabric-primary answers the first `Terminate` `BuildInProgress`. The report
     /// stays owed: it is sent again on the resend schedule and the fabric-primary opens the
@@ -716,25 +720,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-terminate-owed").expect("the cell's evidence file can be created");
-        let mut admin = birth("mesh2.admin.2", NodeKind::NodeAdmin);
+        let mut admin = birth(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         admin.is_primary = true;
-        let mut fp = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        let mut fp = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
-        let caller = birth("mesh2.admin.1", NodeKind::NodeAdmin);
+        let caller = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         let caller_inc = caller.incarnation_id.clone().unwrap();
-        let recreated = birth("mesh2.admin.1", NodeKind::NodeAdmin);
+        let recreated = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         let fabric_id = rdm_core::FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process };
         let meshes: Vec<crate::model::Mesh> = ["mesh1", "mesh2"].into_iter().map(|m| crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: m.into(), status: crate::model::ScopeStatus::Ready }).collect();
         let planned = Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![fp.clone(), admin.clone(), recreated.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().birth().unwrap(), "mesh1").await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes, nodes: vec![fp.clone(), admin.clone(), recreated.clone()] }));
         // The node records of mesh2: the admin's and the re-created birth's live, the returned birth's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&recreated, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), status);
+            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();
         }
@@ -744,7 +748,7 @@ mod tests {
         let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let fp_addr = fp_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let root = AtlasView { nodes: vec![AtlasNodeView { name: recreated.name.clone(), node_id: recreated.node_id.clone(), incarnation_id: recreated.incarnation_id.clone(), status: rdm_core::views::NodeStatus::Ready, stopped: false, accepted: None, observed: None }] };
-        let terminates = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
+        let terminates = Arc::new(Mutex::new(Vec::<(PathName, String, String)>::new()));
         let asked = terminates.clone();
         let server = rdm_transport::ServerBuilder::new()
             .serve::<rdm_core::status::Status, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
@@ -764,11 +768,11 @@ mod tests {
                     };
                     let sends = {
                         let mut a = asked.lock().unwrap();
-                        a.push((node.to_string(), node_id.to_string(), incarnation.as_str().to_string()));
+                        a.push((node.clone(), node_id.to_string(), incarnation.as_str().to_string()));
                         a.len()
                     };
                     if sends == 1 {
-                        return Ok(rdm_core::reply::build::build_in_progress("b7".into(), Some("mesh2".into()), Some("mesh1.admin.1".into())));
+                        return Ok(rdm_core::reply::build::build_in_progress("b7".into(), Some("mesh2".into()), Some(NodeId::parse("100000000000").unwrap())));
                     }
                     let _streaming = sink.started(BuildReply::Started { build_id: "b8".into(), attempt: 8, disposition: Disposition::Created }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
                     Ok(BuildReply::Complete { build_id: "b8".into(), attempt: 8 })
@@ -778,14 +782,14 @@ mod tests {
             .unwrap();
         let _router = iroh::protocol::Router::builder(fp_ep).accept(rdm_transport::ALPN, server).spawn();
         let resolver = Arc::new(rdm_transport::StaticResolver::new());
-        resolver.insert(rdm_transport::ResolvedNode { node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        resolver.insert(rdm_transport::ResolvedNode { mesh: fp.mesh.clone(), kind: fp.kind, node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, resolver));
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;
         let (_views, installed) = tokio::sync::watch::channel(0u64);
         callers.watch_views(installed);
         let (decision, outcome) = callers.decide(&atlas, "join", &caller.node_id, &caller_inc).await.expect("one decision of the returned birth");
-        assert_eq!(decision.name(), "delete-path-held", "the re-created birth is at the returned birth's path.name (Q207)");
+        assert_eq!(decision.name(), "delete-path-held", "the re-created birth is at the returned birth's (path, name) (Q207)");
         assert_eq!(outcome, "terminate-reported", "the termination is reported once the fabric-primary opened it");
         let (_, spans) = decided(&capture).await;
         let decisions: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.update.via-refused-caller").map(|s| s["attributes"].clone()).collect();
@@ -795,7 +799,7 @@ mod tests {
         assert_eq!((reported["returned"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh2.admin.1"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the report names the exact birth: {reported}");
         let sent = terminates.lock().unwrap().clone();
         assert_eq!(sent.len(), 2, "the Terminate refused BuildInProgress is sent again until the fabric-primary opens it: {sent:?} {reported}");
-        assert!(sent.iter().all(|t| *t == ("mesh2.admin.1".to_string(), caller.node_id.to_string(), caller_inc.as_str().to_string())), "every send names the exact birth: {sent:?}");
+        assert!(sent.iter().all(|t| *t == (PathName::new("mesh2.admin", "1").unwrap(), caller.node_id.to_string(), caller_inc.as_str().to_string())), "every send names the exact birth: {sent:?}");
         assert_eq!((reported["outcome"].as_str(), reported["sends"].as_str(), reported["build_id"].as_str(), reported["attempt"].as_str()), (Some("opened"), Some("2"), Some("b8"), Some("8")), "the report ends once the fabric-primary opened the termination, naming its Build and attempt: {reported}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -815,23 +819,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-terminate-unknown-node-owed").expect("the cell's evidence file can be created");
-        let mut admin = birth("mesh2.admin.2", NodeKind::NodeAdmin);
+        let mut admin = birth(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         admin.is_primary = true;
-        let mut fp = birth("mesh1.admin.1", NodeKind::NodeAdmin);
+        let mut fp = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         fp.is_primary = true;
         fp.is_fabric_primary = true;
-        let caller = birth("mesh2.admin.1", NodeKind::NodeAdmin);
+        let caller = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin);
         let caller_inc = caller.incarnation_id.clone().unwrap();
         let fabric_id = rdm_core::FabricId::mint();
         let fabric = crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process };
         let meshes: Vec<crate::model::Mesh> = ["mesh1", "mesh2"].into_iter().map(|m| crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: m.into(), status: crate::model::ScopeStatus::Ready }).collect();
         let planned = Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![fp.clone(), admin.clone(), caller.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().birth().unwrap(), "mesh1").await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![fp.clone(), admin.clone()] }));
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
         for (n, status) in [(&admin, NodeStatus::Ready), (&caller, NodeStatus::Deleted)] {
-            let mut r = NodeRow::new(n.name.clone(), n.node_id.clone(), status);
+            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), status);
             r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
             rows.put_node(&r).await.unwrap();
         }
@@ -839,7 +843,7 @@ mod tests {
         // The fabric-primary's real ControlPlane: its atlas holds no deleted row of caller yet, and its
         // Build state receives the NodeDeleted receipt only after the first open_terminate is refused.
         let fp_builds: Arc<dyn crate::build_state::BuildStateAdapter> = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        let fp_accepted = crate::accepted::AcceptedStore::seeded(&*fp_builds, fabric_id, crate::accepted::FabricTopology::of_observed(&planned), "mesh1.admin.1").await.unwrap();
+        let fp_accepted = crate::accepted::AcceptedStore::seeded(&*fp_builds, fabric_id, crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().birth().unwrap(), "mesh1").await.unwrap();
         let before = fp_builds.current().await.unwrap().unwrap();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(1_000);
@@ -848,7 +852,7 @@ mod tests {
         let fp_key = iroh::SecretKey::generate();
         let fp_ep = rdm_transport::endpoint::bind(fp_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let fp_addr = fp_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let terminates = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
+        let terminates = Arc::new(Mutex::new(Vec::<(PathName, String, String)>::new()));
         let asked = terminates.clone();
         let cp_served = cp.clone();
         let fp_builds_served = fp_builds.clone();
@@ -872,10 +876,10 @@ mod tests {
                     };
                     let sends = {
                         let mut a = asked.lock().unwrap();
-                        a.push((node.to_string(), node_id.to_string(), incarnation.as_str().to_string()));
+                        a.push((node.clone(), node_id.to_string(), incarnation.as_str().to_string()));
                         a.len()
                     };
-                    let span = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "returned-birth", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str());
+                    let span = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "returned-birth", node_path = %node.path, node_name = %node.name, node_id = %node_id, incarnation_id = %incarnation.as_str());
                     match cp.open_terminate(span, "returned-birth", node.clone(), node_id.clone(), incarnation.clone()).await {
                         Ok(crate::control_plane::Recovery::Opened(o)) => {
                             let _streaming = sink.started(BuildReply::Started { build_id: o.build_id.to_string(), attempt: o.attempt, disposition: Disposition::Created }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
@@ -884,8 +888,8 @@ mod tests {
                         Ok(other) => panic!("expected Opened on send {sends}, got {other:?}"),
                         Err(r) => {
                             assert_eq!(sends, 1, "only the first send before NodeDeleted is refused: {r:?}");
-                            let operation = format!("node.delete:{node}");
-                            let op = rdm_core::LifecycleOp { mesh: node.mesh.clone(), build_id: before_id.to_string(), attempt: before_attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: node.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+                            let operation = rdm_core::OperationId::node("node.delete", &node_id);
+                            let op = rdm_core::LifecycleOp { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: before_id.to_string(), attempt: before_attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: node.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
                             fp_builds
                                 .append_step_receipt(&crate::build_state::BuildStepReceipt { mesh: None, build_id: before_id, attempt: before_attempt, operation, step: "NodeDeleted".into(), outcome: crate::build_state::StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
                                 .await
@@ -899,7 +903,7 @@ mod tests {
             .unwrap();
         let router = iroh::protocol::Router::builder(fp_ep.clone()).accept(rdm_transport::ALPN, server).spawn();
         let resolver = Arc::new(rdm_transport::StaticResolver::new());
-        resolver.insert(rdm_transport::ResolvedNode { node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        resolver.insert(rdm_transport::ResolvedNode { mesh: fp.mesh.clone(), kind: fp.kind, node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), resolver));
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;

@@ -29,7 +29,7 @@ impl std::hash::Hash for PublisherId {
 
 impl From<&crate::MeshNode> for PublisherId {
     fn from(author: &crate::MeshNode) -> Self {
-        Self { node: author.name.to_string(), incarnation: author.incarnation.clone(), node_id: author.node_id.clone() }
+        Self { node: author.name.name.clone(), incarnation: author.incarnation.clone(), node_id: author.node_id.clone() }
     }
 }
 

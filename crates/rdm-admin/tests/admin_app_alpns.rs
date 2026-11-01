@@ -34,7 +34,7 @@ fn wiring_with(alpn: &[u8]) -> Wiring {
 
 fn resolved_admin(running: &Running) -> ResolvedNode {
     let me = running.birth();
-    ResolvedNode {
+    ResolvedNode { mesh: me.mesh.clone(), kind: me.kind,
         node_id: me.node_id.clone(),
         name: me.name.clone(),
         endpoint_id: me.endpoint_id.0.parse().unwrap(),
@@ -47,7 +47,7 @@ fn resolved_admin(running: &Running) -> ResolvedNode {
 async fn member_dialer(admin: &ResolvedNode) -> (ConnectionsRegistry, iroh::protocol::Router, Birth) {
     let key = iroh::SecretKey::generate();
     let ep = rdm_transport::endpoint::bind_with_alpns(key, "127.0.0.1:0".parse().unwrap(), &[APP.to_vec()]).await.unwrap();
-    let birth = Birth { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let birth = Birth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(admin.clone());
     let sink = Arc::new(MemoryConnectionsSink::new(birth.clone()));
@@ -87,7 +87,7 @@ fn an_admins_app_alpn_dial_passes_admit() {
         let (registry, router, _) = member_dialer(&admin).await;
         let (opener, _) = registry.connections(APP).unwrap().split();
         let accepted = tokio::spawn(async move { app.accept().await });
-        let opened = tokio::time::timeout(floor * 2, opener.open(&Birth { name: admin.name.clone(), node_id: admin.node_id.clone(), incarnation: admin.incarnation.clone() })).await;
+        let opened = tokio::time::timeout(floor * 2, opener.open(&Birth { mesh: admin.mesh.clone(), kind: admin.kind, name: admin.name.clone(), node_id: admin.node_id.clone(), incarnation: admin.incarnation.clone() })).await;
         let Ok(Ok(conn)) = opened else { panic!("a member's dial is admitted: {opened:?}") };
         let reached = tokio::time::timeout(floor, accepted).await.expect("the admitted connection reaches the app").unwrap();
         assert_eq!(reached.map(|c| c.id().clone()), Some(conn.id().clone()), "the app accepts the member's admitted connection");

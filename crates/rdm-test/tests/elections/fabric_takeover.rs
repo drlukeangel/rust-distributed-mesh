@@ -211,7 +211,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     let floor = rdm_transport::topology::staleness_floor();
     let recreated = new_birth_within(&estate, "mesh1.admin.1", &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
-        Some(_) => inherited_env(estate.pid_of("mesh1.admin.1").await),
+        Some(_) => inherited_env(estate.pid_of(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await),
         None => None,
     };
     let restored = match &recreated {
@@ -277,7 +277,7 @@ async fn a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_when_its_r
     let floor = rdm_transport::topology::staleness_floor();
     let recreated = new_birth_within(&estate, "mesh1.admin.1", &old_id, floor * 12 + Duration::from_secs(120)).await;
     let told = match &recreated {
-        Some(_) => inherited_env(estate.pid_of("mesh1.admin.1").await),
+        Some(_) => inherited_env(estate.pid_of(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await),
         None => None,
     };
     estate.stop().await;

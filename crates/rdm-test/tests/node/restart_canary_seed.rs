@@ -170,10 +170,10 @@ async fn estate_with_build_in_flight(cell: &str) -> (Estate, BuildStream) {
 
 /// The refusal the stop of `node`, a restart's first call (Q183: a restart is node.stop then
 /// node.start), ended with, named: the reason and the detail the fabric-primary gave.
-async fn restart_refused(estate: &Estate, node: &str) -> CallEnd {
-    match estate.nodes_obj().await.stop(&node.parse().expect("a path.name")).await {
+async fn restart_refused(estate: &Estate, node: &rdm_core::PathName) -> CallEnd {
+    match estate.nodes_obj().await.stop(node).await {
         Err(refused) => refused,
-        Ok(stream) => panic!("the fabric-primary accepted the stop of {node} as Build {} attempt {}", stream.accepted().build_id, stream.accepted().attempt),
+        Ok(stream) => panic!("the fabric-primary accepted the stop of {node:?} as Build {} attempt {}", stream.accepted().build_id, stream.accepted().attempt),
     }
 }
 
@@ -186,13 +186,13 @@ async fn restart_during_an_inflight_build_is_refused_and_opens_no_attempt() {
     let cell = "restart_during_an_inflight_build_is_refused_and_opens_no_attempt";
     let (estate, mut stream) = estate_with_build_in_flight(cell).await;
     let build = stream.build_id().clone();
-    let refused = restart_refused(&estate, "mesh1.rpc.2").await;
+    let refused = restart_refused(&estate, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
     assert_eq!(refused, CallEnd::BuildInProgress { current: build.clone() }, "{refused}");
     let view = estate.carrier().await.build(&build).await.expect("build.get [id] of the accepted Build");
     assert!(view.attempt <= 1 && view.reason != "stop", "the refusal opened no attempt: {view:?}");
     Estate::until_complete(&mut stream).await;
     estate.settled_views(&[("mesh1", 2, 5)]).await;
-    let (accepted, started) = estate.stop_then_start(&"mesh1.rpc.2".parse().unwrap()).await;
+    let (accepted, started) = estate.stop_then_start(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
     assert_eq!(accepted.build_id, build, "the stop is an attempt of the accepted Build: {accepted:?}");
     assert_eq!(started.build_id, build, "and so is the start: {started:?}");
     write_result(cell, &json!({"cell": cell, "provider": "process", "build_id": build, "refused": {"error": "build-in-progress", "current_build_id": build}, "restart_accepted": {"build_id": accepted.build_id, "attempt": accepted.attempt}}));
@@ -209,7 +209,7 @@ async fn restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt() {
     let build = stream.build_id().clone();
     Estate::until_complete(&mut stream).await;
     let before = estate.carrier().await.build(&build).await.expect("build.get [id] of the accepted Build");
-    let refused = restart_refused(&estate, "mesh1.rpc.9").await;
+    let refused = restart_refused(&estate, &rdm_core::PathName::new("mesh1.rpc", "9").unwrap()).await;
     let CallEnd::Rejected { reason, detail } = &refused else { panic!("the stop of an unknown node ends Rejected: {refused:?}") };
     assert_eq!(reason, "unknown-node", "{detail}");
     let after = estate.carrier().await.build(&build).await.expect("build.get [id] of the accepted Build");

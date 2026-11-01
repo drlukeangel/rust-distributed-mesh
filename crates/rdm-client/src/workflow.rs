@@ -40,7 +40,7 @@ pub enum Frame {
     /// The step in flight is blocked. Live progress: never a step outcome, and not terminal.
     Blocked {
         /// The Build operation the blocked step belongs to.
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The blocked step.
         step: String,
         /// What it waits for.
@@ -59,8 +59,8 @@ pub enum Frame {
     /// The fabric-primary moved while the workflow ran (`node-rpc-envelope.md` "Frames, durable receipts and reattachment"). Terminal for this
     /// stream, not a failure: the Build goes on at the new fabric-primary, and the caller resumes it there.
     FabricPrimaryMoved {
-        /// The node-admin (`path.name`) that is the fabric-primary now, when the old fabric-primary's view named one.
-        fabric_primary: Option<String>,
+        /// The node-admin (`(path, name)`) that is the fabric-primary now, when the old fabric-primary's view named one.
+        fabric_primary: Option<rdm_core::NodeId>,
     },
 }
 
@@ -76,13 +76,13 @@ impl Frame {
 pub enum WorkflowKind {
     /// `node.create`: the Build's `node.create:*` operation.
     Create,
-    /// `node.stop` of this node: `node.stop:<path.name>`.
+    /// `node.stop` of this node: `node.stop:<path and name>`.
     Stop(PathName),
-    /// `node.start` of this stopped node: `node.start:<path.name>`.
+    /// `node.start` of this stopped node: `node.start:<path and name>`.
     Start(PathName),
-    /// `node.delete` of this node: `node.delete:<path.name>`.
+    /// `node.delete` of this node: `node.delete:<path and name>`.
     Delete(PathName),
-    /// `node.connection.delete { All }` of this node: `node.connection.delete:<path.name>`. The
+    /// `node.connection.delete { All }` of this node: `node.connection.delete:<path and name>`. The
     /// process keeps running.
     DeleteConnections(PathName),
     /// Steps: one Build of node primitives, each step its own op's operation, in order
@@ -100,7 +100,7 @@ struct Row {
     terminal: bool,
     /// The exact operation key the row belongs to, for a Build's step: two steps of one Build
     /// share an operation prefix (a stop of the predecessor and of the successor) and differ by path.
-    key: Option<String>,
+    key: Option<rdm_core::OperationId>,
     /// A step of the operation's stop half, which node.delete of an already stopped or proven-exited
     /// birth does not run (node-delete.md: its stop steps are already done): absent while a later row
     /// of the same operation is receipted, it is passed, never waited for.
@@ -113,9 +113,9 @@ const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, e
 
 impl Row {
     /// Whether the receipt key `key` is this row's operation in workflow `kind`.
-    fn matches(&self, kind: &WorkflowKind, key: &str) -> bool {
+    fn matches(&self, kind: &WorkflowKind, key: &rdm_core::OperationId) -> bool {
         match &self.key {
-            Some(k) => k == key,
+            Some(k) => k.action == key.action && k.recipe_step.is_some() && k.recipe_step == key.recipe_step,
             None => kind.operation_matches(self.operation, key),
         }
     }
@@ -170,7 +170,7 @@ fn shutdown_rows(operation: &'static str) -> Vec<Row> {
 
 /// The rows of one step, in pipeline order, each keyed to the step's exact operation. Each
 /// step is its op's own workflow: the same rows that op's call streams.
-fn step_rows(step: &Step) -> Vec<Row> {
+fn step_rows(step: &Step, recipe_step: u32) -> Vec<Row> {
     let mut rows: Vec<Row> = match step {
         Step::Create { .. } => create_rows!("node.create", &[NodeEvent::Created]).into(),
         Step::Stop { .. } => stop_rows(),
@@ -186,7 +186,7 @@ fn step_rows(step: &Step) -> Vec<Row> {
     };
     for r in &mut rows {
         r.terminal = false;
-        r.key = Some(format!("{}:{}", r.operation, step.node()));
+        r.key = Some(rdm_core::OperationId::location(r.operation, step.node()).in_recipe(Some(recipe_step)));
     }
     rows
 }
@@ -250,7 +250,7 @@ impl WorkflowKind {
             (None, Self::Steps(steps)) => tracing::info_span!(
                 "rdm.node_admin.build.create.via-steps",
                 op = "build.create",
-                steps = %steps.iter().map(|s| format!("{}:{}", node_step_of(s).name(), s.node())).collect::<Vec<_>>().join(" "),
+                steps = %steps.iter().map(|s| format!("{}: path {:?}, name {:?}", node_step_of(s).name(), s.node().path, s.node().name)).collect::<Vec<_>>().join(" "),
                 outcome = tracing::field::Empty,
                 failed_step = tracing::field::Empty,
                 build_id = tracing::field::Empty,
@@ -277,15 +277,11 @@ impl WorkflowKind {
                 row("node.connection.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
                 row("node.connection.delete", "Complete", NodeStep::ConnectionsDelete, &[], true),
             ],
-            // node.delete of a `<path>.old` path acts only on the stopped predecessor a rename left
-            // there, or one whose exit is proven (the fabric-primary admits nothing else there): its
-            // stop half is already done and is no row of its workflow.
-            Self::Delete(n) if n.old => delete_rows().into_iter().filter(|r| !r.stop_half).collect(),
             Self::Delete(_) => delete_rows(),
             // A Build's rows are its steps' own, each keyed to its exact operation; only the last
             // row of the last step ends the workflow.
             Self::Steps(steps) => {
-                let mut rows: Vec<Row> = steps.iter().flat_map(step_rows).collect();
+                let mut rows: Vec<Row> = steps.iter().enumerate().flat_map(|(i, step)| step_rows(step, i as u32 + 1)).collect();
                 if let Some(last) = rows.last_mut() {
                     last.terminal = true;
                 }
@@ -295,23 +291,23 @@ impl WorkflowKind {
     }
 
     /// The Build operation key a row's operation prefix names for this workflow.
-    fn operation_matches(&self, prefix: &str, key: &str) -> bool {
+    fn operation_matches(&self, prefix: &str, key: &rdm_core::OperationId) -> bool {
         match self {
-            Self::Create => prefix == "node.create" && key.starts_with("node.create:"),
-            Self::Stop(n) | Self::Start(n) | Self::Delete(n) | Self::DeleteConnections(n) => key == format!("{prefix}:{n}"),
-            Self::Steps(steps) => steps.iter().any(|s| key == format!("{prefix}:{}", s.node())),
+            Self::Create => prefix == "node.create" && key.action == prefix,
+            Self::Stop(n) | Self::Start(n) | Self::Delete(n) | Self::DeleteConnections(n) => key.action == prefix && match &key.subject { Some(rdm_core::OperationSubject::Location(location)) => location == n, Some(rdm_core::OperationSubject::Node(_)) => true, _ => false },
+            Self::Steps(steps) => key.action == prefix && key.recipe_step.and_then(|i| i.checked_sub(1)).is_some_and(|i| steps.get(i as usize).is_some()),
         }
     }
 
     /// The workflow step a failure of operation `key` names when no row does.
-    fn fallback_step(&self, key: &str) -> NodeStep {
+    fn fallback_step(&self, key: &rdm_core::OperationId) -> NodeStep {
         match self {
             Self::Create => NodeStep::Create,
             Self::Stop(_) => NodeStep::Stop,
             Self::Start(_) => NodeStep::Start,
             Self::Delete(_) => NodeStep::Delete,
             Self::DeleteConnections(_) => NodeStep::ConnectionsDelete,
-            Self::Steps(steps) => steps.iter().find(|s| key.split_once(':').is_some_and(|(_, p)| p == s.node().to_string())).map(node_step_of).unwrap_or(NodeStep::Create),
+            Self::Steps(steps) => key.recipe_step.and_then(|i| i.checked_sub(1)).and_then(|i| steps.get(i as usize)).map(node_step_of).unwrap_or(NodeStep::Create),
         }
     }
 }
@@ -322,9 +318,9 @@ pub struct Folded {
     /// The frames the receipts justify, after `Started`, in order.
     pub frames: Vec<Frame>,
     /// The `(operation, step)` of every step with a `Complete` receipt, in pipeline order.
-    pub completed: Vec<(String, String)>,
+    pub completed: Vec<(rdm_core::OperationId, String)>,
     /// The `(operation, step)` of the first step with no `Complete` receipt, when there is one.
-    pub next: Option<(String, String)>,
+    pub next: Option<(rdm_core::OperationId, String)>,
 }
 
 /// Fold the receipts of `view` that attempts `from_attempt` and later wrote for `kind` into
@@ -357,7 +353,7 @@ pub fn fold_receipts(kind: &WorkflowKind, receipts: &Build, from_attempt: u32) -
 pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) -> Result<Folded, CallEnd> {
     let rows = kind.rows();
     // The latest receipt of each (operation, step) among the attempts this call opened.
-    let mut latest: Vec<(String, String, u32, Option<String>)> = Vec::new();
+    let mut latest: Vec<(rdm_core::OperationId, String, u32, Option<String>)> = Vec::new();
     for s in steps.iter().filter(|s| s.attempt >= from_attempt) {
         if !rows.iter().any(|r| r.matches(kind, &s.operation)) {
             continue;
@@ -377,6 +373,16 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
             Some(held) if held.2 > s.attempt => {}
             Some(held) => *held = (s.operation.clone(), s.step.clone(), s.attempt, failure),
             None => latest.push((s.operation.clone(), s.step.clone(), s.attempt, failure)),
+        }
+    }
+    // One workflow row belongs to one admitted operation. Never combine receipts
+    // from distinct node IDs, occurrences or other operation scopes.
+    for row in &rows {
+        let mut matching = latest.iter().filter(|(operation, ..)| row.matches(kind, operation));
+        if let Some((first, ..)) = matching.next() {
+            if let Some((other, step, ..)) = matching.find(|(operation, ..)| operation != first) {
+                return Err(CallEnd::UnrecognisedReceipt { operation: other.clone(), step: step.clone() });
+            }
         }
     }
     let mut frames = Vec::new();
@@ -408,7 +414,10 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
             }
             None => {
                 if next.is_none() {
-                    next = Some((r.key.clone().unwrap_or_else(|| r.operation.to_string()), r.step.to_string()));
+                    let operation = latest.iter().find(|(operation, ..)| r.matches(kind, operation))
+                        .map(|(operation, ..)| operation.clone())
+                        .unwrap_or_else(|| r.key.clone().unwrap_or_else(|| rdm_core::OperationId::unscoped(r.operation)));
+                    next = Some((operation, r.step.to_string()));
                 }
                 break;
             }
@@ -421,10 +430,10 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resume {
     /// The steps whose `Complete` receipt exists. A resume replays none of them.
-    pub completed: Vec<(String, String)>,
+    pub completed: Vec<(rdm_core::OperationId, String)>,
     /// The first step with no `Complete` receipt: where the next attempt starts. `None` when
     /// every step is complete.
-    pub from: Option<(String, String)>,
+    pub from: Option<(rdm_core::OperationId, String)>,
 }
 
 impl Resume {
@@ -458,7 +467,7 @@ pub struct WorkflowStream {
     /// to the caller whichever attempts completed it, as in [`fold`]: a successor attempt that
     /// reissues a step whose receipt the lost executor alone held completes it again under its own
     /// receipt key, and that frame announces nothing new.
-    delivered: std::collections::HashSet<(String, String)>,
+    delivered: std::collections::HashSet<(rdm_core::OperationId, String)>,
 }
 
 impl WorkflowStream {
@@ -522,7 +531,7 @@ impl WorkflowStream {
                         return Some(Err(self.broke(CallEnd::UnrecognisedReceipt { operation, step })));
                     };
                     if !self.delivered.insert((operation.clone(), step.clone())) {
-                        self.span.in_scope(|| tracing::info!(attempt, operation = %operation, step = %step, "a later attempt completed a step whose event this stream delivered: one event per step"));
+                        self.span.in_scope(|| tracing::info!(attempt, operation = %operation.action, operation_subject = ?operation.subject, recipe_step = ?operation.recipe_step, step = %step, "a later attempt completed a step whose event this stream delivered: one event per step"));
                         continue;
                     }
                     let mut events = row.events.iter().copied();
@@ -535,7 +544,7 @@ impl WorkflowStream {
                     if attempt < self.accepted.attempt {
                         continue;
                     }
-                    self.span.in_scope(|| tracing::info!(operation = %operation, step = %step, reason = %reason, "the step in flight is blocked"));
+                    self.span.in_scope(|| tracing::info!(operation = %operation.action, operation_subject = ?operation.subject, recipe_step = ?operation.recipe_step, step = %step, reason = %reason, "the step in flight is blocked"));
                     return Some(Ok(Frame::Blocked { operation, step, reason }));
                 }
                 BuildFrame::Complete { .. } => {
@@ -555,7 +564,7 @@ impl WorkflowStream {
                 BuildFrame::FabricPrimaryMoved { fabric_primary } => {
                     self.ended = true;
                     self.span.record("outcome", "fabric-primary-moved");
-                    self.span.in_scope(|| tracing::info!(fabric_primary = fabric_primary.as_deref().unwrap_or("none"), "the fabric-primary role moved; the Build goes on at the new fabric-primary"));
+                    self.span.in_scope(|| tracing::info!(fabric_primary = fabric_primary.as_ref().map(|id| id.as_str()).unwrap_or("none"), "the fabric-primary role moved; the Build goes on at the new fabric-primary"));
                     return Some(Ok(Frame::FabricPrimaryMoved { fabric_primary }));
                 }
                 other => return Some(Err(self.broke(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a workflow stream carried {other:?}") }))),
@@ -581,9 +590,9 @@ mod tests {
     /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
     #[test]
     fn fold_steps_and_fold_receipts_map_step_receipts_to_workflow_frames_and_refuse_unknown_steps() {
-        let node: PathName = "mesh1.rpc.1".parse().unwrap();
+        let node: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let kind = WorkflowKind::Start(node.clone());
-        let op = format!("node.start:{node}");
+        let op = rdm_core::OperationId::location("node.start", &node);
 
         // 1. `fold_steps` folds completed receipts from `from_attempt` onward into workflow `Frame`s.
         let steps = vec![
@@ -657,6 +666,40 @@ mod tests {
         }];
         assert!(matches!(fold_steps(&kind, &bad_steps, 1), Err(CallEnd::UnrecognisedReceipt { .. })));
     }
+    #[test]
+    fn resume_preserves_admitted_operation_and_refuses_mixed_subjects() {
+        let location = PathName::new("arbitrary.old", "north-old").unwrap();
+        let kind = WorkflowKind::Delete(location);
+        let operation = rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::mint()).in_occurrence(rdm_core::OperationOccurrenceId::mint());
+        let receipt = |operation| StepView { attempt: 1, operation, step: "NodeDeleting".into(), outcome: serde_json::json!("complete") };
+        let first = receipt(operation.clone());
+        assert_eq!(fold_steps(&kind, &[first.clone()], 1).unwrap().next, Some((operation.clone(), "StopNode".into())));
+        let other = receipt(rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::mint()));
+        assert!(matches!(fold_steps(&kind, &[first.clone(), other.clone()], 1), Err(CallEnd::UnrecognisedReceipt { .. })));
+        let different_occurrence = receipt(operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint()));
+        assert!(matches!(fold_steps(&kind, &[first.clone(), different_occurrence], 1), Err(CallEnd::UnrecognisedReceipt { .. })));
+        let mut retried = first.clone();
+        retried.attempt = 2;
+        let mut failed = first;
+        failed.outcome = serde_json::json!({"failed": {"reason": "try failed"}});
+        let latest = fold_steps(&kind, &[failed, retried.clone()], 1).unwrap();
+        assert_eq!(latest.next, Some((operation.clone(), "StopNode".into())));
+        assert!(latest.frames.is_empty());
+        assert_eq!(fold_steps(&kind, &[other, retried], 2).unwrap().next, Some((operation, "StopNode".into())));
+
+    }
+
+    #[test]
+    fn recipe_resume_retains_each_positions_admitted_subject() {
+        let location = PathName::new("services.rpc", "north").unwrap();
+        let kind = WorkflowKind::Steps(vec![Step::Stop { node: location.clone() }, Step::Stop { node: location }]);
+        let first = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).in_recipe(Some(1));
+        let second = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint()).in_recipe(Some(2)).in_occurrence(rdm_core::OperationOccurrenceId::mint());
+        let receipt = |operation: &rdm_core::OperationId, step: &str| StepView { attempt: 1, operation: operation.clone(), step: step.into(), outcome: serde_json::json!("complete") };
+        let receipts = vec![receipt(&first, "StopNode"), receipt(&first, "AwaitNodeLeft"), receipt(&first, "Complete"), receipt(&second, "StopNode")];
+        assert_eq!(fold_steps(&kind, &receipts, 1).unwrap().next, Some((second, "AwaitNodeLeft".into())));
+    }
+
 }
 
 

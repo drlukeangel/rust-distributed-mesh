@@ -34,9 +34,9 @@ fn desired(meshes: &[&str]) -> FabricDesired {
 fn ready_topology(meshes: &[&str]) -> Topology {
     let mut nodes = Vec::new();
     for m in meshes {
-        for (k, n) in [("admin", 2), ("rpc", 3)] {
+        for (k, n) in [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)] {
             for i in 1..=n {
-                let mut node = Node::allocated(format!("{m}.{k}.{i}").parse().unwrap());
+                let mut node = Node::allocated(rdm_core::PathName::numbered(*m, k, i), *m, k);
                 node.status = NodeStatus::Ready;
                 nodes.push(node);
             }

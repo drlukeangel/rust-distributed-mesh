@@ -73,12 +73,12 @@ pub enum BuildClaimReply {
         /// The attempt's observability context.
         context: CallContext,
     },
-    /// The attempt is held by `holder` (a node-admin's path.name).
+    /// The attempt is held by `holder` (a node-admin's globally unique ID).
     ///
     /// Position 1 on the wire.
     Lost {
         /// The node-admin holding the attempt.
-        holder: String,
+        holder: NodeId,
     },
     /// The attempt is not the Build's next, or the Build is complete; `next` is the attempt that
     /// is open, when one is.
@@ -96,9 +96,9 @@ pub enum BuildClaimReply {
         /// The mesh the attempt acts in, when the receiver's view names one.
         mesh: Option<String>,
         /// The fabric primary the receiver sees, when it sees one.
-        fabric_primary: Option<String>,
+        fabric_primary: Option<crate::NodeId>,
         /// The mesh's mesh-primary the receiver sees, when it sees one.
-        mesh_primary: Option<String>,
+        mesh_primary: Option<crate::NodeId>,
     },
     /// The peer the call needed could not be resolved.
     ///
@@ -152,7 +152,7 @@ pub enum BuildClaimReply {
         /// The mesh.
         mesh: String,
         /// The admin that claimed the attempt holding it, when it was recorded.
-        held_by: Option<String>,
+        held_by: Option<crate::NodeId>,
     },
 }
 
@@ -251,16 +251,16 @@ mod tests {
     fn every_reply_variant_encodes_and_classifies_the_same_after_a_round_trip() {
         let all = [
             (BuildClaimReply::Won { context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None } }, ReplyKind::Success),
-            (BuildClaimReply::Lost { holder: "mesh1.admin.1".into() }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (BuildClaimReply::Lost { holder: crate::NodeId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (BuildClaimReply::NotOpen { next: Some(7) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some(crate::NodeId::mint()), mesh_primary: Some(crate::NodeId::mint()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (BuildClaim::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (BuildClaim::not_ready("n".into()), ReplyKind::NotReady),
             (BuildClaim::busy("b".into()), ReplyKind::Busy),
             (BuildClaim::connections_deleting("d".into()), ReplyKind::ConnectionsDeleting),
             (BuildClaim::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (BuildClaim::unauthorized("u".into()), ReplyKind::Unauthorized),
-            (BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some("mesh1.admin.1".into()) }, ReplyKind::new(crate::outcome::Code::Unavailable)),
+            (BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some(crate::NodeId::mint()) }, ReplyKind::new(crate::outcome::Code::Unavailable)),
         ];
         assert_eq!(all.len() as u32, BuildClaim::REPLY_VARIANTS);
         for (r, kind) in all {

@@ -97,16 +97,16 @@ pub struct FabricBuildStateAdapter {
 pub enum PrimaryRecord {
     /// The record names this birth, names none, or names a birth proven gone: it ends nothing.
     Open {
-        /// The path.name of this birth when the record names it (from the digests held); `None`
+        /// The node ID of this birth when the record names it; `None`
         /// when the record names none or a birth proven gone.
-        primary: Option<String>,
+        primary: Option<rdm_core::NodeId>,
     },
     /// The record names another live birth: this birth's authority ended at that record's revision.
     Moved {
         /// The record, in words.
         by: String,
-        /// The path.name of the birth the record names, when a digest of it is held.
-        to: Option<String>,
+        /// The exact birth named directly by the primary record.
+        to: Option<rdm_core::framing::Birth>,
     },
 }
 
@@ -134,7 +134,7 @@ impl PrimarySource {
 /// The record is the target every decision is judged against (lifecycles/node-primary-update.md
 /// step 4): nothing else is written for the log.
 pub struct DecisionGate {
-    node: String,
+    node: rdm_core::NodeId,
     decisions: Arc<tokio::sync::Mutex<()>>,
     /// The primary record this birth's target is read from.
     role: PrimarySource,
@@ -142,7 +142,7 @@ pub struct DecisionGate {
 
 impl DecisionGate {
     /// A gate for `node`'s Build log, its role read from `role`.
-    pub fn new(node: String, role: PrimarySource) -> Self {
+    pub fn new(node: rdm_core::NodeId, role: PrimarySource) -> Self {
         Self { node, decisions: Arc::default(), role }
     }
 
@@ -168,7 +168,7 @@ impl DecisionGate {
 
     /// [`Self::enter`], with the primary an open record names (`PrimaryRecord::Open::primary`), read
     /// under the same lock.
-    pub async fn enter_naming(&self) -> Result<(tokio::sync::MutexGuard<'_, ()>, Option<String>), BuildStateError> {
+    pub async fn enter_naming(&self) -> Result<(tokio::sync::MutexGuard<'_, ()>, Option<rdm_core::NodeId>), BuildStateError> {
         let held = self.decisions.lock().await;
         match (self.role.read)() {
             PrimaryRecord::Open { primary } => Ok((held, primary)),
@@ -184,8 +184,8 @@ impl DecisionGate {
 
 impl FabricBuildStateAdapter {
     /// The Build state of the admin named `node` over its Build journal `local`, its fabric-primary
-    /// decisions gated by `role`. `location_view` names this admin's path.name as its view holds it.
-    pub fn new(local: Arc<dyn LocalBuildLog>, location_view: &rdm_transport::topology::LocationView, node: String, role: PrimarySource) -> Self {
+    /// decisions gated by `role`. `location_view` names this admin's path and name as its view holds it.
+    pub fn new(local: Arc<dyn LocalBuildLog>, location_view: &rdm_transport::topology::LocationView, node: rdm_core::NodeId, role: PrimarySource) -> Self {
         Self { local, gate: DecisionGate::new(node, role), location_view: location_view.clone() }
     }
 
@@ -193,7 +193,7 @@ impl FabricBuildStateAdapter {
     /// primary record names another live birth, else the primary the open record names. The
     /// fabric-primary's drive passes this before every dispatch; it holds the gate only for the
     /// check, because an attempt lasts as long as its steps and the target is kept.
-    pub async fn target_check(&self) -> Result<Option<String>, BuildStateError> {
+    pub async fn target_check(&self) -> Result<Option<rdm_core::NodeId>, BuildStateError> {
         self.gate.enter_naming().await.map(|(_, primary)| primary)
     }
 
@@ -293,10 +293,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
         self.local.committed_facts(build).await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
         self.local.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.local.mesh_deleted_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
@@ -330,10 +330,10 @@ mod tests {
                 (name, m)
             })
             .collect();
-        let pin = crate::build::PinnedBirth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let pin = crate::build::PinnedBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::RpcNode, node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let topology = crate::accepted::FabricTopology {
             section_of: None,
-            pinned: vec![("mesh2.rpc.1".parse().unwrap(), pin)],
+            pinned: vec![(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), pin)],
             storage_change: None,
             topology_storage_provider: Some("file".into()),
             fabric: "fabric1".into(),
@@ -435,32 +435,32 @@ mod tests {
     /// operation's `Complete`, which still commits no output.
     #[test]
     fn a_stop_receipt_carries_its_birth_and_time_on_the_build_topic() {
-        let op = rdm_core::LifecycleOp { mesh: "mesh1".into(),
+        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 2,
-            operation: "node.stop:mesh1.rpc.1".into(),
+            operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
-            name: "mesh1.rpc.1".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             event_at_rafka_ms: 4_242,
             traceparent: None,
             tracestate: None,
         };
-        let receipt = |operation: &str| BuildStepReceipt {
+        let receipt = |operation: &rdm_core::OperationId| BuildStepReceipt {
             mesh: None,
             build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt: 2,
-            operation: operation.into(),
+            operation: operation.clone(),
             step: "Complete".into(),
             outcome: crate::build_state::StepOutcome::Complete,
             output: Some(serde_json::to_value(&op).unwrap()),
-            executor: Some("mesh1.admin.1".into()),
+            executor: None,
         };
-        let stop = BuildFact::Step(receipt("node.stop:mesh1.rpc.1"));
+        let stop = BuildFact::Step(receipt(&rdm_core::OperationId::node("node.stop", &op.node_id)));
         let (messages, refused) = encode_chunks(vec![stop.clone()]);
         assert!(refused.is_empty(), "{refused:?}");
         assert_eq!(BuildMessage::from_bytes(&messages[0]).unwrap().facts, vec![stop]);
-        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt("node.create:mesh1.rpc.1"))]);
+        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt(&rdm_core::OperationId::location("node.create", &op.name)))]);
         assert_eq!(refused.len(), 1, "another operation's Complete commits no output");
     }
 
@@ -471,12 +471,12 @@ mod tests {
         for n in 0..200u32 {
             let facts: Vec<BuildFact> = (0..60u32)
                 .map(|i| {
-                    BuildFact::Claim(BuildAttemptClaim {
+                    BuildFact::Claim(BuildAttemptClaim { executor_mesh: format!("mesh{n}"), claimed_mesh: None,
                         claimant: None,
                         mesh: None,
                         build_id: BuildId::mint(),
                         attempt: i,
-                        executor: format!("mesh{}.admin.{}", n, "x".repeat(((i * 37 + n) % 90) as usize)),
+                        executor: rdm_core::framing::Birth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() },
                     })
                 })
                 .collect();
@@ -495,18 +495,18 @@ mod tests {
     #[test]
     fn an_attempt_travels_the_build_topic_with_its_steps_and_pinned_births() {
         use rdm_core::build::Step;
-        let node: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
-        let pin = crate::build::PinnedBirth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let node: crate::model::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let opened = crate::build_state::AttemptOpened {
             mesh: None,
             build_id: BuildId::parse("3qcfk1kq47m9").unwrap(),
             attempt: 2,
             reason: crate::build_state::AttemptReason::Steps,
-            action: Some(crate::accepted::AttemptAction::Steps {
-                steps: vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }, Step::Update { node: node.clone(), name: node.renamed() }, Step::Stop { node: node.renamed() }, Step::Create { mesh: node.mesh.clone(), kind: node.kind, node: node.clone(), executable: None }, Step::Delete { node: node.renamed() }],
+            action: Some(crate::accepted::AttemptAction::Steps { rename_intents: Default::default(),
+                steps: vec![Step::DeleteConnections { node: node.clone() }, Step::LeaveMesh { node: node.clone() }, Step::Update { node: node.clone(), name: node.renamed().unwrap() }, Step::Stop { node: node.renamed().unwrap() }, Step::Create { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: None }, Step::Delete { node: node.renamed().unwrap() }],
                 pinned: vec![(node.clone(), pin)],
             }),
-            opened_by: "mesh1.admin.1".into(),
+            opened_by: rdm_core::NodeId::parse("100000000000").unwrap(),
             opened_at_ms: 7,
             context: None,
         };
@@ -521,7 +521,7 @@ mod tests {
     /// primary is no longer primary"; Build dispatch from the old role is refused `RoleYielded`, and nothing
     /// else is written): the Build log reads its authority from the committed
     /// fabric primary record. Once the record names another live birth, every decision is refused by
-    /// name, naming that birth's path.name from the digest view even when the projected view does not
+    /// name, naming that birth's path and name from the digest view even when the projected view does not
     /// hold it yet, and a wait on the target resolves; no target write is made. A record naming a birth
     /// proven gone (a vacancy the election fills before this birth's own record lands) ends nothing.
     /// What must NOT happen: a moved record that still lets the old role decide, or a refusal naming
@@ -538,10 +538,10 @@ mod tests {
             let changed = Some(primaries.subscribe());
             let (primaries, me, lost) = (primaries.clone(), me.clone(), lost.clone());
             // The digest view holds mesh2.admin.1; nothing here consults a projected view.
-            let read = std::sync::Arc::new(move || crate::primary_watch::fabric_primary_record(primaries.fabric().as_ref(), &me, &lost.lock().unwrap(), |id| (id.as_str() == "100000000000").then(|| "mesh2.admin.1".to_string())));
+            let read = std::sync::Arc::new(move || crate::primary_watch::fabric_primary_record(primaries.fabric().as_ref(), &me, &lost.lock().unwrap()));
             PrimarySource { read, changed }
         };
-        let gate = DecisionGate::new("mesh2.admin.2".into(), source);
+        let gate = DecisionGate::new(me.0.clone(), source);
         primaries.take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
         assert!(gate.enter().await.is_ok(), "the record names this birth: it decides");
         assert!(gate.target_set().now_or_never().is_none(), "no target while the record names this birth");
@@ -551,12 +551,35 @@ mod tests {
         lost.lock().unwrap().clear();
         match gate.enter().await {
             Err(BuildStateError::RoleYielded { to, by, .. }) => {
-                assert_eq!(to.as_deref(), Some("mesh2.admin.1"), "the refusal names the primary the record names");
+                assert_eq!(to.as_ref().map(|b| (&b.node_id, &b.incarnation)), Some((&next.node_id, &next.incarnation)), "the refusal names the primary the record names");
                 assert!(by.contains("100000000000") && by.contains("revision 2"), "the reason names the record: {by}");
             }
             other => panic!("the moved record must refuse the old role's decision by name, got {:?}", other.map(|_| ())),
         }
         assert!(gate.target_set().now_or_never().is_some(), "a wait on the target resolves once the record moved");
+    }
+
+    #[tokio::test]
+    async fn a_new_incarnation_of_the_same_node_yields_with_exact_birth() {
+        use rdm_core::{IncarnationId, NodeId, Primary};
+        let node_id = NodeId::parse("300000000000").unwrap();
+        let old = IncarnationId::parse(&rdm_core::fixture_crockford60("old")).unwrap();
+        let new = IncarnationId::parse(&rdm_core::fixture_crockford60("new")).unwrap();
+        let target = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: new.clone(), revision: 2 };
+        let me = (node_id.clone(), old.clone());
+        let source = PrimarySource {
+            read: std::sync::Arc::new(move || crate::primary_watch::fabric_primary_record(Some(&target), &me, &Default::default())),
+            changed: None,
+        };
+        let gate = DecisionGate::new(node_id.clone(), source);
+        match gate.enter().await {
+            Err(BuildStateError::RoleYielded { to: Some(to), .. }) => {
+                assert_eq!(to.node_id, node_id);
+                assert_eq!(to.incarnation, new);
+                assert_ne!(to.incarnation, old);
+            }
+            other => panic!("a newer incarnation must end this birth's decisions: {:?}", other.map(|_| ())),
+        };
     }
 
     /// CONTRACT (R-A2 item 2): a role commit on this admin waits for the decision in flight (it
@@ -570,10 +593,10 @@ mod tests {
         let source = {
             let changed = Some(primaries.subscribe());
             let (primaries, me) = (primaries.clone(), me.clone());
-            PrimarySource { read: std::sync::Arc::new(move || crate::primary_watch::fabric_primary_record(primaries.fabric().as_ref(), &me, &Default::default(), |_| None)), changed }
+            PrimarySource { read: std::sync::Arc::new(move || crate::primary_watch::fabric_primary_record(primaries.fabric().as_ref(), &me, &Default::default())), changed }
         };
         primaries.take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
-        let gate_ref = std::sync::Arc::new(DecisionGate::new("mesh1.admin.1".into(), source));
+        let gate_ref = std::sync::Arc::new(DecisionGate::new(me.0.clone(), source));
         let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gate = gate_ref.enter().await.unwrap();
         let (decisions, c, primary_view) = (gate_ref.decisions(), committed.clone(), primaries.clone());
@@ -590,9 +613,9 @@ mod tests {
         let later = gate_ref.enter().await.map(|_| ());
         match later {
             Err(BuildStateError::RoleYielded { node, by, to }) => {
-                assert_eq!(node, "mesh1.admin.1");
-                assert!(by.contains("400000000000") && by.contains("no digest of that birth is held"), "the reason names the record and why no path.name is named: {by}");
-                assert_eq!(to, None);
+                assert_eq!(node, me.0);
+                assert!(by.contains("400000000000") && by.contains("revision 2"), "the reason names the record without requiring a digest: {by}");
+                assert_eq!(to.as_ref().map(|b| &b.node_id), Some(&NodeId::parse("400000000000").unwrap()));
             }
             other => panic!("a decision after the record moved must be refused by name, got {other:?}"),
         }

@@ -34,13 +34,13 @@ fn attr(sp: &Value, k: &str) -> String {
     }
 }
 
-fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
             node_id: node_id.clone(),
-            name: name.parse().unwrap(),
-            endpoint_id: EndpointId(format!("key-{name}")),
+            name,
+            endpoint_id: EndpointId(format!("key-{node_id}")),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: incarnation.clone(),
             supersedes: None,
@@ -111,7 +111,7 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
         let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()], &[]).await.unwrap();
         let y = TopologyView::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr], &[]).await.unwrap();
-        p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() });
+        p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, None);
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         m.wait_for_neighbour().await;
         y.wait_for_neighbour().await;
@@ -123,10 +123,10 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         assert_eq!(p.mesh_status("mesh2"), held, "mesh2.admin.2 holds X's status");
 
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
-        let departure = LifecycleOp { mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
+        let departure = LifecycleOp { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), attempt: 1, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), node_id: x.clone(), incarnation: x_inc.clone(), name: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
         p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
         until("Y and the member to hold X deleted", || y.digest_view.is_deleted(x.as_str()) && m.digest_view.is_deleted(x.as_str())).await;
-        assert!(y.digest_view.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's view");
+        assert!(y.digest_view.all().iter().all(|d| d.node.name != rdm_core::PathName::new("mesh2.admin", "1").unwrap()), "Y has not published: no live birth holds the name in Y's view");
 
         // The entry answer: mesh2.admin.2's held statuses, the original publisher kept.
         let answer = p.status_frames("mesh2.admin.2");
@@ -138,7 +138,7 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
 
         // Y's first heartbeat reaches the member: the name resolves to Y's live birth.
         let (y_id, y_inc) = (NodeId::mint(), IncarnationId::mint());
-        y.publish(&digest("mesh2.admin.1", &y_id, &y_inc, 41_021)).await.unwrap();
+        y.publish(&digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &y_id, &y_inc, 41_021)).await.unwrap();
         until("the member to hold Y's birth", || m.digest_view.get(y_id.as_str()).is_some()).await;
         m.learn_statuses(&answer);
         assert_eq!(m.mesh_status("mesh2"), held, "the repeat leaves the held status as it is");
@@ -190,7 +190,7 @@ fn an_application_span_made_from_a_deleted_operation_shares_the_deletes_trace() 
         let clock = rdm_transport::clock::os_clock;
         let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
         let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr], &[]).await.unwrap();
-        p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() });
+        p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, None);
         m.wait_for_neighbour().await;
 
         // The delete's span: the Build step's, its caller's tracestate carried in.
@@ -199,7 +199,7 @@ fn an_application_span_made_from_a_deleted_operation_shares_the_deletes_trace() 
         let delete = tracing::info_span!("app.node.delete", node = "mesh2.admin.1");
         rdm_transport::set_remote_parent(&delete, &rdm_transport::traceparent_of(&request).expect("the capture's layer gives the request a context"), Some("rafka=delete-1"));
         let deleted_in = rdm_transport::traceparent_of(&delete);
-        let departure = LifecycleOp { mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
+        let departure = LifecycleOp { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), attempt: 1, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), node_id: x.clone(), incarnation: x_inc.clone(), name: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
         tracing::Instrument::instrument(p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }), delete.clone()).await.unwrap();
         until("the member to hold X deleted", || m.digest_view.is_deleted(x.as_str())).await;
 

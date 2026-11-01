@@ -81,13 +81,13 @@ impl std::fmt::Display for Store {
     }
 }
 
-/// Which claim: the fabric's claim of its name, the claim of a mesh name or a node path.name, or a
+/// Which claim: the fabric's claim of its name, the claim of a mesh name or a node path and name, or a
 /// mesh's in-flight row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClaimKind {
     /// The fabric's claim of its name (R-FN1).
     FabricName,
-    /// The claim of a mesh name or a node path.name.
+    /// The claim of a mesh name or a node path and name.
     Name,
     /// The one attempt in flight on a mesh.
     InFlight,

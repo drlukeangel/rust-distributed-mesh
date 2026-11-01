@@ -33,36 +33,36 @@ pub(crate) struct Shortfall {
     pub kind: NodeKind,
     pub desired: u32,
     pub present: u32,
-    /// The unheard births the provider was asked about (`path.name`).
-    pub exited: Vec<String>,
+    /// The exact node ID and incarnation pairs the provider was asked about.
+    pub exited: Vec<(crate::model::NodeId, IncarnationId)>,
 }
 
 impl std::fmt::Display for Shortfall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = self.kind.name();
-        write!(f, "{}.{kind}: {} present of {} accepted (unheard: {})", self.mesh, self.present, self.desired, self.exited.join(" "))
+        write!(f, "{}.{kind}: {} present of {} accepted (unheard: {})", self.mesh, self.present, self.desired, format!("{:?}", self.exited))
     }
 }
 
 /// The births of `t` the fabric-primary may have to recover: the ones it no longer hears
 /// (`PendingReconnect`, or `Dead` once its offline tickle found no path). Only these are inspected.
 pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
-    // `members`: a replaced predecessor (`<path>.old`) is its replacement operation's, never drift's.
+    // `members`: a replaced predecessor (the predecessor name `<name>-old` at the same path) is its replacement operation's, never drift's.
     t.members().filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).collect()
 }
 
 /// The (mesh, node type) counts of `topology` that `t` holds fewer births for than it names,
 /// counting every held birth but those in `exited` (unheard incarnations the
 /// provider was asked about). A node type short without one is not drift.
-pub(crate) fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<IncarnationId>) -> Vec<Shortfall> {
+pub(crate) fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<(crate::model::NodeId, IncarnationId)>) -> Vec<Shortfall> {
     let mut out = Vec::new();
     for m in topology.meshes.values() {
         for kind in NodeKind::ALL {
             let want = m.count(kind);
             let (mut present, mut gone) = (0u32, Vec::new());
             for n in t.nodes_of_type(&m.name, kind) {
-                if n.incarnation_id.as_ref().is_some_and(|i| exited.contains(i)) {
-                    gone.push(n.name.to_string());
+                if n.incarnation_id.as_ref().is_some_and(|i| exited.contains(&(n.node_id.clone(), i.clone()))) {
+                    gone.push((n.node_id.clone(), n.incarnation_id.clone().expect("inspected birth")));
                 } else {
                     present += 1;
                 }
@@ -82,8 +82,8 @@ mod tests {
     use crate::build::MeshDesired;
     use crate::model::{Fabric, FabricId, Mesh, MeshId, Node, ProviderKind, ScopeStatus};
 
-    fn node(name: &str, status: NodeStatus) -> Node {
-        let mut n = Node::allocated(name.parse().unwrap());
+    fn node(name: crate::model::PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus) -> Node {
+        let mut n = Node::allocated(name, mesh, kind);
         n.status = status;
         n.incarnation_id = Some(IncarnationId::mint());
         n
@@ -104,30 +104,33 @@ mod tests {
     #[test]
     fn a_silent_birth_counts_short_only_once_its_exact_runtime_is_inspected_exited() {
         use NodeStatus::{Dead, PendingReconnect, Ready as R};
-        let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), node("mesh1.rpc.2", PendingReconnect), node("mesh1.rpc.3", R)]);
+        let t = view(vec![node(crate::model::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R), node(crate::model::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R), node(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, PendingReconnect), node(crate::model::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R)]);
         let d = desired(1, 3);
         assert_eq!(unheard(&t).len(), 1);
-        assert_eq!(unheard(&view(vec![node("mesh1.rpc.2", Dead)])).len(), 1, "a Dead birth is unheard too");
+        assert_eq!(unheard(&view(vec![node(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Dead)])).len(), 1, "a Dead birth is unheard too");
         // Unreachable, partitioned or in another control domain: no drift.
         assert!(shortfall(&d, &t, &HashSet::new()).is_empty());
+        let unrelated = [(crate::model::NodeId::mint(), t.nodes[2].incarnation_id.clone().unwrap())].into();
+        assert!(shortfall(&d, &t, &unrelated).is_empty(), "an equal incarnation on another node is not this birth's inspection");
         // Its runtime inspected and exited: one rpc node short.
-        let exited: HashSet<_> = [t.nodes[2].incarnation_id.clone().unwrap()].into();
+        let exited: HashSet<_> = [(t.nodes[2].node_id.clone(), t.nodes[2].incarnation_id.clone().unwrap())].into();
         let s = shortfall(&d, &t, &exited);
-        assert_eq!(s, vec![Shortfall { mesh: "mesh1".into(), kind: NodeKind::RpcNode, desired: 3, present: 2, exited: vec!["mesh1.rpc.2".into()] }]);
-        assert_eq!(s[0].to_string(), "mesh1.rpc_node: 2 present of 3 accepted (unheard: mesh1.rpc.2)");
+        assert_eq!(s, vec![Shortfall { mesh: "mesh1".into(), kind: NodeKind::RpcNode, desired: 3, present: 2, exited: vec![(t.nodes[2].node_id.clone(), t.nodes[2].incarnation_id.clone().unwrap())] }]);
+        assert!(s[0].to_string().contains(t.nodes[2].node_id.as_str()));
     }
 
-    /// CONTRACT: a replaced predecessor (`<path>.old`) is its replacement's, never drift's: it is not
+    /// CONTRACT: a replaced predecessor (the predecessor name `<name>-old` at the same path) is its replacement's, never drift's: it is not
     /// unheard, and it counts as no birth of its node type, so the successor at `<path>` is the one
     /// present.
     #[test]
     fn a_renamed_predecessor_is_neither_unheard_nor_a_birth_of_its_node_type() {
         use NodeStatus::{Dead, Ready as R};
-        let mut old = node("mesh1.rpc.1", Dead);
-        old.name = old.name.renamed();
-        let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), old.clone()]);
+        let mut old = node(crate::model::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Dead);
+        old.renamed_from = Some(old.name.clone());
+        old.name = old.name.renamed().unwrap();
+        let t = view(vec![node(crate::model::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R), node(crate::model::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R), old.clone()]);
         assert!(unheard(&t).is_empty());
-        let exited: HashSet<_> = [old.incarnation_id.clone().unwrap()].into();
+        let exited: HashSet<_> = [(old.node_id.clone(), old.incarnation_id.clone().unwrap())].into();
         assert!(shortfall(&desired(1, 1), &t, &exited).is_empty(), "one rpc node present of one accepted");
     }
 
@@ -136,12 +139,12 @@ mod tests {
         use NodeStatus::Ready as R;
         // A failed grow leaves the node type short: that is the Build's outcome,
         // not runtime drift, and must not start Build after Build.
-        let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R)]);
+        let t = view(vec![node(crate::model::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R), node(crate::model::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R)]);
         assert!(shortfall(&desired(1, 3), &t, &HashSet::new()).is_empty());
         // At or above desired with an exited birth: not short.
-        let mut t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), node("mesh1.rpc.2", NodeStatus::PendingReconnect)]);
-        t.nodes.push(node("mesh1.rpc.3", R));
-        let exited: HashSet<_> = [t.nodes[2].incarnation_id.clone().unwrap()].into();
+        let mut t = view(vec![node(crate::model::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R), node(crate::model::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R), node(crate::model::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::PendingReconnect)]);
+        t.nodes.push(node(crate::model::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R));
+        let exited: HashSet<_> = [(t.nodes[2].node_id.clone(), t.nodes[2].incarnation_id.clone().unwrap())].into();
         assert!(shortfall(&desired(1, 2), &t, &exited).is_empty());
     }
 }

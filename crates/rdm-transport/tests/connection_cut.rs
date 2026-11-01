@@ -41,7 +41,7 @@ async fn a_cut_closes_every_accepted_connection_but_the_spared_peers_and_the_end
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolver = Arc::new(LiveNodeResolver::default());
-    resolver.apply(ResolvedNode { node_id: node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation }, None);
+    resolver.apply(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation }, None);
     let target = NodeTarget::ExactNode(node_id);
     let (spared, spared_key) = client_of(resolver.clone()).await;
     let (cut, _) = client_of(resolver.clone()).await;

@@ -63,7 +63,7 @@ impl Birth {
             fabric_id: self.fabric.clone(),
             node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: self.node_id.clone(),
-                name: "mesh1.rpc.1".parse().unwrap(),
+                name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
                 endpoint_id: EndpointId("k".into()),
                 transport_addr: "127.0.0.1:7000".parse().unwrap(),
                 incarnation: self.incarnation.clone(),

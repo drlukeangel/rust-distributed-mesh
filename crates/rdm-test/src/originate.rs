@@ -52,12 +52,12 @@ pub enum ProofOp {
 /// An originate door call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OriginateRequest {
-    /// Call `destination` (a path) with `op`, over this node's held projection.
+    /// Call `destination` (a node ID) with `op`, over this node's held projection.
     ///
     /// Position 0 on the wire.
     Call {
-        /// The `path.name` to call.
-        destination: String,
+        /// The node ID to call.
+        destination: rdm_core::NodeId,
         /// The proof-store operation to make.
         op: ProofOp,
     },
@@ -89,10 +89,10 @@ pub enum OriginateRequest {
     ///
     /// Position 4 on the wire.
     RecordProxy {
-        /// The `path.name` the facts concern.
-        destination: String,
-        /// The `path.name` of the carrier.
-        carrier: String,
+        /// The node ID the facts concern.
+        destination: rdm_core::NodeId,
+        /// The node ID of the carrier.
+        carrier: rdm_core::NodeId,
         /// The number of Direct Failed observations to record first.
         failed_attempts: u32,
     },
@@ -103,8 +103,8 @@ pub enum OriginateRequest {
     ///
     /// Position 5 on the wire.
     Dial {
-        /// The `path.name` to ping.
-        destination: String,
+        /// The node ID to ping.
+        destination: rdm_core::NodeId,
     },
     /// Open a data-plane stream (connections.md §5: `Connections::open`, `open_bi`) to the current
     /// birth of `destination` on this node's one registered ALPN, write `payload`, finish, and read
@@ -112,8 +112,8 @@ pub enum OriginateRequest {
     ///
     /// Position 6 on the wire.
     Stream {
-        /// The `path.name` to stream to.
-        destination: String,
+        /// The node ID to stream to.
+        destination: rdm_core::NodeId,
         /// The bytes written.
         payload: Vec<u8>,
     },
@@ -132,8 +132,8 @@ pub enum OriginateRequest {
     ///
     /// Position 8 on the wire.
     BlockDirect {
-        /// The `path.name` whose Direct dials are blocked or released.
-        destination: String,
+        /// The node ID whose Direct dials are blocked or released.
+        destination: rdm_core::NodeId,
         /// Block when true, release when false.
         blocked: bool,
     },
@@ -154,8 +154,8 @@ pub enum OriginateRequest {
     ///
     /// Position 10 on the wire.
     Throughput {
-        /// The `path.name` to measure toward.
-        destination: String,
+        /// The node ID to measure toward.
+        destination: rdm_core::NodeId,
         /// The streams opened in turn on the one connection.
         streams: u32,
         /// The bytes each stream writes (the echo answers them back), at most 1 MiB less the echo's prefix.
@@ -168,8 +168,8 @@ pub enum OriginateRequest {
 pub struct AnsweredBy {
     /// The answering node's id.
     pub node_id: String,
-    /// The answering node's `path.name`.
-    pub node: String,
+    /// The answering node's separate path and name.
+    pub node: PathName,
     /// The answering node's incarnation id.
     pub incarnation_id: String,
 }
@@ -188,7 +188,7 @@ pub enum OriginateReply {
         /// The effective route's token: `via-peer`, `direct`, `direct-unknown` or `no-active-route`.
         route: String,
         /// The carrier the route used, when it used one.
-        carrier: Option<String>,
+        carrier: Option<rdm_core::NodeId>,
         /// The own Proxy the resolution found invalid, and why, if any.
         deleted: Option<String>,
         /// The call's outcome name.
@@ -356,8 +356,8 @@ pub enum OriginateReply {
     DirectBlocked {
         /// Who set it.
         by: AnsweredBy,
-        /// The `path.name` the block names.
-        destination: String,
+        /// The node ID the block names.
+        destination: rdm_core::NodeId,
         /// Whether Direct dials toward it are now blocked.
         blocked: bool,
     },
@@ -456,14 +456,16 @@ pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
 /// gateway carrying for a compute) declares its own kind here.
 pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy: CarrierPolicy) -> ServerBuilder {
     let (node_id, incarnation_id) = (launch.node_id.to_string(), launch.incarnation.to_string());
+    let launch_node_id = launch.node_id.clone();
     b.serve::<Originate, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: OriginateRequest| {
         // The node answers and routes under the name it holds at this call (R12).
         let own: PathName = seams.name.now();
-        let by = AnsweredBy { node_id: node_id.clone(), node: own.to_string(), incarnation_id: incarnation_id.clone() };
+        let by = AnsweredBy { node_id: node_id.clone(), node: own.clone(), incarnation_id: incarnation_id.clone() };
         let seams = seams.clone();
+        let launch_node_id = launch_node_id.clone();
         async move {
             Ok(match req {
-                OriginateRequest::Call { destination, op } => call(&by, &seams, &own, &destination, op, policy).await,
+                OriginateRequest::Call { destination, op } => call(&by, &seams, &launch_node_id, &destination, op, policy).await,
                 OriginateRequest::ArmFault { refuse_index, refuse_history, pass_history } => {
                     seams.fault.arm(refuse_index, refuse_history, pass_history);
                     OriginateReply::FaultArmed { by, refuse_index, refuse_history }
@@ -475,7 +477,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                 OriginateRequest::Throughput { destination, streams, bytes } => throughput(&by, &seams, &destination, streams, bytes).await,
                 OriginateRequest::BlockDirect { destination, blocked } => block_direct(&by, &seams, &destination, blocked),
                 OriginateRequest::UpdateOwnConfig { config } => match seams.own_config.get().cloned() {
-                    None => OriginateReply::NotReady { reason: format!("{own}: the node does not run yet; its own config has no door") },
+                    None => OriginateReply::NotReady { reason: format!("{own:?}: the node does not run yet; its own config has no door") },
                     Some(door) => {
                         use rdm_core::status::StatusReply as R;
                         let (outcome, config, revision) = match door.update(config).await {
@@ -515,12 +517,8 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
     })
 }
 
-async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str, op: ProofOp, policy: CarrierPolicy) -> OriginateReply {
-    let path: PathName = match destination.parse() {
-        Ok(p) => p,
-        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
-    };
-    let target = match seams.resolver.resolve(&NodeTarget::CurrentPath(path.clone())) {
+async fn call(by: &AnsweredBy, seams: &Seams, own: &rdm_core::NodeId, destination: &rdm_core::NodeId, op: ProofOp, policy: CarrierPolicy) -> OriginateReply {
+    let target = match seams.resolver.resolve(&NodeTarget::ExactNode(destination.clone())) {
         Ok(n) => n,
         Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
     };
@@ -530,13 +528,13 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
     let resolution = {
         let held = seams.connections.held();
         let held = held.lock().unwrap();
-        resolve(&held, own, &path, policy)
+        resolve(&held, own, &target.node_id, policy)
     };
     let req = match op {
         ProofOp::Get { key } => ProofRequest::Get { key },
         ProofOp::Put { key, value } => ProofRequest::Put { key, value },
     };
-    let call = seams.client.call_resolved::<ProofStore>(resolution, own, &path, &target.node_id, &req, &CallOptions::default()).await;
+    let call = seams.client.call_resolved::<ProofStore>(resolution, own, &target.name, &target.node_id, &req, &CallOptions::default()).await;
     // A Proxy the resolution found invalid is deleted by this source, as the caller of the seam.
     let deleted = match call.delete {
         Some((proxy, why)) => {
@@ -547,7 +545,7 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
         None => None,
     };
     let (route, carrier) = match &call.route {
-        rdm_core::connections::EffectiveRoute::ViaPeer { carrier, .. } => ("via-peer".to_string(), Some(carrier.to_string())),
+        rdm_core::connections::EffectiveRoute::ViaPeer { proxy, .. } => ("via-peer".to_string(), proxy.carrier.as_ref().map(|n| n.node_id.clone())),
         other => (other.token().to_string(), None),
     };
     let (outcome, reply) = match call.outcome {
@@ -566,13 +564,9 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
     }
 }
 
-async fn dial(by: &AnsweredBy, seams: &Seams, destination: &str) -> OriginateReply {
+async fn dial(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::NodeId) -> OriginateReply {
     use rdm_core::ping::{Ping, PingRequest};
-    let path: PathName = match destination.parse() {
-        Ok(p) => p,
-        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
-    };
-    let target = match seams.resolver.resolve(&NodeTarget::CurrentPath(path)) {
+    let target = match seams.resolver.resolve(&NodeTarget::ExactNode(destination.clone())) {
         Ok(n) => n,
         Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
     };
@@ -582,20 +576,16 @@ async fn dial(by: &AnsweredBy, seams: &Seams, destination: &str) -> OriginateRep
 
 /// One data-plane round trip to `destination`'s current birth: open on the node's ALPN, one
 /// bidirectional stream, the payload written and finished, the far role's answer read whole.
-async fn stream(by: &AnsweredBy, seams: &Seams, destination: &str, payload: Vec<u8>) -> OriginateReply {
+async fn stream(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::NodeId, payload: Vec<u8>) -> OriginateReply {
     let failed = |reason: String| OriginateReply::StreamFailed { by: by.clone(), reason };
-    let path: PathName = match destination.parse() {
-        Ok(p) => p,
-        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
-    };
-    let target = match seams.resolver.resolve(&NodeTarget::CurrentPath(path.clone())) {
+    let target = match seams.resolver.resolve(&NodeTarget::ExactNode(destination.clone())) {
         Ok(n) => n,
         Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
     };
     let Some(dialer) = seams.data_plane.get() else {
         return failed("no-data-plane-alpn: this node registered no data-plane ALPN".into());
     };
-    let birth = rdm_transport::connections::Birth { name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), kind: target.kind, name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
     let conn = match dialer.open(&birth).await {
         Ok(c) => c,
         Err(e) => return failed(format!("open: {e:?}")),
@@ -617,8 +607,8 @@ async fn stream(by: &AnsweredBy, seams: &Seams, destination: &str, payload: Vec<
     let peer = conn.peer();
     OriginateReply::Streamed {
         by: by.clone(),
-        peer: AnsweredBy { node_id: peer.node_id.to_string(), node: peer.name.to_string(), incarnation_id: peer.incarnation.to_string() },
-        kind: match conn.kind() { rdm_transport::connections::ConnectionKind::Direct => "direct".into(), rdm_transport::connections::ConnectionKind::Proxy { via } => format!("proxy via {}", via.name) },
+        peer: AnsweredBy { node_id: peer.node_id.to_string(), node: peer.name.clone(), incarnation_id: peer.incarnation.to_string() },
+        kind: match conn.kind() { rdm_transport::connections::ConnectionKind::Direct => "direct".into(), rdm_transport::connections::ConnectionKind::Proxy { via } => format!("proxy via {}", via.node_id) },
         connection_id: conn.id().to_string(),
         answered,
     }
@@ -626,23 +616,19 @@ async fn stream(by: &AnsweredBy, seams: &Seams, destination: &str, payload: Vec<
 
 /// The data plane measured toward `destination`'s current birth: the open, then `streams` streams in
 /// turn on the one connection, each `bytes` bytes written and their echo read whole.
-async fn throughput(by: &AnsweredBy, seams: &Seams, destination: &str, streams: u32, bytes: u32) -> OriginateReply {
+async fn throughput(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::NodeId, streams: u32, bytes: u32) -> OriginateReply {
     let failed = |reason: String| OriginateReply::StreamFailed { by: by.clone(), reason };
     if bytes as usize > (1 << 20) - 256 {
         return failed(format!("{bytes} bytes a stream: the echo reads at most 1 MiB"));
     }
-    let path: PathName = match destination.parse() {
-        Ok(p) => p,
-        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
-    };
-    let target = match seams.resolver.resolve(&NodeTarget::CurrentPath(path)) {
+    let target = match seams.resolver.resolve(&NodeTarget::ExactNode(destination.clone())) {
         Ok(n) => n,
         Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
     };
     let Some(dialer) = seams.data_plane.get() else {
         return failed("no-data-plane-alpn: this node registered no data-plane ALPN".into());
     };
-    let birth = rdm_transport::connections::Birth { name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+    let birth = rdm_transport::connections::Birth { mesh: target.mesh.clone(), kind: target.kind, name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
     let opened = std::time::Instant::now();
     let conn = match dialer.open(&birth).await {
         Ok(c) => c,
@@ -669,7 +655,7 @@ async fn throughput(by: &AnsweredBy, seams: &Seams, destination: &str, streams: 
     }
     OriginateReply::Measured {
         by: by.clone(),
-        kind: match conn.kind() { rdm_transport::connections::ConnectionKind::Direct => "direct".into(), rdm_transport::connections::ConnectionKind::Proxy { via } => format!("proxy via {}", via.name) },
+        kind: match conn.kind() { rdm_transport::connections::ConnectionKind::Direct => "direct".into(), rdm_transport::connections::ConnectionKind::Proxy { via } => format!("proxy via {}", via.node_id) },
         open_us,
         streams_us: began.elapsed().as_micros() as u64,
         bytes: moved,
@@ -677,33 +663,25 @@ async fn throughput(by: &AnsweredBy, seams: &Seams, destination: &str, streams: 
 }
 
 /// Block or release this node's Direct dials toward `destination` on its one data-plane ALPN.
-fn block_direct(by: &AnsweredBy, seams: &Seams, destination: &str, blocked: bool) -> OriginateReply {
-    let path: PathName = match destination.parse() {
-        Ok(p) => p,
-        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
-    };
+fn block_direct(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::NodeId, blocked: bool) -> OriginateReply {
     let Some((registry, alpn)) = seams.data_plane_registry.get() else {
         return OriginateReply::StreamFailed { by: by.clone(), reason: "no-data-plane-alpn: this node registered no data-plane ALPN".into() };
     };
     if blocked {
-        registry.block_direct_dial(&path, alpn);
+        registry.block_direct_dial(destination, alpn);
     } else {
-        registry.unblock_direct_dial(&path, alpn);
+        registry.unblock_direct_dial(destination, alpn);
     }
-    OriginateReply::DirectBlocked { by: by.clone(), destination: path.to_string(), blocked }
+    OriginateReply::DirectBlocked { by: by.clone(), destination: destination.clone(), blocked }
 }
 
-async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier: &str, failed_attempts: u32) -> OriginateReply {
+async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &rdm_core::NodeId, carrier: &rdm_core::NodeId, failed_attempts: u32) -> OriginateReply {
     use rdm_core::connections::{ConnectionEnd, ConnectionKind};
     use rdm_transport::ConnectionObserver;
     let bad = |reason: String| OriginateReply::BadDestination { by: by.clone(), reason };
     let mut ends = Vec::new();
     for what in [destination, carrier] {
-        let path: PathName = match what.parse() {
-            Ok(p) => p,
-            Err(e) => return bad(format!("{what:?}: {e}")),
-        };
-        match seams.resolver.resolve(&NodeTarget::CurrentPath(path)) {
+        match seams.resolver.resolve(&NodeTarget::ExactNode(what.clone())) {
             Ok(n) => ends.push(n),
             Err(f) => return bad(format!("{what} does not resolve on this node: {f:?}")),
         }
@@ -713,7 +691,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
         seams.connections.direct_failed(&dest, "testkit seed: the direct dial ended NotSent");
     }
     seams.connections.observations_landed().await;
-    let end = |n: &rdm_transport::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
+    let end = |n: &rdm_transport::ResolvedNode| ConnectionEnd { mesh: n.mesh.clone(), kind: n.kind, name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
         id: rdm_core::ConnectionId::mint(),
         source: seams.connections.own(),
@@ -789,40 +767,40 @@ mod tests {
     #[test]
     fn originate_keeps_every_variant_on_its_pinned_bytes() {
         let s = || "r".to_string();
-        let by = || AnsweredBy { node_id: "i".into(), node: "n".into(), incarnation_id: "c".into() };
+        let by = || AnsweredBy { node_id: "i".into(), node: PathName::new("p", "n").unwrap(), incarnation_id: "c".into() };
         let requests = [
-            (OriginateRequest::Call { destination: "d".into(), op: ProofOp::Put { key: vec![1], value: vec![2] } }, "0001640101010102"),
+            (OriginateRequest::Call { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), op: ProofOp::Put { key: vec![1], value: vec![2] } }, "000c6464646464646464646464640101010102"),
             (OriginateRequest::ArmFault { refuse_index: 1, refuse_history: 2, pass_history: 3 }, "01010203"),
             (OriginateRequest::ReleaseFault, "02"),
             (OriginateRequest::Snapshot, "03"),
-            (OriginateRequest::RecordProxy { destination: "d".into(), carrier: "c".into(), failed_attempts: 2 }, "040164016302"),
-            (OriginateRequest::Dial { destination: "d".into() }, "050164"),
-            (OriginateRequest::Stream { destination: "d".into(), payload: vec![9] }, "0601640109"),
+            (OriginateRequest::RecordProxy { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), carrier: rdm_core::NodeId::parse("cccccccccccc").unwrap(), failed_attempts: 2 }, "040c6464646464646464646464640c63636363636363636363636302"),
+            (OriginateRequest::Dial { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap() }, "050c646464646464646464646464"),
+            (OriginateRequest::Stream { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), payload: vec![9] }, "060c6464646464646464646464640109"),
             (OriginateRequest::StopTransport { reason: s() }, "070172"),
-            (OriginateRequest::BlockDirect { destination: "d".into(), blocked: true }, "08016401"),
+            (OriginateRequest::BlockDirect { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), blocked: true }, "080c64646464646464646464646401"),
             (OriginateRequest::UpdateOwnConfig { config: [("a".to_string(), "b".to_string())].into() }, "090101610162"),
-            (OriginateRequest::Throughput { destination: "d".into(), streams: 2, bytes: 3 }, "0a01640203"),
+            (OriginateRequest::Throughput { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), streams: 2, bytes: 3 }, "0a0c6464646464646464646464640203"),
         ];
         let replies = [
-            (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, deleted: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "000169016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
-            (OriginateReply::FaultArmed { by: by(), refuse_index: 1, refuse_history: 2 }, "010169016e01630102", "fault-armed", Code::Ok),
-            (OriginateReply::FaultReleased { by: by(), refused: 4 }, "020169016e016304", "fault-released", Code::Ok),
-            (OriginateReply::Snapshot { by: by(), own_active_proxies: vec![], own_latest_directs: vec![], active_len: 5, active_directs: vec![], owed: vec![], fault_refused: 6 }, "030169016e0163000005000006", "snapshot", Code::Ok),
-            (OriginateReply::BadDestination { by: by(), reason: s() }, "040169016e01630172", "bad-destination", Code::InvalidArgument),
+            (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, deleted: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "0001690170016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
+            (OriginateReply::FaultArmed { by: by(), refuse_index: 1, refuse_history: 2 }, "0101690170016e01630102", "fault-armed", Code::Ok),
+            (OriginateReply::FaultReleased { by: by(), refused: 4 }, "0201690170016e016304", "fault-released", Code::Ok),
+            (OriginateReply::Snapshot { by: by(), own_active_proxies: vec![], own_latest_directs: vec![], active_len: 5, active_directs: vec![], owed: vec![], fault_refused: 6 }, "0301690170016e0163000005000006", "snapshot", Code::Ok),
+            (OriginateReply::BadDestination { by: by(), reason: s() }, "0401690170016e01630172", "bad-destination", Code::InvalidArgument),
             (OriginateReply::PeerUnresolved { reason: s() }, "050172", "peer-unresolved", Code::NotFound),
             (OriginateReply::NotReady { reason: s() }, "060172", "not-ready", Code::Unavailable),
             (OriginateReply::Busy { reason: s() }, "070172", "busy", Code::Unavailable),
             (OriginateReply::ConnectionsDeleting { reason: s() }, "080172", "connections-deleting", Code::Unavailable),
             (OriginateReply::Malformed { kind: MalformedKind::Corrupt }, "0902", "malformed", Code::DataLoss),
             (OriginateReply::Unauthorized { reason: s() }, "0a0172", "unauthorized", Code::PermissionDenied),
-            (OriginateReply::ProxyRecorded { by: by(), destination_node_id: "d".into(), destination_incarnation: "e".into(), carrier_node_id: "c".into(), carrier_incarnation: "f".into(), failed_attempts: 2 }, "0b0169016e0163016401650163016602", "proxy-recorded", Code::Ok),
-            (OriginateReply::Dialed { by: by(), destination_node_id: "d".into(), outcome: "o".into() }, "0c0169016e01630164016f", "dialed", Code::Ok),
-            (OriginateReply::Streamed { by: by(), peer: by(), kind: "direct".into(), connection_id: "x".into(), answered: vec![8] }, "0d0169016e01630169016e01630664697265637401780108", "streamed", Code::Ok),
-            (OriginateReply::StreamFailed { by: by(), reason: s() }, "0e0169016e01630172", "stream-failed", Code::Ok),
-            (OriginateReply::TransportStopMarked { by: by(), reason: s() }, "0f0169016e01630172", "transport-stop-marked", Code::Ok),
-            (OriginateReply::DirectBlocked { by: by(), destination: "d".into(), blocked: false }, "100169016e0163016400", "direct-blocked", Code::Ok),
-            (OriginateReply::OwnConfigUpdated { by: by(), outcome: "o".into(), config: [("a".to_string(), "b".to_string())].into(), revision: 9 }, "110169016e0163016f010161016209", "own-config-updated", Code::Ok),
-            (OriginateReply::Measured { by: by(), kind: "k".into(), open_us: 1, streams_us: 2, bytes: 3 }, "120169016e0163016b010203", "measured", Code::Ok),
+            (OriginateReply::ProxyRecorded { by: by(), destination_node_id: "d".into(), destination_incarnation: "e".into(), carrier_node_id: "c".into(), carrier_incarnation: "f".into(), failed_attempts: 2 }, "0b01690170016e0163016401650163016602", "proxy-recorded", Code::Ok),
+            (OriginateReply::Dialed { by: by(), destination_node_id: "d".into(), outcome: "o".into() }, "0c01690170016e01630164016f", "dialed", Code::Ok),
+            (OriginateReply::Streamed { by: by(), peer: by(), kind: "direct".into(), connection_id: "x".into(), answered: vec![8] }, "0d01690170016e016301690170016e01630664697265637401780108", "streamed", Code::Ok),
+            (OriginateReply::StreamFailed { by: by(), reason: s() }, "0e01690170016e01630172", "stream-failed", Code::Ok),
+            (OriginateReply::TransportStopMarked { by: by(), reason: s() }, "0f01690170016e01630172", "transport-stop-marked", Code::Ok),
+            (OriginateReply::DirectBlocked { by: by(), destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), blocked: false }, "1001690170016e01630c64646464646464646464646400", "direct-blocked", Code::Ok),
+            (OriginateReply::OwnConfigUpdated { by: by(), outcome: "o".into(), config: [("a".to_string(), "b".to_string())].into(), revision: 9 }, "1101690170016e0163016f010161016209", "own-config-updated", Code::Ok),
+            (OriginateReply::Measured { by: by(), kind: "k".into(), open_us: 1, streams_us: 2, bytes: 3 }, "1201690170016e0163016b010203", "measured", Code::Ok),
         ];
         let off = pinned::<Originate>(&requests, &replies);
         assert!(off.is_empty(), "the wire moved:\n{}", off.join("\n"));
@@ -836,7 +814,7 @@ mod tests {
     use rdm_core::{IncarnationId, NodeId};
 
     fn end(kind: NodeKind, ordinal: u32, inc: &str) -> ConnectionEnd {
-        ConnectionEnd { name: PathName::new("mesh1", kind, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap()) }
+        ConnectionEnd { mesh: "mesh1".into(), kind: kind, name: PathName::numbered("mesh1", kind, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap()) }
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
@@ -850,16 +828,16 @@ mod tests {
     fn door_resolves_a_gateway_carried_proxy_only_under_a_gateway_policy() {
         let (own, carrier, dest) = (end(NodeKind::Compute, 1, "o1"), end(NodeKind::Gateway, 1, "c1"), end(NodeKind::Broker, 1, "d1"));
         let mut held = ConnectionsHeld::new();
-        held.set_own_source(own.name.clone());
+        held.set_own_source(own.node_id.clone());
         held.mark_complete();
         held.apply(row(&carrier, &dest, ConnectionKind::Direct, None, 10)).unwrap();
         let p = row(&own, &dest, ConnectionKind::Proxy, Some(&carrier), 20);
         held.apply(p.clone()).unwrap();
         let gateway = CarrierPolicy::Proxy { carrier_kind: NodeKind::Gateway };
-        let r = resolve(&held, &own.name, &dest.name, gateway);
-        assert_eq!(r.route, EffectiveRoute::ViaPeer { carrier: carrier.name.clone(), proxy: p });
+        let r = resolve(&held, &own.node_id, &dest.node_id, gateway);
+        assert_eq!(r.route, EffectiveRoute::ViaPeer { carrier: carrier.node_id.clone(), proxy: p });
         assert_eq!(r.delete, None);
-        let d = resolve(&held, &own.name, &dest.name, POLICY);
+        let d = resolve(&held, &own.node_id, &dest.node_id, POLICY);
         assert_eq!(d.route, EffectiveRoute::Direct { known: false }, "the gateway-carried Proxy is not the route under the rpc_node policy: with no Direct fact the pair dials directly");
         assert_eq!(d.delete, None, "a Proxy through a kind the policy does not name is skipped, never deleted");
     }

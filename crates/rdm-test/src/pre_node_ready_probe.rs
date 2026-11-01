@@ -324,7 +324,7 @@ impl PreNodeReady for TestPreNodeReady {
         self.member_certs.lock().unwrap().push(ctx.member_cert.clone());
         self.contexts.lock().unwrap().push((
             ctx.attempt,
-            ctx.accepting_primary.accepted().map(|a| a.name.to_string()),
+            ctx.accepting_primary.accepted().map(|a| a.node_id.to_string()),
             match &ctx.accepting_primary {
                 rdm_node::node_hooks::AcceptingPrimarySource::None(why) => Some(why.reason().to_string()),
                 rdm_node::node_hooks::AcceptingPrimarySource::Accepted(_) => None,
@@ -356,10 +356,10 @@ impl PreNodeReady for TestPreNodeReady {
                             }
                             HookOutcome::Ok
                         }
-                        PullReply::NotReady { reason } => ctx.primary_not_ready(format!("{} answered NotReady: {reason}", accepting_primary.name)),
-                        other => HookOutcome::Failed { reason: format!("{} answered the pull with {other:?}", accepting_primary.name) },
+                        PullReply::NotReady { reason } => ctx.primary_not_ready(format!("{} answered NotReady: {reason}", accepting_primary.node_id)),
+                        other => HookOutcome::Failed { reason: format!("{} answered the pull with {other:?}", accepting_primary.node_id) },
                     },
-                    other => HookOutcome::Blocked { reason: format!("the pull to {} was not answered: {}", accepting_primary.name, other.name()), retry_on: RetryOn::PrimaryChanged },
+                    other => HookOutcome::Blocked { reason: format!("the pull to {} was not answered: {}", accepting_primary.node_id, other.name()), retry_on: RetryOn::PrimaryChanged },
                 }
             }
         }
@@ -367,7 +367,7 @@ impl PreNodeReady for TestPreNodeReady {
 }
 
 /// A node's `pre_node_ready` read from a scenario's knob file
-/// ([`crate::pre_node_ready_knob_dir`]`/<path.name>`): each attempt reads the file; `pass` (or no file)
+/// ([`crate::pre_node_ready_knob_dir`]`/<location-index>`): each attempt reads the file; `pass` (or no file)
 /// returns `Ok`, any other text is `Blocked` with that text as its reason, run again when the
 /// node's authority addresses it. A scenario changes the reason or lets the hook pass by rewriting
 /// the file. Testkit only; never a product binary.
@@ -378,15 +378,15 @@ pub struct KnobPreNodeReady {
 impl KnobPreNodeReady {
     /// The hook for the node `name` of the estate under `root`, when the scenario recorded a knob
     /// for it; `None` otherwise (the node registers no hook).
-    pub fn for_node(root: &std::path::Path, name: &str) -> Option<Arc<Self>> {
-        let file = crate::pre_node_ready_knob_dir(root).join(name);
+    pub fn for_node(root: &std::path::Path, name: &rdm_core::PathName) -> Option<Arc<Self>> {
+        let file = crate::location_knob_file(&crate::pre_node_ready_knob_dir(root), name);
         file.exists().then(|| Arc::new(Self { file }))
     }
 
     /// The hook for the node `name` of the estate under `root`, passing immediately when no knob
     /// file exists and consulting the knob file when one was written.
-    pub fn always(root: &std::path::Path, name: &str) -> Arc<Self> {
-        let file = crate::pre_node_ready_knob_dir(root).join(name);
+    pub fn always(root: &std::path::Path, name: &rdm_core::PathName) -> Arc<Self> {
+        let file = crate::location_knob_file(&crate::pre_node_ready_knob_dir(root), name);
         Arc::new(Self { file })
     }
 }
@@ -401,7 +401,7 @@ impl PreNodeReady for KnobPreNodeReady {
             Ok(text) if text.trim() != "pass" => HookOutcome::Blocked { reason: text.trim().to_string(), retry_on: RetryOn::PrimaryAddressed },
             _ => HookOutcome::Ok,
         };
-        // One line per attempt beside the knob (`<path.name>.attempts`): what the scenario waits on.
+        // One line per attempt beside the knob (`<location-index>.attempts`): what the scenario waits on.
         let line = match &outcome {
             HookOutcome::Blocked { reason, .. } => format!("blocked {reason}\n"),
             _ => "ok\n".to_string(),

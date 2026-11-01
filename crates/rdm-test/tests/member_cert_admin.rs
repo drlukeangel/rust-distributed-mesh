@@ -73,8 +73,8 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         let own_signed = certs::cert_from_bytes(&own).expect("the root's own issuer signed it");
         let me = root.birth();
         assert_eq!(
-            (own_signed.cert.node_id.to_string(), own_signed.cert.incarnation.as_str(), own_signed.cert.name.to_string(), own_signed.cert.mesh.as_str(), own_signed.cert.endpoint.0.as_str()),
-            (me.node_id.to_string(), me.incarnation.as_str(), "mesh1.admin.1".to_string(), "mesh1", me.endpoint_id.0.as_str()),
+            (own_signed.cert.node_id.to_string(), own_signed.cert.incarnation.as_str(), own_signed.cert.name.clone(), own_signed.cert.mesh.as_str(), own_signed.cert.endpoint.0.as_str()),
+            (me.node_id.to_string(), me.incarnation.as_str(), me.name.clone(), "mesh1", me.endpoint_id.0.as_str()),
             "issued for exactly the Day-0 root's birth"
         );
         assert_eq!(certs::verify(&own_signed, &[test_root_public()], root.rafka_time.now_ms(), 0), Ok(()), "member to issuer, issuer to CA, CA to the root");
@@ -92,14 +92,14 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             fabric_id,
             mesh: "mesh1".into(),
             kind: rdm_core::NodeKind::NodeAdmin,
-            name: "mesh1.admin.2".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.admin", "2").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
             seeds: vec![(root_digest.node.endpoint_id.0.clone(), root_digest.node.transport_addr)],
-            launcher: Some(Launcher { name: root_digest.node.name.clone(), node_id: root_digest.node.node_id.clone(), incarnation: root_digest.node.incarnation.clone() }),
+            launcher: Some(Launcher { mesh: root_digest.node.mesh.clone(), name: root_digest.node.name.clone(), node_id: root_digest.node.node_id.clone(), incarnation: root_digest.node.incarnation.clone() }),
             data_dir: joiner_dir.clone(),
             store_dir: joiner_dir.clone(),
             mesh_id: Some(root_mesh_id),
@@ -133,8 +133,8 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         let signed = certs::cert_from_bytes(&bytes).expect("the root issued a signed member cert");
         let cert = &signed.cert;
         assert_eq!(
-            (cert.node_id.to_string(), cert.incarnation.as_str(), cert.name.to_string(), cert.mesh.as_str(), cert.endpoint.0.as_str()),
-            (launch.node_id.to_string(), launch.incarnation.as_str(), "mesh1.admin.2".to_string(), "mesh1", key.public().to_string().as_str()),
+            (cert.node_id.to_string(), cert.incarnation.as_str(), cert.name.clone(), cert.mesh.as_str(), cert.endpoint.0.as_str()),
+            (launch.node_id.to_string(), launch.incarnation.as_str(), launch.name.clone(), "mesh1", key.public().to_string().as_str()),
             "issued for exactly this birth"
         );
         let life = certs::MEMBER_CERT_TTL_SECS * 1000;
@@ -172,7 +172,7 @@ fn the_day_zero_roots_dial_on_an_app_alpn_presents_its_own_member_cert_and_is_ad
         // A node of mesh1 serving the app ALPN, admitting on the fabric's root.
         let key = iroh::SecretKey::generate();
         let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), std::slice::from_ref(&alpn.name)).await.unwrap();
-        let peer = Birth { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let peer = Birth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let sink = Arc::new(MemoryConnectionsSink::new(peer.clone()));
         let (registry, handlers) = ConnectionsRegistry::new(ep.clone(), Arc::new(StaticResolver::new()), sink, std::slice::from_ref(&alpn), Vec::new()).unwrap();
         registry.admit_on(vec![test_root_public()], rdm_transport::clock::RafkaTime::unadopted());
@@ -183,7 +183,7 @@ fn the_day_zero_roots_dial_on_an_app_alpn_presents_its_own_member_cert_and_is_ad
         let router = rb.spawn();
         let (_, mut app) = registry.connections(&alpn.name).unwrap().split();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the peer binds an IPv4 socket");
-        root.node_rpc.resolver.apply(ResolvedNode { node_id: peer.node_id.clone(), name: peer.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: peer.incarnation.clone() }, None);
+        root.node_rpc.resolver.apply(ResolvedNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, node_id: peer.node_id.clone(), name: peer.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: peer.incarnation.clone() }, None);
 
         let accepted = tokio::spawn(async move { app.accept().await });
         let opened = tokio::time::timeout(WRONG, opener.open(&peer)).await.expect("the dial ends");

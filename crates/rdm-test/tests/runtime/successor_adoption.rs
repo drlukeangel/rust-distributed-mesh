@@ -1,13 +1,13 @@
 //! i143.e4.s16 process E2E: a successor manages births it never launched
 //! (rafka-v2 #2850).
 //!
-//! Build A completes (mesh1.admin.1 launches three rpc nodes). Only then is
-//! mesh1.admin.2 born, so it never holds A's receipts: the Build topic hands
+//! Build A completes (the bootstrap admin launches three rpc nodes). Only then is
+//! the successor admin born, so it never holds A's receipts: the Build topic hands
 //! a new admin only active Builds. The launching admin is killed. From public
 //! surfaces only:
 //! - the successor holds the mesh and the fabric, and its view advertises
 //!   every rpc node's data dir (current birth metadata, from the topology view);
-//! - it restarts one of A's births (same node id, new incarnation) and
+//! - it restarts one of A's births (same node id and incarnation) and
 //!   deletes another (its runtime is gone), from the runtime each birth
 //!   publishes with its topology view, never from Build history.
 //!
@@ -26,7 +26,7 @@
 //! `PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata` complete, in
 //! order, before its `WaitForNodeReady` step begins.
 
-use rdm_client::{LaunchKind as NodeKind, NodeStatus};
+use rdm_client::{LaunchKind as NodeKind, NodeStatus, PathName};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -61,11 +61,11 @@ async fn a_successor_manages_births_it_never_launched() {
     let nodes = estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     // The initial fabric refuses a node restart and a node delete until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let successor = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").cloned().unwrap();
-    let launcher = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").cloned().unwrap();
-    let rpc = |name: &str| a_births.iter().find(|n| n.name.to_string() == name).cloned().unwrap();
-    let (restarted, deleted) = (rpc("mesh1.rpc.2"), rpc("mesh1.rpc.3"));
-    let deleted_pid = estate.pid_of("mesh1.rpc.3").await;
+    let successor = nodes.iter().find(|n| n.name == PathName::new("mesh1.admin", "2").unwrap()).cloned().unwrap();
+    let launcher = nodes.iter().find(|n| n.name == PathName::new("mesh1.admin", "1").unwrap()).cloned().unwrap();
+    let rpc = |name: &str| a_births.iter().find(|n| n.name == PathName::new("mesh1.rpc", name).unwrap()).cloned().unwrap();
+    let (restarted, deleted) = (rpc("2"), rpc("3"));
+    let deleted_pid = estate.pid_of(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await;
 
     // Stop the launching admin (`node.stop` runs `node.primary.update` to `mesh1.admin.2` first and
     // takes `mesh1.admin.1` down only after the confirmed transfer).
@@ -78,19 +78,19 @@ async fn a_successor_manages_births_it_never_launched() {
     estate.kill_bootstrap();
     let view = estate
         .until_view("the successor holds the mesh and the fabric", Duration::from_secs(30), |v| {
-            let me = v.iter().find(|n| n.name == successor.name)?;
+            let me = v.iter().find(|n| n.node_id == successor.node_id)?;
             (me.is_primary && me.is_fabric_primary).then(|| v.to_vec())
         })
         .await;
     for n in view.iter().filter(|n| n.kind == NodeKind::RpcNode) {
-        assert!(n.data_dir.as_deref().is_some_and(|d| !d.is_empty()), "the successor's view carries {}'s data dir: {n:?}", n.name);
+        assert!(n.data_dir.as_deref().is_some_and(|d| !d.is_empty()), "the successor's view carries {:?}'s data dir: {n:?}", n.name);
     }
 
     // Restart one of A's births and delete another, through the successor.
     estate.stop_then_start(&restarted.name).await;
     // A stop then a start keep the birth (node-stop.md "Kept": "node.id, incarnation, endpoint key, port,
     // bin, path/name and storage"): the node is ready again as the same birth.
-    let after = estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
+    let after = estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1.rpc.2 ready again as the same birth", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
     assert_eq!((&after.node_id, &after.incarnation_id), (&restarted.node_id, &restarted.incarnation_id), "a restart keeps the node id and the birth");
     Estate::workflow("node.delete of mesh1.rpc.3", estate.nodes_obj().await.delete(&deleted.name).await).await;
     wait_for("mesh1.rpc.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
@@ -98,25 +98,26 @@ async fn a_successor_manages_births_it_never_launched() {
     // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the
     // killed launcher's path, a new NodeId that may take the role back by NodeId order.
     let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
+    let recovery_scope = format!("mesh1.node_admin: 1 present of 2 accepted (unheard: {:?})", vec![(launcher.node_id.clone(), launcher.incarnation_id.clone().expect("launched birth"))]);
     let (launcher, restarted, deleted) = (serde_json::to_value(&launcher).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&deleted).unwrap());
     estate.stop().await;
     let spans = estate.spans();
     // Day 0: the bootstrap admin published the runtime it adopted for itself.
-    let boot = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node"] == "mesh1.admin.1").cloned().expect("the bootstrap admin is ready");
+    let boot = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == launcher["node_id"] && sp["attributes"]["incarnation_id"] == launcher["incarnation_id"]).cloned().expect("the bootstrap admin is ready");
     assert_eq!(boot["attributes"]["runtime_locator_kind"], if estate.owner.provider == "container" { "container-id" } else { "process-pid-start" });
     assert_eq!(boot["attributes"]["source"], "self-published-topology");
     let ns = |sp: &Value, k: &str| sp[k].as_u64().unwrap_or_else(|| panic!("{k} on {sp}"));
-    let steps_of = |node: &str, pipeline_step: &dyn Fn(&Value) -> bool| -> Vec<Value> {
+    let steps_of = |node: &PathName, pipeline_step: &dyn Fn(&Value) -> bool| -> Vec<Value> {
         let mut v: Vec<Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
-            .filter(|sp| sp["attributes"]["node"] == node && pipeline_step(sp))
+            .filter(|sp| sp["attributes"]["node_path"] == node.path && sp["attributes"]["node_name"] == node.name && pipeline_step(sp))
             .cloned()
             .collect();
         v.sort_by_key(|sp| ns(sp, "start_unix_nano"));
         v
     };
     // Day 0: the adoption, step by step, before Ready.
-    let day0 = steps_of("mesh1.admin.1", &|sp| sp["attributes"]["build_id"] == "");
+    let day0 = steps_of(&PathName::new("mesh1.admin", "1").unwrap(), &|sp| sp["attributes"]["build_id"] == "");
     let names: Vec<&str> = day0.iter().map(|sp| sp["attributes"]["step"].as_str().unwrap()).collect();
     assert_eq!(names, ["AdoptCurrentRuntime", "RegisterExactRuntimeHandle", "ResolveProviderControlDomain", "PublishRuntimeFactAndCurrentRuntimeMetadata"]);
     for sp in &day0 {
@@ -131,61 +132,62 @@ async fn a_successor_manages_births_it_never_launched() {
     // The killed bootstrap admin is desired (2 node-admins): once its exact
     // runtime is proven exited, the successor may recreate it under a new
     // proven-drift Build before the test stops.
-    let recoveries = named(&spans, "rdm.node_admin.build.create.via-proven-drift");
+    let recoveries = named(&spans, "rdm.node_admin.build.update.via-proven-drift");
     assert!(recoveries.len() <= 1, "one recovery at most for one exited birth");
     for r in &recoveries {
-        assert_eq!(r["attributes"]["scope"], "mesh1.node_admin: 1 present of 2 desired (exited: mesh1.admin.1)");
+        assert_eq!(r["attributes"]["scope"], recovery_scope);
     }
     // A restart, node.stop then node.start, deploys nothing (node-start.md: the same process rejoins):
     // its start's WaitForNodeReady follows StartNode and none of the launch steps. Every other wait is a
     // launch.
+    let location_of = |sp: &Value| PathName::new(sp["attributes"]["node_path"].as_str().expect("step path"), sp["attributes"]["node_name"].as_str().expect("step name")).unwrap();
     let steps_before = |wait: &Value| -> Vec<Value> {
-        let (node, build) = (wait["attributes"]["node"].as_str().unwrap(), wait["attributes"]["build_id"].clone());
-        steps_of(node, &|sp| sp["attributes"]["build_id"] == build && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"))
+        let (node, build) = (location_of(wait), wait["attributes"]["build_id"].clone());
+        steps_of(&node, &|sp| sp["attributes"]["build_id"] == build && sp["attributes"]["attempt"] == wait["attributes"]["attempt"] && sp["trace_id"] == wait["trace_id"] && sp["parent_span_id"] == wait["parent_span_id"] && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"))
     };
     let (restarts, launches): (Vec<&Value>, Vec<&Value>) =
-        launched.iter().filter(|w| w["attributes"]["node"] != "mesh1.admin.1").partition(|w| steps_before(w).iter().any(|sp| sp["attributes"]["step"] == "StartNode"));
-    let restarted_nodes: Vec<&str> = restarts.iter().map(|w| w["attributes"]["node"].as_str().unwrap()).collect();
-    assert_eq!(restarted_nodes, ["mesh1.rpc.2"], "mesh1.rpc.2's restart waited for Ready, and no other node was restarted");
-    for node in ["mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"] {
-        assert!(launches.iter().any(|w| w["attributes"]["node"] == node), "{node} was launched and waited for Ready");
+        launched.iter().filter(|w| location_of(w) != PathName::new("mesh1.admin", "1").unwrap()).partition(|w| steps_before(w).iter().any(|sp| sp["attributes"]["step"] == "StartNode"));
+    let restarted_nodes: Vec<PathName> = restarts.iter().map(|w| location_of(w)).collect();
+    assert_eq!(restarted_nodes, [PathName::new("mesh1.rpc", "2").unwrap()], "only the restarted fixture waited for Ready after StartNode");
+    for node in ["1", "2", "3"].map(|name| PathName::new("mesh1.rpc", name).unwrap()) {
+        assert!(launches.iter().any(|w| location_of(w) == node), "{node:?} was launched and waited for Ready");
     }
     for wait in &restarts {
-        let node = wait["attributes"]["node"].as_str().unwrap();
+        let node = location_of(wait);
         let before = steps_before(wait);
-        assert!(!before.iter().any(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap()) || sp["attributes"]["step"] == "DeployRuntime"), "{node}: a restart deploys nothing: {before:?}");
+        assert!(!before.iter().any(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap()) || sp["attributes"]["step"] == "DeployRuntime"), "{node:?}: a restart deploys nothing: {before:?}");
     }
     for wait in launches {
-        let node = wait["attributes"]["node"].as_str().unwrap();
+        let node = location_of(wait);
         let before = steps_before(wait);
         let names: Vec<&str> = before.iter().map(|sp| sp["attributes"]["step"].as_str().unwrap()).filter(|s| PREREQUISITES.contains(s)).collect();
-        assert_eq!(names, PREREQUISITES, "{node}: every prerequisite committed, in order, before WaitForNodeReady");
+        assert_eq!(names, PREREQUISITES, "{node:?}: every prerequisite committed, in order, before WaitForNodeReady");
         assert!(before.iter().filter(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap())).all(|sp| sp["attributes"]["outcome"] == "complete"));
     }
     // The rebirth of the killed launcher's path checks the birth its view holds there first
     // (`via-path-investigation`): an unreached one ends in the provider's inspection, whose span is the
     // evidence (node-runtime-inspect.md "Observability contract"), in the same trace, naming the
     // investigated birth and the same verdict.
-    let checked: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| sp["attributes"]["outcome"] == "unreached").collect();
+    let checked: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| sp["attributes"]["outcome"] == "unreached" && sp["attributes"]["node_id"] == launcher["node_id"] && sp["attributes"]["incarnation"] == launcher["incarnation_id"]).collect();
     assert!(!checked.is_empty(), "the rebirth of the killed launcher's path investigates the birth its view holds there");
     for check in checked {
         let inspected = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
             .into_iter()
-            .find(|sp| sp["trace_id"] == check["trace_id"] && sp["attributes"]["incarnation_id"] == check["attributes"]["incarnation"] && sp["attributes"]["caller"].as_str().unwrap_or("").is_empty())
+            .find(|sp| sp["trace_id"] == check["trace_id"] && sp["attributes"]["node_id"] == check["attributes"]["node_id"] && sp["attributes"]["incarnation_id"] == check["attributes"]["incarnation"] && sp["attributes"]["caller"].as_str().unwrap_or("").is_empty())
             .unwrap_or_else(|| panic!("the path check's investigation inspects the exact runtime under its own span: {check}"));
         assert_eq!(inspected["attributes"]["verdict"], check["attributes"]["verdict"], "the inspection's verdict is the investigation's: {inspected} {check}");
         assert!(!s(&inspected["attributes"]["inspector"]).is_empty(), "the inspection names its inspector: {inspected}");
     }
     for birth in [&restarted, &deleted] {
-        let name = s(&birth["name"]);
+        let name = s(&birth["node_id"]);
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
-            .find(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
+            .find(|sp| sp["attributes"]["node_id"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
             .cloned()
             .unwrap_or_else(|| panic!("{name} reports ready"));
         let adopted = named(&spans, "rdm.node_admin.runtime.update.via-adopt")
             .into_iter()
-            .find(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
+            .find(|sp| sp["attributes"]["node_id"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
             .cloned()
             .unwrap_or_else(|| panic!("the successor adopted {name}'s runtime"));
         let (r, a) = (&ready["attributes"], &adopted["attributes"]);

@@ -44,7 +44,7 @@ pub enum NodePrimaryUpdateRequest {
         /// The run of that Build: the first attempt of the series a submission opened.
         run: u32,
         /// The update's operation identity, `node.primary.update:<build_id>:<run>:<op>`.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// node.primary.update commanded from above, on the primary of `node_type` in the receiver's mesh,
     /// or on the mesh-primary for another type's primary of its mesh: the primary runs the sequence.
@@ -58,7 +58,7 @@ pub enum NodePrimaryUpdateRequest {
         /// The run of that Build.
         run: u32,
         /// The update's operation identity.
-        operation: String,
+        operation: crate::OperationId,
         /// The successor's exact birth, named by the mesh-primary's pre-check (node-primary-update.md step
         /// 2) when it commands another type's primary; none to a node-admin, which computes the election
         /// itself (Q129).
@@ -91,7 +91,7 @@ pub enum NodePrimaryUpdateReply {
     /// Position 1 on the wire.
     RejectedConflictingPayload {
         /// The operation in conflict.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Reserved position (Q171): never sent.
     ///

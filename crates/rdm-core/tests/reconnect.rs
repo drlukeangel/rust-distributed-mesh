@@ -10,12 +10,12 @@ use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
 const RPC: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
 fn end(ordinal: u32, incarnation: &str) -> ConnectionEnd {
-    ConnectionEnd { name: PathName::new("mesh1", NodeKind::RpcNode, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(incarnation)).unwrap()) }
+    ConnectionEnd { mesh: "mesh1".into(), kind: NodeKind::RpcNode, name: PathName::numbered("mesh1", NodeKind::RpcNode, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(incarnation)).unwrap()) }
 }
 
 fn held_for(own: &ConnectionEnd) -> ConnectionsHeld {
     let mut h = ConnectionsHeld::new();
-    h.set_own_source(own.name.clone());
+    h.set_own_source(own.node_id.clone());
     h.mark_complete();
     h
 }
@@ -62,7 +62,7 @@ fn the_backoff_is_computed_from_the_latest_failed_row_held_not_reset() {
     // A second projection handed the same latest row computes the same schedule.
     let after = reconnect_plan(&single(&own, &latest), |_| Some(IncarnationId::parse(&rdm_core::fixture_crockford60("d1")).unwrap()));
     assert_eq!(before, after);
-    let want = 1000 + reconnect_backoff(3) + deterministic_jitter(&own.name, &dest.name, 3);
+    let want = 1000 + reconnect_backoff(3) + deterministic_jitter(&own.node_id, &dest.node_id, 3);
     assert_eq!(after[0].due_ms, want);
     assert!(reconnect_backoff(3) > reconnect_backoff(1), "backed off, not reset to the first interval");
     assert!(due(&after, want - 1).is_empty(), "no attempt before the due time");
@@ -116,19 +116,19 @@ fn cutback_to_direct_happens_only_after_the_proxy_disconnected_write_is_applied_
     assert!(owed_direct_restored(&h, 25).is_empty(), "no Direct yet: nothing owed");
 
     h.apply(connected(&own, &dest, 30)).unwrap();
-    assert!(matches!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays effective until deleted");
+    assert!(matches!(resolve(&h, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays effective until deleted");
     let owed = owed_direct_restored(&h, 31);
     assert_eq!(owed.len(), 1);
     assert_eq!((owed[0].state, owed[0].reason.as_deref()), (ConnectionState::Disconnected, Some(DIRECT_RESTORED)));
 
     // The write fails (never applied): the delete is owed again, and the Proxy still routes.
     assert_eq!(owed_direct_restored(&h, 40).len(), 1);
-    assert!(matches!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { .. }));
+    assert!(matches!(resolve(&h, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::ViaPeer { .. }));
 
     // The write lands: the Proxy is deleted and new invocations go Direct.
     h.apply(owed_direct_restored(&h, 50).remove(0)).unwrap();
     assert!(owed_direct_restored(&h, 51).is_empty());
-    assert_eq!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(resolve(&h, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::Direct { known: true });
 }
 
 #[test]
@@ -138,8 +138,8 @@ fn route_resolution_never_creates_or_moves_a_reconnect() {
     let h = single(&own, &latest);
     let plan = reconnect_plan(&h, |_| None);
     for _ in 0..100 {
-        assert_eq!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute);
-        assert_eq!(resolve(&h, &own.name, &end(7, "x").name, RPC).route, EffectiveRoute::Direct { known: false });
+        assert_eq!(resolve(&h, &own.node_id, &dest.node_id, RPC).route, EffectiveRoute::NoActiveRoute);
+        assert_eq!(resolve(&h, &own.node_id, &end(7, "x").node_id, RPC).route, EffectiveRoute::Direct { known: false });
     }
     assert_eq!(reconnect_plan(&h, |_| None), plan, "traffic changes no reconnect obligation");
 }
@@ -155,8 +155,8 @@ fn a_known_dialers_refused_fact_cuts_no_live_connection() {
     let mut held = held_for(&acceptor);
     let live = connected(&dialer, &acceptor, 100);
     held.apply(live.clone()).unwrap();
-    assert_eq!(held.active_direct(&dialer.name, &acceptor.name).flatten().map(|c| c.id.clone()), Some(live.id.clone()), "the live connection is held");
+    assert_eq!(held.active_direct(&dialer.node_id, &acceptor.node_id).flatten().map(|c| c.id.clone()), Some(live.id.clone()), "the live connection is held");
     let refused = NodeConnection { id: rdm_core::ConnectionId::mint(), state: ConnectionState::Refused, reason: Some("expired".into()), logged_at_ms: 200, ..live.clone() };
     held.apply(refused).unwrap();
-    assert_eq!(held.active_direct(&dialer.name, &acceptor.name).flatten().map(|c| c.id.clone()), Some(live.id), "a Refused fact cuts no live connection");
+    assert_eq!(held.active_direct(&dialer.node_id, &acceptor.node_id).flatten().map(|c| c.id.clone()), Some(live.id), "a Refused fact cuts no live connection");
 }

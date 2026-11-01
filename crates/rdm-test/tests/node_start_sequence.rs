@@ -79,7 +79,7 @@ fn passing() -> NodeHooks {
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
 /// A launch of `name` by `root` over its own data dir `dir`, on the fabric's store root `store` (the
 /// root's): every admin of a fabric reads the one Build storage (Q292).
-fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
+fn launch_by(root: &Running, name: PathName, kind: rdm_core::NodeKind, dir: &std::path::Path, store: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -87,15 +87,15 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::pat
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
-        kind: rdm_core::NodeKind::NodeAdmin,
-        name: name.parse().unwrap(),
+        kind,
+        name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners,
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -134,7 +134,7 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 }
 
 fn stop(launch: &Launch) -> StatusRequest {
-    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 1, operation: format!("node.stop:{}", launch.name) }
+    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &launch.node_id) }
 }
 
 /// `req` sent by `root` over Node RPC to the birth `launch` names, as a commanding node-admin sends
@@ -144,12 +144,12 @@ async fn command(root: &Running, launch: &Launch, req: &StatusRequest) -> Status
     if let Some(reply) = crate::common::root_lifecycle_reply(root, launch, req).await { return reply; }
     match root.node_rpc.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(launch.node_id.clone()), req, &opts).await.0 {
         rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
-        other => panic!("{} to {} did not end in a reply: {other:?}", req.op(), launch.name),
+        other => panic!("{} to {:?} did not end in a reply: {other:?}", req.op(), launch.name),
     }
 }
 
 fn start(launch: &Launch) -> StatusRequest {
-    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 2, operation: format!("node.start:{}", launch.name) }
+    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 2, operation: rdm_core::OperationId::node("node.start", &launch.node_id) }
 }
 
 /// The start steps of `node` that are children of a span named `root`, in the order they began:
@@ -159,7 +159,7 @@ fn steps_under(spans: &crate::common::Spans, node: &str, root: &str) -> Vec<(Str
     let closed = spans.3.lock().unwrap();
     let mut found: Vec<(u64, String)> = held
         .iter()
-        .filter(|(_, (name, parent, fields))| STEPS.contains(&name.as_str()) && parent.as_deref() == Some(root) && fields.get("node").map(String::as_str) == Some(node))
+        .filter(|(_, (name, parent, fields))| STEPS.contains(&name.as_str()) && parent.as_deref() == Some(root) && fields.get("node_id").map(String::as_str) == Some(node))
         .map(|(seq, (name, _, _))| (*seq, name.clone()))
         .collect();
     found.sort();
@@ -194,7 +194,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
         // A node-admin's first start: launched by the root.
-        let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
+        let admin_launch = launch_by(&root, PathName::new("mesh1.admin", "2").unwrap(), rdm_core::NodeKind::NodeAdmin, &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
         let _ = root.runner.joins.expect(deployed(&admin_launch, None));
         let env = admin_launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
@@ -202,7 +202,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
 
         // An rpc node's first start: launched by the root.
-        let rpc_launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir, &root_dir, vec![]);
+        let rpc_launch = launch_by(&root, PathName::new("mesh1.rpc", "1").unwrap(), rdm_core::NodeKind::RpcNode, &rpc_dir, &root_dir, vec![]);
         let _ = root.runner.joins.expect(deployed(&rpc_launch, None));
         let rpc = rdm_test::node::start_pre_node_ready(&rpc_launch, passing(), |b, _| b).await.expect("the rpc node comes up");
         until_ready("mesh1.rpc.1 (first start)", || {
@@ -226,10 +226,10 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         assert_eq!(started, StatusReply::Started, "the rpc node starts after its stop");
 
         let paths = [
-            ("node-admin first start", steps_under(&spans, "mesh1.admin.2", FIRST_START)),
-            ("node-admin start after stop", steps_under(&spans, "mesh1.admin.2", AFTER_STOP)),
-            ("rpc node first start", steps_under(&spans, "mesh1.rpc.1", FIRST_START)),
-            ("rpc node start after stop", steps_under(&spans, "mesh1.rpc.1", AFTER_STOP)),
+            ("node-admin first start", steps_under(&spans, admin_launch.node_id.as_str(), FIRST_START)),
+            ("node-admin start after stop", steps_under(&spans, admin_launch.node_id.as_str(), AFTER_STOP)),
+            ("rpc node first start", steps_under(&spans, rpc_launch.node_id.as_str(), FIRST_START)),
+            ("rpc node start after stop", steps_under(&spans, rpc_launch.node_id.as_str(), AFTER_STOP)),
         ];
         let report: Vec<String> = paths.iter().map(|(path, steps)| format!("{path}: {steps:?}")).collect();
         for (path, steps) in &paths {
@@ -303,13 +303,13 @@ impl BuildStateAdapter for NoCurrentWhileHeld {
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
     }
-    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
         self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
     }
-    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
@@ -365,7 +365,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
         held.store(true, Ordering::SeqCst);
 
         // A node-admin's first start, launched by the root: its join is answered with no Build.
-        let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
+        let admin_launch = launch_by(&root, PathName::new("mesh1.admin", "2").unwrap(), rdm_core::NodeKind::NodeAdmin, &admin_dir, &root_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
         let _ = root.runner.joins.expect(deployed(&admin_launch, None));
         let env = admin_launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
@@ -373,7 +373,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
 
         // Its Build floor reports the no-pointer blocker and acts on it: the first read of it (or a
         // repeat of the entry, which must not happen) has ended.
-        let mine = |f: &std::collections::BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.contains_key("outcome");
+        let mine = |f: &std::collections::BTreeMap<String, String>| f.get("node_path") == Some(&admin_launch.name.path) && f.get("node_name") == Some(&admin_launch.name.name) && f.contains_key("outcome");
         let read = spans.recorded(READ_COMMITTED, |f| mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build"));
         let repeated = spans.recorded(ENTRY_REPEAT, mine);
         tokio::time::timeout(WRONG, async {
@@ -389,7 +389,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
             let all = spans.0.lock().unwrap();
             let joins: Vec<String> = all
                 .values()
-                .filter(|(n, _, f)| n == JOIN_SERVED && f.get("node").map(String::as_str) == Some("mesh1.admin.2"))
+                .filter(|(n, _, f)| n == JOIN_SERVED && f.get("node_id").map(String::as_str) == Some(admin_launch.node_id.as_str()))
                 .map(|(_, _, f)| f.get("outcome").cloned().unwrap_or_default())
                 .collect();
             let reads: Vec<String> = all
@@ -397,7 +397,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
                 .filter(|(n, _, f)| n == READ_COMMITTED && mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build"))
                 .map(|(_, _, f)| f.get("outcome").cloned().unwrap_or_default())
                 .collect();
-            let repeats = all.values().filter(|(n, _, f)| n == ENTRY_REPEAT && f.get("node").map(String::as_str) == Some("mesh1.admin.2")).count();
+            let repeats = all.values().filter(|(n, _, f)| n == ENTRY_REPEAT && f.get("node_path") == Some(&admin_launch.name.path) && f.get("node_name") == Some(&admin_launch.name.name)).count();
             (joins, reads, repeats)
         };
         assert_eq!(joins.len(), 1, "the authority serves exactly one JoinNode for mesh1.admin.2; the no-pointer blocker is read, never joined again; served joins by outcome: {joins:?}");
@@ -409,7 +409,7 @@ fn a_start_whose_join_named_no_build_joins_once_and_reads_the_blocker_through_bu
         until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let (joins, absorbed) = {
             let all = spans.0.lock().unwrap();
-            let joins = all.values().filter(|(n, _, f)| n == JOIN_SERVED && f.get("node").map(String::as_str) == Some("mesh1.admin.2")).count();
+            let joins = all.values().filter(|(n, _, f)| n == JOIN_SERVED && f.get("node_id").map(String::as_str) == Some(admin_launch.node_id.as_str())).count();
             let absorbed = all.values().filter(|(n, _, f)| n == READ_COMMITTED && mine(f) && f.get("blocker").map(String::as_str) == Some("no-current-build") && f.get("outcome").map(String::as_str) == Some("absorbed")).count();
             (joins, absorbed)
         };

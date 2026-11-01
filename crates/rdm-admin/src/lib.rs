@@ -88,7 +88,7 @@ pub mod node_investigation;
 pub mod node_config;
 pub mod node_properties;
 pub mod node_name_update;
-/// Node `path.name` updates (`docs/architecture/lifecycles/node-name-update.md`).
+/// Node `(path, name)` updates (`docs/architecture/lifecycles/node-name-update.md`).
 pub use rdm_node::node_name;
 pub mod node_rows;
 /// Process-wide Node RPC client and live resolver (`docs/architecture/node-rpc.md`).

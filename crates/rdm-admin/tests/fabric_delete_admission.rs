@@ -10,8 +10,8 @@ use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
 
-fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
@@ -29,18 +29,19 @@ fn view(status: ScopeStatus) -> Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status, provider: ProviderKind::Process },
         meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: m.to_string(), status: ScopeStatus::Ready }).collect(),
         nodes: vec![
-            node("mesh1.admin.1", true, true),
-            node("mesh1.admin.2", false, false),
-            node("mesh1.rpc.1", true, false),
-            node("mesh1.rpc.2", false, false),
-            node("mesh2.admin.1", true, false),
-            node("mesh2.admin.2", false, false),
-            node("mesh2.rpc.1", true, false),
+            node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true),
+            node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false, false),
+            node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true, false),
+            node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false),
+            node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false),
+            node(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false),
+            node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, true, false),
         ],
     }
 }
 
 struct Rig {
+    executor: rdm_core::framing::Birth,
     cp: Arc<ControlPlane>,
     builds: Arc<MemoryBuildStateAdapter>,
 }
@@ -50,9 +51,11 @@ struct Rig {
 async fn rig(status: ScopeStatus) -> Rig {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = view(status);
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
-    Rig { cp, builds }
+    let admin = t.nodes.iter().find(|n| n.is_fabric_primary).unwrap();
+    let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor, "mesh1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
+    Rig { executor, cp, builds }
 }
 
 impl Rig {
@@ -64,7 +67,7 @@ impl Rig {
 /// The claim of `attempt` of `build` by this admin for itself, decided on its own log: the attempt runs.
 async fn running(r: &Rig, build: &rdm_admin::build::BuildId, attempt: u32) {
     use rdm_admin::build_state::{BuildAttemptClaim, ClaimOutcome};
-    let claim = BuildAttemptClaim { build_id: build.clone(), attempt, executor: "mesh1.admin.1".into(), claimant: Some("mesh1.admin.1".into()), mesh: None };
+    let claim = BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), build_id: build.clone(), attempt, executor: r.executor.clone(), claimant: Some(r.executor.node_id.clone()), mesh: None };
     assert_eq!(r.builds.claim_attempt(&claim).await.unwrap(), ClaimOutcome::Won, "attempt {attempt} of {build} is claimed");
 }
 
@@ -80,7 +83,7 @@ async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress
     let grow = r.cp.submit("test", crate::named_request(&r.cp, TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await).await.expect("growth is admitted before the first ready");
     running(&r, &grow.build_id, 1).await;
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(grow.build_id.clone()), "the growth Build is in progress");
-    for change in [TopologyChange::RemoveMesh { mesh: "mesh2".into() }, TopologyChange::RemoveNode { node: "mesh1.rpc.1".parse().unwrap() }] {
+    for change in [TopologyChange::RemoveMesh { mesh: "mesh2".into() }, TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }] {
         match r.cp.submit("test", change.clone()).await {
             Err(Refusal::BuildInProgress(_)) => {}
             other => panic!("the standalone {change:?} was not refused build-in-progress: {other:?}"),

@@ -2006,7 +2006,8 @@ impl Run {
         let t0 = now_ms();
         let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
         let path: rdm_core::PathName = node.parse().unwrap();
-        let mut stream = nodes.steps(rdm_test::steps::replace(&path)).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {} refused the replace steps of {node}: {e}", st.fp_name()));
+        let subject = f.estate.node_view(node).await;
+        let mut stream = nodes.steps(rdm_test::steps::replace(&path, &subject.mesh, subject.kind).expect("valid replacement fixture name")).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {} refused the replace steps of {node}: {e}", st.fp_name()));
         let (build_id, attempt) = (stream.accepted().build_id.to_string(), stream.accepted().attempt);
         tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
         self.attempts.insert(build_id.clone(), u64::from(attempt));

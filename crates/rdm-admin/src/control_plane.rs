@@ -26,7 +26,7 @@ pub struct ControlPlane {
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The Fabric identity as this admin holds it (`crate::accepted`).
     pub accepted: Arc<AcceptedStore>,
-    /// This admin's path.name: topology is accepted only while it is the fabric-primary.
+    /// This admin's path and name: topology is accepted only while it is the fabric-primary.
     pub me: PathName,
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
@@ -40,7 +40,7 @@ pub struct ControlPlane {
     /// owns the inputs).
     pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Topology> + Send>> + Send + Sync>>,
     /// Fabric recovery in a view (Q122): its executor opens the re-create of the node-admin at the
-    /// fabric-primary's path.name, in the fabric lane.
+    /// fabric-primary's path and name, in the fabric lane.
     pub fabric_recovery: std::sync::OnceLock<crate::fabric_recovery::Reader>,
     /// This admin's primary view: a node-admin it holds as its mesh's primary replaced by the election is
     /// an unheard mesh-primary, the fabric-primary's to recover (node-recovery.md step 2).
@@ -92,6 +92,8 @@ pub struct ControlPlane {
     /// decides for itself are refused by name while the rows hold this birth deleted (Q181,
     /// [`crate::node_rows::deleted_birth`]).
     pub node_id: std::sync::OnceLock<crate::model::NodeId>,
+    /// The incarnation established by this process at boot.
+    pub incarnation: std::sync::OnceLock<crate::model::IncarnationId>,
     /// This admin's `RDM_EXECUTABLE_DIRS` (proposal executable-bindings-at-create.md §2): under the
     /// container provider, an executable a request names outside them is refused by name at acceptance.
     pub executable_dirs: Vec<std::path::PathBuf>,
@@ -135,6 +137,7 @@ impl ControlPlane {
             node_records: Default::default(),
             node_rows: std::sync::OnceLock::new(),
             node_id: std::sync::OnceLock::new(),
+            incarnation: std::sync::OnceLock::new(),
             executable_dirs: Vec::new(),
             topology_storage_providers: vec![rdm_core::launch::TOPOLOGY_STORAGE_FILE.into()],
             atlas: Arc::default(),
@@ -167,7 +170,7 @@ impl ControlPlane {
         self
     }
 
-    /// This admin's currently held `path.name`: what its Build state or its view names its birth,
+    /// This admin's currently held `(path, name)`: what its Build state or its view names its birth,
     /// falling back to `self.me` before its birth is in the view.
     pub async fn held_name(&self) -> PathName {
         if let Some(held) = self.builds.held_name() {
@@ -179,11 +182,11 @@ impl ControlPlane {
     /// Only the current fabric-primary changes topology or opens attempts.
     async fn require_fabric_primary(&self, route: &'static str) -> Result<(), Refusal> {
         let me = self.held_name().await;
-        let primary = self.topology.read().await.fabric_primary().map(|n| n.name.clone());
-        if primary.as_ref() != Some(&me) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-fabric-primary-required", route, node = %me, fabric_primary = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
+        let primary = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone());
+        if !primary.as_ref().is_some_and(|id| self.node_id.get() == Some(id)) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-fabric-primary-required", route, node_path = %me.path, node_name = %me.name, fabric_primary = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("topology is changed only by the fabric-primary"));
-            return Err(Refusal::NotPrimary(primary.map(|p| p.to_string())));
+            return Err(Refusal::NotPrimary(primary));
         }
         Ok(())
     }
@@ -249,11 +252,11 @@ impl ControlPlane {
             if held.held_by.is_none() {
                 let me = self.held_name().await;
                 let row = self.claims.in_flight(mesh).await.map_err(|e| {
-                    Refusal::Unavailable(format!("{me}: mesh {mesh} is held by an attempt of {} that no one claimed, and the mesh's in-flight row naming its holder could not be read: {e}", held.current_build_id))
+                    Refusal::Unavailable(format!("path {me_path:?}, name {me_name:?}: mesh {mesh} is held by an attempt of {} that no one claimed, and the mesh's in-flight row naming its holder could not be read: {e}", held.current_build_id, me_path = &me.path, me_name = &me.name))
                 })?;
                 held.held_by = row.filter(|r| r.build_id == held.current_build_id && r.lane.as_deref() == Some(mesh)).map(|r| r.claimant);
             }
-            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %held.current_build_id.log(), mesh, held_by = %held.held_by.as_deref().unwrap_or(""))
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %held.current_build_id.log(), mesh, held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""))
                 .in_scope(|| tracing::info!("an attempt holds the mesh: one attempt in flight per mesh"));
             return Err(Refusal::BuildInProgress(held));
         }
@@ -270,127 +273,45 @@ impl ControlPlane {
     async fn deleted_self(&self) -> Result<Option<String>, Refusal> {
         let (Some(rows), Some(node_id)) = (self.node_rows.get(), self.node_id.get()) else { return Ok(None) };
         let me = self.held_name().await;
-        crate::node_rows::deleted_birth(&**rows, &me, node_id).await.map_err(|e| Refusal::Unavailable(format!("{me}: its own node row ({node_id}) could not be read: {e}")))
+        crate::node_rows::deleted_birth(&**rows, &me, node_id).await.map_err(|e| Refusal::Unavailable(format!("path {me_path:?}, name {me_name:?}: its own node row ({node_id}) could not be read: {e}", me_path = &me.path, me_name = &me.name)))
     }
 
-    async fn departure_of(&self, claimant: &PathName) -> Result<Option<crate::model::Node>, Refusal> {
-        let Some(n) = self.topology.read().await.node(claimant).cloned().filter(|n| n.incarnation_id.is_some()) else { return Ok(None) };
-        let Some(proof) = self.departure.get() else { return Ok(None) };
-        Ok(proof.proven(claimant).await.ok().map(|()| n))
+    async fn departure_of(&self, executor: &rdm_core::framing::Birth) -> bool {
+        let Some(proof) = self.departure.get() else { return false };
+        proof.proven(executor).await.is_ok()
     }
 
-    /// End `mesh`'s drift attempt of `current` whose claimant exited with it unfinished, when its
-    /// departure is proven (R-BI7 caveat 2: each mesh-primary claims its mesh's drift attempts on its
-    /// mesh's rows; build.md §5.2 as the approved proposal A4 words it: "The next attempt is claimed
-    /// after the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the
-    /// executor is lost with the attempt unfinished, after exact departure proof. A live run is
-    /// reattached, never re-claimed"). The lane's running attempt, claimed by another admin than this
-    /// one, whose exact birth in this admin's view has its exit recorded, ends `Failed` naming that
-    /// departure (on the fabric's Build journal on the store root, so every fold holds the lane free and
-    /// the exits the attempt was recovering are owed a submit again: node-recovery.md "Failure and
-    /// receipts"), and its in-flight row of the mesh is released. Answers whether it ended one. An
-    /// attempt this admin claimed, an attempt whose claimant is not proven exited, and the fabric
-    /// lane's attempt (its drive takes it over) are left holding the mesh.
+    /// End an unfinished attempt only on its committed executor birth's departure proof.
+    /// The recorded claim scope selects the attempt; the claimant identifies the row to release.
     async fn end_deleted_attempt(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
-        let fabric_holds = current.state == BuildState::Running && current.executor.as_deref().and_then(|e| e.parse::<PathName>().ok()).is_some_and(|e| e.mesh == mesh);
-        if fabric_holds {
-            return self.end_fabric_attempt_of_a_lost_claimant(current, mesh).await;
-        }
-        let Some(lane) = current
-            .lanes
-            .get(mesh)
-            .filter(|l| l.state == BuildState::Running)
-        else {
-            return Ok(false);
+        let fabric_holds = current.state == BuildState::Running && current.attempt_claimed_meshes.get(&current.attempt).is_some_and(|held| held == mesh);
+        let (lane, attempt, executor, claimant) = if fabric_holds {
+            (None, current.attempt, current.executor.as_ref(), current.claimant.as_ref())
+        } else {
+            let Some(held) = current.lanes.get(mesh).filter(|held| held.state == BuildState::Running) else { return Ok(false) };
+            (Some(mesh.to_owned()), held.attempt, held.executor.as_ref(), held.claimant.as_ref())
         };
-        // The admin that runs the attempt deleted: its executor (the claimant too, for an attempt its
-        // mesh-primary claimed at its own door; the fabric-primary decided the claim of a reported one).
-        let Some(executor) = lane
-            .executor
-            .as_deref()
-            .or(lane.claimant.as_deref())
-            .and_then(|c| c.parse::<PathName>().ok())
-        else {
-            return Ok(false);
-        };
-        let claimant = lane
-            .claimant
-            .clone()
-            .unwrap_or_else(|| executor.to_string());
+        let (Some(executor), Some(claimant)) = (executor, claimant) else { return Ok(false) };
+        if !self.departure_of(executor).await { return Ok(false) }
         let me = self.held_name().await;
-        if executor == me || executor == self.me {
-            return Ok(false);
-        }
-        let Some(n) = self.departure_of(&executor).await? else {
-            return Ok(false);
-        };
-        let attempt = lane.attempt;
-        let incarnation = n
-            .incarnation_id
-            .as_ref()
-            .map(|i| i.as_str().to_string())
-            .unwrap_or_default();
-        let reason = format!("{executor} ({} at {incarnation}) exited with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven; {me} takes the lane over", n.node_id);
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, executor = %executor, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
+        let reason = format!("executor node {}, incarnation {} exited with attempt {attempt} of Build {} unfinished in scope {:?}; its departure is proven", executor.node_id, executor.incarnation, current.build_id, lane);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = lane.as_deref().unwrap_or("fabric"), attempt, claimant = %claimant, executor_node_id = %executor.node_id, executor_incarnation = %executor.incarnation, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty);
         let verdict = crate::build_state::BuildAttemptReceipt {
-            mesh: Some(mesh.to_string()),
-            build_id: current.build_id.clone(),
-            attempt,
-            outcome: crate::build_state::AttemptOutcome::Failed {
-                reason,
-                code: rdm_core::outcome::Code::FailedPrecondition,
-            },
+            mesh: lane.clone(), build_id: current.build_id.clone(), attempt,
+            outcome: crate::build_state::AttemptOutcome::Failed { reason, code: rdm_core::outcome::Code::FailedPrecondition },
         };
-        if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
+        if let Err(error) = self.builds.append_attempt_receipt(&verdict).await {
             span.record("outcome", "verdict-unwritten");
-            span.in_scope(|| tracing::info!(error = %e, "the deleted claimant's attempt could not be ended: the mesh stays held by it"));
-            return Err(Refusal::State(e));
+            span.in_scope(|| tracing::info!(%error, "the executor's departure verdict could not be written: the mesh stays held"));
+            return Err(Refusal::State(error));
         }
-        let held = crate::mesh_claims::InFlight {
-            build_id: current.build_id.clone(),
-            lane: Some(mesh.to_string()),
-            attempt,
-            claimant,
-            claimant_node: None,
-        };
-        if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
+        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane, attempt, claimant: claimant.clone() };
+        if let Err(error) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
-            span.in_scope(|| tracing::info!(error = %e, "the deleted claimant's attempt is ended and mesh's in-flight row could not be released: the mesh stays held by it"));
-            return Err(Refusal::Unavailable(format!("{me}: attempt {attempt} of mesh {mesh}'s lane of {} is ended on {executor}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", current.build_id)));
+            return Err(Refusal::Unavailable(format!("attempt {attempt} of Build {} ended on executor node {}, incarnation {} departing, but its in-flight row in mesh {mesh} could not be released: {error}", current.build_id, executor.node_id, executor.incarnation)));
         }
         span.record("outcome", "ended");
-        span.in_scope(|| tracing::info!("the mesh's drift attempt ends with its deleted claimant, and its in-flight row is released"));
-        Ok(true)
-    }
-
-    /// End the fabric lane's attempt of `current` acting in `mesh` whose claimant exited with it unfinished,
-    /// on that departure's exact proof: the next one in the same order starts the workflow again, resuming the
-    /// attempt from its recorded progress (fabric-recovery.md, Q122; build.md "after exact departure proof").
-    async fn end_fabric_attempt_of_a_lost_claimant(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
-        let Some(claimant) = current.claimant.as_deref().and_then(|c| c.parse::<PathName>().ok()) else { return Ok(false) };
-        let me = self.held_name().await;
-        if claimant == me || claimant == self.me {
-            return Ok(false);
-        }
-        let Some(n) = self.departure_of(&claimant).await? else { return Ok(false) };
-        let attempt = current.attempt;
-        let incarnation = n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
-        let reason = format!("{claimant} ({} at {incarnation}) exited with attempt {attempt} of the fabric lane unfinished, acting in mesh {mesh}: its departure is proven; {me} starts the workflow again", n.node_id);
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = "fabric", attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, node = %me, outcome = tracing::field::Empty);
-        let verdict = crate::build_state::BuildAttemptReceipt { mesh: None, build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason, code: rdm_core::outcome::Code::FailedPrecondition } };
-        if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
-            span.record("outcome", "verdict-unwritten");
-            span.in_scope(|| tracing::info!(error = %e, "the deleted claimant's fabric-lane attempt could not be ended: the mesh stays held by it"));
-            return Err(Refusal::State(e));
-        }
-        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: None, attempt, claimant: claimant.to_string(), claimant_node: None };
-        if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
-            span.record("outcome", "in-flight-unreleased");
-            span.in_scope(|| tracing::info!(error = %e, "the deleted claimant's fabric-lane attempt is ended and the mesh's in-flight row could not be released"));
-            return Err(Refusal::Unavailable(format!("{me}: attempt {attempt} of {}'s fabric lane is ended on {claimant}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", current.build_id)));
-        }
-        span.record("outcome", "ended");
-        span.in_scope(|| tracing::info!("the fabric lane's attempt ends with its deleted claimant, and the mesh's in-flight row is released"));
+        span.in_scope(|| tracing::info!("the attempt ends on its executor's exact departure, and its claimant's in-flight row is released"));
         Ok(true)
     }
 
@@ -466,7 +387,7 @@ impl ControlPlane {
                     if let Some(provider) = topology_storage_provider.as_ref() {
                         let named = self.accepted.topology_storage_provider().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
                         if named.as_deref() != Some(provider.as_str()) {
-                            let changes = self.storage_changes.get().ok_or_else(|| Refusal::Unavailable(format!("{}: no topology storage handle is held yet to open `{provider}`", self.me)))?;
+                            let changes = self.storage_changes.get().ok_or_else(|| Refusal::Unavailable(format!("path={} name={}: no topology storage handle is held yet to open `{provider}`", self.me.path, self.me.name)))?;
                             if let Err(detail) = changes.handle.opens(provider).await {
                                 let reject = BuildReject::TopologyStorageProviderNotOpened { provider: provider.clone(), detail };
                                 outer.in_scope(|| reject_span(route, &reject));
@@ -474,7 +395,7 @@ impl ControlPlane {
                             }
                         }
                     }
-                    let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("{}: no nodes.storage is open yet to read what each node's row records", self.me)))?;
+                    let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("path={} name={}: no nodes.storage is open yet to read what each node's row records", self.me.path, self.me.name)))?;
                     crate::accepted::recorded_executables(&**rows, self.node_records.get().map(|r| &**r), &current.topology).await.map_err(Refusal::Unavailable)?
                 }
                 _ => crate::accepted::Recorded::new(),
@@ -496,18 +417,26 @@ impl ControlPlane {
             // `node-not-live` by name: silence never says the runtime exited (Q219).
             let mut exited_pin: Option<(PathName, crate::build::PinnedBirth)> = None;
             if let TopologyChange::RemoveNode { node } = &change {
+                if let Some(candidate) = collect {
+                    let exact = observed.node(node).is_some_and(|n| n.node_id == candidate.node_id && n.incarnation_id.as_ref() == Some(&candidate.incarnation) && n.stopped);
+                    if !exact {
+                        let reject = BuildReject::NodeNotStopped { node: node.clone(), found: "the admitted removal location no longer names the scanned stopped birth".into() };
+                        outer.in_scope(|| reject_span(route, &reject));
+                        return Err(Refusal::Reject(reject));
+                    }
+                }
+                if let Some(n) = self.atlas_row(node, &observed).await? {
                 // The node's mesh held by its own attempt is the gate before the node's own gates
                 // (build.md §4.4): refused naming the mesh, whatever the node's state.
-                if let Some(held) = holding(&current, Some(&node.mesh)) {
+                if let Some(held) = holding(&current, Some(&n.mesh)) {
                     outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %node.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %node)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %n.mesh, held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""), node_path = %node.path, node_name = %node.name)
                             .in_scope(|| tracing::info!("the node's mesh is held by its own drift attempt: one attempt in flight per mesh"))
                     });
                     return Err(Refusal::BuildInProgress(held));
                 }
-                if let Some(n) = self.atlas_row(node, &observed).await? {
                     match self.delete_gate(&n, &observed, &outer).await {
-                        Some(crate::build::DeleteAdmitted::Exited) => exited_pin = n.incarnation.clone().map(|incarnation| (node.clone(), crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation })),
+                        Some(crate::build::DeleteAdmitted::Exited) => exited_pin = n.incarnation.clone().map(|incarnation| (node.clone(), crate::build::PinnedBirth { kind: n.kind, mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation })),
                         Some(_) => {}
                         None => return Err(not_live(&outer, route, node, n.status, "a delete needs a live node, a stopped one, or one whose exit node investigation proved")),
                     }
@@ -575,7 +504,7 @@ impl ControlPlane {
             topology.pinned = pinned;
             // A peer mesh held unheard is held as a mesh (R-D1): its births under a silence mark are planned
             // as they stand, and gate 6 below reads what the request changes there.
-            let held: std::collections::BTreeSet<String> = topology.meshes.keys().filter(|m| **m != self.me.mesh && self.peer_mesh.get().and_then(|f| f(m)).is_some_and(|p| p.unheard_ms.is_some())).cloned().collect();
+            let held: std::collections::BTreeSet<String> = topology.meshes.keys().filter(|m| observed.node(&self.me).is_none_or(|own| **m != own.mesh) && self.peer_mesh.get().and_then(|f| f(m)).is_some_and(|p| p.unheard_ms.is_some())).cloned().collect();
             let operations = crate::accepted::plan_holding(&topology, &observed, &held).operations;
             // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
             // build-in-progress refusal, R-BI7 and R-PC1: it interrupts the Build in progress, and its own
@@ -601,7 +530,7 @@ impl ControlPlane {
             // is refused, naming the Build, the mesh and the mesh-primary holding it (R-BI7 caveat 3).
             if let Some(held) = operations.iter().chain(replacements.iter()).filter_map(op_mesh).find_map(|mesh| holding(&current, Some(&mesh))).filter(|_| !interrupts) {
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
+                    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""))
                         .in_scope(|| tracing::info!("a topology operation acts in a mesh its own drift attempt holds: one attempt in flight per mesh"))
                 });
                 return Err(Refusal::BuildInProgress(held));
@@ -609,9 +538,12 @@ impl ControlPlane {
             // Gate 6 (build.md §4.4; Q221): every node the Build acts on is of a mesh the fabric-primary's
             // view hears, refused by name naming the mesh and how long it has gone unheard (R-D1). Each
             // operation is checked again before its claim or dispatch (the drive's own check).
-            if let Some(reject) = operations.iter().chain(replacements.iter()).filter_map(|op| op.node()).filter(|n| n.mesh != self.me.mesh).find_map(|n| {
-                let unheard_ms = self.peer_mesh.get().and_then(|f| f(&n.mesh)).and_then(|p| p.unheard_ms)?;
-                Some(BuildReject::UnheardMesh { node: n.to_string(), mesh: n.mesh.clone(), unheard_ms })
+            if let Some(reject) = operations.iter().chain(replacements.iter()).find_map(|op| {
+                let n = op.node()?;
+                let mesh = op.mesh()?;
+                if observed.node(&self.me).is_some_and(|own| own.mesh == mesh) { return None; }
+                let unheard_ms = self.peer_mesh.get().and_then(|f| f(mesh)).and_then(|p| p.unheard_ms)?;
+                Some(BuildReject::UnheardMesh { node: n.clone(), mesh: mesh.to_string(), unheard_ms })
             }) {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -658,7 +590,7 @@ impl ControlPlane {
             // step can move the fabric-primary role (a delete of this admin's own mesh), which refuses every gated
             // write after it, so the door answers the Build it accepted whatever the drive does next.
             let me = self.held_name().await;
-            crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &me.to_string(), "accepted").await.map_err(Refusal::State)?;
+            crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), self.node_id.get().ok_or_else(|| Refusal::Unavailable("accepting admin ID is not bound".into()))?.as_str(), "accepted").await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id.log(), "build accepted");
             // A resize or an executable replacement puts the fabric back to pending (states.md): the change takes
             // the accepted Build before the door answers it and before the executor is woken.
@@ -675,15 +607,15 @@ impl ControlPlane {
     /// Open the next attempt of `current` in `lane` (`None` the fabric lane, `Some(mesh)` that mesh's
     /// drift lane) with `action`, putting its context first.
     #[allow(clippy::too_many_arguments)]
-    async fn open_with(&self, current: &crate::build_state::BuildProjection, lane: Option<&str>, reason: AttemptReason, action: AttemptAction, route: &'static str, outer: &tracing::Span, node_name: &str, span: tracing::Span) -> Result<Opened, Refusal> {
-        let me = self.held_name().await;
+    async fn open_with(&self, current: &crate::build_state::BuildProjection, lane: Option<&str>, reason: AttemptReason, action: AttemptAction, route: &'static str, outer: &tracing::Span, span: tracing::Span) -> Result<Opened, Refusal> {
+        let opener = self.node_id.get().cloned().ok_or_else(|| Refusal::Unavailable("attempt opener node ID is not bound".into()))?;
         let opened = AttemptOpened {
             mesh: lane.map(str::to_string),
             build_id: current.build_id.clone(),
             attempt: next_in_lane(current, lane),
             reason,
             action: Some(action),
-            opened_by: me.to_string(),
+            opened_by: opener,
             opened_at_ms: self.time.now_ms(),
             // The request's context, in the open's own record: a refused open writes nothing, and
             // a claim of the attempt the moment it lands takes this context (build.md §4.4).
@@ -698,7 +630,7 @@ impl ControlPlane {
             return Err(match e {
                 BuildStateError::AttemptTaken { .. } => {
                     outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route, build_id = %current.build_id.log(), attempt = opened.attempt, node = %node_name, detail = %e)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route, build_id = %current.build_id.log(), attempt = opened.attempt, action = ?opened.action, detail = %e)
                             .in_scope(|| tracing::info!(detail = %e, "attempt refused: another action holds the number"))
                     });
                     Refusal::AttemptTaken(e.to_string())
@@ -717,7 +649,7 @@ impl ControlPlane {
     /// Open the next attempt of the current Build with a targeted action (a connections delete,
     /// stop, start or delete of one birth). The topology is unchanged; the Build stays the current one.
     pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind) -> Result<Opened, Refusal> {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node_path = %path.path, node_name = %path.name);
         self.open_attempt_in(span, route, reason, path, kind).await
     }
 
@@ -734,18 +666,7 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.require_fabric_primary(route).await?;
-            let summary = steps.iter().map(crate::build::step_key).collect::<Vec<_>>().join(" ");
             let (_admitted, current) = self.current_settled().await?;
-            for step in &steps {
-                let node = step.node();
-                if let Some(held) = holding(&current, Some(&node.mesh)) {
-                    outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %node.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %node)
-                            .in_scope(|| tracing::info!("the steps act in a mesh held by its own drift attempt: one attempt in flight per mesh"))
-                    });
-                    return Err(Refusal::BuildInProgress(held));
-                }
-            }
             let mut t = match self.view_now.get() {
                 Some(project) => project().await,
                 None => self.topology.read().await.clone(),
@@ -761,11 +682,14 @@ impl ControlPlane {
                     return Err(Refusal::Reject(reject));
                 }
             };
-            for step in &steps {
+            let AttemptAction::Steps { pinned, .. } = &action else { unreachable!("steps action") };
+            let births = crate::accepted::step_births(&steps, pinned).map_err(Refusal::Reject)?;
+            for (step, (_, mesh, _)) in steps.iter().zip(&births) {
+                if let Some(held) = holding(&current, Some(mesh)) { return Err(Refusal::BuildInProgress(held)); }
                 let node = step.node();
-                if node.mesh != self.me.mesh {
-                    if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(&node.mesh)).and_then(|p| p.unheard_ms) {
-                        let reject = BuildReject::UnheardMesh { node: node.to_string(), mesh: node.mesh.clone(), unheard_ms };
+                if t.node(&self.me).is_none_or(|own| own.mesh != *mesh) {
+                    if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(mesh)).and_then(|p| p.unheard_ms) {
+                        let reject = BuildReject::UnheardMesh { node: node.clone(), mesh: mesh.clone(), unheard_ms };
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
                     }
@@ -784,7 +708,7 @@ impl ControlPlane {
                 }
             }
             drop(t);
-            self.open_with(&current, None, AttemptReason::Steps, action, route, &outer, &summary, span.clone()).await
+            self.open_with(&current, None, AttemptReason::Steps, action, route, &outer, span.clone()).await
         }
         .instrument(span.clone())
         .await
@@ -796,58 +720,30 @@ impl ControlPlane {
         async {
             self.require_fabric_primary(route).await?;
             let (_admitted, current) = self.current_settled().await?;
-            // The node's mesh held by its own drift attempt refuses the action, naming the mesh-primary
-            // holding it (R-BI7 caveat 3).
-            if let Some(held) = holding(&current, Some(&path.mesh)) {
-                outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %path.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
-                        .in_scope(|| tracing::info!("the node's mesh is held by its own drift attempt: one attempt in flight per mesh"))
-                });
+            let mut t = match self.view_now.get() {
+                Some(project) => project().await,
+                None => self.topology.read().await.clone(),
+            };
+            self.atlas.apply(&mut t);
+            let n = self.atlas_row(&path, &t).await?.ok_or_else(||
+                Refusal::Reject(BuildReject::UnknownNode { node: path.clone(), step: None }))?;
+            let mesh = n.mesh.clone();
+            if let Some(held) = holding(&current, Some(&mesh)) {
                 return Err(Refusal::BuildInProgress(held));
             }
-            // A delete acts only on a `.old` path: the stopped birth a node.name.update renamed there,
-            // found in the view (below), which reads a renamed birth by its node id through the node-row
-            // id index (R12). Any other action's `.old` name is its accepted path's (node-replace.md: a
-            // predecessor renamed `<name>.old` live and stopped there): a stopped `.old` node is started by
-            // its row's name (rollback step 2), and its birth is targeted below in the view, which lists it at
-            // its row's name.
-            let stopped_old = kind == ActionKind::Delete && path.old;
-            // A birth of a mesh deleted at mesh.deleted (its last admin, alive): no accepted Build names
-            // the mesh, and only a delete acts on it (mesh-delete.md step 7).
-            let deleted_mesh = kind == ActionKind::Delete && !path.old && !current.topology.meshes.contains_key(&path.mesh) && self.of_deleted_mesh(&path).await;
-            if (kind == ActionKind::Delete && !(path.old || deleted_mesh)) || (!stopped_old && !deleted_mesh && !current.topology.contains(&path.base())) {
-                let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
+            let predecessor = n.renamed_from.is_some();
+            let stopped_old = kind == ActionKind::Delete && predecessor;
+            let deleted_mesh = kind == ActionKind::Delete && !predecessor
+                && !current.topology.meshes.contains_key(&mesh)
+                && t.meshes.iter().any(|m| m.name == mesh && m.status == crate::model::ScopeStatus::Dead);
+            let accepted_path = n.renamed_from.as_ref().unwrap_or(&path);
+            if (kind == ActionKind::Delete && !(predecessor || deleted_mesh))
+                || (!stopped_old && !deleted_mesh && !current.topology.contains(accepted_path)) {
+                let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
             let (node_id, from_incarnation) = {
-                // A stopped birth at a `.old` path is admitted from the view, which reads a renamed
-                // birth by its node id through the node-row id index (R12).
-                let mut t = match self.view_now.get() {
-                    Some(project) => project().await,
-                    None => self.topology.read().await.clone(),
-                };
-                // Each birth as the ops left it (R-FA1): a primary's successor a stop or a start the
-                // fabric-primary ran moved is read so, whatever the gossip view has heard of it.
-                self.atlas.apply(&mut t);
-                // The birth and its lifecycle are the atlas's: the node row's current birth and what the
-                // ops left it (fabric-atlas.md R-FA1), never the gossip view.
-                let held = self.atlas_row(&path, &t).await?;
-                let Some(n) = held else {
-                    let me = self.held_name().await;
-                    let why = if stopped_old {
-                        format!("{me}: this fabric-primary's view holds no stopped birth at {path} (no node.name.update renamed one to it, or its Deleted row is written)")
-                    } else {
-                        self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string())
-                    };
-                    let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
-                    drop(t);
-                    outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-unknown-node", route, detail = %reject, view = %why)
-                            .in_scope(|| tracing::info!(%reject, %why, "build refused: the live view lacks the node"))
-                    });
-                    return Err(Refusal::Reject(reject));
-                };
                 // A start is the transition out of Leaving, and only for a stopped process; every other action needs a live node.
                 let startable = kind == ActionKind::Start && n.stopped;
                 let live = n.live;
@@ -866,15 +762,15 @@ impl ControlPlane {
                         ActionKind::DeleteConnections => "node.connection.delete needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
                         ActionKind::Start => "a start needs a stopped node",
-                        ActionKind::Delete => "a delete of a .old path needs the stopped predecessor or one whose exit is proven; any other delete through this route is of a deleted mesh's birth",
+                        ActionKind::Delete => "a delete of a retained predecessor needs that stopped birth or one whose exit is proven; any other delete through this route is of a deleted mesh's birth",
                     };
                     return Err(not_live(&outer, route, &path, n.status, reason));
                 }
                 // A node of a peer mesh this fabric-primary holds unheard is not its to stop or delete:
                 // the mesh's own authority, once heard again, reconciles it (R-D1).
-                if path.mesh != self.me.mesh {
-                    if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(&path.mesh)).and_then(|p| p.unheard_ms) {
-                        let reject = BuildReject::UnheardMesh { node: path.to_string(), mesh: path.mesh.clone(), unheard_ms };
+                if mesh != t.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default() {
+                    if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(&mesh)).and_then(|p| p.unheard_ms) {
+                        let reject = BuildReject::UnheardMesh { node: path.clone(), mesh: mesh.clone(), unheard_ms };
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
                     }
@@ -894,14 +790,13 @@ impl ControlPlane {
                     None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to pin the attempt to")),
                 }
             };
-            let node_name = path.to_string();
             let action = match kind {
-                ActionKind::DeleteConnections => AttemptAction::DeleteConnections { path, node_id, from_incarnation },
-                ActionKind::Stop => AttemptAction::Stop { path, node_id, from_incarnation },
-                ActionKind::Start => AttemptAction::Start { path, node_id, from_incarnation },
-                ActionKind::Delete => AttemptAction::Delete { path, node_id, from_incarnation },
+                ActionKind::DeleteConnections => AttemptAction::DeleteConnections { kind: n.kind, mesh: mesh, path, node_id, from_incarnation },
+                ActionKind::Stop => AttemptAction::Stop { kind: n.kind, mesh: mesh, path, node_id, from_incarnation },
+                ActionKind::Start => AttemptAction::Start { kind: n.kind, mesh: mesh, path, node_id, from_incarnation },
+                ActionKind::Delete => AttemptAction::Delete { kind: n.kind, mesh: mesh, path, node_id, from_incarnation },
             };
-            self.open_with(&current, None, reason, action, route, &outer, &node_name, span.clone()).await
+            self.open_with(&current, None, reason, action, route, &outer, span.clone()).await
         }
         .instrument(span.clone())
         .await
@@ -922,7 +817,7 @@ impl ControlPlane {
         let finding = match (self.investigation.get(), n.incarnation.clone()) {
             (Some(probe), Some(incarnation)) => {
                 let birth = observed.births().find(|b| b.node_id == n.node_id && b.incarnation_id.as_ref() == Some(&incarnation)).cloned().unwrap_or_else(|| {
-                    let mut b = crate::model::Node::allocated(n.name.clone());
+                    let mut b = crate::model::Node::allocated(n.name.clone(), n.mesh.clone(), n.kind);
                     b.node_id = n.node_id.clone();
                     b.incarnation_id = Some(incarnation.clone());
                     b
@@ -934,7 +829,7 @@ impl ControlPlane {
         let admitted = crate::build::delete_admits(n.stopped, n.live, heard_dead, finding.as_ref());
         let verdict = finding.as_ref().map(|f| f.name()).unwrap_or("none-held");
         let detail = finding.as_ref().map(|f| f.detail()).unwrap_or_default();
-        outer.in_scope(|| tracing::info!(node = %n.name, node_id = %n.node_id, verdict, detail = %detail, admitted = admitted.map(|a| a.name()).unwrap_or("none"), "gate 5: the birth is neither stopped nor heard live, so node investigation of its exact birth decides the delete"));
+        outer.in_scope(|| tracing::info!(node_path = %n.name.path, node_name = %n.name.name, node_id = %n.node_id, verdict, detail = %detail, admitted = admitted.map(|a| a.name()).unwrap_or("none"), "gate 5: the birth is neither stopped nor heard live, so node investigation of its exact birth decides the delete"));
         admitted
     }
 
@@ -955,18 +850,21 @@ impl ControlPlane {
             // has completed and whether or not this atlas has heard the deleting mesh-primary's row.
             let deleted_here = current.steps.iter().filter_map(|s| crate::build_state::delete_step_birth(s, "NodeDeleted")).any(|(p, n, i)| p == path && n == node_id && i == incarnation);
             if !deleted_here && !self.atlas.holds_deleted(&node_id, &incarnation) && self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {
-                let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
+                let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
             settled(&current)?;
-            let operation = format!("node.terminate:{path}@{}", incarnation.as_str());
+            let operation = rdm_core::OperationId::new("node.terminate", rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() });
             if let Some(done) = current.steps.iter().find(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete) {
                 return Ok(Recovery::AlreadyApplied(Opened { build_id: current.build_id.clone(), attempt: done.attempt, mesh: None }));
             }
-            let node_name = path.to_string();
-            let action = AttemptAction::Terminate { path, node_id, from_incarnation: incarnation };
-            self.open_with(&current, None, AttemptReason::Delete, action, route, &outer, &node_name, span.clone()).await.map(Recovery::Opened)
+            let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("path {path_path:?}, name {path_name:?}: node records are not bound", path_path = &path.path, path_name = &path.name)))?;
+            let subject = rows.node(&node_id).await.map_err(|e| Refusal::Unavailable(format!("path {path_path:?}, name {path_name:?} ({node_id}): {e}", path_path = &path.path, path_name = &path.name)))?
+                .ok_or_else(|| Refusal::Unavailable(format!("path {path_path:?}, name {path_name:?} ({node_id}): lifecycle record absent", path_path = &path.path, path_name = &path.name)))?;
+            let mesh = subject.mesh;
+            let action = AttemptAction::Terminate { kind: subject.kind, mesh: mesh, path, node_id, from_incarnation: incarnation };
+            self.open_with(&current, None, AttemptReason::Delete, action, route, &outer, span.clone()).await.map(Recovery::Opened)
         }
         .instrument(span.clone())
         .await
@@ -975,12 +873,13 @@ impl ControlPlane {
     /// Whether `path` is a birth of a mesh deleted at mesh.deleted, as the live view holds it: the
     /// mesh's status is deleted (its row Dead), and its last admin lives on until its own node.delete
     /// (mesh-delete.md steps 6-7).
-    pub async fn of_deleted_mesh(&self, path: &PathName) -> bool {
+    pub async fn of_deleted_mesh(&self, path: &PathName) -> Result<bool, Refusal> {
         let t = match self.view_now.get() {
             Some(project) => project().await,
             None => self.topology.read().await.clone(),
         };
-        t.meshes.iter().any(|m| m.name == path.mesh && m.status == crate::model::ScopeStatus::Dead)
+        let Some(n) = self.atlas_row(path, &t).await? else { return Ok(false) };
+        Ok(n.renamed_from.is_some() || t.meshes.iter().any(|m| m.name == n.mesh && m.status == crate::model::ScopeStatus::Dead))
     }
 
     /// Open and claim the recovery of `path` from its exited birth `(node_id, incarnation)` as the
@@ -1005,7 +904,12 @@ impl ControlPlane {
     /// lane's attempt already opened with this very recovery and claimed by no one (its opener lost
     /// between its open and its claim) is claimed as it stands: never opened again, and nothing ends it.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, mesh = %path.mesh, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), open_attempt = tracing::field::Empty, mesh_primary = tracing::field::Empty, admins = tracing::field::Empty, executor = tracing::field::Empty, outcome = tracing::field::Empty);
+        let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("path {path_path:?}, name {path_name:?}: node records are not bound", path_path = &path.path, path_name = &path.name)))?;
+        let subject = rows.node(&node_id).await.map_err(|e| Refusal::Unavailable(format!("path {path_path:?}, name {path_name:?} ({node_id}): {e}", path_path = &path.path, path_name = &path.name)))?
+            .ok_or_else(|| Refusal::Unavailable(format!("path {path_path:?}, name {path_name:?} ({node_id}): lifecycle record absent", path_path = &path.path, path_name = &path.name)))?;
+        let mesh = subject.mesh.clone();
+        let kind = subject.kind;
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, mesh = %mesh, node_path = %path.path, node_name = %path.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), open_attempt = tracing::field::Empty, mesh_primary = tracing::field::Empty, admins = tracing::field::Empty, executor = tracing::field::Empty, outcome = tracing::field::Empty);
         let outer = tracing::Span::current();
         let r = async {
             // A deleted birth opens nothing (node-investigation.md: "A node that comes back after it was
@@ -1016,7 +920,7 @@ impl ControlPlane {
                 let me = self.held_name().await;
                 let node_id = self.node_id.get().map(|i| i.to_string()).unwrap_or_default();
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-deleted-birth", route, node = %me, node_id = %node_id, member = %path, reason = %why)
+                    tracing::info_span!("rdm.node_admin.build.reject.via-deleted-birth", route, node_path = %me.path, node_name = %me.name, node_id = %node_id, member_path = %path.path, member_name = %path.name, reason = %why)
                         .in_scope(|| tracing::info!("this admin's own birth is a deleted birth on the node rows: it opens no recovery"))
                 });
                 return Err(Refusal::Conflict(why));
@@ -1028,8 +932,8 @@ impl ControlPlane {
             // receipts), and nothing is opened.
             if let Some((build_id, mesh, attempt, operation)) = self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)? {
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id.log(), lane = mesh.as_deref().unwrap_or("fabric"), attempt, operation = %operation, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str())
-                        .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by {operation} and its workflow completed at this attempt: its exit belongs to that workflow, nothing is opened"))
+                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id.log(), lane = mesh.as_deref().unwrap_or("fabric"), attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, operation_occurrence = ?operation.occurrence, node_path = %path.path, node_name = %path.name, node_id = %node_id, incarnation_id = %incarnation.as_str())
+                        .in_scope(|| tracing::info!(operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, operation_occurrence = ?operation.occurrence, "the exited birth was deleted and its workflow completed at this attempt: its exit belongs to that workflow, nothing is opened"))
                 });
                 return Ok(Recovery::AlreadyApplied(Opened { build_id, attempt, mesh }));
             }
@@ -1039,53 +943,59 @@ impl ControlPlane {
             // written, its attempts included.
             if let Some((delete, _)) = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(Refusal::State)? {
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-fabric-delete-in-force", route, build_id = %delete.build_id.log(), node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str())
+                    tracing::info_span!("rdm.node_admin.build.reject.via-fabric-delete-in-force", route, build_id = %delete.build_id.log(), node_path = %path.path, node_name = %path.name, node_id = %node_id, incarnation_id = %incarnation.as_str())
                         .in_scope(|| tracing::info!("a fabric.delete is in force: nothing is recovered and nothing is re-created"))
                 });
-                return Err(Refusal::BuildInProgress(InProgress { current_build_id: delete.build_id.clone(), mesh: Some(path.mesh.clone()), held_by: None }));
+                return Err(Refusal::BuildInProgress(InProgress { current_build_id: delete.build_id.clone(), mesh: Some(mesh.clone()), held_by: None }));
             }
             let me = self.held_name().await;
             let t = self.topology.read().await.clone();
+            let me_id = self.node_id.get().ok_or_else(|| Refusal::Unavailable("recovery admin node ID is not bound".into()))?;
+            let me_inc = self.incarnation.get().ok_or_else(|| Refusal::Unavailable("recovery admin incarnation is not bound".into()))?;
+            let me_birth = rdm_core::framing::Birth { node_id: me_id.clone(), incarnation: me_inc.clone() };
+            if !t.own(me_id).is_some_and(|node| node.incarnation_id.as_ref() == Some(me_inc)) {
+                return Err(Refusal::Unavailable("the admission view does not name this process's exact birth".into()));
+            }
             // A node-admin is node-recovered by its mesh's live primary (mesh-recovery.md:8-9); one
             // with no other live admin in its mesh is that mesh's lost mesh-primary: mesh recovery.
             // An unheard mesh-primary is recovered by the fabric-primary (node-recovery.md sequence
             // step 1: "for an unheard mesh-primary, the fabric-primary opens it").
-            // Fabric recovery's re-create of the node-admin at the fabric-primary's path.name is its
+            // Fabric recovery's re-create of the node-admin at the fabric-primary's path and name is its
             // executor's, in the fabric lane (fabric-recovery.md step 3, Q122): nobody is fabric-primary.
-            let fabric_recovery = self.fabric_recovery.get().and_then(|read| read(&t)).filter(|fr| path.kind == NodeKind::NodeAdmin && fr.target.node_id == node_id && fr.target.incarnation == incarnation);
+            let fabric_recovery = self.fabric_recovery.get().and_then(|read| read(&t)).filter(|fr| kind == NodeKind::NodeAdmin && fr.target.node_id == node_id && fr.target.incarnation == incarnation);
             // Unheard as the primary: the view still names it, or the election has replaced it and the
             // fabric-primary runs its recovery "after the election has named the new mesh-primary"
             // (node-recovery.md step 2).
-            let replaced = self.primaries.get().is_some_and(|primaries| primaries.replaced(rdm_core::PrimaryRole::MeshPrimary, &path.mesh, &incarnation));
+            let replaced = self.primaries.get().is_some_and(|primaries| primaries.replaced(rdm_core::PrimaryRole::MeshPrimary, &mesh, &incarnation));
             let unheard_mesh_primary = fabric_recovery.is_some()
-                || (path.kind == crate::model::NodeKind::NodeAdmin && (replaced || t.node_type_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && p.node_id == node_id && !p.status.is_live())));
+                || (kind == crate::model::NodeKind::NodeAdmin && (replaced || t.node_type_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == node_id && p.incarnation_id.as_ref() == Some(&incarnation) && !p.status.is_live())));
             let recoverer = if let Some(fr) = &fabric_recovery {
-                fr.executor.clone()
+                fr.executor.as_ref().map(|birth| birth.node_id.clone())
             } else if unheard_mesh_primary {
-                t.fabric_primary().map(|n| n.name.clone())
-            } else if path.kind == crate::model::NodeKind::NodeAdmin {
-                let Some(recoverer) = crate::executor::node_admin_recoverer(&path, &t) else {
-                    let reject = BuildReject::NodeAdminNotNodeRecovered { node: path.to_string() };
+                t.fabric_primary().map(|n| n.node_id.clone())
+            } else if kind == crate::model::NodeKind::NodeAdmin {
+                let Some(recoverer) = crate::executor::node_admin_recoverer(&path, &mesh, &t) else {
+                    let reject = BuildReject::NodeAdminNotNodeRecovered { node: path.clone() };
                     outer.in_scope(|| reject_span(route, &reject));
                     return Err(Refusal::Reject(reject));
                 };
                 Some(recoverer)
             } else {
-                t.node_type_primary(&path.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone())
+                t.node_type_primary(&mesh, NodeKind::NodeAdmin).map(|n| n.node_id.clone())
             };
             // A mesh-primary reports its drift up as build.create { Change(Recover) }: the fabric-primary
             // opens the attempt at `(build_id, mesh, attempt)` and the mesh-primary claims it through
             // BuildClaim (node-recovery.md "Execution", Q118). Any other admin that is not the recoverer
             // opens nothing.
-            let reported = recoverer.as_ref().is_some_and(|r| *r != me) && route == "build.create" && t.fabric_primary().is_some_and(|n| n.name == me);
-            if recoverer.as_ref() != Some(&me) && !reported {
-                let fabric_primary = t.fabric_primary().map(|n| n.name.to_string());
-                let mesh_primary = recoverer.map(|n| n.to_string());
+            let reported = recoverer.as_ref().is_some_and(|r| r != me_id) && route == "build.create" && t.fabric_primary().is_some_and(|n| &n.node_id == me_id && n.incarnation_id.as_ref() == Some(me_inc));
+            if recoverer.as_ref() != Some(me_id) && !reported {
+                let fabric_primary = t.fabric_primary().map(|n| n.node_id.clone());
+                let mesh_primary = recoverer.clone();
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-not-claimant", route, node = %me, mesh = %path.mesh, fabric_primary = %fabric_primary.as_deref().unwrap_or(""), mesh_primary = %mesh_primary.as_deref().unwrap_or(""), member = %path)
+                    tracing::info_span!("rdm.node_admin.build.reject.via-not-claimant", route, node_path = %me.path, node_name = %me.name, mesh = %mesh, fabric_primary = %fabric_primary.as_ref().map(|id| id.as_str()).unwrap_or(""), mesh_primary = %mesh_primary.as_ref().map(|id| id.as_str()).unwrap_or(""), member_path = %path.path, member_name = %path.name)
                         .in_scope(|| tracing::info!("a drift attempt is claimed by its mesh's primary: this admin is not it in its view"))
                 });
-                return Err(Refusal::NotClaimant { mesh: path.mesh.clone(), fabric_primary, mesh_primary });
+                return Err(Refusal::NotClaimant { mesh: mesh.clone(), fabric_primary, mesh_primary });
             }
             // An unheard mesh-primary's recovery the fabric-primary opens in the fabric lane is claimed for
             // the mesh-primary the election named in the birth's place, the one writer of its mesh's rows
@@ -1098,51 +1008,57 @@ impl ControlPlane {
             // the election has not named it here yet, and nothing is opened or claimed; the submit is owed
             // and made again.
             let fabric_lane = unheard_mesh_primary && fabric_recovery.is_none() && !reported;
-            let executor = if fabric_lane {
+            let executor_node = if fabric_lane {
                 let now = match self.view_now.get() {
                     Some(project) => project().await,
                     None => t.clone(),
                 };
-                let named = crate::executor::unheard_mesh_primary_executor(&path, &node_id, &now);
-                let mesh_primary = now.node_type_primary(&path.mesh, NodeKind::NodeAdmin).map(|n| n.name.to_string()).unwrap_or_default();
-                let admins: Vec<String> = crate::executor::held_admins(&path.mesh, Some(&path), &now).into_iter().map(|n| n.name.to_string()).collect();
+                let named = crate::executor::unheard_mesh_primary_executor(&path, &mesh, &node_id, &now);
+                let mesh_primary = now.node_type_primary(&mesh, NodeKind::NodeAdmin).map(|n| n.node_id.to_string()).unwrap_or_default();
+                let admins: Vec<String> = crate::executor::held_admins(&mesh, Some(&path), &now).into_iter().map(|n| n.node_id.to_string()).collect();
                 span.record("mesh_primary", mesh_primary.as_str());
                 span.record("admins", admins.join(",").as_str());
                 match named {
-                    Some(executor) => executor,
+                    Some(executor) => now.own(&executor).cloned().ok_or_else(|| Refusal::Unavailable(format!("node_id={executor}: selected executor absent from selection view")))?,
                     None => {
                         let why = format!(
-                            "{me}: the recovery of mesh {}'s unheard mesh-primary {path} ({node_id}) is not opened: this admin's view names {} mesh {}'s primary and the mesh holds node-admin(s) {}, so the election has not named the mesh-primary in its place here; the submit is made again",
-                            path.mesh,
+                            "path {me_path:?}, name {me_name:?}: the recovery of mesh {}'s unheard mesh-primary path {path_path:?}, name {path_name:?} ({node_id}) is not opened: this admin's view names {} mesh {}'s primary and the mesh holds node-admin(s) {}, so the election has not named the mesh-primary in its place here; the submit is made again",
+                            mesh,
                             if mesh_primary.is_empty() { "no node-admin".to_string() } else { mesh_primary.clone() },
-                            path.mesh,
-                            admins.join(", ")
-                        );
+                            mesh,
+                            admins.join(", "), me_path = &me.path, me_name = &me.name, path_path = &path.path, path_name = &path.name);
                         outer.in_scope(|| {
-                            tracing::info_span!("rdm.node_admin.build.reject.via-mesh-primary-not-named", route, node = %me, mesh = %path.mesh, member = %path, node_id = %node_id, mesh_primary = %mesh_primary, admins = %admins.join(","))
+                            tracing::info_span!("rdm.node_admin.build.reject.via-mesh-primary-not-named", route, node_path = %me.path, node_name = %me.name, mesh = %mesh, member_path = %path.path, member_name = %path.name, node_id = %node_id, mesh_primary = %mesh_primary, admins = %admins.join(","))
                                 .in_scope(|| tracing::info!("an unheard mesh-primary's recovery is claimed for the mesh-primary the election names in its place: none is named in this admin's view yet"))
                         });
                         return Err(Refusal::Unavailable(why));
                     }
                 }
             } else {
-                me.clone()
+                t.own(me_id).cloned().ok_or_else(|| Refusal::Unavailable("local executor absent from admission view".into()))?
             };
-            let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: route == "fabric-recovery-backbone" };
+            let executor = executor_node.node_id.clone();
+            let executor_birth = rdm_core::framing::Birth { node_id: executor.clone(), incarnation: executor_node.incarnation_id.clone().ok_or_else(|| Refusal::Unavailable(format!("node_id={executor}: executor has no incarnation")))? };
+            if let Some(recovery) = &fabric_recovery {
+                if recovery.executor.as_ref() != Some(&executor_birth) {
+                    return Err(Refusal::Unavailable("the selected recovery executor birth differs from the admission view".into()));
+                }
+            }
+            let action = AttemptAction::Recover { kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone(), backbone: route == "fabric-recovery-backbone" };
             // A reported recovery whose attempt still runs under the reporter is reattached, never
             // claimed again (build.md: "A live run is reattached, never re-claimed"): the fabric-primary
             // lost its stream to the run, and the reporter's next report finds it.
             if let Some(claimant) = recoverer.as_ref().filter(|_| reported) {
                 let current = self.builds.current().await.map_err(Refusal::State)?;
-                let live = current.as_ref().and_then(|c| c.lanes.get(&path.mesh).filter(|l| l.state == BuildState::Running && l.action.as_ref() == Some(&action) && l.executor.as_deref() == Some(claimant.to_string().as_str())).map(|l| Opened { build_id: c.build_id.clone(), attempt: l.attempt, mesh: Some(path.mesh.clone()) }));
+                let live = current.as_ref().and_then(|c| c.lanes.get(&mesh).filter(|l| l.state == BuildState::Running && l.action.as_ref() == Some(&action) && l.executor.as_ref().is_some_and(|birth| &birth.node_id == claimant && t.own(claimant).is_some_and(|node| node.incarnation_id.as_ref() == Some(&birth.incarnation)))).map(|l| Opened { build_id: c.build_id.clone(), attempt: l.attempt, mesh: Some(mesh.clone()) }));
                 if let Some(opened) = live {
                     span.record("open_attempt", "reattached");
                     return Ok(Recovery::Reported { opened, claimant: claimant.clone() });
                 }
             }
-            let (_admitted, current, open) = self.mesh_settled(&path.mesh, &action).await?;
+            let (_admitted, current, open) = self.mesh_settled(&mesh, &action).await?;
             if !current.topology.contains(&path) {
-                let reject = BuildReject::UnknownNode { node: path.to_string(), step: None };
+                let reject = BuildReject::UnknownNode { node: path.clone(), step: None };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
@@ -1157,7 +1073,7 @@ impl ControlPlane {
             // the mesh.
             // Fabric recovery's re-create runs in its target mesh's lane: free while the fabric lane holds an
             // attempt the lost fabric-primary claimed, which the restored fabric-primary resumes.
-            let lane = if fabric_lane { None } else { Some(path.mesh.as_str()) };
+            let lane = if fabric_lane { None } else { Some(mesh.as_str()) };
             // The lane's attempt opened with this very recovery and claimed by no one is claimed as
             // it stands; otherwise the lane's next attempt is opened for it.
             // A fabric-lane attempt opened with this very recovery and claimed by no one (an executor's open whose
@@ -1172,7 +1088,7 @@ impl ControlPlane {
             if lane.is_none() && open.is_none() && current.state == BuildState::Running {
                 if let Some(held) = holding(&current, None) {
                     outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""), node_path = %path.path, node_name = %path.name)
                             .in_scope(|| tracing::info!("the fabric lane's attempt is running: one attempt at a time in the fabric lane"))
                     });
                     return Err(Refusal::BuildInProgress(held));
@@ -1180,46 +1096,46 @@ impl ControlPlane {
             }
             let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
             span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
-            let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string(), claimant_node: None };
-            let standing = match self.claims.in_flight(&path.mesh).await {
+            let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me_id.clone(), };
+            let standing = match self.claims.in_flight(&mesh).await {
                 Ok(standing) => standing.filter(|held| !held.same_claim(&row)),
-                Err(e) => return Err(Refusal::Unavailable(format!("{me}: the in-flight row of mesh {} could not be read for attempt {attempt} of {}: {e}", path.mesh, current.build_id))),
+                Err(e) => return Err(Refusal::Unavailable(format!("path {me_path:?}, name {me_name:?}: the in-flight row of mesh {} could not be read for attempt {attempt} of {}: {e}", mesh, current.build_id, me_path = &me.path, me_name = &me.name))),
             };
             if let Some(held) = standing {
-                // A row a deleted claimant took for a drift attempt that holds no lane in this admin's
-                // fold (its run ended and the row was never released, or nothing of it was written
-                // before the claimant was lost) is released on that departure's exact proof.
-                let deleted = match held.claimant.parse::<PathName>() {
-                    Ok(c) if held.lane.as_deref() == Some(path.mesh.as_str()) && c != me && c != self.me => self.departure_of(&c).await?.map(|n| (c, n)),
-                    _ => None,
+                // Only the exact committed executor birth can prove this claim's attempt gone.
+                // The claimant ID names the in-flight row; it is not the executor's incarnation.
+                let committed = crate::build_state::committed_claim(&*self.builds, &held.build_id, held.lane.as_deref(), held.attempt).await.map_err(Refusal::State)?;
+                let departed = if let Some(claim) = committed.filter(|claim| claim.claimant.as_ref() == Some(&held.claimant) && claim.claimed_mesh.as_deref() == Some(mesh.as_str())) {
+                    held.lane.as_deref() == Some(mesh.as_str()) && claim.executor != me_birth && self.departure_of(&claim.executor).await
+                } else {
+                    false
                 };
-                if let Some((claimant, n)) = deleted {
-                    let release = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default(), node = %me, outcome = tracing::field::Empty);
-                    if let Err(e) = self.claims.release_in_flight(&path.mesh, &held).await {
+                if departed {
+                    let release = tracing::info_span!("rdm.node_admin.build.update.via-executor-departure", build_id = %held.build_id.log(), lane = %mesh, attempt = held.attempt, claimant = %held.claimant, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty);
+                    if let Err(e) = self.claims.release_in_flight(&mesh, &held).await {
                         release.record("outcome", "in-flight-unreleased");
-                        return Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which deleted; the row could not be released: {e}", path.mesh, held.attempt, held.build_id)));
+                        return Err(Refusal::Unavailable(format!("node_id={me_id}: mesh {mesh}'s in-flight row of attempt {} could not be released: {e}", held.attempt)));
                     }
                     release.record("outcome", "row-released");
-                    release.in_scope(|| tracing::info!("the mesh's in-flight row of a deleted claimant's attempt that holds no lane is released"));
+                    release.in_scope(|| tracing::info!("the mesh's in-flight row is released after its committed executor's exact departure"));
                 } else if self.builds.in_flight_live(&held).await.map_err(Refusal::State)? {
                     // Owed to its mesh (node-recovery.md step 1, Q291): opened now as the mesh's next attempt,
                     // claimed by no one, on the Build journal, so it holds the mesh against every other
                     // attempt there, the Build's own next one included; its submitter claims it as it
                     // stands once the attempt holding the mesh has ended. A repeat finds it open.
                     if let (Some(lane), None) = (lane, open) {
-                        match self.open_with(&current, Some(lane), AttemptReason::Recovery, action.clone(), route, &outer, &path.to_string(), span.clone()).await {
+                        match self.open_with(&current, Some(lane), AttemptReason::Recovery, action.clone(), route, &outer, span.clone()).await {
                             Ok(o) => span.record("open_attempt", format!("owed-{}", o.attempt).as_str()),
                             Err(_) => span.record("open_attempt", "owed-not-opened"),
                         };
                     }
-                    return Err(in_progress(route, &outer, &path, held.build_id, Some(held.claimant)));
+                    return Err(in_progress(route, &outer, &path, &mesh, held.build_id, Some(held.claimant)));
                 }
             }
-            let node_name = path.to_string();
             let opened = match open {
                 // Its open is on the Build log already, whoever wrote it: nothing is written again.
                 Some(attempt) => Opened { build_id: current.build_id.clone(), attempt, mesh: lane.map(str::to_string) },
-                None => self.open_with(&current, lane, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await?,
+                None => self.open_with(&current, lane, AttemptReason::Recovery, action, route, &outer, span.clone()).await?,
             };
             // A reported drift: opened here, claimed by the mesh-primary through BuildClaim.
             if let Some(claimant) = recoverer.filter(|_| reported) {
@@ -1232,17 +1148,17 @@ impl ControlPlane {
             // each receipt up that stream, and the fabric-primary writes every Build record"
             // (node-recovery.md "Execution").
             span.record("executor", executor.to_string().as_str());
-            let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: executor.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
-            let own = self.node_rows.get().zip(self.node_id.get()).filter(|_| executor == me).map(|(rows, id)| (&**rows, id));
-            match crate::build_claim::decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &path.mesh, own).await {
+            let claim = crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: executor_node.mesh.clone(), build_id: opened.build_id.clone(), attempt: opened.attempt, executor: executor_birth, claimant: Some(me_id.clone()), mesh: opened.mesh.clone() };
+            let own = self.node_rows.get().filter(|_| &executor == me_id).map(|rows| (&**rows, me_id));
+            match crate::build_claim::decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &mesh, own).await {
                 rdm_core::build_claim::BuildClaimReply::Won { .. } => Ok(Recovery::Opened(opened)),
                 // Another attempt took the mesh's row between the read above and this claim: the
                 // attempt stays open, claimed by no one, and the next recovery claims it as it stands.
                 rdm_core::build_claim::BuildClaimReply::BuildInProgress { current_build_id, held_by, .. } => match BuildId::parse(&current_build_id) {
-                    Ok(id) => Err(in_progress(route, &outer, &path, id, held_by)),
-                    Err(e) => Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names a Build id that does not parse ({current_build_id:?}: {e})", path.mesh))),
+                    Ok(id) => Err(in_progress(route, &outer, &path, &mesh, id, held_by)),
+                    Err(e) => Err(Refusal::Unavailable(format!("path {me_path:?}, name {me_name:?}: mesh {}'s in-flight row names a Build id that does not parse ({current_build_id:?}: {e})", mesh, me_path = &me.path, me_name = &me.name))),
                 },
-                other => Err(Refusal::Unavailable(format!("{me}: attempt {} of {} in mesh {}'s lane was opened and its claim not won: {other:?}", opened.attempt, opened.build_id, path.mesh))),
+                other => Err(Refusal::Unavailable(format!("path {me_path:?}, name {me_name:?}: attempt {} of {} in mesh {}'s lane was opened and its claim not won: {other:?}", opened.attempt, opened.build_id, mesh, me_path = &me.path, me_name = &me.name))),
             }
         }
         .instrument(span.clone())
@@ -1288,10 +1204,10 @@ impl ControlPlane {
 
 /// The refusal of a recovery while another attempt's in-flight row holds `path`'s mesh (R-BI7 caveat
 /// 3), spanned under `outer`: the Build and the claimant the row names.
-fn in_progress(route: &'static str, outer: &tracing::Span, path: &PathName, current_build_id: BuildId, held_by: Option<String>) -> Refusal {
-    let held = InProgress { current_build_id, mesh: Some(path.mesh.clone()), held_by };
+fn in_progress(route: &'static str, outer: &tracing::Span, path: &PathName, mesh: &str, current_build_id: BuildId, held_by: Option<crate::model::NodeId>) -> Refusal {
+    let held = InProgress { current_build_id, mesh: Some(mesh.to_string()), held_by };
     outer.in_scope(|| {
-        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %path.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
+        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %mesh, held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""), node_path = %path.path, node_name = %path.name)
             .in_scope(|| tracing::info!("the mesh's in-flight row names another attempt: one attempt in flight per mesh"))
     });
     Refusal::BuildInProgress(held)
@@ -1306,7 +1222,7 @@ pub enum ActionKind {
     Stop,
     /// `node.start:<path>`.
     Start,
-    /// `delete-node:<path>.old`.
+    /// `node.delete` targeting the retained predecessor by node ID.
     Delete,
 }
 
@@ -1336,20 +1252,20 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     let target = t.node(node)?;
     // The primary of any other node type: its mesh-primary's node.primary.update needs another node
     // of its type (Q7); the delete of a type's only node in its mesh skips the update, whether the node
-    // leaves the topology (a removal) or is re-created at the same path.name (node recovery, an executable
+    // leaves the topology (a removal) or is re-created at the same path and name (node recovery, an executable
     // replacement, the replace's Delete step): R5, node-primary-update.md "No-successor cases".
     if target.kind != crate::model::NodeKind::NodeAdmin {
-        let holds = t.node_type_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
-        let only_of_node_type = t.nodes_of_type(&node.mesh, target.kind).all(|n| n.node_id == target.node_id);
+        let holds = t.node_type_primary(&target.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
+        let only_of_node_type = t.nodes_of_type(&target.mesh, target.kind).all(|n| n.node_id == target.node_id);
         if !holds || (action == "delete" && only_of_node_type) {
             return None;
         }
         let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
         let refusal = crate::election::commanded_node_type_successor(&nodes, &crate::election::Incumbency::default(), target).err()?;
-        return Some(BuildReject::NoSecondary { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal });
+        return Some(BuildReject::NoSecondary { node: node.clone(), mesh: target.mesh.clone(), action: action.to_string(), refusal });
     }
     let fabric_role = t.fabric_primary().is_some_and(|fp| fp.node_id == target.node_id);
-    let mesh_role = t.node_type_primary(&node.mesh, crate::model::NodeKind::NodeAdmin).is_some_and(|p| p.node_id == target.node_id);
+    let mesh_role = t.node_type_primary(&target.mesh, crate::model::NodeKind::NodeAdmin).is_some_and(|p| p.node_id == target.node_id);
     let moving = match (mesh_role, fabric_role) {
         (true, true) => crate::election::Moving::BothRoles,
         (true, false) => crate::election::Moving::MeshRole,
@@ -1359,7 +1275,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     // final primary a mesh.delete left alive, mesh-delete.md step 7), skips the update; a fabric-primary role on
     // it still moves, out of its mesh (C2 search step 2), and is refused with C2 step 3's text when no
     // other mesh-primary can take it.
-    let moving = if action == "delete" && t.only_node(&node.mesh, &target.node_id) {
+    let moving = if action == "delete" && t.only_node(&target.mesh, &target.node_id) {
         if !fabric_role || (!t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead)) {
             return None;
         }
@@ -1368,7 +1284,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
         moving
     };
     let refusal = crate::election::commanded_successor_in(t, &crate::election::Incumbency::default(), target, moving).err()?;
-    Some(BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal })
+    Some(BuildReject::LastAdmin { node: node.clone(), mesh: target.mesh.clone(), action: action.to_string(), refusal })
 }
 
 /// The first executable a complete-topology request names that cannot launch, refused by name before
@@ -1388,18 +1304,18 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
     for (path, spec) in next.meshes.values().flat_map(|m| m.spec_by_path.iter()) {
         let Some(binding) = spec.executable.as_ref() else { continue };
         let created = !current.contains(path);
-        let replaced = recorded.get(path).is_some_and(|r| r.sha256.as_deref() != Some(binding.sha256.as_str()));
-        if !(created || replaced) || !checked.insert((binding.executable.clone(), binding.sha256.clone(), path.kind.name().to_string())) {
+        let replaced = recorded.get(path).is_some_and(|r| r.mesh != spec.mesh || r.kind != spec.kind || r.sha256.as_deref() != Some(binding.sha256.as_str()));
+        if !(created || replaced) || !checked.insert((binding.executable.clone(), binding.sha256.clone(), spec.kind.name().to_string())) {
             continue;
         }
         if provider == crate::model::ProviderKind::Container && !executable_dirs.iter().any(|d| binding.executable.starts_with(d)) {
             let named = executable_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(",");
             let detail = format!("{} is outside every directory {} names ({named:?}): a containerized admin mounts only those, so no launch could read it", binding.executable.display(), rdm_core::launch::ENV_EXECUTABLE_DIRS);
-            refused_unread = Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
+            refused_unread = Some(BuildReject::ExecutableRefused { node: path.clone(), detail });
             break;
         }
-        if let Err(detail) = crate::admin::runner::binding_fits(binding, path.kind, provider) {
-            refused_unread = Some(BuildReject::ExecutableRefused { node: path.to_string(), detail });
+        if let Err(detail) = crate::admin::runner::binding_fits(binding, spec.kind, provider) {
+            refused_unread = Some(BuildReject::ExecutableRefused { node: path.clone(), detail });
             break;
         }
         to_hash.push((path, binding));
@@ -1417,7 +1333,7 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
         futures_util::future::join_all(files.iter().map(|(file, (b, ids))| async move { (*file, crate::admin::runner::hash_executable(b, &ids.join(","), "request").await) })).await.into_iter().collect();
     to_hash
         .iter()
-        .find_map(|(path, b)| hashed.get(&(b.executable.as_path(), b.sha256.as_str())).and_then(|r| r.clone().err()).map(|detail| BuildReject::ExecutableRefused { node: path.to_string(), detail }))
+        .find_map(|(path, b)| hashed.get(&(b.executable.as_path(), b.sha256.as_str())).and_then(|r| r.clone().err()).map(|detail| BuildReject::ExecutableRefused { node: (*path).clone(), detail }))
         .or(refused_unread)
 }
 
@@ -1429,7 +1345,7 @@ fn created_without_executable(current: &crate::accepted::FabricTopology, next: &
         .values()
         .flat_map(|m| m.spec_by_path.iter())
         .find(|(path, spec)| !current.contains(path) && spec.executable.is_none())
-        .map(|(path, _)| BuildReject::ExecutableMissing { node: path.to_string() })
+        .map(|(path, _)| BuildReject::ExecutableMissing { node: path.clone() })
 }
 
 /// The stop/start/delete refusal `node-not-live`, spanned beside the request with the node, the
@@ -1437,9 +1353,9 @@ fn created_without_executable(current: &crate::accepted::FabricTopology, next: &
 /// (`rdm.node_admin.node.reject.via-not-live`).
 fn not_live(outer: &tracing::Span, route: &'static str, path: &PathName, status: crate::model::NodeStatus, reason: &'static str) -> Refusal {
     let held = serde_json::to_value(status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| format!("{status:?}"));
-    let reject = BuildReject::NodeNotLive { node: path.to_string() };
+    let reject = BuildReject::NodeNotLive { node: path.clone() };
     outer.in_scope(|| {
-        tracing::info_span!("rdm.node_admin.node.reject.via-not-live", route, node = %path, status = %held, reason, detail = %reject)
+        tracing::info_span!("rdm.node_admin.node.reject.via-not-live", route, node_path = %path.path, node_name = %path.name, status = %held, reason, detail = %reject)
             .in_scope(|| tracing::info!(%reject, status = %held, reason, "build refused: the node is not live"))
     });
     Refusal::Reject(reject)
@@ -1495,12 +1411,12 @@ pub enum Refusal {
         /// The mesh the request acts in.
         mesh: String,
         /// The fabric-primary this admin's view holds, when one.
-        fabric_primary: Option<String>,
+        fabric_primary: Option<crate::model::NodeId>,
         /// The mesh's primary this admin's view holds (the member's recoverer), when one.
-        mesh_primary: Option<String>,
+        mesh_primary: Option<crate::model::NodeId>,
     },
     /// This admin is not the fabric-primary (named when known).
-    NotPrimary(Option<String>),
+    NotPrimary(Option<crate::model::NodeId>),
     /// The attempt number this request computed was opened first by another action.
     AttemptTaken(String),
     /// The admin cannot decide the request yet (it holds no Build).
@@ -1532,7 +1448,7 @@ pub struct InProgress {
     /// The admin that claimed the holding attempt, as its claim recorded it (never re-read from a
     /// later role view); `None` for an attempt not yet claimed or claimed before claimants were
     /// recorded.
-    pub held_by: Option<String>,
+    pub held_by: Option<crate::model::NodeId>,
 }
 
 /// The attempt of `p` holding `mesh` in this admin's fold (R-BI7 caveat 3), or, for `None`, the
@@ -1540,7 +1456,7 @@ pub struct InProgress {
 /// (running) attempt acts in its executor's mesh; a drift lane's open attempt holds its own mesh.
 /// A fabric-lane attempt opened and not yet claimed holds no mesh: its claim takes the mesh's row.
 fn holding(p: &crate::build_state::BuildProjection, mesh: Option<&str>) -> Option<InProgress> {
-    let fabric_mesh = (p.state == BuildState::Running).then(|| p.executor.as_deref().and_then(|e| e.parse::<PathName>().ok()).map(|e| e.mesh)).flatten();
+    let fabric_mesh = (p.state == BuildState::Running).then(|| p.attempt_claimed_meshes.get(&p.attempt).cloned()).flatten();
     match mesh {
         None => (matches!(p.state, BuildState::Pending | BuildState::Running)).then(|| InProgress {
             current_build_id: p.build_id.clone(),
@@ -1560,7 +1476,7 @@ fn holding(p: &crate::build_state::BuildProjection, mesh: Option<&str>) -> Optio
 /// while the fabric lane's attempt does not hold `mesh`: the lane stands at its open (`Pending`, the
 /// open one past the highest claim). An attempt handed off or claimed is not one.
 fn open_unclaimed(p: &crate::build_state::BuildProjection, mesh: &str, action: &AttemptAction) -> Option<u32> {
-    let fabric_holds = p.state == BuildState::Running && p.executor.as_deref().and_then(|e| e.parse::<PathName>().ok()).is_some_and(|e| e.mesh == mesh);
+    let fabric_holds = p.state == BuildState::Running && p.attempt_claimed_meshes.get(&p.attempt).is_some_and(|m| m == mesh);
     let lane = p.lanes.get(mesh).filter(|l| !fabric_holds && l.state == BuildState::Pending && l.opened == l.attempt + 1)?;
     (lane.action.as_ref() == Some(action)).then_some(lane.opened)
 }
@@ -1581,7 +1497,7 @@ fn settled(current: &crate::build_state::BuildProjection) -> Result<(), Refusal>
         return Ok(());
     }
     let held = holding(current, None).unwrap_or_else(|| InProgress { current_build_id: current.build_id.clone(), mesh: None, held_by: None });
-    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id.log(), state = ?current.state, mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
+    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id.log(), state = ?current.state, mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""))
         .in_scope(|| tracing::info!("another Build is reconciling: one topology Build in flight"));
     Err(Refusal::BuildInProgress(held))
 }
@@ -1590,7 +1506,7 @@ fn settled(current: &crate::build_state::BuildProjection) -> Result<(), Refusal>
 fn op_mesh(op: &crate::build::BuildOperation) -> Option<String> {
     match op {
         crate::build::BuildOperation::CreateMesh { mesh, .. } | crate::build::BuildOperation::ShutdownMesh { mesh, .. } | crate::build::BuildOperation::BlockStorage { mesh, .. } | crate::build::BuildOperation::UnblockStorage { mesh, .. } => Some(mesh.clone()),
-        other => other.node().map(|n| n.mesh.clone()),
+        other => other.mesh().map(str::to_owned),
     }
 }
 
@@ -1607,7 +1523,7 @@ pub enum Recovery {
         /// The attempt.
         opened: Opened,
         /// The mesh-primary that reported it: the attempt's claimant and executor.
-        claimant: PathName,
+        claimant: crate::model::NodeId,
     },
 }
 
@@ -1616,8 +1532,8 @@ mod tests {
     use super::*;
     use crate::model::{Fabric, FabricId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
 
-    fn node(name: &str, primary: bool, fabric: bool) -> Node {
-        let mut n = Node::allocated(name.parse().unwrap());
+    fn node(name: PathName, mesh: &str, kind: NodeKind, primary: bool, fabric: bool) -> Node {
+        let mut n = Node::allocated(name, mesh, kind);
         n.status = NodeStatus::Ready;
         n.incarnation_id = Some(crate::model::IncarnationId::mint());
         n.is_primary = primary;
@@ -1648,31 +1564,31 @@ mod tests {
                 Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
                 Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
-            nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", true, false), node("mesh1.rpc.2", false, false), node("mesh2.admin.1", true, false), node("mesh2.rpc.1", true, false)],
+            nodes: vec![node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", NodeKind::NodeAdmin, true, true), node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode, true, false), node(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", NodeKind::RpcNode, false, false), node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", NodeKind::NodeAdmin, true, false), node(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", NodeKind::RpcNode, true, false)],
         };
-        let stop = |path: &str| crate::build::BuildOperation::StopNode { node: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: t.node(&path.parse().unwrap()).unwrap().incarnation_id.clone().unwrap() };
-        let primary_stop = stop("mesh1.rpc.1");
-        assert_eq!(crate::executor::role_move(&primary_stop, &t).map(|m| m.primary.name.to_string()), Some("mesh1.rpc.1".to_string()), "the rpc role moves before its primary's stop");
+        let stop = |path: PathName| crate::build::BuildOperation::StopNode { mesh: t.node(&path).unwrap().mesh.clone(), kind: t.node(&path).unwrap().kind, node: path.clone(), node_id: t.node(&path).unwrap().node_id.clone(), from_incarnation: t.node(&path).unwrap().incarnation_id.clone().unwrap() };
+        let primary_stop = stop(PathName::new("mesh1.rpc", "1").unwrap());
+        assert_eq!(crate::executor::role_move(&primary_stop, &t).map(|m| m.primary.name.clone()), Some(PathName::new("mesh1.rpc", "1").unwrap()), "the rpc role moves before its primary's stop");
         assert_eq!(crate::executor::executor_for(&primary_stop, &t), None, "no admin executes the primary's stop until its role moved");
-        let other = stop("mesh1.rpc.2");
+        let other = stop(PathName::new("mesh1.rpc", "2").unwrap());
         assert_eq!(crate::executor::role_move(&other, &t), None, "a node that holds no primary role moves none");
-        assert_eq!(crate::executor::executor_for(&other, &t).map(|p| p.to_string()), Some("mesh1.admin.1".to_string()), "its mesh's primary executes it");
-        assert!(last_admin(&"mesh1.rpc.1".parse().unwrap(), "stop", &t).is_none(), "mesh1's rpc primary has a secondary: admitted");
+        assert_eq!(crate::executor::executor_for(&other, &t), Some(t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().node_id.clone()), "its mesh's primary executes it");
+        assert!(last_admin(&PathName::new("mesh1.rpc", "1").unwrap(), "stop", &t).is_none(), "mesh1's rpc primary has a secondary: admitted");
         for action in ["stop"] {
-            match last_admin(&"mesh2.rpc.1".parse().unwrap(), action, &t) {
+            match last_admin(&PathName::new("mesh2.rpc", "1").unwrap(), action, &t) {
                 Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type rpc-node in mesh mesh2"), "{action}"),
                 None => panic!("{action} of mesh2's sole rpc node is refused by name"),
             }
         }
-        let delete_sole = crate::build::BuildOperation::DeleteLiveNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None };
-        assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "deleting the sole member of a non-admin node type skips node.primary.update");
+        let delete_sole = crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh2".into(), kind: NodeKind::RpcNode, node: PathName::new("mesh2.rpc", "1").unwrap(), exited: None, birth: None };
+        assert!(last_admin(&PathName::new("mesh2.rpc", "1").unwrap(), "delete", &t).is_none(), "deleting the sole member of a non-admin node type skips node.primary.update");
         assert_eq!(crate::executor::role_move(&delete_sole, &t), None, "deleting the sole member of a non-admin node type moves no role");
         // R5 (Luke 2026-10-24, arm (a); node-primary-update.md "No-successor cases": "the delete of a
         // type's only node in its mesh, whether the node leaves the topology (a removal) or is re-created
-        // at the same `path.name`"): the replace's Delete step and the node.delete route of a
+        // at the same `(path, name)`"): the replace's Delete step and the node.delete route of a
         // type's only node skip the update as a removal does, refused `no-secondary` at no step.
-        assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t).is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&"mesh2.rpc.1".parse().unwrap(), "delete", &t));
-        let delete_step = crate::build::BuildOperation::Step { step: rdm_core::build::Step::Delete { node: "mesh2.rpc.1".parse().unwrap() }, birth: None, entry: None };
+        assert!(last_admin(&PathName::new("mesh2.rpc", "1").unwrap(), "delete", &t).is_none(), "the delete of a type's only node skips node.primary.update: {:?}", last_admin(&PathName::new("mesh2.rpc", "1").unwrap(), "delete", &t));
+        let delete_step = crate::build::BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: Some(0), mesh: "mesh2".into(), kind: NodeKind::RpcNode, step: rdm_core::build::Step::Delete { node: PathName::new("mesh2.rpc", "1").unwrap() }, birth: None, entry: None };
         assert_eq!(crate::executor::role_move(&delete_step, &t), None, "the Build's delete of a type's only node moves no primary");
     }
 
@@ -1692,20 +1608,20 @@ mod tests {
                 Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
                 Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
-            nodes: vec![node("mesh1.admin.1", true, false), node("mesh2.admin.1", true, true), node("mesh2.rpc.1", true, false)],
+            nodes: vec![node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", NodeKind::NodeAdmin, true, false), node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", NodeKind::NodeAdmin, true, true), node(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", NodeKind::RpcNode, true, false)],
         };
-        let only: PathName = "mesh1.admin.1".parse().unwrap();
+        let only: PathName = PathName::new("mesh1.admin", "1").unwrap();
         for action in ["delete"] {
             assert!(last_admin(&only, action, &t).is_none(), "{action} of mesh1's only node skips the update: {:?}", last_admin(&only, action, &t));
         }
-        let refusal = |path: &str, action: &str| match last_admin(&path.parse().unwrap(), action, &t) {
+        let refusal = |path: PathName, action: &str| match last_admin(&path, action, &t) {
             Some(BuildReject::LastAdmin { refusal, .. }) => refusal,
-            other => panic!("{action} of {path} is refused last-admin: {other:?}"),
+            other => panic!("{action} of {path:?} is refused last-admin: {other:?}"),
         };
-        assert_eq!(refusal("mesh1.admin.1", "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
-        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { node: only.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
-        assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the role move");
-        assert_eq!(refusal("mesh2.admin.1", "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
+        assert_eq!(refusal(PathName::new("mesh1.admin", "1").unwrap(), "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
+        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node: only.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
+        assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node: only, exited: None, birth: None }, &t), None, "the delete of mesh1's only node skips the role move");
+        assert_eq!(refusal(PathName::new("mesh2.admin", "1").unwrap(), "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2
@@ -1726,13 +1642,13 @@ mod tests {
                 Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
                 Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
-            nodes: vec![node("mesh1.admin.1", true, false), node("mesh1.rpc.1", true, false), node("mesh2.admin.1", true, true)],
+            nodes: vec![node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", NodeKind::NodeAdmin, true, false), node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode, true, false), node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", NodeKind::NodeAdmin, true, true)],
         };
-        let fp: PathName = "mesh2.admin.1".parse().unwrap();
+        let fp: PathName = PathName::new("mesh2.admin", "1").unwrap();
         for action in ["delete"] {
             assert!(last_admin(&fp, action, &t).is_none(), "{action}: mesh1's Ready primary takes the fabric-primary role: {:?}", last_admin(&fp, action, &t));
         }
-        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh1.admin.1") {
+        for n in t.nodes.iter_mut().filter(|n| n.name == PathName::new("mesh1.admin", "1").unwrap()) {
             n.status = NodeStatus::Pending;
         }
         for action in ["delete"] {
@@ -1766,14 +1682,14 @@ mod tests {
                 Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready },
                 Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
             ],
-            nodes: vec![node("mesh1.admin.1", true, true), node("mesh2.admin.1", true, false), node("mesh2.admin.2", false, false)],
+            nodes: vec![node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", NodeKind::NodeAdmin, true, true), node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", NodeKind::NodeAdmin, true, false), node(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", NodeKind::NodeAdmin, false, false)],
         };
-        let started: PathName = "mesh2.admin.2".parse().unwrap();
-        let primary: PathName = "mesh2.admin.1".parse().unwrap();
+        let started: PathName = PathName::new("mesh2.admin", "2").unwrap();
+        let primary: PathName = PathName::new("mesh2.admin", "1").unwrap();
         let from = t.node(&started).unwrap().incarnation_id.clone().unwrap();
         let build_id = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
-        let start = AttemptAction::Start { path: started.clone(), node_id: t.node(&started).unwrap().node_id.clone(), from_incarnation: from.clone() };
-        let operation = format!("node.start:{started}");
+        let start = AttemptAction::Start { mesh: "mesh2".into(), kind: NodeKind::NodeAdmin, path: started.clone(), node_id: t.node(&started).unwrap().node_id.clone(), from_incarnation: from.clone() };
+        let operation = rdm_core::OperationId::new("node.start", rdm_core::OperationSubject::Birth { node_id: t.node(&started).unwrap().node_id.clone(), incarnation: from.clone() });
         let p = BuildProjection {
             build_id: build_id.clone(),
             topology: FabricTopology { section_of: None, storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default(), pinned: Default::default() },
@@ -1788,6 +1704,8 @@ mod tests {
             action: Some(start.clone()),
             attempt_actions: [(16, start)].into_iter().collect(),
             attempt_executors: Default::default(),
+            attempt_executor_meshes: Default::default(),
+            attempt_claimed_meshes: Default::default(),
             opened: 16,
             failed_at: None,
             completed_at: None,
@@ -1796,7 +1714,7 @@ mod tests {
             lanes: Default::default(),
         };
         let atlas = crate::atlas::Atlas::default();
-        assert_eq!(atlas.take_receipt(&p, 16, &operation), crate::atlas::Taken::Effect(Some("started")), "the start's Complete receipt is the atlas's");
+        assert_eq!(atlas.take_receipt(&p, 16, &operation, &None), crate::atlas::Taken::Effect(Some("started")), "the start's Complete receipt is the atlas's");
         let viewed = |status: NodeStatus, stopped: bool| {
             let mut view = t.clone();
             for n in view.nodes.iter_mut().filter(|n| n.name == started) {
@@ -1837,19 +1755,18 @@ mod tests {
             rdm_core::binding::Binding { launch_id: id.into(), sha256: rdm_core::binding::sha256_file(&p).unwrap(), executable: p, image: None }
         };
         let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
-        let with = |path: &str, b: rdm_core::binding::Binding| {
+        let with = |p: PathName, kind: NodeKind, b: rdm_core::binding::Binding| {
             let mut next = current.clone();
-            let p: PathName = path.parse().unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { mesh: p.mesh.clone(), kind: p.kind, path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() });
+            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind, path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() });
             spec.executable = Some(b);
             m.spec_by_path.insert(p, spec);
             next
         };
         let rows = crate::accepted::Recorded::new();
         let good = bind("rpc_node");
-        assert_eq!(named_executable_refusal(&current, &with("mesh1.rpc.2", good.clone()), &rows, ProviderKind::Process, &[]).await, None, "a hash-true file of the path's kind");
+        assert_eq!(named_executable_refusal(&current, &with(PathName::new("mesh1.rpc", "2").unwrap(), NodeKind::RpcNode, good.clone()), &rows, ProviderKind::Process, &[]).await, None, "a hash-true file of the path's kind");
         let refused = |r: Option<BuildReject>| match r {
             Some(BuildReject::ExecutableRefused { node, detail }) => (node, detail),
             other => panic!("refused executable-refused: {other:?}"),
@@ -1858,26 +1775,25 @@ mod tests {
         let wrong = rdm_core::binding::Binding { sha256: "0".repeat(64), ..good.clone() };
         let admin = bind("node_admin");
         for (b, what) in [(missing, "a missing file"), (wrong, "a sha its bytes do not hash to"), (admin.clone(), "a binding of another kind")] {
-            let (node, detail) = refused(named_executable_refusal(&current, &with("mesh1.rpc.2", b), &rows, ProviderKind::Process, &[]).await);
-            assert_eq!(node, "mesh1.rpc.2", "{what}: {detail}");
+            let (node, detail) = refused(named_executable_refusal(&current, &with(PathName::new("mesh1.rpc", "2").unwrap(), NodeKind::RpcNode, b), &rows, ProviderKind::Process, &[]).await);
+            assert_eq!(node, PathName::new("mesh1.rpc", "2").unwrap(), "{what}: {detail}");
         }
         // A held path whose row already records the executable is not hashed again: its file may be gone.
         let gone = rdm_core::binding::Binding { executable: dir.join("gone"), ..admin.clone() };
-        let recorded: crate::accepted::Recorded = [("mesh1.admin.1".parse().unwrap(), crate::accepted::RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
-        assert_eq!(named_executable_refusal(&current, &with("mesh1.admin.1", gone), &recorded, ProviderKind::Process, &[]).await, None);
-        assert_eq!(BuildReject::ExecutableRefused { node: "x".into(), detail: "y".into() }.reason(), "executable-refused");
+        let recorded: crate::accepted::Recorded = [(PathName::new("mesh1.admin", "1").unwrap(), crate::accepted::RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
+        assert_eq!(named_executable_refusal(&current, &with(PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, gone), &recorded, ProviderKind::Process, &[]).await, None);
+        assert_eq!(BuildReject::ExecutableRefused { node: PathName::new("root", "x").unwrap(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A topology of mesh1 holding one node-admin, and that topology with each `(path, binding)` created.
-    fn creating(created: &[(&str, rdm_core::binding::Binding)]) -> (crate::accepted::FabricTopology, crate::accepted::FabricTopology) {
+    fn creating(created: &[(PathName, NodeKind, rdm_core::binding::Binding)]) -> (crate::accepted::FabricTopology, crate::accepted::FabricTopology) {
         let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])))].into() };
         let mut next = current.clone();
         let m = next.meshes.get_mut("mesh1").unwrap();
-        for (path, b) in created {
-            let p: PathName = path.parse().unwrap();
+        for (p, kind, b) in created {
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: p.mesh.clone(), kind: p.kind, path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: *kind, path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
         }
         (current, next)
     }
@@ -1902,7 +1818,7 @@ mod tests {
         let dir = crate::test_support::tempdir("hash-once-shared");
         let node = bound_file(&dir, "rdm-node", "broker", 4 << 20);
         let as_kind = |id: &str| rdm_core::binding::Binding { launch_id: id.into(), ..node.clone() };
-        let (current, next) = creating(&[("mesh1.broker.1", as_kind("broker")), ("mesh1.gateway.1", as_kind("gateway")), ("mesh1.compute.1", as_kind("compute"))]);
+        let (current, next) = creating(&[(PathName::new("mesh1.broker", "1").unwrap(), NodeKind::Broker, as_kind("broker")), (PathName::new("mesh1.gateway", "1").unwrap(), NodeKind::Gateway, as_kind("gateway")), (PathName::new("mesh1.compute", "1").unwrap(), NodeKind::Compute, as_kind("compute"))]);
         let capture = crate::span_capture::Capture::new("rdm148-hash-once-shared");
         let refused = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -1913,9 +1829,9 @@ mod tests {
         assert_eq!(hashes.len(), 1, "one hash of the one file the three kinds share: {hashes:#?}");
         assert_eq!(hashes[0].attributes.get("outcome").map(String::as_str), Some("hashed"), "{hashes:#?}");
         // Each kind's launch id is still checked: the shared file bound for the node-admin at a broker path.
-        let (current, next) = creating(&[("mesh1.broker.1", as_kind("broker")), ("mesh1.gateway.1", as_kind("node_admin"))]);
+        let (current, next) = creating(&[(PathName::new("mesh1.broker", "1").unwrap(), NodeKind::Broker, as_kind("broker")), (PathName::new("mesh1.gateway", "1").unwrap(), NodeKind::Gateway, as_kind("node_admin"))]);
         match named_executable_refusal(&current, &next, &crate::accepted::Recorded::new(), ProviderKind::Process, &[]).await {
-            Some(BuildReject::ExecutableRefused { node, detail }) => assert_eq!(node, "mesh1.gateway.1", "{detail}"),
+            Some(BuildReject::ExecutableRefused { node, detail }) => assert_eq!(node, PathName::new("mesh1.gateway", "1").unwrap(), "{detail}"),
             other => panic!("refused executable-refused at mesh1.gateway.1: {other:?}"),
         }
         eprintln!("span rdm.node_admin.deployment.resolve.via-executable-hash trace_id={} {:?}", hashes[0].trace_id, hashes[0].attributes);
@@ -1929,7 +1845,7 @@ mod tests {
     #[tokio::test]
     async fn distinct_files_a_request_names_are_hashed_at_once_at_acceptance() {
         let dir = crate::test_support::tempdir("hash-once-distinct");
-        let (current, next) = creating(&[("mesh1.rpc.1", bound_file(&dir, "rpc", "rpc_node", 64 << 20)), ("mesh1.broker.1", bound_file(&dir, "broker", "broker", 64 << 20)), ("mesh1.gateway.1", bound_file(&dir, "gateway", "gateway", 64 << 20))]);
+        let (current, next) = creating(&[(PathName::new("mesh1.rpc", "1").unwrap(), NodeKind::RpcNode, bound_file(&dir, "rpc", "rpc_node", 64 << 20)), (PathName::new("mesh1.broker", "1").unwrap(), NodeKind::Broker, bound_file(&dir, "broker", "broker", 64 << 20)), (PathName::new("mesh1.gateway", "1").unwrap(), NodeKind::Gateway, bound_file(&dir, "gateway", "gateway", 64 << 20))]);
         let capture = crate::span_capture::Capture::new("rdm148-hash-once-distinct");
         let refused = {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -1958,12 +1874,12 @@ mod tests {
         let rows = crate::accepted::Recorded::new();
         // mesh1.broker.1 sorts before mesh1.gateway.1.
         for (created, first, what) in [
-            ([("mesh1.broker.1", wrong_sha.clone()), ("mesh1.gateway.1", wrong_kind.clone())], "mesh1.broker.1", "a wrong sha before a wrong launch id"),
-            ([("mesh1.broker.1", rdm_core::binding::Binding { launch_id: "compute".into(), ..b.clone() }), ("mesh1.gateway.1", missing.clone())], "mesh1.broker.1", "a wrong launch id before a missing file"),
-            ([("mesh1.broker.1", b.clone()), ("mesh1.gateway.1", missing.clone())], "mesh1.gateway.1", "a later missing file once the earlier path passes"),
+            ([(PathName::new("mesh1.broker", "1").unwrap(), NodeKind::Broker, wrong_sha.clone()), (PathName::new("mesh1.gateway", "1").unwrap(), NodeKind::Gateway, wrong_kind.clone())], PathName::new("mesh1.broker", "1").unwrap(), "a wrong sha before a wrong launch id"),
+            ([(PathName::new("mesh1.broker", "1").unwrap(), NodeKind::Broker, rdm_core::binding::Binding { launch_id: "compute".into(), ..b.clone() }), (PathName::new("mesh1.gateway", "1").unwrap(), NodeKind::Gateway, missing.clone())], PathName::new("mesh1.broker", "1").unwrap(), "a wrong launch id before a missing file"),
+            ([(PathName::new("mesh1.broker", "1").unwrap(), NodeKind::Broker, b.clone()), (PathName::new("mesh1.gateway", "1").unwrap(), NodeKind::Gateway, missing.clone())], PathName::new("mesh1.gateway", "1").unwrap(), "a later missing file once the earlier path passes"),
         ] {
             let (current, next) = creating(&created);
-            assert_eq!(next.meshes["mesh1"].spec_by_path.keys().find(|p| p.kind != NodeKind::NodeAdmin).map(|p| p.to_string()).as_deref(), Some("mesh1.broker.1"), "the topology's order");
+            assert_eq!(next.meshes["mesh1"].spec_by_path.iter().find(|(_, spec)| spec.kind != NodeKind::NodeAdmin).map(|(location, _)| location.clone()), Some(PathName::new("mesh1.broker", "1").unwrap()), "the topology's order");
             match named_executable_refusal(&current, &next, &rows, ProviderKind::Process, &[]).await {
                 Some(BuildReject::ExecutableRefused { node, detail }) => assert_eq!(node, first, "{what}: {detail}"),
                 other => panic!("{what}: refused executable-refused: {other:?}"),
@@ -1997,10 +1913,10 @@ mod tests {
         let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 0)])))].into() };
         let with = |b: rdm_core::binding::Binding| {
             let mut next = current.clone();
-            let p: PathName = "mesh1.rpc.1".parse().unwrap();
+            let p: PathName = PathName::new("mesh1.rpc", "1").unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: p.mesh.clone(), kind: p.kind, path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode, path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default(), config: Default::default() });
             next
         };
         let rows = crate::accepted::Recorded::new();
@@ -2010,7 +1926,7 @@ mod tests {
         for (configured, what) in [(dirs.clone(), "outside every configured directory"), (Vec::new(), "none configured")] {
             match named_executable_refusal(&current, &with(out.clone()), &rows, ProviderKind::Container, &configured).await {
                 Some(BuildReject::ExecutableRefused { node, detail }) => {
-                    assert_eq!(node, "mesh1.rpc.1", "{what}: {detail}");
+                    assert_eq!(node, PathName::new("mesh1.rpc", "1").unwrap(), "{what}: {detail}");
                     assert!(detail.contains("RDM_EXECUTABLE_DIRS") && detail.contains(&out.executable.display().to_string()), "{what}: {detail}");
                 }
                 other => panic!("{what}: refused executable-refused: {other:?}"),
@@ -2037,11 +1953,11 @@ mod tests {
         let current = crate::accepted::FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), crate::accepted::MeshTopology::of(&crate::build::MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])))].into() };
         let observed = crate::topology::Topology { fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes: vec![] };
         let grown = crate::accepted::compile(&current, &crate::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, &observed).unwrap();
-        assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: "mesh1.rpc.2".into() }));
+        assert_eq!(created_without_executable(&current, &grown), Some(BuildReject::ExecutableMissing { node: PathName::new("mesh1.rpc", "2").unwrap() }));
         assert_eq!(created_without_executable(&current, &current), None, "held paths naming none are history");
         let mut named = grown.clone();
-        named.meshes.get_mut("mesh1").unwrap().spec_by_path.get_mut(&"mesh1.rpc.2".parse().unwrap()).unwrap().executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/x/rpc".into(), sha256: "0".repeat(64), image: None });
+        named.meshes.get_mut("mesh1").unwrap().spec_by_path.get_mut(&PathName::new("mesh1.rpc", "2").unwrap()).unwrap().executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/x/rpc".into(), sha256: "0".repeat(64), image: None });
         assert_eq!(created_without_executable(&current, &named), None);
-        assert_eq!(BuildReject::ExecutableMissing { node: "x".into() }.reason(), "executable-missing");
+        assert_eq!(BuildReject::ExecutableMissing { node: PathName::new("root", "x").unwrap() }.reason(), "executable-missing");
     }
 }

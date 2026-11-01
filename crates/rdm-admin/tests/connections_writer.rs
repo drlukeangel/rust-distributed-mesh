@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 
 const POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
-fn end(name: &str) -> ConnectionEnd {
-    ConnectionEnd { name: name.parse().unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
+fn end(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> ConnectionEnd {
+    ConnectionEnd { mesh: mesh.into(), kind, name, node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
 }
 
 fn resolved(e: &ConnectionEnd) -> ResolvedNode {
-    ResolvedNode {
+    ResolvedNode { mesh: e.mesh.clone(), kind: e.kind,
         node_id: e.node_id.clone(),
         name: e.name.clone(),
         endpoint_id: iroh::SecretKey::generate().public(),
@@ -42,8 +42,8 @@ fn data_dir(tag: &str) -> std::path::PathBuf {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restart_holds_none_of_the_previous_births_rows_and_the_first_resolution_dials() {
     let dir = data_dir("restart-holds-none");
-    let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap() };
+    let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap() };
     {
         let storage = open().await;
         let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
@@ -56,7 +56,7 @@ async fn a_restart_holds_none_of_the_previous_births_rows_and_the_first_resoluti
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(open().await);
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let _writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
-    let r = resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY);
+    let r = resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY);
     assert_eq!(r.route, EffectiveRoute::Direct { known: false }, "the restarted birth holds no Proxy and dials");
     assert!(reconnect_plan(&held.lock().unwrap(), |_| None).is_empty(), "no reconnect series stands");
     assert_eq!(storage.history().await.unwrap().len(), 3, "the store keeps the previous birth's rows as written");
@@ -68,8 +68,8 @@ async fn a_restart_holds_none_of_the_previous_births_rows_and_the_first_resoluti
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pair() {
     let dir = data_dir("bounded");
-    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let (me, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     let target = resolved(&dest);
@@ -99,8 +99,8 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_cuts_back() {
     let dir = data_dir("delete");
-    let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 11)).await.unwrap();
@@ -110,7 +110,7 @@ async fn a_direct_connected_beside_a_proxy_disconnects_it_durably_and_the_route_
     writer.observations_landed().await;
     let deleted = storage.history().await.unwrap().into_iter().last().unwrap();
     assert_eq!((deleted.kind, deleted.state, deleted.reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
-    assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::Direct { known: true });
     assert_eq!(writer.disconnect_owed().await.unwrap(), 0, "nothing owed once the delete landed");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -176,8 +176,8 @@ async fn until(what: &str, cond: impl Fn() -> bool) {
 /// (round 1, ordinal 1) at `failed_at`: what a proven carried path leaves (connections.md §7).
 async fn proxied(tag: &str, failed_at: u64) -> (std::path::PathBuf, ConnectionEnd, ConnectionEnd, Arc<dyn ConnectionsStorage>, Arc<Mutex<ConnectionsHeld>>, ConnectionsWriter, NodeConnection) {
     let dir = data_dir(tag);
-    let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
@@ -204,10 +204,10 @@ async fn an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_sourc
     writer.observations_landed().await;
     assert_eq!(storage.history().await.unwrap().len(), rows_before, "the accept wrote nothing");
     until("the source dials its own connection", || dial.calls().len() == 1).await;
-    assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays the route while the dial is out");
+    assert!(matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays the route while the dial is out");
     assert_eq!(dial.calls()[0].0, dest, "the dial is toward the exact birth the Proxy names");
     dial.go.add_permits(1);
-    until("the route cuts back", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
+    until("the route cuts back", || matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::Direct { known: true })).await;
     let history = storage.history().await.unwrap();
     let after: Vec<(ConnectionKind, ConnectionState, Option<String>)> = history[rows_before..].iter().map(|r| (r.kind, r.state, r.reason.clone())).collect();
     assert_eq!(
@@ -241,7 +241,7 @@ async fn repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_ba
     until("the one attempt is made", || dial.calls().len() == 1).await;
     assert!(dial.calls()[0].1 >= due, "the dial waited for the backoff: dialled at {} ms, due at {due} ms", dial.calls()[0].1);
     dial.go.add_permits(1);
-    until("the route cuts back", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
+    until("the route cuts back", || matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::Direct { known: true })).await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert_eq!(dial.calls().len(), 1, "one dial for five accepts");
     let _ = std::fs::remove_dir_all(&dir);
@@ -262,7 +262,7 @@ async fn a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_
     until("the failed dial's row is held", || held.lock().unwrap().own_latest_directs().iter().any(|d| d.recovery.map(|r| r.attempt_ordinal) == Some(2))).await;
     let latest = storage.history().await.unwrap().into_iter().last().unwrap();
     assert_eq!((latest.kind, latest.state, latest.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))), "the series' next Failed row: {latest:?}");
-    assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays the route");
+    assert!(matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays the route");
     assert!(writer.owed().is_empty(), "no delete is owed");
     let due = rdm_core::reconnect::next_due(&latest).unwrap();
     until("the attempt is rescheduled from the new row", || writer.recovery_pending().iter().any(|p| p.destination == dest && p.due_ms == due)).await;
@@ -285,7 +285,7 @@ async fn an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_bir
     held.lock().unwrap().set_topology_view(topology_view.clone());
     let dial = CellDial::new(&writer, resolved(&dest), vec![Ok(())]);
     let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(50), Some(dial.dial()));
-    let next = end("mesh1.rpc.3");
+    let next = end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
     writer.accepted(&resolved(&next));
     assert_eq!(writer.recovery_pending().into_iter().map(|p| p.destination).collect::<Vec<_>>(), vec![dest.clone()], "the next birth is not the birth the Proxy names; only the Failed row's birth is pending");
     // The Proxy's own birth coalesces into its pending attempt (due when its backoff ends, seconds away); then it is gone.
@@ -336,8 +336,8 @@ impl ConnectionsStorage for RefusingIndex {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands() {
     let dir = data_dir("refused-delete");
-    let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
+    let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
@@ -348,17 +348,17 @@ async fn a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands()
     // The delete's index write is refused: the Proxy stays effective, the obligation stands.
     storage.refuse.store(1, std::sync::atomic::Ordering::SeqCst);
     assert!(writer.settle_owed().await.is_err(), "the refused write is named");
-    assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "new calls keep the Proxy");
+    assert!(matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::ViaPeer { .. }), "new calls keep the Proxy");
     assert_eq!(writer.owed().len(), 1);
     assert!(!storage.connections().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "nothing durable says the Proxy deleted");
     // The bounded reconciler attempts it again until it lands; then Direct is effective.
     let _task = writer.spawn_reconciler(std::time::Duration::from_millis(50), None);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }) {
+    while matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::ViaPeer { .. }) {
         assert!(std::time::Instant::now() < deadline, "the delete never landed");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true }));
+    assert!(matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::Direct { known: true }));
     assert!(writer.owed().is_empty());
     let deleted: Vec<NodeConnection> = storage.connections().await.unwrap().into_iter().filter(|r| r.kind == ConnectionKind::Proxy).collect();
     assert_eq!(deleted.len(), 1);
@@ -377,8 +377,8 @@ async fn a_refused_disconnected_write_keeps_the_proxy_effective_until_it_lands()
 async fn a_carrier_names_its_own_connection_only_when_its_latest_direct_is_not_connected() {
     use rdm_transport::CarrierConnections;
     let dir = data_dir("connections");
-    let (me, dest) = (end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let (me, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     assert_eq!(writer.connection_not_active(&dest.node_id).await, None, "no fact is not a connection fact");
     writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
@@ -427,8 +427,8 @@ impl ConnectionsStorage for SlowIndex {
 async fn a_carrier_names_the_connection_a_dial_has_just_failed_however_slow_the_write() {
     use rdm_transport::CarrierConnections;
     let dir = data_dir("connections-slow");
-    let (me, dest) = (end("mesh2.rpc.1"), end("mesh2.admin.1"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap())));
+    let (me, dest) = (end(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap())));
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.direct_failed(&resolved(&dest), "timed out");
     let why = writer.connection_after_dial(&resolved(&dest), "timed out").await.expect("the failed dial's fact is named");
@@ -446,8 +446,8 @@ async fn a_carrier_names_the_connection_a_dial_has_just_failed_however_slow_the_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_observation_write_is_held_only_once_its_retry_lands() {
     let dir = data_dir("refused-observation");
-    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
-    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
+    let (me, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     storage.refuse.store(1, std::sync::atomic::Ordering::SeqCst);
@@ -460,15 +460,15 @@ async fn a_refused_observation_write_is_held_only_once_its_retry_lands() {
     }
     {
         let h = held.lock().unwrap();
-        assert!(!h.holds_direct_fact(&me.name, &dest.name), "a refused fact is not held");
+        assert!(!h.holds_direct_fact(&me.node_id, &dest.node_id), "a refused fact is not held");
         assert!(h.own_latest_directs().is_empty());
-        assert_eq!(resolve(&h, &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: false });
+        assert_eq!(resolve(&h, &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::Direct { known: false });
     }
     assert!(storage.connections().await.unwrap().is_empty(), "nothing durable in the index");
     assert_eq!(writer.in_flight(), 1, "the write stays owed");
     // The retry lands it, with no second observation.
     writer.observations_landed().await;
-    assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::Direct { known: true });
     let index = storage.connections().await.unwrap();
     assert_eq!((index.len(), index[0].state), (1, ConnectionState::Connected));
     assert_eq!(storage.history().await.unwrap().len(), 1, "the raw log took the row once: only the refused index write was attempted again");
@@ -483,8 +483,8 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::ping::{Ping, PingRequest};
     let dir = data_dir("dead-cold");
-    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let (me, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
     let resolver = Arc::new(StaticResolver::new());
@@ -492,8 +492,8 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
     let opts = CallOptions { budget: Budget::Overall(std::time::Duration::from_millis(300)), ..Default::default() };
-    let resolution = resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY);
-    let call = client.call_resolved::<Ping>(resolution, &me.name, &dest.name, &dest.node_id, &PingRequest::Ping { payload: vec![1] }, &opts).await;
+    let resolution = resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY);
+    let call = client.call_resolved::<Ping>(resolution, &me.node_id, &dest.name, &dest.node_id, &PingRequest::Ping { payload: vec![1] }, &opts).await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });
     assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
     writer.observations_landed().await;
@@ -539,7 +539,7 @@ impl ConnectionsStorage for SlowFirstPut {
 /// observation's index write is the slowest.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
-    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let (me, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowFirstPut(Default::default()));
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held);
@@ -563,16 +563,16 @@ async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_rows_written_before() {
     let dir = data_dir("held-name");
-    let (me, peer) = (end("mesh1.rpc.7"), end("mesh1.rpc.2"));
-    let taken: PathName = "mesh1.rpc.1".parse().unwrap();
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let (me, peer) = (end(rdm_core::PathName::new("mesh1.rpc", "7").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     // The process's held name, as its topology view holds it: none told yet, so the birth's.
     let told: Arc<Mutex<Option<PathName>>> = Arc::default();
     let (cell, birth) = (told.clone(), me.name.clone());
     writer.follow_held_name(move || cell.lock().unwrap().clone().unwrap_or_else(|| birth.clone())).unwrap();
-    assert!(writer.follow_held_name(|| "mesh1.rpc.9".parse().unwrap()).is_err_and(|e| e.contains("mesh1.rpc.7") && e.contains("already reads its name")), "one place holds the name");
+    assert!(writer.follow_held_name(|| rdm_core::PathName::new("mesh1.rpc", "9").unwrap()).is_err_and(|e| e.contains("mesh1.rpc.7") && e.contains("already reads its name")), "one place holds the name");
     let target = resolved(&peer);
     writer.direct_connected(&target);
     writer.observations_landed().await;
@@ -601,9 +601,9 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restarted_birth_starts_its_own_series_naming_its_own_birth() {
     let dir = data_dir("restart-series");
-    let (previous, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let (previous, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
     let me = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..previous.clone() };
-    let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap() };
+    let open = || async { FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap() };
     {
         let storage = open().await;
         let mut failed = row(&previous, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
@@ -631,9 +631,9 @@ async fn a_restarted_birth_starts_its_own_series_naming_its_own_birth() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming_that_birth() {
     let dir = data_dir("next-birth-series");
-    let (me, gone) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let (me, gone) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
     let next = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..gone.clone() };
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
     for i in 0..2 {
         writer.direct_failed(&resolved(&gone), &format!("refused {i}"));
@@ -691,8 +691,8 @@ fn the_span_that_owed_a_write_has_ended_once_the_write_has_landed() {
     let owing = OpenSpans::named("rdm.test.connections_writer.owing", std::time::Duration::from_millis(100));
     spans_of("the_span_that_owed_a_write_has_ended_once_the_write_has_landed", Some(owing.clone()), || async {
         let dir = data_dir("owing-span");
-        let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let (me, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
         // The call owes its fact inside its own span and lets the span go: the owed write holds it.
         tracing::info_span!("rdm.test.connections_writer.owing").in_scope(|| writer.direct_connected(&resolved(&dest)));
@@ -715,8 +715,8 @@ fn the_span_that_owed_a_write_has_ended_once_the_write_has_landed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_observation_after_a_recorded_row_of_its_pair_is_held_as_the_latest_whatever_the_clock_reads() {
     let dir = data_dir("recorded-then-observed");
-    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+    let (me, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     // Recorded at a millisecond the clock has not passed when the observation is stamped.
@@ -750,8 +750,8 @@ fn an_attempt_its_dials_reply_spent_is_not_armed_again_by_another_destinations_r
     let dests = std::cell::RefCell::new(Vec::new());
     let spans = spans_of("an_attempt_its_dials_reply_spent_is_not_armed_again_by_another_destinations_row_landing", None, || async {
         let dir = data_dir("spent-not-armed-again");
-        let (me, a, b) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"), end("mesh1.rpc.4"));
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let (me, a, b) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
         // Both series failed a minute ago: both attempts are due at once.
         for dest in [&a, &b] {
@@ -768,7 +768,7 @@ fn an_attempt_its_dials_reply_spent_is_not_armed_again_by_another_destinations_r
             let (w, seen) = (w.clone(), seen.clone());
             let target = ends.iter().find(|e| **e == destination).map(resolved);
             Box::pin(async move {
-                seen.lock().unwrap().push(destination.name.to_string());
+                seen.lock().unwrap().push(destination.node_id.to_string());
                 w.direct_connected(&target.expect("a destination the cell seeded"));
                 "Reply".to_string()
             })
@@ -780,19 +780,20 @@ fn an_attempt_its_dials_reply_spent_is_not_armed_again_by_another_destinations_r
         writer.observations_landed().await;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(writer.recovery_pending().is_empty(), "no attempt stands once both rows have landed: {:?}", writer.recovery_pending());
-        dests.borrow_mut().extend([a.name.to_string(), b.name.to_string()]);
+        dests.borrow_mut().extend([a.node_id.to_string(), b.node_id.to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     });
     let mut dialled = calls.lock().unwrap().clone();
     dialled.sort();
-    let dests = dests.into_inner();
+    let mut dests = dests.into_inner();
+    dests.sort();
     assert_eq!(dialled, dests, "each destination dialled once");
     for dest in &dests {
-        let ended: Vec<Option<String>> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.connection.remove.via-recovery-attempt" && attr(s, "destination").as_deref() == Some(dest.as_str())).map(|s| attr(s, "reason")).collect();
+        let ended: Vec<Option<String>> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.connection.remove.via-recovery-attempt" && attr(s, "destination_id").as_deref() == Some(dest.as_str())).map(|s| attr(s, "reason")).collect();
         let story: Vec<String> = spans
             .iter()
             .filter(|s| ["rdm.node_admin.connection.remove.via-recovery-attempt", "rdm.node_admin.connection.update.via-observed", "rdm.node_admin.connection.create.via-recovery-dial"].contains(&s["name"].as_str().unwrap_or_default()))
-            .map(|s| format!("{} start={} end={} destination={:?} reason={:?} state={:?}", s["name"].as_str().unwrap_or_default(), s["start_unix_nano"], s["end_unix_nano"], attr(s, "destination"), attr(s, "reason"), attr(s, "state")))
+            .map(|s| format!("{} start={} end={} destination={:?} reason={:?} state={:?}", s["name"].as_str().unwrap_or_default(), s["start_unix_nano"], s["end_unix_nano"], attr(s, "destination_id"), attr(s, "reason"), attr(s, "state")))
             .collect();
         assert_eq!(ended, vec![Some("direct-connected".to_string())], "the attempt toward {dest} ends on one span:\n{}", story.join("\n"));
     }
@@ -812,11 +813,11 @@ fn an_attempt_its_dials_reply_spent_is_not_armed_again_by_another_destinations_r
 fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts() {
     let open_dials = OpenSpans::named("rdm.node_admin.connection.create.via-recovery-dial", std::time::Duration::ZERO);
     let spans = spans_of("a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts", Some(open_dials.clone()), || async {
-        let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-        let jitter1 = rdm_core::reconnect::deterministic_jitter(&me.name, &dest.name, 1);
+        let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+        let jitter1 = rdm_core::reconnect::deterministic_jitter(&me.node_id, &dest.node_id, 1);
         let failed_at = now_ms() - rdm_core::reconnect::reconnect_backoff(1) - jitter1 + 250;
         let dir = data_dir("due-time-reconnect");
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
         let mut failed1 = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
@@ -862,7 +863,7 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
         assert_eq!(dial2_dest, dest);
         assert!(dial2_at >= due2, "attempt 2 waited for due2: dialled at {dial2_at} ms, due at {due2} ms");
         dial.go.add_permits(1);
-        until("the route cuts back to Direct after Proxy delete", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
+        until("the route cuts back to Direct after Proxy delete", || matches!(resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY).route, EffectiveRoute::Direct { known: true })).await;
         until("the pending item is spent once Direct is Connected", || writer.recovery_pending().is_empty()).await;
         // The dial decides from its own result and never waits for its row (Q169): its span,
         // the parent of the row's, ends once that row has landed.
@@ -955,15 +956,15 @@ fn attr(sp: &serde_json::Value, k: &str) -> Option<String> {
 /// round and ordinal. Must NOT happen: a landed transition whose span leaves out any of them.
 #[test]
 fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_carrier_and_series_position() {
-    let (me, carrier, dest, other) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"), end("mesh1.rpc.4"));
-    let names = (me.name.to_string(), carrier.name.to_string(), dest.name.to_string(), other.name.to_string());
+    let (me, carrier, dest, other) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+    let names = (me.node_id.to_string(), carrier.node_id.to_string(), dest.node_id.to_string(), other.node_id.to_string());
     let dir = data_dir("transition-spans");
     let spans = spans_of("every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason_carrier_and_series_position", None, || async {
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
         // Seeded: the carrier's connection, and a failing series at (1, 2) whose next attempt is due now.
-        let failed_at = now_ms() - rdm_core::reconnect::reconnect_backoff(2) - rdm_core::reconnect::deterministic_jitter(&me.name, &dest.name, 2) - 1;
+        let failed_at = now_ms() - rdm_core::reconnect::reconnect_backoff(2) - rdm_core::reconnect::deterministic_jitter(&me.node_id, &dest.node_id, 2) - 1;
         let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
         failed.recovery = Some(rdm_core::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 2 });
         failed.reason = Some("seeded".into());
@@ -990,13 +991,13 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
     let _ = std::fs::remove_dir_all(&dir);
     let named = |n: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == n).collect() };
     let transitions: Vec<&serde_json::Value> = ["rdm.node_admin.connection.update.via-observed", "rdm.node_admin.connection.delete.via-direct-restored", "rdm.node_admin.connection.update.via-connection-delete"].into_iter().flat_map(named).collect();
-    let kinds: Vec<(String, String, Option<String>)> = transitions.iter().map(|sp| (sp["name"].as_str().unwrap().rsplit('.').next().unwrap().to_string(), format!("{}->{}", attr(sp, "source").unwrap_or_default(), attr(sp, "destination").unwrap_or_default()), attr(sp, "state"))).collect();
+    let kinds: Vec<(String, String, Option<String>)> = transitions.iter().map(|sp| (sp["name"].as_str().unwrap().rsplit('.').next().unwrap().to_string(), format!("{}->{}", attr(sp, "source_id").unwrap_or_default(), attr(sp, "destination_id").unwrap_or_default()), attr(sp, "state"))).collect();
     assert_eq!(transitions.len(), 5, "five transitions landed (Proxy Connected, Direct Connected, Proxy Disconnected, Direct Failed, the drop): {kinds:?}");
     for sp in &transitions {
-        for k in ["source", "destination", "kind", "state", "reason"] {
+        for k in ["source_id", "destination_id", "kind", "state", "reason"] {
             assert!(attr(sp, k).is_some(), "a transition span names its {k}: {sp}");
         }
-        assert_eq!(attr(sp, "source").as_deref(), Some(names.0.as_str()), "{sp}");
+        assert_eq!(attr(sp, "source_id").as_deref(), Some(names.0.as_str()), "{sp}");
         assert!(!attr(sp, "kind").unwrap().is_empty() && !attr(sp, "state").unwrap().is_empty(), "{sp}");
         if attr(sp, "kind").as_deref() == Some("proxy") {
             assert_eq!(attr(sp, "carrier").as_deref(), Some(names.1.as_str()), "a Proxy transition names its carrier: {sp}");
@@ -1008,11 +1009,11 @@ fn every_landed_connection_transition_is_spanned_with_its_pair_kind_state_reason
     let delete = named("rdm.node_admin.connection.delete.via-direct-restored");
     assert_eq!(delete.iter().map(|sp| (attr(sp, "kind"), attr(sp, "state"), attr(sp, "reason"), attr(sp, "outcome"))).collect::<Vec<_>>(), vec![(Some("proxy".into()), Some("disconnected".into()), Some("direct-restored".into()), Some("landed".into()))], "{delete:?}");
     let drop = named("rdm.node_admin.connection.update.via-connection-delete");
-    assert_eq!(drop.iter().map(|sp| (attr(sp, "destination"), attr(sp, "kind"), attr(sp, "state"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("direct".into()), Some("disconnected".into()))], "{drop:?}");
+    assert_eq!(drop.iter().map(|sp| (attr(sp, "destination_id"), attr(sp, "kind"), attr(sp, "state"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("direct".into()), Some("disconnected".into()))], "{drop:?}");
     let failed: Vec<&&serde_json::Value> = transitions.iter().filter(|sp| attr(sp, "state").as_deref() == Some("failed")).collect();
-    assert_eq!(failed.iter().map(|sp| (attr(sp, "destination"), attr(sp, "recovery_round"), attr(sp, "attempt_ordinal"))).collect::<Vec<_>>(), vec![(Some(names.3.clone()), Some("1".into()), Some("1".into()))], "a Direct Failed names its round and ordinal: {failed:?}");
+    assert_eq!(failed.iter().map(|sp| (attr(sp, "destination_id"), attr(sp, "recovery_round"), attr(sp, "attempt_ordinal"))).collect::<Vec<_>>(), vec![(Some(names.3.clone()), Some("1".into()), Some("1".into()))], "a Direct Failed names its round and ordinal: {failed:?}");
     let dials = named("rdm.node_admin.connection.create.via-recovery-dial");
-    assert_eq!(dials.iter().map(|sp| (attr(sp, "destination"), attr(sp, "recovery_round"), attr(sp, "attempt_ordinal"), attr(sp, "fact"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("1".into()), Some("3".into()), Some("connected".into()))], "the reconnect attempt names its round and its ordinal, one above the latest Failed row's: {dials:?}");
+    assert_eq!(dials.iter().map(|sp| (attr(sp, "destination_id"), attr(sp, "recovery_round"), attr(sp, "attempt_ordinal"), attr(sp, "fact"))).collect::<Vec<_>>(), vec![(Some(names.2.clone()), Some("1".into()), Some("3".into()), Some("connected".into()))], "the reconnect attempt names its round and its ordinal, one above the latest Failed row's: {dials:?}");
 }
 
 /// CONTRACT (connections.md §12: "The reconnect attempt span is owned by node-base and records
@@ -1040,7 +1041,7 @@ fn a_pending_reconnect_attempt_never_dialled_ends_on_a_span_naming_its_supersede
         until("the attempt for the superseded birth ends", || writer.recovery_pending().is_empty()).await;
         assert!(dial.calls().is_empty(), "no dial toward a superseded birth");
         dirs.borrow_mut().push(dir);
-        dests.borrow_mut().push(dest.name.to_string());
+        dests.borrow_mut().push(dest.node_id.to_string());
 
         // The birth whose Direct connects by ordinary traffic.
         let (dir, _me, dest, _storage, _held, writer, _) = proxied("pending-satisfied", now_ms()).await;
@@ -1053,13 +1054,13 @@ fn a_pending_reconnect_attempt_never_dialled_ends_on_a_span_naming_its_supersede
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(dial.calls().is_empty(), "no dial once the Direct is connected");
         dirs.borrow_mut().push(dir);
-        dests.borrow_mut().push(dest.name.to_string());
+        dests.borrow_mut().push(dest.node_id.to_string());
     });
     for dir in dirs.into_inner() {
         let _ = std::fs::remove_dir_all(dir);
     }
     assert!(spans.iter().all(|s| s["name"] != "rdm.node_admin.connection.create.via-recovery-dial"), "nothing was dialled");
-    let ended: Vec<(Option<String>, Option<String>)> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.connection.remove.via-recovery-attempt").map(|sp| (attr(sp, "destination"), attr(sp, "reason"))).collect();
+    let ended: Vec<(Option<String>, Option<String>)> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.connection.remove.via-recovery-attempt").map(|sp| (attr(sp, "destination_id"), attr(sp, "reason"))).collect();
     let d = dests.into_inner();
     assert_eq!(ended, vec![(Some(d[0].clone()), Some("destination-superseded".into())), (Some(d[1].clone()), Some("direct-connected".into()))], "each pending attempt ends on one span naming why");
 }

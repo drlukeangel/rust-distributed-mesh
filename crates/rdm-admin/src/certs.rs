@@ -355,13 +355,13 @@ impl CertIssuer {
     pub fn issue_member(&self, birth: &BirthIdentity) -> Result<MemberIssue, IssueFailure> {
         if matches!(self.material(), Material::NoCerts) {
             let now = self.time.try_now_ms().unwrap_or(0);
-            tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), issued_at_rafka_ms = now)
+            tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node_path = %birth.name.path, node_name = %birth.name.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), issued_at_rafka_ms = now)
                 .in_scope(|| tracing::info!("this node-admin is configured with no certs: the member cert is empty"));
             return Ok(MemberIssue { bytes: Vec::new(), issued_at: now, expires_at: 0, issuer_expires_at: 0, renew_at: 0, minted: None });
         }
         let span = tracing::info_span!(
             "rdm.node_admin.cert.create.via-join",
-            node = %birth.name,
+            node_path = %birth.name.path, node_name = %birth.name.name,
             node_id = %birth.node_id,
             incarnation_id = %birth.incarnation.as_str(),
             issued_at_rafka_ms = tracing::field::Empty,
@@ -387,7 +387,7 @@ impl CertIssuer {
             }
             Err(IssueFailure::Refused { error, detail }) => {
                 span.record("outcome", "refused");
-                tracing::info_span!("rdm.node_admin.cert.reject.via-refused", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), refusal = %error, detail = %detail)
+                tracing::info_span!("rdm.node_admin.cert.reject.via-refused", node_path = %birth.name.path, node_name = %birth.name.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), refusal = %error, detail = %detail)
                     .in_scope(|| tracing::warn!("the member cert is refused: the join is refused"));
             }
         }
@@ -408,7 +408,7 @@ impl CertIssuer {
         let (issuer, minted) = self.issuer_for(&birth.mesh, issued_at)?;
         let wanted = issued_at.saturating_add(policy.member_ttl_secs.saturating_mul(1000));
         let expiry_ms = wanted.min(issuer.expiry_ms());
-        let signed = rdm_core::certs::issue(&issuer, birth, issued_at, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("the member cert of {} ({} {})", birth.name, birth.node_id, birth.incarnation.as_str()) })?;
+        let signed = rdm_core::certs::issue(&issuer, birth, issued_at, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("the member cert of node_id={}, incarnation={}", birth.node_id, birth.incarnation.as_str()) })?;
         let dates = member_cert_dates(&signed, policy.renew_at_permille);
         Ok(MemberIssue { bytes: rdm_core::certs::cert_to_bytes(&signed), issued_at: dates.issued_at, expires_at: dates.expires_at, issuer_expires_at: dates.issuer_expires_at, renew_at: dates.renew_at, minted })
     }
@@ -679,9 +679,9 @@ mod tests {
     use crate::model::{EndpointId, IncarnationId, NodeId};
     use rdm_core::launch::SecretHex;
 
-    fn birth(name: &str) -> BirthIdentity {
-        let name: crate::model::PathName = name.parse().unwrap();
-        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: name.mesh.clone(), name, endpoint_key: EndpointId("k".into()) }
+    fn birth(name: rdm_core::PathName, mesh: &str) -> BirthIdentity {
+        
+        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: mesh.to_owned(), name, endpoint_key: EndpointId("k".into()) }
     }
 
     /// A fabric CA under `root`.
@@ -700,7 +700,7 @@ mod tests {
     fn an_issuer_whose_admin_holds_no_rafka_time_issues_nothing_and_says_so() {
         let root = rdm_core::certs::mint_key();
         let issuer = CertIssuer::with_root(root.clone(), ca_of(&root), None, RafkaTime::unadopted());
-        match issuer.member(&birth("mesh1.rpc.1")) {
+        match issuer.member(&birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1")) {
             Err(IssueFailure::NoRafkaTime(why)) => assert!(why.contains("no rafka-time"), "{why}"),
             other => panic!("{other:?}"),
         }
@@ -712,7 +712,7 @@ mod tests {
     fn the_explicit_no_certs_choice_issues_empty_bytes_and_an_unchosen_wiring_resolves_to_a_named_refusal() {
         let nowhere = std::path::Path::new("/nonexistent");
         let issuer = CertChoice::NoCerts.issuer(nowhere, false, time_at(5)).unwrap();
-        assert_eq!(issuer.member(&birth("mesh1.rpc.1")), Ok(Vec::new()));
+        assert_eq!(issuer.member(&birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1")), Ok(Vec::new()));
         assert_eq!(issuer.issuing_material("mesh2"), Ok(None));
         let refused = CertChoice::default().issuer(nowhere, false, time_at(5)).err().expect("no choice is refused");
         assert!(refused.contains("no cert choice") && refused.contains("NoCerts"), "{refused}");
@@ -733,7 +733,7 @@ mod tests {
         let dir = crate::test_support::tempdir("cert-cut-to-issuer");
         keep_ca(&dir, &ca_key(&material, &issuing).unwrap()).unwrap();
         let late = CertChoice::Ca { secret: root, issuing: Some(issuing) }.issuer(&dir, false, time_at(1_000 + issuing_life_ms - 3_600_000)).unwrap();
-        let signed = rdm_core::certs::cert_from_bytes(&late.member(&birth("mesh1.rpc.1")).unwrap()).unwrap();
+        let signed = rdm_core::certs::cert_from_bytes(&late.member(&birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1")).unwrap()).unwrap();
         assert_eq!(signed.cert.expiry_ms, signed.issuer.cert.expiry_ms, "cut to the issuer's expiry");
     }
 
@@ -874,13 +874,13 @@ mod tests {
         let early = CertIssuer::with_root(root.clone(), ca.clone(), Some(issuer.clone()), time_at(1_000));
         early.set_policy(policy);
         assert_eq!(early.policy(), policy, "the admin holds the policy it was given");
-        let first = early.issue_member(&birth("mesh1.rpc.1")).unwrap();
+        let first = early.issue_member(&birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1")).unwrap();
         assert_eq!((first.expires_at - first.issued_at, first.issuer_expires_at), (12_000, 16_000), "the policy's 12 s from its issue, inside the issuer's life: {first:?}");
         assert!(in_window(&first), "renewed at two thirds of its life plus at most 5 %: {first:?}");
 
         let late = CertIssuer::with_root(root, ca, Some(issuer), time_at(10_000));
         late.set_policy(policy);
-        let cut = late.issue_member(&birth("mesh1.rpc.2")).unwrap();
+        let cut = late.issue_member(&birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1")).unwrap();
         assert!(cut.issued_at >= 10_000 && (cut.expires_at, cut.issuer_expires_at) == (16_000, 16_000), "cut to the issuer's expiry: {cut:?}");
         assert_eq!(rdm_core::certs::cert_from_bytes(&cut.bytes).unwrap().cert.expiry_ms, 16_000, "the bytes carry the cut expiry");
         assert!(in_window(&cut) && cut.renew_at < 16_000, "the renew point is taken from the cut life: {cut:?}");

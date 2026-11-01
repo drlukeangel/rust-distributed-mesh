@@ -196,7 +196,7 @@ fn torn_down(receipts: &rdm_client::Build, meshes: usize) {
 async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_deleted_with_every_receipt() {
     let mut estate = estate_with("a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_deleted_with_every_receipt").await;
     // mesh1.rpc.1's hook is Blocked from its first attempt and never passes: its mesh, and the fabric, stay pending.
-    rdm_test::write_pre_node_ready_knob(&estate.root, "mesh1.rpc.1", "held by the cell").unwrap();
+    rdm_test::write_pre_node_ready_knob(&estate.root, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "held by the cell").unwrap();
     let mut held = estate.carrier().await.create(estate.shape_change(&rdm_client::FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await).await.unwrap_or_else(|end| panic!("the fabric-primary accepts the growth: {end}"));
     let first = held.build_id().to_string();
     // mesh1.rpc.1 is launched and held: the growth reports it Blocked at its pre_node_ready.
@@ -257,7 +257,7 @@ async fn a_fabric_held_pending_by_a_node_whose_pre_node_ready_never_passes_is_de
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after() {
     let mut estate = estate_with("a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_nothing_after").await;
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create:mesh1.rpc.1"})).await;
     let grown = [MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2)])];
     let mut grow = estate.submit_named("mesh1 grown to two rpc nodes", |current, executables| current.resized(&grown, false, executables)).await;
@@ -312,7 +312,7 @@ async fn a_fabric_delete_accepted_mid_launch_lets_the_launch_end_and_launches_no
 async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outstanding_is_continued_by_its_successor() {
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
     let mut estate = ready_fabric("the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outstanding_is_continued_by_its_successor", &shape).await;
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("launch", json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create:mesh1.rpc.2"})).await;
     let grow = estate.submit_named("one more rpc node in mesh1", |current, executables| current.with_one_more("mesh1", NodeKind::RpcNode, executables)).await;
     let grow_id = grow.build_id().to_string();
@@ -361,7 +361,7 @@ async fn the_fabric_primary_lost_after_the_delete_is_accepted_with_a_create_outs
 async fn the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next_attempt() {
     let shape = [("mesh1", 2, 1), ("mesh2", 1, 1)];
     let mut estate = ready_fabric("the_delete_executor_killed_after_the_first_mesh_is_finished_by_the_next_attempt", &shape).await;
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("first-mesh", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete:mesh2.admin.1"})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
@@ -403,7 +403,7 @@ async fn the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_nam
     let shape = [("mesh1", 1, 2)];
     let mut estate = ready_fabric("the_sole_admin_lost_mid_delete_is_adopted_by_a_launch_at_a_new_path_name_that_finishes_the_delete", &shape).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh_id}")})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
@@ -462,7 +462,7 @@ async fn the_backbone_executor_takes_both_roles_and_deletes_the_admin_less_mesh_
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
     let mut estate = ready_fabric("the_backbone_executor_takes_both_roles_and_deletes_the_admin_less_mesh_in_process", &shape).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh2_id}")})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
@@ -611,7 +611,7 @@ async fn the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_dele
     let shape = [("mesh1", 1, 1)];
     let mut estate = ready_fabric("the_fabric_primary_lost_with_no_mesh_left_leaves_only_its_own_node_delete_from_outside_and_creates_nothing", &shape).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("deleted", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_MESH_DELETED, "operation": format!("mesh.delete:{mesh_id}")})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
@@ -683,9 +683,9 @@ async fn the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_t
     let mut estate = ready_fabric("the_backbone_executor_lost_midway_through_the_teardown_is_followed_by_the_next_which_finishes_it", &shape).await;
     let mesh1_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh2_id}")})).await;
-    let executor = Door::at(&estate, "mesh2.admin.1").await;
+    let executor = Door::at(&estate, &rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await;
     executor.arm("midway", json!({"kind": "receipt", "step": "Complete", "node": "mesh1.rpc.1"})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
@@ -733,7 +733,7 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
     let shape = [("mesh1", 1, 2)];
     let mut estate = ready_fabric("an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_next_launch_which_finishes_it", &shape).await;
     let mesh_id = estate.mesh_view("mesh1").await.id.map(|i| i.to_string()).expect("mesh1's id");
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh_id}")})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;
@@ -747,7 +747,7 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
     let faults = estate.root.join("faults");
     std::fs::create_dir_all(&faults).unwrap();
     let midway = json!([{"id": "midway", "kind": "receipt", "step": "NodeDeleted", "node": "mesh1.rpc.2"}]);
-    std::fs::write(faults.join("mesh1.admin.2.boot.json"), serde_json::to_vec(&midway).unwrap()).unwrap();
+    std::fs::write(rdm_test::admin_faults::boot_cuts_file(&estate.root, &rdm_core::PathName::new("mesh1.admin", "2").unwrap()), serde_json::to_vec(&midway).unwrap()).unwrap();
     estate.kill_bootstrap();
 
     let env = adoption_env(&estate, "mesh1.admin.2", &custody);
@@ -755,7 +755,7 @@ async fn an_adoption_launch_lost_midway_through_the_teardown_is_followed_by_the_
     let first = estate.restart_admin_with(&estate.root.join("adopted-mesh1.admin.2"), &env);
     assert_eq!(first.to_string(), "mesh1.admin.2", "the first launch is born at its new path.name");
     estate.enter(&first).await;
-    let first_door = Door::at(&estate, "mesh1.admin.2").await;
+    let first_door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "2").unwrap()).await;
     let at = first_door.wait_held("midway").await;
     assert_eq!(at["hit"]["build_id"].as_str(), Some(id.as_str()), "the first launch is held midway, at mesh1.rpc.2's NodeDeleted: {at}");
     let first_pid = *estate.restarted_pids().last().expect("the first launch's pid");
@@ -809,9 +809,9 @@ async fn a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_a
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
     let mut estate = ready_fabric("a_fabric_primary_paused_through_the_transfer_is_ignored_refused_stale_and_stops_on_its_first_read_after_resuming", &shape).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).expect("mesh2's id");
-    let door = Door::at(&estate, "mesh1.admin.1").await;
+    let door = Door::at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     door.arm("roster", json!({"kind": "receipt", "step": rdm_admin::mesh_delete::STEP_ACCEPTED_ROSTER, "operation": format!("mesh.delete:{mesh2_id}")})).await;
-    let executor = Door::at(&estate, "mesh2.admin.1").await;
+    let executor = Door::at(&estate, &rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await;
     executor.arm("in-process", json!({"kind": "receipt", "step": "NodeDeleting", "node": "mesh1.admin.1"})).await;
     let accepted_ns = now_ns();
     let delete = delete_admitted(&estate).await;

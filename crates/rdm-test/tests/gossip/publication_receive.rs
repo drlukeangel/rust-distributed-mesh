@@ -52,7 +52,7 @@ fn story(story: Story) {
         }
         let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let id = NodeId::mint();
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { mesh: "mesh2".into(), kind: rdm_core::NodeKind::RpcNode, node_id: id.clone(), name: "mesh2.rpc.1".parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(MeshId::mint()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { mesh: "mesh2".into(), kind: rdm_core::NodeKind::RpcNode, node_id: id.clone(), name: rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(MeshId::mint()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         let snapshot = |version, publication, index, count, digests: Vec<MeshDigest>, stamp| Frame::MeshTopology { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.2".into()), topology_version: version, published_at_rafka_ms: stamp, snapshot_id: publication, chunk_index: index, chunk_count: count, digests, in_flight: vec![], deleted: vec![] };
         let read = |digests| Chunk { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 10, snapshot_id: 3, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], deleted: vec![] };
         let delta = |base, version, changed: Vec<MeshDigest>, stamp| Frame::MeshTopologyDelta { mesh: "mesh2".into(), source_publisher: publisher.clone(), base_version: base, topology_version: version, published_at_rafka_ms: stamp, changed, removed: vec![], in_flight: vec![], deleted: vec![] };
@@ -84,7 +84,7 @@ fn story(story: Story) {
             Story::Inconsistent => send(&sender, &receiver, snapshot(10, 1, 0, 1, vec![changed.clone()], 100), 2).await,
             Story::LowerStamp => { send(&sender, &receiver, snapshot(11, 2, 0, 1, vec![changed.clone()], 1), 2).await; expected = 11; },
             Story::Chunks | Story::PendingConflict => {
-                let mut second = digest.clone(); second.node.node_id = NodeId::mint(); second.node.name = "mesh2.rpc.2".parse().unwrap();
+                let mut second = digest.clone(); second.node.node_id = NodeId::mint(); second.node.name = rdm_core::PathName::new("mesh2.rpc", "2").unwrap();
                 let first = snapshot(11, 2, 0, 2, vec![changed.clone()], 101);
                 let last = snapshot(11, 2, 1, 2, vec![second.clone()], 101);
                 if matches!(story, Story::Chunks) {

@@ -11,11 +11,12 @@
 //! named [`ManifestError`].
 
 use crate::scenario::{MeshShape, Scenario};
+use rdm_core::PathName;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Who owns the evidence: the mesh product taxonomy (PRD §16), machine-readable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +48,7 @@ pub struct Source {
 pub enum Fault {
     /// Restart `node`: node.stop then node.start through node-admin (Q183; the same NodeId and
     /// incarnation).
-    RestartNode { node: String },
+    RestartNode { node: PathName },
 }
 
 /// A fault applied immediately before operation `before_operation` (an index into the
@@ -67,7 +68,7 @@ pub struct StepOutcome {
     pub step: String,
     /// `put`, `cas`, `delete`, `get` or `restart_node`.
     pub action: String,
-    pub target: String,
+    pub target: PathName,
     pub key: Option<u64>,
     /// The call's outcome (`Reply`, ...), or `Restarted` for a fault.
     pub outcome: String,
@@ -89,8 +90,9 @@ pub struct ReplayManifest {
     pub fault_schedule: Vec<ScheduledFault>,
     /// The ordered outcomes of the run that wrote the manifest; empty in a manifest not yet run.
     pub outcomes: Vec<StepOutcome>,
-    /// The proof state at the end: `target/key` -> `{found, value}`, ordered by key.
-    pub final_state: std::collections::BTreeMap<String, Value>,
+    /// The proof state at the end: structured `(location, key)` entries -> `{found, value}`, ordered by key.
+    #[serde(with = "crate::structured_map")]
+    pub final_state: std::collections::BTreeMap<(PathName, u64), Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +112,7 @@ pub enum ManifestError {
     /// A fault is scheduled at an operation index the scenario does not have.
     FaultStepOutOfRange { before_operation: usize, operations: usize },
     /// A fault names a node that is not an rpc node of a declared mesh.
-    FaultTargetUnknown(String),
+    FaultTargetUnknown(PathName),
     /// The owner's provider differs from the scenario's.
     ProviderDisagrees { owner: String, scenario: String },
 }
@@ -127,7 +129,7 @@ impl fmt::Display for ManifestError {
             Self::Scenario(e) => write!(f, "replay manifest scenario is invalid: {e}"),
             Self::ShapesDisagree => write!(f, "replay manifest shapes differ from the scenario's meshes"),
             Self::FaultStepOutOfRange { before_operation, operations } => write!(f, "fault scheduled before operation {before_operation}, the scenario has {operations}"),
-            Self::FaultTargetUnknown(n) => write!(f, "fault targets `{n}`, which is no rpc node of the declared meshes"),
+            Self::FaultTargetUnknown(n) => write!(f, "fault targets {n:?}, which is no rpc node of the declared meshes"),
             Self::ProviderDisagrees { owner, scenario } => write!(f, "replay manifest owner.provider `{owner}` differs from the scenario's `{scenario}`"),
         }
     }
@@ -187,15 +189,15 @@ impl ReplayManifest {
     }
 
     /// The ordered actions of the run, without outcomes: what a replay must repeat exactly.
-    pub fn actions(&self) -> Vec<String> {
-        self.outcomes.iter().map(|o| format!("{} {} {} {}", o.step, o.action, o.target, o.key.map(|k| k.to_string()).unwrap_or_default())).collect()
+    pub fn actions(&self) -> Vec<(String, String, PathName, Option<u64>)> {
+        self.outcomes.iter().map(|o| (o.step.clone(), o.action.clone(), o.target.clone(), o.key)).collect()
     }
 }
 
 /// The fault schedule a seed derives for a scenario: one restart of a seeded rpc node before a
 /// seeded operation. The same seed and scenario always derive the same schedule.
 pub fn schedule_from_seed(seed: u64, scenario: &Scenario) -> Vec<ScheduledFault> {
-    let nodes: Vec<String> = scenario.meshes.iter().flat_map(|m| (1..=m.rpc_node).map(move |n| format!("{}.rpc.{n}", m.name))).collect();
+    let nodes: Vec<PathName> = scenario.meshes.iter().flat_map(|m| (1..=m.rpc_node).map(move |n| PathName::new(format!("{}.rpc", m.name), n.to_string()).expect("declared scenario location"))).collect();
     if nodes.is_empty() {
         return Vec::new();
     }

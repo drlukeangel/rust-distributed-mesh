@@ -38,7 +38,7 @@ fn owed_via(policy: impl Fn(u32) -> RouteChoice + Send + Sync + 'static) -> Call
 }
 
 fn via_carrier(r: &Rig) -> RouteChoice {
-    RouteChoice::ViaPeer { carrier: r.carrier.resolved.node_id.clone(), path: r.carrier.resolved.name.clone() }
+    RouteChoice::ViaPeer { carrier: r.carrier.resolved.node_id.clone() }
 }
 
 /// Wait until the origin has resent its request `n` times, or fail naming the wait.

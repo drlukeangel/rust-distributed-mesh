@@ -19,11 +19,11 @@ use std::time::Duration;
 
 const POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
-async fn connected(rig: &Rig, held: &ConnectionsHeld, own: &PathName, target: &Node, payload: &[u8]) -> ConnectedCall<ProbeReply> {
+async fn connected(rig: &Rig, held: &ConnectionsHeld, own: &rdm_core::connections::ConnectionEnd, target: &Node, payload: &[u8]) -> ConnectedCall<ProbeReply> {
     rig.origin
         .call_connected::<Probe>(
             held,
-            own,
+            &own.node_id,
             &target.resolved.name,
             &target.resolved.node_id,
             POLICY,
@@ -39,9 +39,9 @@ fn pooled_to(rig: &Rig, node: &Node) -> Vec<PoolKey> {
 }
 
 /// A projection in which the origin's Direct to B failed and its Proxy to B through P is active.
-fn proxied(rig: &Rig, own: &PathName) -> ConnectionsHeld {
-    let me = own_end(own);
-    let mut held = held_for(own);
+fn proxied(rig: &Rig, own: &rdm_core::connections::ConnectionEnd) -> ConnectionsHeld {
+    let me = own.clone();
+    let mut held = held_for(&own.node_id);
     held.apply(connection(me.clone(), end(&rig.b), ConnectionKind::Direct, ConnectionState::Failed, None, 10)).unwrap();
     held.apply(connection(end(&rig.p), end(&rig.b), ConnectionKind::Direct, ConnectionState::Connected, None, 11)).unwrap();
     held.apply(connection(me, end(&rig.b), ConnectionKind::Proxy, ConnectionState::Connected, Some(end(&rig.p)), 12)).unwrap();
@@ -51,12 +51,12 @@ fn proxied(rig: &Rig, own: &PathName) -> ConnectionsHeld {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder() {
     let r = rig().await;
-    let own: PathName = "mesh1.admin.1".parse().unwrap();
+    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
     let held = proxied(&r, &own);
     let first = connected(&r, &held, &own, &r.b, b"first").await;
-    assert_eq!(served_by(&first.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", first.outcome);
+    assert_eq!(served_by(&first.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", first.outcome);
     assert!(matches!(first.route, EffectiveRoute::ViaPeer { .. }), "{:?}", first.route);
-    assert_eq!(first.leg, RouteLeg::ViaPeer { carrier: "mesh1.rpc.3".into() });
+    assert_eq!(first.leg, RouteLeg::ViaPeer { carrier: r.p.resolved.node_id.clone() });
     assert!(first.delete.is_none(), "a valid Proxy is reused, not deleted");
     let ev = first.evidence.expect("one leg ran");
     assert_eq!(ev.node_id, Some(r.p.resolved.node_id.clone()), "the one leg the origin ran went to the carrier");
@@ -66,8 +66,8 @@ async fn an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder() {
     assert!(r.origin.dialing().is_empty(), "and none is in flight");
     // The next new invocation reuses the Proxy and the pooled carrier connection: no ladder, no dial.
     let second = connected(&r, &held, &own, &r.b, b"second").await;
-    assert_eq!(served_by(&second.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", second.outcome);
-    assert_eq!(second.leg, RouteLeg::ViaPeer { carrier: "mesh1.rpc.3".into() });
+    assert_eq!(served_by(&second.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", second.outcome);
+    assert_eq!(second.leg, RouteLeg::ViaPeer { carrier: r.p.resolved.node_id.clone() });
     assert!(second.evidence.expect("one leg ran").reused, "the carrier connection came from the pool");
     assert!(pooled_to(&r, &r.b).is_empty(), "still no direct connection to B");
     assert_eq!((r.b.handled.load(Ordering::SeqCst), r.c.handled.load(Ordering::SeqCst)), (2, 0), "B served both, through P; C was never touched");
@@ -76,19 +76,19 @@ async fn an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_indeterminate_alone_never_invalidates_a_proxy() {
     let r = rig().await;
-    let own: PathName = "mesh1.admin.1".parse().unwrap();
+    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
     let held = proxied(&r, &own);
     // B commits the carried request and never answers within the budget: Indeterminate, over the Proxy.
     let held_call = connected(&r, &held, &own, &r.b, b"hold").await;
     assert!(matches!(held_call.outcome, RpcOutcome::Indeterminate(_)), "{:?}", held_call.outcome);
-    assert_eq!(held_call.leg, RouteLeg::ViaPeer { carrier: "mesh1.rpc.3".into() });
+    assert_eq!(held_call.leg, RouteLeg::ViaPeer { carrier: r.p.resolved.node_id.clone() });
     assert!(held_call.evidence.expect("one leg ran").committed);
     assert!(held_call.delete.is_none(), "a post-commit loss is not Proxy-health evidence (connections.md §8)");
     // The projection is the seam's read-only input: the Proxy is still valid, nothing is owed, and
     // the next new invocation still goes over it.
     assert!(owed_direct_restored(&held, 1_000).is_empty(), "no delete is owed after an Indeterminate");
     let next = connected(&r, &held, &own, &r.b, b"after").await;
-    assert_eq!(served_by(&next.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", next.outcome);
+    assert_eq!(served_by(&next.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", next.outcome);
     assert!(matches!(next.route, EffectiveRoute::ViaPeer { .. }));
     assert!(next.delete.is_none());
     assert_eq!(r.c.handled.load(Ordering::SeqCst), 0, "nothing was replayed anywhere else");
@@ -97,8 +97,8 @@ async fn an_indeterminate_alone_never_invalidates_a_proxy() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_back_only_after_it_is_durable() {
     let r = rig().await;
-    let own: PathName = "mesh1.admin.1".parse().unwrap();
-    let me = own_end(&own);
+    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let me = own.clone();
     let mut held = proxied(&r, &own);
     // The direct connection to B returns (whichever path opened it): Direct Connected beside the
     // active Proxy. The obligation exists at once; the Proxy stays effective until it is deleted.
@@ -107,7 +107,7 @@ async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_
     assert_eq!(owed.len(), 1, "one delete is owed: {owed:?}");
     assert_eq!((owed[0].kind, owed[0].state, owed[0].reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
     let still = connected(&r, &held, &own, &r.b, b"still-proxied").await;
-    assert_eq!(still.leg, RouteLeg::ViaPeer { carrier: "mesh1.rpc.3".into() }, "new calls stay on the proven Proxy until the delete lands");
+    assert_eq!(still.leg, RouteLeg::ViaPeer { carrier: r.p.resolved.node_id.clone() }, "new calls stay on the proven Proxy until the delete lands");
     assert!(matches!(still.route, EffectiveRoute::ViaPeer { .. }));
     assert!(still.delete.is_none(), "the seam deletes nothing itself: the obligation is the caller's");
     assert!(pooled_to(&r, &r.b).is_empty(), "no direct leg was run on the strength of the row alone");
@@ -116,7 +116,7 @@ async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_
     held.apply(owed.into_iter().next().unwrap()).unwrap();
     assert!(owed_direct_restored(&held, 22).is_empty(), "nothing is owed once the delete landed");
     let cut = connected(&r, &held, &own, &r.b, b"direct").await;
-    assert_eq!(served_by(&cut.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", cut.outcome);
+    assert_eq!(served_by(&cut.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", cut.outcome);
     assert_eq!(cut.leg, RouteLeg::Direct);
     assert_eq!(cut.route, EffectiveRoute::Direct { known: true });
     assert_eq!(cut.evidence.expect("one leg ran").node_id, Some(r.b.resolved.node_id.clone()));
@@ -130,12 +130,12 @@ async fn a_direct_connected_owes_the_proxy_disconnected_write_and_new_calls_cut_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_complete_projection_with_no_fact_dials_the_destination_directly() {
     let r = rig().await;
-    let own: PathName = "mesh1.admin.1".parse().unwrap();
-    let held = held_for(&own);
+    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let held = held_for(&own.node_id);
     let call = connected(&r, &held, &own, &r.b, b"cold").await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });
     assert_eq!(call.leg, RouteLeg::Direct);
-    assert_eq!(served_by(&call.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", call.outcome);
+    assert_eq!(served_by(&call.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", call.outcome);
     assert!(!pooled_to(&r, &r.b).is_empty(), "the destination was dialled directly");
     assert_eq!((r.b.handled.load(Ordering::SeqCst), r.c.handled.load(Ordering::SeqCst), r.p.handled.load(Ordering::SeqCst)), (1, 0, 0));
 }
@@ -145,13 +145,13 @@ async fn a_complete_projection_with_no_fact_dials_the_destination_directly() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
     let r = rig().await;
-    let own: PathName = "mesh1.admin.1".parse().unwrap();
-    let mut held = held_for(&own);
-    held.apply(connection(own_end(&own), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
+    let own = own_end(&rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+    let mut held = held_for(&own.node_id);
+    held.apply(connection(own.clone(), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
     let members = std::sync::Arc::new(rdm_core::connections::StaticIncarnations::default());
     members.set(r.b.resolved.node_id.clone(), r.b.resolved.name.clone(), rdm_core::IncarnationId::mint());
     held.set_topology_view(members);
     let call = connected(&r, &held, &own, &r.b, b"re-born").await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });
-    assert_eq!(served_by(&call.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", call.outcome);
+    assert_eq!(served_by(&call.outcome).map(|s| s.0).as_deref(), Some(r.b.resolved.node_id.as_str()), "{:?}", call.outcome);
 }

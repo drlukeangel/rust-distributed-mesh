@@ -261,7 +261,7 @@ mod tests {
                 Ok(Vec::new())
             }
         }
-        let mut node = crate::model::Node::allocated("mesh1.rpc.1".parse().unwrap());
+        let mut node = crate::model::Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         node.node_id = crate::model::NodeId::mint();
         node.incarnation_id = Some(crate::model::IncarnationId::mint());
         let view = crate::topology::Topology {

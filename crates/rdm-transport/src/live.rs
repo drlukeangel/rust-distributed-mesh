@@ -317,10 +317,10 @@ mod tests {
         iroh::SecretKey::generate().public()
     }
 
-    fn birth(path: &str, port: u16) -> ResolvedNode {
-        ResolvedNode {
+    fn birth(path: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: u16) -> ResolvedNode {
+        ResolvedNode { mesh: mesh.to_owned(), kind,
             node_id: NodeId::mint(),
-            name: path.parse().unwrap(),
+            name: path,
             endpoint_id: key(),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn a_restart_is_the_same_node_under_its_next_birth_and_the_old_birth_never_returns() {
         let r = LiveNodeResolver::default();
-        let a = birth("mesh1.rpc.1", 7000);
+        let a = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
         assert_eq!(r.apply(a.clone(), None), Applied::Joined);
         let b = restart(&a, 7001);
         assert_eq!(r.apply(b.clone(), Some(&a.incarnation)), Applied::Restarted { old: a.incarnation.clone() });
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn reapplying_is_idempotent_and_a_moved_address_is_an_update() {
         let r = LiveNodeResolver::default();
-        let a = birth("mesh1.rpc.1", 7000);
+        let a = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
         r.apply(a.clone(), None);
         assert_eq!(r.apply(a.clone(), None), Applied::Unchanged);
         let moved = ResolvedNode { transport_addr: "127.0.0.1:7001".parse().unwrap(), ..a.clone() };
@@ -363,40 +363,40 @@ mod tests {
     #[test]
     fn a_connections_deleting_or_silent_node_is_found_and_only_a_departure_makes_it_gone() {
         let r = LiveNodeResolver::default();
-        let a = birth("mesh1.rpc.1", 7000);
+        let a = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
         r.apply(a.clone(), None);
         assert!(exact(&r, &a).is_ok(), "the resolver holds no lifecycle: nothing but a departure removes a node");
         assert_eq!(r.depart(&a.node_id, &a.incarnation, &a.name), Applied::Deleted);
         assert_eq!(exact(&r, &a), Err(ResolveFailure::Gone));
         assert_eq!(r.resolve(&NodeTarget::CurrentPath(a.name.clone())), Err(ResolveFailure::Unknown));
         assert!(matches!(r.apply(restart(&a, 7001), Some(&a.incarnation)), Applied::Refused(Refusal::Deleted { .. })), "a deleted node never returns");
-        assert_eq!(exact(&r, &birth("mesh1.rpc.9", 7003)), Err(ResolveFailure::Unknown), "never seen");
+        assert_eq!(exact(&r, &birth(rdm_core::PathName::new("mesh1.rpc", "9").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7003)), Err(ResolveFailure::Unknown), "never seen");
     }
 
     #[test]
     fn topology_view_names_the_birth_a_connection_fact_may_be_judged_against() {
         use rdm_core::connections::{Birth, CurrentIncarnations};
         let r = LiveNodeResolver::default();
-        let a = birth("mesh1.rpc.1", 7000);
-        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Unknown, "never heard of: nothing is judged");
+        let a = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
+        assert_eq!(r.birth(&a.node_id), Birth::Unknown, "never heard of: nothing is judged");
         r.apply(a.clone(), None);
-        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Current(a.incarnation.clone()));
+        assert_eq!(r.birth(&a.node_id), Birth::Current(a.incarnation.clone()));
         let b = restart(&a, 7001);
         r.apply(b.clone(), Some(&a.incarnation));
-        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Current(b.incarnation.clone()), "a restart is the next birth of the same node");
+        assert_eq!(r.birth(&a.node_id), Birth::Current(b.incarnation.clone()), "a restart is the next birth of the same node");
         r.depart(&a.node_id, &b.incarnation, &a.name);
-        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Deleted);
-        let other = birth("mesh1.rpc.2", 7002);
-        let replacement = birth("mesh1.rpc.2", 7003);
+        assert_eq!(r.birth(&a.node_id), Birth::Deleted);
+        let other = birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7002);
+        let replacement = birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7003);
         r.apply(replacement.clone(), None);
-        assert_eq!(r.birth(&other.node_id, &other.name), Birth::Deleted, "another node holds the path");
+        assert_eq!(r.birth(&other.node_id), Birth::Unknown, "another node at the location is no evidence about this ID");
     }
 
     #[test]
     fn a_replacement_takes_the_path_once_the_old_node_departs() {
         let r = LiveNodeResolver::default();
-        let old = birth("mesh1.rpc.1", 7000);
-        let new = birth("mesh1.rpc.1", 7001);
+        let old = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
+        let new = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7001);
         r.apply(old.clone(), None);
         r.apply(new.clone(), None);
         let path = NodeTarget::CurrentPath(old.name.clone());
@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn a_stopped_birth_gives_up_its_path_and_stays_reachable_by_id() {
         let r = LiveNodeResolver::default();
-        let old = birth("mesh1.rpc.1", 7000);
+        let old = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
         r.apply(old.clone(), None);
         let path = NodeTarget::CurrentPath(old.name.clone());
         assert!(r.stop(&old.node_id, &old.incarnation));
@@ -424,7 +424,7 @@ mod tests {
         assert_eq!(r.apply(old.clone(), None), Applied::Updated, "heard again: it rejoined as itself");
         assert_eq!(r.resolve(&path).unwrap().node_id, old.node_id, "the rejoined birth holds its path again");
         assert!(r.stop(&old.node_id, &old.incarnation));
-        let new = birth("mesh1.rpc.1", 7001);
+        let new = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7001);
         r.apply(new.clone(), None);
         assert_eq!(r.resolve(&path).unwrap().node_id, new.node_id, "the successor holds the path the stopped predecessor gave up");
         r.apply(old.clone(), None);
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn a_departure_heard_before_the_birth_still_holds() {
         let r = LiveNodeResolver::default();
-        let old = birth("mesh1.rpc.1", 7000);
+        let old = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
         r.depart(&old.node_id, &old.incarnation, &old.name);
         assert!(matches!(r.apply(old.clone(), None), Applied::Refused(Refusal::Deleted { .. })));
         assert_eq!(exact(&r, &old), Err(ResolveFailure::Gone));
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn a_departure_is_forgotten_after_the_retention() {
         let r = LiveNodeResolver::new(Duration::from_millis(30));
-        let a = birth("mesh1.rpc.1", 7000);
+        let a = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
         r.apply(a.clone(), None);
         let t0 = Instant::now();
         r.depart_at(&a.node_id, &a.incarnation, &a.name, t0);
@@ -452,17 +452,17 @@ mod tests {
         assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), after), Err(ResolveFailure::Unknown), "Gone is what this process holds now, not an archive");
     }
 
-    /// CONTRACT (R12; node-rpc-envelope.md "Meta and config"; node-replace.md: `path.name` resolves to
+    /// CONTRACT (R12; node-rpc-envelope.md "Meta and config"; node-replace.md: `(path, name)` resolves to
     /// the successor the moment its Applied lands): a held birth that took another name
-    /// (`ApplyNodeName`) is the same birth at its new `path.name`: it resolves there by path and by
+    /// (`ApplyNodeName`) is the same birth at its new `(path, name)`: it resolves there by path and by
     /// its exact id, nobody holds the name it gave up, and the change ticks. The same fact again is
     /// unchanged. What must NOT happen: the birth kept under the name it gave up, or its new name
     /// resolving to nobody.
     #[tokio::test]
     async fn a_birth_that_takes_another_name_resolves_at_it_and_gives_up_the_old_one() {
         let r = LiveNodeResolver::default();
-        let born = birth("mesh1.rpc.7", 7000);
-        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        let born = birth(rdm_core::PathName::new("mesh1.rpc", "7").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
+        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         assert_eq!(r.apply(born.clone(), None), Applied::Joined);
         let mut rx = r.changes().unwrap();
         rx.borrow_and_update();
@@ -481,7 +481,7 @@ mod tests {
     async fn every_answer_change_ticks_and_an_unchanged_fact_does_not() {
         let r = LiveNodeResolver::default();
         let mut rx = r.changes().unwrap();
-        let a = birth("mesh1.rpc.1", 7000);
+        let a = birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 7000);
         r.apply(a.clone(), None);
         assert!(rx.has_changed().unwrap());
         rx.borrow_and_update();
@@ -496,18 +496,15 @@ mod tests {
 }
 
 /// The topology view as the connections holder reads it: the birth each node holds now. A node this
-/// process has not heard of is `Unknown` and nothing is judged; a node that deleted, or whose path
-/// another node holds, is `Deleted`.
+/// process has not heard of is `Unknown` and nothing is judged; only an explicitly deleted
+/// node is `Deleted`, independently of the occupant of its former location.
 impl rdm_core::connections::CurrentIncarnations for LiveNodeResolver {
-    fn birth(&self, node_id: &NodeId, path: &PathName) -> rdm_core::connections::Birth {
+    fn birth(&self, node_id: &NodeId) -> rdm_core::connections::Birth {
         use rdm_core::connections::Birth;
         match self.resolve(&NodeTarget::ExactNode(node_id.clone())) {
             Ok(n) => Birth::Current(n.incarnation),
             Err(ResolveFailure::Gone) => Birth::Deleted,
-            Err(_) => match self.resolve(&NodeTarget::CurrentPath(path.clone())) {
-                Ok(holder) if &holder.node_id != node_id => Birth::Deleted,
-                _ => Birth::Unknown,
-            },
+            Err(_) => Birth::Unknown,
         }
     }
 }

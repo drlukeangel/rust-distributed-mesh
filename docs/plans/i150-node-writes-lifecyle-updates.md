@@ -9,7 +9,9 @@
 **Owner:** CLI implementation in lane 1 on `codex/i150-node-records`; desktop documentation audit in the same unit; Rafka integration coordinated with the i141 lead
 **Feature:** `node-records`
 **Baseline:** `4dbf01ebaf99ca5e17d4e2ba9cfb78ebf8fe2a65`, verified with `git cat-file -e`; no accompanying uncommitted contract edits are incorporated
-**Record:** this file owns i150 gaps, story status and evidence. e0 updates the dependency in [i143-prd.md](i143-prd.md); e6 coordinates the i141 consumer record and [i149](i149-topology-storage-provider.md).
+**Record:** [i143-prd.md](i143-prd.md) is the current remaining-work record. This file defines i150 requirements, stories and acceptance evidence; e6 coordinates the i141 consumer record and [i149](i149-topology-storage-provider.md).
+
+**Append-only storage:** lifecycle changes append records. `Deleted` is the status in the latest appended lifecycle record in the election-selected writer’s stream for that node, not removal of that record or its history. A later append by a former writer does not supersede the selected writer’s stream. Replacement changes only the predecessor’s name to `<name>-old`, at its immutable path; the successor has a new globally unique node ID and claims the original separate `(path, name)` fields. An explicit predecessor reference records node ID and incarnation, not authorization.
 **Source template:** [Seed-first PRD](../eng/templates/prd-seed-template.md). The requested filename `i150-node-writes-lifecyle-updates.md` is intentional.
 
 ## Context
@@ -22,11 +24,19 @@ executed increment controls. Planned acceptance tests and fields are not complet
 
 ## Requirements
 
+The location and identity contract is [R-NR1](proposal/node-record.md#requirements):
+`path` is where a node is; `name` is its name, unique within that path. They remain separate in
+storage, wire objects, launch inputs, references, queries and diagnostic fields. A structured
+argument or composite `(path, name)` index may contain both. Neither field supplies identity,
+mesh, type or ordinal; code selects `node.id` first and reads explicit metadata. Replacement
+keeps the predecessor's path unchanged, changes its name to `<name>-old`, and creates the
+successor with the original name at that same path. Architect 1's review includes all these surfaces.
+
 Every gap has a BUILD owner. Existing behavior used as a dependency is source-verified, but no row is labelled HOLDS without its executable regression evidence. All rows therefore remain BUILD until the implementing epic supplies that evidence or records a passing existing control.
 
 | ID | Requirement, in consumer terms | HOLDS / BUILD | Baseline evidence or target contract | Owning epic |
 |---|---|---|---|---|
-| R1 | References carry separate free-text path and dot-free name, with mesh/type separate | BUILD | `crates/rdm-core/src/path.rs:91` stores mesh/kind/ordinal/label/old; `:228` serializes one string | e1 |
+| R1 | Code selects globally unique node IDs first; location arguments carry separate immutable path and mutable name, with explicit mesh/type metadata | BUILD | `crates/rdm-core/src/path.rs:91` stores mesh/kind/ordinal/label/old; `:228` serializes one string | e1 |
 | R2 | A late predecessor property write cannot hide the successor | BUILD | `crates/rdm-admin/src/storage.rs:605` exposes node lookup, `:609` node_at, `:617` index_path, `:625` name_claim | e2 |
 | R3 | A node persists its properties directly; success follows durable persistence | BUILD | `docs/architecture/lifecycles/node-config-update.md:33` sends the own update upward; `crates/rdm-test/tests/node_own_config.rs:22` asserts that route | e3 |
 | R4 | Lifecycle records are keyed by subject node ID and writer node ID/incarnation; flags are not counters | BUILD | `crates/rdm-node/src/nodes_storage.rs:200` has one combined NodeRow; proposal R-NR2/R-NR3 specify the split | e2, e3 |
@@ -571,11 +581,55 @@ never merely from an ordinary name ending in `-old`.
 The implementation now rejects changed paths at node apply, stored-row rename and Build-step
 admission, and rejects invalid generated rename targets before a Build executes any step. Added
 regressions cover those boundaries and ordinary `-old` names without replacement provenance.
-Architect 1 reviewed this correction: explicit replacement/rollback intent still needs to replace
-Build-origin and spelling inference, including receipt replay. The architecture text changes remain
+Architect 1 reviewed this correction. The latest source batch persists explicit replacement/rollback intent by original step position and passes it through the existing rename writer; ordinary `-old` names preserve their ordinary meaning. Receipt replay now reads that admitted intent. Review found completion-key mismatch and stale rename replay: the shared admitted-step key is now used by planning and completion recognition; replay ordering remains under review. These changes and new regressions are uncompiled. The architecture text changes remain
 in the proposal's exact-text review scope. The focused cell attempt failed compiling existing
 joined-string callers after removal of `PathName`'s parser/formatter; no tests ran and these new
 regressions are unverified (`target/evidence/i150/immutable-path-check.log`).
+
+The subsequent `node-references-check-3.log` run compiled core, transport, client and node libraries,
+then failed node test fixtures and admin. No tests executed. After those diagnostics, the source
+batch added ID-based accepting-primary and redirect references, typed scoped handover replay payloads,
+separate NameHeld path/name fields, and persisted rename intent through the existing writer.
+`admitted_step_key` now supplies execution and completion recognition consistently. Added regressions
+remain unexecuted. Architect 1 identified a remaining correctness blocker: Atlas replay of an old
+rename can overwrite a newer name after restart/ABA; in-memory ordering alone does not resolve it.
+Current-row read/publication or durable applied rename evidence must replace that receipt-derived
+name mutation. Final compilation, test execution and initiative acceptance remain owed.
+
+The next source batch changes standalone action planning to exact NodeId reads, reuses one atlas
+row projection, and keeps accepted operations as typed subjects/identities and created locations as
+structured pairs. Lifecycle receipt readers no longer split operation strings; effect ordering
+retains original step position before attempt. Architect 1 found stale accepted entries, omitted
+exact-birth lookups, and stale-writer folding bypassed by the ID route; source fixes and regressions
+were added. Further review found payload incarnation validation must precede receipt acceptance;
+that correction remains in progress. `atlas-identity-check.log` is the current compilation attempt,
+not test evidence. Rename replay ABA remains open; no acceptance status advances.
+
+The completed `atlas-identity-check.log` compile failed admin (3262 library / 3817 test-target
+errors); no tests executed. Further edits validate carried lifecycle evidence through the pipeline's
+existing retry boundary, with explicit Build/lane scope and admission pins taking precedence over
+payloads. The committed-receipt index remains an assertion extractor, not a provenance validator.
+Creates now carry an exact admitted predecessor birth through request and durable allocation.
+Seeding, executable lookup and marking read that ID first, preserving predecessor identity across
+successor ownership changes. Fallback discovery uses explicit replacement provenance, excludes
+deleted rows and refuses ambiguity; names do not select a predecessor. Architect 1's final source
+review and `predecessor-identity-check.log` compilation are pending. These are source changes and
+unexecuted regressions, not passing acceptance evidence. Rename replay ABA remains open.
+
+`predecessor-identity-check.log` then failed admin (3179 library / 3752 test-target errors);
+no tests ran. Architect 1 found successor node-type copying and a cross-mesh writer violation.
+The source now removes the successor type copy and refuses cross-mesh replacement at admission,
+with writer-side guards. Same-mesh replacements may change kind while carrying the exact
+predecessor ID. Receipt-index slots are typed composites, and 263 diagnostic locations now expose
+separate path/name fields. Those changes are under compilation in `structured-diagnostics-check.log`;
+regressions and final review remain outstanding. No acceptance state advances.
+
+`structured-diagnostics-check.log` failed admin with 2013 library / 2580 test-target errors,
+without test execution. Architect 1 then accepted source corrections selecting Create ownership by
+original step position and validating retained predecessor state inside the existing writer lock.
+Additional planner operation comparisons and node-row diagnostics/fixtures are migrated; recovery
+alone may inherit a predecessor's explicit node type. The active `node-row-diagnostics-check.log`
+compile has not supplied passing evidence. Rename replay ABA and the broader initiative remain open.
 
 ### Explicit correction: separate properties and ID-first code references
 
@@ -843,7 +897,7 @@ This is a dependency plan, not authorization to launch agents. Follow the existi
 
 **Critical path:** e0 → e1 → e2 → e3 → e4 → e5 → e6 → e7. F1/F2 block e4 contract landing; F3 and delayed-provider lifetime evidence block e3 acceptance.
 
-**Format changes:** separate path/name references and split node/lifecycle storage are incompatible unless explicitly implemented otherwise. Use the repository's `durable format moved` marker and wire marker requirements; regenerate goldens. e0 specifies the fresh-estate/coordinated consumer-pin procedure and named rejection of unsupported stored layouts. No mixed-version correctness is claimed. Fresh-estate deployment tests do not replace retained-format restart tests within the new version.
+**Format changes:** separate path/name references and split node/lifecycle storage are incompatible unless explicitly implemented otherwise. Use the repository's `durable format moved` marker and wire marker requirements; derive wire golden expectations independently from the declared encoding. e0 specifies the fresh-estate/coordinated consumer-pin procedure and named rejection of unsupported stored layouts. No mixed-version correctness is claimed. Fresh-estate deployment tests do not replace retained-format restart tests within the new version.
 
 ## § Retro (on ship)
 
@@ -871,3 +925,298 @@ before `after.floor`, then calls `read_topology` again for time. The CLI must re
 workflow and audit floor/readiness dependencies on early topology installation. Proof owed:
 startup trace shows the Build-floor check before exactly one topology request, that reply supplies
 time, and no Started/Ready occurs before both complete. Existing gap repair remains separate.
+
+
+Current compilation status: `node-row-diagnostics-check.log` failed admin with 1767 library /
+2322 test-target errors; no tests ran. The next batch uses structured locations in BuildReject,
+including NodeSpecConflict carrying indexed location, declared location and explicit mesh. Status
+span helpers take PathName explicitly. Added serialization regression is unexecuted; the batch is
+compiling in `rejection-location-check.log`. Architect 1 reviews the changes and remaining
+claimant/executor references. Atlas rename replay ABA and the full initiative obligations above
+remain open.
+
+
+`rejection-location-check.log` failed admin with 1729 library / 2282 test-target errors; no tests
+ran. The connected claim/dispatch source migration now uses exact executor Birth, claimant NodeId,
+ID-based future handoff, and exact runtime departure evidence. Local dispatch and run admission
+compare full Birth. Fabric/drift recovery uses recorded claim scope and executor departure, with
+claimant identity retained for row release. Many callers/fixtures remain unmigrated; the current
+`claim-birth-check.log` attempt and Architect 1 review are not passing evidence.
+
+
+`claim-birth-check-4.log` reached admin and failed with 1690 library / 2300 test-target errors;
+no tests ran. Driver changes now read the winning committed Birth after either Won or Lost,
+without treating an in-flight claimant as an executor; section dispatch uses the same evidence.
+Own synthetic claims use boot-established identity. Source review and `claim-driver-check.log`
+are active; recovery callers, older driver paths, fixtures and full initiative proof remain owed.
+
+### Primary reference correction (2026-10-31, unverified)
+
+The operation follow-up compilation failed with 1565 admin library / 2183 test-target errors; no
+tests ran. Primary-record destinations, decision gates, role-yielded replies and recovery executor
+selection now carry NodeId directly. Primary selection no longer needs a digest to recover a name.
+The first build of this batch stopped on two core wire fixtures; they are migrated. Architect 1
+is reviewing identity and incarnation handling. Caller migration and all prior initiative obligations
+remain open; this is not passing evidence. Approved architecture packet remains unchanged.
+
+Architect 1 found same-ID/new-incarnation permission gaps in the ID-only primary transition and
+recovery checks. These now retain exact Birth for permission; future handoff still uses NodeId.
+Recovery checks compare established local incarnation, including WrittenRows.writer for row/status
+permission. A same-ID/new-incarnation gate regression is added but unexecuted. Last completed admin
+build (`primary-id-check-2.log`) failed 1553 library / 2177 test-target errors. Exact-birth follow-up
+`primary-birth-check.log` is compiling; no passing test evidence or closure claim.
+
+### Runtime identity follow-up (2026-10-31, unverified)
+
+Architect 1 source review accepted exact-birth permission and committed delete-claim takeover changes.
+The latter releases only the recorded claimant's matching row in the recorded scope; its test now uses
+different claimant and executor IDs. Last build failed 1545 library / 2164 test-target errors; no tests ran.
+Default physical data directories now share a NodeId-based helper across launch, adoption and fallback
+reads. Explicit persisted/inherited directories retain precedence. Lifecycle transition receipt identity
+now takes typed NodeId and incarnation. Existing tests updated; runtime compilation/review pending.
+The durable-format rollout and architecture correction packet remain outstanding; no compatibility
+or passing-test claim is made for these uncommitted changes.
+
+### Exact runtime review correction (2026-10-31, unverified)
+
+Architect 1 found and source-reviewed fixes for runtime lookup: claimed launches honor exact durable
+directory evidence and explicit node directories, digest directories require matching incarnation,
+and absent births are read by admitted NodeId even after rename. A retained birth now uses its exact
+durable RuntimeRow.runtime; disk fallback requires an allocation for its incarnation and matching
+deployment. The inherited-directory regression refuses newer runtime evidence then verifies the
+old durable runtime is used. No tests ran: latest compilation failed 1485 library / 2095 test-target
+errors; `runtime-proof-check.log` is active. All previously recorded initiative obligations remain.
+
+`runtime-proof-check.log` completed with 1485 admin library / 2095 test-target errors; no tests ran.
+Architect 1 source review found the exact-runtime correction addresses its finding. Full diagnostics
+are saved in `target/evidence/i150/runtime-proof-diagnostics.jsonl`. `git diff --check` passes. No build
+is active. Implementation and documentation audit remain incomplete; none of the final gates ran.
+
+### Recovery admission continuation (2026-10-31)
+
+Luke explicitly instructed continuous work until completion; persistent goal is active. ControlPlane
+now binds the boot incarnation, checks its exact local birth, selects recovery destinations by NodeId,
+and freezes executor Birth and mesh from the selection snapshot before admission mutations. Architect 1
+identified the earlier cross-snapshot bug and reviewed this fix. Orphan claim release uses matching
+committed claimant/scope and exact executor departure proof. AttemptOpened/WireOpened.opened_by now
+carry NodeId; production opener callers and fixtures are still being migrated.
+
+A diagnostic helper accidentally replaced the control-plane test suffix; the immediate compile caught
+the syntax error. The section is restored from committed tests with pre-edit compiler source evidence
+and explicit-field migration. All ten original test functions remain. The helper's suffix variable is
+fixed; a restored-file snapshot is under target/evidence/i150. No test passed or was removed as a fix.
+Current build: recovery-admission-check-2.log, session28154. No Rust edits while it runs.
+
+Recovery admission compile finished with 1415 library / 2042 test-target errors; no tests ran.
+The follow-up completes production adoption opener-ID migration and further migrates control-plane
+fixtures to explicit locations and metadata (including creation test tuples). Current build is
+`control-fixture-check.log`, session28544. No Rust edits while active.
+
+### Adoption identity and receipt continuation (2026-10-31)
+
+Adoption claim APIs now take the established boot Birth. Committed-claim equality is checked before
+taking an in-flight row; takeover releases only the recorded claimant/scope for the exact lost birth.
+NodeDeleted receipts now contain full LifecycleOp metadata and the planner's typed node-delete ID;
+create completion retains its stable location operation. Answers returns Result<Vec<NodeId>, String>;
+errors cannot invent answering IDs. Genuine answers hand off; real errors fail the attempt Unavailable
+while fabric_delete_in_force retains the deletion intent. Architect 1 rechecked and accepted that
+existing retry mechanism, withdrawing an earlier cancellation concern.
+
+Adoption checks now cover unreadable probes and decoding the exact deletion birth in its mesh lane.
+All remaining literal opened_by fixtures now use explicit node IDs; drive diagnostics split path/name.
+Latest completed build failed 1365 library / 1965 test-target errors; no tests ran. Current build is
+drive-diagnostics-check.log, session21558. No Rust edits while active.
+
+
+Continuation: drive-diagnostics-check completed with 1318 admin library / 1916 test-target errors;
+no tests ran. Build replay now retains typed FrameKey fields instead of joined operation strings
+and splitn parsing. Primary-update claim/handoff use NodeId, synthetic failure receipt has no
+invented endpoint provenance, and operation tracing exposes structured components. Architect 1
+found no concrete source regression and requested focused replay/dedup coverage. A completion
+regression covers attempt, recipe position, location and Blocked distinction; frame-identity-check
+is compiling and has not run tests. Full i150 remains incomplete, including the remaining caller
+migration, Atlas ABA correction, lifecycle activation and final gates.
+
+
+Continuation: frame-identity-check failed compilation with 1287 library / 1885 test-target errors,
+so no test executed. The next source batch replaces joined stall keys with typed variants,
+represents a missing section operation with Option, and distinguishes attempt-verdict publication
+failure using an explicit unscoped attempt operation. Tests now cover exact frame deduplication,
+recipe/attempt distinctions, opaque non-node delimiter text and absent versus unscoped operation.
+Architect 1 is reviewing this delta; section-identity-check is compiling. Primary handover still
+has joined operation/run parsing to migrate; no completed implementation or gate is claimed.
+
+
+Continuation: section-identity-check compilation failed at 1261 library /1854 test-target errors;
+no tests ran. Exact publication-failure classification is shared across local/remote verdict and
+section paths, with no synthetic step receipt. Primary handover now carries a typed role plus full
+preceding OperationId, preserving preceding action, subject and accepted step position. Build and
+submission run remain separate and scope memo acknowledgements. Wrappers and RoleGate pass run;
+PrecedingUpdate carries it. Joined update strings and run parsing removed. Added core roundtrip,
+ordering and memo scope regressions; existing integration fixtures need migration. Architect 1 is
+reviewing this source delta and handover-identity-check is compiling. Full i150 remains incomplete.
+
+
+Continuation: handover-identity-check failed compilation with 1182 library /1775 test-target errors;
+no tests ran. Architect 1 accepted the typed handover identity/memo/run delta and found a remaining
+location-based primary selection. That boundary now carries the admitted OperationSubject, using
+exact Birth when pinned and NodeId otherwise. Shared Topology::node_subject does not fall back from
+ID/Birth to the location's successor. role_move and acknowledgement both use it. A topology regression
+covers renamed predecessor, replacement at the old pair, different incarnation and missing old ID.
+Architect 1 is reviewing; primary-subject-check is compiling. Integration fixtures and the full i150
+remaining implementation and gates remain outstanding.
+
+
+Continuation: primary-subject-check failed compilation at 1182 library /1774 test-target errors;
+no tests executed. Architect 1 reviewed ID-first primary selection with no new defect. Status effect
+tracking now uses a typed composite key (node ID, incarnation, Build, attempt, structured operation),
+with no joined-string encoding. A regression covers name/state invariance and all identity components.
+Status diagnostics use separate path/name fields or NodeId; declaration fault selectors receive the
+known NodeId directly. Testkit selector fixtures still need migration. status-identity-check is
+compiling and Architect 1 is reviewing. Full i150 remains incomplete.
+
+
+Continuation: status-identity-check failed compilation with 1060 library /1660 test-target errors;
+no tests ran. Status effect map uses typed HashMap keys because incarnation IDs have equality but no
+ordering semantics. Declaration fault seam now receives typed NodeId and optional separate location;
+selectors prefer the ID and use a structured location only when no ID is provided. This preserves the
+cut armed before a node is allocated. All three declaration-cut fixtures updated, selector regression
+added; broader integration fixtures still need migration. declaration-selector-check is compiling;
+Architect 1 is reviewing. Full i150 remains incomplete and no gate status advances.
+
+
+Continuation: declaration-selector-check failed compilation with 1028 library /1610 test-target
+errors; no tests ran. Historical location fallback removed from status cleanup and deleted-birth
+investigation: only exact retained released records prove deletion; successor lookup is diagnostic.
+Regressions cover renamed live predecessor, successor claim, missing record and released states.
+Termination receipts now keep a structured path/name pair, and provider spawn errors retain that
+pair with labelled diagnostics. Constructors migrated, launch test claims bound to real launcher
+Birth, separate launch path/name assertions added. Added terminal receipt roundtrip/rejection test.
+deployment-identity-check is compiling; Architect 1 reviewing. Full i150 remains incomplete.
+
+### Continued structured receipt and journal migration
+
+The deployment compilation failed with 970 library / 1538 test-target errors; no tests ran.
+The resulting 20 PathName diagnostic field-access mistakes are corrected. `ReceiptKey` now
+retains structured operation and step fields through primary transfer and replay. The journal
+indexes their structured encoding with an opaque hash while retaining every field in the fact.
+Build/mesh/attempt scope stays separate. This is an incompatible durable format change:
+`build-record/2`, with the `durable format moved` marker and audit ratchet updated. Added tests
+cover distinct fields, nested primary updates, output-independent indexing, scope and rejection
+of the old format. Existing journal fixtures now use explicit IDs, Birth claims, structured
+locations and typed operations. Architect 1 found no defect in the initial identity/index delta;
+format/fixture review and `receipt-identity-check.log` compilation are in progress. No new test
+has executed. Full i150 completion, architecture correction approval, gates and landing remain owed.
+
+### Continued observer and property-diagnostic migration
+
+Receipt compilation finished at 941 library / 1431 test-target errors; no tests ran. Build-state
+had one remaining handoff fixture conversion, now fixed. Architect 1 accepted the journal format
+refusal and fixture changes; an unrelated executable hash-label substitution was restored.
+Property-command diagnostics now use explicit receiver/subject/primary IDs, with optional location
+fields separate. ElectionLog selects its observing admin by NodeId even after a rename or a new
+occupant at its former location; winner path/name remain separate. Added a regression for that
+case and migrated election fixtures to structured pairs. Observer compilation and Architect 1
+review are in progress. The Atlas historical rename replay defect remains open: old receipt
+mutation must be replaced by ordered current-row publication or equivalent durable evidence.
+
+### Continued runtime handle identity migration
+
+Observer compilation finished at 866 library / 1340 test-target errors; no tests ran. Architect 1
+accepted the observer/property diagnostic semantics and found one identifier typo, now corrected.
+Runtime handles now use NodeId as their index, verifying incarnation on pinned reads. Renaming
+a predecessor cannot hide its runtime behind the successor's location. Cleanup removes only the
+matching ID/incarnation under one lock, preserving a later incarnation. Added a regression for
+rename, replacement and stale cleanup. Remaining pre-admission location discovery compares the
+structured pair. `runtime-index-check.log` compilation and Architect 1 review are in progress.
+The Atlas review confirmed that legacy row revisions cannot solve ordering for split lifecycle
+records, which have no revision counter; current-row publication ordering remains required.
+
+### Runtime review corrections
+
+Runtime-index compilation finished at 728 library / 1196 test-target errors; no tests ran. It
+reported no compiler errors in runner, election, node_config or build_state. Architect 1 found
+ambiguous cached-location selection after replacement and a known-birth rejoin that re-resolved
+location. Both are corrected: unpinned steps read the current composite name claim and then use
+NodeId; rejoin retains the caller's exact NodeId/incarnation. Metadata refresh filters incarnation,
+and cached handle lookup requires a known incarnation. The regression covers duplicate cached
+locations, absent claims, current successor claims and stale cleanup. Architect 1 reviewed these
+corrections without further findings. `runtime-claim-check.log` is running; no tests are green.
+
+### Continued manifest-reference migration
+
+Runtime-claim compilation remained at 728 library / 1196 test-target errors; no tests ran. Architect 1
+accepted the exact-birth runtime corrections. MeshDeleted now carries a structured ManifestReference
+with Build, attempt, OperationId and explicit scope; validation compares fields directly rather than
+joining/splitting a string. The 128-byte reference bound remains, measured on its postcard encoding.
+Added field distinction/reject-joined-string tests and adapted the maximum-size wire fixture. Roster
+delete receipts now select node IDs; fabric-delete receipts use the typed Fabric subject. Manifest
+compilation and Architect 1 review are running. Wire goldens and all execution evidence remain owed.
+
+### Mesh-delete exact-reference continuation
+
+Manifest compilation finished with 629 library / 1093 test-target errors; no tests ran. Architect 1
+accepted structured matching and identified synthetic receipts carrying node IDs as endpoint provenance;
+those receipts now omit executor. Mesh-delete runtime insertion uses NodeId, retained deletion matching
+uses typed node operations, and silent-member lookups require both node ID and incarnation. The unused
+outer operation argument was removed from exit receipt lookup. Diagnostics use IDs or labelled separate
+path/name fields. Follow-up review and compilation remain pending; full i150 closure is still outstanding.
+
+### Build dispatch exact-claim continuation
+
+Mesh-delete compilation finished with 548 library / 1010 test-target errors; no tests ran. Its only
+remaining compiler sites were two diagnostic substitutions, now corrected. Architect 1 also found
+one synthetic MeshLeft receipt still carrying a node ID as endpoint provenance; it now omits executor.
+Drift dispatch now freezes the committed executor Birth selected by reporter NodeId, keeps committed
+claimant/mesh for release, and rechecks full claim identity before evidence and terminal publication.
+Shared frame/receipt validators reject mismatched Build, attempt, mesh, operation and step without
+rewriting receipt scope; malformed/unwritten receipts are not acknowledged as accepted evidence.
+Core Build headers carry executor Birth as fields; executor filtering uses node ID. Reply chunk sizing
+uses encoded structured receipts. Scope regression and Architect 1 follow-up review remain unexecuted
+and pending respectively. All remaining i150 work and full gates remain open.
+
+### Structured run replay and client executor continuation
+
+The next compile stopped first at one core wire fixture, then at two client executor-field sites;
+no tests ran and the last full admin count remains 548 library / 1010 test-target errors. These
+fixtures/client fields now carry Birth. Updated fixed Got and MeshDeleted wire expectations by
+independent field encoding, without using serializer output. Architect 1 accepted drift Running
+checks; regressions cover ended claims and changed birth/claimant/scope. RunLog blocked/failed state
+now retains OperationId, and recovery dispatch compares exact executor Birth and releases the
+committed claimant/mesh. A replay identity regression was added; source review is pending.
+Atlas root review requires shared WrittenRows per-ID locks across read-to-publication, current-row
+refresh instead of synthetic rename replay, and fill that cannot overwrite newer publications.
+This is still open, along with full migration, execution evidence, architecture approval and closure.
+
+### Recovery claim and replay fixture continuation
+
+Full compilation reached admin again: 472 library / 933 test-target errors; no tests ran. Recovery
+now reads committed_claim for the exact opened Build/lane/attempt and validates it before execution,
+freezing claimant and claimed mesh for release. The two executor verdict-publication failures use
+the shared exact attempt marker. Run replay fixtures now carry explicit unrelated actor births,
+structured locations and operations, and typed retained-receipt keys. The ordinary read fixture
+uses explicit mesh metadata rather than splitting a node name. Review and compilation are pending.
+An unapproved draft exact-text architecture correction is in proposal/node-reference-fields.patch;
+architecture pages and the previously approved architecture packet are unchanged. The draft is not
+the complete cross-page audit, which remains in target/evidence/i150/architecture-joined-reference-audit.txt.
+
+### Property diagnostics and retained publication failure
+
+Recovery-claim compilation finished with 468 library / 882 test-target errors; no tests ran. No
+compiler errors were reported in build_run or build_op. Architect 1 accepted the frozen recovery
+claim and found that verdict-publication failure still released its in-flight row; that exact
+terminal now returns Broke before release, retaining the claim. Rename/tag diagnostics identify
+nodes by ID, with requested/from/to/subject path and name recorded separately. Declaration logging
+retains structured operations and recipient IDs. This delta is awaiting review and compilation.
+
+### Typed drift decision continuation
+
+Property-diagnostic compilation finished with 418 library / 832 test-target errors; no tests ran.
+Architect 1 accepted diagnostic/reference changes and retained recovery publication failures. Drift
+now compares inspected exact node ID/incarnation pairs, keys proven births by NodeId, and retains
+location separately for create admission/order. Typed target/input/memo values replace concatenated
+name strings and string sentinels; completed steps match operation fields directly. Surplus deletion
+suppression requires successful scoped lifecycle evidence for the exact birth, not matching JSON
+fields alone. Added equal-incarnation/different-node regression and migrated drift fixtures. Review
+and compilation pending. Legacy tag combined-row fallback and Atlas current-row publication remain
+open; no closure or full gate result is claimed.

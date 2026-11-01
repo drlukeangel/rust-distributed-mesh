@@ -1,5 +1,6 @@
 //! Declarative scenario files (`scenarios/*.yaml`, PRD §6).
 
+use rdm_core::PathName;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -33,16 +34,16 @@ pub struct MeshShape {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
-    Put { target: String, key: u64, value: String },
-    Cas { target: String, key: u64, expected: String, value: String },
-    Delete { target: String, key: u64 },
+    Put { target: PathName, key: u64, value: String },
+    Cas { target: PathName, key: u64, expected: String, value: String },
+    Delete { target: PathName, key: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Assertion {
     Get {
-        target: String,
+        target: PathName,
         key: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         equals: Option<String>,
@@ -58,7 +59,7 @@ pub enum ScenarioError {
     UnknownShape(String),
     ShapeMismatch { shape: String, reason: String },
     UnknownProvider(String),
-    UnknownTarget(String),
+    UnknownTarget(PathName),
     AmbiguousGet { key: u64 },
 }
 
@@ -70,7 +71,7 @@ impl fmt::Display for ScenarioError {
             Self::UnknownShape(s) => write!(f, "shape `{s}` is not SN, MN or MM"),
             Self::ShapeMismatch { shape, reason } => write!(f, "meshes are below the {shape} floor: {reason}"),
             Self::UnknownProvider(p) => write!(f, "provider `{p}` is not process or container"),
-            Self::UnknownTarget(t) => write!(f, "target `{t}` names no rpc node of the declared meshes"),
+            Self::UnknownTarget(t) => write!(f, "target {t:?} names no rpc node of the declared meshes"),
             Self::AmbiguousGet { key } => write!(f, "get on key {key} must say exactly one of `equals` or `absent: true`"),
         }
     }
@@ -109,7 +110,7 @@ impl Scenario {
         }
         for t in self.targets() {
             if !self.is_rpc_node(t) {
-                return Err(ScenarioError::UnknownTarget(t.into()));
+                return Err(ScenarioError::UnknownTarget(t.clone()));
             }
         }
         for a in &self.assert {
@@ -121,23 +122,20 @@ impl Scenario {
         Ok(())
     }
 
-    fn targets(&self) -> impl Iterator<Item = &str> {
+    fn targets(&self) -> impl Iterator<Item = &PathName> {
         self.operations
             .iter()
             .map(|o| match o {
-                Operation::Put { target, .. } | Operation::Cas { target, .. } | Operation::Delete { target, .. } => target.as_str(),
+                Operation::Put { target, .. } | Operation::Cas { target, .. } | Operation::Delete { target, .. } => target,
             })
-            .chain(self.assert.iter().map(|Assertion::Get { target, .. }| target.as_str()))
+            .chain(self.assert.iter().map(|Assertion::Get { target, .. }| target))
     }
 
-    /// `<mesh>.rpc.<ordinal>` with `1 <= ordinal <= rpc_node` of a declared mesh.
-    pub fn is_rpc_node(&self, path_name: &str) -> bool {
-        let mut parts = path_name.split('.');
-        let (Some(mesh), Some("rpc"), Some(n), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
-            return false;
-        };
-        let Ok(n) = n.parse::<u32>() else { return false };
-        self.meshes.iter().any(|m| m.name == mesh && (1..=m.rpc_node).contains(&n))
+    /// Match an explicitly generated location in the declared RPC class; neither field is parsed.
+    pub fn is_rpc_node(&self, location: &PathName) -> bool {
+        self.meshes.iter().any(|mesh| (1..=mesh.rpc_node).any(|ordinal| {
+            PathName::new(format!("{}.rpc", mesh.name), ordinal.to_string()).as_ref() == Ok(location)
+        }))
     }
 
     /// The fabric this scenario's shape reconciles to: what its `build.create` carries.
@@ -165,11 +163,11 @@ mod tests {
         assert_eq!(s.operations.len(), 8);
         assert_eq!(
             s.operations[6],
-            Operation::Cas { target: "mesh1.rpc.1".into(), key: 100, expected: "seed-000".into(), value: "seed-000-cas".into() }
+            Operation::Cas { target: PathName::new("mesh1.rpc", "1").unwrap(), key: 100, expected: "seed-000".into(), value: "seed-000-cas".into() }
         );
-        assert_eq!(s.operations[7], Operation::Delete { target: "mesh1.rpc.3".into(), key: 105 });
+        assert_eq!(s.operations[7], Operation::Delete { target: PathName::new("mesh1.rpc", "3").unwrap(), key: 105 });
         assert_eq!(s.assert.len(), 3);
-        assert_eq!(s.assert[2], Assertion::Get { target: "mesh1.rpc.3".into(), key: 105, equals: None, absent: Some(true) });
+        assert_eq!(s.assert[2], Assertion::Get { target: PathName::new("mesh1.rpc", "3").unwrap(), key: 105, equals: None, absent: Some(true) });
     }
 
     #[test]
@@ -184,8 +182,8 @@ mod tests {
     fn unknown_provider_target_and_fields_are_refused() {
         assert_eq!(Scenario::parse(&SEED.replace("provider: process", "provider: vm")), Err(ScenarioError::UnknownProvider("vm".into())));
         assert_eq!(
-            Scenario::parse(&SEED.replace("target: mesh1.rpc.3, key: 104", "target: mesh1.rpc.9, key: 104")),
-            Err(ScenarioError::UnknownTarget("mesh1.rpc.9".into()))
+            Scenario::parse(&SEED.replace(r#"target: {path: mesh1.rpc, name: "3"}, key: 104"#, r#"target: {path: mesh1.rpc, name: "9"}, key: 104"#)),
+            Err(ScenarioError::UnknownTarget(PathName::new("mesh1.rpc", "9").unwrap()))
         );
         assert!(matches!(Scenario::parse(&SEED.replace("shape: MN", "shape: MN\nextra: 1")), Err(ScenarioError::Parse(_))));
     }
@@ -193,7 +191,7 @@ mod tests {
     #[test]
     fn legacy_role_names_are_not_rpc_targets() {
         let s = Scenario::parse(SEED).unwrap();
-        assert!(!s.is_rpc_node("mesh1.broker.1"));
-        assert!(s.is_rpc_node("mesh1.rpc.3"));
+        assert!(!s.is_rpc_node(&PathName::new("mesh1.broker", "1").unwrap()));
+        assert!(s.is_rpc_node(&PathName::new("mesh1.rpc", "3").unwrap()));
     }
 }

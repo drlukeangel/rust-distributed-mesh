@@ -86,7 +86,7 @@ fn reply(out: RpcOutcome<ProofReply>) -> ProofReply {
 }
 
 /// CONTRACT (#2775): every proof-store op served over real Node RPC answers its typed reply, and
-/// each reply names exactly the birth that executed it (logical NodeId, path.name, mesh,
+/// each reply names exactly the birth that executed it (logical NodeId, separate path and name, mesh,
 /// incarnation) and the op. A compare-and-swap whose expected value does not match answers
 /// Mismatch with the current value and changes nothing; one that matches swaps to exactly the new
 /// value. A key or value over its limit is refused by name (field, limit, size) and the store file
@@ -113,7 +113,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
             kind: rdm_core::NodeKind::RpcNode,
-            name: "mesh1.rpc.1".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -137,7 +137,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
+        resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), kind: launch.kind, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
         let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let call = |req: ProofRequest| {
@@ -146,8 +146,8 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         };
         let at = |op: ProofOp| Provenance {
             node_id: launch.node_id.to_string(),
-            node: launch.name.to_string(),
-            mesh: launch.name.mesh.clone(),
+            node: launch.name.clone(),
+            mesh: launch.mesh.clone(),
             incarnation_id: launch.incarnation.to_string(),
             op,
         };
@@ -196,7 +196,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         let r = call(ProofRequest::Get { key: b"kept".to_vec() }).await;
         step("get-kept", ProofRequest::Get { key: b"kept".to_vec() }, r, ProofReply::Value { at: at(ProofOp::Get), value: b"kv".to_vec() });
         json!({
-            "birth": {"node_id": launch.node_id.to_string(), "node": launch.name.to_string(), "mesh": launch.name.mesh, "incarnation_id": launch.incarnation.to_string()},
+            "birth": {"node_id": launch.node_id.to_string(), "path": launch.name.path, "name": launch.name.name, "mesh": launch.mesh, "incarnation_id": launch.incarnation.to_string()},
             "store_file": store.path().display().to_string(),
             "steps": seen,
         })
@@ -225,7 +225,8 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
     for s in &served {
         assert_eq!(s["attributes"]["node_id"], birth["node_id"], "{s}");
         assert_eq!(s["attributes"]["incarnation_id"], birth["incarnation_id"], "{s}");
-        assert_eq!(s["attributes"]["node"], birth["node"], "{s}");
+        assert_eq!(s["attributes"]["node_path"], birth["path"], "{s}");
+        assert_eq!(s["attributes"]["node_name"], birth["name"], "{s}");
         assert!(calls.iter().any(|c| c["trace_id"] == s["trace_id"]), "served under its caller's trace: {s}");
         assert_ne!(s["parent_span_id"], "0000000000000000", "a served span has a parent: {s}");
     }

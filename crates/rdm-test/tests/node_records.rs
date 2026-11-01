@@ -25,7 +25,7 @@ async fn a_build_applies_properties_and_a_nodes_later_update_stands() {
     estate.reconcile_shape("fabric1", &shape).await;
     estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let subject: rdm_core::PathName = "mesh1.rpc.2".parse().unwrap();
+    let subject: rdm_core::PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
     let change = |value: &'static str| {
         let subject = subject.clone();
         move |current: &rdm_test::executables::Current, _: &rdm_test::executables::Executables| {
@@ -51,13 +51,13 @@ async fn a_build_applies_properties_and_a_nodes_later_update_stands() {
         )
         .await;
     let applied = estate.follow(stream).await;
-    let before = estate.node_view("mesh1.rpc.2").await;
+    let before = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
     assert_eq!(before.config, [("entry".into(), "build-a".into())].into());
     assert_eq!(before.tags, ["build-a".into()].into());
     let answer = estate.probe(&[
         "own-config",
         "--target",
-        "path:mesh1.rpc.2",
+        &format!("exact:{}", before.node_id),
         "--value",
         "listener.data=127.0.0.1:45005",
     ]);
@@ -70,7 +70,7 @@ async fn a_build_applies_properties_and_a_nodes_later_update_stands() {
         .await
         .expect("the same Build reattaches");
     estate.follow(again.stream).await;
-    let after = estate.node_view("mesh1.rpc.2").await;
+    let after = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
     assert_eq!(
         after.node_id, before.node_id,
         "in-place property operations preserve identity"
@@ -87,7 +87,7 @@ async fn a_build_applies_properties_and_a_nodes_later_update_stands() {
         )
         .await;
     estate.follow(stream).await;
-    let later = estate.node_view("mesh1.rpc.2").await;
+    let later = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
     assert_eq!(later.node_id, before.node_id);
     assert_eq!(later.config, [("entry".into(), "build-b".into())].into());
     assert_eq!(later.tags, ["build-b".into()].into());
@@ -140,14 +140,14 @@ async fn own_properties_survive_node_restart() {
         .node_views()
         .await
         .into_iter()
-        .find(|n| n.name.to_string() == "mesh1.rpc.2")
+        .find(|n| n.name == rdm_core::PathName::new("mesh1.rpc", "2").unwrap())
         .expect("the non-primary subject is ready");
     let expected: BTreeMap<String, String> =
         [("listener.data".into(), "127.0.0.1:45005".into())].into();
     let answer = estate.probe(&[
         "own-config",
         "--target",
-        "path:mesh1.rpc.2",
+        &format!("exact:{}", before.node_id),
         "--value",
         "listener.data=127.0.0.1:45005",
     ]);
@@ -174,13 +174,13 @@ async fn own_properties_survive_node_restart() {
         },
     )
     .await;
-    estate.kill_node("mesh1.rpc.2").await;
+    estate.kill_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await;
     let recovered = wait_for(
         "a recovered node exposes the acknowledged config",
         crate::node_recovery_due(),
         || async {
             estate.node_views().await.into_iter().find(|n| {
-                n.name.to_string() == "mesh1.rpc.2"
+                n.name == rdm_core::PathName::new("mesh1.rpc", "2").unwrap()
                     && n.node_id != before.node_id
                     && n.status == rdm_client::NodeStatus::Ready
             })

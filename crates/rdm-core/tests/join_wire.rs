@@ -18,7 +18,7 @@ fn digest() -> rdm_core::MeshDigest {
         fabric_id: FabricId::mint(),
         node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             node_id: NodeId::mint(),
-            name: "mesh1.rpc.1".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -57,7 +57,7 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
     let fixtures = [
         (Joined { answer: vec![1] }, "000101"),
         (JoinMismatch { field: "a".into(), deployed: "b".into(), reported: "c".into() }, "010161016201 63"),
-        (NotPrimary { primary: Some("m".into()) }, "0201016d"),
+        (NotPrimary { primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) }, "02010c303132333435363738396162"),
         (NotPrimary { primary: None }, "0200"),
         (PeerUnresolved { reason: "p".into() }, "030170"),
         (NotReady { reason: "n".into() }, "04016e"),

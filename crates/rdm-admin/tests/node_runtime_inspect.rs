@@ -52,8 +52,8 @@ impl Capture {
     }
 }
 
-fn allocated_birth(name: &str) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn allocated_birth(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.status = NodeStatus::PendingReconnect;
@@ -116,12 +116,12 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         let store = MemoryNodesStorage::default();
 
         // 1. Live process (this process's own exact PID + start token in this host's control domain) -> Running.
-        let running_node = allocated_birth("mesh1.rpc.1");
+        let running_node = allocated_birth(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         let running_inc = running_node.incarnation_id.clone().unwrap();
         let running_dep = rdm_core::fixture_crockford60("dep-running-1");
         let running_fact = RuntimeFact::of_this_process(&running_dep).expect("of_this_process");
         store
-            .put_runtime(&RuntimeRow {
+            .put_runtime(&RuntimeRow { kind: running_node.kind, mesh: running_node.mesh.clone(),
                 node_id: running_node.node_id.clone(),
                 name: running_node.name.clone(),
                 incarnation_id: running_inc,
@@ -144,7 +144,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         );
 
         // 2. Gone process with a proven ExitRecord in its data_dir -> Exited(Some(4)).
-        let exited_node = allocated_birth("mesh1.rpc.2");
+        let exited_node = allocated_birth(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         let exited_inc = exited_node.incarnation_id.clone().unwrap();
         let exited_dep = rdm_core::fixture_crockford60("dep-exited-2");
         ExitRecord {
@@ -156,7 +156,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         .write(&dir)
         .unwrap();
         store
-            .put_runtime(&RuntimeRow {
+            .put_runtime(&RuntimeRow { kind: exited_node.kind, mesh: exited_node.mesh.clone(),
                 node_id: exited_node.node_id.clone(),
                 name: exited_node.name.clone(),
                 incarnation_id: exited_inc,
@@ -187,10 +187,10 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         );
 
         // 3. Foreign control domain -> Unavailable with no handle.
-        let foreign_node = allocated_birth("mesh1.rpc.3");
+        let foreign_node = allocated_birth(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         let foreign_inc = foreign_node.incarnation_id.clone().unwrap();
         store
-            .put_runtime(&RuntimeRow {
+            .put_runtime(&RuntimeRow { kind: foreign_node.kind, mesh: foreign_node.mesh.clone(),
                 node_id: foreign_node.node_id.clone(),
                 name: foreign_node.name.clone(),
                 incarnation_id: foreign_inc,
@@ -221,7 +221,7 @@ fn node_runtime_inspect_reports_running_exited_with_proven_code_and_unavailable_
         );
 
         // 4. No RuntimeFact recorded -> Unavailable with no handle.
-        let unrecorded_node = allocated_birth("mesh1.rpc.4");
+        let unrecorded_node = allocated_birth(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         let (out4, handle4) =
             inspect_birth_with_handle(&provider, &digest_view, Some(&store), &unrecorded_node).await;
         assert!(matches!(&out4, Inspected::Unavailable(r) if r.contains("no runtime fact")), "{out4:?}");

@@ -150,11 +150,11 @@ fn action_generator_replays_seed_preserves_legal_sequence() {
 /// sequence grew, and that node then restarted.
 fn grown_written_restarted(rule: &str) -> impl Fn(&Model, &[Action]) -> Result<(), Failure> + '_ {
     move |initial, actions| {
-        let mut prev: BTreeSet<String> = initial.meshes["mesh2"].nodes.keys().cloned().collect();
-        let mut grown: BTreeSet<String> = BTreeSet::new();
-        let mut written: BTreeSet<String> = BTreeSet::new();
+        let mut prev: BTreeSet<rdm_core::PathName> = initial.meshes["mesh2"].nodes.keys().cloned().collect();
+        let mut grown: BTreeSet<rdm_core::PathName> = BTreeSet::new();
+        let mut written: BTreeSet<rdm_core::PathName> = BTreeSet::new();
         observe(initial, actions, |step, a, m| {
-            let now: BTreeSet<String> = m.meshes["mesh2"].nodes.keys().cloned().collect();
+            let now: BTreeSet<rdm_core::PathName> = m.meshes["mesh2"].nodes.keys().cloned().collect();
             if let Action::Grow { mesh, class: NodeClass::RpcNode } = a {
                 if mesh == "mesh2" {
                     grown.extend(now.difference(&prev).cloned());
@@ -174,7 +174,7 @@ fn grown_written_restarted(rule: &str) -> impl Fn(&Model, &[Action]) -> Result<(
                     written.insert(target.clone());
                 }
                 Action::Restart { node } if written.contains(node) => {
-                    return Err(Failure { rule: rule.into(), step, action: a.clone(), detail: format!("{node} was grown by this sequence, written, then restarted") });
+                    return Err(Failure { rule: rule.into(), step, action: a.clone(), detail: format!("{node:?} was grown by this sequence, written, then restarted") });
                 }
                 _ => {}
             }

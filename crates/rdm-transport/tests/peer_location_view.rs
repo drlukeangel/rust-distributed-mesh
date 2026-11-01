@@ -86,7 +86,7 @@ fn birth(node_id: &NodeId, key: iroh::PublicKey, socket: SocketAddr, incarnation
         fabric_id: FabricId::parse("fab000000001").unwrap(),
         node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin,
             node_id: node_id.clone(),
-            name: "mesh1.admin.2".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.admin", "2").unwrap(),
             endpoint_id: EndpointId(key.to_string()),
             transport_addr: socket,
             incarnation: incarnation.clone(),

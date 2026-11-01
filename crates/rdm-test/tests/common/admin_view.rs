@@ -14,16 +14,15 @@ use rdm_core::views::{FabricView, MeshView, NodeStatus, NodeView, ProviderKind, 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-/// The stub admin's own `path.name`.
-pub const ADMIN: &str = "mesh1.admin.9";
+/// The stub admin's separate path and name.
+pub fn admin_location() -> PathName { PathName::new("mesh1.admin", "9").unwrap() }
 
 /// One node of a served view: `endpoint`, `addr` and `incarnation` are `None` for a node the admin holds
 /// and that is not born yet.
-pub fn node(name: &str, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
-    let name: PathName = name.parse().unwrap_or_else(|e| panic!("{name} is no path.name: {e:?}"));
+pub fn node(name: PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
     NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-        kind: name.kind,
-        mesh: name.mesh.clone(),
+        kind,
+        mesh: mesh.to_owned(),
         name,
         node_id: node_id.clone(),
         endpoint_id: endpoint,
@@ -73,7 +72,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let mut me = node(ADMIN, &node_id, Some(key.public().to_string()), Some(addr), Some(incarnation.clone()));
+    let mut me = node(admin_location(), "mesh1", rdm_core::NodeKind::NodeAdmin, &node_id, Some(key.public().to_string()), Some(addr), Some(incarnation.clone()));
     me.is_primary = true;
     me.is_fabric_primary = true;
     let mut held = vec![me];
@@ -82,11 +81,11 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
     let mut meshes: Vec<MeshView> = Vec::new();
     for n in &held {
         match meshes.iter_mut().find(|m| m.name == n.mesh) {
-            Some(m) => m.nodes.push(n.name.clone()),
-            None => meshes.push(MeshView { renewals: None, id: None, name: n.mesh.clone(), status: ScopeStatus::Ready, primary_admin: Some(ADMIN.parse().unwrap()), admin_api_base: None, nodes: vec![n.name.clone()] }),
+            Some(m) => m.nodes.push(n.node_id.clone()),
+            None => meshes.push(MeshView { renewals: None, id: None, name: n.mesh.clone(), status: ScopeStatus::Ready, primary_admin: Some(node_id.clone()), admin_api_base: None, nodes: vec![n.node_id.clone()] }),
         }
     }
-    let fabric = FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process, fabric_primary: Some(ADMIN.parse().unwrap()), admin_api_base: None, meshes, build_id: None };
+    let fabric = FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process, fabric_primary: Some(node_id.clone()), admin_api_base: None, meshes, build_id: None };
     let seen: Arc<Mutex<Vec<ReadRequest>>> = Arc::default();
     let s = seen.clone();
     let server = ServerBuilder::new()
@@ -97,7 +96,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
                 let (read, frame) = match req {
                     ReadRequest::Get { entity: Entity::Fabrics, filter } if filter.pairs.is_empty() => ("fabric.get", ReadReply::Fabrics { fabrics: vec![fabric] }),
                     ReadRequest::Get { entity: Entity::Nodes, filter } => ("node.get", ReadReply::Nodes { nodes: held.into_iter().filter(|n| filter.matches(n)).collect() }),
-                    other => return Ok(ReadReply::NotReady { reason: format!("the stub admin {ADMIN} answers fabric.get and node.get only, not {}", other.op()) }),
+                    other => return Ok(ReadReply::NotReady { reason: format!("the stub admin answers fabric.get and node.get only, not {}", other.op()) }),
                 };
                 let rows = frame.rows() as u32;
                 let Ok(mut sink) = sink.started(ReadReply::Started { read: read.into() }).await else {
@@ -112,7 +111,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let birth = MeshNode { mesh: (ADMIN.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (ADMIN.parse::<rdm_core::PathName>().unwrap()).kind, node_id, name: ADMIN.parse().unwrap(), endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };
+    let birth = MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::NodeAdmin, node_id, name: admin_location(), endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };
     AdminView { birth, seen, router }
 }
 

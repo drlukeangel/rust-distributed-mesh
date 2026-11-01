@@ -34,6 +34,7 @@ s=$(date +%s.%N)
 cargo build --message-format=json --tests --bins $sel > $art 2>> $berr; brc=$?
 grep '^rdm build: ' $berr >&2
 if [ $brc -ne 0 ]; then
+  cp "$art" "$out/build-diagnostics.jsonl"
   python3 -c 'import json,sys
 for l in open(sys.argv[1]):
     try: m=json.loads(l)

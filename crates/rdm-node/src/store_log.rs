@@ -1105,7 +1105,7 @@ fn describe(op: &Op) -> String {
 pub enum LockKind {
     /// `locks/in-flight/<mesh name>`: the one attempt in flight on that mesh name.
     InFlight,
-    /// `locks/name/<name>`: the claim of a mesh name or a node path.name, the lock being the claim.
+    /// `locks/name/<name>`: the claim of a mesh name or a node path and name, the lock being the claim.
     Name,
     /// `locks/commit/<build_id>.<change_id>`: a storage change's `commit` record (storage.md §2 step 4),
     /// inserted on the new provider; the insert is the switch.
@@ -1222,6 +1222,12 @@ impl StoreLocks {
     /// remover expects, re-read under the name's reclamation mutex for a name lock (R-SR5). Answers
     /// whether it was removed; a lock naming another claimant is left as it is.
     pub async fn release(&self, kind: LockKind, name: &str, names: impl Fn(&[u8]) -> bool + Send + 'static) -> Result<bool, StorageError> {
+        self.release_checked(kind, name, move |bytes| Ok(names(bytes))).await
+    }
+
+    /// The same reclamation operation with validation errors propagated. Invalid or mismatched
+    /// claim content is never removed and never reported as a successful release.
+    pub async fn release_checked(&self, kind: LockKind, name: &str, names: impl Fn(&[u8]) -> Result<bool, StorageError> + Send + 'static) -> Result<bool, StorageError> {
         Self::checked(kind, name, &self.dir)?;
         let path = self.path(kind, name);
         let anchor = (kind == LockKind::Name).then(|| self.dir.join(kind.dir()).join(format!("{name}.reclaim")));
@@ -1235,7 +1241,7 @@ impl StoreLocks {
                 None => None,
             };
             match read_lock(&path)? {
-                Some(held) if names(&held) => crate::record_store::remove_file(&dir, &path),
+                Some(held) => if names(&held)? { crate::record_store::remove_file(&dir, &path) } else { Ok(false) },
                 _ => Ok(false),
             }
         })

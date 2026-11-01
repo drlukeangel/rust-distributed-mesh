@@ -20,44 +20,42 @@ pub(crate) fn incumbency_of(digest_view: &DigestView, _records: &Records) -> cra
 /// While the fabric-primary is unavailable, the fabric recovery workflow's executor writes that attempt's
 /// Build records (build.md §5.3, Q122): for it, the record naming the lost birth is open, naming no
 /// primary. `view` is this admin's view once it is built.
-pub(crate) fn fabric_primary_source(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::PrimarySource {
+pub(crate) fn fabric_primary_source(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), _me_name: &PathName, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::fabric_builds::PrimarySource {
     let changed = Some(digest_view.primaries.subscribe());
-    let (digest_view, records, me_name) = (digest_view.clone(), records.clone(), me_name.to_string());
+    let (digest_view, records) = (digest_view.clone(), records.clone());
     let read = Arc::new(move || {
         let incumbency = incumbency_of(&digest_view, &records);
-        let held_name = digest_view.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
-        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &digest_view))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.fabric.as_ref() == Some(&fr.target));
+        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &digest_view))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.node_id == me.0 && e.incarnation == me.1) && incumbency.fabric.as_ref() == Some(&fr.target));
         if executes {
             return crate::fabric_builds::PrimaryRecord::Open { primary: None };
         }
-        let name_of = |id: &NodeId| if *id == me.0 { Some(held_name.clone()) } else { digest_view.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
-        crate::primary_watch::fabric_primary_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, name_of)
+        crate::primary_watch::fabric_primary_record(incumbency.fabric.as_ref(), &me, &incumbency.lost)
     });
     crate::fabric_builds::PrimarySource { read, changed }
 }
 
 /// Whether this birth reads the Build records now ([`crate::build_state::LocalBuildLog::read_records_while`];
-/// Q227: "only FP reads the builds"): its held path.name while the fabric-primary record `digest_view`
+/// Q227: "only FP reads the builds"): its node ID for diagnostics while the fabric-primary record `digest_view`
 /// holds names this exact birth, or while fabric recovery names it the executor that restores the
 /// fabric-primary in its place (build.md §5.3, Q122: it writes that attempt's Build records), or, for an
 /// admin started with no launcher (`unlaunched`: Day 0, a start again from its own data dir, an adoption
 /// launch; Q227's first or re-born fabric-primary), while that record names no birth or a birth proven
 /// gone; `None` otherwise, and the admin answers from what reached it. `view` is this admin's view once
 /// it is built.
-pub(crate) fn build_records_reader(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, unlaunched: bool, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::build_state::RecordsReader {
-    let (digest_view, records, me_name) = (digest_view.clone(), records.clone(), me_name.to_string());
+pub(crate) fn build_records_reader(digest_view: &DigestView, records: &Arc<Records>, me: (NodeId, IncarnationId), _me_name: &PathName, unlaunched: bool, view: Arc<std::sync::OnceLock<Arc<tokio::sync::RwLock<crate::topology::Topology>>>>) -> crate::build_state::RecordsReader {
+    let (digest_view, records) = (digest_view.clone(), records.clone());
     Arc::new(move || {
-        let held_name = digest_view.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone());
+        let reader_id = me.0.to_string();
         let record = digest_view.primaries.fabric();
         if record.as_ref().is_some_and(|h| h.is_birth(&me.0, &me.1)) {
-            return Some(held_name);
+            return Some(reader_id);
         }
         let incumbency = incumbency_of(&digest_view, &records);
         if unlaunched && record.as_ref().is_none_or(|h| incumbency.lost.contains(&h.incarnation)) {
-            return Some(held_name);
+            return Some(reader_id);
         }
-        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &digest_view))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.to_string() == held_name) && incumbency.fabric.as_ref() == Some(&fr.target));
-        executes.then_some(held_name)
+        let executes = view.get().and_then(|v| v.try_read().ok().and_then(|t| crate::fabric_recovery::of(&t, &incumbency, &digest_view))).is_some_and(|fr| fr.executor.as_ref().is_some_and(|e| e.node_id == me.0 && e.incarnation == me.1) && incumbency.fabric.as_ref() == Some(&fr.target));
+        executes.then_some(reader_id)
     })
 }
 
@@ -164,7 +162,7 @@ pub(crate) struct RowNames {
 /// Where the row of one birth stands.
 pub(crate) enum RowName {
     /// The name of the row the birth holds (the name it published, when it holds no row).
-    At(PathName),
+    At(PathName, Option<PathName>),
     /// Its id index entry could not be read: the birth's name is not known, and the view does not
     /// list it.
     Unreadable,
@@ -206,7 +204,7 @@ impl RowNames {
         }
         for (node_id, incarnation, published) in quiet {
             let (name, released) = row_name(me, &*store, &node_id, &incarnation, &published).await;
-            if let RowName::At(moved) = &name {
+            if let RowName::At(moved, _) = &name {
                 if moved != &published {
                     *listed.entry(moved.clone()).or_default() += 1;
                 }
@@ -219,14 +217,9 @@ impl RowNames {
         // A publishing birth is listed at the name it published whatever its row says; its row is read
         // only for whether it released the name (unreadable: not known to, and the birth keeps today's rule).
         for (node_id, incarnation, published) in publishing {
-            if listed.get(&published).copied().unwrap_or(0) < 2 {
-                continue;
-            }
-            if let Ok(Some(row)) = store.node(&node_id).await {
-                if row.name.mesh == published.mesh && crate::node_rows::released_its_name(&row) {
-                    rows.released.insert((node_id, incarnation));
-                }
-            }
+            let (name, released) = row_name(me, &*store, &node_id, &incarnation, &published).await;
+            if released { rows.released.insert((node_id.clone(), incarnation.clone())); }
+            rows.names.insert((node_id, incarnation), (published, name));
         }
         rows
     }
@@ -235,7 +228,7 @@ impl RowNames {
     /// `(node id, incarnation, published, row's name)`.
     pub(crate) fn moved(&self) -> impl Iterator<Item = (&NodeId, &IncarnationId, &PathName, &PathName)> {
         self.names.iter().filter_map(|((id, inc), (published, row))| match row {
-            RowName::At(name) if name != published => Some((id, inc, published, name)),
+            RowName::At(name, _) if name != published => Some((id, inc, published, name)),
             _ => None,
         })
     }
@@ -245,7 +238,7 @@ impl RowNames {
     /// could not be read, and the birth is not listed.
     pub(crate) fn name_of(&self, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> Option<PathName> {
         match self.names.get(&(node_id.clone(), incarnation.clone())) {
-            Some((_, RowName::At(n))) => Some(n.clone()),
+            Some((_, RowName::At(n, _))) => Some(n.clone()),
             Some((_, RowName::Unreadable)) => None,
             None => Some(published.clone()),
         }
@@ -259,8 +252,8 @@ impl RowNames {
     /// Which of two births listed at one path the records say is current, when they say it: the
     /// birth at a path is the one whose row holds the name, stopped or not, and a birth whose row
     /// released the name never takes the path from it (node-identity-and-state.md §2.3: "the deleted
-    /// row releases the `path.name`"; §6 "Re-born": "the predecessor is deleted by the recovery Build,
-    /// so the projection holds one entry per `path.name`"; node-investigation.md: "A node that comes
+    /// row releases the `(path, name)`"; §6 "Re-born": "the predecessor is deleted by the recovery Build,
+    /// so the projection holds one entry per `(path, name)`"; node-investigation.md: "A node that comes
     /// back after it was re-created is a deleted birth"). `Some(true)`: `candidate` takes the path
     /// from `listed`; `Some(false)`: `listed` keeps it; `None`: the rows read do not tell them apart.
     pub(crate) fn takes_path(&self, listed: &Node, candidate: &Node) -> Option<bool> {
@@ -273,7 +266,10 @@ impl RowNames {
 
     /// List `n` at `name` when no birth is listed there yet, or when the birth listed there is not the
     /// current one and `n` is ([`Self::takes_path`]).
-    pub(crate) fn place(&self, nodes: &mut BTreeMap<PathName, Node>, name: PathName, n: Node) {
+    pub(crate) fn place(&self, nodes: &mut BTreeMap<PathName, Node>, name: PathName, mut n: Node) {
+        if let Some((_, RowName::At(_, predecessor))) = n.incarnation_id.as_ref().and_then(|inc| self.names.get(&(n.node_id.clone(), inc.clone()))) {
+            n.renamed_from = predecessor.clone();
+        }
         match nodes.get(&name) {
             Some(listed) if self.takes_path(listed, &n) != Some(true) => {}
             _ => {
@@ -294,15 +290,15 @@ pub(crate) fn publishes(digest_view: &DigestView, records: &Records, node_id: &N
 /// one point read through the row's id index in the birth's mesh (a rename never changes the mesh). An
 /// index entry that cannot be read is one span on every projection that reads it, until it can be read.
 pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesStorage, node_id: &NodeId, incarnation: &IncarnationId, published: &PathName) -> (RowName, bool) {
-    match store.node(node_id).await.map(|r| r.filter(|r| r.name.mesh == published.mesh)) {
+    match store.node(node_id).await {
         Ok(Some(row)) => {
             let released = crate::node_rows::released_its_name(&row);
-            (RowName::At(row.name), released)
+            (RowName::At(row.name.clone(), row.replacement_from.clone()), released)
         }
         // The node holds no row: no rename moved it, and the name it published stands.
-        Ok(None) => (RowName::At(published.clone()), false),
+        Ok(None) => (RowName::At(published.clone(), None), false),
         Err(e) => {
-            tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", node = %me, subject = %published, node_id = %node_id, incarnation_id = %incarnation.as_str(), index = "id", detail = %e)
+            tracing::info_span!("rdm.node_admin.topology.reject.via-row-unreadable", node_path = %me.path, node_name = %me.name, subject_path = %published.path, subject_name = %published.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), index = "id", detail = %e)
                 .in_scope(|| tracing::info!("the birth's row could not be read through its id index: its name is not known and the view does not list it"));
             (RowName::Unreadable, false)
         }
@@ -395,7 +391,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         let Some((_, age)) = digest_view.get_at(d.node.node_id.as_str(), now) else { continue };
         heard.insert(d.node.incarnation.clone());
         // A birth that publishes names itself (R12); one that does not is listed at the name its row
-        // holds (a stopped predecessor a node.update renamed `<path>.old`), one whose row could not be read not at all.
+        // holds (a stopped predecessor a node.update renamed the predecessor name `<name>-old` at the same path), one whose row could not be read not at all.
         let name = if publishes(digest_view, records, &d.node.node_id, &d.node.incarnation, age) {
             d.node.name.clone()
         } else {
@@ -411,10 +407,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
-        let mut n = Node::allocated(name.clone());
-        n.mesh = d.node.mesh.clone();
-        n.kind = d.node.kind;
-        n.node_type = d.node.kind.node_type().to_string();
+        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), d.node.kind);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -471,10 +464,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
-        let mut n = Node::allocated(name.clone());
-        n.mesh = d.node.mesh.clone();
-        n.kind = d.node.kind;
-        n.node_type = d.node.kind.node_type().to_string();
+        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), d.node.kind);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -505,7 +495,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if removed.contains(&(name.clone(), Some(op.incarnation.clone()))) {
             continue;
         }
-        let mut n = Node::allocated(name.clone());
+        let mut n = Node::allocated(name.clone(), op.mesh.clone(), op.kind);
         n.mesh = op.mesh.clone();
         n.node_id = op.node_id.clone();
         n.incarnation_id = Some(op.incarnation.clone());
@@ -539,10 +529,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(d.node.mesh.clone()).or_insert(id);
         }
-        let mut n = Node::allocated(name.clone());
-        n.mesh = d.node.mesh.clone();
-        n.kind = d.node.kind;
-        n.node_type = d.node.kind.node_type().to_string();
+        let mut n = Node::allocated(name.clone(), d.node.mesh.clone(), d.node.kind);
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
@@ -601,7 +588,7 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         }
     } else {
         // The election takes members: a replaced predecessor holds no role.
-        let (mut members, predecessors): (Vec<Node>, Vec<Node>) = std::mem::take(&mut topology.nodes).into_iter().partition(|n| !n.name.old);
+        let (mut members, predecessors): (Vec<Node>, Vec<Node>) = std::mem::take(&mut topology.nodes).into_iter().partition(|n| n.renamed_from.is_none());
         crate::election::resolve_with(&mut members, decided);
         topology.nodes = members.into_iter().chain(predecessors).collect();
     }
@@ -709,17 +696,17 @@ mod tests {
     fn digest_projection_preserves_explicit_ownership_and_primary_selection() {
         let view = DigestView::default();
         let records = Records::default();
-        let mut admin = super::super::tests::digest("mesh1.admin.1", MemberStatus::Ready);
+        let mut admin = super::super::tests::digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready);
         let fabric = admin.fabric_id.clone();
         let mesh_id = MeshId::mint();
-        admin.node.name = "elsewhere.rpc.administrator".parse().unwrap();
+        admin.node.name = rdm_core::PathName::new("elsewhere.rpc", "administrator").unwrap();
         admin.node.mesh = "mesh2".into();
         admin.node.kind = NodeKind::NodeAdmin;
         admin.mesh_id = Some(mesh_id.clone());
         admin.is_primary = Some(7);
         admin.is_fabric_primary = Some(7);
-        let mut member = super::super::tests::digest("mesh1.rpc.1", MemberStatus::Ready);
-        member.node.name = "elsewhere.gateway.north".parse().unwrap();
+        let mut member = super::super::tests::digest(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, MemberStatus::Ready);
+        member.node.name = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap();
         member.node.mesh = "mesh2".into();
         member.node.kind = NodeKind::Compute;
         member.mesh_id = Some(mesh_id.clone());
@@ -760,7 +747,7 @@ mod tests {
         let records = Arc::new(Records::default());
         let me_id = NodeId::mint();
         let me_inc = IncarnationId::mint();
-        let me_name: PathName = "mesh1.admin.1".parse().unwrap();
+        let me_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let view = Arc::new(std::sync::OnceLock::new());
 
         // 1. `fabric_primary_source` and `build_records_reader`:
@@ -772,7 +759,7 @@ mod tests {
         let reader_launched = build_records_reader(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, false, view.clone());
         let reader_unlaunched = build_records_reader(&dv, &records, (me_id.clone(), me_inc.clone()), &me_name, true, view.clone());
         assert_eq!(reader_launched(), None);
-        assert_eq!(reader_unlaunched(), Some(me_name.to_string()));
+        assert_eq!(reader_unlaunched(), Some(me_id.to_string()));
 
         // When the fabric primary names this exact birth, both `primary_src` and `reader_launched` name `me_name`.
         dv.primaries.take(
@@ -784,8 +771,8 @@ mod tests {
                 revision: 1,
             },
         );
-        assert_eq!((primary_src.read)(), PrimaryRecord::Open { primary: Some(me_name.to_string()) });
-        assert_eq!(reader_launched(), Some(me_name.to_string()));
+        assert_eq!((primary_src.read)(), PrimaryRecord::Open { primary: Some(me_id.clone()) });
+        assert_eq!(reader_launched(), Some(me_id.to_string()));
 
         // When a newer revision moves the fabric primary to another birth, `primary_src` reports `Moved` and `reader_launched` returns `None`.
         let other_id = NodeId::mint();
@@ -806,29 +793,29 @@ mod tests {
         //    `row_name` reads a birth's row from `NodesStorage` and indicates whether the row released its name (`Deleted` / `Withdrawn`).
         //    `takes_path` lets a candidate whose row has not released its name take the path from a listed birth whose row released its name.
         let store = MemoryNodesStorage::default();
-        let rpc_path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let rpc_path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let old_id = NodeId::mint();
         let old_inc = IncarnationId::mint();
         let new_id = NodeId::mint();
         let new_inc = IncarnationId::mint();
 
         let (r_none, rel_none) = row_name(&me_name, &store, &new_id, &new_inc, &rpc_path).await;
-        assert!(matches!(r_none, RowName::At(ref p) if p == &rpc_path));
+        assert!(matches!(r_none, RowName::At(ref p, _) if p == &rpc_path));
         assert!(!rel_none);
 
-        store.put_node(&NodeRow::new(rpc_path.clone(), old_id.clone(), NodeStatus::Deleted)).await.unwrap();
+        store.put_node(&NodeRow::new(rpc_path.clone(), "mesh1", rdm_core::NodeKind::RpcNode, old_id.clone(), NodeStatus::Deleted)).await.unwrap();
         let (r_del, rel_del) = row_name(&me_name, &store, &old_id, &old_inc, &rpc_path).await;
-        assert!(matches!(r_del, RowName::At(ref p) if p == &rpc_path));
+        assert!(matches!(r_del, RowName::At(ref p, _) if p == &rpc_path));
         assert!(rel_del);
 
         let mut row_names = RowNames::default();
         row_names.released.insert((old_id.clone(), old_inc.clone()));
 
-        let mut old_node = Node::allocated(rpc_path.clone());
+        let mut old_node = Node::allocated(rpc_path.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         old_node.node_id = old_id;
         old_node.incarnation_id = Some(old_inc);
 
-        let mut new_node = Node::allocated(rpc_path.clone());
+        let mut new_node = Node::allocated(rpc_path.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         new_node.node_id = new_id;
         new_node.incarnation_id = Some(new_inc);
 

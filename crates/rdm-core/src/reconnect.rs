@@ -34,7 +34,7 @@ pub fn reconnect_backoff(attempt_ordinal: u32) -> u64 {
 
 /// The jitter added to attempt `attempt_ordinal`'s backoff for this pair, ms: FNV-1a over the
 /// source, destination and ordinal, below a quarter of the backoff; the same in every process.
-pub fn deterministic_jitter(source: &PathName, destination: &PathName, attempt_ordinal: u32) -> u64 {
+pub fn deterministic_jitter(source: &crate::NodeId, destination: &crate::NodeId, attempt_ordinal: u32) -> u64 {
     let span = reconnect_backoff(attempt_ordinal) / 4;
     if span == 0 {
         return 0;
@@ -52,7 +52,7 @@ pub fn next_due(row: &NodeConnection) -> Option<u64> {
     Some(
         row.logged_at_ms
             .saturating_add(reconnect_backoff(ordinal))
-            .saturating_add(deterministic_jitter(&row.source.name, &row.destination.name, ordinal)),
+            .saturating_add(deterministic_jitter(&row.source.node_id, &row.destination.node_id, ordinal)),
     )
 }
 
@@ -155,7 +155,7 @@ pub fn first_failure_for(
 pub fn owed_direct_restored(held: &ConnectionsHeld, now_ms: u64) -> Vec<NodeConnection> {
     held.own_active_proxies()
         .into_iter()
-        .filter(|p| matches!(held.active_direct_for(&p.source.name, &p.destination.name, &p.alpn), Some(Some(connection)) if !held.names_superseded_destination(connection)))
+        .filter(|p| matches!(held.active_direct_for(&p.source.node_id, &p.destination.node_id, &p.alpn), Some(Some(connection)) if !held.names_superseded_destination(connection)))
         .map(|p| NodeConnection {
             id: crate::ConnectionId::mint(),
             state: ConnectionState::Disconnected,

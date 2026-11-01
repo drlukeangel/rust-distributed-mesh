@@ -105,7 +105,7 @@ fn every_reply_variant_of_join_classifies_to_one_code() {
     let fixtures = [
             JoinReply::Joined { answer: vec![1, 2, 3] },
             JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() },
-            JoinReply::NotPrimary { primary: Some("mesh1.admin.1".into()) },
+            JoinReply::NotPrimary { primary: Some(rdm_core::NodeId::mint()) },
             JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() },
             JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() },
             Join::peer_unresolved("p".into()),
@@ -129,16 +129,16 @@ fn every_reply_variant_of_build_claim_classifies_to_one_code() {
 
     let fixtures = [
             BuildClaimReply::Won { context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None } },
-            BuildClaimReply::Lost { holder: "mesh1.admin.1".into() },
+            BuildClaimReply::Lost { holder: rdm_core::NodeId::parse("0123456789ab").unwrap() },
             BuildClaimReply::NotOpen { next: Some(7) },
-            BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) },
+            BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) },
             BuildClaim::peer_unresolved("p".into()),
             BuildClaim::not_ready("n".into()),
             BuildClaim::busy("b".into()),
             BuildClaim::connections_deleting("d".into()),
             BuildClaim::malformed(MalformedKind::Corrupt),
             BuildClaim::unauthorized("u".into()),
-            BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some("mesh1.admin.1".into()) },
+            BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) },
         ];
     let mut variants = std::collections::BTreeSet::new();
     for r in fixtures { variants.insert(BuildClaim::encode_reply(&r).unwrap()[0]); check::<BuildClaim>(&r); }
@@ -192,7 +192,7 @@ pub(crate) fn check_malformed<P: NodeProtocol>() {
 fn the_standard_code_view_keeps_the_protocols_exact_typed_detail() {
     use rdm_core::outcome::{PreCommit, RequestFinished};
     let committed = || PreCommit::begin(Status::OP).commit(RequestFinished::after_complete_write(1, 1).unwrap());
-    for (value, code) in [(StatusReply::Applied, Code::Ok), (StatusReply::AlreadyApplied, Code::AlreadyExists), (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: rdm_core::NodeId::mint() }, Code::AlreadyExists), (StatusReply::RequestNotHandled { request: "node.get".into() }, Code::Unimplemented)] {
+    for (value, code) in [(StatusReply::Applied, Code::Ok), (StatusReply::AlreadyApplied, Code::AlreadyExists), (StatusReply::NameHeld { path: "mesh1.rpc".into(), name: "1".into(), by: rdm_core::NodeId::mint() }, Code::AlreadyExists), (StatusReply::RequestNotHandled { request: "node.get".into() }, Code::Unimplemented)] {
         let bytes = Status::encode_reply(&value).unwrap();
         let out = committed().reply::<Status>(&bytes);
         assert_eq!(out.code(), code);

@@ -48,7 +48,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
 /// A launch of `name` by `root` over its own data dir `dir`, on the root's store root `store`: every
 /// admin of a fabric reads the one Build storage (Q292).
-fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::path::Path) -> Launch {
+fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path, store: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -57,14 +57,14 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::pat
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::NodeAdmin,
-        name: name.parse().unwrap(),
+        name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -167,11 +167,11 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         let root_digest = root.digest.lock().unwrap().clone();
-        let root_name = root_digest.node.name.to_string();
-        let root_publisher = PublisherId { node: root_name.clone(), incarnation: root_digest.node.incarnation.clone(), node_id: root_digest.node.node_id.clone() };
+        let root_id = root_digest.node.node_id.to_string();
+        let root_publisher = PublisherId { node: root_id.clone(), incarnation: root_digest.node.incarnation.clone(), node_id: root_digest.node.node_id.clone() };
 
         // mesh1.admin.2: launched by the root, a node-admin that is not its mesh's primary.
-        let launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
@@ -197,7 +197,8 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let admin_addr = gossip_addr(&admin_digest).expect("mesh1.admin.2's digest names its endpoint");
         learn_addresses(&probe.ep, &[admin_addr.clone()]).unwrap();
         let mesh_id = root_digest.mesh_id.clone().expect("the root holds its mesh id");
-        let channel = TopologyView::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, "mesh1.rpc.9", rdm_transport::clock::os_clock(), vec![admin_addr], &[]).await.expect("the cell joins mesh1's channel");
+        let observer_id = NodeId::mint();
+        let channel = TopologyView::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, observer_id.as_str(), rdm_transport::clock::os_clock(), vec![admin_addr], &[]).await.expect("the cell joins mesh1's channel");
         crate::declare_gossip_probe(&channel);
         until("the cell's endpoint to hold the primary's replayed full", WRONG, || channel.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         // mesh1.admin.2's own Ready moves the primary's projection, which the primary then
@@ -230,20 +231,20 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         };
         channel.forward(&delta).await.expect("the cell puts the delta on mesh1's channel");
         let base_s = gap_base.to_string();
-        let gap = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("base_version") == Some(&base_s) && f.get("repair_requested").map(String::as_str) == Some("true");
+        let gap = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("base_version") == Some(&base_s) && f.get("repair_requested").map(String::as_str) == Some("true");
         tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.topology.update.via-gap", gap)).await.expect("mesh1.admin.2 took the delta as a version gap");
 
         // The top-up: mesh1.admin.2 reads mesh1 from its own Mesh's primary and resumes the source.
-        let topped = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1"));
+        let topped = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1"));
         if tokio::time::timeout(TOP_UP, spans.recorded("rdm.mesh.entry.update.via-top-up", topped)).await.is_err() {
-            let rejected = spans_named(&spans, "rdm.mesh.entry.reject.via-top-up", |f| f.get("node").map(String::as_str) == Some("mesh1.admin.2"));
+            let rejected = spans_named(&spans, "rdm.mesh.entry.reject.via-top-up", |f| f.get("node").map(String::as_str) == Some(launch.node_id.as_str()));
             panic!(
                 "mesh1.admin.2 never topped up its desynchronized source mesh1 from its own Mesh's primary within {TOP_UP:?}; desynchronized now: {:?}; refused top-ups: {rejected:?}",
                 admin.topology_view.desynced_sources()
             );
         }
         let top_up = spans_named(&spans, "rdm.mesh.entry.update.via-top-up", topped).remove(0);
-        assert_eq!((top_up["mesh_primary"].as_str(), top_up["served_by"].as_str(), top_up["still_desynced"].as_str()), (root_name.as_str(), root_name.as_str(), ""), "served by its own Mesh's primary, nothing left desynchronized: {top_up:?}");
+        assert_eq!((top_up["mesh_primary"].as_str(), top_up["served_by"].as_str(), top_up["still_desynced"].as_str()), (root_id.as_str(), root_id.as_str(), ""), "served by its own Mesh's primary, nothing left desynchronized: {top_up:?}");
         assert!(top_up["reasons"].contains("mesh1:"), "the span names the gap it repaired: {top_up:?}");
         assert!(admin.topology_view.desynced_sources().is_empty(), "no source stays desynchronized: {:?}", admin.topology_view.desynced_sources());
         let own = admin.digest.lock().unwrap().clone();
@@ -252,11 +253,11 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
 
         // The primary heard the same delta with no baseline of its own mesh on its channel: it is the
         // Mesh's primary, so it names that and dials nobody.
-        let primary_says = |f: &BTreeMap<String, String>| f.get("node") == Some(&root_name) && f.get("reason").map(String::as_str) == Some("this-node-is-the-mesh-primary");
+        let primary_says = |f: &BTreeMap<String, String>| f.get("node") == Some(&root_id) && f.get("reason").map(String::as_str) == Some("this-node-is-the-mesh-primary");
         tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.entry.reject.via-top-up", primary_says)).await.expect("the primary named why it has no top-up to make");
-        let root_pulls = spans_named(&spans, "rdm.mesh.entry.reject.via-top-up", |f| f.get("node") == Some(&root_name) && f.get("reason").map(String::as_str) == Some("pull-refused"));
+        let root_pulls = spans_named(&spans, "rdm.mesh.entry.reject.via-top-up", |f| f.get("node") == Some(&root_id) && f.get("reason").map(String::as_str) == Some("pull-refused"));
         assert!(root_pulls.is_empty(), "the primary never dials itself for a top-up: {root_pulls:?}");
-        let root_topped = spans_named(&spans, "rdm.mesh.entry.update.via-top-up", |f| f.get("node") == Some(&root_name));
+        let root_topped = spans_named(&spans, "rdm.mesh.entry.update.via-top-up", |f| f.get("node") == Some(&root_id));
         assert!(root_topped.is_empty(), "the primary tops up from nobody: {root_topped:?}");
 
         let _ = std::fs::write(dir.join("facts.txt"), format!("held={held} gap_base={gap_base} gap_version={gap_version}\ntop_up={top_up:?}\n"));

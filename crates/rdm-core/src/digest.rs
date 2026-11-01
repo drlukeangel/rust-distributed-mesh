@@ -14,7 +14,7 @@ pub struct MeshNode {
     pub kind: crate::NodeKind,
     /// The node's minted id.
     pub node_id: NodeId,
-    /// The node's `path.name`.
+    /// The node's `(path, name)`.
     pub name: PathName,
     /// The node's fabric endpoint id.
     pub endpoint_id: EndpointId,
@@ -196,7 +196,7 @@ mod tests {
     fn a_birth_round_trips_as_json_for_gossip() {
         let a = MeshNode { mesh: "mesh1".into(), kind: crate::NodeKind::RpcNode,
             node_id: NodeId::mint(),
-            name: "mesh1.rpc.1".parse().unwrap(),
+            name: crate::PathName::new("mesh1.rpc", "1").unwrap(),
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:7000".parse().unwrap(),
             incarnation: IncarnationId::mint(),

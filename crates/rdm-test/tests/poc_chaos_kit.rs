@@ -2,7 +2,7 @@
 //! so the chaos run starts from pieces known to work. Process provider; telemetry on through
 //! `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-use rdm_core::NodeKind;
+use rdm_core::{NodeKind, PathName};
 use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_test::typed::BuildSpec;
 use rdm_core::build::BuildPhase;
@@ -45,7 +45,7 @@ async fn small_estate(test: &str) -> Estate {
 #[tokio::test(flavor = "multi_thread")]
 async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
     let mut estate = small_estate("poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid").await;
-    let dir = PathBuf::from(estate.data_dir("mesh1.rpc.2").await);
+    let dir = PathBuf::from(estate.data_dir(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await);
     let rt = ExactRuntime::published(&dir).expect("rpc.2 published its runtime");
 
     // A recycled pid is refused by name, and nothing is signalled.
@@ -75,9 +75,9 @@ async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
 async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
     let mut estate = small_estate("poc_netfault_cut_unhears_one_node_and_heal_restores_it").await;
     let nodes = estate.node_values().await;
-    let victim = "mesh1.rpc.2".to_string();
-    let rest: Vec<String> = nodes.iter().filter_map(|n| n["name"].as_str()).filter(|n| *n != victim).map(String::from).collect();
-    let id_before = estate.node_view(&victim).await.node_id;
+    let victim = PathName::new("mesh1.rpc", "2").unwrap();
+    let rest: Vec<PathName> = nodes.iter().map(|n| serde_json::from_value(n["name"].clone()).expect("separate path and name")).filter(|n| *n != victim).collect();
+    let before = estate.node_view(&victim).await;
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &rest)) {
         Ok(c) => c,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").is_err() => {
@@ -88,17 +88,17 @@ async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
         Err(why) => panic!("netfault required: {why}"),
     };
     let held = estate.until_node(&victim, "the cut node is no longer ready in the admin's view", SETTLE, |n| n.filter(|n| !ready(n)).map(|n| n.status)).await;
-    eprintln!("poc: under the cut {victim} reads {held:?}");
+    eprintln!("poc: under the cut {victim:?} reads {held:?}");
     drop(cut);
     let back = estate.until_node(&victim, "the healed node is ready again", SETTLE, |n| n.filter(|n| ready(n)).cloned()).await;
-    assert_eq!(back.node_id, id_before, "the heal brings back the same node: {back:?}");
+    assert_eq!((&back.node_id, &back.incarnation_id), (&before.node_id, &before.incarnation_id), "the heal brings back the same node: {back:?}");
     estate.stop().await;
 }
 
 /// CONTRACT: the admin fault door holds a real node-admin at one named cut (the create of an rpc
 /// node, after DeployRuntime's work and before its receipt is durable): the Build does not complete
 /// while the cut holds, the door reports the held call, and on release the Build completes and the
-/// node comes up ready. Needs `cargo build -p rafka-node-rpc-testkit --bins` (faulted-node-admin).
+/// node comes up ready. Uses the faulted-node-admin binary built by the cell runner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     use rdm_test::faults::{binding_set, candidate_sha, Door};
@@ -112,10 +112,10 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     // Either admin may execute: arm the same cut on both doors.
     let mut doors = Vec::new();
     for n in estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
-        doors.push(Door::at(&estate, &n.name.to_string()).await);
+        doors.push(Door::at(&estate, &n.name).await);
     }
     let id = "poc:deploy-runtime";
-    let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": "mesh1.rpc.1"});
+    let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": {"path": "mesh1.rpc", "name": "1"}});
     for d in &doors {
         d.arm(id, spec.clone()).await;
     }
@@ -131,7 +131,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
         d.release(id).await;
     }
     Estate::until_complete(&mut stream).await;
-    estate.until_node("mesh1.rpc.1", "rpc.1 ready after the release", SETTLE, |n| n.filter(|n| ready(n)).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "rpc.1 ready after the release", SETTLE, |n| n.filter(|n| ready(n)).map(|_| ())).await;
     estate.stop().await;
 }
 
@@ -141,7 +141,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn poc_probe_round_trips_and_a_cut_frame_is_not_sent() {
     let mut estate = small_estate("poc_probe_round_trips_and_a_cut_frame_is_not_sent").await;
-    let id = estate.node_value("mesh1.rpc.1").await["node_id"].as_str().unwrap().to_string();
+    let id = estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await["node_id"].as_str().unwrap().to_string();
     let exact = format!("exact:{id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "7", "--value", "poc"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
@@ -161,16 +161,18 @@ async fn poc_probe_round_trips_and_a_cut_frame_is_not_sent() {
 async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() {
     let mut estate = Estate::bootstrap(owner("poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric"), "fabric1", "mesh1").await;
     let build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await.build_id.to_string();
-    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"].iter().map(|s| s.to_string()).collect();
+    let want: std::collections::BTreeSet<PathName> = [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()].into();
     let before = estate.settles_to_named(&want, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let primary = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).unwrap();
-    let primary_dir = if primary.to_string() == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&primary.to_string()).await) };
-    let rpc_id = estate.node_view("mesh1.rpc.1").await.node_id;
-    for (path, pid) in estate.live_runtimes() {
-        if path.file_name().unwrap().to_string_lossy().contains(".admin.") {
-            estate.kill_pid(pid);
-        }
+    let primary_dir = if primary == PathName::new("mesh1.admin", "1").unwrap() { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&primary).await) };
+    let rpc_id = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await.node_id;
+    let mut admin_pids = Vec::new();
+    for admin in before.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.name != PathName::new("mesh1.admin", "1").unwrap()) {
+        admin_pids.push(estate.pid_of(&admin.name).await);
+    }
+    for pid in admin_pids {
+        estate.kill_pid(pid as u32);
     }
     estate.kill_bootstrap();
     estate.restart_admin_with(&primary_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
@@ -178,8 +180,8 @@ async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() 
     let after = estate.settles_to_named(&want, Duration::from_secs(240)).await;
     let fabric = estate.fabric_view().await;
     assert_eq!(fabric.build_id.as_deref(), Some(build.as_str()), "the same Build: {fabric:?}");
-    let rpc_after = after.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap();
+    let rpc_after = after.iter().find(|n| n.node_id == rpc_id).unwrap();
     assert_eq!(rpc_after.node_id, rpc_id, "the live member is preserved");
-    eprintln!("poc: restarted {primary}; fabric {:?}", fabric.status);
+    eprintln!("poc: restarted {primary:?}; fabric {:?}", fabric.status);
     estate.stop().await;
 }

@@ -21,7 +21,7 @@ use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 pub use rdm_core::PublisherId;
 
-type OpKey = (String, u32, String);
+type OpKey = (String, u32, rdm_core::OperationId);
 
 /// The digest as the topology projection sees it: what `topology_version` orders.
 ///
@@ -983,8 +983,8 @@ mod tests {
     use super::*;
     use rdm_core::IncarnationId;
 
-    fn op(operation: &str, node_id: &rdm_core::NodeId, incarnation: &IncarnationId) -> LifecycleOp {
-        LifecycleOp { mesh: "mesh1".into(), build_id: "b1".into(), attempt: 1, operation: operation.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+    fn op(action: &str, node_id: &rdm_core::NodeId, incarnation: &IncarnationId) -> LifecycleOp {
+        LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }), node_id: node_id.clone(), incarnation: incarnation.clone(), name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
     /// CONTRACT (gossip.md §3.1 NodeStopped: "stays in the in-flight overlay until the next lifecycle
@@ -996,8 +996,8 @@ mod tests {
     #[test]
     fn a_departure_ends_every_overlay_of_its_birth_so_the_receiver_holds_the_publishers_full() {
         let (node, inc) = (rdm_core::NodeId::mint(), IncarnationId::mint());
-        let stopped = Full::new(vec![], vec![op("node.stop:mesh1.rpc.2", &node, &inc)], vec![]);
-        let deleted = Full::new(vec![], vec![], vec![op("node.delete:mesh1.rpc.2", &node, &inc)]);
+        let stopped = Full::new(vec![], vec![op("node.stop", &node, &inc)], vec![]);
+        let deleted = Full::new(vec![], vec![], vec![op("node.delete", &node, &inc)]);
         let mut held = stopped.clone();
         held.apply(&stopped.delta_to(&deleted));
         assert!(held.in_flight().is_empty(), "the departure ended the birth's stop overlay: {:?}", held.in_flight());

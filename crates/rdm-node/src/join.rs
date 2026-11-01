@@ -47,7 +47,7 @@ pub async fn call_join_to_types<F, Fut>(client: &NodeRpcClient, mut next: F, dig
 where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
     let req = JoinRequest::JoinNode { types: types.to_vec(), digest: WireDigest::from(digest), listeners: listeners.to_vec() };
-    let node = digest.node.name.to_string();
+    let node = digest.node.node_id.to_string();
     let mut last = String::new();
     for attempt in 1..=attempts.max(1) {
         let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(5)), ..Default::default() };

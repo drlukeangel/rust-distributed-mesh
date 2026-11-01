@@ -37,12 +37,12 @@ pub const SEND: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 pub struct BuildCarrier {
     client: Arc<NodeRpcClient>,
-    fabric_primary: PathName,
+    target: NodeTarget,
 }
 
 impl std::fmt::Debug for BuildCarrier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BuildCarrier").field("fabric_primary", &self.fabric_primary).finish()
+        f.debug_struct("BuildCarrier").field("target", &self.target).finish()
     }
 }
 
@@ -54,7 +54,7 @@ pub enum BuildFrame {
         /// The attempt.
         attempt: u32,
         /// The operation's idempotency key.
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The step.
         step: String,
     },
@@ -63,7 +63,7 @@ pub enum BuildFrame {
         /// The attempt.
         attempt: u32,
         /// The operation.
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The blocked step.
         step: String,
         /// What it waits for.
@@ -81,7 +81,7 @@ pub enum BuildFrame {
         /// The attempt that failed.
         attempt: u32,
         /// The operation the failed step belongs to.
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The step that failed.
         step: String,
         /// The attempt's reason.
@@ -96,7 +96,7 @@ pub enum BuildFrame {
         /// The current attempt.
         attempt: u32,
         /// The executor of the current attempt.
-        executor: Option<String>,
+        executor: Option<rdm_core::framing::Birth>,
         /// Why the current attempt exists.
         reason: String,
         /// Why the last attempt failed.
@@ -109,8 +109,8 @@ pub enum BuildFrame {
     /// Terminal of `build.create`: the fabric-primary moved while the Build ran (`node-rpc-envelope.md` "Frames, durable receipts and reattachment").
     /// Deliberate outer-stream end naming the new fabric-primary; the caller resubmits the same `build_id` there.
     FabricPrimaryMoved {
-        /// The node-admin (`path.name`) that is the fabric-primary now, when the old fabric-primary's view named one.
-        fabric_primary: Option<String>,
+        /// The node-admin (`(path, name)`) that is the fabric-primary now, when the old fabric-primary's view named one.
+        fabric_primary: Option<rdm_core::NodeId>,
     },
     /// Terminal of `build.delete`.
     Deleted,
@@ -126,7 +126,7 @@ pub struct BuildStream {
     build_id: BuildId,
     attempt: u32,
     disposition: Disposition,
-    seen: HashSet<(String, u32, String, String, String)>,
+    seen: HashSet<(String, u32, rdm_core::OperationId, String, String)>,
     ended: bool,
 }
 
@@ -213,20 +213,20 @@ fn refusal(reply: BuildReply) -> CallEnd {
         };
     }
     let detail = match &reply {
-        BuildReply::NotFabricPrimary { fabric_primary } => format!("the receiver is not the fabric-primary; it sees {}", fabric_primary.as_deref().unwrap_or("none")),
+        BuildReply::NotFabricPrimary { fabric_primary } => format!("the receiver is not the fabric-primary; it sees {}", fabric_primary.as_ref().map(|id| id.as_str()).unwrap_or("none")),
         BuildReply::NotExecutor { named, recipient } => format!("the claim names {named}, the recipient is {recipient}"),
-        BuildReply::StaleClaim { held_attempt, held_executor, carried_attempt } => format!("the recipient holds attempt {held_attempt} for {}, the call carried {carried_attempt}", held_executor.as_deref().unwrap_or("no executor")),
+        BuildReply::StaleClaim { held_attempt, held_executor, carried_attempt } => format!("the recipient holds attempt {held_attempt} for {held_executor:?}, the call carried {carried_attempt}"),
         BuildReply::UnknownBuild { build_id } => format!("the fabric-primary holds no fact of Build {build_id}"),
         BuildReply::Rejected { reason, detail } => format!("{reason}: {detail}"),
         BuildReply::BuildInProgress { current_build_id, mesh, held_by } => match mesh {
-            Some(mesh) => format!("an attempt of Build {current_build_id} holds mesh {mesh} (claimed by {}); one attempt in flight per mesh", held_by.as_deref().unwrap_or("no recorded claimant")),
+            Some(mesh) => format!("an attempt of Build {current_build_id} holds mesh {mesh} (claimed by {}); one attempt in flight per mesh", held_by.as_ref().map(|id| id.as_str()).unwrap_or("no recorded claimant")),
             None => format!("Build {current_build_id} is still reconciling; one Build at a time"),
         },
         BuildReply::NotClaimant { mesh, fabric_primary, mesh_primary } => format!(
             "the receiver may not claim on mesh {}: a topology attempt is the fabric-primary's ({}), a drift attempt the mesh-primary's ({})",
             mesh.as_deref().unwrap_or("unknown"),
-            fabric_primary.as_deref().unwrap_or("none seen"),
-            mesh_primary.as_deref().unwrap_or("none seen")
+            fabric_primary.as_ref().map(|id| id.as_str()).unwrap_or("none seen"),
+            mesh_primary.as_ref().map(|id| id.as_str()).unwrap_or("none seen")
         ),
         BuildReply::AttemptTaken { detail } => detail.clone(),
         BuildReply::RoleYielded { node, by } => format!("{node} is no longer the fabric-primary: {by}"),
@@ -329,7 +329,7 @@ impl BuildCarrier {
 
     /// A carrier over `client`, starting at the fabric-primary `fabric_primary`.
     pub fn new(client: Arc<NodeRpcClient>, fabric_primary: PathName) -> Self {
-        Self { client, fabric_primary }
+        Self { client, target: NodeTarget::CurrentPath(fabric_primary) }
     }
 
     /// The node-RPC client the carrier calls with: a caller that makes its own call reaches the admin
@@ -338,9 +338,14 @@ impl BuildCarrier {
         &self.client
     }
 
-    /// The fabric-primary calls start at.
-    pub fn fabric_primary(&self) -> &PathName {
-        &self.fabric_primary
+    /// A carrier selecting its entry admin by globally unique node ID.
+    pub fn at_node(client: Arc<NodeRpcClient>, node_id: rdm_core::NodeId) -> Self {
+        Self { client, target: NodeTarget::ExactNode(node_id) }
+    }
+
+    /// The explicit target calls start at.
+    pub fn target(&self) -> &NodeTarget {
+        &self.target
     }
 
     /// Open `req` at the fabric-primary: follow the redirect of a node that is not it, once for each
@@ -354,16 +359,15 @@ impl BuildCarrier {
 
     /// [`Self::open`]'s redirect and `Started` read, the stream and the `Started` frame's fields as sent.
     async fn open_started(&self, req: BuildRequest) -> Result<(ReplyStream<BuildFamily>, String, u32, Disposition), CallEnd> {
-        let mut asked: BTreeSet<PathName> = BTreeSet::new();
-        let mut target = self.fabric_primary.clone();
+        let mut asked: BTreeSet<rdm_core::NodeId> = BTreeSet::new();
+        let mut target = self.target.clone();
         loop {
-            asked.insert(target.clone());
             let opts = CallOptions { budget: Budget::Stream { send: SEND }, ..CallOptions::default() };
             // The first reply of the call: an early refusal of the receiving node, or the first frame
             // of the stream (`Started`, or the handler's own refusal).
             // The frames are the executor's receipts, recorded before they are sent; this client records
             // nothing of them: reading a frame is its recovery (node-rpc.md §43).
-            let (first, stream) = match self.client.call_stream::<BuildFamily>(&NodeTarget::CurrentPath(target.clone()), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
+            let (first, stream) = match self.client.call_stream::<BuildFamily>(&target, &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
                 Err((RpcOutcome::Reply(r), _)) => (r.into_value(), None),
                 Err((other, _)) => return Err(ended(other).err().unwrap_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Internal, reason: "an early reply that is no refusal".into() })),
                 Ok((mut stream, _)) => match stream.next().await {
@@ -376,10 +380,11 @@ impl BuildCarrier {
             };
             match (first, stream) {
                 (BuildReply::Started { build_id, attempt, disposition }, Some(stream)) => return Ok((stream, build_id, attempt, disposition)),
-                (BuildReply::NotFabricPrimary { fabric_primary: Some(named) }, _) => match named.parse::<PathName>() {
-                    Ok(next) if !asked.contains(&next) => target = next,
-                    Ok(_) => return Err(CallEnd::Rejected { reason: "not-fabric-primary".into(), detail: format!("{target} is not the fabric-primary and names {named}, which was already asked ({asked:?})") }),
-                    Err(e) => return Err(CallEnd::Rejected { reason: "not-fabric-primary".into(), detail: format!("{target} is not the fabric-primary and names {named:?}, which is not a path.name: {e}") }),
+                (BuildReply::NotFabricPrimary { fabric_primary: Some(node_id) }, _) => {
+                    if !asked.insert(node_id.clone()) {
+                        return Err(CallEnd::Rejected { reason: "not-fabric-primary".into(), detail: format!("redirect to node {node_id} was already followed") });
+                    }
+                    target = NodeTarget::ExactNode(node_id);
                 },
                 (other, _) => return Err(refusal(other)),
             }
@@ -496,14 +501,14 @@ pub struct Build {
     /// The current attempt.
     pub attempt: u32,
     /// The executor of the current attempt, when one is.
-    pub executor: Option<String>,
+    pub executor: Option<rdm_core::framing::Birth>,
     /// Why the current attempt exists.
     pub reason: String,
     /// Why the last attempt failed, when one did.
     pub last_failure: Option<String>,
     /// Whether this is the current Build, selected once for the read.
     pub current: bool,
-    /// Its topology: every node's create spec, in `path.name` order.
+    /// Its topology: every node's create spec, in `(path, name)` order.
     pub nodes: Vec<NodeSpec>,
     /// The receipts of every attempt, in order.
     pub steps: Vec<StepReceipt>,
@@ -535,9 +540,9 @@ mod tests {
                     // The frames after `Started` are written once the caller holds only the stream.
                     g.notified().await;
                     for step in ["AllocateIdentity", "WaitForMeshJoin", "Complete"] {
-                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: "node.create:mesh1.admin.1".into(), step: step.into(), receipt: None }).await.map_err(gone)?;
+                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.admin", "1").unwrap()), step: step.into(), receipt: None }).await.map_err(gone)?;
                     }
-                    Ok(BuildReply::FabricPrimaryMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some("mesh1.admin.2".into()) })
+                    Ok(BuildReply::FabricPrimaryMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) })
                 }
             })
             .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
@@ -546,12 +551,12 @@ mod tests {
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = iroh::protocol::Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-        let fp: PathName = "mesh1.admin.1".parse().unwrap();
+        let fp: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { node_id, name: fp.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
+        resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id, name: fp.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
         let cep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let carrier = BuildCarrier::new(Arc::new(NodeRpcClient::new(cep, resolver).with_caller_system("rdm")), fp);
-        let mut stream = carrier.create(BuildChange::Stop { node: "mesh1.admin.1".parse().unwrap() }).await.expect("the call was accepted");
+        let mut stream = carrier.create(BuildChange::Stop { node: rdm_core::PathName::new("mesh1.admin", "1").unwrap() }).await.expect("the call was accepted");
         assert_eq!((stream.build_id().as_str(), stream.attempt()), ("cq2tyb03krac", 3));
         drop(carrier);
         go.notify_one();
@@ -563,8 +568,8 @@ mod tests {
             }
         })
         .await;
-        let step = |s: &str| Ok(BuildFrame::Step { attempt: 3, operation: "node.create:mesh1.admin.1".into(), step: s.into() });
+        let step = |s: &str| Ok(BuildFrame::Step { attempt: 3, operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.admin", "1").unwrap()), step: s.into() });
         assert!(read.is_ok(), "the stream delivered no terminal within 10 s; it delivered {got:?}");
-        assert_eq!(got, vec![step("AllocateIdentity"), step("WaitForMeshJoin"), step("Complete"), Ok(BuildFrame::FabricPrimaryMoved { fabric_primary: Some("mesh1.admin.2".into()) })]);
+        assert_eq!(got, vec![step("AllocateIdentity"), step("WaitForMeshJoin"), step("Complete"), Ok(BuildFrame::FabricPrimaryMoved { fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) })]);
     }
 }

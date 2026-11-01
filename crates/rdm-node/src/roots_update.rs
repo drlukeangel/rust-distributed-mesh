@@ -87,10 +87,10 @@ mod tests {
             let ep_id = EndpointId(endpoint.secret_key().public().to_string());
             let node_id = NodeId::mint();
             let incarnation = IncarnationId::mint();
-            let name: PathName = "mesh1.rpc.1".parse().unwrap();
+            let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
-            let own_end = ConnectionEnd { name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) };
+            let own_end = ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) };
             let writer = Arc::new(ConnectionsWriter::new(own_end, conn_store, held));
             let resolver = Arc::new(LiveNodeResolver::default());
 

@@ -55,8 +55,8 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
     }
 }
 
-fn node(name: &str, primary: bool) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.incarnation_id = Some(IncarnationId::mint());
@@ -69,9 +69,9 @@ fn observed() -> Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![
-            Node { is_fabric_primary: true, ..node("mesh1.admin.1", true) },
-            node("mesh1.admin.2", false),
-            node("mesh1.rpc.1", true),
+            Node { is_fabric_primary: true, ..node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true) },
+            node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false),
+            node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true),
         ],
     }
 }
@@ -81,13 +81,13 @@ fn observed() -> Topology {
 async fn lose_a(topology: &RwLock<Topology>) {
     let mut t = topology.write().await;
     for n in t.nodes.iter_mut() {
-        match n.name.to_string().as_str() {
-            "mesh1.admin.1" => {
+        match (n.name.path.as_str(), n.name.name.as_str()) {
+            ("mesh1.admin", "1") => {
                 n.status = NodeStatus::PendingReconnect;
                 n.is_primary = false;
                 n.is_fabric_primary = false;
             }
-            "mesh1.admin.2" => {
+            ("mesh1.admin", "2") => {
                 n.is_primary = true;
                 n.is_fabric_primary = true;
             }
@@ -114,7 +114,7 @@ impl OperationRunner for Runner {
             self.died.notify_one();
             std::future::pending::<()>().await;
         }
-        self.topology.write().await.nodes.push(node(&name.to_string(), false));
+        self.topology.write().await.nodes.push(node(name.clone(), op.mesh().unwrap(), op.kind().unwrap(), false));
         Ok(())
     }
 }
@@ -134,7 +134,7 @@ impl rdm_admin::build_drive::Gate for RowsGate {
             .filter(|n| n.status.is_live())
             .filter_map(|n| {
                 let entry = rdm_admin::accepted::target_executable(topology, &n.name)?;
-                Some((n.name.clone(), rdm_admin::accepted::RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
+                Some((n.name.clone(), rdm_admin::accepted::RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
             })
             .collect())
     }
@@ -142,17 +142,18 @@ impl rdm_admin::build_drive::Gate for RowsGate {
 
 /// A fabric-primary's drive of the Build over `builds`: its claim door is its own log, and
 /// `dispatch` reaches the executors that are still alive.
-fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, proofs: Arc<crate::loopback::Proofs>, told: &crate::Told) -> Arc<DriveEnv> {
-    Arc::new(DriveEnv {
-        me: me.parse().unwrap(),
+fn drive_env(me: &PathName, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, proofs: Arc<crate::loopback::Proofs>, told: &crate::Told) -> Arc<DriveEnv> {
+    Arc::new(DriveEnv { me_mesh: "mesh1".into(),
+        me: me.clone(),
         topology: topology.clone(),
         builds: a.builds.clone(),
         door: Arc::new(rdm_admin::build_claim::ClaimDoor {
-            me: me.parse().unwrap(),
+            incarnation: topology.try_read().unwrap().node(me).unwrap().incarnation_id.clone().unwrap(),
+            me: me.clone(),
             node_id: topology
                 .try_read()
                 .expect("the view is free")
-                .node(&me.parse().unwrap())
+                .node(me)
                 .expect("the fabric-primary is in the view")
                 .node_id
                 .clone(),
@@ -183,7 +184,7 @@ struct Admin {
 }
 
 /// An admin of the fabric whose store root is `root`, connected to no other admin.
-async fn admin(root: &std::path::Path) -> Admin {
+async fn admin(root: &std::path::Path, birth: &rdm_core::framing::Birth) -> Admin {
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
         .relay_mode(iroh::RelayMode::Disabled)
@@ -197,12 +198,12 @@ async fn admin(root: &std::path::Path) -> Admin {
     rdm_admin::fabric_storage::claim_identity(&*storage, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     // Its Build journal as its file backend opens it, on the fabric's store root.
-    let scope = rdm_admin::storage_backend::StorageScope { data_dir: root.join(format!("data-{}", NodeId::mint())), fabric_id: fabric1(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() };
+    let scope = rdm_admin::storage_backend::StorageScope { data_dir: rdm_admin::deployment::node_data_dir(root, &birth.node_id), fabric_id: fabric1(), own_mesh: "mesh1".into(), writer: birth.incarnation.clone(), node_id: birth.node_id.clone() };
     let local = {
         use rdm_admin::storage_backend::StorageBackend as _;
         rdm_admin::storage_backend::FileBackend::at(root).open(&scope).await.unwrap().builds
     };
-    let builds = Arc::new(FabricBuildStateAdapter::new(local.clone(), &rdm_transport::topology::LocationView::new(&endpoint, "test-admin").unwrap(), "test-admin".into(), rdm_admin::fabric_builds::PrimarySource::unrecorded()));
+    let builds = Arc::new(FabricBuildStateAdapter::new(local.clone(), &rdm_transport::topology::LocationView::new(&endpoint, birth.node_id.as_str()).unwrap(), birth.node_id.clone(), rdm_admin::fabric_builds::PrimarySource::unrecorded()));
     Admin { endpoint, builds, local, accepted }
 }
 
@@ -230,23 +231,25 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // One store root, the fabric's; A and B are never connected to each other.
     let root = std::env::temp_dir().join(format!("build-takeover-{}", NodeId::mint()));
     std::fs::create_dir_all(&root).unwrap();
-    let a = admin(&root).await;
-    let b = admin(&root).await;
+    let a_birth = topology.read().await.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
+    let b_birth = topology.read().await.node(&PathName::new("mesh1.admin", "2").unwrap()).unwrap().birth().unwrap();
+    let a = admin(&root, &a_birth).await;
+    let b = admin(&root, &b_birth).await;
 
     // A accepts the Build through its control plane: grow mesh1 to 3 rpc nodes.
     // A holds a settled accepted Build of what is observed: the one the change compiles against.
     // The settled Build A is seeded into the fabric's builds store, which its control plane moves.
     let seed = rdm_admin::build::BuildId::mint();
     a.builds
-        .publish_accepted(&rdm_admin::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&observed()), submitted_change: None, submitted_at_ms: 0 })
+        .publish_accepted(&rdm_admin::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&*topology.read().await), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    a.builds.claim_attempt(&rdm_admin::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: seed.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    a.builds.claim_attempt(&rdm_admin::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: seed.clone(), attempt: 1, executor: a_birth.clone() }).await.unwrap();
     a.builds
         .append_attempt_receipt(&rdm_admin::build_state::BuildAttemptReceipt { mesh: None, build_id: seed.clone(), attempt: 1, outcome: rdm_admin::build_state::AttemptOutcome::Converged })
         .await
         .unwrap();
-    let mut cp = ControlPlane::new(a.builds.clone(), a.accepted.clone(), "mesh1.admin.1".parse().unwrap(), observed(), crate::adopted_time());
+    let mut cp = ControlPlane::new(a.builds.clone(), a.accepted.clone(), rdm_core::PathName::new("mesh1.admin", "1").unwrap(), topology.read().await.clone(), crate::adopted_time());
     cp.topology = topology.clone();
     let build_id = cp
         .submit("POST /api/build", crate::named_request(&cp, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)]) }).await)
@@ -256,10 +259,10 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
 
     // A drives: mesh1.rpc.2 completes, A dies in mesh1.rpc.3.
     let died = Arc::new(Notify::new());
-    let a_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: Some("mesh1.rpc.3".parse().unwrap()), died: died.clone() });
+    let a_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: Some(rdm_core::PathName::new("mesh1.rpc", "3").unwrap()), died: died.clone() });
     let a_dispatch = crate::loopback::Loopback::new(a.builds.clone(), a.local.clone(), topology.clone(), a_runner.clone());
     let a_told = crate::Told::default();
-    let a_env = drive_env("mesh1.admin.1", &a, &topology, a_dispatch.clone(), Arc::default(), &a_told);
+    let a_env = drive_env(&PathName::new("mesh1.admin", "1").unwrap(), &a, &topology, a_dispatch.clone(), Arc::default(), &a_told);
     let a_drive = Drive::detached(build_id.clone());
     let mut a_driving = Box::pin({
         let (env, drive) = (a_env.clone(), a_drive.clone());
@@ -272,8 +275,8 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // While A is stuck in mesh1.rpc.3, B, not the fabric-primary, reads the Build from the store
     // root: the intent and A's claim of attempt 1.
     eventually("B's projection shows A's attempt", || {
-        let (b, id) = (b.builds.clone(), build_id.clone());
-        async move { b.read_build(&id).await.is_ok_and(|v| v.attempt == 1 && v.executor.as_deref() == Some("mesh1.admin.1")) }
+        let (b, id, expected) = (b.builds.clone(), build_id.clone(), a_birth.clone());
+        async move { b.read_build(&id).await.is_ok_and(|v| v.attempt == 1 && v.executor.as_ref() == Some(&expected)) }
     })
     .await;
     // A dies: its execution and Build state go with it.
@@ -296,45 +299,45 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     .await;
     let b_dispatch = crate::loopback::Loopback::new(b.builds.clone(), b.local.clone(), topology.clone(), b_runner.clone());
     // A is gone: nothing answers at its address.
-    b_dispatch.lose("mesh1.admin.1");
+    b_dispatch.lose(&a_birth.node_id);
     let proofs = Arc::new(crate::loopback::Proofs::default());
     let b_told = crate::Told::default();
-    let b_env = drive_env("mesh1.admin.2", &b, &topology, b_dispatch.clone(), proofs.clone(), &b_told);
+    let b_env = drive_env(&PathName::new("mesh1.admin", "2").unwrap(), &b, &topology, b_dispatch.clone(), proofs.clone(), &b_told);
     let b_drive = Drive::detached(build_id.clone());
     // Silence is not proof: A is unreachable, its departure is not proven, and the attempt it holds
     // is not claimed for another admin.
     match b_env.run(&b_drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("departure is not proven") && why.contains("mesh1.admin.1 is gone: nothing answers at its address"), "the stall names the unproven departure and why the call to A ended: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("departure is not proven") && why.contains(&format!("{a_birth} is gone: nothing answers at its address")), "the stall names the unproven departure and why the call to A ended: {why}"),
         other => panic!("an unreachable executor without proof stalls the drive: {other:?}"),
     }
     assert_eq!(b.builds.read_build(&build_id).await.unwrap().attempt, 1, "no attempt was claimed on silence");
     assert!(b_runner.ran.lock().unwrap().is_empty(), "nothing ran on silence");
     // The proof arrives: the exact runtime of A is inspected and exited.
-    proofs.exited.lock().unwrap().insert("mesh1.admin.1".into());
+    proofs.exited.lock().unwrap().insert(a_birth.clone());
     assert_eq!(b_env.run(&b_drive).await, DriveEnd::Terminal);
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
         vec![
-            (1, BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
-            (1, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
+            (1, BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
+            (1, BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
         ]
     );
     assert_eq!(
         *b_runner.ran.lock().unwrap(),
         vec![
             // A's admin is lost too: its path is part of what is left.
-            (2, BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap(), over: None, executable: None, entry: None }),
+            (2, BuildOperation::CreateNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), over: None, executable: None, entry: None }),
             // The successor reads the Build from the store, where each entry keeps its executable (Q186).
-            (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
+            (2, BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), over: None, executable: Some(crate::test_executable(rdm_core::NodeKind::RpcNode)), entry: None }),
         ],
         "mesh1.rpc.2 is never created twice"
     );
-    assert_eq!(*b_dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "attempt 2 was dispatched to B alone");
+    assert_eq!(*b_dispatch.dispatched.lock().unwrap(), vec![(b_birth.clone(), 2)], "attempt 2 was dispatched to B alone");
     let rpcs = topology.read().await.nodes.iter().filter(|n| n.kind == NodeKind::RpcNode).count();
     assert_eq!(rpcs, 3);
 
     let view = b.builds.read_build(&build_id).await.unwrap();
-    assert_eq!((view.state, view.attempt, view.executor.as_deref()), (BuildState::Complete, 2, Some("mesh1.admin.2")));
+    assert_eq!((view.state, view.attempt, view.executor.as_ref()), (BuildState::Complete, 2, Some(&b_birth)));
 
     // The takeover is one reconcile span on B, and one departure proof span naming A.
     let all = spans.0.lock().unwrap().clone();
@@ -344,12 +347,12 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .filter(|(n, f)| n == "rdm.node_admin.build.update.via-reconcile" && f.get("build_id").map(String::as_str) == Some(logged.as_str()))
         .map(|(_, f)| f)
         .collect();
-    let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some("mesh1.admin.2")).unwrap_or_else(|| panic!("B's reconcile span among {reconciles:?}"));
+    let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some(b_birth.to_string().as_str())).unwrap_or_else(|| panic!("B's reconcile span among {reconciles:?}"));
     assert_eq!(takeover.get("attempt").map(String::as_str), Some("2"));
     // The span names the executor the takeover follows: the admin that held attempt 1, not the
     // claim of attempt 2 the executor absorbed before it runs.
-    assert_eq!(takeover.get("previous_executor").map(String::as_str), Some("mesh1.admin.1"), "the takeover names the executor it follows: {takeover:?}");
-    assert_eq!(takeover.get("operations").map(String::as_str), Some("node.create:mesh1.admin.1,node.create:mesh1.rpc.3"));
+    assert_eq!(takeover.get("previous_executor"), Some(&format!("{:?}", Some(&a_birth))), "the takeover names the executor it follows: {takeover:?}");
+    assert_eq!(takeover.get("operations"), Some(&format!("{:?}", [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.admin", "1").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap())])));
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
     let proven = all
         .values()
@@ -357,7 +360,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .map(|(_, f)| f)
         .collect::<Vec<_>>();
     assert_eq!(proven.len(), 1, "the departure was proven once: {proven:?}");
-    assert_eq!(proven[0].get("executor").map(String::as_str), Some("mesh1.admin.1"));
+    assert_eq!(proven[0].get("executor").map(String::as_str), Some(a_birth.to_string().as_str()));
     // The application's Build notices (fabric-node-hooks.md, Q256): A told it the Build started at the
     // claim of attempt 1; B's takeover (attempt 2) continues the Build in progress and sends no
     // on_build_started, and B, which recorded its Complete, sends the one on_build_ended.

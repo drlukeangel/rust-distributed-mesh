@@ -20,7 +20,7 @@ pub(crate) fn refuse_contradictory_start(cfg: &AdminConfig, holds: Option<&str>)
     // fabric and never adopts one, told apart from an adoption launch by intent, never by the store.
     if !recovering && cfg.fabric_id_named && holds == Some(HOLDS_FABRIC) {
         return Err(format!(
-            "Day 0 is given Fabric {} ({}) and the store root {} already holds that Fabric's record: Day 0 creates a fabric and never adopts one; a node-admin started into that fabric is an adoption launch, {} at the lost fabric-primary's path.name (fabric-recovery.md \"Nothing alive\")",
+            "Day 0 is given Fabric {} ({}) and the store root {} already holds that Fabric's record: Day 0 creates a fabric and never adopts one; a node-admin started into that fabric is an adoption launch, {} at the lost fabric-primary's (path, name) (fabric-recovery.md \"Nothing alive\")",
             cfg.fabric_id,
             rdm_core::launch::ENV_FABRIC_ID,
             cfg.store_dir.join(cfg.fabric_id.to_string()).display(),
@@ -88,7 +88,7 @@ pub(crate) fn pending_gate(me: &PathName, mesh: &str, day0: bool, pending_applie
     } else if enters_existing_mesh {
         PendingGate::Clear
     } else {
-        PendingGate::Blocked(format!("{me}: the first admin of {mesh}: its mesh's Pending has not been applied here by the fabric primary"))
+        PendingGate::Blocked(format!("path {:?}, name {:?}: the first admin of {mesh}: its mesh's Pending has not been applied here by the fabric primary", me.path, me.name))
     }
 }
 
@@ -99,8 +99,8 @@ pub(crate) fn pending_gate(me: &PathName, mesh: &str, day0: bool, pending_applie
 pub fn take_over_blockers(held: &[MeshDigest], provider: &dyn crate::deployment::provider::DeploymentProvider) -> Vec<String> {
     held.iter()
         .filter_map(|d| match &d.node.runtime {
-            None => Some(format!("{}: publishes no runtime fact", d.node.name)),
-            Some(f) => crate::deployment::provider::adopt(provider, f).err().map(|r| format!("{}: {r}", d.node.name)),
+            None => Some(format!("{}: publishes no runtime fact", d.node.node_id)),
+            Some(f) => crate::deployment::provider::adopt(provider, f).err().map(|r| format!("{}: {r}", d.node.node_id)),
         })
         .collect()
 }
@@ -143,13 +143,13 @@ impl TopologyObserver {
         };
         tracing::info_span!(
             "rdm.node_admin.node.update.via-pending-reconnect",
-            node = %node.name,
+            node_path = %node.name.path, node_name = %node.name.name,
             node_id = %node.node_id,
             incarnation_id = %incarnation.as_str(),
             reason = why.reason,
             detail = %why.detail,
             command = cmd.operation_prefix(),
-            operation = %ctx.operation,
+            operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject,
             recorded = recorded.map(|s| format!("{s:?}")).unwrap_or_default(),
             outcome,
             "otel.kind" = "internal",
@@ -180,7 +180,7 @@ pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, digest_
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     match rdm_client::NodeRpc::new(client).get(&birth, &rdm_transport::CallOptions::default()).await {
         Ok(rdm_core::status::StatusReply::Blocked { node_id, incarnation: answered, reason, retry_on }) if node_id == node.node_id && answered == incarnation => {
-            Some(format!("{}: pre_node_ready is blocked: {reason}; it runs again on {}", node.name, retry_on.name()))
+            Some(format!("{}: pre_node_ready is blocked: {reason}; it runs again on {}", node.node_id, retry_on.name()))
         }
         _ => None,
     }
@@ -202,7 +202,7 @@ impl NodeObserver for TopologyObserver {
     /// admin took the birth's node.started (the state it holds the birth declared).
     async fn ready(&self, node: &Node) -> Result<(), String> {
         let Some(d) = self.digest_of(node) else {
-            return Err(format!("no digest from {} for this birth", node.name));
+            return Err(format!("no digest from {} for this birth", node.node_id));
         };
         if d.status == MemberStatus::Ready {
             return Ok(());
@@ -224,7 +224,7 @@ impl NodeObserver for TopologyObserver {
             Some(Some(rdm_core::status::NodeState::Ready)) => "this admin holds the birth declared Ready: it took node.started".to_string(),
             Some(Some(state)) => format!("this admin holds the birth declared {state:?}"),
         };
-        Err(format!("{} is held {:?}, not ready: {member}; {started}", node.name, d.status))
+        Err(format!("{} is held {:?}, not ready: {member}; {started}", node.node_id, d.status))
     }
 
     async fn ready_blocker(&self, node: &Node) -> Option<String> {
@@ -239,14 +239,14 @@ impl NodeObserver for TopologyObserver {
             let (admission, unreachable) = door.carry_lifecycle_reaching(node, cmd == crate::node_commands::NodeCommand::Start, ctx).await;
             if let Some(why) = &unreachable { self.mark_unreachable(node, cmd, ctx, why); }
             let detail = format!("{admission:?}");
-            tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
+            tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node_path = %node.name.path, node_name = %node.name.name, command = cmd.operation_prefix(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
             return admission;
         }
         // node.connection.delete { All } goes through this admin's own Status door, the birth's
         // mesh-primary: it commands the birth and holds its node.connections.deleted for a rename.
         if cmd == crate::node_commands::NodeCommand::DeleteConnections {
             let (Some(door), Some(incarnation)) = (self.status_door.get(), node.incarnation_id.clone()) else {
-                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connection.delete to {}", node.name), code: rdm_core::outcome::Code::Unavailable };
+                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connection.delete to {}", node.node_id), code: rdm_core::outcome::Code::Unavailable };
             };
             // The carrier's end, in-process (i144 R22): a command never sent reaches the never-sent mark
             // as `NotSent` (node-recovery.md step 1); one broken after the node accepted it is
@@ -364,7 +364,7 @@ impl crate::node_self::Session for AdminSession {
         // The name this admin holds (its row's, as its last join or apply handed it): what its join
         // presents and what it is named by until the join answer hands it the row's (R12).
         let held = self.digest.lock().unwrap().node.name.clone();
-        let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
+        let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node_path = %held.path, node_name = %held.name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AdminAfterStop { session: self, root, commander, birth_cancel: Some(birth_cancel), rows, operation, progress, held_again };
         crate::workflows::node_start::node_start(&mut start, crate::node_hooks::StartKind::AfterStop).await
     }
@@ -461,7 +461,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
     fn starting(&self) -> crate::workflows::node_start::Starting {
         let s = self.session;
         let held = s.digest.lock().unwrap().node.name.clone();
-        crate::workflows::node_start::Starting { root: self.root.clone(), name: held.to_string(), path: held, node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
+        crate::workflows::node_start::Starting { root: self.root.clone(), name: held.name.clone(), path: held, node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
@@ -472,7 +472,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 
-    fn operation(&self) -> Option<String> {
+    fn operation(&self) -> Option<rdm_core::OperationId> {
         Some(self.operation.operation.clone())
     }
 
@@ -489,7 +489,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         s.declarer.begin_own_cycle(&me, &s.incarnation.as_str(), &self.operation);
         if self.progress.is_some() {
             if let Some(receiver) = s.topology_view.projected_member_at(&self.commander.borrow().to_string()) {
-                s.declarer.own_on_stream(&me, &s.node_id, &s.incarnation, &self.operation, &receiver);
+                s.declarer.own_on_stream(s.topology_view.mesh_name(), &s.node_id, &s.incarnation, &self.operation, &receiver);
             }
         }
         // Back on its channels, this admin reports NodeJoined, as an rpc node does: the start finishes on
@@ -518,7 +518,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 progress: None,
                 held: Some(s.local.clone()),
             },
-            leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
+            leave: (self.operation.operation.action == "node.mesh.join").then(|| AdminLeave { topology_view: s.topology_view.clone(), backbone: s.backbone.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), node_id: s.node_id.clone(), name: me.clone() }),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
@@ -553,7 +553,7 @@ impl AdminLeave {
         }
         self.node_hooks.gate().close();
         crate::node_self::leave_channels(&self.topology_view, Some(&self.backbone), &self.node_id).await;
-        tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %self.name, step, reason)
+        tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node_path = %self.name.path, node_name = %self.name.name, step, reason)
             .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the admin leaves its channels for its authority's next command"));
     }
 }
@@ -586,7 +586,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             .installed
             .iter()
             .flat_map(|m| m.members.iter())
-            .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.mesh == self.name.mesh)
+            .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.mesh == topology_view.mesh_name())
             .filter_map(rdm_transport::topology::gossip_addr)
             .collect();
         let _ = topology_view.join_peers_as("admin.session.mesh", mesh_peers).await;
@@ -602,7 +602,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             // The Ready names the birth that became ready, as the first start's does.
             let incarnation = d.node.incarnation.clone();
             self.wake.wake.poke();
-            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready"));
+            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node_path = %self.name.path, node_name = %self.name.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-topology").in_scope(|| tracing::info!("ready"));
         }
     }
 }
@@ -683,7 +683,7 @@ impl AdminFloor {
 pub(crate) struct StartProgress(pub(crate) Arc<Mutex<Option<String>>>);
 impl StartProgress {
     pub(crate) fn begun(me: &PathName) -> Self {
-        Self(Arc::new(Mutex::new(Some(format!("{me}: node.start has not run its topology, Build-floor and rafka-time steps")))))
+        Self(Arc::new(Mutex::new(Some(format!("path {:?}, name {:?}: node.start has not run its topology, Build-floor and rafka-time steps", me.path, me.name)))))
     }
 
     pub(crate) fn at(&self, what: String) {
@@ -720,19 +720,19 @@ pub(crate) struct AdminFirstStart {
 
 #[async_trait::async_trait]
 impl crate::workflows::node_start::AfterHook for AdminFirstStart {
-    async fn before_topology_read(&mut self, primary: &PathName) {
+    async fn before_topology_read(&mut self, primary: &NodeId) {
         if let Some(seam) = &self.read_seam {
-            seam.before_topology_read(&self.me.to_string(), &primary.to_string()).await;
+            seam.before_topology_read(self.me_id.as_str(), primary.as_str()).await;
         }
     }
 
     async fn topology_installed(&mut self, topology_view: &TopologyView, read: &crate::topology_read::TopologyRead) {
-        self.progress.at(format!("{}: node.start is at its topology step", self.me));
+        self.progress.at(format!("{}: node.start is at its topology step", self.me_id));
         let mut mesh_peers = Vec::new();
         let mut admins = Vec::new();
-        for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id && d.node.name != self.me) {
+        for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.me_id) {
             if let Some(a) = rdm_transport::topology::gossip_addr(d) {
-                if d.node.mesh == self.mesh {
+                if d.node.mesh == topology_view.mesh_name() {
                     mesh_peers.push(a.clone());
                 }
                 if d.node.kind == NodeKind::NodeAdmin {
@@ -776,7 +776,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         // absent, node-rpc-envelope.md's Stored, yet its Primaries frame names the mesh's primary):
         // this admin enters an existing mesh, never waits for a Pending that is not its own (rdm#130).
         let primary_elsewhere = read.primaries.iter().any(|(role, p, gone)| *role == rdm_core::PrimaryRole::MeshPrimary && p.mesh == self.mesh && p.node_id != self.me_id && !gone);
-        if primary_elsewhere || map.iter().any(|n| n.name.mesh == self.mesh && n.node_id != self.me_id) {
+        if primary_elsewhere || map.iter().any(|n| n.mesh == self.mesh && n.node_id != self.me_id) {
             self.entering.store(true, std::sync::atomic::Ordering::SeqCst);
             let sweep = spawn_entry_sweep(&self.gate, self.entry.clone(), "maker", map, self.sweep.clone(), self.records.clone(), self.provider);
             self.start_tasks.lock().unwrap().push(sweep);
@@ -785,7 +785,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
 
     async fn floor(&mut self, step: &tracing::Span) {
         self.floor.until_held(step).await;
-        self.progress.at(format!("{}: node.start is at its rafka-time step", self.me));
+        self.progress.at(format!("{}: node.start is at its rafka-time step", self.me_id));
     }
 
     async fn report(self: Box<Self>) {
@@ -795,7 +795,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
 
     async fn start_failed(self: Box<Self>, failed: &crate::node_self::StartFailed, _: bool) {
         // The Ready check names the failed step as this admin's blocker: it is not started.
-        self.progress.at(format!("{}: node.start failed at {}: {}", self.me, failed.step, failed.reason));
+        self.progress.at(format!("{}: node.start failed at {}: {}", self.me_id, failed.step, failed.reason));
     }
 }
 
@@ -833,6 +833,7 @@ pub(crate) fn spawn_entry_sweep(
 
 /// What this admin answers an entry pull with.
 pub(crate) struct EntryState {
+    pub(crate) node_id: NodeId,
     pub(crate) name: PathName,
     pub(crate) provider: ProviderKind,
     pub(crate) accepted: Arc<AcceptedStore>,
@@ -850,7 +851,7 @@ impl EntryState {
     /// topology is read with `GetTopology`).
     pub(crate) async fn answer(&self) -> Result<crate::wire::JoinAnswer, String> {
         let e = self;
-        let me = e.topology_view.digest_view.held_path_name().unwrap_or_else(|| e.name.clone());
+        let me = &e.node_id;
         // An admin that holds no rafka-time has none to hand a joiner: the join is not completed,
         // and the refusal says why.
         let rafka_time_ms = e.time.try_now_ms().ok_or_else(|| format!("{me}: this admin holds no rafka-time to answer a join with"))?;
@@ -863,8 +864,8 @@ impl EntryState {
         let build = current.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
         let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
         let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
-        let me_str = me.to_string();
-        Ok(crate::wire::JoinAnswer { served_by: me_str.clone(), control, statuses: e.topology_view.status_frames(&me_str) })
+        let me_str = e.node_id.to_string();
+        Ok(crate::wire::JoinAnswer { served_by: e.node_id.clone(), control, statuses: e.topology_view.status_frames(&me_str) })
     }
 }
 
@@ -944,7 +945,7 @@ mod carried_tests {
         let err = refuse_contradictory_start(&mesh_only_recovery, None).expect_err("mesh_primary without fabric_primary must be refused");
         assert!(err.contains("RDM_MESH_PRIMARY without RDM_FABRIC_PRIMARY"), "{err}");
 
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         assert_eq!(pending_gate(&me, "mesh1", true, false, false), PendingGate::SelfApply);
         assert_eq!(pending_gate(&me, "mesh1", true, true, false), PendingGate::Clear);
         assert!(matches!(pending_gate(&me, "mesh1", false, false, false), PendingGate::Blocked(_)));

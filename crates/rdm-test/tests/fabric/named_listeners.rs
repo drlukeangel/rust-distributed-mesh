@@ -5,13 +5,14 @@
 //! deployment-provider page's assigned endpoints): the application's wiring names each kind's
 //! listeners. A create assigns each the birth's address with port 0 (`RDM_LISTENERS`); the node binds
 //! them, keeps every bind open through its join and reports the ports the operating system selected;
-//! the accepting primary verifies the report against the assignment and the node's row publishes them.
+//! the accepting primary verifies the report against the assignment and the node appends its property record with them.
 //!
 //! Every estate runs the testkit's faulted node-admin, whose application declares `kafka`, `rest` and
 //! `proxy` on the gateway (`rdm_test::test_app::listeners`).
 
 use rdm_client::{FabricDesired, MeshDesired};
 use rdm_core::views::NodeView;
+use rdm_core::{NodeId, PathName};
 use rdm_test::estate::{Estate, Owner};
 use rdm_test::faults::{binding_set_with_roles, candidate_sha};
 use rdm_test::test_app::{LISTENERS, LISTENER_KIND};
@@ -45,17 +46,30 @@ fn mesh_with_gateways(gateways: u32) -> FabricDesired {
     FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 0, broker: 0, gateway: gateways, compute: 0 }] }
 }
 
-/// The record of `node` on the fabric's store root, as its mesh-primary wrote it.
-fn row_of(estate: &Estate, node: &NodeView) -> Value {
-    estate.node_record(node.node_id.as_str()).unwrap_or_else(|| panic!("{}: its row is not in nodes.jsonl", node.name))
+/// Expected locations are pairs; the fixture declares each path and name separately.
+fn wanted(gateways: u32) -> BTreeSet<PathName> {
+    let mut locations = BTreeSet::from([
+        PathName { path: "mesh1.admin".into(), name: "1".into() },
+        PathName { path: "mesh1.admin".into(), name: "2".into() },
+    ]);
+    locations.extend((1..=gateways).map(|n| PathName { path: "mesh1.gateway".into(), name: n.to_string() }));
+    locations
 }
 
-/// The listeners the row's facts of `node`'s current birth carry.
+/// The latest appended node-owned property record, selected by globally unique node ID.
+fn row_of(estate: &Estate, node: &NodeView) -> Value {
+    serde_json::to_value(estate.node_properties(&node.node_id).expect("node-owned property record"))
+        .expect("properties serialize")
+}
+
+/// Listeners belong to node-owned properties, not a primary's lifecycle record.
 fn row_listeners(estate: &Estate, node: &NodeView) -> Vec<(String, SocketAddr)> {
     let row = row_of(estate, node);
-    let incarnation = node.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
-    let birth = row["record"]["births"].as_array().and_then(|b| b.iter().find(|b| b["incarnation_id"] == incarnation.as_str())).cloned().unwrap_or_else(|| panic!("{}: its row holds no facts of birth {incarnation}: {row}", node.name));
-    serde_json::from_value(birth["listeners"].clone()).unwrap_or_default()
+    let properties: rdm_node::node_records::NodeProperties = serde_json::from_value(row)
+        .expect("complete node-owned properties");
+    assert_eq!(properties.birth.node_id, node.node_id);
+    assert_eq!(Some(properties.birth.incarnation_id), node.incarnation_id);
+    properties.listeners
 }
 
 /// The listeners the join that admitted `node` reported, as the accepting primary's span records them,
@@ -66,7 +80,7 @@ async fn join_reported(estate: &Estate, node: &NodeView) -> Option<String> {
         let found = estate
             .spans()
             .into_iter()
-            .find(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["node_id"] == node.node_id.to_string().as_str() && s["attributes"]["outcome"] == "installed")
+            .find(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["node_id"] == node.node_id.to_string().as_str() && s["attributes"]["incarnation_id"] == node.incarnation_id.as_ref().expect("ready birth").as_str() && s["attributes"]["outcome"] == "installed")
             .map(|s| s["attributes"]["listeners"].as_str().unwrap_or_default().to_string());
         if found.is_some() || std::time::Instant::now() > until {
             return found;
@@ -75,24 +89,24 @@ async fn join_reported(estate: &Estate, node: &NodeView) -> Option<String> {
     }
 }
 
-/// `node`'s listeners as the view, its row and its admitted join carry them: exactly the declared
+/// `node`'s listeners as the view, its node-owned properties and its admitted join carry them: exactly the declared
 /// names, each on the birth's own address (its transport's) with a port the operating system selected.
 async fn published(estate: &Estate, node: &NodeView) -> Vec<(String, SocketAddr)> {
-    let ip = node.transport_addr.unwrap_or_else(|| panic!("{}: the view names no address", node.name)).ip();
+    let ip = node.transport_addr.unwrap_or_else(|| panic!("{:?}: the view names no address", node.name)).ip();
     let names: BTreeSet<&str> = node.listeners.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, LISTENERS.iter().copied().collect::<BTreeSet<_>>(), "{}: the view carries exactly the declared listeners: {:?}", node.name, node.listeners);
-    assert_eq!(node.listeners.len(), LISTENERS.len(), "{}: each once: {:?}", node.name, node.listeners);
+    assert_eq!(names, LISTENERS.iter().copied().collect::<BTreeSet<_>>(), "{:?}: the view carries exactly the declared listeners: {:?}", node.name, node.listeners);
+    assert_eq!(node.listeners.len(), LISTENERS.len(), "{:?}: each once: {:?}", node.name, node.listeners);
     for (n, a) in &node.listeners {
-        assert!(a.ip() == ip && a.port() != 0, "{}: {n} at {a} is on the birth's address {ip}, with the port the operating system selected", node.name);
+        assert!(a.ip() == ip && a.port() != 0, "{:?}: {n} at {a} is on the birth's address {ip}, with the port the operating system selected", node.name);
     }
     let mut row = row_listeners(estate, node);
     let mut view = node.listeners.clone();
     row.sort();
     view.sort();
-    assert_eq!(row, view, "{}: its row on the store root publishes the listeners the view carries", node.name);
-    let reported = join_reported(estate, node).await.unwrap_or_else(|| panic!("{}: no admitted join of it in the spans", node.name));
+    assert_eq!(row, view, "{:?}: its node-owned property record on the store root publishes the listeners the view carries", node.name);
+    let reported = join_reported(estate, node).await.unwrap_or_else(|| panic!("{:?}: no admitted join of it in the spans", node.name));
     for (n, a) in &node.listeners {
-        assert!(reported.split(',').any(|e| e == format!("{n}={a}")), "{}: its join reported {n}={a}: {reported}", node.name);
+        assert!(reported.split(',').any(|e| e == format!("{n}={a}")), "{:?}: its join reported {n}={a}: {reported}", node.name);
     }
     node.listeners.clone()
 }
@@ -104,20 +118,20 @@ async fn a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_ro
     let test = "a_gateways_listeners_are_bound_reported_at_join_and_published_on_its_row";
     let mut estate = estate_on(test, "process").await;
     estate.reconcile(&mesh_with_gateways(1)).await;
-    let want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.gateway.1"].iter().map(|n| n.to_string()).collect();
+    let want = wanted(1);
     let views = estate.settles_to_named(&want, SETTLE).await;
     let gateway = views.iter().find(|n| n.kind == LISTENER_KIND).expect("the gateway is in the view");
     estate.artifact("views.json", &json!(Estate::values(&views)));
     estate.artifact("row.json", &row_of(&estate, gateway));
     let listeners = published(&estate, gateway).await;
     // Bound, and held: each port is a listening socket of the gateway's own process.
-    let pid = estate.pid_of(&gateway.name.to_string()).await;
+    let pid = estate.pid_of(&gateway.name).await;
     for (n, a) in &listeners {
         let who = rdm_admin::deployment::endpoint::port_holder(*a, rdm_admin::deployment::endpoint::SlotTransport::Tcp).unwrap();
         assert!(who.contains("listen") && who.contains(&format!("pid {pid} ")), "{n} at {a} is held listening by the gateway's process (pid {pid}): {who}");
     }
     for v in views.iter().filter(|n| n.kind != LISTENER_KIND) {
-        assert!(v.listeners.is_empty(), "{}: a kind that declares none binds none: {:?}", v.name, v.listeners);
+        assert!(v.listeners.is_empty(), "{:?}: a kind that declares none binds none: {:?}", v.name, v.listeners);
     }
     estate.stop().await;
 }
@@ -129,16 +143,16 @@ async fn two_gateways_launched_at_once_bind_their_listeners_with_no_conflict() {
     let test = "two_gateways_launched_at_once_bind_their_listeners_with_no_conflict";
     let mut estate = estate_on(test, "process").await;
     estate.reconcile(&mesh_with_gateways(2)).await;
-    let want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.gateway.1", "mesh1.gateway.2"].iter().map(|n| n.to_string()).collect();
+    let want = wanted(2);
     let views = estate.settles_to_named(&want, SETTLE).await;
     estate.artifact("views.json", &json!(Estate::values(&views)));
-    let mut ports: BTreeMap<SocketAddr, String> = BTreeMap::new();
+    let mut ports: BTreeMap<SocketAddr, (NodeId, String)> = BTreeMap::new();
     let gateways: Vec<&NodeView> = views.iter().filter(|n| n.kind == LISTENER_KIND).collect();
     assert_eq!(gateways.len(), 2, "both gateways are ready");
     for g in gateways {
         for (n, a) in published(&estate, g).await {
-            if let Some(other) = ports.insert(a, format!("{}:{n}", g.name)) {
-                panic!("{}:{n} and {other} report one address {a}", g.name);
+            if let Some(other) = ports.insert(a, (g.node_id.clone(), n.clone())) {
+                panic!("node {} listener {n} and {other:?} report one address {a}", g.node_id);
             }
         }
     }
@@ -158,7 +172,7 @@ async fn a_container_fabrics_gateway_listeners_are_on_the_containers_own_address
     let test = "a_container_fabrics_gateway_listeners_are_on_the_containers_own_address";
     let mut estate = estate_on(test, "container").await;
     estate.reconcile(&mesh_with_gateways(1)).await;
-    let want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.gateway.1"].iter().map(|n| n.to_string()).collect();
+    let want = wanted(1);
     let views = estate.settles_to_named(&want, SETTLE).await;
     let gateway = views.iter().find(|n| n.kind == LISTENER_KIND).expect("the gateway is in the view");
     estate.artifact("views.json", &json!(Estate::values(&views)));

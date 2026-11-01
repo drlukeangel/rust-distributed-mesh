@@ -35,7 +35,7 @@ fn identity(k: &MeshDeleteKey) -> MeshDeleteIdentity {
 }
 
 fn final_primary() -> RosterBirth {
-    RosterBirth { node: "mesh2.admin.1".into(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() }
+    RosterBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin, node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() }
 }
 
 fn runtime() -> RuntimeProof {
@@ -57,9 +57,16 @@ fn refusals(spans: &[Value], trace_id: &str, name: &str) -> Vec<Value> {
 }
 
 /// The attributes a workflow reject span carries: the call, the workflow held and the workflow offered.
-fn named_identities(span: &Value) -> (String, String, String, String, String, String, String) {
-    let a = |k: &str| span["attributes"][k].as_str().unwrap_or_default().to_string();
-    (a("call"), a("held_build_id"), a("held_attempt"), a("held_operation"), a("build_id"), a("attempt"), a("operation"))
+type OperationFields = (String, String, String, String);
+type WorkflowFields = (String, String, OperationFields);
+fn named_identities(span: &Value) -> (String, WorkflowFields, WorkflowFields) {
+    let a = |k: &str| span["attributes"][k].as_str().unwrap().to_string();
+    let operation = |prefix: &str| (a(&format!("{prefix}operation")), a(&format!("{prefix}operation_subject")), a(&format!("{prefix}operation_step")), a(&format!("{prefix}operation_occurrence")));
+    (a("call"), (a("held_build_id"), a("held_attempt"), operation("held_")), (a("build_id"), a("attempt"), operation("")))
+}
+
+fn workflow_fields(k: &MeshDeleteKey) -> WorkflowFields {
+    (k.build_id.to_string(), k.attempt.to_string(), (k.operation.action.clone(), format!("{:?}", k.operation.subject), format!("{:?}", k.operation.recipe_step), format!("{:?}", k.operation.occurrence)))
 }
 
 /// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair"): the leaving mesh-primary holds the
@@ -116,10 +123,10 @@ fn a_delete_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_t
     keep("delete_mesh_workflow", &trace_id, &spans);
     let stale_spans = refusals(&spans, &trace_id, STALE);
     let conflicting_spans = refusals(&spans, &trace_id, CONFLICTING);
-    let named = |k: &MeshDeleteKey| (k.build_id.to_string(), k.attempt.to_string(), k.operation.clone());
+    let named = workflow_fields;
     let expect = |offered: &MeshDeleteKey| {
         let (h, o) = (named(&held), named(offered));
-        ("delete-mesh".to_string(), h.0, h.1, h.2, o.0, o.1, o.2)
+        ("delete-mesh".to_string(), h, o)
     };
     assert_eq!(stale_spans.iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&stale), expect(&stale)], "{stale_spans:?}");
     assert_eq!(conflicting_spans.iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&other)], "{conflicting_spans:?}");
@@ -173,10 +180,10 @@ fn a_mesh_deleted_report_naming_a_workflow_the_fabric_primary_does_not_hold_is_r
     assert!(handoff.borrow().is_none(), "a refused workflow ends nothing: the open leave still waits for its handoff");
     let spans = cap.spans();
     keep("mesh_deleted_workflow", &trace_id, &spans);
-    let named = |k: &MeshDeleteKey| (k.build_id.to_string(), k.attempt.to_string(), k.operation.clone());
+    let named = workflow_fields;
     let expect = |offered: &MeshDeleteKey| {
         let (h, o) = (named(&held), named(offered));
-        ("mesh-deleted".to_string(), h.0, h.1, h.2, o.0, o.1, o.2)
+        ("mesh-deleted".to_string(), h, o)
     };
     assert_eq!(refusals(&spans, &trace_id, STALE).iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&stale)]);
     assert_eq!(refusals(&spans, &trace_id, CONFLICTING).iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&unopened), expect(&other)]);

@@ -71,7 +71,7 @@ async fn a_start_of_another_meshs_node_sent_the_moment_its_stop_completes_is_adm
     let mut refused_starts = Vec::new();
     for before in &targets {
         let node = path_of(before);
-        let mut stop = estate.nodes_obj().await.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node}: {e}"));
+        let mut stop = estate.nodes_obj().await.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node:?}: {e}"));
         Estate::complete(&mut stop).await;
         // No wait: the start goes out on the stop's Complete.
         match estate.nodes_obj().await.start(&node).await {
@@ -89,7 +89,7 @@ async fn a_start_of_another_meshs_node_sent_the_moment_its_stop_completes_is_adm
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["status"] == "ready" && n["stopped"] == false).then_some(n)
         }).await;
-        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{node}: the same birth after its stop and start: {after}");
+        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{node:?}: the same birth after its stop and start: {after}");
     }
     estate.stop().await;
     let spans = estate.spans();
@@ -188,17 +188,17 @@ async fn the_atlas_names_a_stop_at_its_admission_and_its_receipts_before_complet
         d.arm("atlas:no-gossip", json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
     }
     fp_door.arm("atlas:claimed", json!({"kind": "claimed-attempt"})).await;
-    let mut stop = estate.nodes_obj().await.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node}: {e}"));
+    let mut stop = estate.nodes_obj().await.stop(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node:?}: {e}"));
     fp_door.wait_held("atlas:claimed").await;
     let at_acceptance = atlas(&estate, "R-FA2: fabric.atlas.get while the accepted stop's attempt is held before its dispatch").await;
-    let row = at_acceptance.node(&node.to_string()).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node}: {at_acceptance:#?}"));
-    assert_eq!(row.accepted.as_deref(), Some(format!("node.stop:{node}").as_str()), "R-FA2: the atlas names the accepted stop on {node} before its attempt runs: {row:#?}");
+    let row = at_acceptance.node(&node.to_string()).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node:?}: {at_acceptance:#?}"));
+    assert_eq!(row.accepted.as_deref(), Some(format!("node.stop:{node}").as_str()), "R-FA2: the atlas names the accepted stop on {node:?} before its attempt runs: {row:#?}");
     assert!(!row.stopped, "R-FA2: an accepted stop whose attempt has not run does not stop the node in the atlas: {row:#?}");
     fp_door.release("atlas:claimed").await;
     Estate::complete(&mut stop).await;
     let at_complete = atlas(&estate, "R-FA2: fabric.atlas.get on the stop's Complete").await;
-    let row = at_complete.node(&node.to_string()).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node}: {at_complete:#?}"));
-    assert!(row.stopped && row.accepted.is_none(), "R-FA2: on the stop's Complete the atlas holds {node} stopped from its receipts, nothing accepted on it: {row:#?}");
+    let row = at_complete.node(&node.to_string()).unwrap_or_else(|| panic!("R-FA2: the atlas holds no row of {node:?}: {at_complete:#?}"));
+    assert!(row.stopped && row.accepted.is_none(), "R-FA2: on the stop's Complete the atlas holds {node:?} stopped from its receipts, nothing accepted on it: {row:#?}");
     for d in &mesh2_doors {
         d.release("atlas:no-gossip").await;
     }
@@ -211,7 +211,7 @@ async fn atlas_holds_for(estate: &Estate, node: &PathName, floors: u32, why: &st
     let until = tokio::time::Instant::now() + rdm_core::cadence::staleness_floor() * floors;
     while tokio::time::Instant::now() < until {
         let read = atlas(estate, why).await;
-        let row = read.node(&node.to_string()).unwrap_or_else(|| panic!("{why}: the atlas holds no row of {node}: {read:#?}"));
+        let row = read.node(&node.to_string()).unwrap_or_else(|| panic!("{why}: the atlas holds no row of {node:?}: {read:#?}"));
         if let Err(wrong) = holds(row) {
             panic!("{why}: {wrong}: {row:#?}");
         }
@@ -273,7 +273,7 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     let targets = two_meshes(&mut estate).await;
     let before = &targets[0];
     let node = path_of(before);
-    let renamed = node.renamed();
+    let renamed = node.renamed().unwrap();
     let mut mesh2_doors = Vec::new();
     for v in estate.node_values().await.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin") {
         mesh2_doors.push(Door::at(&estate, v["name"].as_str().unwrap_or_default()).await);
@@ -281,9 +281,9 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     for d in &mesh2_doors {
         d.arm("atlas:no-gossip", json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
     }
-    Estate::workflow(&format!("the predecessor's half of the replace of {node}"), estate.nodes_obj().await.steps(rdm_test::steps::predecessor_steps(&node)).await).await;
+    Estate::workflow(&format!("the predecessor's half of the replace of {node}"), estate.nodes_obj().await.steps(rdm_test::steps::predecessor_steps(&node).expect("valid replacement fixture name")).await).await;
     // No wait: the read goes out on the Build's Complete.
-    let listed = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&node.mesh])).await.expect("node.get [mesh] at the fabric-primary");
+    let listed = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&estate.node_view(&renamed.to_string()).await.mesh])).await.expect("node.get [mesh] at the fabric-primary");
     let read = atlas(&estate, "R-FA2: fabric.atlas.get on the Build's Complete").await;
     for d in &mesh2_doors {
         d.release("atlas:no-gossip").await;
@@ -291,12 +291,12 @@ async fn a_build_of_steps_another_meshs_primary_executed_is_read_back_at_the_fab
     let at_old = listed.iter().find(|n| n.name == renamed).cloned();
     assert!(
         at_old.as_ref().is_some_and(|n| n.stopped && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()),
-        "mesh.nodes.get at the fabric-primary lists {node}'s birth stopped at {renamed} on the Build's Complete: {listed:#?}"
+        "mesh.nodes.get at the fabric-primary lists {node:?}'s birth stopped at {renamed} on the Build's Complete: {listed:#?}"
     );
-    assert!(!listed.iter().any(|n| n.name == node && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()), "the renamed birth is not answered at {node} too: {listed:#?}");
+    assert!(!listed.iter().any(|n| n.name == node && n.node_id.to_string() == before["node_id"].as_str().unwrap_or_default()), "the renamed birth is not answered at {node:?} too: {listed:#?}");
     // `fabric.atlas.get` answers the paths the current Build names (R-FA4): the birth the rename moved
     // off `<path>` is not at it.
-    assert!(read.node(&node.to_string()).is_none_or(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the Build's Complete the atlas holds no birth of {node} at {node}: {read:#?}");
+    assert!(read.node(&node.to_string()).is_none_or(|row| row.node_id.to_string() != before["node_id"].as_str().unwrap_or_default()), "R-FA2: on the Build's Complete the atlas holds no birth of {node} at {node:?}: {read:#?}");
     estate.stop().await;
     let spans = estate.spans();
     let executed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| attr(sp, "outcome") == "complete" && attr(sp, "executor").starts_with("mesh2.admin.")).collect();
@@ -322,7 +322,7 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     let targets = two_meshes(&mut estate).await;
     let (node, primary) = (path_of(&targets[0]), &targets[3]);
-    let renamed = node.renamed();
+    let renamed = node.renamed().unwrap();
     let nodes = estate.nodes_obj().await;
     // The node's connections deleted and its mesh left: the precondition of a live rename.
     Estate::workflow(&format!("node.connection.delete and node.mesh.leave of {node}"), nodes.steps(vec![rdm_core::build::Step::DeleteConnections { node: node.clone() }, rdm_core::build::Step::LeaveMesh { node: node.clone() }]).await).await;
@@ -334,13 +334,13 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
         incarnation: serde_json::from_value(targets[0]["incarnation_id"].clone()).expect("an incarnation id"),
     };
     let mesh_primary: rdm_core::NodeId = serde_json::from_value(primary["node_id"].clone()).expect("a node id");
-    let reply = nodes.name_update(&birth, &mesh_primary, &rdm_transport::RouteChoice::Direct, &renamed.name()).await.unwrap_or_else(|e| panic!("node.name.update of {node} at mesh2's primary: {e}"));
-    assert!(matches!(reply, rdm_core::status::StatusReply::NameUpdated { .. }), "node.name.update of {node} at mesh2's primary: {reply:?}");
+    let reply = nodes.name_update(&birth, &mesh_primary, &rdm_transport::RouteChoice::Direct, &renamed).await.unwrap_or_else(|e| panic!("node.name.update of {node:?} at mesh2's primary: {e}"));
+    assert!(matches!(reply, rdm_core::status::StatusReply::NameUpdated { .. }), "node.name.update of {node:?} at mesh2's primary: {reply:?}");
     // No wait: the fabric-primary's read the moment the caller is answered.
     let read = estate.node_values().await;
     let at: Vec<String> = read.iter().filter(|n| n["node_id"] == targets[0]["node_id"]).map(|n| id(n, "name")).collect();
     estate.stop().await;
-    assert_eq!(at, vec![renamed.to_string()], "the fabric-primary's node read lists the birth of {node} at {renamed} once the rename was answered: {read:#?}");
+    assert_eq!(at, vec![renamed.to_string()], "the fabric-primary's node read lists the birth of {node:?} at {renamed} once the rename was answered: {read:#?}");
     let spans = estate.spans();
     let mp = id(primary, "name");
     let forwarded: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-forward").into_iter().filter(|sp| attr(sp, "node") == mp && attr(sp, "op") == "node.name.update").collect();
@@ -388,5 +388,5 @@ async fn a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_
     estate.stop().await;
     let spans = estate.spans();
     let last_admin: Vec<Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().cloned().collect();
-    assert!(refused.is_none() && last_admin.is_empty(), "R-FA1: the Reconcile removing {primary} right after {other}'s start completed was refused: {refused:?}; last-admin spans: {last_admin:#?}");
+    assert!(refused.is_none() && last_admin.is_empty(), "R-FA1: the Reconcile removing {primary:?} right after {other}'s start completed was refused: {refused:?}; last-admin spans: {last_admin:#?}");
 }

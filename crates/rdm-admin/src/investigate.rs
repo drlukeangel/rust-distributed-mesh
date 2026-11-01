@@ -374,7 +374,7 @@ pub struct Watch {
     /// The admin's stop gate: this watch is held at its own wait while the admin is stopped, never
     /// where it reads the view.
     pub gate: crate::stop_gate::StopGate,
-    /// This admin's `path.name`.
+    /// This admin's `(path, name)`.
     pub me: PathName,
     /// The node id this admin was born with: whether it holds the fabric-primary role is decided by it.
     pub me_id: crate::model::NodeId,
@@ -397,7 +397,7 @@ pub struct Watch {
     /// The ladder.
     pub ladder: Arc<Mutex<Ladder>>,
     /// The carrier each mesh's latest probe went through.
-    pub carriers: Mutex<BTreeMap<String, PathName>>,
+    pub carriers: Mutex<BTreeMap<String, NodeId>>,
     /// Fabric recovery (Q122): no node-admin of the fabric-primary's mesh answered by the decision step, so
     /// the lowest Ready mesh-primary on the backbone starts it.
     pub fabric_recovery: Arc<crate::fabric_recovery::FabricRecoveryDoor>,
@@ -420,7 +420,7 @@ fn local_now_ms() -> u64 {
 /// down its ladder.
 pub async fn run(w: Watch) {
     let w = Arc::new(w);
-    let inv = Investigations::new(w.me.to_string(), w.ladder.clone(), w.gate.clone());
+    let inv = Investigations::new(w.me_id.to_string(), w.ladder.clone(), w.gate.clone());
     // When this admin took the fabric-primary role: a peer mesh it has never heard is unheard from then.
     let mut never_since: BTreeMap<String, Instant> = BTreeMap::new();
     let mut was_fabric_primary = false;
@@ -441,7 +441,7 @@ pub async fn run(w: Watch) {
         let _turn = w.gate.turn("peer-mesh-investigation").await;
         let view = Arc::new(w.topology.read().await.clone());
         let me = w.held_name_in(&view);
-        inv.set_me(me.to_string());
+        inv.set_me(w.me_id.to_string());
         let fabric_primary = view.is_fabric_primary(&w.me_id);
         was_fabric_primary = fabric_primary;
         if ladder_role_fabric_primary != Some(fabric_primary) {
@@ -477,7 +477,7 @@ pub async fn run(w: Watch) {
         }
         let digest_view = &w.topology_view.digest_view;
         let heard = digest_view.backbone_meshes();
-        let current_never = never_heard(&view, &me.mesh, &heard);
+        let current_never = never_heard(&view, w.topology_view.mesh_name(), &heard);
         never_since.retain(|m, _| current_never.contains(m));
         // The clock of a mesh never heard starts once the accepted Build is settled: from the role,
         // and from each settling, because a mesh the Build is still birthing has not had its chance
@@ -493,7 +493,7 @@ pub async fn run(w: Watch) {
             Ok(false) => {}
             // A store that cannot be read starts no new clock: named.
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "mesh-investigation", node = %me, error = %e)
+                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "mesh-investigation", node_path = %me.path, node_name = %me.name, error = %e)
                     .in_scope(|| tracing::info!("the current Build could not be read: the never-heard clock does not run on a read that failed"));
             }
         }
@@ -501,7 +501,7 @@ pub async fn run(w: Watch) {
         forget_unheard_meshes(&w.ladder, &heard.union(&never).cloned().collect());
         let mut tasks = Vec::new();
         let mut unheard_now = Vec::new();
-        for mesh in heard.into_iter().filter(|m| *m != me.mesh) {
+        for mesh in heard.into_iter().filter(|m| m != w.topology_view.mesh_name()) {
             let Some(unheard) = digest_view.mesh_unheard(&mesh, Instant::now()) else { continue };
             unheard_now.push(mesh.clone());
             tasks.push(investigate(&w, &inv, &view, mesh, unheard));
@@ -532,11 +532,11 @@ pub async fn run(w: Watch) {
 /// mesh's standby is the primary watch's arm, node-recovery.md step 2) and the record's birth is held off
 /// ready in this admin's view. `None` otherwise.
 fn fabric_primary_mesh_to_investigate(w: &Watch, view: &Topology, me: &PathName) -> Option<String> {
-    if !view.is_mesh_primary(&me.mesh, &w.me_id) {
+    if !view.is_mesh_primary(w.topology_view.mesh_name(), &w.me_id) {
         return None;
     }
     let record = w.topology_view.primaries().fabric()?;
-    if record.mesh == me.mesh {
+    if record.mesh == w.topology_view.mesh_name() {
         return None;
     }
     let held = view.members().any(|n| n.node_id == record.node_id && n.incarnation_id.as_ref() == Some(&record.incarnation) && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead));
@@ -567,11 +567,11 @@ fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
 /// report, is not this (`crate::checklist::recovered`).
 pub fn restore_peer_recovery(me: &PathName, records: &Records, view: &Topology) {
     for recovery in records.peer_recoveries() {
-        let primary = view.node_type_primary(&recovery.mesh, NodeKind::NodeAdmin).and_then(|p| p.incarnation_id.clone());
+        let primary = view.node_type_primary(&recovery.mesh, NodeKind::NodeAdmin).and_then(|p| p.birth());
         let report = records.declared.lock().unwrap().report_of(&recovery.mesh, view.node_type_primary(&recovery.mesh, NodeKind::NodeAdmin));
         if crate::checklist::recovered(&recovery, primary.as_ref(), report.as_ref()) {
             records.close_peer_recovery(&recovery.mesh);
-            tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = ?recovery.verdict_rafka_ms)
+            tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node_path = %me.path, node_name = %me.name, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = ?recovery.verdict_rafka_ms)
                 .in_scope(|| tracing::info!("the recovered mesh's primary reported its checklist complete: the fabric is ready again"));
         }
     }
@@ -580,7 +580,7 @@ pub fn restore_peer_recovery(me: &PathName, records: &Records, view: &Topology) 
 /// The driver of the ladder for every mesh: it steps the ladder on elapsed time and starts each
 /// probe the ladder asks for, recording the probe's result when the probe ends.
 pub(crate) struct Investigations {
-    /// This admin's `path.name`, named on the probe and verdict spans.
+    /// This admin's `(path, name)`, named on the probe and verdict spans.
     me: Mutex<String>,
     ladder: Arc<Mutex<Ladder>>,
     /// The probes in flight, each its own task, held by the admin's stop gate while it is stopped;
@@ -664,7 +664,7 @@ fn land(me: &str, span: &tracing::Span, ladder: &Mutex<Ladder>, mesh: &str, tick
     span.record("primary_record", found.primary_record.as_str());
     span.record("target", found.target.as_str());
     span.record("member", found.members.as_str());
-    span.record("carrier", found.carrier.as_str());
+    span.record("carrier", found.carrier.as_ref().map(NodeId::as_str).unwrap_or(""));
     span.record("outcome", found.outcome.as_str());
     span.record("detail", found.detail.as_str());
     span.record("iroh_known_addrs", found.iroh_known.as_str());
@@ -687,11 +687,11 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
     for step in steps {
         match step {
             Step::Track { unheard_ms } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %me, mesh = %mesh, at, unheard_ms, mark = false)
+                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node_path = %me.path, node_name = %me.name, mesh = %mesh, at, unheard_ms, mark = false)
                     .in_scope(|| tracing::info!("no word of the mesh on the backbone: the investigation tracks it"));
             }
             Step::Mark { unheard_ms } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %me, mesh = %mesh, at, unheard_ms, mark = true)
+                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node_path = %me.path, node_name = %me.name, mesh = %mesh, at, unheard_ms, mark = true)
                     .in_scope(|| tracing::info!("the mesh is marked silent; nothing is sent"));
             }
             Step::Probe { .. } | Step::Stop { .. } => {}
@@ -702,18 +702,18 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
                 // mesh"; elections §4.3). The re-creation of the lost mesh's node-admin follows it.
                 let record = w.topology_view.primaries().fabric().filter(|r| r.mesh == mesh && r.node_id != w.me_id);
                 if let (Some(_), false) = (record, view.is_fabric_primary(&w.me_id)) {
-                    verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, "no node-admin of the fabric-primary's mesh answered by the decision step: the backbone rule applies");
+                    verdict(&w.me_id.to_string(), &mesh, latest.as_str(), unheard_ms, "no node-admin of the fabric-primary's mesh answered by the decision step: the backbone rule applies");
                     continue;
                 }
-                verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if recover { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
+                verdict(&w.me_id.to_string(), &mesh, latest.as_str(), unheard_ms, if recover { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
                 if recover {
                     let verdict_ms = w.topology_view.clock().now_rafka_ms();
-                    let lost = view.nodes_of_type(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
+                    let lost = view.nodes_of_type(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.birth()).collect();
                     w.records.open_mesh_recovery(&me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "connection-lost", true);
                 }
             }
             Step::Cancel { unheard_ms, probes } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %me, mesh = %mesh, outcome = "heard-again", at = local_now_ms(), unheard_ms, probes)
+                tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node_path = %me.path, node_name = %me.name, mesh = %mesh, outcome = "heard-again", at = local_now_ms(), unheard_ms, probes)
                     .in_scope(|| tracing::info!("the mesh is heard on the backbone again: the investigation is cancelled"));
             }
         }
@@ -729,7 +729,7 @@ fn verdict(me: &str, mesh: &str, outcome: &str, unheard_ms: u64, why: &str) {
 /// is `connection-lost`, and that carrier is named; a carrier that cannot be reached, refuses, or
 /// loses the call says nothing of the node-admin, so `unreachable`, naming the first carrier that
 /// answered anything at all (a reply that was not the exact birth's, or an `Indeterminate`), or none.
-pub(crate) fn classify_unreached(unreached: &Unreached) -> (ProbeOutcome, Option<String>) {
+pub(crate) fn classify_unreached(unreached: &Unreached) -> (ProbeOutcome, Option<NodeId>) {
     if let Some(PeerProbe { carrier, .. }) = unreached.peers.iter().find(|p| matches!(p.end, ProbeEnd::ConnectionLost(_))) {
         return (ProbeOutcome::ConnectionLost, Some(carrier.clone()));
     }
@@ -742,9 +742,9 @@ pub(crate) struct Found {
     pub(crate) outcome: ProbeOutcome,
     pub(crate) target: String,
     pub(crate) members: String,
-    pub(crate) carrier: String,
+    pub(crate) carrier: Option<NodeId>,
     pub(crate) detail: String,
-    /// iroh's local view of each node-admin asked, `<path.name>=<known addrs>` joined by `;`: a
+    /// iroh's local view of each node-admin asked, `<path and name>=<known addrs>` joined by `;`: a
     /// diagnostic beside the probe, nothing decides on it (`rdm_transport::iroh_obs`).
     pub(crate) iroh_known: String,
     /// The addresses iroh used for each node-admin asked, as `iroh_known`.
@@ -759,7 +759,7 @@ pub(crate) struct Found {
 /// held, path order. Only exact births are asked: a probe names `(node.id, incarnation)`.
 pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, primary: Option<&rdm_core::role::Primary>) -> Vec<Node> {
     let mut admins: Vec<Node> = view.nodes_of_type(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).cloned().collect();
-    admins.sort_by_key(|a| a.name.to_string());
+    admins.sort_by_key(|a| a.name.clone());
     if let Some(record) = primary.filter(|r| r.mesh == mesh) {
         if let Some(i) = admins.iter().position(|a| a.node_id == record.node_id) {
             let mut primary = admins.remove(i);
@@ -803,7 +803,7 @@ pub(crate) struct WatchCalls<'a>(pub(crate) &'a Watch);
 #[async_trait::async_trait]
 impl TickleCalls for WatchCalls<'_> {
     fn caller(&self) -> String {
-        self.0.me.to_string()
+        self.0.me_id.to_string()
     }
 
     fn deadline(&self) -> Duration {
@@ -855,10 +855,10 @@ impl ProbeCalls for WatchCalls<'_> {
 /// 1 and 3): the mesh's ordinary members, active connections first, then path order, the member
 /// `avoid` (the one that carried the latest probe, when this is probe 2) last; the tickle takes the
 /// first [`VIA_PEER_TICKLE_FANOUT`] of them, so probe 2 prefers members probe 1 did not carry through.
-pub(crate) fn investigation_carriers(view: &Topology, mesh: &str, connected: impl Fn(&NodeId) -> bool, avoid: Option<&PathName>) -> Vec<Node> {
+pub(crate) fn investigation_carriers(view: &Topology, mesh: &str, connected: impl Fn(&NodeId) -> bool, avoid: Option<&NodeId>) -> Vec<Node> {
     let mut members: Vec<Node> = view.members().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving).cloned().collect();
-    members.sort_by_key(|m| (!connected(&m.node_id), m.name.to_string()));
-    members.sort_by_key(|m| avoid == Some(&m.name));
+    members.sort_by_key(|m| (!connected(&m.node_id), m.name.clone()));
+    members.sort_by_key(|m| avoid == Some(&m.node_id));
     members.into_iter().take(VIA_PEER_TICKLE_FANOUT).collect()
 }
 
@@ -868,7 +868,7 @@ pub(crate) fn investigation_carriers(view: &Topology, mesh: &str, connected: imp
 /// fails, carried by up to two members of the mesh at once ([`investigation_carriers`]). The first
 /// node-admin that answers ends the probe. `carriers` holds the carrier each mesh's latest probe went
 /// through; probe 2 prefers other members.
-pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rdm_core::role::Primary>, mesh: &str, _n: u8) -> Found {
+pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, NodeId>>, view: &Topology, record: Option<rdm_core::role::Primary>, mesh: &str, _n: u8) -> Found {
     let primary_record = record.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let admins = admins_in_probe_order(view, mesh, record.as_ref());
     if admins.is_empty() {
@@ -876,8 +876,8 @@ pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BT
     }
     // The carrier probe 2 prefers to avoid is the one that carried probe 1 (`calls.carriers` reads it
     // from `carriers`); the carrier this probe went through lands there once it ends, never while it runs.
-    let mut carrier: Option<String> = None;
-    let mut members_asked: Vec<String> = Vec::new();
+    let mut carrier: Option<NodeId> = None;
+    let mut members_asked: Vec<NodeId> = Vec::new();
     let (mut outcomes, mut asked_admins, mut details) = (Vec::new(), Vec::new(), Vec::new());
     let (mut iroh_known, mut iroh_active) = (Vec::new(), Vec::new());
     for admin in &admins {
@@ -885,24 +885,24 @@ pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BT
         // One read of iroh's local view of the node-admin, beside its probe; the outcome is the
         // Node RPC's, never this.
         let (known, active) = calls.observe(admin).await;
-        iroh_known.push(format!("{}={known}", admin.name));
-        iroh_active.push(format!("{}={active}", admin.name));
+        iroh_known.push(format!("{}={known}", admin.node_id));
+        iroh_active.push(format!("{}={active}", admin.node_id));
         match ladder {
             Err(reason) => {
                 outcomes.push(ProbeOutcome::Unreachable);
-                asked_admins.push(format!("{}=unreachable", admin.name));
+                asked_admins.push(format!("{}=unreachable", admin.node_id));
                 details.push(reason);
             }
             Ok(Tickle::Reached { answer, carrier: via }) => {
                 outcomes.push(ProbeOutcome::AdminAlive);
                 let said = match &answer {
-                    StatusReply::Current { state, .. } => format!("{} answered: {state:?}", admin.name),
-                    other => format!("{} answered: {}", admin.name, other.name()),
+                    StatusReply::Current { state, .. } => format!("{} answered: {state:?}", admin.node_id),
+                    other => format!("{} answered: {}", admin.node_id, other.name()),
                 };
                 match via {
-                    None => asked_admins.push(format!("{}=admin-alive(direct)", admin.name)),
+                    None => asked_admins.push(format!("{}=admin-alive(direct)", admin.node_id)),
                     Some(c) => {
-                        asked_admins.push(format!("{}=admin-alive(via {c})", admin.name));
+                        asked_admins.push(format!("{}=admin-alive(via {c})", admin.node_id));
                         if !members_asked.contains(&c) {
                             members_asked.push(c.clone());
                         }
@@ -925,21 +925,18 @@ pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BT
                 details.push(if carried.is_empty() { format!("direct: {}; no member to carry it", unreached.direct.name()) } else { format!("direct: {}; {carried}", unreached.direct.name()) });
                 match via {
                     Some(c) => {
-                        asked_admins.push(format!("{}={}(via {c})", admin.name, outcome.as_str()));
+                        asked_admins.push(format!("{}={}(via {c})", admin.node_id, outcome.as_str()));
                         carrier = Some(c);
                     }
-                    None => asked_admins.push(format!("{}={}", admin.name, outcome.as_str())),
+                    None => asked_admins.push(format!("{}={}", admin.node_id, outcome.as_str())),
                 }
             }
         }
     }
     if let Some(c) = &carrier {
-        if let Ok(c) = c.parse::<PathName>() {
-            carriers.lock().unwrap().insert(mesh.to_string(), c);
-        }
+        carriers.lock().unwrap().insert(mesh.to_string(), c.clone());
     }
-    let carrier = carrier.unwrap_or_default();
-    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked.join(","), carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), primary_record }
+    Found { outcome: fold_admin_outcomes(&outcomes), target: asked_admins.join(","), members: members_asked.iter().map(NodeId::as_str).collect::<Vec<_>>().join(","), carrier, detail: details.join("; "), iroh_known: iroh_known.join(";"), iroh_active: iroh_active.join(";"), primary_record }
 }
 
 #[cfg(test)]
@@ -1003,11 +1000,11 @@ mod tests {
     #[test]
     fn a_peer_mesh_known_from_topology_alone_is_watched_from_the_fabric_primary() {
         use crate::model::*;
-        let node = |n: &str| Node::allocated(n.parse().unwrap());
+        let node = |n: PathName, mesh: &str, kind: rdm_core::NodeKind| Node::allocated(n, mesh, kind);
         let t = Topology {
             fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: Vec::new(),
-            nodes: vec![node("mesh1.admin.1"), node("mesh2.admin.1"), node("mesh2.rpc.1"), node("mesh3.admin.1")],
+            nodes: vec![node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), node(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), node(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin)],
         };
         let heard: BTreeSet<String> = ["mesh3".to_string()].into();
         assert_eq!(never_heard(&t, "mesh1", &heard), BTreeSet::from(["mesh2".to_string()]), "mesh2 only: mesh1 is this admin's own, mesh3 was heard on the backbone");
@@ -1126,8 +1123,8 @@ mod tests {
         Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes }
     }
 
-    fn admin(name: &str, primary: bool) -> Node {
-        let mut n = Node::allocated(name.parse().unwrap());
+    fn admin(name: PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool) -> Node {
+        let mut n = Node::allocated(name, mesh, kind);
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(crate::model::IncarnationId::mint());
         n.status = NodeStatus::Ready;
@@ -1206,9 +1203,9 @@ mod tests {
     #[test]
     fn one_investigation_runs_on_elapsed_time_from_the_last_direct_backbone_receipt() {
         use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
-        let digest = |name: &str| MeshDigest { held_hash: Default::default(),
+        let digest = |name: PathName, mesh: &str, kind: rdm_core::NodeKind| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
-            node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind, node_id: NodeId::mint(), name: name.parse().unwrap(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            node: MeshNode { mesh: mesh.to_owned(), kind, node_id: NodeId::mint(), name, endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::Ready,
             node_state: Default::default(),
             admin_api_base: None,
@@ -1223,7 +1220,7 @@ mod tests {
         let floor = Duration::from_secs(30);
         for every in [Duration::from_millis(500), Duration::from_secs(2)] {
             let digest_view = rdm_transport::topology::DigestView::default();
-            let (admin, rpc) = (digest("mesh2.admin.1"), digest("mesh2.rpc.1"));
+            let (admin, rpc) = (digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), digest(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode));
             let t0 = Instant::now();
             assert!(digest_view.record_forwarded_at(admin.clone(), t0), "the direct backbone receipt");
             let mut l = Ladder::new(Rungs::at(floor, every));
@@ -1277,15 +1274,15 @@ mod tests {
     #[test]
     fn a_probe_asks_the_recorded_mesh_primary_first_then_the_other_admins() {
         use rdm_core::role::Primary;
-        let v = view_of(vec![admin("mesh2.admin.1", false), admin("mesh2.admin.3", false), admin("mesh2.admin.2", true), admin("mesh1.admin.1", true)]);
-        let a3 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.3").unwrap().clone();
-        let names = |order: Vec<Node>| order.iter().map(|a| a.name.to_string()).collect::<Vec<_>>();
+        let v = view_of(vec![admin(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false), admin(PathName::new("mesh2.admin", "3").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false), admin(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true), admin(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true)]);
+        let a3 = v.nodes.iter().find(|n| n.name == PathName::new("mesh2.admin", "3").unwrap()).unwrap().clone();
+        let names = |order: Vec<Node>| order.iter().map(|a| a.name.clone()).collect::<Vec<_>>();
         let record = Primary { mesh: "mesh2".into(), node_id: a3.node_id.clone(), incarnation: a3.incarnation_id.clone().unwrap(), revision: 4 };
-        assert_eq!(names(admins_in_probe_order(&v, "mesh2", Some(&record))), vec!["mesh2.admin.3", "mesh2.admin.1", "mesh2.admin.2"], "the primary record's primary first, then the others in path order, and nothing of another mesh; never the view's is_primary");
-        assert_eq!(names(admins_in_probe_order(&v, "mesh2", None)), vec!["mesh2.admin.1", "mesh2.admin.2", "mesh2.admin.3"], "no record held: path order, the view's is_primary choosing nothing");
+        assert_eq!(names(admins_in_probe_order(&v, "mesh2", Some(&record))), vec![PathName::new("mesh2.admin", "3").unwrap(), PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2").unwrap()], "the primary record's primary first, then the others in path order, and nothing of another mesh; never the view's is_primary");
+        assert_eq!(names(admins_in_probe_order(&v, "mesh2", None)), vec![PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2").unwrap(), PathName::new("mesh2.admin", "3").unwrap()], "no record held: path order, the view's is_primary choosing nothing");
         let newer = Primary { incarnation: crate::model::IncarnationId::mint(), revision: 5, ..record };
         let order = admins_in_probe_order(&v, "mesh2", Some(&newer));
-        assert_eq!((order[0].name.to_string(), order[0].incarnation_id.clone()), ("mesh2.admin.3".to_string(), Some(newer.incarnation.clone())), "the record's exact birth is asked, not the older birth the view holds");
+        assert_eq!((order[0].name.clone(), order[0].incarnation_id.clone()), (PathName::new("mesh2.admin", "3").unwrap(), Some(newer.incarnation.clone())), "the record's exact birth is asked, not the older birth the view holds");
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:34
@@ -1303,7 +1300,7 @@ mod tests {
     /// runs, or a decision taken with a probe outstanding.
     #[tokio::test(start_paused = true)]
     async fn a_running_probe_never_holds_the_ladder() {
-        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
+        let inv = Investigations::new("100000000000".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
         let ended = Arc::new(Mutex::new(Vec::<(u8, u64)>::new()));
         let t0 = tokio::time::Instant::now();
         let mut log: Vec<Step> = Vec::new();
@@ -1341,7 +1338,7 @@ mod tests {
     async fn a_probe_in_flight_when_the_admin_stops_makes_no_step_until_the_gate_opens() {
         use std::sync::atomic::{AtomicU32, Ordering};
         let gate = crate::stop_gate::StopGate::new();
-        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), gate.clone());
+        let inv = Investigations::new("100000000000".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), gate.clone());
         let calls = Arc::new(AtomicU32::new(0));
         let start = |_n: u8| {
             let calls = calls.clone();
@@ -1561,6 +1558,27 @@ mod tests {
         assert!(ladder.lock().unwrap().meshes().is_empty());
     }
 
+    // @feature: node-reference-fields
+    #[test]
+    fn carrier_avoidance_follows_id_across_rename_and_allows_replacement() {
+        let mut previous = Node::allocated(PathName::new("arbitrary.path", "first").unwrap(), "mesh2", NodeKind::RpcNode);
+        previous.status = NodeStatus::Ready;
+        let mut second = Node::allocated(PathName::new("arbitrary.path", "second").unwrap(), "mesh2", NodeKind::RpcNode);
+        second.status = NodeStatus::Ready;
+        let mut third = Node::allocated(PathName::new("arbitrary.path", "third").unwrap(), "mesh2", NodeKind::RpcNode);
+        third.status = NodeStatus::Ready;
+        let mut renamed = previous.clone();
+        renamed.name = PathName::new("arbitrary.path", "first-old").unwrap();
+        let view = view_of(vec![renamed, second.clone(), third.clone()]);
+        let selected = investigation_carriers(&view, "mesh2", |_| true, Some(&previous.node_id));
+        assert!(selected.iter().all(|n| n.node_id != previous.node_id));
+        let mut replacement = Node::allocated(previous.name.clone(), "mesh2", NodeKind::RpcNode);
+        replacement.status = NodeStatus::Ready;
+        let view = view_of(vec![replacement.clone(), second, third]);
+        let selected = investigation_carriers(&view, "mesh2", |_| true, Some(&previous.node_id));
+        assert!(selected.iter().any(|n| n.node_id == replacement.node_id));
+    }
+
     /// A probe's calls, recorded in the order made and answered as the cell says: a node-admin in
     /// `answers_direct` answers its direct `ProbeNodeState`, a node-admin in `answers_carried` answers
     /// the carried `ProbeNodeState` through the carrier `answering_carrier`; with `members_carry`,
@@ -1568,17 +1586,17 @@ mod tests {
     /// reached at all; `connected` are the members this node holds an Active Direct connection to.
     struct Recorder {
         made: Mutex<Vec<String>>,
-        answers_direct: BTreeSet<String>,
-        answers_carried: BTreeSet<String>,
-        answering_carrier: &'static str,
+        answers_direct: BTreeSet<NodeId>,
+        answers_carried: BTreeSet<NodeId>,
+        answering_carrier: Option<NodeId>,
         members_carry: bool,
         connected: BTreeSet<NodeId>,
-        carriers: Mutex<BTreeMap<String, PathName>>,
+        carriers: Mutex<BTreeMap<String, NodeId>>,
     }
 
     impl Default for Recorder {
         fn default() -> Self {
-            Self { made: Mutex::default(), answers_direct: BTreeSet::new(), answers_carried: BTreeSet::new(), answering_carrier: "mesh2.rpc.1", members_carry: true, connected: BTreeSet::new(), carriers: Mutex::default() }
+            Self { made: Mutex::default(), answers_direct: BTreeSet::new(), answers_carried: BTreeSet::new(), answering_carrier: None, members_carry: true, connected: BTreeSet::new(), carriers: Mutex::default() }
         }
     }
 
@@ -1601,7 +1619,7 @@ mod tests {
     #[async_trait::async_trait]
     impl TickleCalls for Recorder {
         fn caller(&self) -> String {
-            "mesh1.admin.1".into()
+            "100000000000".into()
         }
 
         fn deadline(&self) -> Duration {
@@ -1609,8 +1627,8 @@ mod tests {
         }
 
         async fn direct(&self, admin: &Node, req: &StatusRequest) -> ProbeEnd {
-            self.note(format!("direct {}", admin.name), Some((admin, req)));
-            if self.answers_direct.contains(&admin.name.to_string()) {
+            self.note(format!("direct {}", admin.node_id), Some((admin, req)));
+            if self.answers_direct.contains(&admin.node_id.clone()) {
                 Self::current(admin)
             } else {
                 ProbeEnd::Other { end: "NotSent", detail: "not sent: dial deadline".into() }
@@ -1618,15 +1636,15 @@ mod tests {
         }
 
         async fn via_peer(&self, carrier: &Node, admin: &Node, req: &StatusRequest) -> ProbeEnd {
-            self.note(format!("via {} > {}", carrier.name, admin.name), Some((admin, req)));
+            self.note(format!("via {} > {}", carrier.node_id, admin.node_id), Some((admin, req)));
             // Both carried probes are in flight before either ends.
             tokio::task::yield_now().await;
             if !self.members_carry {
                 ProbeEnd::Other { end: "NotSent", detail: "not sent: NoActiveRoute".into() }
-            } else if self.answers_carried.contains(&admin.name.to_string()) && carrier.name.to_string() == self.answering_carrier {
+            } else if self.answers_carried.contains(&admin.node_id.clone()) && Some(&carrier.node_id) == self.answering_carrier.as_ref() {
                 Self::current(admin)
             } else {
-                ProbeEnd::ConnectionLost(format!("{} cannot reach {}", carrier.name, admin.name))
+                ProbeEnd::ConnectionLost(format!("{} cannot reach {}", carrier.node_id, admin.node_id))
             }
         }
 
@@ -1647,26 +1665,26 @@ mod tests {
         }
     }
 
-    /// A ready member of its mesh: its kind is its path's.
-    fn member(name: &str) -> Node {
-        admin(name, false)
+    /// A ready member with explicit mesh and kind metadata.
+    fn member(name: PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
+        admin(name, mesh, kind, false)
     }
 
     /// The peer mesh mesh2 of the probe cells: node-admins 1 and 2, the held mesh-primary record
     /// naming node-admin 2 (so the exact mesh-primary is not the first in path order), rpc members 1
     /// to 3, and this admin's own mesh1, never asked.
     fn mesh2() -> (Arc<Topology>, rdm_core::role::Primary) {
-        let v = view_of(vec![admin("mesh1.admin.1", true), member("mesh1.rpc.1"), admin("mesh2.admin.1", true), admin("mesh2.admin.2", false), member("mesh2.rpc.1"), member("mesh2.rpc.2"), member("mesh2.rpc.3")]);
-        let a2 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.2").unwrap().clone();
+        let v = view_of(vec![admin(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true), member(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), admin(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true), admin(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false), member(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), member(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), member(PathName::new("mesh2.rpc", "3").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode)]);
+        let a2 = v.nodes.iter().find(|n| n.name == PathName::new("mesh2.admin", "2").unwrap()).unwrap().clone();
         let record = rdm_core::role::Primary { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), revision: 3 };
         (Arc::new(v), record)
     }
 
-    fn node_id_of(v: &Topology, name: &str) -> NodeId {
-        v.nodes.iter().find(|n| n.name.to_string() == name).unwrap().node_id.clone()
+    fn node_id_of(v: &Topology, name: PathName) -> NodeId {
+        v.nodes.iter().find(|n| n.name == name).unwrap().node_id.clone()
     }
 
-    fn calls(lines: &[&str]) -> Vec<String> {
+    fn calls(lines: &[String]) -> Vec<String> {
         lines.iter().map(|l| l.to_string()).collect()
     }
 
@@ -1708,11 +1726,16 @@ mod tests {
     #[tokio::test]
     async fn a_probe_asks_each_node_admin_direct_then_through_two_carriers_at_once_the_exact_mesh_primary_first() {
         let (view, record) = mesh2();
+        let a1 = node_id_of(&view, PathName::new("mesh2.admin", "1").unwrap());
+        let a2 = node_id_of(&view, PathName::new("mesh2.admin", "2").unwrap());
+        let r1 = node_id_of(&view, PathName::new("mesh2.rpc", "1").unwrap());
+        let r2 = node_id_of(&view, PathName::new("mesh2.rpc", "2").unwrap());
+        let r3 = node_id_of(&view, PathName::new("mesh2.rpc", "3").unwrap());
         let carriers = Arc::new(Mutex::new(BTreeMap::new()));
-        let rig = Arc::new(Recorder { connected: [node_id_of(&view, "mesh2.rpc.3")].into(), ..Recorder::default() });
+        let rig = Arc::new(Recorder { connected: [node_id_of(&view, PathName::new("mesh2.rpc", "3").unwrap())].into(), ..Recorder::default() });
         let capture = crate::span_capture::Capture::new("i143-3097-probe-order");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
+        let inv = Investigations::new("100000000000".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
         let start = |n: u8| {
             let (rig, carriers, view, record) = (rig.clone(), carriers.clone(), view.clone(), record.clone());
             async move {
@@ -1731,30 +1754,30 @@ mod tests {
         }
         assert_eq!(
             made[0],
-            calls(&["direct mesh2.admin.2", "via mesh2.rpc.3 > mesh2.admin.2", "via mesh2.rpc.1 > mesh2.admin.2", "direct mesh2.admin.1", "via mesh2.rpc.3 > mesh2.admin.1", "via mesh2.rpc.1 > mesh2.admin.1"]),
+            calls(&[format!("direct {a2}"), format!("via {r3} > {a2}"), format!("via {r1} > {a2}"), format!("direct {a1}"), format!("via {r3} > {a1}"), format!("via {r1} > {a1}")]),
             "probe 1: the primary record's exact mesh-primary first, then the other node-admin, each direct, then carried through two members at once (the Active Direct member first)"
         );
         assert_eq!(
             made[1],
-            calls(&["direct mesh2.admin.2", "via mesh2.rpc.1 > mesh2.admin.2", "via mesh2.rpc.2 > mesh2.admin.2", "direct mesh2.admin.1", "via mesh2.rpc.1 > mesh2.admin.1", "via mesh2.rpc.2 > mesh2.admin.1"]),
+            calls(&[format!("direct {a2}"), format!("via {r1} > {a2}"), format!("via {r2} > {a2}"), format!("direct {a1}"), format!("via {r1} > {a1}"), format!("via {r2} > {a1}")]),
             "probe 2 repeats probe 1, preferring members probe 1 did not carry through (rpc 3 is asked last and left out)"
         );
         let spans = capture.named("rdm.node_admin.mesh.update.via-probe");
         assert_eq!(spans.len(), 2, "one span per probe: {spans:?}");
         let attr = |i: usize, k: &str| spans[i].attributes.get(k).cloned().unwrap_or_default();
-        for (i, carrier) in [(0, "mesh2.rpc.3"), (1, "mesh2.rpc.1")] {
+        for (i, carrier) in [(0, r3.as_str()), (1, r1.as_str())] {
             assert_eq!(attr(i, "probe"), (i + 1).to_string());
-            assert_eq!(attr(i, "target"), format!("mesh2.admin.2=connection-lost(via {carrier}),mesh2.admin.1=connection-lost(via {carrier})"), "probe {}: every node-admin asked, in order, with its leg", i + 1);
+            assert_eq!(attr(i, "target"), format!("{a2}=connection-lost(via {carrier}),{a1}=connection-lost(via {carrier})"), "probe {}: every node-admin asked, in order, with its leg", i + 1);
             assert_eq!(attr(i, "carrier"), carrier, "probe {}", i + 1);
             assert_eq!(attr(i, "outcome"), "connection-lost", "probe {}", i + 1);
             assert_eq!(attr(i, "primary_record"), record.to_string(), "probe {}: ordered by the held primary record", i + 1);
             eprintln!("span rdm.node_admin.mesh.update.via-probe trace_id={} {:?}", spans[i].trace_id, spans[i].attributes);
         }
-        assert_eq!(attr(0, "member"), "mesh2.rpc.3,mesh2.rpc.1", "probe 1 asked the Active Direct member first");
-        assert_eq!(attr(1, "member"), "mesh2.rpc.1,mesh2.rpc.2", "probe 2 asked members other than probe 1's carrier");
+        assert_eq!(attr(0, "member"), format!("{r3},{r1}"), "probe 1 asked the Active Direct member first");
+        assert_eq!(attr(1, "member"), format!("{r1},{r2}"), "probe 2 asked members other than probe 1's carrier");
         let tickles = capture.named("rdm.node.tickle.returns-unknown.via-unreached");
         assert_eq!(tickles.len(), 4, "one unreached ladder per node-admin per probe, each saying the investigation decides next: {tickles:?}");
-        assert!(tickles.iter().all(|t| t.attributes.get("next").map(String::as_str) == Some("decide") && t.attributes.get("caller").map(String::as_str) == Some("mesh1.admin.1")), "{tickles:?}");
+        assert!(tickles.iter().all(|t| t.attributes.get("next").map(String::as_str) == Some("decide") && t.attributes.get("caller").map(String::as_str) == Some("100000000000")), "{tickles:?}");
     }
 
     /// CONTRACT (mesh-investigation.md step 1: each target follows the direct-then-via-peer policy;
@@ -1767,18 +1790,23 @@ mod tests {
     #[tokio::test]
     async fn a_node_admin_whose_direct_probe_fails_is_probed_through_two_members_at_once_even_after_none_carried_the_one_before() {
         let (view, record) = mesh2();
+        let a1 = node_id_of(&view, PathName::new("mesh2.admin", "1").unwrap());
+        let a2 = node_id_of(&view, PathName::new("mesh2.admin", "2").unwrap());
+        let r1 = node_id_of(&view, PathName::new("mesh2.rpc", "1").unwrap());
+        let r2 = node_id_of(&view, PathName::new("mesh2.rpc", "2").unwrap());
+        let r3 = node_id_of(&view, PathName::new("mesh2.rpc", "3").unwrap());
         let rig = Recorder { members_carry: false, ..Recorder::default() };
         let found = probe(&rig, &Mutex::new(BTreeMap::new()), &view, Some(record), "mesh2", 1).await;
         assert_eq!(
             rig.made(),
-            calls(&["direct mesh2.admin.2", "via mesh2.rpc.1 > mesh2.admin.2", "via mesh2.rpc.2 > mesh2.admin.2", "direct mesh2.admin.1", "via mesh2.rpc.1 > mesh2.admin.1", "via mesh2.rpc.2 > mesh2.admin.1"]),
+            calls(&[format!("direct {a2}"), format!("via {r1} > {a2}"), format!("via {r2} > {a2}"), format!("direct {a1}"), format!("via {r1} > {a1}"), format!("via {r2} > {a1}")]),
             "each node-admin whose direct probe failed is carried through two members at once"
         );
         assert_eq!(found.outcome, Unreachable, "no member reached: {found:?}");
-        assert_eq!(found.target, "mesh2.admin.2=unreachable,mesh2.admin.1=unreachable");
-        assert_eq!(found.carrier, "", "no member carried the probe");
-        assert_eq!(found.members, "mesh2.rpc.1,mesh2.rpc.2", "the members asked");
-        assert_eq!(found.detail.matches("direct: NotSent: not sent: dial deadline; via mesh2.rpc.1: NotSent: not sent: NoActiveRoute; via mesh2.rpc.2: NotSent: not sent: NoActiveRoute").count(), 2, "each node-admin names how each of its probes ended: {}", found.detail);
+        assert_eq!(found.target, format!("{a2}=unreachable,{a1}=unreachable"));
+        assert_eq!(found.carrier, None, "no member carried the probe");
+        assert_eq!(found.members, format!("{r1},{r2}"), "the members asked");
+        assert_eq!(found.detail.matches(&format!("direct: NotSent: not sent: dial deadline; via {r1}: NotSent: not sent: NoActiveRoute; via {r2}: NotSent: not sent: NoActiveRoute")).count(), 2, "each node-admin names how each of its probes ended: {}", found.detail);
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:27
@@ -1800,11 +1828,16 @@ mod tests {
     #[tokio::test]
     async fn the_first_answering_node_admin_ends_the_probe_and_probe_two_prefers_other_carriers() {
         let (view, record) = mesh2();
+        let a1 = node_id_of(&view, PathName::new("mesh2.admin", "1").unwrap());
+        let a2 = node_id_of(&view, PathName::new("mesh2.admin", "2").unwrap());
+        let r1 = node_id_of(&view, PathName::new("mesh2.rpc", "1").unwrap());
+        let r2 = node_id_of(&view, PathName::new("mesh2.rpc", "2").unwrap());
+        let r3 = node_id_of(&view, PathName::new("mesh2.rpc", "3").unwrap());
         let capture = crate::span_capture::Capture::new("answering_admin_stops_probe");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
 
-        let rig = Arc::new(Recorder { answers_direct: ["mesh2.admin.2".to_string()].into(), ..Recorder::default() });
-        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
+        let rig = Arc::new(Recorder { answers_direct: [a2.clone()].into(), ..Recorder::default() });
+        let inv = Investigations::new("100000000000".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
         let start = |n: u8| {
             let (rig, view, record) = (rig.clone(), view.clone(), record.clone());
             async move { probe(&*rig, &Mutex::new(BTreeMap::new()), &view, Some(record), "mesh2", n).await }
@@ -1812,33 +1845,33 @@ mod tests {
         let steps = inv.tick("mesh2", Duration::from_secs(2), start).await;
         assert!(steps.iter().any(|s| matches!(s, Step::Probe { n: 1, .. })));
         tokio::time::timeout(Duration::from_secs(10), inv.landed()).await.unwrap();
-        assert_eq!(rig.made(), calls(&["direct mesh2.admin.2"]), "the exact mesh-primary answered direct: nothing else is asked");
+        assert_eq!(rig.made(), calls(&[format!("direct {a2}")]), "the exact mesh-primary answered direct: nothing else is asked");
         let verdicts = capture.named("rdm.node_admin.mesh.update.via-probe-verdict");
         assert_eq!(verdicts.len(), 1, "answering probe emits via-probe-verdict: {verdicts:?}");
         assert_eq!(verdicts[0].attributes.get("mesh").map(String::as_str), Some("mesh2"));
         assert_eq!(verdicts[0].attributes.get("outcome").map(String::as_str), Some("admin-alive"));
 
-        let rig = Recorder { answers_direct: ["mesh2.admin.2".to_string()].into(), ..Recorder::default() };
+        let rig = Recorder { answers_direct: [a2.clone()].into(), ..Recorder::default() };
         let found = probe(&rig, &Mutex::new(BTreeMap::new()), &view, Some(record.clone()), "mesh2", 1).await;
-        assert_eq!(rig.made(), calls(&["direct mesh2.admin.2"]), "the exact mesh-primary answered direct: nothing else is asked");
-        assert_eq!((found.outcome, found.target.as_str(), found.carrier.as_str()), (AdminAlive, "mesh2.admin.2=admin-alive(direct)", ""));
+        assert_eq!(rig.made(), calls(&[format!("direct {a2}")]), "the exact mesh-primary answered direct: nothing else is asked");
+        assert_eq!((found.outcome, found.target.as_str(), found.carrier.as_ref().map(NodeId::as_str)), (AdminAlive, format!("{a2}=admin-alive(direct)").as_str(), None));
 
-        let rig = Recorder { answers_carried: ["mesh2.admin.2".to_string()].into(), ..Recorder::default() };
+        let rig = Recorder { answering_carrier: Some(r1.clone()), answers_carried: [a2.clone()].into(), ..Recorder::default() };
         let found = probe(&rig, &Mutex::new(BTreeMap::new()), &view, Some(record.clone()), "mesh2", 1).await;
-        assert_eq!(rig.made(), calls(&["direct mesh2.admin.2", "via mesh2.rpc.1 > mesh2.admin.2", "via mesh2.rpc.2 > mesh2.admin.2"]), "the exact mesh-primary answered through a carrier: node-admin 1 is never asked");
-        assert_eq!((found.outcome, found.target.as_str(), found.carrier.as_str()), (AdminAlive, "mesh2.admin.2=admin-alive(via mesh2.rpc.1)", "mesh2.rpc.1"));
+        assert_eq!(rig.made(), calls(&[format!("direct {a2}"), format!("via {r1} > {a2}"), format!("via {r2} > {a2}")]), "the exact mesh-primary answered through a carrier: node-admin 1 is never asked");
+        assert_eq!((found.outcome, found.target.as_str(), found.carrier.as_ref().map(NodeId::as_str)), (AdminAlive, format!("{a2}=admin-alive(via {r1})").as_str(), Some(r1.as_str())));
 
         // Probe 1 was carried by rpc 3: probe 2 goes through the two other members.
-        let rig = Recorder { carriers: Mutex::new(BTreeMap::from([("mesh2".to_string(), "mesh2.rpc.3".parse::<PathName>().unwrap())])), ..Recorder::default() };
-        let carriers = Mutex::new(BTreeMap::from([("mesh2".to_string(), "mesh2.rpc.3".parse::<PathName>().unwrap())]));
+        let rig = Recorder { carriers: Mutex::new(BTreeMap::from([("mesh2".to_string(), r3.clone())])), ..Recorder::default() };
+        let carriers = Mutex::new(BTreeMap::from([("mesh2".to_string(), r3.clone())]));
         let found = probe(&rig, &carriers, &view, Some(record), "mesh2", 2).await;
         assert_eq!(
             rig.made(),
-            calls(&["direct mesh2.admin.2", "via mesh2.rpc.1 > mesh2.admin.2", "via mesh2.rpc.2 > mesh2.admin.2", "direct mesh2.admin.1", "via mesh2.rpc.1 > mesh2.admin.1", "via mesh2.rpc.2 > mesh2.admin.1"]),
+            calls(&[format!("direct {a2}"), format!("via {r1} > {a2}"), format!("via {r2} > {a2}"), format!("direct {a1}"), format!("via {r1} > {a1}"), format!("via {r2} > {a1}")]),
             "probe 1's carrier is asked last and left out while two other members stand"
         );
-        assert_eq!((found.outcome, found.carrier.as_str()), (ConnectionLost, "mesh2.rpc.1"));
-        assert_eq!(carriers.lock().unwrap().get("mesh2").map(ToString::to_string).as_deref(), Some("mesh2.rpc.1"), "the carrier this probe went through is held for the next");
+        assert_eq!((found.outcome, found.carrier.as_ref().map(NodeId::as_str)), (ConnectionLost, Some(r1.as_str())));
+        assert_eq!(carriers.lock().unwrap().get("mesh2").map(ToString::to_string).as_deref(), Some(r1.as_str()), "the carrier this probe went through is held for the next");
     }
 
     /// CONTRACT (Q253 amended, rdm#164: the reconcile loop's drift check and drive read what this ladder

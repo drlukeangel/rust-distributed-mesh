@@ -234,7 +234,7 @@ fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_befor
             let root = rdm_admin::store_root::StoreRoot::open(&day0.store, &fabric_id).unwrap();
             let reader = rdm_admin::model::IncarnationId::mint();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&day0.data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-            nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap()
+            nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap()
         })
     };
     let row = row.expect("the store root holds the row at mesh1.admin.1");
@@ -262,12 +262,12 @@ struct Prepared {
     /// The incarnation the own row says this birth last ran.
     incarnation: rdm_admin::model::IncarnationId,
     build_id: rdm_admin::build::BuildId,
-    /// The nodes the lost fabric-primary launched, as the store records them: path.name and node.id.
-    launched: Vec<(String, rdm_admin::model::NodeId)>,
+    /// The nodes the lost fabric-primary launched, as the store records them: separate path/name fields and node.id.
+    launched: Vec<(rdm_core::PathName, rdm_admin::model::NodeId)>,
 }
 
 /// The nodes [`Prepared::recovering`] records the lost fabric-primary as having launched.
-const LAUNCHED: [&str; 2] = ["mesh1.admin.2", "mesh1.rpc.1"];
+const LAUNCHED: [(&str, &str, rdm_core::NodeKind); 2] = [("mesh1.admin", "2", rdm_core::NodeKind::NodeAdmin), ("mesh1.rpc", "1", rdm_core::NodeKind::RpcNode)];
 
 /// A loopback address nothing listens on: a port the operating system assigned and that was let go.
 fn unanswered_addr() -> std::net::SocketAddr {
@@ -287,7 +287,7 @@ impl Prepared {
         Self::prepare(name, &LAUNCHED)
     }
 
-    fn prepare(name: &str, launched_names: &[&str]) -> Self {
+    fn prepare(name: &str, launched_names: &[(&str, &str, rdm_core::NodeKind)]) -> Self {
         use rdm_admin::fabric_storage::FabricStorage as _;
         use rdm_admin::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId};
         use rdm_admin::storage::NodesStorage as _;
@@ -308,10 +308,10 @@ impl Prepared {
             let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
             rdm_admin::storage::claim_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), dead: false, states: Default::default() }).await.unwrap().expect("mesh1's name is free");
             let nodes = rdm_admin::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
-            let own = rdm_admin::storage::NodeRecord {
+            let own = rdm_admin::storage::NodeRecord { mesh: "mesh1".into(),
                 node_id: node_id.clone(),
                 fabric_id: fabric_id.clone(),
-                name: "mesh1.admin.1".parse().unwrap(),
+                name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
                 mesh_id: mesh_id.clone(),
                 incarnation_id: incarnation.clone(),
                 endpoint_id: EndpointId(key.public().to_string()),
@@ -325,7 +325,7 @@ impl Prepared {
             let mut runtime = rdm_core::RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();
             runtime.locator = rdm_core::runtime::RuntimeLocator::Process { pid: 1, start: u64::MAX };
             nodes
-                .put_runtime(&rdm_admin::storage::RuntimeRow {
+                .put_runtime(&rdm_admin::storage::RuntimeRow { kind: rdm_core::NodeKind::NodeAdmin, mesh: own.mesh.clone(),
                     node_id: node_id.clone(),
                     name: own.name.clone(),
                     incarnation_id: incarnation.clone(),
@@ -338,7 +338,7 @@ impl Prepared {
             // them: the name is held by this node.id.
             let mut birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.name.clone());
             (birth.endpoint_id, birth.transport_addr) = (Some(own.endpoint_id.clone()), Some(own.transport_addr));
-            let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, writer: None,
+            let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::NodeAdmin, mesh: own.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
                 name: own.name.clone(),
                 node_id: node_id.clone(),
                 status: rdm_admin::model::NodeStatus::Ready,
@@ -356,12 +356,13 @@ impl Prepared {
             };
             nodes.write_record(&row).await.unwrap();
             let mut launched = Vec::new();
-            for name in launched_names {
+            for (path, name, kind) in launched_names {
+                let location = rdm_core::PathName::new(*path, *name).unwrap();
                 let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-                let mut birth = rdm_admin::storage::BirthFacts::new(incarnation, name.parse().unwrap());
+                let mut birth = rdm_admin::storage::BirthFacts::new(incarnation, location.clone());
                 (birth.endpoint_id, birth.transport_addr) = (Some(EndpointId(iroh::SecretKey::generate().public().to_string())), Some(unanswered_addr()));
-                let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, writer: None,
-                    name: name.parse().unwrap(),
+                let row = rdm_admin::storage::NodeRow { mesh: "mesh1".to_owned(), kind: *kind, replacement_from: None, initial_properties: None, topology_storage_provider: None, writer: None,
+                    name: location.clone(),
                     node_id: node_id.clone(),
                     status: rdm_admin::model::NodeStatus::Ready,
                     config: Default::default(),
@@ -377,7 +378,7 @@ impl Prepared {
                     placement: None, revision: 0,
                 };
                 nodes.write_record(&row).await.unwrap();
-                launched.push((name.to_string(), node_id));
+                launched.push((location, node_id));
             }
             let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
             let accepted = rdm_admin::build_state::BuildAccepted {
@@ -422,7 +423,7 @@ impl Prepared {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
             let reader = rdm_admin::model::IncarnationId::mint();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&self.data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-            let row = nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
+            let row = nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap();
             let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
             let contacts = rdm_admin::storage::live_records(&meshes, &nodes, "mesh1").await.unwrap().into_iter().filter(|r| r.newest_birth().is_some_and(|b| b.transport_addr.is_some())).map(|r| r.node_id.to_string()).collect();
             (row, contacts)
@@ -509,7 +510,7 @@ fn assert_recovery_reaches_the_recorded_nodes(spans: &[serde_json::Value], root:
     assert!(!pulls.is_empty(), "the admin pulls from the recorded nodes: no recovery pull in {spans:?}");
     let targets: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.update.via-call").filter_map(|s| s["attributes"]["target"].as_str().map(str::to_string)).collect();
     for (name, id) in &root.launched {
-        assert!(targets.iter().any(|t| t.contains(&id.to_string())), "the admin called {name} ({id}), a node the store records: {targets:?}");
+        assert!(targets.iter().any(|t| t.contains(&id.to_string())), "the admin called {name:?} ({id}), a node the store records: {targets:?}");
     }
     assert!(!targets.iter().any(|t| t.contains(&root.node_id.to_string())), "no call targets the admin's own lost birth {}: {targets:?}", root.node_id);
     let adopted: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.entry.update.via-rafka-time-adopted").collect();
@@ -827,7 +828,7 @@ impl Prepared {
             let store = rdm_admin::store_root::StoreRoot::open(&root.store, &root.fabric_id).unwrap();
             let writer = rdm_admin::model::IncarnationId::mint();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&root.dir.join("fixture"), &store, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
-            let mut row = nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap().expect("the lost birth's row");
+            let mut row = nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap().expect("the lost birth's row");
             let birth = row.births.last_mut().unwrap();
             (birth.is_primary, birth.is_fabric_primary) = (Some(1), Some(1));
             nodes.write_record(&row).await.unwrap();
@@ -846,7 +847,7 @@ impl Prepared {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&self.dir.join("reader"), &root, "mesh1", &rdm_admin::store_log::LogWriter::mint()).await.unwrap();
-            let at = nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
+            let at = nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap();
             let of = match rdm_admin::model::NodeId::parse(node_id) {
                 Ok(id) => nodes.node(&id).await.unwrap(),
                 Err(_) => None,
@@ -1036,7 +1037,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         let nodes = rdm_admin::storage::FileNodesStorage::open(&d.dir.join("reader"), &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
         let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
         let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-        (nodes.record_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap(), meshes.in_flight("mesh1").await.unwrap(), journal.facts().await.unwrap())
+        (nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap(), meshes.in_flight("mesh1").await.unwrap(), journal.facts().await.unwrap())
     });
     let row = row.expect("the live fabric-primary's row");
     assert!(row.node_id.to_string() == live_id && row.status != rdm_admin::model::NodeStatus::Deleted && row.newest_birth().is_some_and(|b| b.is_fabric_primary.is_some()), "the live fabric-primary's row is intact: {row:?}");

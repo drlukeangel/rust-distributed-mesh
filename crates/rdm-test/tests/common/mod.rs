@@ -403,7 +403,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     let data_root = template.data_root.clone();
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
-    let node_name = "mesh1.rpc.1".parse().unwrap();
+    let node_name = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
     let sink = Published::default();
     let pipeline = DeploymentPipeline {
         provider: &*provider,
@@ -417,7 +417,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     };
 
     let created = pipeline
-        .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: node_name, spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node_name)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: node_name, spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await;
     let created = match created {
         Ok(c) => c,
@@ -464,8 +464,9 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
 
     // Every step has exactly one Complete receipt, in pipeline order.
     let view = builds.read_build(&build_id).await.unwrap();
-    let receipts: Vec<_> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, r.operation.as_str(), r.attempt)).collect();
-    let want: Vec<_> = CreateStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "node.create:mesh1.rpc.1", 1)).collect();
+    let receipts: Vec<_> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, &r.operation, r.attempt)).collect();
+    let operation = rdm_core::OperationId::location("node.create", &created.node.name);
+    let want: Vec<_> = CreateStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, &operation, 1)).collect();
     assert_eq!(receipts, want);
 
     // One child span per step under the pipeline span, each fully attributed.
@@ -497,7 +498,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
         rdm_core::RuntimeLocator::Container { id } => {
             assert_eq!(id.len(), 64, "the immutable container id, not its name: {id}");
             // A (reusable) container name is no locator.
-            let named = rdm_core::RuntimeFact { locator: rdm_core::RuntimeLocator::Container { id: format!("rafka-{}", created.node.name) }, ..fact.clone() };
+            let named = rdm_core::RuntimeFact { locator: rdm_core::RuntimeLocator::Container { id: format!("rafka-{}", created.node.node_id) }, ..fact.clone() };
             assert!(matches!(adopt(&*provider, &named), Err(AdoptRefusal::Invalid { .. })));
         }
         rdm_core::RuntimeLocator::Process { pid, start } => {
@@ -602,7 +603,7 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
                 None
             }
             N::NodeStarted => {
-                if let Some((digest_view, (held, _))) = digest_view.and_then(|b| b.get(node_id.as_str()).map(|h| (b, h))) { digest_view.started(node_id, incarnation, &held.node.name); }
+                if let Some((digest_view, (held, _))) = digest_view.and_then(|b| b.get(node_id.as_str()).map(|h| (b, h))) { digest_view.started(node_id, incarnation, &held.node.name, &held.node.mesh); }
                 Some(if joined { R::Started } else { R::AlreadyApplied })
             }
             N::NodeStopped => {

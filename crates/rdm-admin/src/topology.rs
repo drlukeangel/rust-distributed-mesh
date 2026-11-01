@@ -66,18 +66,18 @@ pub enum TopologyViolation {
 impl fmt::Display for TopologyViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DuplicateNode(p) => write!(f, "node {p} appears twice"),
+            Self::DuplicateNode(p) => write!(f, "node {p:?} appears twice"),
             Self::DuplicateMesh(m) => write!(f, "mesh {m} appears twice"),
-            Self::NodeInUnknownMesh { node, mesh } => write!(f, "node {node} names mesh {mesh}, which is not in the fabric"),
+            Self::NodeInUnknownMesh { node, mesh } => write!(f, "node {node:?} names mesh {mesh}, which is not in the fabric"),
             Self::NoNodeTypePrimary { mesh, kind } => write!(f, "node type ({mesh}, {kind:?}) has no primary"),
             Self::SplitNodeTypePrimary { mesh, kind, primaries } => {
                 write!(f, "node type ({mesh}, {kind:?}) has {} primaries: {primaries:?}", primaries.len())
             }
-            Self::PrimaryNotLive(p) => write!(f, "primary {p} is not live"),
+            Self::PrimaryNotLive(p) => write!(f, "primary {p:?} is not live"),
             Self::FabricPrimaryCount(n) => write!(f, "{n} fabric primaries, expected exactly one"),
-            Self::FabricPrimaryNotAdmin(p) => write!(f, "fabric primary {p} is not a node-admin"),
+            Self::FabricPrimaryNotAdmin(p) => write!(f, "fabric primary {p:?} is not a node-admin"),
             Self::FabricPrimaryNotMeshPrimary(p) => {
-                write!(f, "fabric primary {p} is not the node-admin primary of its own mesh")
+                write!(f, "fabric primary {p:?} is not the node-admin primary of its own mesh")
             }
         }
     }
@@ -93,11 +93,11 @@ pub struct MeshView {
     /// The mesh's lifecycle state.
     pub status: crate::model::ScopeStatus,
     /// The mesh's primary node-admin, when one is elected.
-    pub primary_admin: Option<PathName>,
+    pub primary_admin: Option<NodeId>,
     /// The control API base of the mesh's primary.
     pub admin_api_base: Option<String>,
-    /// The `path.name` of every node of the mesh.
-    pub nodes: Vec<PathName>,
+    /// The globally unique IDs of every node of the mesh.
+    pub nodes: Vec<NodeId>,
 }
 
 /// The fabric as clients see it (`FabricView`, `docs/architecture/query.md`).
@@ -112,7 +112,7 @@ pub struct FabricView {
     /// The provider that runs the fabric's nodes.
     pub provider: crate::model::ProviderKind,
     /// The fabric's primary node-admin, when one is elected.
-    pub fabric_primary: Option<PathName>,
+    pub fabric_primary: Option<NodeId>,
     /// The control API base of the fabric primary.
     pub admin_api_base: Option<String>,
     /// The fabric's meshes.
@@ -120,12 +120,11 @@ pub struct FabricView {
 }
 
 impl Topology {
-    /// The nodes that hold their paths (`docs/architecture/node-identity-and-state.md` §2.7). Every
-    /// decision (planning, drift, election, primaries, executors) reads the view through this. A
-    /// replaced predecessor (`<path>.old`) does not hold its path: its path is its successor's. This
-    /// is the one place that rule lives.
+    /// The active members used by planning, drift, election, primaries and executors.
+    /// Explicit replacement provenance excludes a predecessor, whose path stays unchanged
+    /// and whose name becomes `<name>-old`. Neither field's spelling determines membership.
     pub fn members(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.iter().filter(|n| !n.name.old)
+        self.nodes.iter().filter(|n| n.renamed_from.is_none())
     }
 
     /// Every birth the view holds, replaced predecessors included. For what names or waits on a
@@ -135,9 +134,9 @@ impl Topology {
         self.nodes.iter()
     }
 
-    /// The replaced predecessors (`<path>.old`) still held, until their departure.
+    /// The replaced predecessors (the predecessor name `<name>-old` at the same path) still held, until their departure.
     pub fn predecessors(&self) -> impl Iterator<Item = &Node> {
-        self.nodes.iter().filter(|n| n.name.old)
+        self.nodes.iter().filter(|n| n.renamed_from.is_some())
     }
 
     /// Whether the birth `node_id` is the only node of `mesh` (R-MT1: the delete of a mesh's only node
@@ -175,7 +174,7 @@ impl Topology {
         use crate::checklist::Missing;
         let mut out = Vec::new();
         if self.node_type_primary(mesh, NodeKind::NodeAdmin).is_none() {
-            out.push(Missing { who: mesh.to_string(), why: "no-primary" });
+            out.push(Missing { who: mesh.to_string().into(), why: "no-primary" });
         }
         let paths: Vec<PathName> = match planned {
             Some(p) => p.iter().cloned().collect(),
@@ -183,9 +182,9 @@ impl Topology {
         };
         for path in paths {
             match self.members().find(|n| n.name == path) {
-                None => out.push(Missing { who: path.to_string(), why: "no-birth-heard" }),
+                None => out.push(Missing { who: crate::checklist::MissingSubject::Location(path.clone()), why: "no-birth-heard" }),
                 Some(n) if n.stopped => {}
-                Some(n) if n.status != NodeStatus::Ready => out.push(Missing { who: path.to_string(), why: "not-ready" }),
+                Some(n) if n.status != NodeStatus::Ready => out.push(Missing { who: crate::checklist::MissingSubject::Node(n.node_id.clone()), why: "not-ready" }),
                 Some(_) => {}
             }
         }
@@ -212,10 +211,10 @@ impl Topology {
     }
 
     /// The row of the node born as `node_id`, among every birth the view holds: how a node finds
-    /// itself (and a primary is told apart from another birth). Never by path.name, its shape
-    /// included: a replace or a recovery keeps the path.name and mints a new node id, the one row
+    /// itself (and a primary is told apart from another birth). Never by path and name, its shape
+    /// included: a replace or a recovery keeps the path and name and mints a new node id, the one row
     /// this view holds at a path ([`crate::admin::project_at`] keys it by `PathName`) can be the
-    /// deleted birth's, and a node whose row its mesh-primary renamed `<path>.old` is still that
+    /// deleted birth's, and a node whose row its mesh-primary renamed the predecessor name `<name>-old` at the same path is still that
     /// exact birth, which reports its own status (states.md "Who sets each state").
     pub fn own(&self, node_id: &NodeId) -> Option<&Node> {
         self.births().find(|n| n.node_id == *node_id)
@@ -241,12 +240,23 @@ impl Topology {
         self.fabric_primary()?.admin_api_base.as_deref()
     }
 
+    /// Resolve an admitted node reference without falling back from identity to location.
+    /// Non-node subjects do not select a node.
+    pub fn node_subject(&self, subject: &rdm_core::OperationSubject) -> Option<&Node> {
+        match subject {
+            rdm_core::OperationSubject::Node(id) => self.own(id),
+            rdm_core::OperationSubject::Birth { node_id, incarnation } => self.own(node_id).filter(|node| node.incarnation_id.as_ref() == Some(incarnation)),
+            rdm_core::OperationSubject::Location(location) => self.node(location),
+            _ => None,
+        }
+    }
+
     /// The node named `name`.
     pub fn node(&self, name: &PathName) -> Option<&Node> {
         self.births().find(|n| &n.name == name)
     }
 
-    /// The `path.name` the birth `node_id` (born as `birth`) currently holds in this view (R12: a
+    /// The `(path, name)` the birth `node_id` (born as `birth`) currently holds in this view (R12: a
     /// live or rejoin `node.name.update` moves the birth to its new name while structs built at boot
     /// still hold `birth`). Resolves by `node_id` first when given, then by `birth`, else the mesh's
     /// primary or sole node-admin when `birth` is a node-admin not listed under `birth`, falling back
@@ -257,15 +267,6 @@ impl Topology {
         }
         if self.node(birth).is_some() {
             return birth.clone();
-        }
-        if birth.kind == NodeKind::NodeAdmin {
-            if let Some(p) = self.node_type_primary(&birth.mesh, NodeKind::NodeAdmin) {
-                return p.name.clone();
-            }
-            let mut admins = self.nodes_of_type(&birth.mesh, NodeKind::NodeAdmin);
-            if let Some(only) = admins.next().filter(|_| admins.next().is_none()) {
-                return only.name.clone();
-            }
         }
         birth.clone()
     }
@@ -328,13 +329,13 @@ impl Topology {
     /// The mesh named or identified by `id_or_name`, as clients see it.
     pub fn mesh_view(&self, id_or_name: &str) -> Option<MeshView> {
         let m = self.meshes.iter().find(|m| m.name == id_or_name || m.id.as_ref().is_some_and(|i| i.as_str() == id_or_name))?;
-        let mut nodes: Vec<PathName> = self.births().filter(|n| n.mesh == m.name).map(|n| n.name.clone()).collect();
+        let mut nodes: Vec<NodeId> = self.births().filter(|n| n.mesh == m.name).map(|n| n.node_id.clone()).collect();
         nodes.sort();
         Some(MeshView {
             id: m.id.clone(),
             name: m.name.clone(),
             status: m.status,
-            primary_admin: self.node_type_primary(&m.name, NodeKind::NodeAdmin).map(|n| n.name.clone()),
+            primary_admin: self.node_type_primary(&m.name, NodeKind::NodeAdmin).map(|n| n.node_id.clone()),
             admin_api_base: self.mesh_control_endpoint(&m.name).map(str::to_string),
             nodes,
         })
@@ -347,7 +348,7 @@ impl Topology {
             name: self.fabric.name.clone(),
             status: self.fabric.status,
             provider: self.fabric.provider,
-            fabric_primary: self.fabric_primary().map(|n| n.name.clone()),
+            fabric_primary: self.fabric_primary().map(|n| n.node_id.clone()),
             admin_api_base: self.fabric_control_endpoint().map(str::to_string),
             meshes: self.meshes.iter().filter_map(|m| self.mesh_view(&m.name)).collect(),
         }
@@ -359,13 +360,13 @@ mod tests {
     use super::*;
     use crate::model::*;
 
-    fn node(name: &str, status: NodeStatus, primary: bool, fabric_primary: bool) -> Node {
-        let mut n = Node::allocated(name.parse().unwrap());
+    fn node(name: PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name, mesh, kind);
         n.status = status;
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
         if n.kind == NodeKind::NodeAdmin {
-            n.admin_api_base = Some(format!("http://127.0.0.1:{}", 18000 + n.name.ordinal));
+            n.admin_api_base = Some(format!("http://127.0.0.1:{}", 18000));
         }
         n
     }
@@ -376,13 +377,43 @@ mod tests {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![
-                node("mesh1.admin.1", R, true, true),
-                node("mesh1.admin.2", R, false, false),
-                node("mesh1.rpc.1", R, true, false),
-                node("mesh1.rpc.2", R, false, false),
-                node("mesh1.rpc.3", R, false, false),
+                node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true, true),
+                node(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, false, false),
+                node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true, false),
+                node(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false, false),
+                node(PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false, false),
             ],
         }
+    }
+
+    /// CONTRACT: selection follows the admitted ID and incarnation across a rename;
+    /// the replacement at the original location is never substituted for that birth.
+    // @feature: node-records
+    #[test]
+    fn admitted_subject_survives_rename_and_rejects_another_incarnation() {
+        let mut view = mn();
+        let location = view.nodes[0].name.clone();
+        let incarnation = IncarnationId::mint();
+        view.nodes[0].incarnation_id = Some(incarnation.clone());
+        let id = view.nodes[0].node_id.clone();
+        let op = crate::build::BuildOperation::StopNode { node: location.clone(), mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node_id: id.clone(), from_incarnation: incarnation.clone() };
+        let subject = op.subject().unwrap();
+        view.nodes[0].name = PathName::new(&location.path, format!("{}-old", location.name)).unwrap();
+        let mut successor = Node::allocated(location.clone(), "mesh1", NodeKind::NodeAdmin);
+        successor.incarnation_id = Some(IncarnationId::mint());
+        let successor_id = successor.node_id.clone();
+        view.nodes.push(successor);
+        assert_eq!(view.node_subject(&subject).map(|n| &n.node_id), Some(&id));
+        assert_eq!(view.node_subject(&rdm_core::OperationSubject::Location(location)).map(|n| &n.node_id), Some(&successor_id));
+        assert_eq!(crate::executor::role_move(&op, &view).map(|m| m.primary.node_id), Some(id.clone()));
+        let updates = crate::build_drive::preceding_updates(&op, &rdm_core::BuildId::mint(), 2);
+        assert_eq!(updates.len(), 2);
+        assert!(updates.iter().all(|update| update.primary.as_ref() == Some(&subject)));
+        view.nodes[0].incarnation_id = Some(IncarnationId::mint());
+        assert!(view.node_subject(&subject).is_none());
+        assert!(crate::executor::role_move(&op, &view).is_none());
+        view.nodes.retain(|n| n.node_id != id);
+        assert!(view.node_subject(&subject).is_none());
     }
 
     /// CONTRACT: a node.create of a node-admin makes it its mesh's first admin when no OTHER node-admin
@@ -395,8 +426,8 @@ mod tests {
     fn a_node_admin_is_the_first_admin_when_no_other_node_admin_of_its_mesh_is_live() {
         use NodeStatus::{Dead, Ready as R};
         let mut t = mn();
-        let admin1: PathName = "mesh1.admin.1".parse().unwrap();
-        let admin2: PathName = "mesh1.admin.2".parse().unwrap();
+        let admin1: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let admin2: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
         assert!(!t.first_admin_of(&admin1, "mesh1", NodeKind::NodeAdmin), "admin.2 is live: admin.1 is not the first");
         t.nodes[1].status = Dead;
         assert!(t.first_admin_of(&admin1, "mesh1", NodeKind::NodeAdmin), "admin.1's own live birth does not count against it: no other node-admin lives");
@@ -406,16 +437,16 @@ mod tests {
         t.nodes[0].status = R;
         t.nodes.retain(|n| n.name != admin2);
         assert!(!t.first_admin_of(&admin2, "mesh1", NodeKind::NodeAdmin), "a path the view holds nothing at, beside a live admin.1: not the first");
-        assert!(!t.first_admin_of(&"mesh1.rpc.1".parse().unwrap(), "mesh1", NodeKind::RpcNode), "a node that is not a node-admin is never a mesh's first admin");
+        assert!(!t.first_admin_of(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode), "a node that is not a node-admin is never a mesh's first admin");
     }
 
     #[test]
     fn settled_mn_is_converged_with_one_primary_per_node_type() {
         let t = mn();
         assert_eq!(t.violations(), vec![]);
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().name.to_string(), "mesh1.admin.1");
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode).unwrap().name.to_string(), "mesh1.rpc.1");
-        assert_eq!(t.fabric_primary().unwrap().name.to_string(), "mesh1.admin.1");
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).unwrap().name, PathName::new("mesh1.admin", "1").unwrap());
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode).unwrap().name, PathName::new("mesh1.rpc", "1").unwrap());
+        assert_eq!(t.fabric_primary().unwrap().name, PathName::new("mesh1.admin", "1").unwrap());
     }
 
     #[test]
@@ -429,11 +460,11 @@ mod tests {
             v.contains(&TopologyViolation::SplitNodeTypePrimary {
                 mesh: "mesh1".into(),
                 kind: NodeKind::RpcNode,
-                primaries: vec!["mesh1.rpc.1".parse().unwrap(), "mesh1.rpc.2".parse().unwrap()],
+                primaries: vec![rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), rdm_core::PathName::new("mesh1.rpc", "2").unwrap()],
             }),
             "{v:?}"
         );
-        assert!(v.contains(&TopologyViolation::FabricPrimaryNotMeshPrimary("mesh1.admin.1".parse().unwrap())), "{v:?}");
+        assert!(v.contains(&TopologyViolation::FabricPrimaryNotMeshPrimary(rdm_core::PathName::new("mesh1.admin", "1").unwrap())), "{v:?}");
         assert_eq!(t.node_type_primary("mesh1", NodeKind::RpcNode), None, "a split node type has no single primary");
     }
 
@@ -447,7 +478,7 @@ mod tests {
         t.nodes[0].is_fabric_primary = false;
         t.nodes[2].is_fabric_primary = true;
         let v = t.violations();
-        assert!(v.contains(&TopologyViolation::FabricPrimaryNotAdmin("mesh1.rpc.1".parse().unwrap())), "{v:?}");
+        assert!(v.contains(&TopologyViolation::FabricPrimaryNotAdmin(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), "{v:?}");
         let mut t = mn();
         t.nodes[0].is_fabric_primary = false;
         assert!(t.violations().contains(&TopologyViolation::FabricPrimaryCount(0)));
@@ -461,9 +492,9 @@ mod tests {
         let mut t = mn();
         t.nodes[0].status = NodeStatus::PendingReconnect;
         let v = t.violations();
-        assert!(v.contains(&TopologyViolation::PrimaryNotLive("mesh1.admin.1".parse().unwrap())), "{v:?}");
+        assert!(v.contains(&TopologyViolation::PrimaryNotLive(rdm_core::PathName::new("mesh1.admin", "1").unwrap())), "{v:?}");
         assert!(v.contains(&TopologyViolation::NoNodeTypePrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");
-        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the silent primary is still the one named");
+        assert_eq!(t.node_type_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(t.nodes[0].node_id.clone()), "the silent primary is still the one named");
         assert_eq!(t.mesh_control_endpoint("mesh1"), Some("http://127.0.0.1:18001"), "the holder's endpoint is the mesh's control endpoint");
     }
 
@@ -471,7 +502,7 @@ mod tests {
     fn views_advertise_the_live_owning_admin_endpoint() {
         let t = mn();
         let f = t.fabric_view();
-        assert_eq!(f.fabric_primary.as_ref().unwrap().to_string(), "mesh1.admin.1");
+        assert_eq!(f.fabric_primary.as_ref(), Some(&t.nodes[0].node_id));
         assert_eq!(f.admin_api_base.as_deref(), Some("http://127.0.0.1:18001"));
         assert_eq!(f.meshes.len(), 1);
         assert_eq!(f.meshes[0].admin_api_base.as_deref(), Some("http://127.0.0.1:18001"));
@@ -491,14 +522,14 @@ mod tests {
     #[test]
     fn structural_mismatches_are_named() {
         let mut explicit = mn();
-        explicit.nodes[2].name = "elsewhere.gateway.north".parse().unwrap();
+        explicit.nodes[2].name = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap();
         assert!(explicit.is_converged(), "a free path/name does not select mesh or kind: {:?}", explicit.violations());
         let mut t = mn();
         t.nodes.push(t.nodes[4].clone());
         t.nodes[2].mesh = "mesh9".into();
         let v = t.violations();
-        assert!(v.contains(&TopologyViolation::DuplicateNode("mesh1.rpc.3".parse().unwrap())), "{v:?}");
-        assert!(v.contains(&TopologyViolation::NodeInUnknownMesh { node: "mesh1.rpc.1".parse().unwrap(), mesh: "mesh9".into() }), "{v:?}");
+        assert!(v.contains(&TopologyViolation::DuplicateNode(rdm_core::PathName::new("mesh1.rpc", "3").unwrap())), "{v:?}");
+        assert!(v.contains(&TopologyViolation::NodeInUnknownMesh { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), mesh: "mesh9".into() }), "{v:?}");
     }
 
     /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; lifecycles/node-name-update.md: "Config on the

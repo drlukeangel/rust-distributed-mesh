@@ -38,9 +38,9 @@ fn reserved(kind: Kind) {
         let (mesh_sender, _mesh_rx) = mesh_channel.split();
         let (backbone_sender, _backbone_rx) = backbone_channel.split();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.admin", "2").unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         receiver.digest_view.record(digest);
-        assert!(receiver.digest_view.started(&node_id, &incarnation, &"mesh1.admin.2".parse().unwrap()));
+        assert!(receiver.digest_view.started(&node_id, &incarnation, &rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1"));
         let primary = Primary { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
         receiver.primaries().take(PrimaryRole::FabricPrimary, &primary);
         receiver.primaries().take(PrimaryRole::MeshPrimary, &primary);
@@ -52,14 +52,14 @@ fn reserved(kind: Kind) {
         let births = receiver.digest_view.birth_changes();
         let overlays = receiver.digest_view.overlay_changes();
         let before = (*roles.borrow(), *births.borrow(), *overlays.borrow());
-        let op = LifecycleOp { mesh: "mesh1".into(), build_id: "reserved-receive".into(), attempt: 1, operation: "node.delete:mesh1.admin.2".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.admin.2".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = LifecycleOp { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), build_id: "reserved-receive".into(), attempt: 1, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.admin", "2").unwrap()), node_id: node_id.clone(), incarnation: incarnation.clone(), name: rdm_core::PathName::new("mesh1.admin", "2").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let unknown = iroh::SecretKey::generate().public();
         let frame = match kind {
             Kind::ConnectionsDeleting => Frame::NodeConnectionsDeleting { op, forwarded_by: None },
             Kind::ConnectionsDeleted => Frame::NodeConnectionsDeleted { op, forwarded_by: None },
             Kind::Leaving => Frame::NodeLeaving { op, forwarded_by: None },
             Kind::Left => Frame::NodeLeft { op, forwarded_by: None },
-            Kind::Restarting => Frame::NodeRestarting { op: LifecycleOp { operation: "node.restart:mesh1.admin.2".into(), ..op }, forwarded_by: None, publisher: { let a = crate::gossip_author(&fabric); rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: a.incarnation, node_id: a.node } }, topology_version: 2 },
+            Kind::Restarting => Frame::NodeRestarting { op: LifecycleOp { operation: rdm_core::OperationId::location("node.restart", &rdm_core::PathName::new("mesh1.admin", "2").unwrap()), ..op }, forwarded_by: None, publisher: { let a = crate::gossip_author(&fabric); rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: a.incarnation, node_id: a.node } }, topology_version: 2 },
             Kind::FabricPrimary => Frame::NewFabricPrimary { primary: Primary { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 99 }, endpoint_id: unknown.to_string(), transport_addr: "127.0.0.1:12009".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:9".into()) },
         };
         assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, kind.type_name(), "the reserved frame travels as its reserved type");

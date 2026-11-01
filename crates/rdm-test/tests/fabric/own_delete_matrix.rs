@@ -54,8 +54,8 @@ fn owner(test: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "fabric-lifecycle".into(), subfeature: "own-delete-matrix".into(), rung: "MM".into(), provider: "process".into(), test: test.into() }
 }
 
-fn path(n: &str) -> PathName {
-    n.parse().unwrap()
+fn path(path: &str, name: &str) -> PathName {
+    PathName::new(path, name).unwrap()
 }
 
 fn attr(sp: &Value, k: &str) -> String {
@@ -75,16 +75,16 @@ async fn ready(test: &str, shape: &[(&str, u32, u32)]) -> (Estate, Vec<NodeView>
     let views = estate.settles_to(shape, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
     let fp: Vec<&NodeView> = views.iter().filter(|n| n.is_fabric_primary).collect();
-    assert!(fp.len() == 1 && fp[0].name == path("mesh1.admin.1"), "mesh1.admin.1 is the fabric-primary: {fp:?}");
+    assert!(fp.len() == 1 && fp[0].name == path("mesh1.admin", "1"), "mesh1.admin.1 is the fabric-primary: {fp:?}");
     (estate, views)
 }
 
 /// The pid of `node`'s runtime: the bootstrap admin's, or the one its launching admin recorded.
-async fn pid_of(estate: &Estate, node: &str) -> u32 {
-    if node == "mesh1.admin.1" {
+async fn pid_of(estate: &Estate, node: &PathName) -> u32 {
+    if *node == path("mesh1.admin", "1") {
         return estate.bootstrap_pid().expect("the estate holds its bootstrap admin");
     }
-    estate.pid_of(node).await as u32
+    u32::try_from(estate.pid_of(node).await).expect("runtime PID fits u32")
 }
 
 /// node.delete of `node`, accepted, read to its last reply (the terminal, or the stream's end after
@@ -92,8 +92,8 @@ async fn pid_of(estate: &Estate, node: &str) -> u32 {
 /// hands over first ends its first stream `FabricPrimaryMoved` (node-stop.md "Primary"); the delete
 /// is followed at the fabric-primary it names, to `Complete` with its `NodeDeleted` step. Answers the
 /// replies.
-async fn deleted_inside_the_bound(estate: &mut Estate, node: &str, pid: u32) -> Vec<String> {
-    let mut stream = estate.nodes_obj().await.delete(&path(node)).await.unwrap_or_else(|end| panic!("node.delete of {node} was refused: {end}"));
+async fn deleted_inside_the_bound(estate: &mut Estate, node: &PathName, target: &rdm_core::NodeId, pid: u32) -> (rdm_client::Accepted, Vec<String>) {
+    let mut stream = estate.nodes_obj().await.delete(node).await.unwrap_or_else(|end| panic!("node.delete of {node:?} was refused: {end}"));
     let accepted = stream.accepted().clone();
     let begun = tokio::time::Instant::now();
     let (mut replies, moved) = tokio::time::timeout(DELETE_BOUND, async {
@@ -121,24 +121,27 @@ async fn deleted_inside_the_bound(estate: &mut Estate, node: &str, pid: u32) -> 
         (replies, moved)
     })
     .await
-    .unwrap_or_else(|_| panic!("node.delete of {node} answered no last reply within {DELETE_BOUND:?}"));
+    .unwrap_or_else(|_| panic!("node.delete of {node:?} answered no last reply within {DELETE_BOUND:?}"));
     if let Some(fp) = moved {
-        let fp = fp.unwrap_or_else(|| panic!("node.delete of {node} handed over to no named fabric-primary: {replies:?}"));
-        estate.enter(&path(&fp)).await;
+        let fp = fp.unwrap_or_else(|| panic!("node.delete of {node:?} handed over to no named fabric-primary: {replies:?}"));
         let left = DELETE_BOUND.saturating_sub(begun.elapsed());
-        let followed = tokio::time::timeout(left, estate.resume(&accepted.build_id, accepted.attempt)).await.unwrap_or_else(|_| panic!("node.delete of {node} followed at {fp} reached no Complete within {DELETE_BOUND:?} of its acceptance: {replies:?}"));
-        let deleted = followed.frames.iter().any(|f| matches!(f, rdm_client::BuildFrame::Step { operation, step, .. } if operation == &format!("node.delete:{node}") && step == "NodeDeleted"));
+        let followed = tokio::time::timeout(left, async {
+            estate.enter_by_id(&fp).await;
+            estate.resume(&accepted.build_id, accepted.attempt).await
+        }).await.unwrap_or_else(|_| panic!("node.delete of {node:?} followed at {fp} reached no Complete within {DELETE_BOUND:?} of its acceptance: {replies:?}"));
+        assert!(matches!(followed.frames.last(), Some(rdm_client::BuildFrame::Complete { .. })), "node.delete must complete after handover: {:?}", followed.frames);
+        let deleted = followed.frames.iter().any(|f| matches!(f, rdm_client::BuildFrame::Step { operation, step, .. } if operation == &rdm_core::OperationId::node("node.delete", target) && step == "NodeDeleted"));
         replies.extend(followed.frames.iter().map(|f| format!("{f:?}")));
-        assert!(deleted, "node.delete of {node}, followed at {fp}, receipts its NodeDeleted: {replies:?}");
+        assert!(deleted, "node.delete of {node:?}, followed at {fp}, receipts its NodeDeleted: {replies:?}");
     } else {
-        assert!(replies.iter().any(|r| r == &format!("{:?}", Frame::Event(NodeEvent::Deleted))), "node.delete of {node} answers node.deleted: {replies:?}");
+        assert!(replies.iter().any(|r| r == &format!("{:?}", Frame::Event(NodeEvent::Deleted))), "node.delete of {node:?} answers node.deleted: {replies:?}");
     }
-    assert!(!replies.iter().any(|r| r.starts_with("Failed")), "no step of node.delete of {node} failed: {replies:?}");
+    assert!(!replies.iter().any(|r| r.starts_with("Failed")), "no step of node.delete of {node:?} failed: {replies:?}");
     while running(pid) && begun.elapsed() < DELETE_BOUND {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(!running(pid), "{node}'s runtime {pid} exited within {DELETE_BOUND:?} of its node.delete: {replies:?}");
-    replies
+    assert!(!running(pid), "{node:?}'s runtime {pid} exited within {DELETE_BOUND:?} of its node.delete: {replies:?}");
+    (accepted, replies)
 }
 
 /// fabric.delete at the fabric-primary, to `Complete`, leaving only the fabric-primary's runtime.
@@ -188,17 +191,18 @@ fn refused_by_name(what: &str, reason: &str, call: Result<rdm_client::WorkflowSt
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_own_run_from_an_outside_call_inside_the_bound() {
     let test = "a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_own_run_from_an_outside_call_inside_the_bound";
-    let (mut estate, _) = ready(test, &[("mesh1", 2, 1), ("mesh2", 1, 1)]).await;
+    let (mut estate, views) = ready(test, &[("mesh1", 2, 1), ("mesh2", 1, 1)]).await;
+    let fp_id = views.iter().find(|n| n.is_fabric_primary).unwrap().node_id.clone();
     fabric_deleted(&estate).await;
-    let pid = pid_of(&estate, "mesh1.admin.1").await;
+    let pid = pid_of(&estate, &path("mesh1.admin", "1")).await;
     assert!(running(pid), "the fabric-primary reported fabric.deleted alive");
-    let replies = deleted_inside_the_bound(&mut estate, "mesh1.admin.1", pid).await;
+    let (accepted, replies) = deleted_inside_the_bound(&mut estate, &path("mesh1.admin", "1"), &fp_id, pid).await;
     estate.stop().await;
     let spans = estate.spans();
-    let of_it = |name: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "node") == "mesh1.admin.1").cloned().collect() };
-    let held: Vec<Value> = of_it("rdm.node_admin.node.update.via-stop-quiesce").into_iter().filter(|sp| !attr(sp, "commanded_by").is_empty()).collect();
+    let of_it = |name: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "node") == fp_id.as_str()).cloned().collect() };
+    let held: Vec<Value> = of_it("rdm.node_admin.node.update.via-stop-quiesce").into_iter().filter(|sp| attr(sp, "commanded_by") == accepted.build_id.as_str()).collect();
     assert_eq!(held.len(), 1, "its own run commanded its stop once, holding without that run's turns: {held:#?}");
-    let cut: Vec<Value> = of_it("rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| attr(sp, "operation") == "node.stop:mesh1.admin.1").collect();
+    let cut: Vec<Value> = of_it("rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| attr(sp, "operation") == "node.stop" && sp["trace_id"] == held[0]["trace_id"]).collect();
     assert!(cut.len() == 1 && attr(&cut[0], "spared") != "0", "its own delete's cut spared the caller reading the Build: {cut:#?}");
     // `via-own-runtime` closes after the provider's terminate of the process it runs in returns, which
     // it never does: the span is not exported, and the runtime's end is read from its exit instead.
@@ -219,16 +223,17 @@ async fn a_two_mesh_fabrics_primary_left_after_fabric_deleted_is_deleted_by_its_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delete_are_refused_by_name_and_its_own_delete_ends_it() {
     let test = "after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delete_are_refused_by_name_and_its_own_delete_ends_it";
-    let (mut estate, _) = ready(test, &[("mesh1", 1, 1)]).await;
+    let (mut estate, views) = ready(test, &[("mesh1", 1, 1)]).await;
+    let fp_id = views.iter().find(|n| n.is_fabric_primary).unwrap().node_id.clone();
     fabric_deleted(&estate).await;
     let nodes = estate.nodes_obj().await;
-    let fp = path("mesh1.admin.1");
+    let fp = path("mesh1.admin", "1");
     let mut refusals = Vec::new();
     refusals.push(refused_by_name("node.stop of the fabric-primary after fabric.deleted", "unknown-node", nodes.stop(&fp).await));
     refusals.push(refused_by_name("node.connection.delete of the fabric-primary after fabric.deleted", "unknown-node", nodes.delete_connections(&fp).await));
-    let pid = pid_of(&estate, "mesh1.admin.1").await;
+    let pid = pid_of(&estate, &path("mesh1.admin", "1")).await;
     assert!(running(pid), "the refusals moved nothing: the fabric-primary runs");
-    let replies = deleted_inside_the_bound(&mut estate, "mesh1.admin.1", pid).await;
+    let (_, replies) = deleted_inside_the_bound(&mut estate, &path("mesh1.admin", "1"), &fp_id, pid).await;
     estate.stop().await;
     estate.artifact("refusals.json", &json!({"refusals": refusals, "own_delete": replies}));
 }
@@ -246,24 +251,27 @@ async fn after_fabric_deleted_the_fabric_primarys_own_stop_and_connections_delet
 async fn an_ordinary_admins_delete_and_the_fabric_primarys_delete_with_a_successor_are_executed_by_another_admin_inside_the_bound() {
     let test = "an_ordinary_admins_delete_and_the_fabric_primarys_delete_with_a_successor_are_executed_by_another_admin_inside_the_bound";
     let (mut estate, views) = ready(test, &[("mesh1", 3, 1)]).await;
-    let mut admins: Vec<String> = views.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !n.is_primary && !n.is_fabric_primary).map(|n| n.name.to_string()).collect();
+    let mut admins: Vec<PathName> = views.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !n.is_primary && !n.is_fabric_primary).map(|n| n.name.clone()).collect();
     admins.sort();
     assert_eq!(admins.len(), 2, "two admins are no primary: {views:?}");
     let (ordinary, successor) = (admins[1].clone(), admins[0].clone());
+    let ordinary_id = estate.node_view(&ordinary).await.node_id;
+    let successor_id = estate.node_view(&successor).await.node_id;
+    let fp_id = views.iter().find(|n| n.is_fabric_primary).unwrap().node_id.clone();
     let pid = pid_of(&estate, &ordinary).await;
-    let ordinary_replies = deleted_inside_the_bound(&mut estate, &ordinary, pid).await;
+    let (_, ordinary_replies) = deleted_inside_the_bound(&mut estate, &ordinary, &ordinary_id, pid).await;
 
     // The fabric-primary hands over to its successor first, which the typed objects enter.
-    estate.enter(&path(&successor)).await;
-    let pid = pid_of(&estate, "mesh1.admin.1").await;
-    let fp_replies = deleted_inside_the_bound(&mut estate, "mesh1.admin.1", pid).await;
-    let fabric = estate.fabric_view_at(&path(&successor)).await.expect("the successor answers fabric.get");
-    assert_eq!(fabric.fabric_primary, Some(path(&successor)), "the successor is the fabric-primary");
+    estate.enter(&successor).await;
+    let pid = pid_of(&estate, &path("mesh1.admin", "1")).await;
+    let (_, fp_replies) = deleted_inside_the_bound(&mut estate, &path("mesh1.admin", "1"), &fp_id, pid).await;
+    let fabric = estate.fabric_view_at(&successor).await.expect("the successor answers fabric.get");
+    assert_eq!(fabric.fabric_primary, Some(estate.node_view(&successor).await.node_id), "the successor is the fabric-primary");
     estate.stop().await;
     let spans = estate.spans();
-    for (node, from) in [(ordinary.as_str(), "mesh1.admin.1"), ("mesh1.admin.1", successor.as_str())] {
-        let own: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-stop-quiesce").into_iter().filter(|sp| attr(sp, "node") == node && !attr(sp, "commanded_by").is_empty()).collect();
-        assert!(own.is_empty(), "{node}'s delete is executed by {from}, never by its own run: {own:#?}");
+    for (node, from) in [(&ordinary_id, &fp_id), (&fp_id, &successor_id)] {
+        let own: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-stop-quiesce").into_iter().filter(|sp| attr(sp, "node") == node.as_str() && !attr(sp, "commanded_by").is_empty()).collect();
+        assert!(own.is_empty(), "{node:?}'s delete is executed by {from}, never by its own run: {own:#?}");
     }
     estate.artifact("deletes.json", &json!({"ordinary": ordinary_replies, "fabric_primary": fp_replies}));
 }
@@ -284,18 +292,19 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
     let test = "in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_name_and_an_ordinary_admins_delete_ends_it_inside_the_bound";
     let (mut estate, views) = ready(test, &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     let nodes = estate.nodes_obj().await;
-    let fp_refused = refused_by_name("node.delete of the fabric-primary, mesh1's only admin", "would-leave-mesh-without-admin", nodes.delete(&path("mesh1.admin.1")).await);
-    let primary = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh2's primary");
-    let ordinary = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && !n.is_primary).map(|n| n.name.to_string()).expect("mesh2's other admin");
+    let fp_refused = refused_by_name("node.delete of the fabric-primary, mesh1's only admin", "would-leave-mesh-without-admin", nodes.delete(&path("mesh1.admin", "1")).await);
+    let primary = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.clone()).expect("mesh2's primary");
+    let ordinary = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && !n.is_primary).map(|n| n.name.clone()).expect("mesh2's other admin");
+    let ordinary_id = views.iter().find(|n| n.name == ordinary).unwrap().node_id.clone();
     let pid = pid_of(&estate, &ordinary).await;
-    let replies = deleted_inside_the_bound(&mut estate, &ordinary, pid).await;
+    let (_, replies) = deleted_inside_the_bound(&mut estate, &ordinary, &ordinary_id, pid).await;
     // node.deleted is mesh2's primary's; the fabric-primary's view drops the node once mesh2's
     // publication reaches it.
-    estate.until_node(&ordinary, &format!("{ordinary} gone from the fabric-primary's view"), Duration::from_secs(30), |n| n.is_none().then_some(())).await;
-    let mp_refused = refused_by_name("node.delete of mesh2's primary, its mesh's only admin", "would-leave-mesh-without-admin", estate.nodes_obj().await.delete(&path(&primary)).await);
+    estate.until_node(&ordinary, &format!("{ordinary:?} gone from the fabric-primary's view"), Duration::from_secs(30), |n| n.is_none().then_some(())).await;
+    let mp_refused = refused_by_name("node.delete of mesh2's primary, its mesh's only admin", "would-leave-mesh-without-admin", estate.nodes_obj().await.delete(&primary).await);
     assert!(mp_refused.contains("mesh2"), "the refusal names mesh2: {mp_refused}");
     for now in estate.mesh_node_views("mesh2").await.iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
-        assert!(now.name.to_string() == primary && now.is_primary && now.status == NodeStatus::Ready, "mesh2's primary stays mesh2's primary and runs: {now:?}");
+        assert!(now.name == primary && now.is_primary && now.status == NodeStatus::Ready, "mesh2's primary stays mesh2's primary and runs: {now:?}");
     }
     estate.stop().await;
     estate.artifact("deletes.json", &json!({"fabric_primary_refused": fp_refused, "ordinary": replies, "mesh_primary_refused": mp_refused}));
@@ -310,10 +319,11 @@ async fn followed(estate: &mut Estate, what: &str, call: Result<rdm_client::Work
     match frames.last() {
         Some(Frame::Complete) => frames,
         Some(Frame::FabricPrimaryMoved { fabric_primary }) => {
-            if let Some(fp) = fabric_primary.as_deref() {
-                estate.enter(&path(fp)).await;
+            if let Some(fp) = fabric_primary.as_ref() {
+                estate.enter_by_id(fp).await;
             }
-            estate.resume(&accepted.build_id, accepted.attempt).await;
+            let resumed = estate.resume(&accepted.build_id, accepted.attempt).await;
+            assert!(matches!(resumed.frames.last(), Some(rdm_client::BuildFrame::Complete { .. })), "{what} must complete after handover: {:?}", resumed.frames);
             frames
         }
         other => panic!("{what} ended {other:?}: {frames:?}"),
@@ -325,8 +335,8 @@ async fn followed(estate: &mut Estate, what: &str, call: Result<rdm_client::Work
 async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, u32, u32)]) {
     let (mut estate, views) = ready(test, shape).await;
     let successor = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && !n.is_primary).map(|n| n.name.clone()).expect("mesh1's second admin");
-    let before = views.iter().find(|n| n.name == path("mesh1.admin.1")).cloned().unwrap();
-    let pid = pid_of(&estate, "mesh1.admin.1").await;
+    let before = views.iter().find(|n| n.name == path("mesh1.admin", "1")).cloned().unwrap();
+    let pid = pid_of(&estate, &path("mesh1.admin", "1")).await;
     estate.enter(&successor).await;
 
     let begun = tokio::time::Instant::now();
@@ -336,30 +346,30 @@ async fn stop_and_start_of_the_fabric_primary_twice(test: &str, shape: &[(&str, 
     assert!(stopped.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Stopped))) || matches!(stopped.last(), Some(Frame::FabricPrimaryMoved { .. })), "the stop answered stopped, or handed over first: {stopped:?}");
     let fabric = estate.fabric_view_at(&successor).await.expect("the successor answers fabric.get");
     let fp = fabric.fabric_primary.clone().expect("a fabric-primary after the stop");
-    assert_ne!(fp, before.name, "the stopped admin handed over first");
-    estate.enter(&fp).await;
-    let stopped_view = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == before.name).expect("node.get lists the stopped admin");
+    assert_ne!(fp, before.node_id, "the stopped admin handed over first");
+    estate.enter_by_id(&fp).await;
+    let stopped_view = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == before.node_id).expect("node.get lists the stopped admin");
     assert!(stopped_view.stopped && stopped_view.incarnation_id == before.incarnation_id, "the stopped fabric-primary is the same birth, stopped with its process live: {stopped_view:?}");
     assert!(running(pid), "a stop keeps the process: {pid} runs");
 
     let started = Estate::workflow("node.start of the former fabric-primary", estate.nodes_obj().await.start(&before.name).await).await;
-    let back = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == before.name).expect("node.get lists the started admin");
-    assert!(!back.stopped && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::Ready, "the same birth runs again: {back:?}");
+    let back = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == before.node_id).expect("node.get lists the started admin");
+    assert!(!back.stopped && back.node_id == before.node_id && back.incarnation_id == before.incarnation_id && back.status == NodeStatus::Ready, "the same birth runs again: {back:?}");
     assert!(running(pid), "the start rejoined the same process {pid}");
 
     // node.stop then node.start of the fabric-primary it handed over to: it hands over first, and it is the
     // same node after.
-    let primary = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == fp).expect("node.get lists the fabric-primary");
-    let other = if fp == before.name { successor.clone() } else { before.name.clone() };
+    let primary = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == fp).expect("node.get lists the fabric-primary");
+    let other = if fp == before.node_id { successor.clone() } else { before.name.clone() };
     estate.enter(&other).await;
-    let stop = estate.nodes_obj().await.stop(&fp).await;
+    let stop = estate.nodes_obj().await.stop(&primary.name).await;
     let restarted = followed(&mut estate, "node.stop of the fabric-primary", stop).await;
     let fabric = estate.fabric_view_at(&other).await.expect("the other admin answers fabric.get");
     let now = fabric.fabric_primary.clone().unwrap_or_else(|| panic!("a fabric-primary after the stop: {fabric:?}"));
-    estate.enter(&now).await;
-    Estate::workflow("node.start of the second fabric-primary", estate.nodes_obj().await.start(&fp).await).await;
-    let after = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.name == fp).expect("node.get lists the started admin");
-    assert!(after.node_id == primary.node_id && after.status == NodeStatus::Ready, "the stopped and started fabric-primary is the same node, running: {after:?}");
+    estate.enter_by_id(&now).await;
+    Estate::workflow("node.start of the second fabric-primary", estate.nodes_obj().await.start(&primary.name).await).await;
+    let after = estate.mesh_node_views("mesh1").await.into_iter().find(|n| n.node_id == fp).expect("node.get lists the started admin");
+    assert!(after.node_id == primary.node_id && after.incarnation_id == primary.incarnation_id && after.status == NodeStatus::Ready, "the stopped and started fabric-primary is the same node, running: {after:?}");
     estate.stop().await;
     let spans = estate.spans();
     let own: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-stop-quiesce").into_iter().filter(|sp| !attr(sp, "commanded_by").is_empty()).collect();
@@ -400,12 +410,14 @@ async fn in_a_two_mesh_fabric_the_fabric_primarys_stops_and_starts_are_executed_
 async fn the_demo_teardown_deletes_the_fabric_then_the_fabric_primary_from_outside_and_ends_clean_inside_the_bound() {
     let test = "the_demo_teardown_deletes_the_fabric_then_the_fabric_primary_from_outside_and_ends_clean_inside_the_bound";
     let (mut estate, _) = ready(test, &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
-    let pid = pid_of(&estate, "mesh1.admin.1").await;
-    let deleted = estate.probe(&["fabric-delete", "--target", "path:mesh1.admin.1"]);
+    let pid = pid_of(&estate, &path("mesh1.admin", "1")).await;
+    let fp_id = estate.node_view(&path("mesh1.admin", "1")).await.node_id;
+    let target = format!("exact:{fp_id}");
+    let deleted = estate.probe(&["fabric-delete", "--target", &target]);
     assert_eq!((deleted["outcome"].as_str(), deleted["terminal"].as_str()), (Some("Reply"), Some("Complete")), "the probe's fabric.delete completes: {deleted}");
     assert_eq!(estate.live_runtimes(), vec![], "only the fabric-primary is left, for its separate node.delete");
     let begun = std::time::Instant::now();
-    let own = estate.probe(&["node-delete", "--target", "path:mesh1.admin.1"]);
+    let own = estate.probe(&["node-delete", "--target", &target]);
     assert_eq!((own["outcome"].as_str(), own["deleted"].as_bool()), (Some("Reply"), Some(true)), "the probe's node.delete of the fabric-primary answers node.deleted: {own}");
     assert!(!own["replies"].as_array().into_iter().flatten().any(|r| r.as_str().is_some_and(|r| r.starts_with("Failed"))), "no step failed: {own}");
     while running(pid) && begun.elapsed() < DELETE_BOUND {

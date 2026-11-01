@@ -84,10 +84,11 @@ fn header(service: &str) -> String {
     let node = std::env::var("RDM_NODE_NAME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| {
         std::env::var_os("RDM_DATA_DIR").and_then(|d| std::path::PathBuf::from(d).file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default()
     });
-    let mesh = std::env::var("RDM_MESH").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| node.split('.').next().filter(|_| node.contains('.')).unwrap_or_default().to_string());
+    let path = env("RDM_NODE_PATH");
+    let mesh = env("RDM_MESH");
     let unix_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     format!(
-        "transport-diag run={:?} fabric={:?} fabric_id={:?} mesh={mesh:?} node={node:?} node_id={:?} incarnation={:?} supersedes={:?} transport_addr={:?} data_dir={:?} service={service:?} pid={} started_unix_ms={unix_ms}\n",
+        "transport-diag run={:?} fabric={:?} fabric_id={:?} mesh={mesh:?} path={path:?} name={node:?} node_id={:?} incarnation={:?} supersedes={:?} transport_addr={:?} data_dir={:?} service={service:?} pid={} started_unix_ms={unix_ms}\n",
         env("RDM_EVIDENCE_DIR"),
         env("RDM_FABRIC"),
         env("RDM_FABRIC_ID"),

@@ -107,11 +107,11 @@ pub fn served(b: &(NodeId, IncarnationId)) -> ServedBirth {
     ServedBirth { node_id: b.0.to_string(), incarnation: b.1 .to_string() }
 }
 
-pub async fn start(server: rdm_transport::NodeRpcServer, key: SecretKey, name: &str, b: (NodeId, IncarnationId)) -> Node {
+pub async fn start(server: rdm_transport::NodeRpcServer, key: SecretKey, name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, b: (NodeId, IncarnationId)) -> Node {
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let resolved = ResolvedNode { node_id: b.0, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.1 };
+    let resolved = ResolvedNode { mesh: mesh.to_owned(), kind, node_id: b.0, name, endpoint_id: key.public(), transport_addr: addr, incarnation: b.1 };
     Node { router, key, resolved }
 }
 
@@ -177,7 +177,7 @@ pub async fn rig_with(connections: Option<Arc<dyn CarrierConnections>>, carrier_
         })
         .build(served(&target_birth))
         .unwrap();
-    let target = start(target_server, SecretKey::generate(), "mesh1.rpc.3", target_birth).await;
+    let target = start(target_server, SecretKey::generate(), rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, target_birth).await;
 
     // The carrier calls out on the endpoint it serves on, as a node does: the target sees the
     // carrier's own transport identity.
@@ -202,9 +202,9 @@ pub async fn rig_with(connections: Option<Arc<dyn CarrierConnections>>, carrier_
     let carrier = Node {
         router: Router::builder(carrier_ep).accept(rdm_transport::ALPN, carrier_server.clone()).spawn(),
         key: carrier_key.clone(),
-        resolved: ResolvedNode {
+        resolved: ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             node_id: carrier_birth.0,
-            name: "mesh1.rpc.2".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
             endpoint_id: carrier_key.public(),
             transport_addr: carrier_addr,
             incarnation: carrier_birth.1,

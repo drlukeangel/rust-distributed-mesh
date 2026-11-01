@@ -121,7 +121,7 @@ impl Run {
     async fn fabric_build_id(&self) -> String {
         let door = self.fabric_door().await;
         let at = path(&door.name);
-        self.estate.fabric_view_at(&at).await.unwrap_or_else(|| panic!("{at} does not answer fabric.get for this estate's Fabric")).build_id.unwrap_or_default()
+        self.estate.fabric_view_at(&at).await.unwrap_or_else(|| panic!("{at:?} does not answer fabric.get for this estate's Fabric")).build_id.unwrap_or_default()
     }
 
     /// Runtimes of `node` the provider holds alive now (process provider: its `deployment.json`).
@@ -181,7 +181,7 @@ impl Run {
     /// behind `door` reads (Q292). A Build they hold as failed fails the cell with the Build.
     async fn build_fact(&self, door: &Door, id: &str, fact: &str, holds: impl Fn(&rdm_admin::build_state::BuildProjection) -> bool) -> Value {
         let build = build_log::build_fact(&self.estate, id, fact, Duration::from_secs(120), |b| {
-            assert!(b.state != BuildState::Failed, "Build {id} failed at {}: {b:#?}", door.name);
+            assert!(b.state != BuildState::Failed, "Build {id} failed at {:?}: {b:#?}", door.name);
             holds(b)
         })
         .await
@@ -442,7 +442,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // explores.) `WaitForNodeReady` holds no receipt until it completes, so a Build waiting on a held
     // admin holds a receipt for every step before it.
     let pre_node_ready = index_of(&create_order, CreateStep::WaitForNodeReady.name());
-    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", "mesh1.admin.3", pre_node_ready, "refusing to act on its locator").await;
+    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", &rdm_core::PathName::new("mesh1.admin", "3").unwrap(), pre_node_ready, "refusing to act on its locator").await;
 
     finish(run, &dir, &create_order, &delete_order).await;
 }
@@ -727,12 +727,12 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
 /// A joining node-admin held at a boot cut (armed from `<root>/faults/<name>.boot.json`, before its
 /// first line runs): the create Build waits on it, and it must not be Ready until the release.
 #[allow(clippy::too_many_arguments)]
-async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: Value, group: &str, admin: &str, receipts_before: usize, blocked_detail: &str) {
+async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: Value, group: &str, admin: &rdm_core::PathName, receipts_before: usize, blocked_detail: &str) {
     let faults = run.root.join("faults");
     std::fs::create_dir_all(&faults).unwrap();
     let mut spec = boot.clone();
     spec["id"] = json!(id);
-    std::fs::write(faults.join(format!("{admin}.boot.json")), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
+    std::fs::write(rdm_test::admin_faults::boot_cuts_file(&run.root, admin), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
     let exec = run.fabric_door().await;
     let mut stream = run.spawn("mesh1", NodeKind::NodeAdmin).await;
     let build_id = Run::id_of(&stream);

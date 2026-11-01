@@ -2,9 +2,9 @@
 //! subfeature=container-kill, rung=MN, provider=container.
 //!
 //! A real container kill (`docker kill`, SIGKILL to the container's init) of an rpc node. The
-//! fabric-primary hears the birth fall silent, proves it gone by its exact runtime's own terminal
+//! mesh-primary hears the birth fall silent, proves it gone by its exact runtime's own terminal
 //! status (the provider inspecting the immutable container id in its control domain), opens the
-//! next attempt of the accepted Build, and that attempt re-creates the node at the same path in
+//! next attempt of the accepted Build, and that attempt re-creates the node at the same path and name in
 //! a new container. Nothing here signals the fabric: the Build and runtime-adoption path does the
 //! recovery.
 //!
@@ -19,7 +19,9 @@ use serde_json::Value;
 use std::process::Command;
 use std::time::Duration;
 
-const NODE: &str = "mesh1.rpc.1";
+fn location() -> rdm_core::PathName {
+    rdm_core::PathName::new("mesh1.rpc", "1").unwrap()
+}
 
 fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
@@ -33,7 +35,7 @@ fn docker_state(id: &str) -> String {
 /// CONTRACT (node-recovery.md step 3, Q111): a killed container is read exited by node investigation's
 /// provider step on its exact immutable id, and that verdict opens the recovery attempt of the accepted
 /// Build, which re-creates the node
-/// at the same path in a new container under a new node id and incarnation; the
+/// at the same path and name in a new container under a new node id and incarnation; the
 /// container id never stands for the new runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it() {
@@ -58,11 +60,11 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     estate.settles_to(&[("mesh1", 1, 2)], Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
-    let before = estate.node_value(NODE).await;
+    let before = estate.node_value(&location()).await;
     assert_eq!(before["provider"], "container", "{before}");
-    let killed = estate.container_of(NODE).await.expect("the rpc node runs in a container labelled with its fabric and path");
+    let killed = estate.container_of(&location()).await.expect("the rpc node runs in a container labelled with its fabric and node ID");
     assert_eq!(killed.len(), 64, "the immutable container id: {killed}");
-    let survivor = estate.container_of("mesh1.rpc.2").await.expect("the other rpc node's container");
+    let survivor = estate.container_of(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await.expect("the other rpc node's container");
 
     // The real kill: SIGKILL to the container's init, from outside every admin.
     estate.fabric_ready();
@@ -72,30 +74,30 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     // Silent past the staleness floor, proven exited, re-created by the next attempt.
     let floor = rdm_transport::topology::staleness_floor();
     let after = estate
-        .until_node(NODE, "mesh1.rpc.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), |n| {
+        .until_node(&location(), "mesh1.rpc.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
-            (n["status"] == "ready" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+            (n["status"] == "ready" && n["node_id"] != before["node_id"] && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
         })
         .await;
-    let recreated = estate.container_of(NODE).await.expect("the re-created node runs in a container");
+    let recreated = estate.container_of(&location()).await.expect("the re-created node runs in a container");
     assert_ne!(recreated, killed, "a new container, never the killed one restarted");
     assert_ne!(after["node_id"], before["node_id"], "node-recovery.md: recovery creates a new node id at the retained path");
     // The recovery's delete reads the killed container exited (exit 137, SIGKILL) and still terminates
     // it, which removes it (node-recovery.md step 3, Q145): the killed container is gone from the host.
     assert_eq!(docker_state(&killed), "", "the killed container is removed by the recovery's TerminateRuntime");
-    assert_eq!(estate.container_of("mesh1.rpc.2").await.as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
+    assert_eq!(estate.container_of(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await.as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
     assert_eq!(after["provider"], "container");
 
     // Evidence: the proof opened the next attempt of the same Build, and that attempt re-created
     // the node through every create step.
     let is_recovery = |sp: &&Value| s(&sp["attributes"]["build_id"]) == build_id
-        && sp["attributes"]["node"] == NODE && sp["attributes"]["node_id"] == before["node_id"]
+        && sp["attributes"]["node_id"] == before["node_id"]
         && sp["attributes"]["incarnation_id"] == before["incarnation_id"]
         && s(&sp["attributes"]["outcome"]).starts_with("complete");
     // Ending a span only queues it: each process's own export thread appends it to the evidence a
     // batch later, so the read waits for both the admin's recovery span and the re-created container's
     // own boot span.
-    let is_born = |sp: &&Value| sp["attributes"]["incarnation_id"] == after["incarnation_id"];
+    let is_born = |sp: &&Value| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["incarnation_id"] == after["incarnation_id"];
     let spans = wait_for("the recovery attempt's spans and the re-created container's own boot span are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
         (named(&spans, "rdm.node_admin.build.update.via-node-recovery").iter().any(is_recovery) && named(&spans, "rdm.mesh.node.create.via-deployment").iter().any(is_born)).then_some(spans)
@@ -106,9 +108,9 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     let attempt = s(&recovery["attributes"]["attempt"]);
     let deployed = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| {
         let at = &sp["attributes"];
-        s(&at["build_id"]) == build_id && s(&at["attempt"]) == attempt && at["node"] == NODE && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
+        s(&at["build_id"]) == build_id && s(&at["attempt"]) == attempt && at["node_path"] == "mesh1.rpc" && at["node_name"] == "1" && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
     });
-    assert!(deployed, "attempt {attempt} of {build_id} deployed {NODE} anew");
+    assert!(deployed, "attempt {attempt} of {build_id} deployed the successor anew");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
 
     estate.stop().await;
@@ -122,7 +124,7 @@ fn gate_dir(tag: &str) -> std::path::PathBuf {
 }
 
 fn give_up_leaves_nothing(tag: &str, exe: &std::path::Path, program: &str) {
-    let node = format!("giveup{tag}{}.admin.1", std::process::id());
+    let node = rdm_core::PathName::new(format!("giveup{tag}{}.admin", std::process::id()), "1").unwrap();
     let dir = gate_dir(tag);
     let t = std::time::Instant::now();
     let e = rdm_test::estate::spawn_admin_in_container_within(Vec::new(), &dir, &dir, &node, exe, &[], Duration::from_secs(3), program).expect_err("the Day-0 container never advertises within 3 s");

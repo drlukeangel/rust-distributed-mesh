@@ -27,7 +27,7 @@ impl DeploymentProvider for LaunchesNothing {
         "pipeline-step-io".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this cell launches nothing".into() })
+        Err(DeployError::Spawn { node: spec.node.clone(), reason: "this cell launches nothing".into() })
     }
     async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
@@ -87,18 +87,19 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
     let data_root = std::env::temp_dir().join(format!("pipeline-step-io-{}", NodeId::mint()));
     let rt = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap();
     let err = rt.block_on(async {
+        let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
-        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
         let template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/pipeline-step-io".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -122,7 +123,7 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
             tokio::time::sleep(HELD).await;
             release_tx.send(()).unwrap();
         });
-        let req = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.3".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "3").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let err = pipeline.create(&req).await.map(|_| ()).expect_err("the provider launches nothing: the create fails at DeployRuntime");
         release.await.unwrap();
         holder.await.unwrap();
@@ -193,13 +194,14 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
     let data_root = std::env::temp_dir().join(format!("pipeline-step-io-s83-{}", NodeId::mint()));
     let rt = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap();
     rt.block_on(async {
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut admin = Node::allocated(me.clone());
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let mut admin = Node::allocated(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin.status = NodeStatus::Ready;
         admin.is_primary = true;
         admin.is_fabric_primary = true;
         admin.incarnation_id = Some(IncarnationId::mint());
         let me_id = admin.node_id.clone();
+        let executor = rdm_core::framing::Birth { node_id: me_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
         let view = Arc::new(RwLock::new(Topology {
             fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
@@ -216,7 +218,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/pipeline-step-io-s83".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { name: me, node_id: me_id, incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: me, node_id: me_id, incarnation: executor.incarnation.clone() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -235,16 +237,16 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
             .publish_accepted(&BuildAccepted { build_id: build1.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
-        builds1.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build1.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds1.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build1.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
         let pipeline1 = DeploymentPipeline { provider: &LaunchesNothing, joins: &joins, observer: &NoBirth, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds1, template: &template, timeouts: Timeouts::default() };
-        let req1 = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build1.clone(), attempt: 1, node: "mesh1.rpc.3".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req1 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "3").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build1.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         // Pre-seed AllocateIdentity so `create` enters `PrepareStorage` without calling `claimed_allocation`.
         builds1
             .append_step_receipt(&rdm_admin::build_state::BuildStepReceipt {
                 mesh: None,
                 build_id: build1.clone(),
                 attempt: 1,
-                operation: "node.create:mesh1.rpc.3".into(),
+                operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "3").unwrap()),
                 step: "AllocateIdentity".into(),
                 outcome: rdm_admin::build_state::StepOutcome::Complete,
                 output: Some(serde_json::json!({
@@ -253,7 +255,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
                     "supersedes": null,
                     "deployment_id": rdm_core::DeploymentId::mint(),
                 })),
-                executor: Some("mesh1.admin.1".into()),
+                executor: Some(executor.clone()),
             })
             .await
             .unwrap();
@@ -269,7 +271,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
             .publish_accepted(&BuildAccepted { build_id: build2.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
-        builds2.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build2.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds2.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build2.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
         let pipeline2 = DeploymentPipeline { provider: &LaunchesNothing, joins: &joins, observer: &NoBirth, sink: &sink, lifecycle: &NoLifecycleEvents, builds: &builds2, template: &template, timeouts: Timeouts::default() };
         let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -278,7 +280,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
             let _ = release_rx.recv();
         });
         held_rx.await.unwrap();
-        let req2 = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build2.clone(), attempt: 1, node: "mesh1.rpc.4".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req2 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "4").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build2.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let timed_out2 = tokio::time::timeout(Duration::from_millis(120), pipeline2.create(&req2)).await;
         assert!(timed_out2.is_err(), "the create waits at transport-key while the blocking thread is held");
         release_tx.send(()).unwrap();

@@ -22,8 +22,8 @@ use std::time::Instant;
 /// per silence. An admin looks at a silent birth every pass; the start it commanded takes the
 /// birth off its mesh for the length of that start, and a second command inside it would start
 /// it over.
-fn commanded() -> &'static Mutex<HashMap<(String, String), Instant>> {
-    static COMMANDED: OnceLock<Mutex<HashMap<(String, String), Instant>>> = OnceLock::new();
+fn commanded() -> &'static Mutex<HashMap<rdm_core::framing::Birth, Instant>> {
+    static COMMANDED: OnceLock<Mutex<HashMap<rdm_core::framing::Birth, Instant>>> = OnceLock::new();
     COMMANDED.get_or_init(Default::default)
 }
 
@@ -54,7 +54,7 @@ impl HeardAgain {
         };
         // A command not sent is spanned too, with why: the flame of a birth left off its mesh reads it.
         if !outcome.starts_with("mesh-joined") && !outcome.starts_with("commanded") {
-            tracing::info_span!("rdm.node_admin.node.update.via-mesh-join-commanded", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), sent = false, outcome = %outcome, "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.node.update.via-mesh-join-commanded", node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), sent = false, outcome = %outcome, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a heard-again birth was looked at: node.mesh.join not sent"));
         }
         outcome
@@ -87,19 +87,19 @@ async fn command_mesh_join(
     // A birth with a lifecycle command of its authority in flight (a stop, a start, a restart) is that
     // command's: the start it runs is the command's own (node-start.md), never this one.
     if let Some(op) = digest_view.in_flight().into_iter().find(|op| op.node_id == node.node_id && op.incarnation == *incarnation) {
-        return format!("in-flight: {}", op.operation);
+        return format!("in-flight: {:?}", op.operation);
     }
     // A birth whose node.create this admin runs is that create's (node-create.md step 3: the create
     // composes the whole node.start; `node.created` follows it): never commanded back while it runs.
     // The tickle lists it from the runtime row its admission kept before its digest was installed,
     // and hears it again at the install: a look inside the create's first start, not a return.
     if runner.joins.creating(&node.node_id) {
-        return format!("create-in-flight: node.create:{}", node.name);
+        return format!("create-in-flight: node.create node_id={}", node.node_id);
     }
     // Once per silence: a birth commanded back is commanded again only after a staleness floor, and
     // only once this process has heard it ready since (the admin looks at it every pass
     // while its view still holds it silent).
-    let key = (node.node_id.to_string(), incarnation.as_str().to_string());
+    let key = rdm_core::framing::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     if let Some(at) = commanded().lock().unwrap().get(&key).copied() {
         if at.elapsed() < digest_view.staleness_floor() {
             return "commanded-already".to_string();
@@ -117,26 +117,26 @@ async fn command_mesh_join(
     // Reserved now, before the command goes out: concurrent looks at one birth command it once.
     commanded().lock().unwrap().insert(key.clone(), Instant::now());
     // Each command back is its own join (node-mesh-join.md step 10, Q97, Q99: one Pending per accepted
-    // join report, per join and not per birth), so its operation names this command by the instant it
-    // was reserved, fixed here: every resend of this one request carries it unchanged. The birth's
+    // join report, per join and not per birth), so its operation carries an opaque occurrence ID minted
+    // once at reservation: every resend of this one request carries it unchanged. The birth's
     // ready declaration carries the operation, and an operation row survives every cycle
     // begin with no state in its key (`NodeOperationRow::key`): a second command back in one Build
     // attempt under the first one's operation would have its ready answered AlreadyApplied from the
     // first join's row, and the birth would stay Pending.
-    let reserved_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-    let operation = format!("node.mesh.join:{}@{reserved_ms}", node.name);
+    let operation = rdm_core::OperationId::new("node.mesh.join", rdm_core::OperationSubject::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() })
+        .in_occurrence(rdm_core::OperationOccurrenceId::mint());
     let (build_id, attempt) = match builds.current().await {
         Ok(Some(b)) => (b.build_id.to_string(), b.attempt),
         _ => (String::new(), 0),
     };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-mesh-join-commanded",
-        node = %node.name,
+        node_path = %node.name.path, node_name = %node.name.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         build_id = %build_id,
         attempt,
-        operation = %operation,
+        operation = %operation.action, operation_subject = ?operation.subject, operation_occurrence = ?operation.occurrence,
         outcome = tracing::field::Empty,
         "otel.kind" = "internal"
     );
@@ -162,7 +162,7 @@ async fn command_mesh_join(
         // published Pending, before the join is answered (node-mesh-join.md step 10), as every
         // accepted join report is: nothing is written before the command reached it (node-start.md
         // step 2), and the birth's hook and its ready follow it.
-        if let Err(why) = runner.stopped_birth_or_live("node.mesh.join", &node.name).await.map(|(_, _, deployed)| runner.joins.expect(deployed)) {
+        if let Err(why) = runner.stopped_birth_or_live(node).await.map(|(_, _, deployed)| runner.joins.expect(deployed)) {
             return format!("join-not-registered: {why}");
         }
         // The command back is this authority's command to the birth, open from the send to the answer
@@ -194,7 +194,7 @@ async fn command_mesh_join(
         commanded().lock().unwrap().remove(&key);
     }
     span.record("outcome", outcome.as_str());
-    span.in_scope(|| tracing::info!(node = %node.name, outcome = %outcome, "a birth heard again is commanded back through node.mesh.join"));
+    span.in_scope(|| tracing::info!(node_path = %node.name.path, node_name = %node.name.name, outcome = %outcome, "a birth heard again is commanded back through node.mesh.join"));
     outcome
 }
 
@@ -203,9 +203,9 @@ async fn command_mesh_join(
 /// the exact birth; the fabric-primary for a mesh-primary. Commands go down"). `Err` names why not.
 pub(crate) fn commands_join(view: &crate::topology::Topology, me: &crate::model::NodeId, subject: &Node) -> Result<(), String> {
     if view.is_mesh_primary(&subject.mesh, &subject.node_id) {
-        return if view.is_fabric_primary(me) { Ok(()) } else { Err(format!("{} is the mesh-primary of {} and this admin is not the fabric-primary", subject.name, subject.mesh)) };
+        return if view.is_fabric_primary(me) { Ok(()) } else { Err(format!("{} is the mesh-primary of {} and this admin is not the fabric-primary", subject.node_id, subject.mesh)) };
     }
-    if view.is_mesh_primary(&subject.mesh, me) { Ok(()) } else { Err(format!("this admin is not the mesh-primary of {}, which commands {}", subject.mesh, subject.name)) }
+    if view.is_mesh_primary(&subject.mesh, me) { Ok(()) } else { Err(format!("this admin is not the mesh-primary of {}, which commands {}", subject.mesh, subject.node_id)) }
 }
 
 #[cfg(test)]
@@ -214,10 +214,10 @@ mod tests {
     use crate::model::{NodeKind, NodeStatus};
     use crate::topology::Topology;
 
-    fn at(name: &str, kind: NodeKind, primary: bool, fabric_primary: bool) -> Node {
-        let mut n = Node::allocated(name.parse().unwrap());
+    fn at(name: rdm_core::PathName, mesh: &str, fixture_kind: rdm_core::NodeKind, kind: NodeKind, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name, mesh, kind);
         n.incarnation_id = Some(IncarnationId::mint());
-        n.mesh = name.split('.').next().unwrap().into();
+        n.mesh = mesh.into();
         n.kind = kind;
         n.status = NodeStatus::Ready;
         n.is_primary = primary;
@@ -243,11 +243,11 @@ mod tests {
     /// mesh-primary commanding the mesh's primary, or the fabric-primary commanding a peer mesh's node.
     #[test]
     fn only_the_mesh_primary_commands_its_node_and_only_the_fabric_primary_commands_a_mesh_primary() {
-        let fp = at("mesh1.admin.1", NodeKind::NodeAdmin, true, true);
-        let rpc = at("mesh1.rpc.1", NodeKind::RpcNode, false, false);
-        let former = at("mesh2.admin.1", NodeKind::NodeAdmin, false, false);
-        let m2p = at("mesh2.admin.2", NodeKind::NodeAdmin, true, false);
-        let broker = at("mesh2.broker.1", NodeKind::RpcNode, false, false);
+        let fp = at(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin, true, true);
+        let rpc = at(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeKind::RpcNode, false, false);
+        let former = at(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin, false, false);
+        let m2p = at(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeKind::NodeAdmin, true, false);
+        let broker = at(rdm_core::PathName::new("mesh2.broker", "1").unwrap(), "mesh2", rdm_core::NodeKind::Broker, NodeKind::RpcNode, false, false);
         let view = Topology {
             fabric: crate::model::Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
             meshes: Vec::new(),

@@ -1,5 +1,5 @@
 //! The fault door of a faulted node-admin, as a scenario drives it (i143.e8.s2, #2780): the testkit
-//! Node RPC op `0x75` (`crate::fault_door`), reached by the admin's `path.name` on the
+//! Node RPC op `0x75` (`crate::fault_door`), reached by the admin's separate path/name pair on the
 //! estate's Node RPC client; armed, observed and released. Shared by every cell that holds a real admin
 //! at a named cut. A cut that must be in force before the admin's Node RPC door is ready is armed from
 //! `<root>/faults/<name>.boot.json` instead.
@@ -15,11 +15,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// One faulted admin's fault door, reached over Node RPC by the admin's `path.name`.
+/// One faulted admin's fault door, reached over Node RPC by the admin's separate path/name pair.
 #[derive(Clone)]
 pub struct Door {
-    pub name: String,
-    path: PathName,
+    pub name: PathName,
     peers: Arc<Peers>,
 }
 
@@ -27,9 +26,9 @@ impl Door {
     /// The door of the faulted admin `name`, once it answers. The admin's Node RPC door answers NotReady
     /// until it is ready (node-rpc-envelope.md, "Node RPC readiness gate"), and an admin the estate did not
     /// start is dialled from the views the estate reads, so until then each turn reads them again.
-    pub async fn at(estate: &Estate, name: &str) -> Door {
-        let door = Door { name: name.into(), path: Estate::path(name), peers: estate.peers().await };
-        wait_for_observed(&format!("{name}'s fault door answers over Node RPC"), Duration::from_secs(60), || async {
+    pub async fn at(estate: &Estate, name: &PathName) -> Door {
+        let door = Door { name: name.clone(), peers: estate.peers().await };
+        wait_for_observed(&format!("{name:?}'s fault door answers over Node RPC"), Duration::from_secs(60), || async {
             match door.ask(&FaultRequest::State).await {
                 Ok(FaultReply::State(_)) => Ok(()),
                 other => {
@@ -43,18 +42,19 @@ impl Door {
     }
 
     async fn ask(&self, req: &FaultRequest) -> Result<FaultReply, String> {
-        fault_door::ask(self.peers.carrier_at(self.path.clone()).client(), &self.path, req).await
+        let carrier = self.peers.carrier_at(self.name.clone());
+        fault_door::ask(carrier.client(), carrier.target(), req).await
     }
 
     /// Arm `spec` (a cut as JSON: `{"kind": .., ..}`) under `id`; the acknowledgement, as JSON.
     pub async fn arm(&self, id: &str, spec: Value) -> Value {
-        let cut: CutSpec = serde_json::from_value(spec.clone()).unwrap_or_else(|e| panic!("{}: `{id}` is not a cut: {spec}: {e}", self.name));
+        let cut: CutSpec = serde_json::from_value(spec.clone()).unwrap_or_else(|e| panic!("{:?}: `{id}` is not a cut: {spec}: {e}", self.name));
         match self.ask(&FaultRequest::arm(id, cut)).await {
             Ok(FaultReply::Armed { node, id: armed, spec }) => {
-                assert_eq!(armed, id, "{}: the door armed another cut", self.name);
+                assert_eq!(armed, id, "{:?}: the door armed another cut", self.name);
                 json!({"armed": armed, "node": node, "spec": spec})
             }
-            other => panic!("{}: arming `{id}` is acknowledged: {other:?}", self.name),
+            other => panic!("{:?}: arming `{id}` is acknowledged: {other:?}", self.name),
         }
     }
 
@@ -62,7 +62,7 @@ impl Door {
     pub async fn state(&self) -> Value {
         match self.ask(&FaultRequest::State).await {
             Ok(FaultReply::State(s)) => state_value(&s),
-            other => panic!("{}: fault state: {other:?}", self.name),
+            other => panic!("{:?}: fault state: {other:?}", self.name),
         }
     }
 
@@ -72,7 +72,7 @@ impl Door {
 
     /// The acknowledgement that the injection is active: the cut holds a call, and which.
     pub async fn wait_held(&self, id: &str) -> Value {
-        wait_for(&format!("{}: cut `{id}` holds a call", self.name), Duration::from_secs(90), || async {
+        wait_for(&format!("{:?}: cut `{id}` holds a call", self.name), Duration::from_secs(90), || async {
             let c = self.cut(id).await;
             (c["held"] == true && !c["hit"].is_null()).then_some(c)
         })
@@ -81,16 +81,16 @@ impl Door {
 
     /// The acknowledgement that the hold ended after a release: the cut no longer holds a call.
     pub async fn wait_released(&self, id: &str) -> bool {
-        wait_for(&format!("{}: the hold of cut `{id}` ended", self.name), Duration::from_secs(30), || async { (self.cut(id).await["held"] == false).then_some(true) }).await
+        wait_for(&format!("{:?}: the hold of cut `{id}` ended", self.name), Duration::from_secs(30), || async { (self.cut(id).await["held"] == false).then_some(true) }).await
     }
 
     pub async fn release(&self, id: &str) -> Value {
         match self.ask(&FaultRequest::Release { id: id.into() }).await {
             Ok(FaultReply::Released { node, id: released, was_held, held_ms }) => {
-                assert_eq!(released, id, "{}: the door released another cut", self.name);
+                assert_eq!(released, id, "{:?}: the door released another cut", self.name);
                 json!({"released": released, "node": node, "was_held": was_held, "held_ms": held_ms})
             }
-            other => panic!("{}: releasing `{id}` is acknowledged: {other:?}", self.name),
+            other => panic!("{:?}: releasing `{id}` is acknowledged: {other:?}", self.name),
         }
     }
 }
@@ -174,7 +174,7 @@ mod tests {
         let (src, exe) = (dir.join("leave.rs"), dir.join("faulted-node-admin"));
         std::fs::write(&src, "fn main() {}").unwrap();
         std::fs::write(&exe, "bin").unwrap();
-        std::fs::write(exe.with_extension("d"), format!("{}: {}\n", exe.display(), src.display())).unwrap();
+        std::fs::write(exe.with_extension("d"), format!("{:?}: {}\n", exe.display(), src.display())).unwrap();
         let set = |path: &std::path::Path, secs: u64| std::fs::OpenOptions::new().write(true).open(path).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
         set(&exe, 2_000);
         set(&src, 1_000);

@@ -199,9 +199,9 @@ async fn rig_serving(count: bool) -> Rig {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode {
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
         node_id: node_id.clone(),
-        name: "mesh1.rpc.1".parse().unwrap(),
+        name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
         endpoint_id: key.public(),
         transport_addr: addr,
         incarnation,

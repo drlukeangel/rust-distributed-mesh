@@ -88,17 +88,19 @@ pub(crate) struct WireOpened {
     attempt: u32,
     reason: AttemptReason,
     action: Option<WireAction>,
-    opened_by: String,
+    opened_by: rdm_core::NodeId,
     opened_at_ms: u64,
     mesh: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct WireClaim {
+    claimed_mesh: Option<String>,
+    executor_mesh: String,
     build_id: BuildId,
     attempt: u32,
-    executor: String,
-    claimant: Option<String>,
+    executor: rdm_core::framing::Birth,
+    claimant: Option<crate::model::NodeId>,
     mesh: Option<String>,
 }
 
@@ -114,11 +116,11 @@ pub(crate) struct WireAttempt {
 pub(crate) struct WireStep {
     build_id: BuildId,
     attempt: u32,
-    operation: String,
+    operation: rdm_core::OperationId,
     step: String,
     outcome: StepOutcome,
     output: Option<WireOutput>,
-    executor: Option<String>,
+    executor: Option<rdm_core::framing::Birth>,
     mesh: Option<String>,
 }
 
@@ -185,7 +187,7 @@ enum WireChange {
     /// ([`TopologyChange::Reserved`]); kept so `Reconcile` keeps its position.
     Reserved7,
     /// The complete topology (proposal executable-bindings-at-create.md rule 1), appended last. Each
-    /// node's create spec travels as the topology's do, by its path.name with its storage and placement,
+    /// node's create spec travels as the topology's do, by its path and name with its storage and placement,
     /// no executable, no tags and no config (rule 7: nothing about executables rides gossip); the stored
     /// accepted Build keeps them.
     Reconcile { based_on: BuildId, nodes: Vec<(PathName, WireSpec)> },
@@ -196,16 +198,16 @@ enum WireAction {
     /// Reserved position: the removed node.restart's action (Q183). Never sent; a fact carrying it is
     /// refused by name ([`fact_from_wire`]). Kept so every later action keeps its position.
     Reserved0 { path: PathName, from_incarnation: IncarnationId },
-    DeleteConnections { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
-    Stop { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
-    Start { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
-    Recover { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
-    Delete { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
-    Steps { steps: Vec<rdm_core::build::Step>, pinned: Vec<(PathName, crate::build::PinnedBirth)> },
-    Terminate { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
+    DeleteConnections { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
+    Stop { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
+    Start { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
+    Recover { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
+    Delete { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
+    Steps { steps: Vec<rdm_core::build::Step>, pinned: Vec<(PathName, crate::build::PinnedBirth)>, rename_intents: std::collections::BTreeMap<u32, crate::accepted::RenameIntent> },
+    Terminate { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
     /// Fabric recovery's backbone re-create, a node.create alone (Q142); appended, so every earlier
     /// variant keeps its position.
-    RecoverFromBackbone { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
+    RecoverFromBackbone { path: PathName, mesh: String, kind: rdm_core::NodeKind, node_id: NodeId, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -261,14 +263,14 @@ impl From<WireChange> for TopologyChange {
 impl From<&AttemptAction> for WireAction {
     fn from(a: &AttemptAction) -> Self {
         match a {
-            AttemptAction::DeleteConnections { path, node_id, from_incarnation } => Self::DeleteConnections { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Stop { path, node_id, from_incarnation } => Self::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Start { path, node_id, from_incarnation } => Self::Start { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Recover { path, node_id, from_incarnation, backbone: false } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Recover { path, node_id, from_incarnation, backbone: true } => Self::RecoverFromBackbone { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Delete { path, node_id, from_incarnation } => Self::Delete { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Steps { steps, pinned } => Self::Steps { steps: steps.clone(), pinned: pinned.clone() },
-            AttemptAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::DeleteConnections { kind, mesh: mesh, path, node_id, from_incarnation } => Self::DeleteConnections { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Stop { kind, mesh: mesh, path, node_id, from_incarnation } => Self::Stop { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Start { kind, mesh: mesh, path, node_id, from_incarnation } => Self::Start { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Recover { kind, mesh: mesh, path, node_id, from_incarnation, backbone: false } => Self::Recover { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Recover { kind, mesh: mesh, path, node_id, from_incarnation, backbone: true } => Self::RecoverFromBackbone { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Delete { kind, mesh: mesh, path, node_id, from_incarnation } => Self::Delete { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Steps { steps, pinned, rename_intents } => Self::Steps { steps: steps.clone(), pinned: pinned.clone(), rename_intents: rename_intents.clone() },
+            AttemptAction::Terminate { kind, mesh: mesh, path, node_id, from_incarnation } => Self::Terminate { kind: *kind, mesh: mesh.clone(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
         }
     }
 }
@@ -278,15 +280,15 @@ impl TryFrom<WireAction> for AttemptAction {
     /// by name.
     fn try_from(a: WireAction) -> Result<Self, String> {
         Ok(match a {
-            WireAction::Reserved0 { path, .. } => return Err(format!("the attempt's action is node.restart of {path}, a reserved position: node.restart is removed (Q183)")),
-            WireAction::DeleteConnections { path, node_id, from_incarnation } => Self::DeleteConnections { path, node_id, from_incarnation },
-            WireAction::Stop { path, node_id, from_incarnation } => Self::Stop { path, node_id, from_incarnation },
-            WireAction::Start { path, node_id, from_incarnation } => Self::Start { path, node_id, from_incarnation },
-            WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation, backbone: false },
-            WireAction::RecoverFromBackbone { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation, backbone: true },
-            WireAction::Delete { path, node_id, from_incarnation } => Self::Delete { path, node_id, from_incarnation },
-            WireAction::Steps { steps, pinned } => Self::Steps { steps, pinned },
-            WireAction::Terminate { path, node_id, from_incarnation } => Self::Terminate { path, node_id, from_incarnation },
+            WireAction::Reserved0 { path, .. } => return Err(format!("the attempt's action is node.restart of {path:?}, a reserved position: node.restart is removed (Q183)")),
+            WireAction::DeleteConnections { kind, mesh, path, node_id, from_incarnation } => Self::DeleteConnections { kind, mesh, path, node_id, from_incarnation },
+            WireAction::Stop { kind, mesh, path, node_id, from_incarnation } => Self::Stop { kind, mesh, path, node_id, from_incarnation },
+            WireAction::Start { kind, mesh, path, node_id, from_incarnation } => Self::Start { kind, mesh, path, node_id, from_incarnation },
+            WireAction::Recover { kind, mesh, path, node_id, from_incarnation } => Self::Recover { kind, mesh, path, node_id, from_incarnation, backbone: false },
+            WireAction::RecoverFromBackbone { kind, mesh, path, node_id, from_incarnation } => Self::Recover { kind, mesh, path, node_id, from_incarnation, backbone: true },
+            WireAction::Delete { kind, mesh, path, node_id, from_incarnation } => Self::Delete { kind, mesh, path, node_id, from_incarnation },
+            WireAction::Steps { steps, pinned, rename_intents } => Self::Steps { steps, pinned, rename_intents },
+            WireAction::Terminate { kind, mesh, path, node_id, from_incarnation } => Self::Terminate { kind, mesh, path, node_id, from_incarnation },
         })
     }
 }
@@ -517,12 +519,12 @@ enum Produces {
     PropertyTarget,
 }
 
-fn produces(operation: &str, step: &str) -> Option<Produces> {
+fn produces(operation: &rdm_core::OperationId, step: &str) -> Option<Produces> {
     let is = |c: CreateStep| c.name() == step;
     // A standalone stop's `Complete` commits the stop's lifecycle op: the exact birth and its
     // rafka-time, the age of its stopped period (node-identity-and-state.md §6.9 Age). Every other
     // operation's `Complete` commits none.
-    if ret_complete(step) && operation.starts_with("node.stop:") {
+    if ret_complete(step) && operation.action == "node.stop" {
         return Some(Produces::LifecycleOp);
     }
     let ret = |r: DeleteStep| r.name() == step;
@@ -578,7 +580,7 @@ fn ret_complete(step: &str) -> bool {
     DeleteStep::Complete.name() == step
 }
 
-fn output_to_wire(operation: &str, step: &str, v: &serde_json::Value) -> Result<WireOutput, String> {
+fn output_to_wire(operation: &rdm_core::OperationId, step: &str, v: &serde_json::Value) -> Result<WireOutput, String> {
     let Some(kind) = produces(operation, step) else {
         return Err("this step commits no output".into());
     };
@@ -700,7 +702,7 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
             opened_at_ms: o.opened_at_ms,
             mesh: o.mesh.clone(),
         }),
-        BuildFact::Claim(c) => WireFact::Claim(WireClaim { build_id: c.build_id.clone(), attempt: c.attempt, executor: c.executor.clone(), claimant: c.claimant.clone(), mesh: c.mesh.clone() }),
+        BuildFact::Claim(c) => WireFact::Claim(WireClaim { claimed_mesh: c.claimed_mesh.clone(), executor_mesh: c.executor_mesh.clone(), build_id: c.build_id.clone(), attempt: c.attempt, executor: c.executor.clone(), claimant: c.claimant.clone(), mesh: c.mesh.clone() }),
         BuildFact::Step(s) => {
             let refuse = |reason: String| WireRefusal { build_id: s.build_id.clone(), attempt: s.attempt, step: s.step.clone(), reason };
             let output = match &s.output {
@@ -748,7 +750,7 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
             mesh: o.mesh,
             context: None,
         }),
-        WireFact::Claim(c) => BuildFact::Claim(BuildAttemptClaim { build_id: c.build_id, attempt: c.attempt, executor: c.executor, claimant: c.claimant, mesh: c.mesh }),
+        WireFact::Claim(c) => BuildFact::Claim(BuildAttemptClaim { claimed_mesh: c.claimed_mesh, executor_mesh: c.executor_mesh, build_id: c.build_id, attempt: c.attempt, executor: c.executor, claimant: c.claimant, mesh: c.mesh }),
         WireFact::Step(s) => {
             let (build_id, attempt, step) = (s.build_id.clone(), s.attempt, s.step.clone());
             let output = match s.output {
@@ -823,12 +825,12 @@ mod tests {
     const EXTRA: &str = "zz_extra";
 
     /// The Build fact of a completed step whose receipt carries `output`.
-    fn step_fact(operation: &str, step: &str, output: Value) -> BuildFact {
+    fn step_fact(operation: &rdm_core::OperationId, step: &str, output: Value) -> BuildFact {
         BuildFact::Step(BuildStepReceipt {
             mesh: None,
             build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt: 3,
-            operation: operation.into(),
+            operation: operation.clone(),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: Some(output),
@@ -851,7 +853,7 @@ mod tests {
     /// field the type does not declare (at `at`) is refused, and the refusal names the step, the Build
     /// and attempt, and the field. Must NOT happen: the field dropped and the fact sent as a different
     /// output than the one the step committed.
-    fn unknown_field_is_refused_by_name(operation: &str, step: &str, valid: Value, at: &str) {
+    fn unknown_field_is_refused_by_name(operation: &rdm_core::OperationId, step: &str, valid: Value, at: &str) {
         if let Err(r) = fact_to_wire(&step_fact(operation, step, valid.clone())) {
             panic!("the valid output of step {step} was refused: {r}");
         }
@@ -869,24 +871,24 @@ mod tests {
         json!({ "deployment_id": "d1", "provider": "process", "control_domain_fingerprint": "cd", "locator_kind": "pid", "locator_fingerprint": "lf" })
     }
 
-    fn roster_birth(name: &str) -> Value {
+    fn roster_birth(name: PathName) -> Value {
         json!({ "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
     }
 
     fn terminal() -> Value {
-        json!({ "node": "mesh1.rpc.1", "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_proof(), "exit_code": 0 })
+        json!({ "node": PathName::new("mesh1.rpc", "1").unwrap(), "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_proof(), "exit_code": 0 })
     }
 
     #[test]
     fn an_identity_output_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "node_id": crate::model::NodeId::mint(), "incarnation": crate::model::IncarnationId::mint(), "supersedes": null, "deployment_id": DeploymentId::mint() });
-        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::AllocateIdentity.name(), valid, "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.create"), CreateStep::AllocateIdentity.name(), valid, "");
     }
 
     #[test]
     fn a_bound_output_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "transport": "127.0.0.1:4000", "listeners": [["http", "127.0.0.1:4001"]] });
-        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::WaitForBind.name(), valid, "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.create"), CreateStep::WaitForBind.name(), valid, "");
     }
 
     /// An endpoint id is the endpoint's key as one string: it has no field to add, so what the reader
@@ -896,14 +898,14 @@ mod tests {
     /// target field is refused by name, never dropped before durable commit.
     #[test]
     fn a_property_target_output_with_an_unknown_field_is_refused_by_name() {
-        let pin = crate::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        unknown_field_is_refused_by_name("node.properties.update:mesh1.rpc.1", "PinPropertyTarget", json!({"node_id":pin.node_id,"incarnation":pin.incarnation}), "");
+        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.properties.update"), "PinPropertyTarget", json!({"node_id":pin.node_id,"incarnation":pin.incarnation}), "");
     }
 
     #[test]
     fn an_endpoint_id_output_that_is_an_object_is_refused_by_name() {
         let step = CreateStep::PrepareStorage.name();
-        let operation = "node.create:mesh1.rpc.1";
+        let operation = &rdm_core::OperationId::unscoped("node.create");
         if let Err(r) = fact_to_wire(&step_fact(operation, step, json!("endpoint-key"))) {
             panic!("the valid output of step {step} was refused: {r}");
         }
@@ -915,87 +917,87 @@ mod tests {
     #[test]
     fn a_deployment_handle_output_with_an_unknown_field_is_refused_by_name() {
         let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(7), start: Some(8), container: None, domain: Some("cd".into()) };
-        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::DeployRuntime.name(), serde_json::to_value(&handle).unwrap(), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.create"), CreateStep::DeployRuntime.name(), serde_json::to_value(&handle).unwrap(), "");
     }
 
     #[test]
     fn a_runtime_evidence_output_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "deployment_id": "d1", "provider": "process", "provider_control_domain_fingerprint": "cd", "runtime_locator_kind": "pid", "runtime_locator_fingerprint": "lf" });
-        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::RegisterExactRuntimeHandle.name(), valid, "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.create"), CreateStep::RegisterExactRuntimeHandle.name(), valid, "");
     }
 
     #[test]
     fn a_mesh_pending_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::ApplyMeshPending.name(), json!({ "applied": "mesh1" }), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.create"), CreateStep::ApplyMeshPending.name(), json!({ "applied": "mesh1" }), "");
     }
 
     #[test]
     fn a_lifecycle_op_output_with_an_unknown_field_is_refused_by_name() {
-        let op = rdm_core::LifecycleOp { mesh: "mesh1".into(),
+        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
             build_id: "b1".into(),
             attempt: 3,
-            operation: "node.delete:mesh1.rpc.1".into(),
+            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
-            name: "mesh1.rpc.1".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             event_at_rafka_ms: 4_242,
             traceparent: None,
             tracestate: None,
         };
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
     }
 
     #[test]
     fn a_command_admission_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::DeleteConnections.name(), json!({ "arm": "admitted" }), "");
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::StopNode.name(), json!({ "arm": "not-sent", "reason": "no route" }), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::DeleteConnections.name(), json!({ "arm": "admitted" }), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::StopNode.name(), json!({ "arm": "not-sent", "reason": "no route" }), "");
     }
 
     #[test]
     fn a_connections_receipt_in_an_admission_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "arm": "connections-deleted", "receipt": { "Established": { "in_flight": 0, "closed": [] } } });
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::DeleteConnections.name(), valid, "/receipt/Established");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::DeleteConnections.name(), valid, "/receipt/Established");
     }
 
     #[test]
     fn a_completion_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::AwaitNodeLeft.name(), json!({ "arm": "received" }), "");
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::AwaitNodeLeft.name(), json!({ "arm": "not-awaited", "admission": "refused" }), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::AwaitNodeLeft.name(), json!({ "arm": "received" }), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::AwaitNodeLeft.name(), json!({ "arm": "not-awaited", "admission": "refused" }), "");
     }
 
     #[test]
     fn a_storage_disposition_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "preserved" }), "");
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "released", "locator": "dir" }), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), RELEASE_STORAGE_STEP, json!({ "arm": "preserved" }), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), RELEASE_STORAGE_STEP, json!({ "arm": "released", "locator": "dir" }), "");
     }
 
     #[test]
     fn a_terminal_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::TerminateRuntime.name(), terminal(), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::TerminateRuntime.name(), terminal(), "");
     }
 
     #[test]
     fn a_runtime_proof_inside_a_terminal_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", DeleteStep::TerminateRuntime.name(), terminal(), "/runtime");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::TerminateRuntime.name(), terminal(), "/runtime");
     }
 
     fn exit_manifest() -> Value {
-        json!({ "mesh_id": "meshd0000001", "roster": [roster_birth("mesh1.admin.1")], "final_primary": roster_birth("mesh1.admin.1"), "final_runtime": runtime_proof(), "receipts": [terminal()] })
+        json!({ "mesh_id": "meshd0000001", "roster": [roster_birth(PathName::new("mesh1.admin", "1").unwrap())], "final_primary": roster_birth(PathName::new("mesh1.admin", "1").unwrap()), "final_runtime": runtime_proof(), "receipts": [terminal()] })
     }
 
     #[test]
     fn an_exit_manifest_output_with_an_unknown_field_is_refused_by_name() {
         let step = crate::mesh_delete::STEP_OTHER_MEMBERS_EXITED;
-        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "");
-        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/roster/0");
-        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/final_primary");
-        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/receipts/0");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), step, exit_manifest(), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), step, exit_manifest(), "/roster/0");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), step, exit_manifest(), "/final_primary");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), step, exit_manifest(), "/receipts/0");
     }
 
     #[test]
     fn a_roster_amended_output_with_an_unknown_field_is_refused_by_name() {
-        let valid = json!({ "predecessor": roster_birth("mesh1.admin.1"), "final_primary": roster_birth("mesh1.admin.2"), "final_runtime": runtime_proof() });
-        unknown_field_is_refused_by_name("mesh.delete:mesh1", crate::mesh_delete::STEP_ROSTER_AMENDED, valid.clone(), "");
-        unknown_field_is_refused_by_name("mesh.delete:mesh1", crate::mesh_delete::STEP_ROSTER_AMENDED, valid, "/final_runtime");
+        let valid = json!({ "predecessor": roster_birth(PathName::new("mesh1.admin", "1").unwrap()), "final_primary": roster_birth(PathName::new("mesh1.admin", "2").unwrap()), "final_runtime": runtime_proof() });
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), crate::mesh_delete::STEP_ROSTER_AMENDED, valid.clone(), "");
+        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), crate::mesh_delete::STEP_ROSTER_AMENDED, valid, "/final_runtime");
     }
 }

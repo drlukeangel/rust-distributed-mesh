@@ -1,5 +1,5 @@
 //! A node's point read of another node's row from the nodes storage (query.md §1, Q237):
-//! `RunningNode::node_row(id | name)`, the store opened on the node's first read and never at its
+//! `RunningNode::node_row(id | structured location)`, the store opened on the node's first read and never at its
 //! start, join or create (Q227).
 
 use crate::common::{admin_side, TEST_MESH_ID};
@@ -16,7 +16,7 @@ use std::path::Path;
 const READ: &str = "rdm.node.row.resolve.via-store";
 const FOLD: &str = "rdm.node.store.resolve.via-fold";
 
-fn launch(dir: &Path, fabric: &FabricId, name: &str, admin: &rdm_test::rig::AdminSide) -> Launch {
+fn launch(dir: &Path, fabric: &FabricId, name: PathName, admin: &rdm_test::rig::AdminSide) -> Launch {
     Launch {
         initial_properties: Default::default(),
         topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
@@ -24,7 +24,7 @@ fn launch(dir: &Path, fabric: &FabricId, name: &str, admin: &rdm_test::rig::Admi
         fabric_id: fabric.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::Gateway,
-        name: name.parse().unwrap(),
+        name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -54,7 +54,7 @@ fn nodes_folds(spans: &crate::common::Spans) -> Vec<Option<String>> {
 /// read by `id` or by `name`, the store opened on the node's first read and never at its start, join or
 /// create"; Q227): broker1's row stands in the fabric's nodes storage as its mesh-primary wrote it.
 /// gw1 starts and joins, and its start folds no `nodes.jsonl`. The mesh-primary then writes broker1's
-/// config again, and every primary gw1 could call is gone: gw1 reads broker1's row by `path.name` and by
+/// config again, and every primary gw1 could call is gone: gw1 reads broker1's row by separate `path` and `name` and by
 /// id, and both answer the config last written, the whole row; a name no row was written at answers
 /// none. The first read opens the store (one fold of `nodes.jsonl`, under the read's span) and the
 /// second folds nothing again; no read makes a Node RPC call. Must NOT happen: the store opened at the
@@ -64,7 +64,7 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
     let cap = crate::common::capture("a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reachable");
     let spans = cap.spans.clone();
     let seen = spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
+    let gateway_id = cap.run(crate::common::Threads::Workers(4), async move {
         let dir = std::env::temp_dir().join(format!("node-row-read-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -74,13 +74,13 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         // broker1's row, as its mesh-primary writes it to the fabric's nodes storage.
         let root = rdm_node::store_root::StoreRoot::open(&dir, &fabric).unwrap();
         let writer = rdm_admin::storage::FileNodesStorage::open(&dir, &root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.expect("the mesh-primary's nodes storage opens");
-        let broker: PathName = "mesh1.broker.1".parse().unwrap();
-        let mut row = NodeRow::new(broker.clone(), NodeId::mint(), NodeStatus::Ready);
+        let broker: PathName = rdm_core::PathName::new("mesh1.broker", "1").unwrap();
+        let mut row = NodeRow::new(broker.clone(), "mesh1", rdm_core::NodeKind::Broker, NodeId::mint(), NodeStatus::Ready);
         row.config = [("listener.data".to_string(), "127.0.0.1:43001".to_string())].into();
         writer.put_node(&row).await.expect("broker1's row is written");
         let written = nodes_folds(&seen).len();
 
-        let launch = launch(&dir, &fabric, "mesh1.gateway.1", &admin);
+        let launch = launch(&dir, &fabric, PathName::new("mesh1.gateway", "1").unwrap(), &admin);
         let key = node::load_or_mint_key(&dir).unwrap();
         admin.deployed(&launch, &key);
         let gw1 = node::start(&launch, |b, _| b).await.expect("gw1 starts and joins");
@@ -96,7 +96,7 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         assert_eq!(by_name.config, BTreeMap::from([("listener.data".to_string(), "127.0.0.1:43002".to_string()), ("zone".to_string(), "eu-1".to_string())]));
         let by_id = gw1.node_row(row.node_id.clone()).await.expect("gw1 reads broker1's row by id").expect("broker1's row stands");
         assert_eq!(by_id, row, "by id, the same row");
-        let none = gw1.node_row("mesh1.broker.9".parse::<PathName>().unwrap()).await.expect("a read of a name no row was written at");
+        let none = gw1.node_row(rdm_core::PathName::new("mesh1.broker", "9").unwrap()).await.expect("a read of a name no row was written at");
         assert_eq!(none, None);
 
         let folds = nodes_folds(&seen);
@@ -105,12 +105,13 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
 
         gw1.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
+        launch.node_id
     });
     let held: BTreeMap<u64, _> = spans.0.lock().unwrap().clone().into_iter().collect();
     let reads: Vec<_> = held.values().filter(|(n, _, _)| n == READ).map(|(_, _, f)| f.clone()).collect();
     let outcomes: Vec<(String, String)> = reads.iter().map(|f| (f.get("by").cloned().unwrap_or_default(), f.get("outcome").cloned().unwrap_or_default())).collect();
-    assert_eq!(outcomes, vec![("name".into(), "found".into()), ("id".into(), "found".into()), ("name".into(), "none".into())], "{reads:?}");
-    assert!(reads.iter().all(|f| f.get("node").map(String::as_str) == Some("mesh1.gateway.1")), "{reads:?}");
+    assert_eq!(outcomes, vec![("location".into(), "found".into()), ("id".into(), "found".into()), ("location".into(), "none".into())], "{reads:?}");
+    assert!(reads.iter().all(|f| f.get("node").map(String::as_str) == Some(gateway_id.as_str())), "{reads:?}");
     let called: Vec<_> = held.values().filter(|(n, parent, _)| n.starts_with("rdm.node_rpc.") && parent.as_deref() == Some(READ)).collect();
     assert!(called.is_empty(), "no read makes a Node RPC call: {called:?}");
 }
@@ -137,13 +138,13 @@ fn a_nodes_start_opens_no_nodes_store_and_its_first_read_does() {
         let line = format!("{{\"op\":{{\"node_id\":\"{}\",\"incarnation_id\":\"{}\",\"seq\":1}},\"format\":\"node-record/9\",\"key\":\"x\",\"record\":{{}}}}\n", NodeId::mint(), IncarnationId::mint());
         std::fs::write(&file, &line).unwrap();
 
-        let launch = launch(&dir, &fabric, "mesh1.gateway.1", &admin);
+        let launch = launch(&dir, &fabric, PathName::new("mesh1.gateway", "1").unwrap(), &admin);
         let key = node::load_or_mint_key(&dir).unwrap();
         admin.deployed(&launch, &key);
         let gw1 = node::start(&launch, |b, _| b).await.expect("gw1 starts over a nodes store it cannot fold");
         assert!(nodes_folds(&seen).is_empty(), "gw1's start folds no nodes.jsonl (Q227)");
 
-        let refused = gw1.node_row("mesh1.broker.1".parse::<PathName>().unwrap()).await.expect_err("the first read folds the store and meets the line");
+        let refused = gw1.node_row(rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await.expect_err("the first read folds the store and meets the line");
         assert!(matches!(&refused, StorageError::Unrecognised { file: f, .. } if f.ends_with("nodes.jsonl")), "refused by name, naming the file: {refused:?}");
         assert_eq!(nodes_folds(&seen), vec![Some(READ.to_string())], "the one fold is the read's");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), line, "the read leaves the file as it is");
@@ -173,7 +174,7 @@ fn estate_owner(test: &str) -> rdm_test::estate::Owner {
 /// CONTRACT (query.md §1, Q237), on real node processes: mesh1.rpc.2 puts its own config and its
 /// mesh-primary, mesh1.admin.1, writes its row to the nodes storage. mesh1.admin.1, the fabric's only
 /// node-admin and so every primary, is then killed. mesh1.rpc.1 reads mesh1.rpc.2's row from the nodes
-/// storage by `path.name` (the testkit's node-row knob, `RunningNode::node_row`) and answers the config
+/// storage by separate `path` and `name` (the testkit's node-row knob, `RunningNode::node_row`) and answers the config
 /// mesh1.rpc.2 put. Spans: mesh1.rpc.1's `rdm.node.row.resolve.via-store` is `found`; the store's fold
 /// of `nodes.jsonl` in that trace is the read's own, under it; no Node RPC call descends from it. Must
 /// NOT happen: the read needing a primary, or answering a row older than the one written.

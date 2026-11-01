@@ -419,7 +419,7 @@ impl Rig {
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).ok_or("the server's endpoint has no IPv4 socket")?;
         let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().expect("a path name"), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() });
+        resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: me.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").expect("a path name"), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() });
         let cep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().expect("an address")).await.map_err(|e| format!("the client's endpoint does not bind: {e}"))?;
         let caller = Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let client = NodeRpcClient::new(cep, resolver).with_delivery(Delivery::with_pacing(caller, PACING));

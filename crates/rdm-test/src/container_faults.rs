@@ -30,11 +30,12 @@ pub trait ContainerEstate {
     /// The Fabric's id: its Docker network is `rafka-<fabric_id>`.
     fn fabric_id(&self) -> &str;
     /// The running container of `node`'s current birth, by the container id its RuntimeFact names.
-    fn container_of(&self, node: &str) -> impl std::future::Future<Output = Option<String>> + Send;
-    /// Every running container of the Fabric as (node `path.name`, Docker id).
-    fn live_containers(&self) -> Vec<(String, String)>;
+    fn container_of(&self, node: &PathName) -> impl std::future::Future<Output = Option<String>> + Send;
+    /// Every running container of the Fabric as (node separate path/name fields, Docker id).
+    fn live_containers(&self) -> Vec<(PathName, String)>;
 }
 use serde::Serialize;
+use rdm_core::PathName;
 use std::process::Command;
 
 /// `docker <args>`: trimmed stdout, or an error naming the command and its stderr.
@@ -55,8 +56,8 @@ pub fn network_of(estate: &impl ContainerEstate) -> String {
 /// A container disconnected from the fabric network, to be reconnected at the same address.
 #[derive(Debug, Clone, Serialize)]
 pub struct Unplugged {
-    /// The node's `path.name`.
-    pub node: String,
+    /// The node's separate path/name fields.
+    pub node: PathName,
     /// The Docker id of the container.
     pub id: String,
     /// The container's address on the Fabric network.
@@ -66,12 +67,12 @@ pub struct Unplugged {
 }
 
 /// Disconnect the running container of `node` from its Fabric's network.
-pub async fn unplug(estate: &impl ContainerEstate, node: &str) -> Result<Unplugged, String> {
-    let id = estate.container_of(node).await.ok_or_else(|| format!("{node}: no running container of fabric {}", estate.fabric_id()))?;
+pub async fn unplug(estate: &impl ContainerEstate, node: &PathName) -> Result<Unplugged, String> {
+    let id = estate.container_of(node).await.ok_or_else(|| format!("{node:?}: no running container of fabric {}", estate.fabric_id()))?;
     let network = network_of(estate);
-    let ip = address_of(estate, &id).map_err(|e| format!("{node}: {e}"))?;
+    let ip = address_of(estate, &id).map_err(|e| format!("{node:?}: {e}"))?;
     docker(&["network", "disconnect", "-f", &network, &id])?;
-    Ok(Unplugged { node: node.into(), id, ip, network })
+    Ok(Unplugged { node: node.clone(), id, ip, network })
 }
 
 /// Reconnect an unplugged container at the address it held.
@@ -205,8 +206,8 @@ impl Drop for NamespaceTool {
 /// One container of an estate with the address it holds.
 #[derive(Debug, Clone, Serialize)]
 pub struct Member {
-    /// The node's `path.name`.
-    pub node: String,
+    /// The node's separate path/name fields.
+    pub node: PathName,
     /// The Docker id of the container.
     pub id: String,
     /// The container's address on the Fabric network.
@@ -238,21 +239,21 @@ pub struct Silenced {
 /// Silence `nodes` against the rest of the estate. `fabric_primary` is the node-admin holding the
 /// fabric-primary role: a set that holds it is refused before anything is touched. A member that
 /// cannot be silenced leaves the ones already silenced restored, and the error says which.
-pub async fn silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
+pub async fn silence(estate: &impl ContainerEstate, nodes: &[PathName], fabric_primary: &PathName) -> Result<Silenced, String> {
     let silenced = prepare_silence(estate, nodes, fabric_primary).await?;
     silenced.install()?;
     Ok(silenced)
 }
 
 /// Resolve the exact containers and addresses before the timed silence starts; install nothing.
-pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
+pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[PathName], fabric_primary: &PathName) -> Result<Silenced, String> {
     if nodes.iter().any(|n| n == fabric_primary) {
-        return Err(format!("refused: the silenced set {nodes:?} holds the fabric-primary node-admin {fabric_primary}"));
+        return Err(format!("refused: the silenced set {nodes:?} holds the fabric-primary node-admin {fabric_primary:?}"));
     }
     let gateway = gateway_of(estate)?;
     let mut members = Vec::new();
     for n in nodes {
-        let id = estate.container_of(n).await.ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id()))?;
+        let id = estate.container_of(n).await.ok_or_else(|| format!("{n:?}: no running container of fabric {}", estate.fabric_id()))?;
         members.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
     }
     // The rest of the estate as the daemon lists it running. One that exits before its address is
@@ -271,12 +272,12 @@ pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fa
 /// from each container of `b` is dropped. The host and every other container still reach both sides,
 /// as the process provider's UDP drop between two port sets does. Installed before it returns;
 /// [`Silenced::lift`] ends it. A node that runs in no container of the fabric is refused by name.
-pub async fn cut(estate: &impl ContainerEstate, a: &[String], b: &[String]) -> Result<Silenced, String> {
+pub async fn cut(estate: &impl ContainerEstate, a: &[PathName], b: &[PathName]) -> Result<Silenced, String> {
     let gateway = gateway_of(estate)?;
     let mut sides = [Vec::new(), Vec::new()];
     for (side, nodes) in sides.iter_mut().zip([a, b]) {
         for n in nodes {
-            let id = estate.container_of(n).await.ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id()))?;
+            let id = estate.container_of(n).await.ok_or_else(|| format!("{n:?}: no running container of fabric {}", estate.fabric_id()))?;
             side.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
         }
     }
@@ -307,15 +308,15 @@ fn on_members<T: Send>(members: &[Member], action: impl Fn(&Member) -> T + Sync)
 
 impl Silenced {
     fn command(&self, member: &Member, command: &str) -> Result<String, String> {
-        self.tools.get(&member.id).ok_or_else(|| format!("{}: no prepared namespace tool", member.node))?
-            .lock().map_err(|_| format!("{}: the namespace tool ended while held", member.node))?
-            .command(command).map_err(|e| format!("{}: {e}", member.node))
+        self.tools.get(&member.id).ok_or_else(|| format!("{:?}: no prepared namespace tool", member.node))?
+            .lock().map_err(|_| format!("{:?}: the namespace tool ended while held", member.node))?
+            .command(command).map_err(|e| format!("{:?}: {e}", member.node))
     }
 
     /// Install each independent namespace's filter concurrently; restore successes on failure.
     pub fn install(&self) -> Result<(), String> {
         let results = on_members(&self.members, |m| self.command(m, "install"));
-        let failed: Vec<_> = self.members.iter().zip(&results).filter_map(|(m, r)| r.as_ref().err().map(|e| format!("{}: {e}", m.node))).collect();
+        let failed: Vec<_> = self.members.iter().zip(&results).filter_map(|(m, r)| r.as_ref().err().map(|e| format!("{:?}: {e}", m.node))).collect();
         if failed.is_empty() { return Ok(()); }
         let applied: Vec<_> = self.members.iter().zip(&results).filter(|(_, r)| r.is_ok()).map(|(m, _)| m.clone()).collect();
         let back: Vec<_> = on_members(&applied, |m| self.command(m, "lift")).into_iter().filter_map(Result::err).collect();
@@ -330,8 +331,8 @@ impl Silenced {
         let rows: Vec<serde_json::Value> = serde_json::from_str(&raw).map_err(|e| format!("docker inspect the silenced containers: {e}"))?;
         self.members.iter().map(|member| {
             let row = rows.iter().find(|row| row["Id"] == member.id)
-                .ok_or_else(|| format!("{}: the daemon holds no exact container {}", member.node, member.id))?;
-            Ok((member.node.clone(), inspected(row)))
+                .ok_or_else(|| format!("{:?}: the daemon holds no exact container {}", member.node, member.id))?;
+            Ok((member.id.clone(), inspected(row)))
         }).collect()
     }
 
@@ -349,7 +350,7 @@ impl Silenced {
 
     /// The rules each member holds now, as its own packet filter lists them.
     pub fn rules(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
-        on_members(&self.members, |m| Ok((m.node.clone(), self.command(m, "rules")?))).into_iter().collect()
+        on_members(&self.members, |m| Ok((m.id.clone(), self.command(m, "rules")?))).into_iter().collect()
     }
 
     /// Every member holds the silence chain, referenced from INPUT and OUTPUT.
@@ -363,7 +364,7 @@ impl Silenced {
     /// ports outside its cut).
     pub fn lift(&self) -> Result<(), String> {
         let gone = |m: &Member| docker(&["inspect", "-f", "{{.State.Running}}", &m.id]).map_or(true, |running| running.trim() != "true");
-        let failed: Vec<String> = on_members(&self.members, |m| self.command(m, "lift").err().filter(|_| !gone(m)).map(|e| format!("{}: {e}", m.node))).into_iter().flatten().collect();
+        let failed: Vec<String> = on_members(&self.members, |m| self.command(m, "lift").err().filter(|_| !gone(m)).map(|e| format!("{:?}: {e}", m.node))).into_iter().flatten().collect();
         if failed.is_empty() {
             Ok(())
         } else {
@@ -435,11 +436,13 @@ fn inspected(c: &serde_json::Value) -> Inspected {
     }
 }
 
-/// The `(rafka.fabric, rafka.node)` labels the provider put on container `id`.
-pub fn labels_of(id: &str) -> Result<(String, String), String> {
-    let out = docker(&["inspect", "--format", "{{index .Config.Labels \"rafka.fabric\"}} {{index .Config.Labels \"rafka.node\"}}", id])?;
-    let (fabric, node) = out.split_once(' ').unwrap_or((out.as_str(), ""));
-    Ok((fabric.to_string(), node.to_string()))
+/// The `(rafka.fabric, rafka.node.path, rafka.node.name)` labels the provider put on container `id`.
+pub fn labels_of(id: &str) -> Result<(String, PathName), String> {
+    let raw = docker(&["inspect", "--format", "{{json .Config.Labels}}", id])?;
+    let labels: std::collections::BTreeMap<String, String> = serde_json::from_str(&raw).map_err(|e| format!("container {id} labels: {e}"))?;
+    let field = |key: &str| labels.get(key).cloned().ok_or_else(|| format!("container {id} is missing {key}"));
+    let location = PathName::new(field("rafka.node.path")?, field("rafka.node.name")?).map_err(|e| format!("container {id} location: {e}"))?;
+    Ok((field("rafka.fabric")?, location))
 }
 
 /// What an exact-container fault does to the container.
@@ -502,9 +505,9 @@ pub enum Refusal {
         /// The id.
         id: String,
         /// The published.
-        published: String,
+        published: PathName,
         /// The observed.
-        observed: String,
+        observed: PathName,
     },
     /// The container at this id started at another time: it is another run of the container now.
     NotThisContainer {
@@ -567,8 +570,8 @@ pub struct ExactContainer {
     pub id: String,
     /// The Fabric label the container carried.
     pub fabric_id: String,
-    /// The node's `path.name`.
-    pub node: String,
+    /// The node's separate path/name fields.
+    pub node: PathName,
     /// When the container started.
     pub started_at: String,
     /// The process id.
@@ -577,8 +580,8 @@ pub struct ExactContainer {
 
 impl ExactContainer {
     /// The container the daemon holds for `node` of the estate's Fabric right now.
-    pub async fn of(estate: &impl ContainerEstate, node: &str) -> Result<Self, Refusal> {
-        let id = estate.container_of(node).await.ok_or_else(|| Refusal::NoSuchContainer { id: format!("{node} of fabric {}", estate.fabric_id()) })?;
+    pub async fn of(estate: &impl ContainerEstate, node: &PathName) -> Result<Self, Refusal> {
+        let id = estate.container_of(node).await.ok_or_else(|| Refusal::NoSuchContainer { id: format!("{node:?} of fabric {}", estate.fabric_id()) })?;
         let i = inspect(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
         let (fabric_id, node) = labels_of(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
         Ok(Self { id, fabric_id, node, started_at: i.started_at, pid: i.pid })
@@ -590,8 +593,8 @@ impl ExactContainer {
     }
 
     /// The same id under another node label.
-    pub fn with_node(&self, node: &str) -> Self {
-        Self { node: node.into(), ..self.clone() }
+    pub fn with_node(&self, node: &PathName) -> Self {
+        Self { node: node.clone(), ..self.clone() }
     }
 
     /// The same id under another Fabric label.
@@ -628,7 +631,7 @@ impl ExactContainer {
             "rdm.testkit.fault.update.via-container-command",
             fault = fault.name(),
             container = %self.id,
-            node = %self.node,
+            node_path = %self.node.path, node_name = %self.node.name,
             fabric = %self.fabric_id,
             started_at = %self.started_at,
             outcome = tracing::field::Empty,
@@ -690,11 +693,11 @@ mod tests {
         assert!(running_address_in(net, "e", "true ").is_err(), "a running container off the network is refused");
 
         // The soak's listing at the failed unheard step: the third container listed had exited.
-        let listed = [("mesh1.gateway.1", "true 10.231.0.31"), ("mesh1.broker.1", "true 10.231.0.30"), ("mesh1.gateway.1", "false invalid IP"), ("mesh1.admin.1", "true 10.231.0.2")];
+        let listed = [(PathName::new("mesh1.gateway", "1").unwrap(), "true 10.231.0.31"), (PathName::new("mesh1.broker", "1").unwrap(), "true 10.231.0.30"), (PathName::new("mesh1.gateway", "1").unwrap(), "false invalid IP"), (PathName::new("mesh1.admin", "1").unwrap(), "true 10.231.0.2")];
         let mut unheard = Vec::new();
         for (i, (node, read)) in listed.iter().enumerate() {
             if let Some(ip) = running_address_in(net, &i.to_string(), read).expect("a listed container's read") {
-                unheard.push(Member { node: node.to_string(), id: i.to_string(), ip });
+                unheard.push(Member { node: node.clone(), id: i.to_string(), ip });
             }
         }
         let silenced = Silenced { network: net.into(), gateway: "10.231.0.1".into(), members: Vec::new(), unheard, host_cut: true, tools: Default::default() };

@@ -14,7 +14,7 @@ use rdm_admin::node_commands::NodeCommand;
 use std::sync::Mutex;
 use std::time::Duration;
 
-const NODE: &str = "mesh1.rpc.1";
+
 
 /// The provider: the runtime runs throughout; a terminate is recorded (a start asks none).
 #[derive(Default)]
@@ -31,7 +31,7 @@ impl DeploymentProvider for Running {
         "start-join-order".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { node: spec.node.to_string(), reason: "a start deploys nothing".into() })
+        Err(DeployError::Spawn { node: spec.node.clone(), reason: "a start deploys nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminated.lock().unwrap().push(h.deployment_id.to_string());
@@ -51,7 +51,7 @@ impl DeploymentProvider for Running {
 /// Every lifecycle event the start publishes, with the operation its op carries.
 #[derive(Default)]
 struct Events {
-    published: Mutex<Vec<(&'static str, String)>>,
+    published: Mutex<Vec<(&'static str, rdm_core::OperationId)>>,
 }
 
 impl Events {
@@ -135,16 +135,17 @@ impl NodeObserver for StartsWhole<'_> {
 /// node.started, so that the Pending node.joined sets stands over the Ready node.started set.
 #[tokio::test]
 async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_started() {
+    let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let builds = MemoryBuildStateAdapter::new();
     let build_id = BuildId::mint();
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    let name: PathName = NODE.parse().unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
+    let name: PathName = PathName::new("mesh1.rpc", "1").unwrap();
     let incarnation = IncarnationId::mint();
-    let mut node = Node::allocated(name.clone());
+    let mut node = Node::allocated(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
     node.node_id = NodeId::mint();
     node.incarnation_id = Some(incarnation.clone());
     node.provider = Some(ProviderKind::Process);
@@ -156,7 +157,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/start-order".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor_birth.node_id.clone(), incarnation: executor_birth.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-s52-start-order-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-s52-start-order-store-{}", NodeId::mint())),
@@ -168,7 +169,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-s52-start-order".into()) };
     let runtime = handle.fact().expect("the handle names its exact runtime");
-    let deployed = rdm_admin::join::Deployed { mesh: name.mesh.clone(), kind: name.kind,
+    let deployed = rdm_admin::join::Deployed { mesh: node.mesh.clone(), kind: node.kind,
         name: name.clone(),
         node_id: node.node_id.clone(),
         incarnation: incarnation.clone(),
@@ -182,7 +183,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     };
     let digest = rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: template.fabric_id.clone(),
-        node: rdm_core::MeshNode { mesh: name.mesh.clone(), kind: name.kind, node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
+        node: rdm_core::MeshNode { mesh: node.mesh.clone(), kind: node.kind, node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
         status: rdm_core::MemberStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
@@ -206,9 +207,11 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         template: &template,
         timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
     };
-    let out = pipeline.start(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
+    let operation = rdm_core::OperationId::node("node.start", &node.node_id);
+    let out = pipeline.start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
     assert!(out.is_ok(), "{out:?}");
     let published = events.published.lock().unwrap().clone();
+    assert!(published.iter().all(|(_, recorded)| recorded == &operation), "each event retains the admitted node ID: {published:?}");
     let order: Vec<&str> = published.iter().map(|(e, _)| *e).filter(|e| matches!(*e, "joined" | "node.started")).collect();
     assert_eq!(order, ["joined", "node.started"], "node.joined is taken at the admitted join, before the birth's node.started: {published:?}");
 }
@@ -275,7 +278,8 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 
     rt.block_on(async {
-        let builds = MemoryBuildStateAdapter::new();
+        let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted {
@@ -287,9 +291,9 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
 
-        let name: PathName = NODE.parse().unwrap();
+        let name: PathName = PathName::new("mesh1.rpc", "1").unwrap();
         let incarnation = IncarnationId::mint();
-        let mut node = Node::allocated(name.clone());
+        let mut node = Node::allocated(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         node.node_id = NodeId::mint();
         node.incarnation_id = Some(incarnation.clone());
         node.provider = Some(ProviderKind::Process);
@@ -303,7 +307,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/start-fault".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor_birth.node_id.clone(), incarnation: executor_birth.incarnation.clone() },
             env: Default::default(),
             data_root: std::env::temp_dir().join(format!("start-fault-{}", NodeId::mint())),
             store_dir: std::env::temp_dir().join(format!("start-fault-store-{}", NodeId::mint())),
@@ -322,7 +326,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             domain: Some("start-fault-domain".into()),
         };
         let runtime = handle.fact().expect("exact runtime");
-        let deployed = rdm_admin::join::Deployed { mesh: name.mesh.clone(), kind: name.kind,
+        let deployed = rdm_admin::join::Deployed { mesh: node.mesh.clone(), kind: node.kind,
             name: name.clone(),
             node_id: node.node_id.clone(),
             incarnation: incarnation.clone(),
@@ -376,9 +380,9 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         };
 
         // 1. Attempt 1: lost reply at `StartNode` -> fails at `StartNode` with no downstream steps.
-        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
         let err1 = pipeline
-            .start(&StartRequest { build_id: build_id.clone(), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
+            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
             .await
             .expect_err("lost reply at StartNode must fail");
         assert_eq!(err1.step, StartStep::StartNode.name());
@@ -387,9 +391,9 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
 
         // 2. Attempt 2: join failure after `CommandAccepted` -> fails at `StartNode` naming `node.join`;
         // no `WaitForNodeReady` or `Complete` receipt follows (node-start.md:88-96).
-        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 2, executor: executor_birth.clone() }).await.unwrap();
         let err2 = pipeline
-            .start(&StartRequest { build_id: build_id.clone(), attempt: 2, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
+            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 2, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
             .await
             .expect_err("join failure at StartNode must fail");
         assert_eq!(err2.step, StartStep::StartNode.name());
@@ -399,8 +403,8 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         // 3. Attempt 3: `StartNode` succeeds (`Started`), then the birth is suspended (`os-stopped`) and
         // the executor is cut at `WaitForNodeReady` before any terminal receipt.
         *observer.ready_err.lock().unwrap() = Some("birth is os-stopped before readiness".into());
-        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: "mesh1.admin.1".into() }).await.unwrap();
-        let req3 = StartRequest { build_id: build_id.clone(), attempt: 3, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() };
+        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: executor_birth.clone() }).await.unwrap();
+        let req3 = StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 3, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() };
         tokio::select! {
             res = pipeline.start(&req3) => panic!("attempt 3 should be cut while suspended at WaitForNodeReady, got {res:?}"),
             _ = observer.ready_entered.notified() => {}
@@ -410,9 +414,9 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         // 4. Attempt 4: birth is resumed (`ready_err = None`); attempt 4 reuses attempt 3's `StartNode`
         // receipt without re-sending `start-node` and completes `WaitForNodeReady` and `Complete`.
         *observer.ready_err.lock().unwrap() = None;
-        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 4, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 4, executor: executor_birth.clone() }).await.unwrap();
         pipeline
-            .start(&StartRequest { build_id: build_id.clone(), attempt: 4, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
+            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id.clone(), attempt: 4, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
             .await
             .expect("attempt 4 must reuse StartNode receipt and complete once resumed");
         assert_eq!(observer.send_calls.load(Ordering::SeqCst), 3, "attempt 4 must reuse StartNode without re-sending");
@@ -429,9 +433,9 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             })
             .await
             .unwrap();
-        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id_2.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id_2.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
         pipeline
-            .start(&StartRequest { build_id: build_id_2.clone(), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
+            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: build_id_2.clone(), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
             .await
             .expect("replayed start answered AlreadyAdmitted must complete");
         assert_eq!(observer.send_calls.load(Ordering::SeqCst), 4);

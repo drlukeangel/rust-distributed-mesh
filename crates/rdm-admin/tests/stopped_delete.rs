@@ -33,7 +33,7 @@ impl DeploymentProvider for Exits {
         "i143-3072-delete".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this cell births nothing".into() })
+        Err(DeployError::Spawn { node: spec.node.clone(), reason: "this cell births nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         self.terminated.lock().unwrap().push(h.deployment_id.to_string());
@@ -64,11 +64,11 @@ struct Recorded {
 #[async_trait::async_trait]
 impl NodeObserver for Recorded {
     async fn send_command(&self, node: &Node, cmd: NodeCommand, _: &CommandContext) -> CommandAdmission {
-        self.sent.lock().unwrap().push(format!("{cmd:?} to {}", node.name));
+        self.sent.lock().unwrap().push(format!("{cmd:?} to {}", node.node_id));
         CommandAdmission::Admitted {}
     }
     async fn await_completion(&self, node: &Node, cmd: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
-        self.sent.lock().unwrap().push(format!("await {cmd:?} from {}", node.name));
+        self.sent.lock().unwrap().push(format!("await {cmd:?} from {}", node.node_id));
         Completion::Received {}
     }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
@@ -100,14 +100,15 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
     let (capture, layer) = rdm_transport::span_capture("i143-3072-stopped-delete", exporter.clone());
     let _g = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
+    let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let builds = MemoryBuildStateAdapter::new();
     let build_id = BuildId::mint();
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
+    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
     node.node_id = NodeId::mint();
     node.incarnation_id = Some(IncarnationId::mint());
     node.provider = Some(ProviderKind::Process);
@@ -117,7 +118,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/stopped-delete".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3072-delete-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3072-delete-store-{}", NodeId::mint())),
@@ -139,7 +140,7 @@ async fn a_stopped_nodes_delete_terminates_its_exact_runtime_and_sends_no_stop()
         timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
-    let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), unreached: false };
+    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), unreached: false };
     let out = pipeline.delete_node(&req).await;
     // The trace first: a red below still names the steps the delete ran, with their trace id.
     capture.flush(Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
@@ -184,7 +185,7 @@ impl DeploymentProvider for StopStepFaultProvider {
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
-            node: spec.node.to_string(),
+            node: spec.node.clone(),
             reason: "stop deploys nothing".into(),
         })
     }
@@ -239,7 +240,7 @@ impl NodeObserver for StopStepFaultObserver {
 
 #[derive(Default)]
 struct StopLifecycleRecorder {
-    stopped_ops: Mutex<Vec<String>>,
+    stopped_ops: Mutex<Vec<rdm_core::OperationId>>,
 }
 
 #[async_trait::async_trait]
@@ -284,7 +285,8 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
     let _guard = tracing::dispatcher::set_default(&dispatch);
 
     rt.block_on(async {
-        let builds = MemoryBuildStateAdapter::new();
+        let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted {
@@ -300,7 +302,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
 
-        let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         node.node_id = NodeId::mint();
         node.incarnation_id = Some(IncarnationId::mint());
         node.provider = Some(ProviderKind::Process);
@@ -319,9 +321,9 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             executable: "/nonexistent/node-stop-chaos".into(),
             seeds: vec![("adminkey".into(), "127.0.0.1:41002".parse().unwrap())],
             launcher: rdm_core::launch::Launcher {
-                name: "mesh1.admin.1".parse().unwrap(),
-                node_id: NodeId::mint(),
-                incarnation: IncarnationId::mint(),
+                mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+                node_id: executor.node_id.clone(),
+                incarnation: executor.incarnation.clone(),
             },
             env: Default::default(),
             data_root: std::env::temp_dir().join(format!("stop-chaos-{}", NodeId::mint())),
@@ -364,17 +366,17 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         // 1. Lost reply at StopNode (CommandAdmission::Indeterminate):
         //    AwaitNodeLeft fails because stop-node was not admitted; no NodeStopped is published.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 1,
-                executor: "mesh1.admin.1".into(),
+                executor: executor.clone(),
             })
             .await
             .unwrap();
         let err_lost = pipeline
-            .stop(&DeleteRequest {
+            .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
                 build_id: build_id.clone(),
                 attempt: 1,
                 node: node.clone(),
@@ -390,12 +392,12 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         // 2. Kill at AwaitNodeLeft (runtime Exited before Stopped reply arrives):
         //    StopNode is admitted, then runtime exits while AwaitNodeLeft waits; fails Unavailable.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 2,
-                executor: "mesh1.admin.1".into(),
+                executor: executor.clone(),
             })
             .await
             .unwrap();
@@ -403,7 +405,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.hold_completion.lock().unwrap() = true;
         *provider.status.lock().unwrap() = DeploymentStatus::Exited { code: Some(137) };
         let err_kill = pipeline
-            .stop(&DeleteRequest {
+            .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
                 build_id: build_id.clone(),
                 attempt: 2,
                 node: node.clone(),
@@ -421,12 +423,12 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         //    OsStopped is not Exited; when the stopped reply does not arrive before the completion
         //    deadline, AwaitNodeLeft fails DeadlineExceeded and publishes no NodeStopped.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 3,
-                executor: "mesh1.admin.1".into(),
+                executor: executor.clone(),
             })
             .await
             .unwrap();
@@ -434,7 +436,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.hold_completion.lock().unwrap() = false;
         *observer.completion.lock().unwrap() = Completion::Deadline {};
         let err_os_stop = pipeline
-            .stop(&DeleteRequest {
+            .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
                 build_id: build_id.clone(),
                 attempt: 3,
                 node: node.clone(),
@@ -453,12 +455,12 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         //    completes AwaitNodeLeft from the recorded Stopped receipt, publishes NodeStopped once,
         //    and records Complete.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 4,
-                executor: "mesh1.admin.1".into(),
+                executor: executor.clone(),
             })
             .await
             .unwrap();
@@ -473,29 +475,29 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
                 build_id: build_id.clone(),
                 mesh: None,
                 attempt: 4,
-                operation: "node.stop:mesh1.rpc.1".into(),
+                operation: rdm_core::OperationId::node("node.stop", &node.node_id),
                 step: DeleteStep::StopNode.name().into(),
                 outcome: rdm_admin::build_state::StepOutcome::Complete,
                 output: Some(serde_json::to_value(&stopped_admission).unwrap()),
-                executor: Some("adminkey@127.0.0.1:41002".into()),
+                executor: Some(executor.clone()),
             })
             .await
             .unwrap();
 
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 5,
-                executor: "mesh1.admin.1".into(),
+                executor: executor.clone(),
             })
             .await
             .unwrap();
         *provider.status.lock().unwrap() = DeploymentStatus::Running;
         let sent_before_resume = *observer.commands_sent.lock().unwrap();
         pipeline
-            .stop(&DeleteRequest {
+            .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
                 build_id: build_id.clone(),
                 attempt: 5,
                 node: node.clone(),
@@ -511,7 +513,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         );
         assert_eq!(
             *lifecycle.stopped_ops.lock().unwrap(),
-            vec!["node.stop:mesh1.rpc.1".to_string()],
+            vec![rdm_core::OperationId::node("node.stop", &node.node_id)],
             "NodeStopped must be published exactly once upon completion"
         );
     });

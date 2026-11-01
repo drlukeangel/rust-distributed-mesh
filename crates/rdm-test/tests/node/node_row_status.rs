@@ -70,11 +70,11 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let root = estate.fabric_store_root();
 
     // Ready: every node's row says so.
-    let ready: Vec<(String, String)> = views.iter().map(|v| (v.name.to_string(), row_status(&root, v.node_id.as_str()))).collect();
+    let ready: Vec<(String, String)> = views.iter().map(|v| (v.node_id.to_string(), row_status(&root, v.node_id.as_str()))).collect();
     assert!(ready.iter().all(|(_, s)| s == "ready"), "every node of a ready fabric is ready on its row: {ready:?}");
 
     // The rpc node that is not its type's primary: a primary is stopped only after node.primary.update.
-    let subject = views.iter().find(|v| v.name.kind == rdm_core::NodeKind::RpcNode && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds an rpc node that is not its type's primary: {views:?}"));
+    let subject = views.iter().find(|v| v.kind == rdm_core::NodeKind::RpcNode && !v.is_primary).unwrap_or_else(|| panic!("mesh1 holds an rpc node that is not its type's primary: {views:?}"));
     let (path, node_id): (PathName, String) = (subject.name.clone(), subject.node_id.to_string());
     let nodes = estate.nodes_obj().await;
 
@@ -85,9 +85,9 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
             "node.start" => nodes.start(&path).await,
             _ => nodes.delete(&path).await,
         };
-        let frames = frames(stream.unwrap_or_else(|e| panic!("{call} of {path} was refused: {e}"))).await;
+        let frames = frames(stream.unwrap_or_else(|e| panic!("{call} of {path:?} was refused: {e}"))).await;
         assert_eq!(frames.last(), Some(&Frame::Complete), "{call}: {frames:?}");
-        assert_eq!(row_status(&root, &node_id), then, "{path}'s row says {then} once {call} completed");
+        assert_eq!(row_status(&root, &node_id), then, "{path:?}'s row says {then} once {call} completed");
     }
 
     estate.stop().await;
@@ -114,6 +114,6 @@ async fn a_node_row_carries_its_status_through_ready_stop_and_start() {
     let stops = crate::node_stop::stop_row_writes();
     assert!(
         stops.iter().any(|stop| starts.iter().any(|start| stops.iter().any(|deleted| created.iter().chain(stop).chain(start).chain(&deleting).chain(deleted).eq(all.iter())))),
-        "{path}'s mesh-primary wrote each status from the node's frame or its own receipt, in states.md's order, each stop's frames moving the row until the node's stopped is taken: {all:?}"
+        "{path:?}'s mesh-primary wrote each status from the node's frame or its own receipt, in states.md's order, each stop's frames moving the row until the node's stopped is taken: {all:?}"
     );
 }

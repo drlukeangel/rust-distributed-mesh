@@ -1,13 +1,14 @@
 //! product=mesh, feature=node-lifecycle, subfeature=node-connections-delete, rung=MN, provider=process.
 //!
 //! `node.connection.delete { All }` as a Build (node-connections-delete.md):
-//! `node.connection.delete:<path>` as the next attempt of the accepted Build. Its mesh-primary sets
+//! `node.connection.delete` with an explicit node ID subject as the next attempt of the accepted Build. Its mesh-primary sets
 //! the birth connections-deleting, commands the birth, holds its `node.connections.deleted` and
 //! stops there: the process keeps running.
 
 use crate::build_log;
 use rdm_client::{Frame, NodeEvent, NodeStatus};
 use rdm_core::status::StatusReply;
+use rdm_core::{NodeId, PathName};
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -22,15 +23,27 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &str, step: &str) -> Option<&'a Value> {
+fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &PathName, step: &str) -> Option<&'a Value> {
     named(spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt && s(&sp["attributes"]["node"]) == node && s(&sp["attributes"]["step"]) == step)
+        .find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node_path"] == node.path && sp["attributes"]["node_name"] == node.name && s(&sp["attributes"]["step"]) == step)
+}
+
+/// Read the operation attempt from its record, matching the accepted Build and exact target birth.
+async fn connection_attempt(estate: &Estate, accepted: &rdm_client::Accepted, before: &Value) -> Value {
+    let id = accepted.build_id.to_string();
+    let record = build_log::build_fact(estate, &id, "the exact connection-deletion attempt", Duration::from_secs(30), |b| {
+        b.attempt >= accepted.attempt && serde_json::to_value(b).is_ok_and(|value| {
+            value["reason"] == "delete-connections" && value["action"]["action"] == "delete_connections"
+                && value["action"]["node_id"] == before["node_id"] && value["action"]["from_incarnation"] == before["incarnation_id"]
+        })
+    }).await.unwrap_or_else(|end| panic!("{end}"));
+    serde_json::to_value(record).expect("a Build view serializes")
 }
 
 /// CONTRACT: `node.connection.delete { All }` opens the next attempt of the accepted Build (reason
 /// delete-connections, action delete_connections targeting the live birth, no Build minted). The
-/// operation is exactly `node.connection.delete:<path>`: the one call through the birth's
+/// operation is exactly `node.connection.delete` with an explicit node ID subject: the one call through the birth's
 /// mesh-primary, then Complete. The Build completes on node.connections.deleted; the node is
 /// connections-deleted under the SAME NodeId and incarnation and its process is still running
 /// afterwards. No stop, no terminate, no NodeDeleted
@@ -43,27 +56,29 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
-    const NODE: &str = "mesh1.rpc.1";
-    let before = estate.node_value(NODE).await;
-    let pid = estate.pid_of(NODE).await;
-    let mut deleting = estate.nodes_obj().await.delete_connections(&NODE.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.connection.delete of {NODE}: {e}"));
+    let node = PathName::new("mesh1.rpc", "1").unwrap();
+    let before = estate.node_value(&node).await;
+    let pid = estate.pid_of(&node).await;
+    let mut deleting = estate.nodes_obj().await.delete_connections(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.connection.delete of {node:?}: {e}"));
     let r = deleting.accepted().clone();
     assert_eq!(r.build_id.to_string(), birth_build, "no Build is minted: {r:?}");
-    let attempt_no = u64::from(r.attempt) + u64::from(before["is_primary"] == true);
-    let opened = build_log::build_fact(&estate, &birth_build, "the node.connection.delete attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "delete-connections")).await.unwrap_or_else(|end| panic!("{end}"));
-    let opened = serde_json::to_value(opened).expect("a Build view serializes");
-    assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("delete_connections", NODE), "{opened}");
-    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "targeted to the live birth: {opened}");
     let frames = Estate::frames_of(&mut deleting).await;
     let events: Vec<NodeEvent> = frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect();
     assert_eq!(events, vec![NodeEvent::ConnectionsDeleted], "the reply stream carries node.connections.deleted and nothing after it: {frames:?}");
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
+    let opened = connection_attempt(&estate, &r, &before).await;
+    let attempt_no = opened["attempt"].as_u64().expect("recorded operation attempt");
+    assert_eq!(opened["action"]["action"], "delete_connections", "{opened}");
+    assert_eq!(opened["action"]["path"], serde_json::to_value(&node).unwrap(), "{opened}");
+    assert_eq!(opened["action"]["node_id"], before["node_id"], "{opened}");
+    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "targeted to the live birth: {opened}");
+
     build_log::attempt_complete(&estate, &birth_build, attempt_no, SETTLE).await;
 
     // The birth is connections-deleted (node-connections-delete.md step 4: its mesh-primary sets it from
     // the `Established` completion; a read answers the row's status, Q233), the same birth, and its
     // process is still alive.
-    let after = estate.until_node(NODE, &format!("{NODE} is connections-deleted"), Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ConnectionsDeleted).map(|n| serde_json::to_value(n).expect("a view serializes"))).await;
+    let after = estate.until_node(&node, &format!("{node:?} is connections-deleted"), Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ConnectionsDeleted).map(|n| serde_json::to_value(n).expect("a view serializes"))).await;
     assert_eq!(after["node_id"], before["node_id"]);
     assert_eq!(after["incarnation_id"], before["incarnation_id"]);
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists(), "the process {pid} whose connections were deleted is still running");
@@ -73,21 +88,21 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     estate.stop().await;
     let spans = estate.spans();
     let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt).unwrap();
-    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("node.connection.delete:{NODE}"), "one node.connection.delete operation and nothing else: {reconcile}");
+    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("{:?}", vec![rdm_core::OperationId::node("node.connection.delete", &serde_json::from_value::<NodeId>(before["node_id"].clone()).unwrap())]), "one node.connection.delete operation and nothing else: {reconcile}");
     let mut last = 0u64;
     for step in ["DeleteConnections", "Complete"] {
-        let sp = step_span(&spans, &birth_build, &attempt, NODE, step).unwrap_or_else(|| panic!("step {step} ran"));
+        let sp = step_span(&spans, &birth_build, &attempt, &node, step).unwrap_or_else(|| panic!("step {step} ran"));
         assert_eq!(s(&sp["attributes"]["outcome"]), "complete", "{sp}");
         let at = sp["start_unix_nano"].as_u64().unwrap();
         assert!(at >= last, "{step} starts before the step it follows");
         last = at;
     }
     for step in ["StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleting", "NodeDeleted", "RemoveTopologyMembership"] {
-        assert!(step_span(&spans, &birth_build, &attempt, NODE, step).is_none(), "a standalone node.connection.delete runs no {step}");
+        assert!(step_span(&spans, &birth_build, &attempt, &node, step).is_none(), "a standalone node.connection.delete runs no {step}");
     }
     assert!(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().all(|sp| sp["attributes"]["node_id"] != before["node_id"]), "a node.connection.delete deletes no node");
 
-    let op = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE).expect("the node operation span");
+    let op = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node_id"] == before["node_id"]).expect("the node operation span");
     estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
 }
 
@@ -107,15 +122,18 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
-    const NODE: &str = "mesh1.rpc.1";
-    let before = estate.node_value(NODE).await;
-    let mut deleting = estate.nodes_obj().await.delete_connections(&NODE.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.connection.delete of {NODE}: {e}"));
+    let node = PathName::new("mesh1.rpc", "1").unwrap();
+    let before = estate.node_value(&node).await;
+    let mut deleting = estate.nodes_obj().await.delete_connections(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.connection.delete of {node:?}: {e}"));
+    let accepted = deleting.accepted().clone();
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
+    let recorded_attempt = connection_attempt(&estate, &accepted, &before).await;
+    let attempt = recorded_attempt["attempt"].as_u64().expect("recorded operation attempt").to_string();
     estate.stop().await;
     let spans = estate.spans();
     // The operation's own run: its DeleteConnections step and everything in its trace.
-    let step = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["node"]) == NODE && s(&sp["attributes"]["step"]) == "DeleteConnections").cloned().expect("the DeleteConnections step");
+    let step = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node_path"] == node.path && sp["attributes"]["node_name"] == node.name && s(&sp["attributes"]["step"]) == "DeleteConnections").cloned().expect("the DeleteConnections step");
     let trace = s(&step["trace_id"]);
     let run: Vec<&Value> = spans.iter().filter(|sp| s(&sp["trace_id"]) == trace).collect();
     let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
@@ -127,23 +145,23 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
         .filter(|sp| start(sp) >= start(&step))
         .filter(|sp| {
             let n = sp["name"].as_str().unwrap_or_default();
-            (n == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node"]) == NODE)
+            (n == "rdm.node_admin.node.update.via-connections-deleting" && sp["attributes"]["node_id"] == before["node_id"])
                 || ((n == "rdm.mesh.topology.update.from-command-admitted" || n == "rdm.mesh.topology.update.from-status-report") && s(&sp["attributes"]["node_id"]) == node_id && s(&sp["attributes"]["status"]) == "ConnectionsDeleting")
         })
         .collect();
     // The mesh-primary's call carrying the command to the node.
     let (step_start, step_end) = (start(&step), step["end_unix_nano"].as_u64().unwrap_or(0));
-    let calls: Vec<&Value> = run.iter().copied().filter(|sp| sp["name"] == "rdm.node_rpc.request.update.via-call" && sp["attributes"]["target"].as_str().is_some_and(|t| t.contains(&node_id)) && start(sp) >= step_start && start(sp) <= step_end).collect();
+    let calls: Vec<&Value> = run.iter().copied().filter(|sp| sp["name"] == "rdm.node_rpc.request.update.via-call" && sp["attributes"]["target"] == format!("{:?}", rdm_transport::NodeTarget::ExactNode(serde_json::from_value::<NodeId>(before["node_id"].clone()).unwrap())) && start(sp) >= step_start && start(sp) <= step_end).collect();
     let first_call = calls.iter().map(|sp| start(sp)).min().expect("the mesh-primary's call to the node");
     let early: Vec<&&Value> = records.iter().filter(|sp| start(sp) < first_call).collect();
-    assert!(early.is_empty(), "nothing is recorded for {NODE} before its command leaves: {early:#?}");
+    assert!(early.is_empty(), "nothing is recorded for {node:?} before its command leaves: {early:#?}");
     let command = calls.iter().find(|sp| s(&sp["attributes"]["op"]) == "34").unwrap_or_else(|| panic!("the command rides NodeCommand op 0x22 (34): {calls:#?}"));
     let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-connections-deleting").expect("the node reports its admission on the stream");
     let recorded = records.iter().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting").expect("the mesh-primary records connections-deleting");
     assert!(!s(&recorded["attributes"]["invocation_id"]).is_empty(), "the record names the invocation that reported it: {recorded}");
     assert_eq!(s(&recorded["attributes"]["seq"]), "1", "the 0x22 progress position, not a state-derived duplicate decision: {recorded}");
     // The completion as the mesh-primary takes it off the same ordered stream, after the record.
-    let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && s(&sp["attributes"]["node"]) == NODE).expect("the mesh-primary holds the node's completion");
+    let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && sp["attributes"]["node_id"] == before["node_id"]).expect("the mesh-primary holds the node's completion");
     assert_eq!(s(&completed["attributes"]["receipt"]), "established", "{completed}");
     assert!(start(command) <= start(admitted) && start(admitted) <= start(recorded) && start(recorded) <= start(completed), "the send, the node's admission, the mesh-primary's record, then the completion: {command} {admitted} {recorded} {completed}");
     println!("node.connection.delete on its command stream: http://192.168.68.99:16687/trace/{trace}");
@@ -170,8 +188,8 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
 
     let nodes = estate.nodes_obj().await;
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
-    let me = primary.name.to_string();
+    let primary = mesh.iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).cloned().expect("node.get names mesh1's primary");
+    let me = primary.node_id.to_string();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), node_id: primary.node_id.clone(), incarnation: primary.incarnation_id.clone().expect("the primary's birth") };
     let route = rdm_transport::RouteChoice::Direct;
 
@@ -190,7 +208,7 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
     for scope in ["connections", "all"] {
         let carried = named(&spans, "rdm.node_admin.connection.delete.via-mesh-primary")
             .into_iter()
-            .find(|sp| s(&sp["attributes"]["node"]) == me && s(&sp["attributes"]["subject"]) == me && s(&sp["attributes"]["scope"]) == scope)
+            .find(|sp| sp["attributes"]["node_path"] == primary.name.path && sp["attributes"]["node_name"] == primary.name.name && s(&sp["attributes"]["subject_id"]) == me && s(&sp["attributes"]["scope"]) == scope)
             .cloned()
             .unwrap_or_else(|| panic!("{me} carries its own {scope} node.connection.delete"));
         assert_eq!((s(&carried["attributes"]["carried"]).as_str(), s(&carried["attributes"]["outcome"]).as_str()), ("in-process", "connections-deleted"), "{carried}");
@@ -202,9 +220,9 @@ async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command
         assert!(dialled.is_empty(), "no op 0x22 call leaves {me} for its own birth: {dialled:#?}");
         if scope == "all" {
             let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.connection.delete.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary's own birth reports its admission");
-            let recorded = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary records its own connections-deleting");
-            assert_eq!((s(&recorded["attributes"]["recorder"]).as_str(), s(&recorded["attributes"]["reported_by"]).as_str()), (me.as_str(), "node"), "{recorded}");
-            let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && s(&sp["attributes"]["node"]) == me).expect("the primary holds its own completion");
+            let recorded = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node_id"]) == me).expect("the primary records its own connections-deleting");
+            assert_eq!((s(&recorded["attributes"]["recorder_node_id"]).as_str(), s(&recorded["attributes"]["reported_by"]).as_str()), (me.as_str(), "node"), "{recorded}");
+            let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && s(&sp["attributes"]["node_id"]) == me).expect("the primary holds its own completion");
             assert!(start(admitted) <= start(recorded) && start(recorded) <= start(completed), "its own report, then its record, then the completion: {admitted} {recorded} {completed}");
             println!("the mesh-primary's own node.connection.delete All: http://192.168.68.99:16687/trace/{trace}");
             estate.record_trace_url(&trace);

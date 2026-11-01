@@ -61,9 +61,9 @@ pub use rdm_core::views::{AtlasNodeView, AtlasView, ConnectionView, ConnectionsV
 /// Executable bindings: what each created path's config names (build-deployment.md), and a
 /// consumer's per-kind set a caller expands into per-path entries before the typed call.
 pub use rdm_core::binding;
-/// The node kind a `path.name` carries (`admin`, `rpc`, `broker`, `gateway` or `compute`).
+/// The explicitly declared node kind; neither path nor name encodes it.
 pub use rdm_core::NodeKind as LaunchKind;
-/// A node's `path.name`, as the typed objects name nodes.
+/// A structured pair of separate path and name fields, used for composite lookups; NodeId is identity.
 pub use rdm_core::PathName;
 /// A Build's id as node-admin returns it: the one Crockford id type (R-BI5), refused by name when
 /// it is anything else.

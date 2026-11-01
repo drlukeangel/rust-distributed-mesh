@@ -26,7 +26,7 @@ fn topology(rpcs: u32) -> FabricTopology {
     let mut t = FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap());
     let mesh = t.meshes.get_mut("mesh1").unwrap();
     for i in 1..=rpcs {
-        let path: PathName = format!("mesh1.rpc.{i}").parse().unwrap();
+        let path: PathName = PathName::new("mesh1.rpc", i.to_string()).unwrap();
         let mut spec = rdm_core::meta::NodeSpec::default_for(path.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         spec.config.insert("note".into(), "n".repeat(256));
         spec.tags.insert(format!("t{}", i % 7));
@@ -38,11 +38,12 @@ fn topology(rpcs: u32) -> FabricTopology {
 
 /// Build `id`, accepted at `at` over `t`; its attempt 1 claimed by mesh1.admin.1, `receipts` written,
 /// and its verdict.
-async fn build(log: &MemoryBuildStateAdapter, id: &BuildId, at: u64, t: FabricTopology, receipts: &[(&str, StepOutcome)], verdict: AttemptOutcome) {
+async fn build(log: &MemoryBuildStateAdapter, id: &BuildId, at: u64, t: FabricTopology, receipts: &[(rdm_core::OperationId, StepOutcome)], verdict: AttemptOutcome) {
+    let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, submitted_change: None, submitted_at_ms: at }).await.unwrap();
-    log.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    log.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
     for (operation, outcome) in receipts {
-        let receipt = BuildStepReceipt { build_id: id.clone(), attempt: 1, operation: operation.to_string(), step: "Complete".into(), outcome: outcome.clone(), output: None, executor: Some("mesh1.admin.1".into()), mesh: None };
+        let receipt = BuildStepReceipt { build_id: id.clone(), attempt: 1, operation: operation.clone(), step: "Complete".into(), outcome: outcome.clone(), output: None, executor: Some(executor_birth.clone()), mesh: None };
         log.append_step_receipt(&receipt).await.unwrap();
     }
     log.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: verdict }).await.unwrap();
@@ -52,7 +53,7 @@ async fn build(log: &MemoryBuildStateAdapter, id: &BuildId, at: u64, t: FabricTo
 async fn fabric_primary(log: Arc<dyn BuildStateAdapter>) -> (iroh::Endpoint, ResolvedNode, Router) {
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
     let served = me.clone();
     let server = ServerBuilder::new()
         .serve_stream::<Build, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req, sink| {
@@ -68,7 +69,7 @@ async fn fabric_primary(log: Arc<dyn BuildStateAdapter>) -> (iroh::Endpoint, Res
         .expect("the catalog is built");
     let router = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    (ep.clone(), ResolvedNode { node_id, name: me, endpoint_id: ep.id(), transport_addr: addr, incarnation }, router)
+    (ep.clone(), ResolvedNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node_id, name: me, endpoint_id: ep.id(), transport_addr: addr, incarnation }, router)
 }
 
 async fn caller(fp: &ResolvedNode) -> (Arc<NodeRpcClient>, iroh::Endpoint) {
@@ -100,10 +101,10 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
     tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap().block_on(async {
         let log = Arc::new(MemoryBuildStateAdapter::new());
         let (b1, b2, b3) = (BuildId::mint(), BuildId::mint(), BuildId::mint());
-        build(&log, &b1, 1, topology(1), &[("node.create:mesh1.rpc.1", StepOutcome::Complete)], AttemptOutcome::Converged).await;
-        build(&log, &b2, 2, topology(300), &[("node.create:mesh1.rpc.2", StepOutcome::Complete)], AttemptOutcome::Converged).await;
+        build(&log, &b1, 1, topology(1), &[(rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap()), StepOutcome::Complete)], AttemptOutcome::Converged).await;
+        build(&log, &b2, 2, topology(300), &[(rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "2").unwrap()), StepOutcome::Complete)], AttemptOutcome::Converged).await;
         let failed = StepOutcome::Failed { reason: "the launch of mesh1.rpc.4 exited 1".into(), code: rdm_core::outcome::Code::FailedPrecondition };
-        build(&log, &b3, 3, topology(4), &[("node.create:mesh1.rpc.3", StepOutcome::Complete), ("node.create:mesh1.rpc.4", failed)], AttemptOutcome::Failed { reason: "node.create:mesh1.rpc.4 failed".into(), code: rdm_core::outcome::Code::FailedPrecondition }).await;
+        build(&log, &b3, 3, topology(4), &[(rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap()), StepOutcome::Complete), (rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "4").unwrap()), failed)], AttemptOutcome::Failed { reason: "node.create failed for path mesh1.rpc, name 4".into(), code: rdm_core::outcome::Code::FailedPrecondition }).await;
         assert_eq!(log.current_build().await.unwrap().into_build_id(), Some(b2.clone()), "the setup: b2 is the current Build, the failed b3 skipped");
 
         let (ep, fp, _router) = fabric_primary(log.clone()).await;
@@ -129,8 +130,8 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
             assert_eq!((got.phase, got.attempt, got.executor.clone(), got.reason.clone(), got.last_failure.clone()), (phase, held.attempt, held.executor.clone(), held.reason.as_str().to_string(), held.last_failure.clone()), "{}'s header is its log's", got.build_id);
             let specs: Vec<rdm_core::meta::NodeSpec> = held.topology.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
             assert_eq!(got.nodes, specs, "{}'s topology is every node's create spec, whole", got.build_id);
-            let receipts: Vec<(String, bool)> = got.steps.iter().map(|s| (s.operation.clone(), s.result == StepResult::Complete)).collect();
-            let held_receipts: Vec<(String, bool)> = held.steps.iter().map(|s| (s.operation.clone(), s.outcome == StepOutcome::Complete)).collect();
+            let receipts: Vec<(rdm_core::OperationId, bool)> = got.steps.iter().map(|s| (s.operation.clone(), s.result == StepResult::Complete)).collect();
+            let held_receipts: Vec<(rdm_core::OperationId, bool)> = held.steps.iter().map(|s| (s.operation.clone(), s.outcome == StepOutcome::Complete)).collect();
             assert_eq!(receipts, held_receipts, "{}'s receipts are its log's", got.build_id);
         }
         assert_eq!(every[1].nodes.len(), 301, "b2's topology: mesh1.admin.1 and 300 rpc nodes");

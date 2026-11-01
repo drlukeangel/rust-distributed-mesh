@@ -17,6 +17,10 @@ pub struct MemberAddr(iroh::EndpointAddr);
 
 /// A joined member of one mesh's topology view (see the module docs).
 pub struct Member {
+    /// Separate descriptive path and name; the publisher uses its minted node ID.
+    pub name: rdm_core::PathName,
+    /// Explicit declared node kind.
+    pub kind: rdm_core::NodeKind,
     /// Its topology view: the mesh channel joined and its declared app types held.
     pub topology_view: TopologyView,
     /// The publisher identity its app events are sourced from.
@@ -27,23 +31,23 @@ pub struct Member {
 }
 
 impl Member {
-    /// A member named `name` (a `path.name`; its first segment is the mesh's name) of the mesh `mesh`
+    /// A member named `name` with explicit `mesh_name` and `kind`, of the mesh `mesh`
     /// of `fabric`, joined through `seeds` and declaring `types`, under a publisher identity minted
     /// for it. A member that cannot bind or join is a defect of the cell: it panics naming why.
-    pub async fn join(fabric: &FabricId, mesh: &MeshId, name: &str, seeds: &[MemberAddr], types: &[&str]) -> Member {
+    pub async fn join(fabric: &FabricId, mesh: &MeshId, name: rdm_core::PathName, mesh_name: &str, kind: rdm_core::NodeKind, seeds: &[MemberAddr], types: &[&str]) -> Member {
         let transport = iroh::endpoint::QuicTransportConfig::builder().build();
         let endpoint = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().expect("a loopback socket address"), vec![iroh_gossip::ALPN.to_vec()], transport)
             .await
-            .unwrap_or_else(|e| panic!("{name}: the member's endpoint does not bind: {e}"));
+            .unwrap_or_else(|e| panic!("{name:?}: the member's endpoint does not bind: {e}"));
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
         let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let author = PublisherId { node: name.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let mesh_name = name.split('.').next().unwrap_or(name);
-        let topology_view = TopologyView::join(&gossip, &endpoint, fabric, mesh_name, mesh, name, rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect(), types)
+        let node_id = NodeId::mint();
+        let author = PublisherId { node: node_id.to_string(), node_id, incarnation: IncarnationId::mint() };
+        let topology_view = TopologyView::join(&gossip, &endpoint, fabric, mesh_name, mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect(), types)
             .await
-            .unwrap_or_else(|e| panic!("{name}: the member does not join mesh {mesh_name} ({mesh}): {e}"));
-        topology_view.set_author(&author);
-        Member { topology_view, author, endpoint, gossip, _router: router }
+            .unwrap_or_else(|e| panic!("{name:?}: the member does not join mesh {mesh_name} ({mesh}): {e}"));
+        topology_view.set_author(&author, None);
+        Member { name, kind, topology_view, author, endpoint, gossip, _router: router }
     }
 
     /// Where this member is reached: its endpoint and the loopback address it bound.

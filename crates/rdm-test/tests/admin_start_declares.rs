@@ -42,7 +42,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
 /// A launch of `name` by `root` over its own data dir `dir`, on the root's store root `store`: every
 /// admin of a fabric reads the one Build storage (Q292).
-fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::path::Path) -> Launch {
+fn launch_by(root: &Running, name: PathName, dir: &std::path::Path, store: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -51,14 +51,14 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::pat
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::NodeAdmin,
-        name: name.parse().unwrap(),
+        name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -98,9 +98,9 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 fn command(launch: &Launch, start: bool) -> StatusRequest {
     let (node_id, incarnation, build_id) = (launch.node_id.clone(), launch.incarnation.clone(), "xtccsd8180sr".to_string());
     if start {
-        StatusRequest::StartNode { node_id, incarnation, build_id, attempt: 2, operation: format!("node.start:{}", launch.name) }
+        StatusRequest::StartNode { node_id, incarnation, build_id, attempt: 2, operation: rdm_core::OperationId::node("node.start", &launch.node_id) }
     } else {
-        StatusRequest::StopNode { node_id, incarnation, build_id, attempt: 1, operation: format!("node.stop:{}", launch.name) }
+        StatusRequest::StopNode { node_id, incarnation, build_id, attempt: 1, operation: rdm_core::OperationId::node("node.stop", &launch.node_id) }
     }
 }
 
@@ -112,13 +112,13 @@ async fn call(root: &Running, launch: &Launch, req: &StatusRequest) -> StatusRep
     if let Some(reply) = crate::common::root_lifecycle_reply(root, launch, req).await { return reply; }
     match root.node_rpc.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(launch.node_id.clone()), req, &opts).await.0 {
         rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
-        other => panic!("{} to {} did not end in a reply: {other:?}", req.op(), launch.name),
+        other => panic!("{} to {:?} did not end in a reply: {other:?}", req.op(), launch.name),
     }
 }
 
 /// The finished own-state declarations `node` sent: each one's target and outcome.
-fn own_declarations(spans: &crate::common::Spans, node: &str) -> Vec<BTreeMap<String, String>> {
-    spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.node_admin.status.update.via-declare" && f.get("node").map(String::as_str) == Some(node) && f.get("key").is_some_and(|k| k.contains("OwnState")) && f.get("finished").map(String::as_str) == Some("true")).map(|(_, _, f)| f.clone()).collect()
+fn own_declarations(spans: &crate::common::Spans, node: &PathName) -> Vec<BTreeMap<String, String>> {
+    spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.node_admin.status.update.via-declare" && f.get("node_path") == Some(&node.path) && f.get("node_name") == Some(&node.name) && f.get("key").is_some_and(|k| k.contains("OwnState")) && f.get("finished").map(String::as_str) == Some("true")).map(|(_, _, f)| f.clone()).collect()
 }
 
 #[test]
@@ -144,9 +144,9 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         })
         .await
         .expect("the Day-0 admin takes mesh1's primary role");
-        let root_name = root.digest.lock().unwrap().node.name.to_string();
+        let root_id = root.digest.lock().unwrap().node.node_id.to_string();
 
-        let launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir);
+        let launch = launch_by(&root, PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch, None));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
@@ -155,7 +155,7 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
         let first = tokio::time::timeout(DECLARED, async {
             loop {
-                let held = own_declarations(&spans, "mesh1.admin.2");
+                let held = own_declarations(&spans, &launch.name);
                 if !held.is_empty() {
                     return held;
                 }
@@ -164,16 +164,16 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         })
         .await
         .expect("mesh1.admin.2 declares its first start's node.started");
-        assert_eq!(first.iter().map(|f| f["to"].clone()).collect::<Vec<_>>(), vec![root_name.clone()], "to its mesh's primary: {first:#?}");
+        assert_eq!(first.iter().map(|f| f["to_node_id"].clone()).collect::<Vec<_>>(), vec![root_id.clone()], "to its mesh's primary: {first:#?}");
 
         assert!(matches!(call(&root, &launch, &command(&launch, false)).await, StatusReply::Stopped { .. }), "the launched admin stops");
         let _ = root.runner.joins.expect(deployed(&launch, Some(&launch.name)));
         assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
-        tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
+        tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node_id").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
         let door = root.status_door().unwrap();
         assert_eq!(door.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));
-        let ready_declarations: Vec<_> = own_declarations(&spans, "mesh1.admin.2").into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready"))).collect();
+        let ready_declarations: Vec<_> = own_declarations(&spans, &launch.name).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready"))).collect();
         assert_eq!(ready_declarations, first, "the open start reports readiness on its stream, with no second Ready declaration");
 
         admin.leave().await;

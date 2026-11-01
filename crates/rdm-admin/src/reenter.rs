@@ -29,6 +29,8 @@ pub(crate) const SWEEP_CONCURRENCY: usize = 8;
 /// One birth of the topology map: what a Ping needs to reach it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MapNode {
+    pub mesh: String,
+    pub kind: crate::model::NodeKind,
     pub node_id: NodeId,
     pub name: PathName,
     pub endpoint_id: EndpointId,
@@ -53,6 +55,7 @@ impl MapNode {
     pub(crate) fn of_record(record: &NodeRow) -> Option<Self> {
         let b = record.newest_birth()?;
         Some(Self {
+            mesh: record.mesh.clone(), kind: record.kind,
             node_id: record.node_id.clone(),
             name: record.name.clone(),
             endpoint_id: b.endpoint_id.clone()?,
@@ -66,7 +69,7 @@ impl MapNode {
     }
 
     pub(crate) fn resolved(&self) -> Option<ResolvedNode> {
-        Some(ResolvedNode {
+        Some(ResolvedNode { mesh: self.mesh.clone(), kind: self.kind,
             node_id: self.node_id.clone(),
             name: self.name.clone(),
             endpoint_id: self.endpoint_id.0.parse().ok()?,
@@ -80,7 +83,7 @@ impl MapNode {
     /// held for one in transition that answered, `PendingReconnect` for a settled one not yet
     /// reached; never `Dead`).
     pub(crate) fn as_node(&self, status: crate::model::NodeStatus, provider: crate::model::ProviderKind) -> crate::model::Node {
-        let mut node = crate::model::Node::allocated(self.name.clone());
+        let mut node = crate::model::Node::allocated(self.name.clone(), self.mesh.clone(), self.kind);
         node.node_id = self.node_id.clone();
         node.endpoint_id = Some(self.endpoint_id.clone());
         node.incarnation_id = Some(self.incarnation.clone());
@@ -109,7 +112,7 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rd
             // heard it at an age the digest does not carry. Every birth is therefore not yet
             // reached (the sweep's ping, or its own digest, says more), never ready.
             let transition = (d.status != rdm_core::MemberStatus::Ready).then(|| crate::admin::node_status(d.status));
-            MapNode {
+            MapNode { mesh: d.node.mesh.clone(), kind: d.node.kind,
                 transition,
                 ready: false,
                 data_dir: d.data_dir.clone(),
@@ -133,12 +136,13 @@ pub(crate) fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<Ma
         .flat_map(|m| m.nodes.iter())
         .filter_map(|n| {
             Some(MapNode {
+                mesh: n.mesh.clone(), kind: n.kind,
                 transition: None,
                 ready: false,
                 data_dir: None,
                 admin_api_base: None,
                 node_id: n.node_id.clone(),
-                name: n.name.parse().ok()?,
+                name: n.name.clone(),
                 endpoint_id: n.endpoint_id.clone(),
                 transport_addr: n.transport_addr,
                 incarnation: n.incarnation.clone(),
@@ -164,20 +168,20 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
     match source {
         TopologySource::DurableMap(rows) => Ok(rows.to_vec()),
         TopologySource::LocalNode { node, client, topology_view, me, me_id, time, adopt_time } => {
-            let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
+            let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.node_id, node.endpoint_id.0))?;
             let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), topology_view.node(), None, None)
                 .await
-                .map_err(|e| format!("reading the topology of {}: {e}", node.name))?;
+                .map_err(|e| format!("reading the topology of {}: {e}", node.node_id))?;
             if adopt_time {
                 // An entering admin adopts the rafka-time its entry read is served with, by the same rule as a join.
-                read.adopt_rafka_time(time, topology_view, &me.to_string(), &me.mesh, me_id, &node.name.to_string()).map_err(|e| format!("adopting rafka-time from {}: {e}", node.name))?;
+                read.adopt_rafka_time(time, topology_view, me_id.as_str(), topology_view.mesh_name(), me_id, node.node_id.as_str()).map_err(|e| format!("adopting rafka-time from {}: {e}", node.node_id))?;
             }
             // The roles this node's mesh knows are held: an entering admin computes none before it has them.
             topology_view.learn_primaries(&read.primaries, "entry");
-            topology_view.join_peers_as("admin.reenter", vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.name))?;
+            topology_view.join_peers_as("admin.reenter", vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.node_id))?;
             let fabric = read.installed.iter().flat_map(|m| m.members.iter()).find(|d| d.node.node_id == node.node_id).map(|d| d.fabric_id.clone());
             let Some(fabric) = fabric else {
-                return Err(format!("{} answered a topology read that does not name itself", node.name));
+                return Err(format!("{} answered a topology read that does not name itself", node.node_id));
             };
             Ok(map_of_read(&read, &fabric))
         }
@@ -199,7 +203,7 @@ pub(crate) struct EntryCtx {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SweepReport {
     /// The own-mesh node the topology was read from, when one answered.
-    pub local: Option<PathName>,
+    pub local: Option<NodeId>,
     pub reached: Vec<MapNode>,
     /// Nodes that did not answer, with the call's outcome name: not yet reached, never dead.
     pub not_reached: Vec<(MapNode, String)>,
@@ -232,21 +236,24 @@ pub(crate) fn sweep_targets(map: &[MapNode]) -> Vec<MapNode> {
 /// refuses new non-status calls"), so a settled node that answers is the one to read from.
 pub(crate) fn local_candidates(map: &[MapNode]) -> Vec<MapNode> {
     let mut v = map.to_vec();
-    v.sort_by_key(|n| (n.transition.is_some(), n.name.to_string()));
+    v.sort_by_key(|n| (n.transition.is_some(), n.name.clone()));
     v
+}
+
+/// Keep distinct node identities even when their locations coincide during replacement.
+fn own_mesh_map(nodes: &[MapNode], mesh: &str, me_id: &NodeId) -> Vec<MapNode> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut own: Vec<_> = nodes.iter().filter(|n| n.mesh == mesh && &n.node_id != me_id && seen.insert(n.node_id.clone())).cloned().collect();
+    own.sort_by_key(|n| n.name.clone());
+    own
 }
 
 /// Enter the existing mesh of `ctx.me` from `held`, the topology its source gave: connect to a
 /// local node, read the current topology from it, then sweep the own mesh once.
 pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, held: Vec<MapNode>) -> SweepReport {
     let started = Instant::now();
-    let mesh = ctx.me.mesh.clone();
-    let own = |nodes: &[MapNode]| -> Vec<MapNode> {
-        let mut v: Vec<MapNode> = nodes.iter().filter(|n| n.name.mesh == mesh && n.node_id != ctx.me_id).cloned().collect();
-        v.sort_by_key(|n| n.name.to_string());
-        v.dedup_by_key(|n| n.name.clone());
-        v
-    };
+    let mesh = ctx.topology_view.mesh_name().to_owned();
+    let own = |nodes: &[MapNode]| own_mesh_map(nodes, &mesh, &ctx.me_id);
     let mut map = own(&held);
     // A local node of the own mesh: the first of the map, in path order, that answers.
     let mut local = None;
@@ -259,15 +266,14 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
     if let Some(l) = &local {
         match get_topology(TopologySource::LocalNode { node: l, client: &ctx.client, topology_view: &ctx.topology_view, me: &ctx.me, me_id: &ctx.me_id, time: &ctx.time, adopt_time: source != "durable-map" }).await {
             Ok(current) => {
-                // The local node's read is current: it replaces the map's entry for a name, and
-                // adds the names the map lacked.
+                // The current read replaces metadata for the same node ID and adds new IDs.
                 let current = own(&current);
-                map.retain(|m| !current.iter().any(|c| c.name == m.name));
+                map.retain(|m| !current.iter().any(|c| c.node_id == m.node_id));
                 map.extend(current);
-                map.sort_by_key(|n| n.name.to_string());
+                map.sort_by_key(|n| n.name.clone());
             }
             Err(why) => {
-                tracing::info_span!("rdm.node_admin.mesh.reject.via-local-topology-read", node = %ctx.me, mesh = %mesh, local = %l.name, detail = %why)
+                tracing::info_span!("rdm.node_admin.mesh.reject.via-local-topology-read", node_path = %ctx.me.path, node_name = %ctx.me.name, mesh = %mesh, local = %l.node_id, detail = %why)
                     .in_scope(|| tracing::info!("the local node answered but its topology was not read; the sweep runs on the map held"));
             }
         }
@@ -285,15 +291,15 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
             }
         }
     }
-    let report = SweepReport { local: local.map(|l| l.name), reached, not_reached, elapsed_ms: started.elapsed().as_millis() as u64 };
+    let report = SweepReport { local: local.map(|l| l.node_id), reached, not_reached, elapsed_ms: started.elapsed().as_millis() as u64 };
     tracing::info_span!(
         "rdm.node_admin.mesh.update.via-entry-sweep",
-        node = %ctx.me,
+        node_path = %ctx.me.path, node_name = %ctx.me.name,
         mesh = %mesh,
         source,
         local = report.local.as_ref().map(|l| l.to_string()).unwrap_or_default(),
         pinged = swept.len(),
-        swept = %swept.iter().map(|n| n.name.to_string()).collect::<Vec<_>>().join(","),
+        swept = %swept.iter().map(|n| n.node_id.to_string()).collect::<Vec<_>>().join(","),
         reached = report.reached.len(),
         not_reached = report.not_reached.len(),
         elapsed_ms = report.elapsed_ms,
@@ -302,11 +308,11 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         for (n, outcome) in &report.not_reached {
             tracing::info_span!(
                 "rdm.node_admin.node.reject.via-entry-sweep-no-reply",
-                node = %n.name,
+                node_path = %n.name.path, node_name = %n.name.name,
                 node_id = %n.node_id,
                 incarnation_id = %n.incarnation.as_str(),
                 outcome = %outcome,
-                sweeper = %ctx.me,
+                sweeper_node_id = %ctx.me_id,
             )
             .in_scope(|| tracing::info!("no reply to the entry sweep's Ping: not yet reached, not dead"));
         }
@@ -321,10 +327,10 @@ mod tests {
     use rdm_core::MemberStatus;
 
     /// An own-mesh birth of the map as a topology read gives it: the status its source held.
-    fn birth(name: &str, status: MemberStatus) -> MapNode {
-        MapNode {
+    fn birth(name: PathName, mesh: &str, kind: rdm_core::NodeKind, status: MemberStatus) -> MapNode {
+        MapNode { mesh: mesh.to_owned(), kind,
             node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
+            name,
             endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:1".parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -335,6 +341,17 @@ mod tests {
         }
     }
 
+    // @feature: node-reference-fields
+    #[test]
+    fn entry_map_keeps_distinct_ids_at_the_same_location() {
+        let first = birth(PathName::new("unrelated.path", "member").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Ready);
+        let second = MapNode { node_id: NodeId::mint(), ..first.clone() };
+        let own = own_mesh_map(&[first.clone(), second.clone(), first.clone()], "mesh2", &NodeId::mint());
+        assert_eq!(own.len(), 2);
+        assert!(own.iter().any(|n| n.node_id == first.node_id));
+        assert!(own.iter().any(|n| n.node_id == second.node_id));
+    }
+
     /// CONTRACT (node-admin-lifecycle.md §4.2: "The new primary sends one bounded Ping, once, to
     /// every node IN ITS OWN MESH"): the entry pings every birth of the own-mesh map, whatever the
     /// status its source held. A member in a lifecycle transition (Pending, ConnectionsDeleting, Leaving) is a
@@ -343,13 +360,13 @@ mod tests {
     #[test]
     fn the_entry_pings_every_own_mesh_birth_whatever_its_status() {
         let map = vec![
-            birth("mesh2.rpc.1", MemberStatus::Leaving),
-            birth("mesh2.rpc.2", MemberStatus::Ready),
-            birth("mesh2.rpc.3", MemberStatus::ConnectionsDeleting),
-            birth("mesh2.rpc.4", MemberStatus::Pending),
+            birth(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Leaving),
+            birth(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Ready),
+            birth(PathName::new("mesh2.rpc", "3").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::ConnectionsDeleting),
+            birth(PathName::new("mesh2.rpc", "4").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Pending),
         ];
-        let pinged: Vec<String> = sweep_targets(&map).iter().map(|n| n.name.to_string()).collect();
-        assert_eq!(pinged, vec!["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3", "mesh2.rpc.4"]);
+        let pinged: Vec<PathName> = sweep_targets(&map).iter().map(|n| n.name.clone()).collect();
+        assert_eq!(pinged, vec![PathName::new("mesh2.rpc", "1").unwrap(), PathName::new("mesh2.rpc", "2").unwrap(), PathName::new("mesh2.rpc", "3").unwrap(), PathName::new("mesh2.rpc", "4").unwrap()]);
     }
 
     /// CONTRACT (node-admin-lifecycle.md §4.1 step 5: "Read GetTopology from a LOCAL node of the
@@ -360,13 +377,13 @@ mod tests {
     #[test]
     fn the_local_node_is_tried_settled_births_first() {
         let map = vec![
-            birth("mesh2.rpc.1", MemberStatus::ConnectionsDeleting),
-            birth("mesh2.rpc.2", MemberStatus::Leaving),
-            birth("mesh2.rpc.3", MemberStatus::Ready),
-            birth("mesh2.rpc.4", MemberStatus::Ready),
+            birth(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::ConnectionsDeleting),
+            birth(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Leaving),
+            birth(PathName::new("mesh2.rpc", "3").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Ready),
+            birth(PathName::new("mesh2.rpc", "4").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Ready),
         ];
-        let tried: Vec<String> = local_candidates(&map).iter().map(|n| n.name.to_string()).collect();
-        assert_eq!(tried, vec!["mesh2.rpc.3", "mesh2.rpc.4", "mesh2.rpc.1", "mesh2.rpc.2"]);
+        let tried: Vec<PathName> = local_candidates(&map).iter().map(|n| n.name.clone()).collect();
+        assert_eq!(tried, vec![PathName::new("mesh2.rpc", "3").unwrap(), PathName::new("mesh2.rpc", "4").unwrap(), PathName::new("mesh2.rpc", "1").unwrap(), PathName::new("mesh2.rpc", "2").unwrap()]);
     }
 
     /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:95
@@ -456,8 +473,8 @@ mod tests {
             let local_gossip = iroh_gossip::net::Gossip::builder().spawn(local_ep.clone());
             let local_time = rdm_transport::clock::RafkaTime::unadopted();
             local_time.adopt(5_000_000);
-            let local_view = TopologyView::join(&local_gossip, &local_ep, &fabric_id, "mesh1", &mesh1_id, "mesh1.rpc.1", Arc::new(local_time.clone()), vec![], &[]).await.unwrap();
             let (local_node_id, local_inc) = (NodeId::mint(), IncarnationId::mint());
+            let local_view = TopologyView::join(&local_gossip, &local_ep, &fabric_id, "mesh1", &mesh1_id, local_node_id.as_str(), Arc::new(local_time.clone()), vec![], &[]).await.unwrap();
             let (dead_node_id, dead_inc) = (NodeId::mint(), IncarnationId::mint());
 
             let local_digest = rdm_core::MeshDigest {
@@ -465,7 +482,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 node: rdm_core::MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: local_node_id.clone(),
-                    name: "mesh1.rpc.1".parse().unwrap(),
+                    name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
                     endpoint_id: EndpointId(local_ep.id().to_string()),
                     transport_addr: local_addr,
                     incarnation: local_inc.clone(),
@@ -488,7 +505,7 @@ mod tests {
             let dead_digest = rdm_core::MeshDigest {
                 node: rdm_core::MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: dead_node_id.clone(),
-                    name: "mesh1.rpc.2".parse().unwrap(),
+                    name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
                     endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
                     transport_addr: "127.0.0.1:9".parse().unwrap(),
                     incarnation: dead_inc.clone(),
@@ -556,15 +573,15 @@ mod tests {
             let fp_gossip = iroh_gossip::net::Gossip::builder().spawn(fp_ep.clone());
             let fp_time = rdm_transport::clock::RafkaTime::unadopted();
             fp_time.adopt(5_000_000);
-            let fp_view = TopologyView::join(&fp_gossip, &fp_ep, &fabric_id, "mesh1", &mesh1_id, "mesh1.admin.1", Arc::new(fp_time.clone()), vec![], &[]).await.unwrap();
             let (fp_node_id, fp_inc) = (NodeId::mint(), IncarnationId::mint());
+            let fp_view = TopologyView::join(&fp_gossip, &fp_ep, &fabric_id, "mesh1", &mesh1_id, fp_node_id.as_str(), Arc::new(fp_time.clone()), vec![], &[]).await.unwrap();
             let fp_resolver = Arc::new(LiveNodeResolver::default());
             let fp_client = Arc::new(NodeRpcClient::new(fp_ep.clone(), fp_resolver.clone()));
 
             // Durable map includes a peer-mesh node (mesh2.rpc.1) and the own-mesh node (mesh1.rpc.1).
-            let peer_map_node = MapNode {
+            let peer_map_node = MapNode { mesh: "mesh2".into(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: NodeId::mint(),
-                name: "mesh2.rpc.1".parse().unwrap(),
+                name: rdm_core::PathName::new("mesh2.rpc", "1").unwrap(),
                 endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
                 transport_addr: "127.0.0.1:9".parse().unwrap(),
                 incarnation: IncarnationId::mint(),
@@ -573,9 +590,9 @@ mod tests {
                 data_dir: None,
                 admin_api_base: None,
             };
-            let own_map_node = MapNode {
+            let own_map_node = MapNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: local_node_id.clone(),
-                name: "mesh1.rpc.1".parse().unwrap(),
+                name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
                 endpoint_id: EndpointId(local_ep.id().to_string()),
                 transport_addr: local_addr,
                 incarnation: local_inc.clone(),
@@ -588,7 +605,7 @@ mod tests {
 
             // Steps 1-3: enter_existing_mesh reads GetTopology from own-mesh node first, joins channel, and sweeps own mesh.
             let ctx = EntryCtx {
-                me: "mesh1.admin.1".parse().unwrap(),
+                me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
                 me_id: fp_node_id.clone(),
                 client: fp_client.clone(),
                 resolver: fp_resolver.clone(),
@@ -596,9 +613,9 @@ mod tests {
                 time: fp_time.clone(),
             };
             let report = enter_existing_mesh(&ctx, "durable-map", durable_rows).await;
-            assert_eq!(report.local, Some("mesh1.rpc.1".parse().unwrap()), "GetTopology targets own-mesh durable-map node first");
-            assert_eq!(report.reached.iter().map(|n| n.name.to_string()).collect::<Vec<_>>(), vec!["mesh1.rpc.1"]);
-            assert_eq!(report.not_reached.iter().map(|(n, _)| n.name.to_string()).collect::<Vec<_>>(), vec!["mesh1.rpc.2"], "non-answering own-mesh member goes to node recovery");
+            assert_eq!(report.local, Some(local_node_id.clone()), "GetTopology targets own-mesh durable-map node first");
+            assert_eq!(report.reached.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), vec![PathName::new("mesh1.rpc", "1").unwrap()]);
+            assert_eq!(report.not_reached.iter().map(|(n, _)| n.name.clone()).collect::<Vec<_>>(), vec![PathName::new("mesh1.rpc", "2").unwrap()], "non-answering own-mesh member goes to node recovery");
 
             // Step 4: Restore secondary admin under the SAME accepted Build, with the claim the recovered fabric-primary's.
             use crate::build_state::BuildStateAdapter as _;
@@ -614,18 +631,18 @@ mod tests {
                 .await
                 .unwrap();
 
-            let mut fp_node = crate::model::Node::allocated("mesh1.admin.1".parse().unwrap());
-            fp_node.kind = rdm_core::NodeKind::NodeAdmin;
-            fp_node.mesh = "mesh1".into();
+            let mut fp_node = crate::model::Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+
+
             fp_node.node_id = fp_node_id.clone();
             fp_node.incarnation_id = Some(fp_inc.clone());
             fp_node.status = crate::model::NodeStatus::Ready;
             fp_node.is_primary = true;
             fp_node.is_fabric_primary = true;
             let (sec_node_id, sec_inc) = (NodeId::mint(), IncarnationId::mint());
-            let mut sec_node = crate::model::Node::allocated("mesh1.admin.2".parse().unwrap());
-            sec_node.kind = rdm_core::NodeKind::NodeAdmin;
-            sec_node.mesh = "mesh1".into();
+            let mut sec_node = crate::model::Node::allocated(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+
+
             sec_node.node_id = sec_node_id.clone();
             sec_node.incarnation_id = Some(sec_inc.clone());
             sec_node.status = crate::model::NodeStatus::Ready;
@@ -640,8 +657,9 @@ mod tests {
                 nodes: vec![fp_node, sec_node],
             }));
             let claim_door = Arc::new(crate::build_claim::ClaimDoor {
-                me: "mesh1.admin.1".parse().unwrap(),
+                me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
                 node_id: fp_node_id.clone(),
+                incarnation: fp_inc.clone(),
                 topology: fp_topology,
                 builds: builds.clone(),
                 contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
@@ -659,9 +677,9 @@ mod tests {
                 .spawn();
             let claimant_resolver = Arc::new(LiveNodeResolver::default());
             claimant_resolver.apply(
-                ResolvedNode {
+                ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin,
                     node_id: fp_node_id.clone(),
-                    name: "mesh1.admin.1".parse().unwrap(),
+                    name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
                     endpoint_id: fp_ep.id(),
                     transport_addr: fp_addr,
                     incarnation: fp_inc,
@@ -672,7 +690,7 @@ mod tests {
             let claim_req = rdm_core::build_claim::BuildClaimRequest::ClaimAttempt {
                 build_id: build_id.to_string(),
                 attempt: 1,
-                executor_node_id: sec_node_id,
+                executor_node_id: sec_node_id.clone(),
                 executor_incarnation: sec_inc,
                 mesh: None,
             };
@@ -686,7 +704,7 @@ mod tests {
                 "rdm.node_admin.deployment.update.via-step",
                 step = "AllocateIdentity",
                 build_id = %build_id.log(),
-                node = "mesh1.admin.2",
+                node_id = %sec_node_id,
                 attempt = 1u32,
                 outcome = "complete",
             )

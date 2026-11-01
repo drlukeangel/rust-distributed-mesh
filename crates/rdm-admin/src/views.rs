@@ -132,7 +132,7 @@ fn data_dir_unreadable_of(n: &Node, row: Option<&crate::storage::NodeRow>) -> Op
     Some(DataDirUnreadable { path: u.path, cause: u.cause })
 }
 
-/// Every birth `view` holds, sorted by `path.name`, each with what `loads` carries for it and what its
+/// Every birth `view` holds, sorted by `(path, name)`, each with what `loads` carries for it and what its
 /// record in `records` carries (its config, tags, app types, cert dates and data-dir facts), replaced
 /// predecessors included. A birth the view no longer holds is answered at a path `planned` names and
 /// no birth holds, from the data-dir-unreadable fact on the record `records` holds there. Nothing
@@ -177,7 +177,7 @@ fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<Gos
             if out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
                 continue;
             }
-            let mut n = Node::allocated(r.name.clone());
+            let mut n = Node::allocated(r.name.clone(), r.mesh.clone(), r.kind);
             n.node_id = r.node_id.clone();
             n.incarnation_id = Some(incarnation);
             n.provider = Some(view.fabric.provider);
@@ -203,7 +203,7 @@ pub fn own_row_view(view: &Topology, records: &Atlas, row: &crate::storage::Node
     if let Some(v) = nodes(view, &BTreeMap::new(), records, &BTreeMap::new()).into_iter().find(|v| v.node_id == row.node_id) {
         return v;
     }
-    let mut n = Node::allocated(row.name.clone());
+    let mut n = Node::allocated(row.name.clone(), row.mesh.clone(), row.kind);
     n.node_id = row.node_id.clone();
     n.status = row.status;
     n.provider = Some(view.fabric.provider);
@@ -231,7 +231,7 @@ pub fn own_row_view(view: &Topology, records: &Atlas, row: &crate::storage::Node
 
 /// `node.get` (Q167) answered by the node-admin `me` from its `view`, its nodes' `loads` and the node
 /// records its atlas holds (`records`; never the node store, Q203): every birth that matches every
-/// pair of `filter`, each with its record's properties, by `path.name`. A filter the node schema
+/// pair of `filter`, each with its record's properties, by `(path, name)`. A filter the node schema
 /// refuses is `RejectedFilter` naming the pair, and nothing is read. Its span names the read, the
 /// pairs and how many nodes were answered.
 pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, filter: &Filter) -> StatusReply {
@@ -241,7 +241,7 @@ pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, records
 /// Whether `n` matches `filter` with the labels it holds in the active tags index (lifecycles/
 /// node-replace.md "Inherited": "The successor's tag-index entries use its own id. Retained predecessor
 /// labels are removed from the active index, not erased from its row"): a record marked `inherited_by`
-/// a successor, the retained `<name>.old` row, carries no active label, so a `tags` pair never names it;
+/// a successor, the retained `<name>-old` row, carries no active label, so a `tags` pair never names it;
 /// the row it is answered with keeps its labels. Every other pair is matched on the row as answered.
 fn matches_active(filter: &Filter, records: &Atlas, n: &NodeView) -> bool {
     let names_tags = filter.pairs.iter().any(|(p, _)| p == "tags" || p == "!tags");
@@ -260,7 +260,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
     let read = Entity::Nodes.read();
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
-        node = %me,
+        node_path = %me.path, node_name = %me.name,
         read,
         properties = %filter.properties(),
         pairs = %pairs(filter),
@@ -295,7 +295,8 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
             identity.pairs.retain(|(property, _)| matches!(property.trim_start_matches('!'), "id" | "incarnation" | "path" | "name" | "mesh" | "kind" | "node_type"));
             nodes.retain(|node| identity.matches(node));
             for node in &mut nodes {
-                match properties.properties(&node.node_id).await {
+                let read = tracing::info_span!("rdm.node.properties.read.via-node-get", node_id = %node.node_id, "otel.kind" = "internal");
+                match tracing::Instrument::instrument(properties.properties(&node.node_id), read).await {
                     Ok(Some(own)) => {
                         node.config = own.config;
                         node.tags = own.tags;
@@ -307,7 +308,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                         if let Some(declared) = own.app_types { node.types = declared.types; }
                     }
                     Ok(None) => {}
-                    Err(error) => return rdm_core::reply::status::not_ready(format!("{}: node record {} could not be read: {error}", me, node.node_id)),
+                    Err(error) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: node record {} could not be read: {error}", me.path, me.name, node.node_id)),
                 }
             }
         }
@@ -383,13 +384,13 @@ pub use rdm_node::node_self::{connection_view, connections_answer};
 pub fn meshes_answer(me: &PathName, view: &Topology, filter: &Filter) -> StatusReply {
     let read = Entity::Meshes.read();
     if let Some(reason) = filter.refusal(Entity::Meshes) {
-        tracing::info_span!("rdm.node_admin.mesh.reject.via-filter", node = %me, read, properties = %filter.properties(), detail = %reason, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-filter", node_path = %me.path, node_name = %me.name, read, properties = %filter.properties(), detail = %reason, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the filter names a pair the mesh schema refuses; nothing is read"));
         return rdm_core::reply::status::bounded_rejected_filter(&reason);
     }
     let meshes: Vec<MeshView> = meshes(view).into_iter().filter(|m| filter.matches(m)).collect();
     let count = meshes.len();
-    tracing::info_span!("rdm.node_admin.mesh.serve.via-get", node = %me, read, properties = %filter.properties(), pairs = %pairs(filter), meshes = count, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.mesh.serve.via-get", node_path = %me.path, node_name = %me.name, read, properties = %filter.properties(), pairs = %pairs(filter), meshes = count, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the meshes the view holds answered"));
     StatusReply::Meshes { meshes }
 }
@@ -407,13 +408,13 @@ pub fn fabric_answer(me: &PathName, view: &Topology, build_id: Option<String>, f
 fn fabrics_reply(me: &PathName, fabrics: Vec<FabricView>, filter: &Filter) -> StatusReply {
     let read = Entity::Fabrics.read();
     if let Some(reason) = filter.refusal(Entity::Fabrics) {
-        tracing::info_span!("rdm.node_admin.fabric.reject.via-filter", node = %me, read, properties = %filter.properties(), detail = %reason, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.fabric.reject.via-filter", node_path = %me.path, node_name = %me.name, read, properties = %filter.properties(), detail = %reason, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the filter names a pair the fabric schema refuses; nothing is read"));
         return rdm_core::reply::status::bounded_rejected_filter(&reason);
     }
     let fabrics: Vec<FabricView> = fabrics.into_iter().filter(|f| filter.matches(f)).collect();
     let (count, meshes, build) = (fabrics.len(), fabrics.first().map_or(0, |f| f.meshes.len()), fabrics.first().and_then(|f| f.build_id.clone()).unwrap_or_default());
-    tracing::info_span!("rdm.node_admin.fabric.serve.via-get", node = %me, read, properties = %filter.properties(), pairs = %pairs(filter), fabrics = count, meshes, build_id = %build, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.fabric.serve.via-get", node_path = %me.path, node_name = %me.name, read, properties = %filter.properties(), pairs = %pairs(filter), fabrics = count, meshes, build_id = %build, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the fabric the view holds answered"));
     StatusReply::Fabrics { fabrics }
 }
@@ -464,7 +465,7 @@ mod tests {
     #[test]
     fn fabrics_get_carries_the_rotation_and_the_ca_and_names_a_rotation_past_its_bound_stalled() {
         use rdm_core::status::RootsPhase;
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let view = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".to_string(), status: ModelScopeStatus::Ready, provider: ModelProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
         let row = |phase: RootsPhase| crate::fabric_storage::FabricRecord {
             fabric_id: FabricId::mint(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
@@ -498,7 +499,7 @@ mod tests {
             .expect("build current-thread runtime");
 
         rt.block_on(async {
-            let me = PathName::new("mesh1", NodeKind::NodeAdmin, 1);
+            let me = PathName::numbered("mesh1", NodeKind::NodeAdmin, 1);
             let admin_id = NodeId::mint();
             let admin_inc = IncarnationId::mint();
             let rpc_succ_id = NodeId::mint();
@@ -506,7 +507,7 @@ mod tests {
             let rpc_pred_id = NodeId::mint();
             let rpc_pred_inc = IncarnationId::mint();
 
-            let mut admin_node = Node::allocated(me.clone());
+            let mut admin_node = Node::allocated(me.clone(), "mesh1", NodeKind::NodeAdmin);
             admin_node.node_id = admin_id.clone();
             admin_node.incarnation_id = Some(admin_inc.clone());
             admin_node.status = ModelNodeStatus::Ready;
@@ -514,17 +515,17 @@ mod tests {
             admin_node.is_fabric_primary = true;
             admin_node.admin_api_base = Some("http://127.0.0.1:18001".to_string());
 
-            let rpc_path = PathName::new("mesh1", NodeKind::RpcNode, 1);
-            let mut rpc_succ = Node::allocated(rpc_path.clone());
+            let rpc_path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
+            let mut rpc_succ = Node::allocated(rpc_path.clone(), "mesh1", NodeKind::RpcNode);
             rpc_succ.node_id = rpc_succ_id.clone();
             rpc_succ.incarnation_id = Some(rpc_succ_inc.clone());
             rpc_succ.status = ModelNodeStatus::Ready;
             rpc_succ.is_primary = true;
 
-            let mut rpc_pred_path = rpc_path.clone();
-            rpc_pred_path.old = true;
-            let mut rpc_pred = Node::allocated(rpc_pred_path.clone());
+            let rpc_pred_path = rpc_path.renamed().unwrap();
+            let mut rpc_pred = Node::allocated(rpc_pred_path.clone(), "mesh1", NodeKind::RpcNode);
             rpc_pred.node_id = rpc_pred_id.clone();
+            rpc_pred.renamed_from = Some(rpc_path.clone());
             rpc_pred.incarnation_id = Some(rpc_pred_inc.clone());
             rpc_pred.status = ModelNodeStatus::Ready;
 
@@ -544,11 +545,11 @@ mod tests {
             };
 
             let atlas = Atlas::default();
-            let mut admin_row = NodeRow::new(me.clone(), admin_id.clone(), ModelNodeStatus::Ready);
+            let mut admin_row = NodeRow::new(me.clone(), "mesh1", NodeKind::NodeAdmin, admin_id.clone(), ModelNodeStatus::Ready);
             admin_row.births.push(BirthFacts::new(admin_inc.clone(), me.clone()));
             atlas.write_record(&admin_row);
 
-            let mut succ_row = NodeRow::new(rpc_path.clone(), rpc_succ_id.clone(), ModelNodeStatus::Ready);
+            let mut succ_row = NodeRow::new(rpc_path.clone(), "mesh1", NodeKind::RpcNode, rpc_succ_id.clone(), ModelNodeStatus::Ready);
             succ_row.tags = BTreeSet::from(["tier-a".to_string()]);
             succ_row.config = BTreeMap::from([("region".to_string(), "eu-west".to_string())]);
             let mut succ_birth = BirthFacts::new(rpc_succ_inc.clone(), rpc_path.clone());
@@ -562,7 +563,7 @@ mod tests {
             atlas.write_record(&succ_row);
 
             // Retained predecessor row keeps its tags on the row, but `inherited_by` removes them from active tags matching.
-            let mut pred_row = NodeRow::new(rpc_pred_path.clone(), rpc_pred_id.clone(), ModelNodeStatus::Ready);
+            let mut pred_row = NodeRow::new(rpc_pred_path.clone(), "mesh1", NodeKind::RpcNode, rpc_pred_id.clone(), ModelNodeStatus::Ready);
             pred_row.tags = BTreeSet::from(["tier-a".to_string()]);
             pred_row.inherited_by = Some(rpc_succ_id.clone());
             pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));

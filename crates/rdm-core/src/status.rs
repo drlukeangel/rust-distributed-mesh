@@ -119,8 +119,8 @@ pub struct DeclaredOperation {
     pub build_id: String,
     /// The attempt of the Build.
     pub attempt: u32,
-    /// The operation's idempotency key (`node.stop:mesh1.rpc.1`).
-    pub operation: String,
+    /// The structured operation identity; node references use NodeId, with path/name kept separate.
+    pub operation: crate::OperationId,
 }
 
 /// A Status call.
@@ -212,7 +212,7 @@ pub enum StatusRequest {
         /// The Build attempt that holds the operation.
         attempt: u32,
         /// The operation.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Reserved position (R-CR4): never sent; a receiver refuses this by name.
     ///
@@ -227,7 +227,7 @@ pub enum StatusRequest {
         /// The Build attempt that holds the operation.
         attempt: u32,
         /// The operation.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Reserved at position 8: refused by name, never executed. Stop and start use NodeCommand 0x22.
     ///
@@ -242,7 +242,7 @@ pub enum StatusRequest {
         /// The Build attempt that holds the operation.
         attempt: u32,
         /// The operation: `node.stop:<path>`.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Reserved: a stopped birth reports `stopped` on the reply of its `StopNode` call, so this call is
     /// never sent and a receiver refuses it by name.
@@ -258,7 +258,7 @@ pub enum StatusRequest {
         /// The Build attempt that holds the operation.
         attempt: u32,
         /// The operation: `node.stop:<path>`.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Downward: the fabric-primary tells the deleting mesh's primary to run its mesh.delete
     /// (`delete-mesh`; mesh-delete.md). `Applied` / `AlreadyApplied` admit the command; mesh.deleted is
@@ -273,7 +273,7 @@ pub enum StatusRequest {
         /// The Build attempt that holds the operation.
         attempt: u32,
         /// The operation: `mesh.delete:<mesh_id>`.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Upward: the still-running mesh-primary hands the fabric-primary the proof that every other
     /// member exited and its own exact runtime (`mesh-deleted`). The manifest is a reference to
@@ -289,7 +289,7 @@ pub enum StatusRequest {
         /// The Build attempt that holds the operation.
         attempt: u32,
         /// The operation: `mesh.delete:<mesh_id>`.
-        operation: String,
+        operation: crate::OperationId,
         /// The final mesh-primary's node.
         final_node_id: NodeId,
         /// The final mesh-primary's incarnation.
@@ -299,7 +299,7 @@ pub enum StatusRequest {
         final_runtime: RuntimeFact,
         /// A bounded reference (at most [`MAX_RECEIPT_MANIFEST_BYTES`]) to the other members'
         /// terminal receipts.
-        receipt_manifest: String,
+        receipt_manifest: ManifestReference,
     },
     /// Reserved position (Q171): never sent; a receiver refuses this by name.
     ///
@@ -316,7 +316,7 @@ pub enum StatusRequest {
         /// The Build attempt.
         attempt: u32,
         /// The operation.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Reserved position (Q171): never sent; a receiver refuses this by name.
     ///
@@ -333,7 +333,7 @@ pub enum StatusRequest {
         /// The Build attempt.
         attempt: u32,
         /// The operation.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Reserved position (Q174): never sent; a receiver refuses this by name.
     ///
@@ -350,7 +350,7 @@ pub enum StatusRequest {
         /// The Build attempt.
         attempt: u32,
         /// The operation.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Reserved position (Q174): never sent; a receiver refuses this by name.
     ///
@@ -367,7 +367,7 @@ pub enum StatusRequest {
         /// The Build attempt.
         attempt: u32,
         /// The operation.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Reserved at position 16: refused by name, never executed. Stop and start use NodeCommand 0x22.
     ///
@@ -382,7 +382,7 @@ pub enum StatusRequest {
         /// The Build attempt that holds the operation.
         attempt: u32,
         /// The operation: `node.start:<path>`.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Upward: a caller asks the fabric-primary to put the exact birth's whole config
     /// (`node.config.update`, node-config-update.md), through a carrier (Forward `0x1A`) when it cannot
@@ -428,14 +428,14 @@ pub enum StatusRequest {
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The `path.name` the row now holds.
-        name: String,
+        /// The `(path, name)` the row now holds.
+        name: crate::PathName,
     },
     /// Upward: `node.name.update` (proposal node-properties-own-commands.md §2; R13, R-CR1): a caller
     /// asks the node's mesh-primary, the only writer of its mesh's rows, through a carrier (Forward
     /// `0x1A`) when it cannot reach it directly, to rename the exact birth. The request carries the
     /// name only, so the path cannot move: the mesh-primary joins the held record's own path and
-    /// `name` for the `path.name` index key. It validates from the record it holds, in order: the
+    /// `name` for the `(path, name)` index key. It validates from the record it holds, in order: the
     /// exact birth ([`StatusReply::RejectedStaleIncarnation`]), its own writer role
     /// ([`NotPrimary::ReceiverNotPrimary`]), the node admitting no connection
     /// ([`StatusReply::RejectedAdmittingConnections`]), the name grammar ([`StatusReply::RejectedName`]);
@@ -451,8 +451,8 @@ pub enum StatusRequest {
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The new name, without its path (`2`, `2.old`, `9`).
-        name: String,
+        /// The new path and name.
+        name: crate::PathName,
     },
     /// `node.connection.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
     /// birth's mesh-primary, which commands the birth with the same request and holds its completion
@@ -557,8 +557,8 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `join-mesh:<path.name>` or `node.start:<path.name>`.
-        operation: String,
+        /// The operation: `join-mesh:<path and name>` or `node.start:<path and name>`.
+        operation: crate::OperationId,
     },
     /// Reserved position (Q205): node.mesh.leave is a node command on NodeCommand 0x22
     /// ([`crate::node_command::NodeCommandRequest::LeaveMesh`]). A receiver refuses this by name and
@@ -574,8 +574,8 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `leave-mesh:<path.name>` or `node.stop:<path.name>`.
-        operation: String,
+        /// The operation: `leave-mesh:<path and name>` or `node.stop:<path and name>`.
+        operation: crate::OperationId,
     },
     /// Downward (`node.cert.renew`; node-cert-renew.md): the birth's issuing authority installs a
     /// fresh member cert on the exact running birth, answered [`StatusReply::CertRenewed`], or
@@ -636,15 +636,8 @@ pub enum StatusRequest {
         /// The pairs every answered row matches.
         filter: crate::filter::Filter,
     },
-    /// Upward (node-config-update.md, a node's own update, step 3; Q235): a mesh-primary that is not
-    /// the fabric-primary owes the node's row as written, its config and the row's revision, to the
-    /// fabric-primary, which writes it into its atlas over an older revision. Owed until answered:
-    /// `Applied` when the atlas took it, `AlreadyApplied` when the atlas holds that revision or a newer
-    /// one; at an admin that is not the fabric-primary, `RejectedNotPrimary` naming it. Appended last:
-    /// no variant before it moves.
-    ///
-    /// Position 34 on the wire.
-    NodeConfigUpdated {
+    /// Removed upward property-copy request. Position 34 remains reserved.
+    Reserved34 {
         /// The node whose row was written.
         node_id: NodeId,
         /// The row's config as written.
@@ -1081,7 +1074,39 @@ pub fn create_tags_refusal(labels: &BTreeSet<String>) -> Option<String> {
     tags_refusal(labels)
 }
 
-/// The longest `receipt_manifest` reference a `MeshDeleted` carries.
+/// Which terminal receipts a mesh deletion manifest proves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManifestScope {
+    /// Every member except the final mesh-primary.
+    OtherMembersExited,
+    /// Every member, including the final mesh-primary.
+    AllMembersExited,
+}
+
+/// A structured reference to a committed manifest; every field retains its own meaning.
+/// Wire format moved: this replaces a joined string reference, with no legacy string parser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestReference {
+    /// The Build whose facts contain the receipt.
+    pub build_id: String,
+    /// The attempt that recorded the receipt.
+    pub attempt: u32,
+    /// The complete admitted operation, including its structured subject and step position.
+    pub operation: crate::OperationId,
+    /// The terminal coverage represented by the receipt.
+    pub scope: ManifestScope,
+}
+
+impl ManifestReference {
+    /// Its encoded wire size, checked against the existing reference bound.
+    pub fn encoded_len(&self) -> Result<usize, postcard::Error> {
+        postcard::to_allocvec(self).map(|bytes| bytes.len())
+    }
+}
+
+/// The maximum encoded wire size of a `MeshDeleted` manifest reference.
 pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 
 /// The bound every Status request fits in (node-rpc.md "Each protocol declares
@@ -1126,7 +1151,7 @@ impl StatusRequest {
             Self::GetAtlas => "fabric.atlas.get",
             Self::GetConnections { .. } => "node.connection.get",
             Self::Get { entity, .. } => entity.read(),
-            Self::NodeConfigUpdated { .. } => "node-config-updated",
+            Self::Reserved34 { .. } => "reserved-34",
             Self::CreateTags { .. } => "node.tag.create",
             Self::DeleteTags { .. } => "node.tag.delete",
             Self::JoinMesh { .. } => "node.mesh.join",
@@ -1222,12 +1247,12 @@ pub struct MeshDeleteIdentity {
     /// The Build attempt.
     pub attempt: u32,
     /// The operation key, `<op>:<mesh_id>`.
-    pub operation: String,
+    pub operation: crate::OperationId,
 }
 
 impl std::fmt::Display for MeshDeleteIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (build {}, attempt {})", self.operation, self.build_id, self.attempt)
+        write!(f, "{:?} (build {}, attempt {})", self.operation, self.build_id, self.attempt)
     }
 }
 
@@ -1426,7 +1451,7 @@ pub enum StatusReply {
     ///
     /// Position 23 on the wire.
     ConfigRowRefused {
-        /// The node's `path.name`, the row the store refused.
+        /// The node's `(path, name)`, the row the store refused.
         node: String,
         /// The store's refusal.
         reason: String,
@@ -1441,7 +1466,7 @@ pub enum StatusReply {
     ///
     /// Position 24 on the wire.
     ConfigNotApplied {
-        /// The node's `path.name`.
+        /// The node's `(path, name)`.
         node: String,
         /// The birth's reply to `apply-node-config` by name, or the call's end by name.
         answered: String,
@@ -1492,6 +1517,8 @@ pub enum StatusReply {
     ///
     /// Position 28 on the wire.
     NameHeld {
+        /// The immutable path within which the name is claimed.
+        path: String,
         /// The name claimed.
         name: String,
         /// The node that holds it.
@@ -1502,7 +1529,7 @@ pub enum StatusReply {
     ///
     /// Position 29 on the wire.
     NodeRowRefused {
-        /// The node's `path.name`, the row the store refused.
+        /// The node's `(path, name)`, the row the store refused.
         node: String,
         /// The store's refusal.
         reason: String,
@@ -1514,7 +1541,7 @@ pub enum StatusReply {
     ///
     /// Position 30 on the wire.
     NameNotApplied {
-        /// The node's `path.name` the row now holds.
+        /// The globally unique node ID whose row holds the new name.
         node: String,
         /// `release-pending`, or the birth's reply to `apply-node-name` by name, or the call's end by
         /// name.
@@ -1547,7 +1574,7 @@ pub enum StatusReply {
         reason: String,
     },
     /// The answer to a `GetNodes`: the nodes the answering admin's view holds that the request
-    /// selected, sorted by `path.name`.
+    /// selected, sorted by `(path, name)`.
     ///
     /// Position 33 on the wire.
     Nodes {
@@ -1625,7 +1652,7 @@ pub enum StatusReply {
     RejectedIncompleteManifest {
         /// How many roster births, the final primary aside, hold no exact Exited receipt.
         missing: u32,
-        /// `<path.name> <incarnation>` of each such birth, at most [`MAX_WITHOUT_EXIT_BIRTHS`] of
+        /// `<path and name> <incarnation>` of each such birth, at most [`MAX_WITHOUT_EXIT_BIRTHS`] of
         /// them (each within [`MAX_WITHOUT_EXIT_BIRTH_BYTES`]); fewer than `missing` when cut.
         without_exit: Vec<String>,
         /// What the receiver read and found missing, within [`MAX_INCOMPLETE_REASON_BYTES`].
@@ -1694,7 +1721,7 @@ pub enum StatusReply {
         not_carried: BTreeSet<String>,
     },
     /// The `UpdateName` was not made: `name` is outside the name grammar ([`name_refusal`]), or the
-    /// `path.name` its join with the held record's path makes is not one this build can key. Nothing
+    /// `(path, name)` its join with the held record's path makes is not one this build can key. Nothing
     /// was written.
     ///
     /// Position 47 on the wire.
@@ -1899,7 +1926,7 @@ pub const MAX_BLOCKED_REASON_BYTES: usize = 1024 - 1 - (1 + CROCKFORD60_LEN) - (
 /// list lengths (at most three bytes each). A birth holds one entry per peer and kind, far fewer.
 pub const MAX_REPORTED_CONNECTIONS: usize = (64 * 1024 - 1 - 3 * 3) / (1 + CROCKFORD60_LEN);
 
-/// The most bytes of a node's `path.name` a config refusal carries.
+/// The most bytes of a node's `(path, name)` a config refusal carries.
 pub const MAX_REFUSAL_NODE_BYTES: usize = 128;
 /// The most bytes of the reply or call-end name a `ConfigNotApplied` carries.
 pub const MAX_REFUSAL_ANSWERED_BYTES: usize = 64;
@@ -1909,7 +1936,7 @@ pub const MAX_REFUSAL_REASON_BYTES: usize = 1024 - 1 - (2 + MAX_REFUSAL_NODE_BYT
 
 /// The most bytes of detail a `RejectedIncompleteManifest` carries.
 pub const MAX_INCOMPLETE_REASON_BYTES: usize = 4096;
-/// The most bytes of one birth a `RejectedIncompleteManifest` names (`<path.name> <incarnation>`).
+/// The most bytes of one birth a `RejectedIncompleteManifest` names (`<path and name> <incarnation>`).
 pub const MAX_WITHOUT_EXIT_BIRTH_BYTES: usize = 192;
 /// The most births a `RejectedIncompleteManifest` names: what is left of the reply bound after the
 /// variant (one byte), the count (a varint, at most five bytes), the list length (a varint, at most
@@ -2390,19 +2417,19 @@ mod tests {
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
             (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::ConnectionsDeleting, held_connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
+            (StatusReply::NameHeld { path: "mesh1.rpc".into(), name: "1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
             (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::NameNotApplied { node: "100000000001".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![], receipt: None }, ReplyKind::Success),
             (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
             (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
-            (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::Pending, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
+            (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, topology_storage_provider: None, roots: None, ca: None, previous_topology_storage_providers: Vec::new(), id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::Pending, provider: crate::views::ProviderKind::Process, fabric_primary: Some(NodeId::mint()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
             (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
-            (StatusReply::RejectedStaleWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "mesh.delete:m".into() }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::Aborted)),
-            (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedStaleWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::source_failed("the Build storage", "read-committed 66h8qrqvaajk", "builds.jsonl: interrupted"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
@@ -2439,31 +2466,31 @@ mod tests {
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
-            StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.1".into() },
-            StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-7:mesh1.rpc.1".into() },
-            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() },
-            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() },
-            StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() },
+            StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-6:mesh1.rpc.1") },
+            StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-7:mesh1.rpc.1") },
+            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },
+            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },
+            StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") },
             StatusRequest::MeshDeleted {
                 mesh_id: MeshId::mint(),
                 build_id: "66h8qrqvaajk".into(),
                 attempt: 1,
-                operation: "mesh.delete:m".into(),
+                operation: crate::OperationId::unscoped("mesh.delete:m"),
                 final_node_id: NodeId::mint(),
                 final_incarnation: IncarnationId::mint(),
                 final_runtime: RuntimeFact { deployment_id: crate::fixture_crockford60("dep"), provider: crate::RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: crate::RuntimeLocator::Process { pid: 4321, start: 123456 } },
-                receipt_manifest: "66h8qrqvaajk/1/mesh.delete:m/other-members-exited".into(),
+                receipt_manifest: ManifestReference { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::new("mesh.delete", crate::OperationSubject::Mesh(MeshId::parse("1123456789ab").unwrap())), scope: ManifestScope::OtherMembersExited },
             },
-            StatusRequest::Reserved12 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
-            StatusRequest::Reserved13 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
-            StatusRequest::Reserved14 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
-            StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
-            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.start:mesh1.rpc.1".into() },
+            StatusRequest::Reserved12 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("commit-state:fabric1") },
+            StatusRequest::Reserved13 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("commit-state:fabric1") },
+            StatusRequest::Reserved14 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
+            StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
+            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.start", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default(), revision: 1 },
-            StatusRequest::NodeConfigUpdated { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
-            StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
-            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "1.old".into() },
+            StatusRequest::Reserved34 { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
+            StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", "1").unwrap() },
+            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc.old", "1").unwrap() },
             StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::All(["rabbit".to_string(), "red".to_string()].into())) },
             StatusRequest::GetMeshes { mesh: None },
@@ -2472,15 +2499,15 @@ mod tests {
             StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
-            StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "join-mesh:mesh1.rpc.1".into() },
-            StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "leave-mesh:mesh1.rpc.1".into() },
+            StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("join-mesh:mesh1.rpc.1") },
+            StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("leave-mesh:mesh1.rpc.1") },
             StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: CaKeyHex("ef".into()) },
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },
             StatusRequest::UpdateRoots { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()], phase: RootsPhase::Distributed, secret: Some(RootSecretHex("cd".into())) },
             StatusRequest::UpdateRoot { secret: RootSecretHex("ab".into()) },
             StatusRequest::ApplyNodeProperties { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), entry: crate::properties::EntryProperties {
-                application: crate::properties::PropertyApplication { build_id: "build-a".into(), operation: "entry".into() },
+                application: crate::properties::PropertyApplication { build_id: "build-a".into(), location: crate::PathName::new("test.properties", "entry").unwrap() },
                 config: Default::default(), tags: Default::default(),
             } },
         ];
@@ -2489,7 +2516,7 @@ mod tests {
             assert_eq!(Status::decode_request(&Status::encode_request(&q).unwrap()).unwrap(), q);
         }
         // A declaration naming the operation that produced its state (i146 Q36).
-        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.stop:mesh1.rpc.1".into() }) };
+        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.rpc", "1").unwrap()) }) };
         assert_eq!(Status::decode_request(&Status::encode_request(&named).unwrap()).unwrap(), named);
     }
 
@@ -2506,7 +2533,7 @@ mod tests {
         let longest_name = "n".repeat(MAX_TAG_BYTES);
         assert_eq!(name_refusal(&longest_name), None);
         for q in [
-            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: longest_name.clone() },
+            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", longest_name.clone()).unwrap() },
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: at_cap.clone() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(at_cap.clone()) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::Any(at_cap.clone())) },
@@ -2612,7 +2639,7 @@ mod tests {
 
     fn node_view() -> crate::views::NodeView {
         crate::views::NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-            name: "mesh1.rpc.12".parse().unwrap(),
+            name: crate::PathName::new("mesh1.rpc", "12").unwrap(),
             kind: crate::NodeKind::RpcNode,
             mesh: "mesh1".into(),
             node_id: NodeId::mint(),
@@ -2639,7 +2666,7 @@ mod tests {
     }
 
     fn mesh_view() -> crate::views::MeshView {
-        crate::views::MeshView { renewals: None, id: Some(MeshId::mint()), name: "mesh1".into(), status: crate::views::ScopeStatus::Ready, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap(), "mesh1.rpc.1".parse().unwrap()] }
+        crate::views::MeshView { renewals: None, id: Some(MeshId::mint()), name: "mesh1".into(), status: crate::views::ScopeStatus::Ready, primary_admin: Some(NodeId::mint()), admin_api_base: None, nodes: vec![NodeId::mint(), NodeId::mint()] }
     }
 
     fn connection_view() -> crate::views::ConnectionView {

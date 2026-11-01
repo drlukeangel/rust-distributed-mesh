@@ -9,22 +9,20 @@ pub(crate) fn held_births(digest_view: &DigestView, fabric: &FabricId, me: &Node
     digest_view.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
 }
 
-/// The durable runtime row of the exact birth `(node_id, incarnation)` of `node`, read by its key
-/// (`NodesStorage::runtime`, the point read; never a list of every row searched for it), with
-/// `reader` naming the admin that reads it. A row never written (`Ok(None)`) and a store that could
-/// not be read (`Err`, naming the store's cause) are two facts, each on its own span.
-pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, node: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, String> {
+/// Read the exact birth's durable runtime by node ID and incarnation.
+/// Missing evidence and an unreadable store remain distinct outcomes.
+pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, reader: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, String> {
     match nodes.runtime(node_id, incarnation).await {
         Ok(Some(row)) => Ok(Some(row)),
         Ok(None) => {
-            tracing::info_span!("rdm.node_admin.node.reject.via-no-runtime-row", reader = %reader, node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), store = "nodes.storage")
+            tracing::info_span!("rdm.node_admin.node.reject.via-no-runtime-row", reader_path = %reader.path, reader_name = %reader.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), store = "nodes.storage")
                 .in_scope(|| tracing::info!("no durable runtime row of this birth was ever written here"));
             Ok(None)
         }
         Err(e) => {
-            tracing::info_span!("rdm.node_admin.node.reject.via-runtime-row-unreadable", reader = %reader, node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), store = "nodes.storage", error = %e)
+            tracing::info_span!("rdm.node_admin.node.reject.via-runtime-row-unreadable", reader_path = %reader.path, reader_name = %reader.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), store = "nodes.storage", error = %e)
                 .in_scope(|| tracing::info!("the durable runtime row of this birth could not be read"));
-            Err(format!("the durable runtime row of {node} ({node_id}) at {} could not be read from {reader}'s nodes.storage: {e}", incarnation.as_str()))
+            Err(format!("the durable runtime row of node {node_id}, incarnation {} could not be read from nodes.storage by path {:?}, name {:?}: {e}", incarnation.as_str(), reader.path, reader.name))
         }
     }
 }
@@ -43,7 +41,7 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
 /// the record's own rule ([`crate::storage::BIRTHS_KEPT`]), and a deleted node's record is `Deleted`:
 /// neither is read as a node to reach. An address is a restart's hint, never topology.
 pub(crate) struct MeshRowsWriter {
-    /// The admin's `path.name`, the writer its spans name.
+    /// The admin's globally unique node ID, rendered for writer diagnostics.
     pub(crate) me: String,
     pub(crate) mesh: String,
     pub(crate) mesh_id: MeshId,
@@ -115,13 +113,13 @@ impl MeshRowsWriter {
                 })
                 .await;
             match written {
-                Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
+                Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
                     .in_scope(|| tracing::info!("the node's record is put whole, the birth's address and the primaries the view holds recorded on it")),
                 Ok(Some(false)) => {}
                 Ok(None) => owed = true,
                 Err(e) => {
                     owed = true;
-                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", node = %self.me, subject = %d.node.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "owed", error = %e)
+                    tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "owed", error = %e)
                         .in_scope(|| tracing::info!("the store did not acknowledge the node's record: it is owed and written again under the one backoff rule"));
                 }
             }
@@ -204,9 +202,9 @@ pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshSto
     let mut taken = 0;
     for r in crate::storage::records(meshes, nodes, own_mesh).await? {
         let Some(b) = r.newest_birth() else { continue };
-        let record = |revision| rdm_core::Primary { mesh: r.name.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
+        let record = |revision| rdm_core::Primary { mesh: r.mesh.clone(), node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone(), revision };
         if let Some(revision) = b.is_primary {
-            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_node_type(r.name.kind), &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
+            taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::of_node_type(r.kind), &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
         }
         if let Some(revision) = b.is_fabric_primary {
             taken += usize::from(matches!(primaries.take(rdm_core::PrimaryRole::FabricPrimary, &record(revision)), rdm_transport::topology::RoleTaken::Held { .. }));
@@ -222,19 +220,19 @@ pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshSto
 /// another MeshId means the admin's mesh was removed and a mesh created again under the name; refused
 /// by name, naming both ids, as are a Dead record and no record.
 pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: &crate::storage::NodeRecord) -> Result<crate::storage::MeshRecord, String> {
-    let (mesh, mesh_id) = (&own.name.mesh, &own.mesh_id);
-    let unread = |e: crate::storage_error::StorageError| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage could not read the record of {mesh}: {e}", own.name);
+    let (mesh, mesh_id) = (&own.mesh, &own.mesh_id);
+    let unread = |e: crate::storage_error::StorageError| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage could not read the record of {mesh}: {e}", own.node_id);
     let held = meshes.mesh(mesh_id).await.map_err(unread)?;
     if held.as_ref().is_some_and(|row| row.dead) {
-        return Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), whose record is Dead: a dead mesh is never restarted", own.name));
+        return Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), whose record is Dead: a dead mesh is never restarted", own.node_id));
     }
     if let Some(other) = meshes.mesh_named(mesh).await.map_err(unread)?.filter(|row| row.mesh_id != *mesh_id) {
         return Err(format!(
             "this admin ({}) belongs to mesh {mesh_id} ({mesh}), which was removed: the name {mesh} is held by mesh {}, a mesh created again under it, and a removed mesh is never rejoined",
-            own.name, other.mesh_id
+            own.node_id, other.mesh_id
         ));
     }
-    held.ok_or_else(|| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage holds no record of {mesh}", own.name))
+    held.ok_or_else(|| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage holds no record of {mesh}", own.node_id))
 }
 
 /// mesh.create's claim of the mesh's name at its key (node-identity-and-state.md §2.7)
@@ -351,7 +349,7 @@ pub(crate) async fn commit_receipt(builds: &dyn BuildStateAdapter, me: &str, rec
     builds
         .append_step_receipt(&receipt)
         .await
-        .map_err(|e| ("receipt-refused", format!("{me}: the {} receipt of {} (Build {}, attempt {}) was not written: {e}", receipt.step, receipt.operation, receipt.build_id, receipt.attempt)))
+        .map_err(|e| ("receipt-refused", format!("{me}: the {} receipt of {:?} (Build {}, attempt {}) was not written: {e}", receipt.step, receipt.operation, receipt.build_id, receipt.attempt)))
 }
 
 /// `create-mesh:<mesh>` as the Build runs it (node-rpc-envelope.md, Build op 0x20: "completed step
@@ -374,10 +372,10 @@ pub(crate) async fn commit_receipt(builds: &dyn BuildStateAdapter, me: &str, rec
 /// `refused`, `store-unanswered`, `receipt-refused` or `build-unreadable`, and the claim's own span is its
 /// child.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::storage::MeshStorage, builds: &dyn BuildStateAdapter, executor: &str, me: &str, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::storage::MeshStorage, builds: &dyn BuildStateAdapter, executor: &rdm_core::framing::Birth, me: &str, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
     use crate::build_state::{BuildStepReceipt, StepOutcome};
     use crate::deployment::pipeline::CreateMeshStep;
-    let BuildOperation::CreateMesh { mesh, mesh_id } = op else { return Err(format!("{me}: {} is not a create-mesh operation", op.key())) };
+    let BuildOperation::CreateMesh { mesh, mesh_id } = op else { return Err(format!("{me}: {:?} is not a create-mesh operation", op.key())) };
     let operation = op.key();
     let span = tracing::info_span!(
         "rdm.node_admin.mesh.create.via-receipt",
@@ -386,14 +384,14 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
         mesh_id = %mesh_id,
         build_id = %build_id.log(),
         attempt,
-        operation = %operation,
+        operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step,
         outcome = tracing::field::Empty,
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let receipt = |step: CreateMeshStep, outcome: StepOutcome| BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.name().into(), outcome, output: None, executor: Some(executor.to_string()) };
+    let receipt = |step: CreateMeshStep, outcome: StepOutcome| BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.name().into(), outcome, output: None, executor: Some(executor.clone()) };
     let run = async {
-        let held = builds.read_build(build_id).await.map_err(|e| ("build-unreadable", format!("{me}: {operation}: the Build {build_id} could not be read for its receipts: {e}")))?;
+        let held = builds.read_build(build_id).await.map_err(|e| ("build-unreadable", format!("{me}: {operation:?}: the Build {build_id} could not be read for its receipts: {e}")))?;
         if held.steps.iter().any(|r| r.operation == operation && r.step == CreateMeshStep::Complete.name() && r.outcome == StepOutcome::Complete && r.attempt >= held.opened && r.attempt <= attempt) {
             hold_mesh_id(records, mesh, mesh_id);
             return Ok("replayed");
@@ -519,7 +517,7 @@ pub async fn inspection_with_handle(
 /// mesh's status names its operation and no Build).
 pub(crate) struct Announced {
     pub(crate) announced: &'static str,
-    pub(crate) operation: String,
+    pub(crate) operation: rdm_core::OperationId,
     pub(crate) build_id: String,
     pub(crate) attempt: u32,
 }

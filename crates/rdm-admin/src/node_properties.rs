@@ -1,15 +1,10 @@
-//! A caller's node property commands at the node's mesh-primary, the one writer of its mesh's rows
-//! (proposal node-properties-own-commands.md §1, §3; R-OW1, R14, R-TG1): each command is admitted at
-//! any time (Q166, Q171) and runs once through the writer's held record, one change at a time with
-//! every other change to a node record (`crate::node_config::NodeConfigs::one_at_a_time`). Here:
-//! `node.tag.create` / `node.tag.delete` (node-rpc-envelope.md node.tags): each label is
-//! its own key of the node store's tags index, kept with the row by the store adapter (a label the
-//! row stops carrying is tombstoned, one it gains is put); a label the node already carries is ignored
-//! and writes nothing. Neither has a precondition, neither touches the
-//! name, and the node is told nothing: its tags live in its row and the index, never in its digest.
+//! Tag commands admitted by the node's mesh-primary and persisted by the node's own
+//! serialized property writer. Node IDs select subjects; incarnation identifies the exact
+//! birth. Path and name remain separate descriptive fields. Missing property storage
+//! refuses the command rather than writing properties into a combined lifecycle row.
 
 use crate::model::PathName;
-use crate::storage::{NodeRow, NodesStorage};
+use crate::storage::NodesStorage;
 use crate::topology::Topology;
 use rdm_core::NodeId;
 use rdm_core::status::{NotPrimary, StatusReply, StatusRequest, TagScope};
@@ -43,24 +38,17 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
         if first.is_fabric_primary(me_id) && !first.is_mesh_primary(&subject.mesh, me_id) {
             let span = tracing::info_span!(
                 "rdm.node_admin.node.update.via-fabric-primary",
-                node = %me, subject = %subject.name, node_id = %node_id, op = req.op(),
+                node_path = %me.path, node_name = %me.name, subject_path = %subject.name.path, subject_name = %subject.name.name, node_id = %node_id, op = req.op(),
                 mesh_primary = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
                 outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
             );
             let down = tracing::Instrument::instrument(door.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
             if let crate::node_config::Down::Answered(reply) = down {
                 if let Some(a) = atlas {
-                    match (&reply, &change) {
-                        (StatusReply::TagsCreated { .. }, Change::Create(labels)) => {
-                            a.update_record(node_id, |r| r.tags.extend(labels.iter().cloned()));
+                    if matches!(reply, StatusReply::TagsCreated { .. } | StatusReply::TagsDeleted { .. }) {
+                        if let Err(error) = a.refresh_record(storage, node_id).await {
+                            span.record("detail", error.as_str());
                         }
-                        (StatusReply::TagsDeleted { .. }, Change::Delete(TagScope::All)) => {
-                            a.update_record(node_id, |r| r.tags.clear());
-                        }
-                        (StatusReply::TagsDeleted { .. }, Change::Delete(TagScope::Labels(labels))) => {
-                            a.update_record(node_id, |r| r.tags.retain(|l| !labels.contains(l)));
-                        }
-                        _ => {}
                     }
                 }
                 span.record("outcome", reply.name());
@@ -73,12 +61,12 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
     let span = match &change {
         Change::Create(labels) => tracing::info_span!(
             "rdm.node_admin.tag.create.via-writer",
-            node = %me, subject = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), labels = %crate::node_rows::labels(labels),
+            node_path = %me.path, node_name = %me.name, subject_path = tracing::field::Empty, subject_name = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), labels = %crate::node_rows::labels(labels),
             arrived = tracing::field::Empty, already_carried = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
         ),
         Change::Delete(scope) => tracing::info_span!(
             "rdm.node_admin.tag.delete.via-writer",
-            node = %me, subject = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), scope = scope.name(), labels = %match scope { TagScope::All => String::new(), TagScope::Labels(l) => crate::node_rows::labels(l) },
+            node_path = %me.path, node_name = %me.name, subject_path = tracing::field::Empty, subject_name = tracing::field::Empty, node_id = %node_id, incarnation_id = %incarnation.as_str(), scope = scope.name(), labels = %match scope { TagScope::All => String::new(), TagScope::Labels(l) => crate::node_rows::labels(l) },
             left = tracing::field::Empty, not_carried = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
         ),
     };
@@ -105,40 +93,40 @@ enum Change<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, node_id: &NodeId, incarnation: &rdm_core::IncarnationId, change: &Change<'_>, span: &tracing::Span) -> StatusReply {
+async fn write(_me: &PathName, me_id: &NodeId, view: &Topology, _storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, node_id: &NodeId, incarnation: &rdm_core::IncarnationId, change: &Change<'_>, span: &tracing::Span) -> StatusReply {
     let refusal = match change {
         Change::Create(labels) => rdm_core::status::create_tags_refusal(labels),
         Change::Delete(scope) => scope.refusal(),
     };
     if let Some(reason) = refusal {
-        let why = format!("{me}: the labels of node {node_id} are refused and nothing is written: {reason}");
+        let why = format!("{me_id}: the labels of node {node_id} are refused and nothing is written: {reason}");
         span.record("detail", why.as_str());
         return rdm_core::reply::status::bounded_rejected_tags(&why);
     }
     // The subject is the exact birth the call names, wherever its row stands (`Topology::own`); one
     // this receiver does not hold is the receiver's own fact, never a peer that did not resolve.
     let Some(subject) = view.own(node_id) else {
-        span.record("detail", format!("{me}: node {node_id} holds no birth in this admin's view; its tags cannot be written").as_str());
+        span.record("detail", format!("{me_id}: node {node_id} holds no birth in this admin's view; its tags cannot be written").as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
     };
-    span.record("subject", subject.name.to_string().as_str());
+    span.record("subject_path", subject.name.path.as_str()).record("subject_name", subject.name.name.as_str());
     // The writer of the row is the mesh-primary of the node's mesh, and no other admin (R-OW1).
     if !view.is_mesh_primary(&subject.mesh, me_id) {
-        let held_by = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
-        let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
+        let held_by = view.node_type_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
+        let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me_id} does not hold it)", subject.mesh, subject.node_id);
         span.record("detail", needed.as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
     }
     match subject.incarnation_id.as_ref() {
         Some(held) if held != incarnation => return rdm_core::reply::stale(held.clone()),
         None => {
-            span.record("detail", format!("{me}: {} has no known birth; its tags cannot be written", subject.name).as_str());
+            span.record("detail", format!("{me_id}: {} has no known birth; its tags cannot be written", subject.node_id).as_str());
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         }
         Some(_) => {}
     }
     let Some(door) = configs else {
-        return rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet, and so no door its record changes take turns at: the tags of {} are not written", subject.name));
+        return rdm_core::reply::status::not_ready(format!("{me_id} has no node-RPC client yet, and so no door its record changes take turns at: the tags of {} are not written", subject.node_id));
     };
     if door.records().is_some() {
         let change = match change {
@@ -148,7 +136,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         let reply = if node_id == me_id {
             match door.own_tags(subject, change).await {
                 Some(result) => result.map_err(|error| error.to_string()),
-                None => return rdm_core::reply::status::not_ready(format!("{me} has no own property writer yet")),
+                None => return rdm_core::reply::status::not_ready(format!("{me_id} has no own property writer yet")),
             }
         } else {
             let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
@@ -161,61 +149,10 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         };
         return match reply {
             Ok(reply) => reply,
-            Err(error) => rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &error),
+            Err(error) => rdm_core::reply::status::bounded_node_row_refused(&subject.node_id.to_string(), &error),
         };
     }
-    // One change to a node record at a time, through the writer's held record: the row carries every
-    // field the writer knows of it, the config included.
-    let _one = door.one_at_a_time().await;
-    let known = match door.written().known_row(storage, node_id).await {
-        Ok(row) => row,
-        Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &format!("{me}: {why}: the tags of {} are not written", subject.name)),
-    };
-    // A writer that meets the row finishes the release a rename left pending (proposal
-    // node-properties-own-commands.md §2.1), whether or not this command writes; one that fails again
-    // stays pending, named on its span.
-    if let Some(r) = &known {
-        let _ = crate::node_rows::finish_release(storage, door.written(), me, r, "tags-put").await;
-    }
-    let was: BTreeSet<String> = known.as_ref().map(|r| r.tags.clone()).unwrap_or_default();
-    let (tags, done) = match change {
-        Change::Create(labels) => {
-            let already: BTreeSet<String> = labels.intersection(&was).cloned().collect();
-            let arrived: BTreeSet<String> = labels.difference(&was).cloned().collect();
-            span.record("arrived", crate::node_rows::labels(&arrived).as_str()).record("already_carried", crate::node_rows::labels(&already).as_str());
-            let tags: BTreeSet<String> = was.union(labels).cloned().collect();
-            if let Some(reason) = rdm_core::status::tags_refusal(&tags) {
-                let why = format!("{me}: {} carries {} and the create adds {}: {reason}; nothing is written", subject.name, crate::node_rows::labels(&was), crate::node_rows::labels(&arrived));
-                span.record("detail", why.as_str());
-                return rdm_core::reply::status::bounded_rejected_tags(&why);
-            }
-            (if arrived.is_empty() { None } else { Some(tags) }, StatusReply::TagsCreated { node_id: node_id.clone(), incarnation: incarnation.clone(), already_carried: already })
-        }
-        Change::Delete(scope) => {
-            let (left, not_carried): (BTreeSet<String>, BTreeSet<String>) = match scope {
-                TagScope::All => (was.clone(), BTreeSet::new()),
-                TagScope::Labels(labels) => (labels.intersection(&was).cloned().collect(), labels.difference(&was).cloned().collect()),
-            };
-            span.record("left", crate::node_rows::labels(&left).as_str()).record("not_carried", crate::node_rows::labels(&not_carried).as_str());
-            (if left.is_empty() { None } else { Some(was.difference(&left).cloned().collect()) }, StatusReply::TagsDeleted { node_id: node_id.clone(), incarnation: incarnation.clone(), not_carried })
-        }
-    };
-    // Nothing to change writes nothing: a label carried is a key already put, one not carried a key
-    // with nothing to tombstone.
-    let Some(tags) = tags else { return done };
-    // The record this writer holds, its tags changed: written whole, its tags index moves with it.
-    let base = NodeRow::new(subject.name.clone(), node_id.clone(), subject.status);
-    // A tag put moves no status (node-status.md: "never a meta or config put"): the record's stands.
-    match door.written().update(storage, node_id, Some(base), |r| {
-        r.tags = tags;
-    }).await {
-        Ok(_) => done,
-        Err(why) => {
-            let why = format!("{me}: {} ({node_id}): {why}", subject.name);
-            span.record("detail", why.as_str());
-            rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &why)
-        }
-    }
+    rdm_core::reply::status::not_ready(format!("{me_id} has no bound node property records; the tags of {} are not written", subject.node_id))
 }
 
 #[cfg(test)]
@@ -227,32 +164,20 @@ mod tests {
     use rdm_transport::{NodeRpcClient, StaticResolver};
     use std::sync::Arc;
 
-    // CONTRACT (`docs/architecture/node-rpc-envelope.md:323` — "`node.tag.create { label | [labels] }`
-    // adds one label or a list; `node.tag.delete { All | [labels] }` removes every label or the named
-    // ones ... Each label is its own keyed row (label, node id) in the node store's tags index. Create is
-    // a blind put of that key, so creating a label the node already carries is ignored and writes no
-    // duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no
-    // leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is
-    // refused by name and nothing is written"): `tags` writes label index entries, reports
-    // `already_carried` and `not_carried`, skips writing when no label changes, and refuses invalid
-    // grammar, >32 labels, stale incarnations, and non-mesh-primary receivers.
+    // Node-owned tags preserve unrelated properties, report deltas, and refuse invalid
+    // labels, stale births and unavailable property storage without writing combined rows.
     // @feature: node-tags
     #[tokio::test]
-    async fn tags_create_and_delete_maintain_index_report_carried_deltas_and_enforce_label_grammar_and_cap() {
-        let mut admin1 = Node::allocated("mesh1.admin.1".parse().unwrap());
+    async fn tags_use_node_owned_properties_and_refuse_unbound_records() {
+        let mut admin1 = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin1.status = NodeStatus::Ready;
         admin1.is_primary = true;
         admin1.is_fabric_primary = true;
         admin1.incarnation_id = Some(IncarnationId::mint());
 
-        let mut admin2 = Node::allocated("mesh1.admin.2".parse().unwrap());
+        let mut admin2 = Node::allocated(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin2.status = NodeStatus::Ready;
         admin2.incarnation_id = Some(IncarnationId::mint());
-
-        let mut rpc1 = Node::allocated("mesh1.rpc.1".parse().unwrap());
-        rpc1.status = NodeStatus::Ready;
-        let rpc1_inc = IncarnationId::mint();
-        rpc1.incarnation_id = Some(rpc1_inc.clone());
 
         let view = RwLock::new(Topology {
             fabric: Fabric {
@@ -266,7 +191,7 @@ mod tests {
                 name: "mesh1".into(),
                 status: ScopeStatus::Ready,
             }],
-            nodes: vec![admin1.clone(), admin2.clone(), rpc1.clone()],
+            nodes: vec![admin1.clone(), admin2.clone()],
         });
 
         let storage = MemoryNodesStorage::default();
@@ -279,8 +204,8 @@ mod tests {
 
         // 1. Invalid grammar (leading '.') refused before writer check.
         let bad_req = StatusRequest::CreateTags {
-            node_id: rpc1.node_id.clone(),
-            incarnation: rpc1_inc.clone(),
+            node_id: admin1.node_id.clone(),
+            incarnation: admin1.incarnation_id.clone().unwrap(),
             labels: set(&[".hidden"]),
         };
         assert!(matches!(
@@ -290,8 +215,8 @@ mod tests {
 
         // 2. Non-mesh-primary refused ReceiverNotPrimary.
         let create_req = StatusRequest::CreateTags {
-            node_id: rpc1.node_id.clone(),
-            incarnation: rpc1_inc.clone(),
+            node_id: admin1.node_id.clone(),
+            incarnation: admin1.incarnation_id.clone().unwrap(),
             labels: set(&["gold", "ssd"]),
         };
         assert!(matches!(
@@ -299,69 +224,85 @@ mod tests {
             StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { .. } }
         ));
 
-        // 3. Create {"gold", "ssd"} writes row at revision 1 and indexes both labels.
+        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &create_req).await, StatusReply::NotReady { .. }));
+        assert!(storage.node(&admin1.node_id).await.unwrap().is_none());
+        use rdm_node::node_records::{MemoryNodeRecords, NodeRecordsStorage};
+        let records = Arc::new(MemoryNodeRecords::default());
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let snapshot = view.read().await.clone();
+        let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        door.uses_records(records.clone(), channels.clone());
+        door.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default(), applied: Default::default() }).await.unwrap();
+
+        // 3. Create {"gold", "ssd"} persists both labels in node-owned properties.
         assert_eq!(
             tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &create_req).await,
             StatusReply::TagsCreated {
-                node_id: rpc1.node_id.clone(),
-                incarnation: rpc1_inc.clone(),
+                node_id: admin1.node_id.clone(),
+                incarnation: admin1.incarnation_id.clone().unwrap(),
                 already_carried: BTreeSet::new(),
             }
         );
-        assert_eq!(written.row_of(&rpc1.node_id).unwrap().revision, 1);
-        assert_eq!(storage.tagged("gold").await.unwrap(), BTreeSet::from([rpc1.node_id.clone()]));
-        assert_eq!(storage.tagged("ssd").await.unwrap(), BTreeSet::from([rpc1.node_id.clone()]));
 
-        // 4. Repeat create {"gold"} reports already_carried={"gold"} and writes nothing (revision stays 1).
+        // 4. Repeat create {"gold"} reports already_carried={"gold"} without changing the tag set.
         let dup_req = StatusRequest::CreateTags {
-            node_id: rpc1.node_id.clone(),
-            incarnation: rpc1_inc.clone(),
+            node_id: admin1.node_id.clone(),
+            incarnation: admin1.incarnation_id.clone().unwrap(),
             labels: set(&["gold"]),
         };
         assert_eq!(
             tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &dup_req).await,
             StatusReply::TagsCreated {
-                node_id: rpc1.node_id.clone(),
-                incarnation: rpc1_inc.clone(),
+                node_id: admin1.node_id.clone(),
+                incarnation: admin1.incarnation_id.clone().unwrap(),
                 already_carried: set(&["gold"]),
             }
         );
-        assert_eq!(written.row_of(&rpc1.node_id).unwrap().revision, 1);
 
-        // 5. Delete {"gold", "missing"} tombstones "gold", reports not_carried={"missing"}, steps revision to 2.
+        // 5. Delete {"gold", "missing"} removes "gold" and reports not_carried={"missing"}.
         let del_req = StatusRequest::DeleteTags {
-            node_id: rpc1.node_id.clone(),
-            incarnation: rpc1_inc.clone(),
+            node_id: admin1.node_id.clone(),
+            incarnation: admin1.incarnation_id.clone().unwrap(),
             scope: TagScope::Labels(set(&["gold", "missing"])),
         };
         assert_eq!(
             tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &del_req).await,
             StatusReply::TagsDeleted {
-                node_id: rpc1.node_id.clone(),
-                incarnation: rpc1_inc.clone(),
+                node_id: admin1.node_id.clone(),
+                incarnation: admin1.incarnation_id.clone().unwrap(),
                 not_carried: set(&["missing"]),
             }
         );
-        assert!(storage.tagged("gold").await.unwrap().is_empty());
-        assert_eq!(written.row_of(&rpc1.node_id).unwrap().tags, set(&["ssd"]));
-        assert_eq!(written.row_of(&rpc1.node_id).unwrap().revision, 2);
+        assert_eq!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags, set(&["ssd"]));
 
-        // 6. Delete All clears remaining tags and tombstones "ssd".
+        let too_many = StatusRequest::CreateTags {
+            node_id: admin1.node_id.clone(), incarnation: admin1.incarnation_id.clone().unwrap(),
+            labels: (0..32).map(|i| format!("tag-{i}")).collect(),
+        };
+        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &too_many).await, StatusReply::RejectedTags { .. }));
+        assert_eq!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags, set(&["ssd"]));
+        let stale = StatusRequest::CreateTags { node_id: admin1.node_id.clone(), incarnation: IncarnationId::mint(), labels: set(&["stale"]) };
+        assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &stale).await, StatusReply::RejectedStaleIncarnation { .. }));
+
+        // 6. Delete All clears the remaining tags.
         let del_all = StatusRequest::DeleteTags {
-            node_id: rpc1.node_id.clone(),
-            incarnation: rpc1_inc,
+            node_id: admin1.node_id.clone(),
+            incarnation: admin1.incarnation_id.clone().unwrap(),
             scope: TagScope::All,
         };
         assert_eq!(
             tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), None, SentBy::Other, &del_all).await,
             StatusReply::TagsDeleted {
-                node_id: rpc1.node_id.clone(),
-                incarnation: rpc1.incarnation_id.unwrap(),
+                node_id: admin1.node_id.clone(),
+                incarnation: admin1.incarnation_id.clone().unwrap(),
                 not_carried: BTreeSet::new(),
             }
         );
-        assert!(storage.tagged("ssd").await.unwrap().is_empty());
-        assert!(written.row_of(&rpc1.node_id).unwrap().tags.is_empty());
+        assert!(records.properties(&admin1.node_id).await.unwrap().unwrap().tags.is_empty());
+        let retained = records.properties(&admin1.node_id).await.unwrap().unwrap();
+        assert_eq!(retained.config, [("preserved".into(), "value".into())].into());
+        assert!(storage.node(&admin1.node_id).await.unwrap().is_none());
+        assert!(written.row_of(&admin1.node_id).is_none());
         ep.close().await;
     }
 }

@@ -11,7 +11,7 @@ pub use crate::path::is_valid_mesh_name;
 pub use crate::{DeploymentId, EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName, PathNameError};
 
 /// Node lifecycle status as published on views.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NodeStatus {
     /// Created and not yet ready.
@@ -49,7 +49,7 @@ pub enum NodeStatus {
     Dead,
     /// Deleted: the node's identity and name are released. Only the node's row carries it, written
     /// by the node's mesh-primary (the fabric-primary for a mesh with no primary) from node.delete's
-    /// step receipt; the record and its config stay for the next node created at the same `path.name`.
+    /// step receipt; the record and its config stay for the next node created at the same path and name.
     ///
     /// Serialized as `deleted`.
     Deleted,
@@ -151,7 +151,10 @@ pub enum ProviderKind {
 /// One node as the fabric control projection knows it (`NodeView`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
-    /// The node's `path.name`.
+    /// The exact birth's original claimed pair while listed as a moved predecessor.
+    #[serde(default)]
+    pub renamed_from: Option<PathName>,
+    /// The node's separate path and name fields.
     pub name: PathName,
     /// The node's kind.
     pub kind: NodeKind,
@@ -205,12 +208,18 @@ fn routable_default() -> bool {
 }
 
 impl Node {
+    /// The exact runtime birth, selected by globally unique node ID and incarnation.
+    pub fn birth(&self) -> Option<crate::framing::Birth> {
+        self.incarnation_id.clone().map(|incarnation| crate::framing::Birth { node_id: self.node_id.clone(), incarnation })
+    }
+
     /// A newly allocated node: identity only, nothing realised yet.
-    pub fn allocated(name: PathName) -> Self {
+    pub fn allocated(name: PathName, mesh: impl Into<String>, kind: NodeKind) -> Self {
         Self {
-            kind: name.kind,
-            node_type: name.kind.node_type().to_string(),
-            mesh: name.mesh.clone(),
+            renamed_from: None,
+            kind,
+            node_type: kind.node_type().to_string(),
+            mesh: mesh.into(),
             name,
             node_id: NodeId::mint(),
             endpoint_id: None,
@@ -231,12 +240,12 @@ impl Node {
         }
     }
 
-    /// The node's path (`<mesh>.<kind>`), separate from its name within that path.
+    /// The node's immutable path, separate from its name and explicit mesh/kind metadata.
     pub fn path(&self) -> String {
         self.name.path()
     }
 
-    /// The node's name within its path (`<base>[.old]`).
+    /// The node's name within its path (an ordinary name, or `<name>-old` for an explicitly replaced predecessor).
     pub fn node_name(&self) -> String {
         self.name.name()
     }
@@ -295,23 +304,25 @@ mod tests {
 
     #[test]
     fn path_name_round_trips() {
-        for s in ["mesh1.rpc.2", "mesh1.admin.1", "m-2.rpc.17"] {
-            let p: PathName = s.parse().unwrap();
-            assert_eq!(p.to_string(), s);
+        for (path, name) in [("mesh1.rpc", "2"), ("mesh1.admin", "1"), ("m-2.rpc", "17")] {
+            let p = PathName::new(path, name).unwrap();
+            assert_eq!((&*p.path, &*p.name), (path, name));
             let json = serde_json::to_string(&p).unwrap();
             assert_eq!(serde_json::from_str::<PathName>(&json).unwrap(), p);
         }
-        let p: PathName = "mesh1.rpc.2".parse().unwrap();
-        assert_eq!(p, PathName::new("mesh1", NodeKind::RpcNode, 2));
+        let p: PathName = crate::PathName::new("mesh1.rpc", "2").unwrap();
+        assert_eq!(p, PathName::numbered("mesh1", NodeKind::RpcNode, 2));
     }
 
     #[test]
-    fn path_name_refuses_by_name() {
-        assert_eq!("mesh1.rpc".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc".into())));
-        assert_eq!("Mesh1.rpc.1".parse::<PathName>(), Err(PathNameError::MeshName("Mesh1".into())));
-        assert_eq!("mesh1.registry.1".parse::<PathName>(), Err(PathNameError::Kind("registry".into())));
-        assert_eq!("mesh1.rpc.0".parse::<PathName>(), Err(PathNameError::Ordinal("0".into())));
-        assert_eq!("mesh1.rpc.01".parse::<PathName>(), Err(PathNameError::Ordinal("01".into())));
+    fn path_name_refuses_invalid_fields_and_accepts_free_text() {
+        assert!(PathName::new("Mesh1.rpc", "1").is_err());
+        assert!(PathName::new("mesh1..rpc", "1").is_err());
+        assert!(PathName::new("mesh1.rpc", "a.b").is_err());
+        for (path, name) in [("mesh1.registry", "1"), ("mesh1.rpc", "0"), ("mesh1.rpc", "01"), ("arbitrary.path", "north")] {
+            let location = PathName::new(path, name).unwrap();
+            assert_eq!((&*location.path, &*location.name), (path, name));
+        }
     }
 
     #[test]
@@ -337,9 +348,9 @@ mod tests {
         }
         assert_eq!(serde_json::to_value(NodeKind::RpcNode).unwrap(), "rpc_node");
         assert_eq!(serde_json::to_value(NodeKind::NodeAdmin).unwrap(), "node_admin");
-        let n = Node::allocated("mesh1.rpc.2".parse().unwrap());
+        let n = Node::allocated(crate::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", crate::NodeKind::RpcNode);
         let v = serde_json::to_value(&n).unwrap();
-        assert_eq!(v["name"], "mesh1.rpc.2");
+        assert_eq!(v["name"], serde_json::json!({"path": "mesh1.rpc", "name": "2"}));
         assert_eq!(v["kind"], "rpc_node");
         assert_eq!(v["mesh"], "mesh1");
         assert_eq!(v["status"], "pending");
@@ -372,14 +383,14 @@ mod node_type_tests {
     /// path/name cannot change that type, and a later type update is refused.
     #[test]
     fn a_declared_node_type_is_independent_of_the_path() {
-        let mut node = Node::allocated("mesh1.rpc.north".parse().unwrap()).with_node_type("application-worker").unwrap();
+        let mut node = Node::allocated(crate::PathName::new("mesh1.rpc", "north").unwrap(), "mesh1", crate::NodeKind::RpcNode).with_node_type("application-worker").unwrap();
         assert_eq!(node.node_type(), "application-worker");
-        node.name = "mesh2.gateway.south".parse().unwrap();
+        node.name = crate::PathName::new("mesh2.gateway", "south").unwrap();
         assert_eq!(node.node_type(), "application-worker");
         assert!(node.update_node_type("gateway").unwrap_err().contains("application-worker"));
         let encoded = serde_json::to_vec(&node).unwrap();
         let decoded: Node = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded.node_type(), "application-worker");
-        assert_eq!(Node::allocated(node.name).with_node_type("").unwrap().node_type(), crate::status::DEFAULT_NODE_TYPE);
+        assert_eq!(Node::allocated(node.name, "mesh1", crate::NodeKind::RpcNode).with_node_type("").unwrap().node_type(), crate::status::DEFAULT_NODE_TYPE);
     }
 }

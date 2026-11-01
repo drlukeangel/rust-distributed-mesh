@@ -346,12 +346,42 @@ pub struct NodeLifecycle {
     pub topology_storage_provider: Option<String>,
     /// Prerequisites allocated at creation, before runtime launch.
     pub allocated: Option<crate::nodes_storage::Allocation>,
+    /// The exact immutable property snapshot selected by this create claim.
+    pub initial_properties: Option<rdm_core::launch::InitialProperties>,
     /// The previous birth named by recovery.
     pub predecessor: Option<RecordBirth>,
     /// The path/name pair moved by a rename, if any.
     pub renamed_from: Option<(String, String)>,
+    /// The original pair of this exact retained predecessor, independent of the pending name
+    /// claim release; preserved across name edits and cleared only by exact rollback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_from: Option<rdm_core::PathName>,
     /// The successor that replaced this instance.
     pub inherited_by: Option<NodeId>,
+}
+
+/// Existing election outputs persisted together before their installation is published.
+/// These are facts produced by the election; reading this record never elects a primary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrimaryRecordBatch {
+    /// The fabric whose election produced the outputs.
+    pub fabric_id: rdm_core::FabricId,
+    /// The process recording the outputs.
+    pub writer: RecordBirth,
+    /// One atomic installation, including all roles moved by a multi-role handover.
+    pub records: Vec<(rdm_core::PrimaryRole, rdm_core::Primary)>,
+}
+
+impl PrimaryRecordBatch {
+    /// Independent exact result keys prevent a delayed observation from overwriting a newer
+    /// election. Consumers fold the outputs using Primary::supersedes, never append order.
+    fn key(&self) -> String {
+        let mut canonical = self.clone();
+        canonical.records.sort_by(|(ar, a), (br, b)|
+            (ar, &a.mesh, a.revision, &a.node_id, a.incarnation.as_str())
+                .cmp(&(br, &b.mesh, b.revision, &b.node_id, b.incarnation.as_str())));
+        serde_json::to_string(&canonical).expect("primary outputs serialize")
+    }
 }
 
 /// The common persistence boundary for node properties and lifecycle records.
@@ -367,6 +397,10 @@ pub struct NodeLifecycle {
 /// Callers retain the future through cancellation; adapters retain any lower-level operation.
 #[async_trait]
 pub trait NodeRecordsStorage: Send + Sync {
+    /// Persist one complete set of existing election outputs at its exact result identity.
+    async fn put_primary_records(&self, batch: &PrimaryRecordBatch) -> Result<(), StorageError>;
+    /// Read persisted outputs, without selecting, ordering by append time, or installing them.
+    async fn primary_records(&self) -> Result<Vec<PrimaryRecordBatch>, StorageError>;
     /// Persist the node's complete property record at its node ID.
     async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError>;
     /// Read the property record at an exact node ID.
@@ -392,12 +426,21 @@ pub trait NodeRecordsStorage: Send + Sync {
 /// In-memory adapter for fixtures and backends without restart survival.
 #[derive(Default)]
 pub struct MemoryNodeRecords {
+    primaries: std::sync::Mutex<BTreeMap<String, PrimaryRecordBatch>>,
     properties: std::sync::Mutex<BTreeMap<NodeId, NodeProperties>>,
     lifecycle: std::sync::Mutex<BTreeMap<(NodeId, NodeId, String), NodeLifecycle>>,
 }
 
 #[async_trait]
 impl NodeRecordsStorage for MemoryNodeRecords {
+    async fn put_primary_records(&self, batch: &PrimaryRecordBatch) -> Result<(), StorageError> {
+        self.primaries.lock().unwrap().insert(batch.key(), batch.clone());
+        Ok(())
+    }
+    async fn primary_records(&self) -> Result<Vec<PrimaryRecordBatch>, StorageError> {
+        Ok(self.primaries.lock().unwrap().values().cloned().collect())
+    }
+
     async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError> {
         self.properties
             .lock()
@@ -461,6 +504,8 @@ pub use crate::store_root::NODE_RECORDS_FILE;
 const PROPERTIES_FORMAT: &str = "node-properties/1";
 #[cfg(feature = "file-backend")]
 const LIFECYCLE_FORMAT: &str = "node-lifecycle/1";
+#[cfg(feature = "file-backend")]
+const PRIMARY_RECORDS_FORMAT: &str = "node-election/1";
 
 /// File adapter using the existing checksummed, durable store log.
 #[cfg(feature = "file-backend")]
@@ -474,7 +519,8 @@ impl FileNodeRecords {
     pub async fn open(root: &crate::store_root::StoreRoot) -> Result<Self, StorageError> {
         let formats = crate::store_log::Formats::new()
             .with::<NodeProperties>(PROPERTIES_FORMAT)
-            .with::<NodeLifecycle>(LIFECYCLE_FORMAT);
+            .with::<NodeLifecycle>(LIFECYCLE_FORMAT)
+            .with::<PrimaryRecordBatch>(PRIMARY_RECORDS_FORMAT);
         Ok(Self {
             log: root.log(NODE_RECORDS_FILE, formats).await?,
         })
@@ -493,6 +539,14 @@ impl FileNodeRecords {
 #[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodeRecordsStorage for FileNodeRecords {
+    async fn put_primary_records(&self, batch: &PrimaryRecordBatch) -> Result<(), StorageError> {
+        let writer = crate::store_log::LogWriter::new(&batch.writer.node_id, &batch.writer.incarnation_id);
+        self.log.append(&writer, PRIMARY_RECORDS_FORMAT, &batch.key(), batch).await
+    }
+    async fn primary_records(&self) -> Result<Vec<PrimaryRecordBatch>, StorageError> {
+        self.log.latest_of("node-election").await?.into_iter().map(|line| line.decode(self.log.path())).collect()
+    }
+
     async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError> {
         let writer =
             crate::store_log::LogWriter::new(&record.birth.node_id, &record.birth.incarnation_id);

@@ -331,11 +331,11 @@ impl Transition<'_> {
         format!("{:?}:{target}:{:?}->{:?}", key.scope, key.from, key.to).to_ascii_lowercase()
     }
 
-    /// The id of a node's transition for ONE birth: its path (the target) and the exact incarnation.
+    /// The id of a node's transition for one exact node ID and incarnation.
     /// A transition id keys once-only hook receipts, and a re-birth at the same path is a new
     /// execution of the transition: its hooks run again. A retry of the same birth reuses its receipts.
-    pub(crate) fn id_for_birth(key: TransitionKey, path: &str, incarnation: &str) -> String {
-        format!("{}@{incarnation}", Self::id_for(key, path))
+    pub(crate) fn id_for_birth(key: TransitionKey, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId) -> String {
+        format!("{}@{incarnation}", Self::id_for(key, node_id.as_str()))
     }
 }
 
@@ -575,11 +575,15 @@ mod tests {
     #[test]
     fn a_re_birth_at_the_same_path_is_another_transition_execution() {
         let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::Ready };
-        let first = Transition::id_for_birth(key, "mesh1.rpc.1", "inc-a");
-        assert_eq!(first, Transition::id_for_birth(key, "mesh1.rpc.1", "inc-a"), "a retry of one birth keeps its id");
-        assert_ne!(first, Transition::id_for_birth(key, "mesh1.rpc.1", "inc-b"), "a re-birth at the path is another execution");
-        assert_ne!(first, Transition::id_for_birth(key, "mesh1.rpc.2", "inc-a"));
-        assert!(first.starts_with(&Transition::id_for(key, "mesh1.rpc.1")), "{first}");
+        let first_node = rdm_core::NodeId::parse("100000000000").unwrap();
+        let second_node = rdm_core::NodeId::parse("200000000000").unwrap();
+        let first_inc = rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("inc-a")).unwrap();
+        let second_inc = rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("inc-b")).unwrap();
+        let first = Transition::id_for_birth(key, &first_node, &first_inc);
+        assert_eq!(first, Transition::id_for_birth(key, &first_node, &first_inc), "a retry of one birth keeps its id");
+        assert_ne!(first, Transition::id_for_birth(key, &first_node, &second_inc), "a re-birth at the path is another execution");
+        assert_ne!(first, Transition::id_for_birth(key, &second_node, &first_inc));
+        assert!(first.starts_with(&Transition::id_for(key, first_node.as_str())), "{first}");
     }
 
     #[tokio::test]

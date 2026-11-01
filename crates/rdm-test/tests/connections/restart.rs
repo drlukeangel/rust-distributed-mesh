@@ -1,16 +1,17 @@
 //! Connections across a restart, end to end on the process provider (`connections.md` §13 B, C,
-//! Q227): the cell kills the source's runtime and its mesh-primary recovers it at the same path.name
+//! Q227): the cell kills the source's runtime and its mesh-primary recovers it at the same separate path and name
 //! (node-recovery.md); the recovered source holds no connection and reads none back. A release-only
 //! stem (`connections_restart`). The map of every connections acceptance test to its cell is
 //! `connections/acceptance.rs`.
 
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
+use rdm_core::{NodeId, PathName};
 use std::time::Duration;
 
-const SOURCE: &str = "mesh1.rpc.1";
-const CARRIER: &str = "mesh1.rpc.2";
-const DEST: &str = "mesh1.rpc.3";
+fn source() -> PathName { PathName::new("mesh1.rpc", "1").unwrap() }
+fn carrier() -> PathName { PathName::new("mesh1.rpc", "2").unwrap() }
+fn destination() -> PathName { PathName::new("mesh1.rpc", "3").unwrap() }
 
 fn owner(test: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "connections".into(), subfeature: "connections-restart".into(), rung: "MN".into(), provider: "process".into(), test: test.into() }
@@ -32,28 +33,28 @@ async fn born(cell: &str) -> Estate {
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    for (witness, peer) in [(SOURCE, CARRIER), (SOURCE, DEST), (CARRIER, DEST)] {
-        estate.witness_holds_birth(witness, peer).await;
+    for (witness, peer) in [(source(), carrier()), (source(), destination()), (carrier(), destination())] {
+        estate.witness_holds_birth(&witness, &peer).await;
     }
     estate
 }
 
-fn snapshot(estate: &Estate, node: &str) -> Value {
-    let out = estate.probe(&["snapshot", "--target", &format!("path:{node}"), "--key", "x"]);
+fn snapshot(estate: &Estate, node: &NodeId) -> Value {
+    let out = estate.probe(&["snapshot", "--target", &format!("exact:{node}"), "--key", "x"]);
     assert_eq!(out["outcome"], "Reply", "{node} answers the snapshot door: {out}");
     out
 }
 
-fn rows<'a>(history: &'a [Value], to: &str, kind: &str) -> Vec<&'a Value> {
-    history.iter().filter(|r| r["destination"]["name"] == to && r["kind"] == kind).collect()
+fn rows<'a>(history: &'a [Value], to: &NodeId, kind: &str) -> Vec<&'a Value> {
+    history.iter().filter(|r| r["destination"]["node_id"] == to.as_str() && r["kind"] == kind).collect()
 }
 
-/// Kill `node`'s runtime and wait for its mesh-primary's recovery: a new node, ready, at its path.name.
-async fn recovered(estate: &Estate, node: &str) -> Value {
+/// Kill `node`'s runtime and wait for its mesh-primary's recovery: a new node, ready, at its separate path and name.
+async fn recovered(estate: &Estate, node: &PathName) -> Value {
     let before = estate.node_value(node).await;
     estate.kill_node(node).await;
     estate
-        .until_node(node, &format!("{node} is recovered as a new node at its path.name"), crate::node_recovery_due(), |n| {
+        .until_node(node, &format!("{node:?} is recovered as a new node at its separate path and name"), crate::node_recovery_due(), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["status"] == "ready" && n["node_id"] != before["node_id"]).then_some(n)
         })
@@ -71,21 +72,27 @@ async fn recovered(estate: &Estate, node: &str) -> Value {
 async fn a_recovered_source_holds_no_connection_and_reads_none_back() {
     let cell = "a_recovered_source_holds_no_connection_and_reads_none_back";
     let mut estate = born(cell).await;
-    let seeded = estate.probe(&["record-proxy", "--target", &format!("path:{SOURCE}"), "--destination", &format!("path:{DEST}"), "--carrier", &format!("path:{CARRIER}"), "--failed-attempts", "5", "--key", "x"]);
+    let source_id = estate.node_view(&source()).await.node_id;
+    let destination_id = estate.node_view(&destination()).await.node_id;
+    let carrier_id = estate.node_view(&carrier()).await.node_id;
+    let seeded = estate.probe(&["record-proxy", "--target", &format!("exact:{source_id}"), "--destination", &format!("exact:{destination_id}"), "--carrier", &format!("exact:{carrier_id}"), "--failed-attempts", "5", "--key", "x"]);
     assert_eq!(seeded["proxy_recorded"], true, "{seeded}");
     let control = serde_json::json!(rdm_core::connections::ALPN);
-    let fifth = rows(&estate.connection_history(SOURCE), DEST, "Direct").into_iter().rev().find(|r| r["state"] == "Failed" && r["alpn"] == control).cloned().expect("the fifth Direct Failed");
+    let fifth = rows(&estate.connection_history(&source_id), &destination_id, "Direct").into_iter().rev().find(|r| r["state"] == "Failed" && r["alpn"] == control).cloned().expect("the fifth Direct Failed");
     assert_eq!(fifth["recovery"]["attempt_ordinal"], 5, "{fifth}");
 
-    let after = recovered(&estate, SOURCE).await;
-    let held = snapshot(&estate, SOURCE);
-    assert!(held["own_latest_directs"].as_array().is_none_or(|d| d.is_empty()), "the recovered source holds no Direct: {held}");
-    assert!(held["own_active_proxies"].as_array().is_none_or(|p| p.is_empty()), "nor any Proxy: {held}");
-    assert!(estate.connection_history(SOURCE).iter().any(|r| r["id"] == fifth["id"]), "the store keeps the first birth's rows as written");
+    let after = recovered(&estate, &source()).await;
+    let recovered_id: NodeId = serde_json::from_value(after["node_id"].clone()).expect("recovered ID");
+    let held = snapshot(&estate, &recovered_id);
+    assert_eq!(held["by"], recovered_id.as_str(), "the recovered node answers: {held}");
+    assert!(held["own_latest_directs"].as_array().expect("snapshot includes Direct array").is_empty(), "the recovered source holds no Direct: {held}");
+    assert!(held["own_active_proxies"].as_array().expect("snapshot includes Proxy array").is_empty(), "nor any Proxy: {held}");
+    assert!(estate.connection_history(&source_id).iter().any(|r| r["id"] == fifth["id"]), "the store keeps the first birth's rows as written");
 
     estate.stop().await;
     let spans = estate.spans();
-    let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().filter(|sp| sp["attributes"]["node"] == SOURCE).last().cloned().expect("the recovered source opened its connections store");
+    let boot = named(&spans, "rdm.mesh.node.create.via-boot").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["incarnation_id"] == after["incarnation_id"]).expect("recovered exact birth boot");
+    let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().filter(|sp| sp["attributes"]["node_path"] == source().path && sp["attributes"]["node_name"] == source().name && sp["parent_span_id"] == boot["span_id"] && sp["trace_id"] == boot["trace_id"]).last().cloned().expect("the recovered source opened its connections store");
     assert!(named(&spans, "rdm.node_admin.connection.update.via-hydrate").is_empty(), "no node reads its connections back");
     assert_ne!(after["node_id"], serde_json::Value::Null, "{after}");
     estate.record_trace_url(&s(&opened["trace_id"]));

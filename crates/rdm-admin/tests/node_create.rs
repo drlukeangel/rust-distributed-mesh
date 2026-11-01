@@ -106,7 +106,7 @@ impl DeploymentProvider for ImmediateReportProvider {
             "node.create must bind port 0 and never pick, reserve or predict a transport port"
         );
         *self.spawn_calls.lock().unwrap() += 1;
-        let refused = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
+        let refused = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason };
         let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
         let (pid, start) = match fact.locator {
             RuntimeLocator::Process { pid, start } => (pid, start),
@@ -131,7 +131,7 @@ impl DeploymentProvider for ImmediateReportProvider {
         let digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
-            node: MeshNode { mesh: spec.node.mesh.clone(), kind: spec.node.kind,
+            node: MeshNode { mesh: spec.mesh.clone(), kind: spec.kind,
                 node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?)
                     .map_err(|e| refused(e.to_string()))?,
                 name: spec.node.clone(),
@@ -268,22 +268,19 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
     let data_root = std::env::temp_dir().join(format!("node-create-cell-{}", NodeId::mint()));
 
     rt.block_on(async {
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut admin = Node::allocated(me.clone());
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let mut admin = Node::allocated(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin.status = NodeStatus::Ready;
         admin.is_primary = true;
         admin.is_fabric_primary = true;
         admin.incarnation_id = Some(IncarnationId::mint());
         let me_id = admin.node_id.clone();
+        let executor_birth = admin.birth().unwrap();
 
-        let held_path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let held_path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let held_id = NodeId::mint();
         let store = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
-        let mut held_row = rdm_admin::storage::NodeRow::new(
-            held_path.clone(),
-            held_id.clone(),
-            NodeStatus::Ready,
-        );
+        let mut held_row = rdm_admin::storage::NodeRow::new(held_path.clone(), "mesh1", rdm_core::NodeKind::RpcNode, held_id.clone(), NodeStatus::Ready);
         held_row.birth_mut(&IncarnationId::mint(), &held_path);
         store.write_record(&held_row).await.unwrap();
 
@@ -334,12 +331,12 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             .await
             .unwrap();
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 1,
-                executor: "mesh1.admin.1".into(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -350,10 +347,10 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             fabric_id: rdm_core::FabricId::mint(),
             executable: binding.executable.clone(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher {
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
                 name: me.clone(),
-                node_id: me_id,
-                incarnation: IncarnationId::mint(),
+                node_id: me_id.clone(),
+                incarnation: executor_birth.incarnation.clone(),
             },
             env: Default::default(),
             data_root: data_root.clone(),
@@ -377,19 +374,19 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         };
 
         // The entry target is a receipt decision, shared by config and tag steps.
-        let property_path: PathName = "mesh1.rpc.9".parse().unwrap();
-        let property_birth = rdm_admin::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        assert_eq!(pipeline.property_target(&build_id, 1, &property_path, async { Ok(property_birth.clone()) }).await.unwrap(), property_birth);
+        let property_path: PathName = rdm_core::PathName::new("mesh1.rpc", "9").unwrap();
+        let property_birth = rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        assert_eq!(pipeline.property_target(&build_id, 1, &property_path, &property_birth.node_id, async { Ok(property_birth.clone()) }).await.unwrap(), property_birth);
         let failed_apply = pipeline.apply_in_place(&build_id, 1, &property_path,
-            format!("node.config.update:{property_path}"), "UpdateConfig", async { Err("reply lost after send".into()) }).await;
+            rdm_core::OperationId::node("node.config.update", &property_birth.node_id), "UpdateConfig", async { Err("reply lost after send".into()) }).await;
         assert!(failed_apply.is_err());
         for attempt in [1, 2] {
-            let pinned = pipeline.property_target(&build_id, attempt, &property_path, async { panic!("same entry must not repin after a failed child step") }).await.unwrap();
+            let pinned = pipeline.property_target(&build_id, attempt, &property_path, &property_birth.node_id, async { panic!("same entry must not repin after a failed child step") }).await.unwrap();
             assert_eq!(pinned, property_birth);
         }
         let mut successor_view = view.read().await.clone();
-        successor_view.nodes.push(Node::allocated(property_path.clone()));
-        assert!(property_birth.held_in(&successor_view, "entry", &property_path).is_err(), "an unanswered old target is never replaced by the current path's new node");
+        successor_view.nodes.push(Node::allocated(property_path.clone(), "mesh1", rdm_core::NodeKind::RpcNode));
+        assert!(property_birth.held_in(&successor_view, &rdm_core::OperationId::node("node.properties.apply", &property_birth.node_id), &property_path).is_err(), "an unanswered old target is never replaced by the current path's new node");
 
         // Endpoint key (node-create.md:16): mint into a new data dir, or load the key from an
         // inherited data dir.
@@ -407,15 +404,15 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let mesh2_id = rdm_core::MeshId::mint();
         let mut accepted_top = FabricTopology::root("fabric1", "mesh1", mesh1_id);
         accepted_top.meshes.get_mut("mesh1").unwrap().nodes = std::collections::BTreeSet::from([
-            "mesh1.admin.1".parse().unwrap(),
-            "mesh1.rpc.2".parse().unwrap(),
+            rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+            rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
         ]);
         accepted_top.meshes.insert(
             "mesh2".into(),
             rdm_admin::accepted::MeshTopology {
                 name: "mesh2".into(),
                 mesh_id: mesh2_id.clone(),
-                nodes: std::collections::BTreeSet::from(["mesh2.admin.1".parse().unwrap()]),
+                nodes: std::collections::BTreeSet::from([rdm_core::PathName::new("mesh2.admin", "1").unwrap()]),
                 spec_by_path: Default::default(),
             },
         );
@@ -433,7 +430,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         );
 
         // 1. A held name at `mesh1.rpc.1` is refused at PrepareStorage before DeployRuntime is called.
-        let held_req = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        let held_req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(held_path)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id: build_id.clone(),
             attempt: 1,
             node: held_path,
@@ -463,17 +460,17 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         //    its executable (path, sha256), config and tags on the row at claim,
         //    verifies the executable sha256 at launch, and completes all steps through Complete from
         //    the validated join report while gossip is silent.
-        let new_path: PathName = "mesh1.rpc.2".parse().unwrap();
-        let create_op = rdm_admin::build::BuildOperation::CreateNode {
+        let new_path: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        let create_op = rdm_admin::build::BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
             node: new_path.clone(),
             over: None,
             executable: None,
             entry: None,
         };
-        assert_eq!(create_op.key(), "node.create:mesh1.rpc.2");
+        assert_eq!(create_op.key(), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "2").unwrap()));
         assert_eq!(
             rdm_admin::executor::executor_for(&create_op, &*view.read().await),
-            Some(me),
+            Some(me_id.clone()),
             "mesh-primary is executor for an ordinary node's node.create"
         );
 
@@ -482,7 +479,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             config: BTreeMap::from([("role".into(), "worker".into())]),
             tags: std::collections::BTreeSet::from(["tier1".into()]),
         };
-        let create_req = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        let create_req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(new_path)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id: build_id.clone(),
             attempt: 1,
             node: new_path.clone(),
@@ -533,10 +530,10 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         // deployment abandonment is refused by name (`Standing::Abandoned`).
         let exp_id = NodeId::mint();
         let exp_inc = IncarnationId::mint();
-        let exp_path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let exp_path: PathName = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
         let exp_ep = EndpointId(loaded_key.public().to_string());
         let exp_fact = RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();
-        let exp_rx = joins.expect(rdm_admin::join::Deployed { mesh: exp_path.mesh.clone(), kind: exp_path.kind,
+        let exp_rx = joins.expect(rdm_admin::join::Deployed { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
             name: exp_path.clone(),
             node_id: exp_id.clone(),
             incarnation: exp_inc.clone(),
@@ -553,7 +550,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             fabric_id: rdm_core::FabricId::mint(),
             node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: exp_id.clone(),
-                name: "mesh1.rpc.99".parse().unwrap(),
+                name: rdm_core::PathName::new("mesh1.rpc", "99").unwrap(),
                 endpoint_id: exp_ep,
                 transport_addr: "127.0.0.1:45680".parse().unwrap(),
                 incarnation: exp_inc,
@@ -595,7 +592,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let rpc2_steps: Vec<(&str, StepOutcome)> = proj
             .steps
             .iter()
-            .filter(|r| r.operation == "node.create:mesh1.rpc.2")
+            .filter(|r| r.operation == rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "2").unwrap()))
             .map(|r| (r.step.as_str(), r.outcome.clone()))
             .collect();
         let expected: Vec<(&str, StepOutcome)> = CreateStep::ORDER
@@ -649,7 +646,7 @@ impl DeploymentProvider for StepFaultProvider {
             "node.create must bind port 0 and never pick, reserve or predict a transport port"
         );
         *self.spawn_calls.lock().unwrap() += 1;
-        let refused = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
+        let refused = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason };
         let fact = RuntimeFact::of_this_process(&spec.deployment_id.to_string()).map_err(refused)?;
         let (pid, start) = match fact.locator {
             RuntimeLocator::Process { pid, start } => (pid, start),
@@ -674,7 +671,7 @@ impl DeploymentProvider for StepFaultProvider {
         let digest = MeshDigest {
             held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
-            node: MeshNode { mesh: spec.node.mesh.clone(), kind: spec.node.kind,
+            node: MeshNode { mesh: spec.mesh.clone(), kind: spec.kind,
                 node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?)
                     .map_err(|e| refused(e.to_string()))?,
                 name: spec.node.clone(),
@@ -802,13 +799,14 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
     let data_root = std::env::temp_dir().join(format!("node-create-chaos-{}", NodeId::mint()));
 
     rt.block_on(async {
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut admin = Node::allocated(me.clone());
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let mut admin = Node::allocated(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin.status = NodeStatus::Ready;
         admin.is_primary = true;
         admin.is_fabric_primary = true;
         admin.incarnation_id = Some(IncarnationId::mint());
         let me_id = admin.node_id.clone();
+        let executor_birth = admin.birth().unwrap();
 
         let store = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
         let view = Arc::new(RwLock::new(Topology {
@@ -852,12 +850,12 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 1,
-                executor: "mesh1.admin.1".into(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -871,10 +869,10 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
                 "adminkey".into(),
                 std::net::SocketAddr::from(([127, 0, 0, 1], seed_port)),
             )],
-            launcher: rdm_core::launch::Launcher {
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
                 name: me.clone(),
                 node_id: me_id.clone(),
-                incarnation: IncarnationId::mint(),
+                incarnation: executor_birth.incarnation.clone(),
             },
             env: Default::default(),
             data_root: data_root.clone(),
@@ -911,24 +909,17 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         // 1. Cut after claiming the name at PrepareStorage before DeployRuntime:
         //    When the provider proves the claimed allocation was NeverLaunched, the next attempt
         //    continues the exact allocated identity (node_id, incarnation, deployment_id).
-        let cut_path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let cut_path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let pre_node_id = NodeId::mint();
         let pre_incarnation = IncarnationId::mint();
         let pre_deployment = rdm_admin::model::DeploymentId::mint();
-        let allocated = rdm_admin::storage::Allocation {
+        let allocated = rdm_admin::storage::Allocation { predecessor: None,
             build_id: build_id.clone(),
-            operation: format!("node.create:{cut_path}"),
+            operation: rdm_core::OperationId::location("node.create", &cut_path),
             incarnation: pre_incarnation.clone(),
             deployment_id: pre_deployment.clone(),
         };
-        rows.claim(
-            &cut_path,
-            &pre_node_id,
-            &format!("node.create:{cut_path}"),
-            Some(&allocated),
-            None,
-            rdm_admin::node_rows::ClaimFor::Create,
-        )
+        rows.claim(&cut_path, "mesh1", rdm_core::NodeKind::RpcNode, &pre_node_id, &rdm_core::OperationId::location("node.create", &cut_path), Some(&allocated), None, rdm_admin::node_rows::ClaimFor::Create)
         .await
         .expect("cut attempt claims the name with its allocated identity");
 
@@ -944,7 +935,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             timeouts: fast_timeouts.clone(),
         };
         let created_cut = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(cut_path)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 1,
                 node: cut_path.clone(),
@@ -961,13 +952,13 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
 
         // 2. Lost reply at WaitForBind, then Kill (Exited) at WaitForBind, then Kill at WaitForNodeReady,
         //    then SIGSTOP (OsStopped) across attempts and resume to Complete:
-        let fault_path: PathName = "mesh1.rpc.2".parse().unwrap();
+        let fault_path: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
 
         // 2a. Lost reply at WaitForBind: join report never arrives within bind timeout -> DeadlineExceeded,
         //     and the name claim is withdrawn.
         *provider.deliver_join_on_inspect.lock().unwrap() = false;
         let lost_reply_err = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 1,
                 node: fault_path.clone(),
@@ -985,18 +976,18 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         // 2b. Kill at WaitForBind: runtime exits before reporting where it bound -> Unavailable,
         //     and the name claim is withdrawn.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 2,
-                executor: "mesh1.admin.1".into(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Exited { code: Some(137) };
         let kill_bind_err = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 2,
                 node: fault_path.clone(),
@@ -1014,12 +1005,12 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
 
         // 2c. Kill at WaitForNodeReady: join report arrives, then runtime exits while waiting for Ready.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 3,
-                executor: "mesh1.admin.1".into(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -1027,7 +1018,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Running;
         *observer.kill_on_first_ready_check.lock().unwrap() = Some(provider.clone());
         let kill_ready_err = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 3,
                 node: fault_path.clone(),
@@ -1049,19 +1040,19 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         //     handle as OsStopped (alive), keeps the exact same birth without spawning a second runtime,
         //     and completes once resumed and ready.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 4,
-                executor: "mesh1.admin.1".into(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Running;
         *observer.ready_ok.lock().unwrap() = false;
         let entered = observer.ready_entered.notified();
-        let req4 = CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        let req4 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id: build_id.clone(),
             attempt: 4,
             node: fault_path.clone(),
@@ -1079,7 +1070,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         assert!(
             proj4.steps.iter().any(|r| {
                 r.attempt == 4
-                    && r.operation == format!("node.create:{fault_path}")
+                    && r.operation == rdm_core::OperationId::location("node.create", &fault_path)
                     && r.step == CreateStep::WaitForMeshJoin.name()
                     && r.outcome == StepOutcome::Complete
             }),
@@ -1088,19 +1079,19 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
 
         // Now the OS holds the runtime OsStopped at attempt 5's start, then resumes it so Ready succeeds.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 5,
-                executor: "mesh1.admin.1".into(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::OsStopped;
         *observer.ready_ok.lock().unwrap() = true;
         let resumed_created = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(fault_path)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: build_id.clone(),
                 attempt: 5,
                 node: fault_path.clone(),

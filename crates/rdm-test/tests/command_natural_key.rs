@@ -28,7 +28,7 @@ use rdm_test::node;
 use std::time::Duration;
 
 const BUILD: &str = "d9efmj2jpt75";
-const NODE: &str = "mesh1.rpc.1";
+
 
 /// A node of the admin side's mesh serving one held op (a call into it stays in flight until the
 /// cell releases it), ready, resolved by the admin side.
@@ -69,7 +69,7 @@ impl Birth {
             fabric_id: fabric,
             mesh: "mesh1".into(),
             kind: rdm_core::NodeKind::RpcNode,
-            name: NODE.parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -104,7 +104,7 @@ impl Birth {
         let birth = Self { target: NodeTarget::ExactNode(launch.node_id.clone()), admin, launch, key, pull, dir, running };
         birth.status_heard(MemberStatus::Ready).await;
         let (d, _) = birth.admin.observer.topology_view.digest_view.get(birth.launch.node_id.as_str()).unwrap();
-        birth.admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        birth.admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         birth
     }
 
@@ -117,7 +117,7 @@ impl Birth {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("{NODE} never became {status:?}"));
+        .unwrap_or_else(|_| panic!("node {} never became {status:?}", self.launch.node_id));
     }
 
     /// Resolves once the admin side's view holds this birth at `status`: the status it set (its
@@ -135,7 +135,7 @@ impl Birth {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("the admin side never heard {NODE} say {status:?}"));
+        .unwrap_or_else(|_| panic!("the admin side never heard node {} say {status:?}", self.launch.node_id));
     }
 
     fn opts() -> CallOptions {
@@ -168,16 +168,16 @@ impl Birth {
         held
     }
 
-    fn command_key(&self, attempt: u32, operation: &str) -> CommandKey {
-        CommandKey { build_id: BUILD.into(), attempt, operation: operation.into(), node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone() }
+    fn command_key(&self, attempt: u32, operation: rdm_core::OperationId) -> CommandKey {
+        CommandKey { build_id: BUILD.into(), attempt, operation, node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone() }
     }
 
     fn stop(&self, attempt: u32) -> StatusRequest {
-        StatusRequest::StopNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("node.stop:{NODE}") }
+        StatusRequest::StopNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: rdm_core::OperationId::node("node.stop", &self.launch.node_id) }
     }
 
     fn start(&self, attempt: u32) -> StatusRequest {
-        StatusRequest::StartNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("node.start:{NODE}") }
+        StatusRequest::StartNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: rdm_core::OperationId::node("node.start", &self.launch.node_id) }
     }
 }
 

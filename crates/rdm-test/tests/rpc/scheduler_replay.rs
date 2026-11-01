@@ -193,7 +193,7 @@ async fn node() -> Node {
         .unwrap();
     let stats = server.stats();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let record = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
+    let record = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Node { _router: router, stats, hooks, record }
 }
 

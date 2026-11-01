@@ -93,7 +93,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let fabric_id = FabricId::mint();
         let mesh_id = MeshId::mint();
 
-        let admin_name = PathName::new("mesh1", NodeKind::NodeAdmin, 1);
+        let admin_name = PathName::numbered("mesh1", NodeKind::NodeAdmin, 1);
         let admin_id = NodeId::mint();
         let admin_inc = IncarnationId::mint();
         let admin_key = SecretKey::generate();
@@ -109,7 +109,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             .find(|a| a.is_ipv4())
             .expect("ipv4");
 
-        let subject_name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+        let subject_name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
         let subject_id = NodeId::mint();
         let subject_inc = IncarnationId::mint();
         let subject_key = SecretKey::generate();
@@ -125,7 +125,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             .find(|a| a.is_ipv4())
             .expect("ipv4");
 
-        let peer_name = PathName::new("mesh1", NodeKind::RpcNode, 2);
+        let peer_name = PathName::numbered("mesh1", NodeKind::RpcNode, 2);
         let peer_id = NodeId::mint();
         let peer_inc = IncarnationId::mint();
         let peer_key = SecretKey::generate();
@@ -155,7 +155,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
 
         let subject_resolver = Arc::new(LiveNodeResolver::default());
         subject_resolver.apply(
-            ResolvedNode {
+            ResolvedNode { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
                 node_id: peer_id.clone(),
                 name: peer_name.clone(),
                 endpoint_id: peer_key.public(),
@@ -165,7 +165,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             None,
         );
         subject_resolver.apply(
-            ResolvedNode {
+            ResolvedNode { kind: NodeKind::NodeAdmin, mesh: "mesh1".to_owned(),
                 node_id: admin_id.clone(),
                 name: admin_name.clone(),
                 endpoint_id: admin_key.public(),
@@ -178,7 +178,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let subject_store = Arc::new(MemoryConnectionsStorage::default());
         let subject_held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let subject_writer = Arc::new(ConnectionsWriter::new(
-            ConnectionEnd {
+            ConnectionEnd { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
                 name: subject_name.clone(),
                 node_id: subject_id.clone(),
                 incarnation: Some(subject_inc.clone()),
@@ -237,7 +237,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             &fabric_id,
             "mesh1",
             &mesh_id,
-            &subject_name.to_string(),
+            subject_id.as_str(),
             clock,
             Vec::new(),
             &[],
@@ -249,7 +249,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let digest_base = MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric_id.clone(),
-            node: MeshNode { mesh: subject_name.mesh.clone(), kind: subject_name.kind,
+            node: MeshNode { mesh: "mesh1".to_owned(), kind: NodeKind::RpcNode,
                 node_id: subject_id.clone(),
                 name: subject_name.clone(),
                 endpoint_id: EndpointId(subject_key.public().to_string()),
@@ -282,19 +282,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let status_for_get = status_cell.clone();
         let get_status = Arc::new(move || *status_for_get.lock().unwrap());
 
-        let subject_own = Arc::new(NodeSelf::new(
-            subject_id.clone(),
-            subject_inc.clone(),
-            subject_name.clone(),
-            subject_server,
-            subject_control,
-            subject_resolver,
-            topology_view,
-            set_status,
-            get_status,
-            None,
-            Duration::from_secs(2),
-        ));
+        let subject_own = Arc::new(NodeSelf::new(subject_id.clone(), subject_inc.clone(), subject_name.clone(), NodeKind::RpcNode, subject_server, subject_control, subject_resolver, topology_view, set_status, get_status, None, Duration::from_secs(2)));
         subject_own.set_connections(subject_writer.clone());
         subject_own.set_data_plane(subject_data_plane.clone());
         let _ = subject_own_slot.set(subject_own.clone());
@@ -302,7 +290,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         // Set up the mesh-primary's StatusAuthority with a client resolving `subject`.
         let admin_resolver = Arc::new(LiveNodeResolver::default());
         admin_resolver.apply(
-            ResolvedNode {
+            ResolvedNode { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
                 node_id: subject_id.clone(),
                 name: subject_name.clone(),
                 endpoint_id: subject_key.public(),
@@ -322,7 +310,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let configs_slot = Arc::new(OnceLock::new());
         let _ = configs_slot.set(configs);
 
-        let mut admin_node = Node::allocated(admin_name.clone());
+        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", NodeKind::NodeAdmin);
         admin_node.node_id = admin_id.clone();
         admin_node.incarnation_id = Some(admin_inc.clone());
         admin_node.endpoint_id = Some(EndpointId(admin_key.public().to_string()));
@@ -331,7 +319,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         admin_node.is_primary = true;
         admin_node.is_fabric_primary = true;
 
-        let mut subject_node = Node::allocated(subject_name.clone());
+        let mut subject_node = Node::allocated(subject_name.clone(), "mesh1", NodeKind::RpcNode);
         subject_node.node_id = subject_id.clone();
         subject_node.incarnation_id = Some(subject_inc.clone());
         subject_node.endpoint_id = Some(EndpointId(subject_key.public().to_string()));
@@ -351,7 +339,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
 
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
         let mut subject_row =
-            rdm_admin::storage::NodeRow::new(subject_name.clone(), subject_id.clone(), NodeStatus::Ready);
+            rdm_admin::storage::NodeRow::new(subject_name.clone(), "mesh1", NodeKind::RpcNode, subject_id.clone(), NodeStatus::Ready);
         subject_row.births.push(rdm_admin::storage::BirthFacts::new(
             subject_inc.clone(),
             subject_name.clone(),

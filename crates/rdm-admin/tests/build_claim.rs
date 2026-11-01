@@ -33,11 +33,15 @@ struct Birth {
     key: SecretKey,
 }
 
-fn birth(name: &str, fabric_primary: bool) -> Birth {
+impl Birth {
+    fn exact(&self) -> rdm_core::framing::Birth {
+        rdm_core::framing::Birth { node_id: self.node.node_id.clone(), incarnation: self.node.incarnation_id.clone().unwrap() }
+    }
+}
+
+fn birth(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, fabric_primary: bool) -> Birth {
     let key = SecretKey::generate();
-    let mut node = Node::allocated(name.parse().unwrap());
-    node.kind = NodeKind::NodeAdmin;
-    node.mesh = "mesh1".into();
+    let mut node = Node::allocated(name, mesh, kind);
     node.node_id = NodeId::mint();
     node.endpoint_id = Some(EndpointId(key.public().to_string()));
     node.incarnation_id = Some(IncarnationId::mint());
@@ -73,6 +77,7 @@ async fn elect(
     let door = Arc::new(ClaimDoor {
         me: b.node.name.clone(),
         node_id: b.node.node_id.clone(),
+        incarnation: b.node.incarnation_id.clone().unwrap(),
         topology,
         builds,
         contexts,
@@ -87,7 +92,7 @@ async fn elect(
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let resolved = ResolvedNode {
+    let resolved = ResolvedNode { mesh: b.node.mesh.clone(), kind: b.node.kind,
         node_id: b.node.node_id.clone(),
         name: b.node.name.clone(),
         endpoint_id: b.key.public(),
@@ -98,7 +103,7 @@ async fn elect(
 }
 
 /// A Build whose log holds `settled` converged attempts: accepted, then claim + converged each.
-async fn settled(builds: &MemoryBuildStateAdapter, id: &BuildId, holder: &str, settled: u32) {
+async fn settled(builds: &MemoryBuildStateAdapter, id: &BuildId, holder: &Birth, settled: u32) {
     builds
         .publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
@@ -107,21 +112,21 @@ async fn settled(builds: &MemoryBuildStateAdapter, id: &BuildId, holder: &str, s
         if attempt > 1 {
             open(builds, id, attempt).await;
         }
-        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: holder.into() }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { executor_mesh: "mesh1".into(), claimed_mesh: None, claimant: None, mesh: None, build_id: id.clone(), attempt, executor: holder.exact() }).await.unwrap();
         builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     }
 }
 
 async fn open(builds: &MemoryBuildStateAdapter, id: &BuildId, attempt: u32) {
-    builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Stop, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0, context: None }).await.unwrap();
+    builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Stop, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
 }
 
 /// A fabric-primary P whose log holds the Build at `settled` converged attempts, listing the
 /// re-born executor's birth in its view the way the product's digest view does.
 async fn primary(id: &BuildId, settled_attempts: u32, contexts: Arc<AttemptContexts>, executor: &Birth) -> (Birth, Admin, Arc<MemoryBuildStateAdapter>) {
-    let p = birth("mesh1.admin.1", true);
+    let p = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true);
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    settled(&builds, id, "mesh1.admin.1", settled_attempts).await;
+    settled(&builds, id, &p, settled_attempts).await;
     let topology = view(vec![p.node.clone(), executor.node.clone()]);
     let s = elect(&p, topology, builds.clone(), contexts).await;
     (p, s, builds)
@@ -133,9 +138,9 @@ async fn primary(id: &BuildId, settled_attempts: u32, contexts: Arc<AttemptConte
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_of_a_held_attempt_is_lost_to_its_claimant_and_changes_nothing() {
     let id = BuildId::mint();
-    let executor = birth("mesh1.admin.2", false);
-    let (_p, p_admin, p_builds) = primary(&id, 6, Arc::new(AttemptContexts::in_memory()), &executor).await;
-    assert_eq!(p_admin.door.claim("mesh1.admin.2", &id, 1).await, BuildClaimReply::Lost { holder: "mesh1.admin.1".into() });
+    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let (p, p_admin, p_builds) = primary(&id, 6, Arc::new(AttemptContexts::in_memory()), &executor).await;
+    assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 1).await, BuildClaimReply::Lost { holder: p.node.node_id.clone() });
     assert_eq!(p_builds.read_build(&id).await.unwrap().attempt, 6, "the fabric-primary's log is unchanged by the refused claim");
 }
 
@@ -144,14 +149,16 @@ async fn a_claim_of_a_held_attempt_is_lost_to_its_claimant_and_changes_nothing()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_past_the_open_attempt_is_not_open_and_names_the_next() {
     let id = BuildId::mint();
-    let executor = birth("mesh1.admin.2", false);
-    let (_p, p_admin, p_builds) = primary(&id, 3, Arc::new(AttemptContexts::in_memory()), &executor).await;
+    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let (p, p_admin, p_builds) = primary(&id, 3, Arc::new(AttemptContexts::in_memory()), &executor).await;
     open(&p_builds, &id, 4).await;
-    assert_eq!(p_admin.door.claim("mesh1.admin.2", &id, 9).await, BuildClaimReply::NotOpen { next: Some(4) });
-    let first = p_admin.door.claim("mesh1.admin.2", &id, 4).await;
+    assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 9).await, BuildClaimReply::NotOpen { next: Some(4) });
+    let first = p_admin.door.claim(&executor.node.node_id, &id, 4).await;
     assert!(matches!(first, BuildClaimReply::Won { .. }), "{first:?}");
-    assert_eq!(p_admin.door.claim("mesh1.admin.2", &id, 4).await, first, "a repeat claim by the holder answers the same");
-    assert_eq!(p_admin.door.claim("mesh1.admin.3", &id, 4).await, BuildClaimReply::Lost { holder: "mesh1.admin.2".into() });
+    assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 4).await, first, "a repeat claim by the holder answers the same");
+    let q = birth(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    p_admin.door.topology.write().await.nodes.push(q.node.clone());
+    assert_eq!(p_admin.door.claim(&q.node.node_id, &id, 4).await, BuildClaimReply::Lost { holder: executor.node.node_id.clone() });
 }
 
 /// CONTRACT (build.md §5.2: a second claimant of one attempt loses and runs nothing; R-BI7 caveat 3:
@@ -165,21 +172,24 @@ async fn a_claim_past_the_open_attempt_is_not_open_and_names_the_next() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_lost_to_an_executor_of_another_mesh_leaves_its_own_mesh_free_for_the_next_attempt() {
     let id = BuildId::mint();
-    let executor = birth("mesh1.admin.2", false);
-    let (_p, p_admin, p_builds) = primary(&id, 0, Arc::new(AttemptContexts::in_memory()), &executor).await;
-    let first = p_admin.door.claim("mesh1.admin.1", &id, 1).await;
+    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let (p, p_admin, p_builds) = primary(&id, 0, Arc::new(AttemptContexts::in_memory()), &executor).await;
+    let mut m = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true);
+    m.node.is_fabric_primary = false;
+    p_admin.door.topology.write().await.nodes.push(m.node.clone());
+    let first = p_admin.door.claim(&p.node.node_id, &id, 1).await;
     assert!(matches!(first, BuildClaimReply::Won { .. }), "{first:?}");
     // The same attempt, claimed again for an admin of mesh2 by a log that had not seen the first claim.
-    assert_eq!(p_admin.door.claim("mesh2.admin.1", &id, 1).await, BuildClaimReply::Lost { holder: "mesh1.admin.1".into() });
+    assert_eq!(p_admin.door.claim(&m.node.node_id, &id, 1).await, BuildClaimReply::Lost { holder: p.node.node_id.clone() });
     assert_eq!(p_admin.door.claims.in_flight("mesh2").await.unwrap(), None, "the lost claim holds no row in mesh2, where its attempt never acts");
     // Lost to a holder of the same mesh: the row is the held attempt's and stays.
-    assert_eq!(p_admin.door.claim("mesh1.admin.2", &id, 1).await, BuildClaimReply::Lost { holder: "mesh1.admin.1".into() });
+    assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 1).await, BuildClaimReply::Lost { holder: p.node.node_id.clone() });
     let held = p_admin.door.claims.in_flight("mesh1").await.unwrap().expect("mesh1's row of the held attempt stands");
-    assert_eq!((held.attempt, held.claimant.as_str()), (1, "mesh1.admin.1"));
+    assert_eq!((held.attempt, held.claimant.as_str()), (1, p.node.node_id.as_str()));
     // Attempt 1 hands off to mesh2.admin.1, and its verdict releases mesh1's row, as the drive does.
-    p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }).await.unwrap();
+    p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: m.node.node_id.clone() } }).await.unwrap();
     p_admin.door.claims.release_in_flight("mesh1", &held).await.unwrap();
-    let next = p_admin.door.claim("mesh2.admin.1", &id, 2).await;
+    let next = p_admin.door.claim(&m.node.node_id, &id, 2).await;
     assert!(matches!(next, BuildClaimReply::Won { .. }), "the next attempt takes mesh2: {next:?}");
 }
 
@@ -190,25 +200,28 @@ async fn a_claim_lost_to_an_executor_of_another_mesh_leaves_its_own_mesh_free_fo
 async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
     let id = BuildId::mint();
     let contexts = Arc::new(AttemptContexts::in_memory());
-    let executor = birth("mesh1.admin.2", false);
-    let (_p, p_admin, p_builds) = primary(&id, 3, contexts.clone(), &executor).await;
+    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
+    let (p, p_admin, p_builds) = primary(&id, 3, contexts.clone(), &executor).await;
+    let mut m = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true);
+    m.node.is_fabric_primary = false;
+    p_admin.door.topology.write().await.nodes.push(m.node.clone());
     let rest = CallContext { caller_system: Some("rdm".into()), traceparent: Some(TRACEPARENT.into()), tracestate: None, baggage: None };
     contexts.put(&id, 4, &rest).await.unwrap();
     open(&p_builds, &id, 4).await;
-    assert_eq!(p_admin.door.claim("mesh1.admin.2", &id, 4).await, BuildClaimReply::Won { context: rest.clone() });
+    assert_eq!(p_admin.door.claim(&executor.node.node_id, &id, 4).await, BuildClaimReply::Won { context: rest.clone() });
     // The next attempt (a hand-off) has no record of its own.
-    p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 4, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }).await.unwrap();
+    p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 4, outcome: AttemptOutcome::HandedOff { to: m.node.node_id.clone() } }).await.unwrap();
     // The verdict releases mesh1's in-flight row attempt 4 held, as the drive does at a hand-off
     // (R-BI7 caveat 3: one attempt in flight per mesh).
-    p_admin.door.claims.release_in_flight("mesh1", &InFlight { build_id: id.clone(), lane: None, attempt: 4, claimant: "mesh1.admin.1".into(), claimant_node: None }).await.unwrap();
+    p_admin.door.claims.release_in_flight("mesh1", &InFlight { build_id: id.clone(), lane: None, attempt: 4, claimant: p.node.node_id.clone(), }).await.unwrap();
     assert_eq!(contexts.get(&id, 5).await.unwrap(), None);
-    assert_eq!(p_admin.door.claim("mesh2.admin.1", &id, 5).await, BuildClaimReply::Won { context: rest.clone() }, "the hand-off continues the trace");
+    assert_eq!(p_admin.door.claim(&m.node.node_id, &id, 5).await, BuildClaimReply::Won { context: rest.clone() }, "the hand-off continues the trace");
     assert_eq!(contexts.get(&id, 5).await.unwrap(), Some(rest), "and keeps it under its own attempt");
     // An unrelated Build the primary has no record for starts a new trace.
     let other = BuildId::mint();
-    settled(&p_builds, &other, "mesh1.admin.1", 1).await;
+    settled(&p_builds, &other, &p, 1).await;
     open(&p_builds, &other, 2).await;
-    match p_admin.door.claim("mesh1.admin.2", &other, 2).await {
+    match p_admin.door.claim(&executor.node.node_id, &other, 2).await {
         BuildClaimReply::Won { context } => assert_eq!(context.traceparent, None),
         other => panic!("{other:?}"),
     }
@@ -224,31 +237,31 @@ async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_and_a_mesh_primary_claims_its_own_drift_attempt() {
     let id = BuildId::mint();
-    let executor = birth("mesh1.admin.2", false);
+    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
     let (p, _p_admin, _p_builds) = primary(&id, 2, Arc::new(AttemptContexts::in_memory()), &executor).await;
-    let q = birth("mesh1.admin.3", false);
+    let q = birth(rdm_core::PathName::new("mesh1.admin", "3").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
     let q_view = view(vec![p.node.clone(), q.node.clone(), executor.node.clone()]);
     let q_admin = elect(&q, q_view, Arc::new(MemoryBuildStateAdapter::new()), Arc::new(AttemptContexts::in_memory())).await;
-    let names_both = BuildClaimReply::NotClaimant { mesh: Some("mesh1".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh1.admin.1".into()) };
-    assert_eq!(q_admin.door.claim("mesh1.admin.2", &id, 1).await, names_both, "an admin holding neither role decides no fabric-lane claim and names both claimants");
-    assert_eq!(q_admin.door.claim_in("mesh1.admin.3", &id, Some("mesh1"), 1).await, names_both, "nor a claim of its mesh's drift lane");
+    let names_both = BuildClaimReply::NotClaimant { mesh: Some("mesh1".into()), fabric_primary: Some(p.node.node_id.clone()), mesh_primary: Some(p.node.node_id.clone()) };
+    assert_eq!(q_admin.door.claim(&executor.node.node_id, &id, 1).await, names_both, "an admin holding neither role decides no fabric-lane claim and names both claimants");
+    assert_eq!(q_admin.door.claim_in(&q.node.node_id, &id, Some("mesh1"), 1).await, names_both, "nor a claim of its mesh's drift lane");
 
     // mesh2's mesh-primary, not the fabric-primary: its own drift lane's attempt 1 is open.
-    let mut m = birth("mesh2.admin.1", false);
+    let mut m = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false);
     m.node.mesh = "mesh2".into();
     m.node.is_primary = true;
     let m_builds = Arc::new(MemoryBuildStateAdapter::new());
-    settled(&m_builds, &id, "mesh1.admin.1", 2).await;
-    m_builds.open_attempt(&AttemptOpened { mesh: Some("mesh2".into()), build_id: id.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: "mesh2.admin.1".into(), opened_at_ms: 0, context: None }).await.unwrap();
+    settled(&m_builds, &id, &p, 2).await;
+    m_builds.open_attempt(&AttemptOpened { mesh: Some("mesh2".into()), build_id: id.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: rdm_core::NodeId::parse("300000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
     let m_admin = elect(&m, view(vec![p.node.clone(), m.node.clone()]), m_builds.clone(), Arc::new(AttemptContexts::in_memory())).await;
-    let fabric_lane = m_admin.door.claim("mesh2.admin.1", &id, 3).await;
-    assert_eq!(fabric_lane, BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) }, "a mesh-primary decides no fabric-lane claim");
-    let own = m_admin.door.claim_in("mesh2.admin.1", &id, Some("mesh2"), 1).await;
+    let fabric_lane = m_admin.door.claim(&m.node.node_id, &id, 3).await;
+    assert_eq!(fabric_lane, BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some(p.node.node_id.clone()), mesh_primary: Some(m.node.node_id.clone()) }, "a mesh-primary decides no fabric-lane claim");
+    let own = m_admin.door.claim_in(&m.node.node_id, &id, Some("mesh2"), 1).await;
     assert!(matches!(own, BuildClaimReply::Won { .. }), "mesh2's mesh-primary wins its own drift lane's claim: {own:?}");
-    let p = m_builds.read_build(&id).await.unwrap();
-    let lane = &p.lanes["mesh2"];
-    assert_eq!((lane.attempt, lane.executor.as_deref(), lane.claimant.as_deref()), (1, Some("mesh2.admin.1"), Some("mesh2.admin.1")), "the drift lane's claim records its claimant: {lane:?}");
-    assert_eq!((p.attempt, p.executor.as_deref()), (2, Some("mesh1.admin.1")), "the fabric lane is untouched");
+    let projection = m_builds.read_build(&id).await.unwrap();
+    let lane = &projection.lanes["mesh2"];
+    assert_eq!((lane.attempt, lane.executor.as_ref(), lane.claimant.as_ref()), (1, Some(&m.exact()), Some(&m.node.node_id)), "the drift lane's claim records its claimant: {lane:?}");
+    assert_eq!((projection.attempt, projection.executor.as_ref()), (2, Some(&p.exact())), "the fabric lane is untouched");
 }
 
 /// CONTRACT: the claim is decided for the executor the request names, at its exact birth as the
@@ -258,7 +271,7 @@ async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_an
 async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     use rdm_core::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
-    let re_born_birth = birth("mesh1.admin.2", false);
+    let re_born_birth = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
     let (p, p_admin, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &re_born_birth).await;
     open(&p_builds, &id, 2).await;
     let resolver = Arc::new(StaticResolver::new());
@@ -286,7 +299,7 @@ async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
 async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_for_the_executor_it_names() {
     use rdm_core::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
-    let executor = birth("mesh1.admin.2", false);
+    let executor = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false);
     let (p, p_admin, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &executor).await;
     open(&p_builds, &id, 2).await;
     let resolver = Arc::new(StaticResolver::new());
@@ -308,7 +321,7 @@ async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_f
     // A birth of the executor the view does not hold: refused about the subject, nothing claimed.
     let other_birth = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: IncarnationId::mint(), mesh: None };
     match call(other_birth).await {
-        BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth") && reason.contains("mesh1.admin.2"), "{reason}"),
+        BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth") && reason.contains(executor.node.node_id.as_str()), "{reason}"),
         other => panic!("a birth the view does not hold is refused about the subject: {other:?}"),
     }
     assert_eq!(p_builds.read_build(&id).await.unwrap().attempt, 1, "nothing was claimed");
@@ -316,7 +329,7 @@ async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_f
     let exact = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: executor.node.incarnation_id.clone().unwrap(), mesh: None };
     assert!(matches!(call(exact).await, BuildClaimReply::Won { .. }), "the claim is decided for the executor the request names");
     let build = p_builds.read_build(&id).await.unwrap();
-    assert_eq!((build.attempt, build.executor.as_deref()), (2, Some("mesh1.admin.2")), "attempt 2 is claimed for the executor the request names");
+    assert_eq!((build.attempt, build.executor.as_ref()), (2, Some(&executor.exact())), "attempt 2 is claimed for the executor the request names");
 }
 
 /// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is a deleted birth
@@ -331,22 +344,23 @@ async fn a_claim_by_a_deleted_birth_is_refused_by_name_and_takes_nothing() {
     use rdm_admin::storage::{MeshStorage as _, NodeRow, NodesStorage as _};
     let id = BuildId::mint();
     let builds = MemoryBuildStateAdapter::new();
-    settled(&builds, &id, "mesh1.admin.1", 1).await;
+    let p = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true);
+    settled(&builds, &id, &p, 1).await;
     open(&builds, &id, 2).await;
     let claims = rdm_admin::storage::MemoryMeshStorage::default();
     let contexts = AttemptContexts::in_memory();
     let rows = rdm_admin::storage::MemoryNodesStorage::default();
-    let me: rdm_core::PathName = "mesh1.admin.2".parse().unwrap();
+    let me: rdm_core::PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
     let me_id = NodeId::mint();
-    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::Deleted)).await.unwrap();
-    let claim = BuildAttemptClaim { claimant: Some(me.to_string()), mesh: None, build_id: id.clone(), attempt: 2, executor: me.to_string() };
+    rows.put_node(&NodeRow::new(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, me_id.clone(), NodeStatus::Deleted)).await.unwrap();
+    let claim = BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: Some(me_id.clone()), mesh: None, build_id: id.clone(), attempt: 2, executor: rdm_core::framing::Birth { node_id: me_id.clone(), incarnation: IncarnationId::mint() } };
     let refused = build_claim::decide_claim(&me, &builds, &claims, &contexts, &claim, "mesh1", Some((&rows, &me_id))).await;
-    assert!(matches!(&refused, BuildClaimReply::NotReady { reason } if reason.contains("deleted birth") && reason.contains("mesh1.admin.2")), "a deleted birth's claim is refused by name: {refused:?}");
+    assert!(matches!(&refused, BuildClaimReply::NotReady { reason } if reason.contains("deleted birth") && reason.contains(me_id.as_str())), "a deleted birth's claim is refused by name: {refused:?}");
     assert_eq!(claims.in_flight("mesh1").await.unwrap(), None, "a deleted birth takes no in-flight row");
     let p = builds.read_build(&id).await.unwrap();
-    assert_eq!((p.attempt, p.executor.as_deref()), (1, None), "nothing of the refused claim is on the Build log: attempt 2 stays unclaimed: {p:?}");
+    assert_eq!((p.attempt, p.executor.as_ref()), (1, None), "nothing of the refused claim is on the Build log: attempt 2 stays unclaimed: {p:?}");
 
-    rows.put_node(&NodeRow::new(me.clone(), me_id.clone(), NodeStatus::Ready)).await.unwrap();
+    rows.put_node(&NodeRow::new(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, me_id.clone(), NodeStatus::Ready)).await.unwrap();
     let won = build_claim::decide_claim(&me, &builds, &claims, &contexts, &claim, "mesh1", Some((&rows, &me_id))).await;
     assert!(matches!(won, BuildClaimReply::Won { .. }), "the live birth's claim wins: {won:?}");
 }

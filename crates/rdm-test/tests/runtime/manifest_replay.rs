@@ -4,7 +4,7 @@
 //! `I143_ACCEPTANCE_DIR` (each cell's `result.json` goes there) and whose estate commands set
 //! `RDM_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
 
-use rdm_core::NodeKind;
+use rdm_core::{NodeKind, PathName};
 use rdm_client::binding::{sha256_file, BindingError, BindingSet};
 use rdm_client::{FabricDesired, MeshDesired};
 use rdm_test::estate::{binding_set_from_build_manifest, descends_from, named, Estate, Owner, ENV_CONSUMER_BIN_DIR, RUNTIME_IMAGE};
@@ -194,10 +194,10 @@ fn variant(e: &BindingError) -> String {
 
 /// The exact executable and image a node of the estate runs, observed from the provider (the
 /// process's `/proc/<pid>/exe`, the container's entry point and bind mount), never from a span.
-async fn observe_launch(estate: &Estate, node: &str) -> Value {
+async fn observe_launch(estate: &Estate, node: &PathName) -> Value {
     let n = estate.node_value(node).await;
     if provider() == "container" {
-        let id = estate.container_of(node).await.unwrap_or_else(|| panic!("{node}: no running container"));
+        let id = estate.container_of(node).await.unwrap_or_else(|| panic!("{node:?}: no running container"));
         let inspect: Value = serde_json::from_str(&docker(&["inspect", "--format", "{{json .}}", &id])).unwrap();
         let path = inspect["Path"].as_str().unwrap().to_string();
         // The mount that supplies the entry point: the executable itself (a node), or its directory
@@ -208,7 +208,7 @@ async fn observe_launch(estate: &Estate, node: &str) -> Value {
             .iter()
             .filter(|m| Path::new(&path).starts_with(m["Destination"].as_str().unwrap()))
             .max_by_key(|m| m["Destination"].as_str().unwrap().len())
-            .unwrap_or_else(|| panic!("{node}: no mount supplies its entry point {path}: {}", inspect["Mounts"]))
+            .unwrap_or_else(|| panic!("{node:?}: no mount supplies its entry point {path}: {}", inspect["Mounts"]))
             .clone();
         let rest = Path::new(&path).strip_prefix(mount["Destination"].as_str().unwrap()).unwrap();
         let source = if rest.as_os_str().is_empty() { mount["Source"].as_str().unwrap().to_string() } else { Path::new(mount["Source"].as_str().unwrap()).join(rest).display().to_string() };
@@ -219,11 +219,11 @@ async fn observe_launch(estate: &Estate, node: &str) -> Value {
         })
     } else {
         // The Day-0 admin is the estate's own child: adopted, so it has no provider deployment record.
-        let pid = match (node == "mesh1.admin.1", estate.bootstrap_pid()) {
+        let pid = match (node == &PathName::new("mesh1.admin", "1").unwrap(), estate.bootstrap_pid()) {
             (true, Some(p)) => p as u64,
             _ => estate.pid_of(node).await,
         };
-        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node}: /proc/{pid}/exe: {e}"));
+        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node:?}: /proc/{pid}/exe: {e}"));
         json!({
             "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "kind": n["kind"],
             "pid": pid, "exe": exe, "observed_sha256": sha256_file(Path::new(&format!("/proc/{pid}/exe"))).unwrap(),
@@ -277,7 +277,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     // 2. The healthy set: the presence control. It starts, serves and restarts through the binding.
     let mut estate = Estate::bootstrap_on(owner(cell, "external-binding"), "fabric1", "mesh1", &set, &sha, &REQUIRED).await.unwrap_or_else(|e| panic!("the healthy set is accepted: {e}"));
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 2), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
-    let names: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.broker.1", "mesh1.broker.2", "mesh1.gateway.1", "mesh1.compute.1"].iter().map(|n| n.to_string()).collect();
+    let names: BTreeSet<PathName> = [("mesh1.admin", "1"), ("mesh1.admin", "2"), ("mesh1.broker", "1"), ("mesh1.broker", "2"), ("mesh1.gateway", "1"), ("mesh1.compute", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()).collect();
     estate.settled_named(&names).await;
     // The presence control of the refusals' observation: scoped to this cell, it sees every runtime of
     // the healthy estate, one per node, so the empty observation after each refusal is evidence.
@@ -286,44 +286,47 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     assert_eq!(seen, names.len(), "the cell's own observation sees one runtime per node of its estate: {running}");
 
     let by_kind = |kind: &str| set.bindings.iter().find(|b| b.launch_id == kind).unwrap().clone();
-    let expect_for = |node: &str| by_kind(match node.split('.').nth(1).unwrap() { "admin" => "node_admin", k => k });
+    let views = estate.node_views().await;
+    let expect_for = |node: &PathName| by_kind(views.iter().find(|n| &n.name == node).expect("fixture node").kind.name());
+    let broker_id = views.iter().find(|n| n.name == PathName::new("mesh1.broker", "1").unwrap()).expect("fixture broker").node_id.clone();
+    let broker_target = format!("exact:{broker_id}");
     let mut launches = Vec::new();
     for node in &names {
         let o = observe_launch(&estate, node).await;
         let b = expect_for(node);
-        assert_eq!(launched_path(&o), b.executable, "{node} runs the bound executable: {o}");
-        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{node} runs the bound bytes: {o}");
+        assert_eq!(launched_path(&o), b.executable, "{node:?} runs the bound executable: {o}");
+        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{node:?} runs the bound bytes: {o}");
         if provider() == "container" {
-            assert_eq!(o["image"], RUNTIME_IMAGE, "{node} runs in the bound image: {o}");
-            assert_eq!(o["mount_read_only"], true, "{node}'s executable is a read-only mount: {o}");
+            assert_eq!(o["image"], RUNTIME_IMAGE, "{node:?} runs in the bound image: {o}");
+            assert_eq!(o["mount_read_only"], true, "{node:?}'s executable is a read-only mount: {o}");
         }
         launches.push(o);
     }
 
     // The proof round-trip through the launched nodes.
-    let put = estate.probe(&["put", "--target", "path:mesh1.broker.1", "--key", "7", "--value", "bound"]);
+    let put = estate.probe(&["put", "--target", broker_target.as_str(), "--key", "7", "--value", "bound"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
-    let get = estate.probe(&["get", "--target", "path:mesh1.broker.1", "--key", "7"]);
+    let get = estate.probe(&["get", "--target", broker_target.as_str(), "--key", "7"]);
     assert_eq!((get["outcome"].as_str(), get["reply"]["result"]["value"].as_str()), (Some("Reply"), Some("bound")), "{get}");
 
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Restarts through the same binding: a role node, and the admin that launched the nodes.
     let mut restarts = Vec::new();
-    for node in ["mesh1.broker.1", "mesh1.admin.2"] {
+    for node in [PathName::new("mesh1.broker", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap()].iter() {
         let before = estate.node_value(node).await;
-        estate.stop_then_start(&node.parse().unwrap()).await;
+        let (stopped, _) = estate.stop_then_start(node).await;
         let after = estate.node_value(node).await;
-        assert_eq!(after["status"], "ready", "{node}: ready after the restart: {after}");
-        assert_eq!(after["node_id"], before["node_id"], "{node}: a restart keeps the NodeId");
-        assert_eq!(after["incarnation_id"], before["incarnation_id"], "{node}: a restart is node.stop then node.start on the stopped process: the same birth");
+        assert_eq!(after["status"], "ready", "{node:?}: ready after the restart: {after}");
+        assert_eq!(after["node_id"], before["node_id"], "{node:?}: a restart keeps the NodeId");
+        assert_eq!(after["incarnation_id"], before["incarnation_id"], "{node:?}: a restart is node.stop then node.start on the stopped process: the same birth");
         let o = observe_launch(&estate, node).await;
         let b = expect_for(node);
-        assert_eq!(launched_path(&o), b.executable, "{node} restarts on the bound executable: {o}");
-        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{node} restarts on the bound bytes: {o}");
-        restarts.push(json!({ "node": node, "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"], "launch": o }));
+        assert_eq!(launched_path(&o), b.executable, "{node:?} restarts on the bound executable: {o}");
+        assert_eq!(o["observed_sha256"], b.sha256.as_str(), "{node:?} restarts on the bound bytes: {o}");
+        restarts.push(json!({ "node": node, "node_id": before["node_id"], "stop_build_id": stopped.build_id, "stop_attempt": stopped.attempt, "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after["incarnation_id"], "launch": o }));
     }
-    let get = estate.probe(&["get", "--target", "path:mesh1.broker.1", "--key", "7"]);
+    let get = estate.probe(&["get", "--target", broker_target.as_str(), "--key", "7"]);
     assert_eq!(get["outcome"], "Reply", "the restarted broker answers: {get}");
     let manifest_bindings = std::fs::read_to_string(estate.artifacts.join("manifest.json")).unwrap();
     let manifest: Value = serde_json::from_str(&manifest_bindings).unwrap();
@@ -340,16 +343,17 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     // fabric-primary's claim returns the context the call left on the attempt.
     let mut chains = Vec::new();
     for r in &restarts {
-        let node = r["node"].as_str().unwrap();
-        let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|s| s["attributes"]["node"] == node).cloned().unwrap_or_else(|| panic!("{node}: no build.update.via-node-rpc span for the restart call"));
+        let node: PathName = serde_json::from_value(r["node"].clone()).expect("structured location");
+        let node_id = r["node_id"].as_str().expect("node ID");
+        let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|s| s["attributes"]["node_path"] == node.path && s["attributes"]["node_name"] == node.name && s["attributes"]["build_id"] == r["stop_build_id"] && s["attributes"]["attempt"].as_str().and_then(|v| v.parse::<u64>().ok()) == r["stop_attempt"].as_u64()).cloned().unwrap_or_else(|| panic!("{node:?}: no build.update.via-node-rpc span for the restart call"));
         // A restart is node.stop then node.start on the stopped process (Q183): the chain is the stop's.
-        let op = format!("node.stop:{node}");
-        let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|s| s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op))).cloned().unwrap_or_else(|| panic!("{node}: no reconcile executed {op}"));
-        let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|s| s["attributes"]["node"] == node && descends_from(&spans, s, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.update.via-build under the reconcile"));
+        let op = rdm_core::OperationId::node("node.stop", &node_id.parse().unwrap());
+        let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|s| s["attributes"]["build_id"] == rest["attributes"]["build_id"] && s["attributes"]["attempt"] == rest["attributes"]["attempt"] && s["parent_span_id"] == rest["span_id"]).cloned().unwrap_or_else(|| panic!("{node:?}: no reconcile executed {op:?}"));
+        let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|s| s["attributes"]["node_id"] == node_id && descends_from(&spans, s, &reconcile)).cloned().unwrap_or_else(|| panic!("{node:?}: no node.update.via-build under the reconcile"));
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| descends_from(&spans, s, &update)).collect();
-        assert!(!steps.is_empty(), "{node}: deployment steps ran under its node update");
-        assert_eq!(rest["attributes"]["build_id"], reconcile["attributes"]["build_id"], "{node}: the restart call and the reconcile are of one Build");
-        assert_eq!(reconcile["parent_span_id"], rest["span_id"], "{node}: the reconcile is the child of the restart call's request span");
+        assert!(!steps.is_empty(), "{node:?}: deployment steps ran under its node update");
+        assert_eq!(rest["attributes"]["build_id"], reconcile["attributes"]["build_id"], "{node:?}: the restart call and the reconcile are of one Build");
+        assert_eq!(reconcile["parent_span_id"], rest["span_id"], "{node:?}: the reconcile is the child of the restart call's request span");
         chains.push(json!({ "node": node, "rest": {"trace_id": rest["trace_id"], "span_id": rest["span_id"]}, "reconcile": {"trace_id": reconcile["trace_id"], "span_id": reconcile["span_id"], "parent_span_id": reconcile["parent_span_id"], "attempt": reconcile["attributes"]["attempt"]}, "update": update["span_id"], "steps": steps.len(), "reconcile_trace_is_restart_calls_trace": reconcile["trace_id"] == rest["trace_id"] }));
     }
     let leftover = provider_actions(&bound, cell);
@@ -388,13 +392,13 @@ meshes:
     node_admin: 1
     rpc_node: 2
 operations:
-  - put: { target: mesh1.rpc.1, key: 10, value: \"a\" }
-  - put: { target: mesh1.rpc.2, key: 11, value: \"b\" }
-  - cas: { target: mesh1.rpc.1, key: 10, expected: \"a\", value: \"a2\" }
-  - delete: { target: mesh1.rpc.2, key: 11 }
+  - put: { target: {path: mesh1.rpc, name: \"1\"}, key: 10, value: \"a\" }
+  - put: { target: {path: mesh1.rpc, name: \"2\"}, key: 11, value: \"b\" }
+  - cas: { target: {path: mesh1.rpc, name: \"1\"}, key: 10, expected: \"a\", value: \"a2\" }
+  - delete: { target: {path: mesh1.rpc, name: \"2\"}, key: 11 }
 assert:
-  - get: { target: mesh1.rpc.1, key: 10, equals: \"a2\" }
-  - get: { target: mesh1.rpc.2, key: 11, absent: true }
+  - get: { target: {path: mesh1.rpc, name: \"1\"}, key: 10, equals: \"a2\" }
+  - get: { target: {path: mesh1.rpc, name: \"2\"}, key: 11, absent: true }
 ";
 
 const SEED: u64 = 2776;
@@ -406,7 +410,7 @@ fn source() -> Source {
 /// A manifest as the scenario runner writes it, with synthetic typed outcomes.
 fn synthetic_manifest() -> ReplayManifest {
     let scenario = Scenario::parse(REPLAY_SCENARIO).unwrap();
-    let outcome = |step: &str, action: &str, target: &str, key: Option<u64>, result: Value| StepOutcome { step: step.into(), action: action.into(), target: target.into(), key, outcome: "Reply".into(), result };
+    let outcome = |step: &str, action: &str, target: PathName, key: Option<u64>, result: Value| StepOutcome { step: step.into(), action: action.into(), target, key, outcome: "Reply".into(), result };
     ReplayManifest {
         schema_version: SCHEMA_VERSION,
         owner: rdm_test::replay::EvidenceOwner { product: "mesh".into(), feature: "i143-2776".into(), subfeature: "replay".into(), rung: "SN".into(), provider: "process".into(), test: "synthetic".into() },
@@ -415,11 +419,11 @@ fn synthetic_manifest() -> ReplayManifest {
         shapes: scenario.meshes.clone(),
         fault_schedule: schedule_from_seed(SEED, &scenario),
         outcomes: vec![
-            outcome("operation[0]", "put", "mesh1.rpc.1", Some(10), json!({})),
-            outcome("operation[2]", "cas", "mesh1.rpc.1", Some(10), json!({"swapped": true})),
-            outcome("assert[0]", "get", "mesh1.rpc.1", Some(10), json!({"found": true, "value": "a2"})),
+            outcome("operation[0]", "put", PathName::new("mesh1.rpc", "1").unwrap(), Some(10), json!({})),
+            outcome("operation[2]", "cas", PathName::new("mesh1.rpc", "1").unwrap(), Some(10), json!({"swapped": true})),
+            outcome("assert[0]", "get", PathName::new("mesh1.rpc", "1").unwrap(), Some(10), json!({"found": true, "value": "a2"})),
         ],
-        final_state: [("mesh1.rpc.1/10".to_string(), json!({"outcome": "Reply", "found": true, "value": "a2"}))].into(),
+        final_state: [((PathName::new("mesh1.rpc", "1").unwrap(), 10), json!({"outcome": "Reply", "found": true, "value": "a2"}))].into(),
         scenario,
     }
 }
@@ -468,7 +472,7 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
     expect("empty_source_sha", mutate(&|x| { x["source"]["sha"] = json!(""); }), |e| matches!(e, ManifestError::EmptySourceField("sha")));
     expect("shapes_disagree", mutate(&|x| { x["shapes"][0]["rpc_node"] = json!(9); }), |e| matches!(e, ManifestError::ShapesDisagree));
     expect("fault_step", mutate(&|x| { x["fault_schedule"][0]["before_operation"] = json!(99); }), |e| matches!(e, ManifestError::FaultStepOutOfRange { before_operation: 99, .. }));
-    expect("fault_target", mutate(&|x| { x["fault_schedule"][0]["fault"]["restart_node"]["node"] = json!("mesh1.broker.1"); }), |e| matches!(e, ManifestError::FaultTargetUnknown(n) if n == "mesh1.broker.1"));
+    expect("fault_target", mutate(&|x| { x["fault_schedule"][0]["fault"]["restart_node"]["node"] = json!(PathName::new("mesh1.broker", "1").unwrap()); }), |e| matches!(e, ManifestError::FaultTargetUnknown(n) if n == &PathName::new("mesh1.broker", "1").unwrap()));
 
     let dir = acceptance_dir("unit", cell);
     write_result(
@@ -481,8 +485,8 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
     );
     // A unit cell runs no process, so there is no exported span to preserve.
     std::fs::write(dir.join("spans.json"), "[]").unwrap();
-    let _ = Fault::RestartNode { node: String::new() };
-    let _ = ScheduledFault { before_operation: 0, fault: Fault::RestartNode { node: String::new() } };
+    let _ = Fault::RestartNode { node: PathName::new("mesh1.rpc", "1").unwrap() };
+    let _ = ScheduledFault { before_operation: 0, fault: Fault::RestartNode { node: PathName::new("mesh1.rpc", "1").unwrap() } };
 }
 
 /// CONTRACT: running one declarative scenario twice - the second time from the first run's
@@ -523,8 +527,8 @@ async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
     let restarts: Vec<&StepOutcome> = a.outcomes.iter().filter(|o| o.action == "restart_node").collect();
     assert_eq!(restarts.len(), 1, "the seeded fault ran: {:?}", a.outcomes);
     assert_eq!(restarts[0].result, json!({"same_node_id": true, "same_incarnation": true}), "a restart keeps the NodeId and the incarnation (node-restart.md \"Kept\")");
-    assert_eq!(a.final_state["mesh1.rpc.1/10"]["value"], "a2");
-    assert_eq!(a.final_state["mesh1.rpc.2/11"]["found"], false);
+    assert_eq!(a.final_state[&(PathName::new("mesh1.rpc", "1").unwrap(), 10)]["value"], "a2");
+    assert_eq!(a.final_state[&(PathName::new("mesh1.rpc", "2").unwrap(), 11)]["found"], false);
 
     let root = rdm_test::estate::artifacts_root().join("i143-2776");
     let mut hosts = Vec::new();

@@ -102,10 +102,10 @@ pub struct Node {
 }
 
 /// A node serving Probe (answering with its own name) and, with `client`, carrying Probe for others.
-pub async fn node(name: &str, carrier_client: Option<Arc<NodeRpcClient>>, key: SecretKey, ep: iroh::Endpoint) -> Node {
+pub async fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, carrier_client: Option<Arc<NodeRpcClient>>, key: SecretKey, ep: iroh::Endpoint) -> Node {
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let handled = Arc::new(AtomicU64::new(0));
-    let (h, me) = (handled.clone(), name.to_string());
+    let (h, me) = (handled.clone(), node_id.to_string());
     let mut b = ServerBuilder::new().ledger(test_ledger()).serve::<Probe, _, _>(OpOwner::Product("test".into()), move |peer: PeerContext, req: ProbeRequest| {
         let (h, me) = (h.clone(), me.clone());
         async move {
@@ -123,7 +123,7 @@ pub async fn node(name: &str, carrier_client: Option<Arc<NodeRpcClient>>, key: S
     let server = b.build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-    let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
+    let resolved = ResolvedNode { mesh: mesh.to_owned(), kind, node_id, name, endpoint_id: key.public(), transport_addr: addr, incarnation };
     Node { _router: router, key, resolved, handled }
 }
 
@@ -143,15 +143,15 @@ pub struct Rig {
 /// B and C are two semantically eligible targets; P is a carrier that can reach both.
 pub async fn rig() -> Rig {
     let (bk, be) = bind().await;
-    let b = node("mesh1.rpc.1", None, bk, be).await;
+    let b = node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None, bk, be).await;
     let (ck, ce) = bind().await;
-    let c = node("mesh1.rpc.2", None, ck, ce).await;
+    let c = node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None, ck, ce).await;
     let (pk, pe) = bind().await;
     let p_resolver = Arc::new(StaticResolver::new());
     p_resolver.insert(b.resolved.clone());
     p_resolver.insert(c.resolved.clone());
     let p_client = Arc::new(NodeRpcClient::new(pe.clone(), p_resolver));
-    let p = node("mesh1.rpc.3", Some(p_client), pk, pe).await;
+    let p = node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(p_client), pk, pe).await;
     let resolver = Arc::new(StaticResolver::new());
     for n in [&b, &c, &p] {
         resolver.insert(n.resolved.clone());
@@ -190,11 +190,11 @@ pub async fn routed(rig: &Rig, target: &Node, route: RouteChoice, payload: &[u8]
 
 /// Connections fixtures, as the held projection records them.
 pub fn end(n: &Node) -> ConnectionEnd {
-    ConnectionEnd { name: n.resolved.name.clone(), node_id: n.resolved.node_id.clone(), incarnation: Some(n.resolved.incarnation.clone()) }
+    ConnectionEnd { mesh: n.resolved.mesh.clone(), kind: n.resolved.kind, name: n.resolved.name.clone(), node_id: n.resolved.node_id.clone(), incarnation: Some(n.resolved.incarnation.clone()) }
 }
 
-pub fn own_end(own: &PathName) -> ConnectionEnd {
-    ConnectionEnd { name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
+pub fn own_end(own: &PathName, mesh: &str, kind: rdm_core::NodeKind) -> ConnectionEnd {
+    ConnectionEnd { mesh: mesh.to_owned(), kind, name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
 }
 
 /// A connections fact at stamp `at`, in the shape the writer records it.
@@ -203,7 +203,7 @@ pub fn connection(from: ConnectionEnd, to: ConnectionEnd, kind: ConnectionKind, 
     NodeConnection { id: rdm_core::ConnectionId::mint(), source: from, destination: to, kind, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier, recovery, reason: None, logged_at_ms: at }
 }
 
-pub fn held_for(own: &PathName) -> ConnectionsHeld {
+pub fn held_for(own: &NodeId) -> ConnectionsHeld {
     let mut held = ConnectionsHeld::new();
     held.set_own_source(own.clone());
     held.mark_complete();

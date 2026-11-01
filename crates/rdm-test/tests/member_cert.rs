@@ -23,7 +23,7 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarn
         fabric_id: fabric.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::RpcNode,
-        name: "mesh1.rpc.1".parse().unwrap(),
+        name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
         node_id,
         incarnation,
         supersedes,
@@ -75,8 +75,8 @@ fn a_node_admitted_by_its_mesh_issuer_holds_a_member_cert_for_exactly_its_birth(
         let signed = certs::cert_from_bytes(&running.member_cert).expect("the handle holds a signed member cert");
         let cert = &signed.cert;
         assert_eq!(
-            (cert.node_id.to_string(), cert.incarnation.as_str(), cert.name.to_string(), cert.mesh.as_str(), cert.endpoint.0.as_str()),
-            (launch.node_id.to_string(), launch.incarnation.as_str(), "mesh1.rpc.1".to_string(), "mesh1", key.public().to_string().as_str()),
+            (cert.node_id.to_string(), cert.incarnation.as_str(), cert.name.clone(), cert.mesh.as_str(), cert.endpoint.0.as_str()),
+            (launch.node_id.to_string(), launch.incarnation.as_str(), launch.name.clone(), "mesh1", key.public().to_string().as_str()),
             "the cert names exactly this birth"
         );
         let issued: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.cert.create.via-join").map(|(_, _, f)| f.clone()).collect();
@@ -148,7 +148,7 @@ fn the_member_cert_is_in_the_pre_node_ready_context_and_equals_the_handles() {
         let seen = pre_node_ready.member_certs.lock().unwrap().clone();
         assert_eq!(seen.len(), 1, "the hook ran once");
         assert_eq!(seen[0].as_deref(), Some(running.member_cert.as_slice()), "the hook's context carries the handle's bytes");
-        assert_eq!(certs::cert_from_bytes(&running.member_cert).unwrap().cert.name.to_string(), "mesh1.rpc.1");
+        assert_eq!(certs::cert_from_bytes(&running.member_cert).unwrap().cert.name, rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
 
         running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -185,10 +185,10 @@ fn a_mesh_primary_configured_with_no_certs_admits_the_birth_with_an_empty_cert_a
 
 /// One birth of mesh1 at `name`, launched by `admin` with the root set `roots` and the product ALPN
 /// `alpn` registered, started and joined.
-async fn alpn_birth(admin: &AdminSide, fabric: &FabricId, name: &str, roots: Vec<rdm_core::certs::VerifyingKey>, alpn: &rdm_transport::connections::Alpn) -> (rdm_node::node::RunningNode, std::path::PathBuf) {
+async fn alpn_birth(admin: &AdminSide, fabric: &FabricId, name: rdm_core::PathName, roots: Vec<rdm_core::certs::VerifyingKey>, alpn: &rdm_transport::connections::Alpn) -> (rdm_node::node::RunningNode, std::path::PathBuf) {
     let dir = birth_dir("member-cert-roots");
     let key = node::load_or_mint_key(&dir).unwrap();
-    let launch = Launch { name: name.parse().unwrap(), roots, ..launch_in(&dir, fabric, admin, IncarnationId::mint(), None, NodeId::mint()) };
+    let launch = Launch { name, roots, ..launch_in(&dir, fabric, admin, IncarnationId::mint(), None, NodeId::mint()) };
     admin.deployed(&launch, &key);
     let running = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], std::slice::from_ref(alpn))
         .await
@@ -197,7 +197,7 @@ async fn alpn_birth(admin: &AdminSide, fabric: &FabricId, name: &str, roots: Vec
 }
 
 fn birth_of(n: &rdm_node::node::RunningNode) -> rdm_transport::connections::Birth {
-    rdm_transport::connections::Birth { name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
+    rdm_transport::connections::Birth { mesh: n.digest.node.mesh.clone(), kind: n.digest.node.kind, name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
 }
 
 // @feature: node-lifecycle
@@ -216,9 +216,9 @@ fn a_node_admits_on_the_root_set_its_launch_carries() {
         let alpn = rdm_transport::connections::Alpn { name: b"member-cert-roots/1".to_vec(), proxy: false, carriers: vec![rdm_core::NodeKind::RpcNode] };
         let fabric = FabricId::mint();
         let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(PRIMARY_REFERENCE_MS), root_choice()).await;
-        let (acceptor, a_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.1", vec![test_root_public()], &alpn).await;
-        let (dialer, d_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.2", vec![test_root_public()], &alpn).await;
-        let (no_certs, n_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.3", vec![], &alpn).await;
+        let (acceptor, a_dir) = alpn_birth(&admin, &fabric, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), vec![test_root_public()], &alpn).await;
+        let (dialer, d_dir) = alpn_birth(&admin, &fabric, rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), vec![test_root_public()], &alpn).await;
+        let (no_certs, n_dir) = alpn_birth(&admin, &fabric, rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), vec![], &alpn).await;
         let dialing = dialer.data_connections_for_testkit();
         tokio::time::timeout(Duration::from_secs(30), async {
             while [&acceptor, &no_certs].iter().any(|n| dialer.node_rpc.resolver.resolve(&rdm_transport::NodeTarget::ExactNode(n.digest.node.node_id.clone())).is_err()) {

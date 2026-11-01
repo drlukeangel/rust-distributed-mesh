@@ -53,20 +53,23 @@ fn build_id() -> BuildId {
     BuildId::parse("vhpqxdbt5w2g").unwrap()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CallEvent { Operation(rdm_core::OperationId, bool), StopCut, Start }
+
 /// What the runner did, in order, beside the instants the cell marks (the stop's cut).
 #[derive(Default)]
 struct Calls {
-    log: Mutex<Vec<String>>,
+    log: Mutex<Vec<CallEvent>>,
     /// The first operation waits here once it has been entered, while `hold_first` is set.
     entered: Notify,
     release: Notify,
 }
 
 impl Calls {
-    fn push(&self, what: String) {
+    fn push(&self, what: CallEvent) {
         self.log.lock().unwrap().push(what);
     }
-    fn log(&self) -> Vec<String> {
+    fn log(&self) -> Vec<CallEvent> {
         self.log.lock().unwrap().clone()
     }
 }
@@ -83,8 +86,8 @@ struct CallingOut {
 #[async_trait::async_trait]
 impl OperationRunner for CallingOut {
     async fn run(&self, _: &BuildId, _: Option<&str>, _: u32, op: &BuildOperation) -> Result<(), RunEnd> {
-        let first = self.calls.log().iter().all(|c| !c.starts_with("call "));
-        self.calls.push(format!("call {}{}", op.key(), if self.gate.is_stopped() { " (gate stopped)" } else { "" }));
+        let first = self.calls.log().iter().all(|c| !matches!(c, CallEvent::Operation(..)));
+        self.calls.push(CallEvent::Operation(op.key(), self.gate.is_stopped()));
         if first && self.hold_first {
             self.calls.entered.notify_one();
             self.calls.release.notified().await;
@@ -99,10 +102,12 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, R
     let memory = Arc::new(MemoryBuildStateAdapter::new());
     let runs = Arc::new(AttemptRuns::default());
     let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()));
-    let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
+    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
     admin.status = NodeStatus::Ready;
     admin.is_primary = true;
     admin.is_fabric_primary = true;
+    admin.incarnation_id = Some(IncarnationId::mint());
+    let executor_birth = admin.birth().unwrap();
     let topology = Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
@@ -110,13 +115,13 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, R
     }));
     let gate = StopGate::new();
     let runner = Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first });
-    let exec = Arc::new(BuildExecutor { executor: "mesh1.admin.1".into(), builds: builds.clone(), topology, runner });
+    let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: builds.clone(), topology, runner });
     memory
         .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    memory.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    let door = RunDoor { me: "mesh1.admin.1".parse().unwrap(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
+    memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
+    let door = RunDoor { me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
     let plan = RunPlan { operations: vec![BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: MeshId::mint() }, BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }], hand_off_to: None };
     (door, gate, plan)
 }
@@ -132,7 +137,7 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
     let (capture, _guard) = capture("mesh1.admin.1");
     let calls = Arc::new(Calls::default());
     let (door, gate, plan) = executor(&calls, true).await;
-    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), 1, "mesh1.admin.1", &CallContext::default(), &plan).await else { panic!("the claimed attempt is started") };
+    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), 1, &door.exec.executor, &CallContext::default(), &plan).await else { panic!("the claimed attempt is started") };
     assert_eq!(disposition, Disposition::Started);
     calls.entered.notified().await;
 
@@ -141,7 +146,7 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
         let (gate, calls) = (gate.clone(), calls.clone());
         async move {
             let at = gate.quiesce().await;
-            calls.push("stop cut".into());
+            calls.push(CallEvent::StopCut);
             (at, std::time::SystemTime::now())
         }
     });
@@ -155,7 +160,7 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
     }
     let (at, cut_at) = cut.await.unwrap();
     // The run was past its wait point at the stop: its second operation runs on the stopped gate, before the cut.
-    assert_eq!(calls.log(), vec!["call create-mesh:mesh2".to_string(), "call create-mesh:mesh3 (gate stopped)".into(), "stop cut".into()], "every call of the run precedes the stop's cut: none follows it");
+    assert_eq!(calls.log(), vec![CallEvent::Operation(plan.operations[0].key(), false), CallEvent::Operation(plan.operations[1].key(), true), CallEvent::StopCut], "every call of the run precedes the stop's cut: none follows it");
     assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "the run ran to its terminal before the cut: {terminal:?}");
     assert_eq!(at.named(), "build-run", "the quiesce waited for the run's turn, by name");
 
@@ -181,18 +186,18 @@ async fn a_run_served_while_its_admin_is_stopped_calls_out_only_once_the_admin_s
     let calls = Arc::new(Calls::default());
     let (door, gate, plan) = executor(&calls, false).await;
     let _ = gate.quiesce().await;
-    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), 1, "mesh1.admin.1", &CallContext::default(), &plan).await else { panic!("the stopped admin answers the claimed attempt") };
+    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), 1, &door.exec.executor, &CallContext::default(), &plan).await else { panic!("the stopped admin answers the claimed attempt") };
     assert_eq!(disposition, Disposition::Started);
     // Every task runs until it waits on something: a run that does not wait at the gate has called out by now.
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(calls.log(), Vec::<String>::new(), "the stopped admin's run made no call");
+    assert_eq!(calls.log(), Vec::<CallEvent>::new(), "the stopped admin's run made no call");
     gate.resume();
-    calls.push("start".into());
+    calls.push(CallEvent::Start);
     let mut terminal = None;
     while let Some(f) = reader.next().await {
         terminal = Some(f);
     }
-    assert_eq!(calls.log(), vec!["start".to_string(), "call create-mesh:mesh2".into(), "call create-mesh:mesh3".into()], "the run called out only once its admin started");
+    assert_eq!(calls.log(), vec![CallEvent::Start, CallEvent::Operation(plan.operations[0].key(), false), CallEvent::Operation(plan.operations[1].key(), false)], "the run called out only once its admin started");
     assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "{terminal:?}");
     let spans = capture.spans();
     crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));
@@ -219,13 +224,13 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
         let (gate, calls) = (gate.clone(), calls.clone());
         async move {
             let at = gate.quiesce().await;
-            calls.push("stop cut".into());
+            calls.push(CallEvent::StopCut);
             at
         }
     });
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(gate.is_stopped(), "the stop held the gate while the pass was in its turn");
-    let Attached::Live { disposition, mut reader, .. } = door.attempt_run_under(&pass, &build_id(), 1, "mesh1.admin.1", &CallContext::default(), &plan).await else { panic!("the pass's own attempt is started") };
+    let Attached::Live { disposition, mut reader, .. } = door.attempt_run_under(&pass, &build_id(), 1, &door.exec.executor, &CallContext::default(), &plan).await else { panic!("the pass's own attempt is started") };
     assert_eq!(disposition, Disposition::Started);
     let terminal = tokio::time::timeout(Duration::from_secs(20), async {
         let mut terminal = None;
@@ -237,11 +242,11 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
     .await
     .expect("the pass's own run reached its terminal: it did not wait at the gate for the pass");
     assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "{terminal:?}");
-    assert_eq!(calls.log(), vec!["call create-mesh:mesh2 (gate stopped)".to_string(), "call create-mesh:mesh3 (gate stopped)".into()], "the run of a pass past its wait point ran, and the stop has not cut");
+    assert_eq!(calls.log(), vec![CallEvent::Operation(plan.operations[0].key(), true), CallEvent::Operation(plan.operations[1].key(), true)], "the run of a pass past its wait point ran, and the stop has not cut");
     drop(pass);
     let at = cut.await.unwrap();
     assert_eq!(at.named(), "build-drive", "at the stop only the pass was in a turn");
-    assert_eq!(calls.log().last().map(String::as_str), Some("stop cut"), "the stop cut once the pass and its run had ended");
+    assert_eq!(calls.log().last(), Some(&CallEvent::StopCut), "the stop cut once the pass and its run had ended");
     let spans = capture.spans();
     crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));
     let turn = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.serve.via-run-turn").expect("the run's turn span was exported");
@@ -250,13 +255,9 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
     println!("trace {} reconcile {} turn {}", reconcile["trace_id"], reconcile["attributes"], turn["attributes"]);
 }
 
-/// CONTRACT (node-identity-and-state.md §8; lifecycles/node-name-update.md; R12; crit:e12.s47.1): an admin born as
-/// `mesh1.admin.9` and renamed to `mesh1.admin.1` answers `build.attempt.run` and runs the
-/// attempt claimed for its new name `mesh1.admin.1` to completion, recording `mesh1.admin.1` on the
-/// claim, the turn and reconcile spans; a call naming its birth name `mesh1.admin.9` is refused
-/// `NotExecutor` naming `recipient: mesh1.admin.1`. Must NOT happen: `RunDoor` refusing the claim
-/// for `mesh1.admin.1` with `NotExecutor`, or `BuildExecutor` recording or handing off against the
-/// birth name `mesh1.admin.9`.
+/// A rename changes the name at the same path while retaining the node ID and incarnation.
+/// The executor accepts the claim for that exact birth after the rename and reports its current
+/// path and name separately. Another node is refused, even with the same incarnation.
 #[tokio::test(start_paused = true)]
 async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
     let (capture, _guard) = capture("mesh1.admin.1");
@@ -264,10 +265,12 @@ async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
     let memory = Arc::new(MemoryBuildStateAdapter::new());
     let runs = Arc::new(AttemptRuns::default());
     let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()));
-    let mut admin = Node::allocated("mesh1.admin.9".parse().unwrap());
+    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "9").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
     admin.status = NodeStatus::Ready;
     admin.is_primary = true;
     admin.is_fabric_primary = true;
+    admin.incarnation_id = Some(IncarnationId::mint());
+    let executor_birth = admin.birth().unwrap();
     let topology = Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
@@ -275,19 +278,19 @@ async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
     }));
     let gate = StopGate::new();
     let runner = Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first: false });
-    let exec = Arc::new(BuildExecutor { executor: "mesh1.admin.9".into(), builds: builds.clone(), topology: topology.clone(), runner });
-    let door = RunDoor { me: "mesh1.admin.9".parse().unwrap(), builds, exec, runs, local: memory.clone(), gate };
+    let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: builds.clone(), topology: topology.clone(), runner });
+    let door = RunDoor { me: rdm_core::PathName::new("mesh1.admin", "9").unwrap(), builds, exec, runs, local: memory.clone(), gate };
     let plan = RunPlan { operations: vec![BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: MeshId::mint() }, BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }], hand_off_to: None };
 
-    // The admin is renamed to `mesh1.admin.1` in its view, and attempt 1 is claimed for its new name.
-    topology.write().await.nodes[0].name = "mesh1.admin.1".parse().unwrap();
+    // Only the name changes; attempt 1 remains claimed for the same exact birth.
+    topology.write().await.nodes[0].name = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
     memory
         .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    memory.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    memory.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
 
-    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), 1, "mesh1.admin.1", &CallContext::default(), &plan).await else {
+    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), 1, &door.exec.executor, &CallContext::default(), &plan).await else {
         panic!("the renamed admin accepts and starts the attempt claimed for its new name")
     };
     assert_eq!(disposition, Disposition::Started);
@@ -296,28 +299,29 @@ async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
         terminal = Some(f);
     }
     assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "the renamed admin ran both operations to Complete without handing off to itself: {terminal:?}");
-    assert_eq!(calls.log(), vec!["call create-mesh:mesh2".to_string(), "call create-mesh:mesh3".into()]);
+    assert_eq!(calls.log(), vec![CallEvent::Operation(plan.operations[0].key(), false), CallEvent::Operation(plan.operations[1].key(), false)]);
     let folded = memory.read_build(&build_id()).await.unwrap();
-    assert_eq!(folded.executor.as_deref(), Some("mesh1.admin.1"), "the folded claim names the held name");
+    assert_eq!(folded.executor.as_ref(), Some(&executor_birth), "the rename preserves the executor birth");
 
-    // A call naming the old birth name is refused NotExecutor with the new held name as recipient.
-    let Attached::Refused(refused) = door.attempt_run(&build_id(), 1, "mesh1.admin.9", &CallContext::default(), &plan).await else {
-        panic!("a call for the birth name must be refused")
+    // A different node ID is refused even when it presents the same incarnation.
+    let other_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: executor_birth.incarnation.clone() };
+    let Attached::Refused(refused) = door.attempt_run(&build_id(), 1, &other_birth, &CallContext::default(), &plan).await else {
+        panic!("a call for another node must be refused")
     };
     assert!(
-        matches!(&refused, BuildReply::NotExecutor { named, recipient } if named == "mesh1.admin.9" && recipient == "mesh1.admin.1"),
-        "a call for the birth name is refused NotExecutor naming the held name as recipient: {refused:?}"
+        matches!(&refused, BuildReply::NotExecutor { named, recipient } if named == &other_birth && recipient == &executor_birth),
+        "a call for another node is refused with the actual recipient birth: {refused:?}"
     );
 
     let spans = capture.spans();
     crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));
     for name in ["rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.serve.via-run-turn", "rdm.node_admin.build.reject.via-not-executor"] {
         for s in spans.iter().filter(|s| s["name"] == name) {
-            assert_eq!(s["attributes"]["node"], "mesh1.admin.1", "{name} names the admin's held name: {s}");
+            assert_eq!((s["attributes"]["node_path"].as_str(), s["attributes"]["node_name"].as_str()), (Some("mesh1.admin"), Some("1")), "{name} names the admin's held name: {s}");
         }
     }
     let reconcile = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile").expect("the run's reconcile span was exported");
-    assert_eq!(reconcile["attributes"]["executor"], "mesh1.admin.1", "via-reconcile names the admin's held name: {reconcile}");
+    assert_eq!(reconcile["attributes"]["executor"], executor_birth.to_string(), "via-reconcile names the admin's held name: {reconcile}");
     println!("trace {} reconcile {}", reconcile["trace_id"], reconcile["attributes"]);
 }
 

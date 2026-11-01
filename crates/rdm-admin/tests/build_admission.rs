@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
@@ -30,12 +30,14 @@ fn view() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-        nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", false, false)],
+        nodes: vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false)],
     }
 }
 
 /// The Build state, holding the FIRST acceptance inside its write until the cell releases it.
 struct Held {
+    predecessor: rdm_core::NodeId,
+    successor: rdm_core::framing::Birth,
     inner: MemoryBuildStateAdapter,
     first: AtomicBool,
     entered: Notify,
@@ -52,7 +54,7 @@ struct Held {
 impl Held {
     fn refused_once_moved(&self) -> Result<(), BuildStateError> {
         if self.moved.load(Ordering::SeqCst) {
-            return Err(BuildStateError::RoleYielded { node: "mesh1.admin.1".into(), by: "the fabric-primary role record names mesh2 (revision 2)".into(), to: Some("mesh2.admin.1".into()) });
+            return Err(BuildStateError::RoleYielded { node: self.predecessor.clone(), by: "the fabric-primary role record names mesh2 (revision 2)".into(), to: Some(self.successor.clone()) });
         }
         Ok(())
     }
@@ -108,10 +110,10 @@ impl BuildStateAdapter for Held {
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
@@ -121,12 +123,12 @@ impl BuildStateAdapter for Held {
 
 async fn rig() -> (Arc<Held>, Arc<ControlPlane>) {
     let t = view();
-    let held = Arc::new(Held { inner: MemoryBuildStateAdapter::new(), first: AtomicBool::new(false), entered: Notify::new(), release: Notify::new(), moves_at_accept: AtomicBool::new(false), moved: AtomicBool::new(false) });
+    let held = Arc::new(Held { predecessor: t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().node_id.clone(), successor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() }, inner: MemoryBuildStateAdapter::new(), first: AtomicBool::new(false), entered: Notify::new(), release: Notify::new(), moves_at_accept: AtomicBool::new(false), moved: AtomicBool::new(false) });
     // The seed is written before the hold is armed.
     held.first.store(true, Ordering::SeqCst);
-    let accepted = AcceptedStore::seeded(&*held, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*held, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
     held.first.store(false, Ordering::SeqCst);
-    let mut cp = ControlPlane::new(held.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time());
+    let mut cp = ControlPlane::new(held.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time());
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
     (held, Arc::new(cp))
 }
@@ -200,7 +202,7 @@ async fn a_primary_move_after_the_acceptance_leaves_the_door_answering_the_build
     held.first.store(true, Ordering::SeqCst);
     held.moved.store(true, Ordering::SeqCst);
     match cp.submit("test-moved-before", crate::named_request(&cp, add_rpc()).await).await {
-        Err(Refusal::State(BuildStateError::RoleYielded { to, .. })) => assert_eq!(to.as_deref(), Some("mesh2.admin.1"), "the refusal names the new role"),
+        Err(Refusal::State(BuildStateError::RoleYielded { to, .. })) => assert_eq!(to.as_ref(), Some(&held.successor), "the refusal names the new role"),
         other => panic!("a role that moved before the door wrote anything refuses RoleYielded: {other:?}"),
     }
     assert!(held.list_active().await.unwrap().is_empty(), "nothing was accepted");

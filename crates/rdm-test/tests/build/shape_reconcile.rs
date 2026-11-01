@@ -43,13 +43,14 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     estate.artifact("build.json", &build);
 
     // Every desired node is live and ready; nothing else exists.
-    let mut want: Vec<String> = Vec::new();
+    let mut want: Vec<rdm_core::PathName> = Vec::new();
     for (m, a, r) in meshes {
-        want.extend((1..=*a).map(|i| format!("{m}.admin.{i}")));
-        want.extend((1..=*r).map(|i| format!("{m}.rpc.{i}")));
+        want.extend((1..=*a).map(|i| rdm_core::PathName::new(format!("{m}.admin"), i.to_string()).unwrap()));
+        want.extend((1..=*r).map(|i| rdm_core::PathName::new(format!("{m}.rpc"), i.to_string()).unwrap()));
     }
     want.sort();
-    let nodes = Estate::values(&estate.settles_to_named(&want.iter().cloned().collect(), Duration::from_secs(15)).await);
+    let views = estate.settles_to_named(&want.iter().cloned().collect(), Duration::from_secs(15)).await;
+    let nodes = Estate::values(&views);
     estate.artifact("nodes.json", &json!(nodes));
 
     // One primary per node type, one fabric primary (an admin primary).
@@ -58,7 +59,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         let node_type = (n["mesh"].as_str().unwrap().to_string(), n["kind"].as_str().unwrap().to_string());
         let e = primaries.entry(node_type).or_default();
         if n["is_primary"] == true {
-            e.push(n["name"].as_str().unwrap().to_string());
+            e.push(n["node_id"].as_str().unwrap().to_string());
         }
     }
     assert_eq!(primaries.len(), meshes.len() * 2, "{shape}: every declared node type is present");
@@ -70,7 +71,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let fp = fabric_primaries[0];
     assert_eq!((fp["kind"].as_str(), fp["is_primary"].as_bool()), (Some("node_admin"), Some(true)), "{shape}: {fp}");
     let fabric = serde_json::to_value(estate.fabric_view().await).expect("a view serializes");
-    assert_eq!(fabric["fabric_primary"], fp["name"], "{shape}: {fabric}");
+    assert_eq!(fabric["fabric_primary"], fp["node_id"], "{shape}: {fabric}");
     for m in fabric["meshes"].as_array().unwrap() {
         assert!(m["admin_api_base"].as_str().is_some_and(|b| !b.is_empty()), "{shape}: mesh {m} names its application contact");
     }
@@ -104,26 +105,27 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
             assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "{shape}: an attempt decided after the role moved starts its own trace: {r}");
         }
     }
-    let created: Vec<&String> = want.iter().filter(|n| *n != "mesh1.admin.1").collect();
+    let bootstrap_location = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    let created: Vec<_> = views.iter().filter(|n| n.name != bootstrap_location).collect();
     for node in created {
         let step = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
-            .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
-            .unwrap_or_else(|| panic!("{shape}: no DeployRuntime step for {node}"))
+            .find(|s| s["attributes"]["node_path"] == node.name.path && s["attributes"]["node_name"] == node.name.name && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
+            .unwrap_or_else(|| panic!("{shape}: no DeployRuntime step for {node:?}"))
             .clone();
-        assert!(reconciles.iter().any(|r| descends_from(&spans, &step, r)), "{shape}: {node}'s DeployRuntime runs under a reconcile of the Build");
+        assert!(reconciles.iter().any(|r| descends_from(&spans, &step, r)), "{shape}: {node:?}'s DeployRuntime runs under a reconcile of the Build");
         let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
             .into_iter()
-            .find(|s| s["attributes"]["node"] == node.as_str())
-            .unwrap_or_else(|| panic!("{shape}: {node} wrote no boot span"))
+            .find(|s| s["attributes"]["node_id"] == node.node_id.as_str())
+            .unwrap_or_else(|| panic!("{shape}: {node:?} wrote no boot span"))
             .clone();
-        assert!(descends_from(&spans, &boot, &step), "{shape}: {node} booted under the step that launched it");
+        assert!(descends_from(&spans, &boot, &step), "{shape}: {node:?} booted under the step that launched it");
         let lifecycle = named(&spans, "rdm.node_admin.lifecycle.update.via-transition")
             .into_iter()
-            .find(|s| s["attributes"]["target"] == node.as_str())
-            .unwrap_or_else(|| panic!("{shape}: no lifecycle transition for {node}"))
+            .find(|s| s["attributes"]["target"] == node.node_id.as_str())
+            .unwrap_or_else(|| panic!("{shape}: no lifecycle transition for {node:?}"))
             .clone();
-        assert!(reconciles.iter().any(|r| descends_from(&spans, &lifecycle, r)), "{shape}: {node}'s lifecycle transition descends from a reconcile of the Build");
+        assert!(reconciles.iter().any(|r| descends_from(&spans, &lifecycle, r)), "{shape}: {node:?}'s lifecycle transition descends from a reconcile of the Build");
     }
     estate.record_trace_url(accepted_span["trace_id"].as_str().unwrap_or(""));
 }

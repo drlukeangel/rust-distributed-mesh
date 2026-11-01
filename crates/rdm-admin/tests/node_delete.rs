@@ -100,7 +100,7 @@ impl DeploymentProvider for ControlledExitProvider {
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
-            node: spec.node.to_string(),
+            node: spec.node.clone(),
             reason: "this cell tests node.delete, not spawn".into(),
         })
     }
@@ -130,7 +130,7 @@ impl DeploymentProvider for ControlledExitProvider {
 }
 
 struct LiveStopObserver {
-    commands: Mutex<Vec<(PathName, NodeCommand, String)>>,
+    commands: Mutex<Vec<(NodeId, NodeCommand, rdm_core::OperationId)>>,
 }
 
 #[async_trait::async_trait]
@@ -152,7 +152,7 @@ impl NodeObserver for LiveStopObserver {
         self.commands
             .lock()
             .unwrap()
-            .push((node.name.clone(), cmd, ctx.operation.clone()));
+            .push((node.node_id.clone(), cmd, ctx.operation.clone()));
         match cmd {
             NodeCommand::Stop => CommandAdmission::Stopped {
                 receipt: ConnectionsReceipt::Established {
@@ -288,27 +288,28 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         ));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut admin_node = Node::allocated(admin_name.clone());
+        let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin_node.status = NodeStatus::Ready;
         admin_node.is_primary = true;
         admin_node.is_fabric_primary = true;
         admin_node.incarnation_id = Some(IncarnationId::mint());
         let admin_id = admin_node.node_id.clone();
+        let executor_birth = admin_node.birth().unwrap();
 
-        let target_name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let target_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let target_id = NodeId::mint();
         let target_incarnation = IncarnationId::mint();
         let deployment_id = DeploymentId::mint();
 
-        let target_data_dir = root_dir.join(format!("{target_name}-{target_id}"));
+        let target_data_dir = rdm_admin::deployment::node_data_dir(&root_dir, &target_id);
         std::fs::create_dir_all(&target_data_dir).unwrap();
         let key = rdm_node::node::load_or_mint_key(&target_data_dir).expect("mint endpoint key");
         let endpoint_id = EndpointId(key.public().to_string());
         let identity_marker = target_data_dir.join("node-identity.json");
         std::fs::write(&identity_marker, b"{\"retained\":true}").unwrap();
 
-        let mut target_node = Node::allocated(target_name.clone());
+        let mut target_node = Node::allocated(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         target_node.node_id = target_id.clone();
         target_node.incarnation_id = Some(target_incarnation.clone());
         target_node.deployment_id = Some(deployment_id.clone());
@@ -318,11 +319,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         target_node.status = NodeStatus::Ready;
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut initial_row = NodeRow::new(
-            target_name.clone(),
-            target_id.clone(),
-            NodeStatus::Ready,
-        );
+        let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, target_id.clone(), NodeStatus::Ready);
         initial_row
             .config
             .insert("retention.role".into(), "rpc-worker".into());
@@ -371,10 +368,10 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             fabric_id: rdm_core::FabricId::mint(),
             executable: std::env::current_exe().unwrap(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher {
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
                 name: admin_name.clone(),
                 node_id: admin_id,
-                incarnation: IncarnationId::mint(),
+                incarnation: executor_birth.incarnation.clone(),
             },
             env: BTreeMap::new(),
             data_root: root_dir.clone(),
@@ -403,12 +400,12 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             .await
             .unwrap();
         builds_fail
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_fail_id.clone(),
                 attempt: 1,
-                executor: admin_name.to_string(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -439,7 +436,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             timeouts: Timeouts::default(),
         };
 
-        let req_fail = DeleteRequest {
+        let req_fail = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
             build_id: build_fail_id.clone(),
             attempt: 1,
             node: target_node.clone(),
@@ -493,12 +490,12 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             .await
             .unwrap();
         builds_ok
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_ok_id.clone(),
                 attempt: 1,
-                executor: admin_name.to_string(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -528,7 +525,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             timeouts: Timeouts::default(),
         };
 
-        let req_ok = DeleteRequest {
+        let req_ok = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
             build_id: build_ok_id.clone(),
             attempt: 1,
             node: target_node.clone(),
@@ -539,7 +536,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             .delete_node(&req_ok)
             .await
             .expect("node.delete must complete when provider reports Exited");
-        assert_eq!(terminal.node, target_name.to_string());
+        assert_eq!(terminal.node, target_name);
         assert_eq!(terminal.node_id, target_id.to_string());
         assert_eq!(terminal.incarnation_id, target_incarnation.to_string());
         assert_eq!(terminal.exit_code, Some(0));
@@ -549,9 +546,9 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         assert_eq!(
             sent_cmds,
             vec![(
-                target_name.clone(),
+                target_id.clone(),
                 NodeCommand::Stop,
-                "node.stop:mesh1.rpc.1".to_string()
+                rdm_core::OperationId::node("node.stop", &target_id)
             )]
         );
         assert_eq!(provider_exited.terminates.lock().unwrap().len(), 1);
@@ -580,14 +577,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
             "deleted row must keep its config"
         );
         let successor_id = NodeId::mint();
-        rows.claim(
-            &target_name,
-            &successor_id,
-            "node.create:mesh1.rpc.1",
-            None,
-            None,
-            ClaimFor::Create,
-        )
+        rows.claim(&target_name, "mesh1", rdm_core::NodeKind::RpcNode, &successor_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), None, None, ClaimFor::Create)
         .await
         .expect("deleted row must release the name claim for a successor node_id");
 
@@ -690,7 +680,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
             Err(DeployError::Spawn {
-                node: spec.node.to_string(),
+                node: spec.node.clone(),
                 reason: "node_delete_step_faults spawns nothing".into(),
             })
         }
@@ -770,22 +760,23 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         ));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut admin_node = Node::allocated(admin_name.clone());
+        let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let mut admin_node = Node::allocated(admin_name.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin_node.status = NodeStatus::Ready;
         admin_node.is_primary = true;
         admin_node.is_fabric_primary = true;
         admin_node.incarnation_id = Some(IncarnationId::mint());
         let admin_id = admin_node.node_id.clone();
+        let executor_birth = admin_node.birth().unwrap();
 
-        let target_name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let target_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let target_id = NodeId::mint();
         let target_incarnation = IncarnationId::mint();
         let deployment_id = DeploymentId::mint();
-        let target_data_dir = root_dir.join(format!("{target_name}-{target_id}"));
+        let target_data_dir = rdm_admin::deployment::node_data_dir(&root_dir, &target_id);
         std::fs::create_dir_all(&target_data_dir).unwrap();
 
-        let mut target_node = Node::allocated(target_name.clone());
+        let mut target_node = Node::allocated(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         target_node.node_id = target_id.clone();
         target_node.incarnation_id = Some(target_incarnation.clone());
         target_node.deployment_id = Some(deployment_id.clone());
@@ -794,7 +785,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         target_node.status = NodeStatus::Ready;
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut initial_row = NodeRow::new(target_name.clone(), target_id.clone(), NodeStatus::Ready);
+        let mut initial_row = NodeRow::new(target_name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, target_id.clone(), NodeStatus::Ready);
         initial_row.birth_mut(&target_incarnation, &target_name);
         store.write_record(&initial_row).await.unwrap();
 
@@ -840,10 +831,10 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             fabric_id: rdm_core::FabricId::mint(),
             executable: std::env::current_exe().unwrap(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher {
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(),
                 name: admin_name.clone(),
                 node_id: admin_id,
-                incarnation: IncarnationId::mint(),
+                incarnation: executor_birth.incarnation.clone(),
             },
             env: BTreeMap::new(),
             data_root: root_dir.clone(),
@@ -908,17 +899,17 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         // 1. Attempt 1: OS-suspended target (`OsStopped`) skips `StopNode`/`AwaitNodeLeft`, calls
         // `terminate(Immediate)`, and fails `TerminateRuntime` when still `OsStopped`.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 1,
-                executor: admin_name.to_string(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
         let err1 = pipeline
-            .delete_node(&DeleteRequest {
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
                 build_id: build_id.clone(),
                 attempt: 1,
                 node: target_node.clone(),
@@ -947,19 +938,19 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         // `NodeDeleted`; Attempt 3 reuses both receipts without calling `provider.terminate` or sending
         // `StopNode`, and completes `NodeDeleted`, `RemoveTopologyMembership`, and `Complete`.
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 2,
-                executor: admin_name.to_string(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
-        let deleting_op = LifecycleOp { mesh: target_name.mesh.clone(),
+        let deleting_op = LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(),
             build_id: build_id.to_string(),
             attempt: 2,
-            operation: format!("node.delete:{target_name}"),
+            operation: rdm_core::OperationId::node("node.delete", &target_id),
             node_id: target_id.clone(),
             incarnation: target_incarnation.clone(),
             name: target_name.clone(),
@@ -972,16 +963,16 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 2,
-                operation: format!("node.delete:{target_name}"),
+                operation: rdm_core::OperationId::node("node.delete", &target_id),
                 step: DeleteStep::NodeDeleting.name().into(),
                 outcome: StepOutcome::Complete,
                 output: Some(serde_json::to_value(&deleting_op).unwrap()),
-                executor: Some(admin_name.to_string()),
+                executor: Some(executor_birth.clone()),
             })
             .await
             .unwrap();
         let term_receipt = TerminalReceipt {
-            node: target_name.to_string(),
+            node: target_name.clone(),
             node_id: target_id.to_string(),
             incarnation_id: target_incarnation.to_string(),
             runtime: None,
@@ -994,27 +985,27 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 2,
-                operation: format!("node.delete:{target_name}"),
+                operation: rdm_core::OperationId::node("node.delete", &target_id),
                 step: DeleteStep::TerminateRuntime.name().into(),
                 outcome: StepOutcome::Complete,
                 output: Some(serde_json::to_value(&term_receipt).unwrap()),
-                executor: Some(admin_name.to_string()),
+                executor: Some(executor_birth.clone()),
             })
             .await
             .unwrap();
 
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 3,
-                executor: admin_name.to_string(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
         let out3 = pipeline
-            .delete_node(&DeleteRequest {
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
                 build_id: build_id.clone(),
                 attempt: 3,
                 node: target_node.clone(),
@@ -1054,17 +1045,17 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .await
             .unwrap();
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id_live.clone(),
                 attempt: 1,
-                executor: admin_name.to_string(),
+                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
         let out_live = pipeline
-            .delete_node(&DeleteRequest {
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
                 build_id: build_id_live.clone(),
                 attempt: 1,
                 node: target_node.clone(),
@@ -1096,7 +1087,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let old_digest = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: template.fabric_id.clone(),
-            node: rdm_core::MeshNode { mesh: target_name.mesh.clone(), kind: target_name.kind,
+            node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: target_id.clone(),
                 name: target_name.clone(),
                 endpoint_id: shared_endpoint.clone(),
@@ -1119,10 +1110,10 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             is_fabric_primary: None,
         };
         assert!(peer_view.record(old_digest.clone()));
-        assert!(peer_view.depart(LifecycleOp { mesh: target_name.mesh.clone(),
+        assert!(peer_view.depart(LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(),
             build_id: build_id_live.to_string(),
             attempt: 1,
-            operation: format!("node.delete:{target_name}"),
+            operation: rdm_core::OperationId::node("node.delete", &target_id),
             node_id: target_id.clone(),
             incarnation: target_incarnation.clone(),
             name: target_name.clone(),
@@ -1132,7 +1123,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         }));
         let (successor_id, successor_inc) = (NodeId::mint(), IncarnationId::mint());
         let successor_digest = rdm_core::MeshDigest {
-            node: rdm_core::MeshNode { mesh: target_name.mesh.clone(), kind: target_name.kind,
+            node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: successor_id.clone(),
                 name: target_name.clone(),
                 endpoint_id: shared_endpoint,

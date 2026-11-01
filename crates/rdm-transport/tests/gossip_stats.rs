@@ -12,13 +12,13 @@ use rdm_core::{EndpointId, FabricId, GossipStats, IncarnationId, MemberStatus, M
 use rdm_transport::topology::TopologyView;
 use std::time::{Duration, Instant};
 
-fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, ep: &iroh::Endpoint) -> MeshDigest {
     let port = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::parse("fab000000001").unwrap(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
             node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
+            name,
             endpoint_id: EndpointId(ep.id().to_string()),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -82,7 +82,7 @@ async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
     let clock = rdm_transport::clock::os_clock;
     let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![], &[]).await.unwrap();
     let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![addr_of(&a)], &[]).await.unwrap();
-    let (da, db) = (digest("mesh1.rpc.1", &a.ep), digest("mesh1.rpc.2", &b.ep));
+    let (da, db) = (digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &a.ep), digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &b.ep));
 
     // Joined: A has a neighbour, has heard B, and frames flowed both ways.
     let pb = mb.publish_every(Duration::from_millis(200), move || db.clone());
@@ -100,7 +100,7 @@ async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
     // Delivery returns: a new node reaches A and A counts it as a neighbour again.
     let c = node().await;
     let mc = TopologyView::join(&c.gossip, &c.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.3", clock(), vec![addr_of(&a)], &[]).await.unwrap();
-    let dc = digest("mesh1.rpc.3", &c.ep);
+    let dc = digest(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &c.ep);
     let pc = mc.publish_every(Duration::from_millis(200), move || dc.clone());
     let returned = published_until(&ma, &da, |g| g.neighbours >= 1 && g.frames_received > isolated.frames_received).await;
     assert!(returned.heard >= 1, "{returned:?}");

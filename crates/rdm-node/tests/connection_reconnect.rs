@@ -79,7 +79,7 @@ impl DurableNode {
         .await
         .unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let resolved = ResolvedNode {
+        let resolved = ResolvedNode { mesh: birth.mesh.clone(), kind: birth.kind,
             node_id: birth.node_id.clone(),
             name: birth.name.clone(),
             endpoint_id: key.public(),
@@ -90,7 +90,7 @@ impl DurableNode {
         let storage: Arc<dyn ConnectionsStorage> = Arc::new(
             FileConnectionsStorage::open(
                 &StoreRoot::at(dir),
-                &birth.name, &rdm_node::store_log::LogWriter::new(&birth.node_id, &birth.incarnation),
+                &rdm_node::store_log::LogWriter::new(&birth.node_id, &birth.incarnation),
             )
             .await
             .unwrap(),
@@ -126,9 +126,9 @@ impl DurableNode {
         }
     }
 
-    async fn bind_fresh(dir: &std::path::Path, name: &str, alpns: &[Alpn]) -> Self {
-        let birth = Birth {
-            name: name.parse().unwrap(),
+    async fn bind_fresh(dir: &std::path::Path, name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, alpns: &[Alpn]) -> Self {
+        let birth = Birth { mesh: mesh.to_owned(), kind,
+            name,
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
@@ -166,9 +166,9 @@ async fn establish_carrier_direct(
 async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
     let dir = temp_data_dir("13a");
     let alpns = [proxy_alpn(ALPN_A)];
-    let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
-    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
+    let gw1 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "2").unwrap(), "mesh1", rdm_core::NodeKind::Broker, &alpns).await;
 
     let (dialer_consumer_1, _acc_gw1) = gw1.registry.connections(ALPN_A).unwrap().split();
     let dialer_consumer_2 = dialer_consumer_1.clone();
@@ -260,13 +260,13 @@ async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
 async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
     let dir = temp_data_dir("13b");
     let alpns = [proxy_alpn(ALPN_A)];
-    let gw1_first_birth = Birth {
-        name: "mesh1.gateway.1".parse().unwrap(),
+    let gw1_first_birth = Birth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::Gateway,
+        name: rdm_core::PathName::new("mesh1.gateway", "1").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
-    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "2").unwrap(), "mesh1", rdm_core::NodeKind::Broker, &alpns).await;
     let (_, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
     gw2.know(&brk2);
     establish_carrier_direct(&gw2, &brk2, &mut acc_brk2, ALPN_A).await;
@@ -287,7 +287,7 @@ async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
         acc_brk2
     };
 
-    let gw1_restarted_birth = Birth {
+    let gw1_restarted_birth = Birth { mesh: gw1_first_birth.mesh.clone(), kind: gw1_first_birth.kind,
         name: gw1_first_birth.name.clone(),
         node_id: gw1_first_birth.node_id.clone(),
         incarnation: IncarnationId::mint(),
@@ -335,12 +335,12 @@ async fn a_restarted_source_holds_no_proxy_and_proves_its_carrier_again() {
 async fn a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_row_back() {
     let dir = temp_data_dir("13c");
     let alpns = [proxy_alpn(ALPN_A)];
-    let gw1_birth_1 = Birth {
-        name: "mesh1.gateway.1".parse().unwrap(),
+    let gw1_birth_1 = Birth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::Gateway,
+        name: rdm_core::PathName::new("mesh1.gateway", "1").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
-    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "2").unwrap(), "mesh1", rdm_core::NodeKind::Broker, &alpns).await;
     let failed_row = NodeConnection {
         id: ConnectionId::mint(),
         source: gw1_birth_1.to_end(),
@@ -377,9 +377,9 @@ async fn a_restarted_source_holds_no_reconnect_obligation_and_reads_no_failed_ro
 async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     let dir = temp_data_dir("13d");
     let alpns = [proxy_alpn(ALPN_A)];
-    let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
-    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
+    let gw1 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "2").unwrap(), "mesh1", rdm_core::NodeKind::Broker, &alpns).await;
 
     let (dialer_gw1, _) = gw1.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
@@ -485,10 +485,10 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
 async fn one_reconnect_attempt_at_a_time_per_node() {
     let dir = temp_data_dir("one-at-a-time");
     let alpns = [proxy_alpn(ALPN_A), proxy_alpn(ALPN_B)];
-    let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
-    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
-    let brk3 = DurableNode::bind_fresh(&dir, "mesh1.broker.3", &alpns).await;
+    let gw1 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "2").unwrap(), "mesh1", rdm_core::NodeKind::Broker, &alpns).await;
+    let brk3 = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "3").unwrap(), "mesh1", rdm_core::NodeKind::Broker, &alpns).await;
 
     let past = now_ms().saturating_sub(60_000);
 
@@ -630,9 +630,9 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
 async fn alpn_interference_restores_a_while_b_keeps_its_proxy() {
     let dir = temp_data_dir("row3-shared-store");
     let alpns = [proxy_alpn(ALPN_A), proxy_alpn(ALPN_B)];
-    let src = DurableNode::bind_fresh(&dir, "mesh1.rpc.1", &alpns).await;
-    let carrier = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
-    let dst = DurableNode::bind_fresh(&dir, "mesh1.rpc.2", &alpns).await;
+    let src = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dst = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     let (dialer_a, _) = src.registry.connections(ALPN_A).unwrap().split();
     let (dialer_b, _) = src.registry.connections(ALPN_B).unwrap().split();
@@ -760,8 +760,8 @@ impl Admitter for GateAdmitter {
 async fn a_refused_dial_starts_a_series_a_refused_attempt_continues_and_an_admitted_one_ends() {
     let dir = temp_data_dir("refused-series");
     let alpns = [proxy_alpn(ALPN_A)];
-    let gw = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
-    let brk = DurableNode::bind_fresh(&dir, "mesh1.broker.1", &alpns).await;
+    let gw = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let brk = DurableNode::bind_fresh(&dir, rdm_core::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", rdm_core::NodeKind::Broker, &alpns).await;
     gw.know(&brk);
     brk.know(&gw);
     let open = Arc::new(std::sync::atomic::AtomicBool::new(false));

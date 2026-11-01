@@ -44,7 +44,7 @@ fn an_admin_that_stopped_reconciling_starts_no_build_attempt() {
         // Every span opened from here on is keyed above the last one opened before.
         let stopped_at = spans.0.lock().unwrap().keys().copied().max().unwrap_or(0);
 
-        let launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), &rpc_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
         let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the rpc node comes up");

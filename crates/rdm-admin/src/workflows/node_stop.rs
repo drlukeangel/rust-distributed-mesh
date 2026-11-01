@@ -105,7 +105,7 @@ mod tests {
             let incarnation = IncarnationId::mint();
             let stale_inc = IncarnationId::mint();
             let commander_id = NodeId::mint();
-            let name: PathName = "mesh1.rpc.1".parse().unwrap();
+            let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
             let fabric_id = rdm_core::FabricId::mint();
             let mesh_id = rdm_core::MeshId::mint();
 
@@ -118,7 +118,7 @@ mod tests {
                 &fabric_id,
                 "mesh1",
                 &mesh_id,
-                &name.to_string(),
+                &node_id.to_string(),
                 clock,
                 Vec::new(),
                 &[],
@@ -140,7 +140,7 @@ mod tests {
 
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
-            let own_end = ConnectionEnd {
+            let own_end = ConnectionEnd { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
                 name: name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
@@ -151,7 +151,7 @@ mod tests {
             let digest_base = MeshDigest {
                 held_hash: [0u8; 32],
                 fabric_id,
-                node: MeshNode { mesh: name.mesh.clone(), kind: name.kind,
+                node: MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: node_id.clone(),
                     name: name.clone(),
                     endpoint_id: ep_id,
@@ -198,19 +198,7 @@ mod tests {
                 })
             };
 
-            let own = Arc::new(NodeSelf::new(
-                node_id.clone(),
-                incarnation.clone(),
-                name.clone(),
-                server,
-                client,
-                resolver,
-                topology_view.clone(),
-                set_status,
-                get_status,
-                Some(declare),
-                Duration::from_secs(2),
-            ));
+            let own = Arc::new(NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rdm_core::NodeKind::RpcNode, server, client, resolver, topology_view.clone(), set_status, get_status, Some(declare), Duration::from_secs(2)));
             own.set_connections(writer);
             let gate = StopGate::new();
             let cuts = Arc::new(Mutex::new(0usize));
@@ -229,7 +217,7 @@ mod tests {
                         incarnation: stale_inc,
                         build_id: "b-stop-1".into(),
                         attempt: 1,
-                        operation: "node.stop:mesh1.rpc.1".into(),
+                        operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                     },
                     Box::new(ChannelFrames(stale_tx)),
                 )
@@ -249,7 +237,7 @@ mod tests {
                 incarnation: incarnation.clone(),
                 build_id: "b-stop-1".into(),
                 attempt: 2,
-                operation: "node.stop:mesh1.rpc.1".into(),
+                operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
             };
             let terminal1 = own
                 .serve_node_command(Some(&commander_id), &stop_req, Box::new(ChannelFrames(tx1)))
@@ -299,7 +287,7 @@ mod tests {
                     Some(DeclaredOperation {
                         build_id: "b-stop-1".into(),
                         attempt: 2,
-                        operation: "node.stop:mesh1.rpc.1".into(),
+                        operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                     })
                 )],
                 "StopNode owes Stopped naming its operation to the mesh-primary"
@@ -327,7 +315,7 @@ mod tests {
                     incarnation: incarnation.clone(),
                     build_id: "b-stop-1".into(),
                     attempt: 2,
-                    operation: "node.stop:mesh1.rpc.1".into(),
+                    operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                 },
             );
             assert!(matches!(
@@ -343,7 +331,7 @@ mod tests {
                     incarnation,
                     build_id: "b-stop-1".into(),
                     attempt: 2,
-                    operation: "node.stop:mesh1.rpc.1".into(),
+                    operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                 },
             );
             assert!(matches!(

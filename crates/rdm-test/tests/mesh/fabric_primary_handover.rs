@@ -118,7 +118,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
 
     // The Node rows mesh1's admin holds, read from its data dir while it runs.
     let mesh1_ids: Vec<(String, String)> = before.iter().filter(|n| n["mesh"] == "mesh1").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
-    let mesh1_dir = estate.data_dir("mesh1.admin.1").await;
+    let mesh1_dir = estate.data_dir(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await;
     let mesh1_bare: String = mesh1_id.split_once('_').map(|(_, r)| r).unwrap_or(&mesh1_id).replace('-', "").to_lowercase();
 
     // Control moves to mesh2 before mesh1 goes: its admins advertise it in the topology.

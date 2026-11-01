@@ -10,13 +10,14 @@ use rdm_admin::deployment::pipeline::LifecycleEvents;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-fn member(fabric: &FabricId, name: &str, seq: u64) -> MeshDigest {
+fn member(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, seq: u64) -> MeshDigest {
+    let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
-            node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
-            endpoint_id: EndpointId(format!("key-{name}-{}", "x".repeat(40))),
+        node: MeshNode { mesh: mesh.into(), kind,
+            node_id: node_id.clone(),
+            name,
+            endpoint_id: EndpointId(format!("key-{node_id}-{}", "x".repeat(40))),
             transport_addr: "127.0.0.1:20001".parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -36,7 +37,7 @@ fn member(fabric: &FabricId, name: &str, seq: u64) -> MeshDigest {
 }
 
 fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { mesh: d.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: operation.into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+    LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node(operation, &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
 // @feature: node-lifecycle
@@ -55,14 +56,15 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
-    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![], &[]).await.unwrap();
-    let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
+    let admin_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
+    let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: admin_birth.node_id.to_string(), incarnation: admin_birth.incarnation.clone(), node_id: admin_birth.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
-    let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_door: Default::default() };
+    let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_door: Default::default() };
 
-    let rpc = member(&fabric, "mesh1.rpc.1", 10);
+    let rpc = member(&fabric, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 10);
     assert!(topology_view.digest_view.record(rpc.clone()), "the member's heartbeat is held");
-    assert!(topology_view.digest_view.started(&rpc.node.node_id, &rpc.node.incarnation, &rpc.node.name), "node.started of the member");
+    assert!(topology_view.digest_view.started(&rpc.node.node_id, &rpc.node.incarnation, &rpc.node.name, &rpc.node.mesh), "node.started of the member");
     let status = |d: &MeshDigest| topology_view.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
     let projected = |d: &MeshDigest| backbone.own_members(&topology_view).into_iter().find(|m| m.node.node_id == d.node.node_id).map(|m| m.status);
     assert_eq!(status(&rpc), Some(MemberStatus::Ready));
@@ -71,13 +73,13 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     assert_eq!(status(&rpc), Some(MemberStatus::ConnectionsDeleting), "the node's report of connections-deleting sets the member connections-deleting");
     assert_eq!(projected(&rpc), Some(MemberStatus::ConnectionsDeleting), "the member projection carries it");
 
-    lifecycle.leaving(&op(&rpc, "node.stop:mesh1.rpc.1")).await;
+    lifecycle.leaving(&op(&rpc, "node.stop")).await;
     assert_eq!(status(&rpc), Some(MemberStatus::Leaving), "the stop's admission sets the member stopping");
     assert_eq!(projected(&rpc), Some(MemberStatus::Leaving), "the member projection carries it");
 
-    let peer = member(&fabric, "mesh2.rpc.1", 10);
+    let peer = member(&fabric, rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, 10);
     assert!(!topology_view.digest_view.reported(&peer.node.node_id, &peer.node.incarnation, MemberStatus::ConnectionsDeleting), "a member of another mesh is not this primary's to record");
-    lifecycle.leaving(&op(&peer, "node.stop:mesh2.rpc.1")).await;
+    lifecycle.leaving(&op(&peer, "node.stop")).await;
     assert_eq!(status(&peer), None, "a member of another mesh is not this primary's to set");
 }
 
@@ -100,13 +102,14 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
-    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![], &[]).await.unwrap();
+    let admin_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
     topology_view.set_mesh_primary(true);
 
-    let member = member(&fabric, "mesh1.admin.2", 10);
+    let member = member(&fabric, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 10);
     assert!(topology_view.digest_view.record(member.clone()), "the member's heartbeat is held");
-    let node = |name: &str, primary: bool, id: NodeId, inc: IncarnationId| {
-        let mut n = Node::allocated(name.parse().unwrap());
+    let node = |name: rdm_core::PathName, primary: bool, id: NodeId, inc: IncarnationId| {
+        let mut n = Node::allocated(name, "mesh1", rdm_core::NodeKind::NodeAdmin);
         n.kind = rdm_core::NodeKind::NodeAdmin;
         n.mesh = "mesh1".into();
         n.node_id = id;
@@ -117,8 +120,8 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
         n.is_fabric_primary = primary;
         n
     };
-    let me = node("mesh1.admin.1", true, NodeId::mint(), IncarnationId::mint());
-    let subject = node("mesh1.admin.2", false, member.node.node_id.clone(), member.node.incarnation.clone());
+    let me = node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), true, admin_birth.node_id.clone(), admin_birth.incarnation.clone());
+    let subject = node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), false, member.node.node_id.clone(), member.node.incarnation.clone());
     let topology = Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
         fabric: Fabric { id: fabric.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: Vec::new(),
@@ -163,7 +166,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     assert_eq!(status(), Some(MemberStatus::Ready), "its node.started sets it ready");
     assert_eq!(status_door.apply(Some(subject.clone()), &declare(NodeState::ConnectionsDeleting)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "its reported ConnectionsDeleting sets it ConnectionsDeleting");
-    let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() }, vec![]).await.unwrap();
+    let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { node: me.node_id.to_string(), incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() }, vec![]).await.unwrap();
     assert_eq!(backbone.own_members(&topology_view).into_iter().find(|d| d.node.node_id == member.node.node_id).map(|d| d.status), Some(MemberStatus::ConnectionsDeleting), "its projection carries it");
     assert!(matches!(status_door.apply(Some(subject.clone()), &declare(NodeState::Pending)).await, StatusReply::RejectedInvalidNodeTransition { .. }), "a backward report is refused");
     assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "and sets nothing");

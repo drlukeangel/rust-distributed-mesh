@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub struct NodeStorage {
     /// The node's own connections rows.
     pub connections: Arc<dyn ConnectionsStorage>,
-    /// The nodes' rows, a point read by id or by `path.name` (query.md §1, Q237): the backend opens
+    /// The nodes' rows, a point read by id or by `(path, name)` (query.md §1, Q237): the backend opens
     /// them on the first read, never at the node's start, join or create (Q227).
     pub node_rows: Arc<dyn NodeRowsStorage>,
     /// Node-owned properties and writer-birth lifecycle records on this same backend.
@@ -56,7 +56,7 @@ impl NodeStorageBackend for FileNodeBackend {
         // thread waits on the disk (crate::blocking).
         let (store_dir, fabric_id) = (self.store_dir.clone().unwrap_or_else(|| launch.store_dir.clone()), launch.fabric_id.clone());
         let root = crate::blocking::blocking_io(move || crate::store_root::StoreRoot::open(&store_dir, &fabric_id)).await.map_err(|e| format!("refusing to start: {e}"))?;
-        let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
+        let connections = crate::storage::FileConnectionsStorage::open(&root, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
             node_records: Arc::new(crate::node_records::FileNodeRecords::open(&root).await.map_err(|e| format!("node records storage: {e}"))?),
@@ -226,6 +226,14 @@ struct NodeRecordsThroughHandle(Arc<NodeStorageHandle>);
 
 #[async_trait]
 impl crate::node_records::NodeRecordsStorage for NodeRecordsThroughHandle {
+    async fn put_primary_records(&self, batch: &crate::node_records::PrimaryRecordBatch) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.node_records.put_primary_records(batch).await
+    }
+    async fn primary_records(&self) -> Result<Vec<crate::node_records::PrimaryRecordBatch>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().node_records.primary_records().await
+    }
+
     async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
         let w = self.0.current.write();
         w.node_records.put_properties(record).await

@@ -14,7 +14,7 @@
 //! ([`crate::fault_door`]): arm, release and state; the state is the active-injection
 //! acknowledgement (`held: true` with the exact call it holds) and the observed consequence
 //! counters. A cut that must be in force before the admin's Node RPC door is ready is armed from
-//! `<root>/faults/<name>.boot.json` ([`arm_boot_cuts`]).
+//! `<root>/faults/<location-index>.boot.json` ([`arm_boot_cuts`]).
 
 use crate::fault_door::{CutRow, FaultState, Hit};
 use async_trait::async_trait;
@@ -41,15 +41,15 @@ use tracing::Instrument;
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CutSpec {
     /// A deployment-pipeline or Build step: the step's work is done and its receipt is not yet
-    /// durable. `operation` is a prefix of the receipt's operation key (`create-node`,
-    /// `retire-node`); `node` is the operation's path.
+    /// durable. `operation` matches an action prefix; `node` matches the structured subject.
+    /// Known nodes use IDs; pre-allocation subjects carry separate path and name.
     Receipt {
         /// The step name.
         step: String,
         /// A prefix of the receipt's operation key.
         #[serde(default)] operation: Option<String>,
-        /// The operation's path.
-        #[serde(default)] node: Option<String>,
+        /// The operation's explicit subject.
+        #[serde(default)] node: Option<rdm_core::OperationSubject>,
         /// The receipt is a Failed one (the step's work ended Failed and its receipt is not yet
         /// durable); a Complete one when false.
         #[serde(default)] failed: bool,
@@ -61,7 +61,7 @@ pub enum CutSpec {
         /// The event name: `deleting`, `restarting`, `deleted` or `stopped`.
         event: String,
         /// The node the event concerns.
-        #[serde(default)] node: Option<String>,
+        #[serde(default)] node: Option<rdm_core::NodeId>,
     },
     /// An accepted Build is about to become durable: its one write (`publish_accepted`) has been called
     /// and has not been made. The Build is its own entity, current from the moment it is durable
@@ -88,7 +88,7 @@ pub enum CutSpec {
     },
     /// A joining admin has joined and is about to make the topology read (op `0x1E`) of node-start.md
     /// step 4, and has not made it: its start waits there, the node stays Pending and takes no traffic,
-    /// until the release. The joiner arms it from `<root>/faults/<name>.boot.json` before its first line.
+    /// until the release. The joiner arms it from `<root>/faults/<location-index>.boot.json` before its first line.
     TopologyRead,
     /// The admin withholds `announcement`, one of its final mesh topologies or leadership announcements
     /// (`rdm_transport::topology::Withhold`: `stopping-aggregate`, `primary-updated`,
@@ -113,8 +113,10 @@ pub enum CutSpec {
     /// decided: held unanswered until the release, so its node still owes it (i146 Q39). `node`
     /// narrows the cut to one declaring node, `state` to one state (`Ready`, `Leaving`, ...).
     Declaration {
-        /// The declaring node's `path.name`.
-        #[serde(default)] node: Option<String>,
+        /// The declaring node's globally unique identity, selected first when supplied.
+        #[serde(default)] node_id: Option<rdm_core::NodeId>,
+        /// Separate location fields for a cut armed before the node is allocated.
+        #[serde(default)] node: Option<rdm_core::PathName>,
         /// The state declared, as `NodeState` names it.
         #[serde(default)] state: Option<String>,
     },
@@ -131,7 +133,7 @@ pub enum CutSpec {
     /// lock, until the release, so a birth a failed Build left surplus is not removed meanwhile (i146
     /// Q39). `node` narrows the cut to one admin.
     DriftPass {
-        /// The admin's `path.name`.
+        /// The admin's node ID.
         #[serde(default)] node: Option<String>,
     },
     /// A storage change's move (storage.md §2 "Changing it") this admin, as `node`'s mesh-primary, is
@@ -139,8 +141,8 @@ pub enum CutSpec {
     /// release and carried then, the move not done now; every later one passes. It models one command
     /// delayed on its way to the node.
     StorageStep {
-        /// The commanded node's `path.name`.
-        #[serde(default)] node: Option<String>,
+        /// The commanded node's separate path and name.
+        #[serde(default)] node: Option<rdm_core::PathName>,
     },
     /// A storage change's copy and switch, about to run on this admin as the fabric-primary: held until
     /// the release, every mesh-primary having replied `blocked`.
@@ -155,7 +157,7 @@ pub enum Probe {
         /// The step name.
         step: String,
         /// The receipt's operation key.
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The Build.
         build_id: String,
         /// The attempt.
@@ -177,7 +179,7 @@ pub enum Probe {
         /// The attempt.
         attempt: u32,
         /// The executor the claim names.
-        executor: String,
+        executor: rdm_core::framing::Birth,
     },
     /// An accepted Build, durable, about to be returned to the acceptance.
     Accepted {
@@ -220,8 +222,10 @@ pub enum Probe {
     },
     /// A node's declaration about to be decided.
     Declaration {
-        /// The declaring node.
-        node: String,
+        /// The declaring node's identity.
+        node_id: rdm_core::NodeId,
+        /// Its separately observed location, if present in the view.
+        node: Option<rdm_core::PathName>,
         /// The state declared.
         state: String,
     },
@@ -237,8 +241,8 @@ pub enum Probe {
     },
     /// A storage change's move about to be carried to its node.
     StorageStep {
-        /// The commanded node.
-        node: String,
+        /// The commanded node's separate path and name.
+        node: rdm_core::PathName,
         /// The change.
         change_id: String,
     },
@@ -251,12 +255,12 @@ pub enum Probe {
 
 impl CutSpec {
     fn matches(&self, p: &Probe) -> bool {
-        let node_is = |want: &Option<String>, got: &str| want.as_deref().is_none_or(|w| got == w || got.ends_with(&format!(":{w}")));
+        let node_is = |want: &Option<String>, got: &str| want.as_deref().is_none_or(|w| got == w);
         match (self, p) {
             (CutSpec::Receipt { step, operation, node, failed }, Probe::Receipt { step: s, operation: o, failed: f, .. }) => {
-                failed == f && step == s && operation.as_deref().is_none_or(|prefix| o.starts_with(prefix)) && node_is(node, o)
+                failed == f && step == s && operation.as_deref().is_none_or(|prefix| o.action.starts_with(prefix)) && node.as_ref().is_none_or(|wanted| o.subject.as_ref() == Some(wanted))
             }
-            (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node_is(node, &op.name.to_string()),
+            (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node.as_ref().is_none_or(|wanted| wanted == &op.node_id),
             (CutSpec::AcceptedBuild, Probe::Accepted { .. }) => true,
             (CutSpec::ClaimedAttempt { attempt }, Probe::Claimed { attempt: a, .. }) => attempt.is_none_or(|w| w == *a),
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
@@ -264,10 +268,13 @@ impl CutSpec {
             (CutSpec::TopologyRead, Probe::TopologyRead { .. }) => true,
             (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
             (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
-            (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
+            (CutSpec::Declaration { node_id, node, state }, Probe::Declaration { node_id: id, node: location, state: s }) => {
+                node_id.as_ref().map_or_else(|| node.as_ref().is_none_or(|wanted| location.as_ref() == Some(wanted)), |wanted| wanted == id)
+                    && state.as_deref().is_none_or(|wanted| wanted == s)
+            },
             (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
-            (CutSpec::StorageStep { node }, Probe::StorageStep { node: n, .. }) => node_is(node, n),
+            (CutSpec::StorageStep { node }, Probe::StorageStep { node: n, .. }) => node.as_ref().is_none_or(|wanted| wanted == n),
             (CutSpec::StorageSwitch, Probe::StorageSwitch { .. }) => true,
             _ => false,
         }
@@ -279,7 +286,7 @@ impl Probe {
     fn hit(&self) -> Hit {
         match self {
             Probe::Receipt { step, operation, build_id, attempt, .. } => Hit::Receipt { step: step.clone(), operation: operation.clone(), build_id: build_id.clone(), attempt: *attempt },
-            Probe::Event { event, op } => Hit::Event { event: event.to_string(), operation: op.operation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, node: op.name.to_string(), incarnation_id: op.incarnation.as_str().to_string() },
+            Probe::Event { event, op } => Hit::Event { event: event.to_string(), operation: op.operation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, node: op.node_id.clone(), incarnation_id: op.incarnation.as_str().to_string() },
             Probe::Accepted { build_id } => Hit::Accepted { build_id: build_id.clone() },
             Probe::Claimed { build_id, attempt, executor } => Hit::Claimed { build_id: build_id.clone(), attempt: *attempt, executor: executor.clone() },
             Probe::ProviderDomain => Hit::ProviderDomain,
@@ -287,7 +294,7 @@ impl Probe {
             Probe::TopologyRead { node, primary } => Hit::TopologyRead { node: node.clone(), reads_from: primary.clone() },
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
-            Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
+            Probe::Declaration { node_id, node, state } => Hit::Declaration { node_id: node_id.clone(), node: node.clone(), state: state.clone() },
             Probe::ProviderInspect { pid } => Hit::ProviderInspect { pid: *pid },
             Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
             Probe::StorageStep { node, change_id } => Hit::StorageStep { node: node.clone(), change_id: change_id.clone() },
@@ -316,8 +323,8 @@ struct Armed {
 
 /// The armed cuts of one node-admin process.
 pub struct AdminFaults {
-    /// The admin's name.
-    pub name: String,
+    /// The admin's globally unique ID.
+    pub node_id: rdm_core::NodeId,
     cuts: Mutex<BTreeMap<String, Armed>>,
     /// Every Build step receipt the Build decorator saw, by call (a consequence counter).
     receipts_seen: AtomicU64,
@@ -325,17 +332,17 @@ pub struct AdminFaults {
 
 impl AdminFaults {
     /// The cuts of the admin named `name`; none armed.
-    pub fn new(name: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self { name: name.into(), cuts: Mutex::new(BTreeMap::new()), receipts_seen: AtomicU64::new(0) })
+    pub fn new(node_id: rdm_core::NodeId) -> Arc<Self> {
+        Arc::new(Self { node_id, cuts: Mutex::new(BTreeMap::new()), receipts_seen: AtomicU64::new(0) })
     }
 
     /// Arm `spec` under `id`. Refused by name when `id` is already armed and not spent.
     pub fn arm(&self, id: &str, spec: CutSpec) -> Result<(), String> {
         let mut cuts = self.cuts.lock().unwrap();
         if cuts.get(id).is_some_and(|c| !c.released) {
-            return Err(format!("{}: cut `{id}` is already armed and not released", self.name));
+            return Err(format!("{}: cut `{id}` is already armed and not released", self.node_id));
         }
-        let span = tracing::info_span!("rdm.testkit.fault.update.via-arm", node = %self.name, cut = id, spec = %serde_json::to_string(&spec).unwrap_or_default());
+        let span = tracing::info_span!("rdm.testkit.fault.update.via-arm", node = %self.node_id, cut = id, spec = %serde_json::to_string(&spec).unwrap_or_default());
         span.in_scope(|| tracing::info!("cut armed"));
         cuts.insert(id.to_string(), Armed { spec, hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, held_calls: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
         Ok(())
@@ -345,7 +352,7 @@ impl AdminFaults {
     /// Refused by name when nothing is armed under `id`.
     pub fn release(&self, id: &str) -> Result<(bool, Option<u64>), String> {
         let mut cuts = self.cuts.lock().unwrap();
-        let c = cuts.get_mut(id).ok_or_else(|| format!("{}: no cut `{id}` is armed", self.name))?;
+        let c = cuts.get_mut(id).ok_or_else(|| format!("{}: no cut `{id}` is armed", self.node_id))?;
         let was_held = c.held;
         let held_so_far = c.held_since.map(|t| t.elapsed().as_millis() as u64);
         c.release.send_replace(true);
@@ -359,7 +366,7 @@ impl AdminFaults {
             c.condition_span = None;
         }
         let held_ms = c.held_ms.or(held_so_far);
-        tracing::info_span!("rdm.testkit.fault.update.via-release", node = %self.name, cut = id, was_held)
+        tracing::info_span!("rdm.testkit.fault.update.via-release", node = %self.node_id, cut = id, was_held)
             .in_scope(|| tracing::info!("cut released"));
         Ok((was_held, held_ms))
     }
@@ -382,7 +389,7 @@ impl AdminFaults {
                 (id.clone(), row)
             })
             .collect();
-        FaultState { node: self.name.clone(), cuts: rows, receipts_seen: self.receipts_seen.load(Ordering::SeqCst) }
+        FaultState { node: self.node_id.to_string(), cuts: rows, receipts_seen: self.receipts_seen.load(Ordering::SeqCst) }
     }
 
     /// Hold the caller if an armed cut matches `probe`; returns when the cut is released. Every
@@ -413,7 +420,7 @@ impl AdminFaults {
 
     /// Waits for the release of the cut `id` that holds the call, then counts the call released.
     async fn wait_release(&self, id: &str, probe: &Probe, mut release: tokio::sync::watch::Receiver<bool>) {
-        let span = tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.hit().detail());
+        let span = tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.node_id, cut = %id, detail = %probe.hit().detail());
         span.in_scope(|| tracing::info!("cut holds"));
         let _ = release.wait_for(|released| *released).instrument(span).await;
         let mut cuts = self.cuts.lock().unwrap();
@@ -441,7 +448,7 @@ impl AdminFaults {
             // release, and a child span would hold that call's whole ancestry open with it (a serve
             // span that never ends, so never exported).
             c.condition_span.get_or_insert_with(|| {
-                let hold = tracing::info_span!(parent: None, "rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.hit().detail());
+                let hold = tracing::info_span!(parent: None, "rdm.testkit.fault.update.via-hold", node = %self.node_id, cut = %id, detail = %probe.hit().detail());
                 hold.follows_from(tracing::Span::current());
                 hold
             });
@@ -513,7 +520,7 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
         self.inner.append_attempt_receipt(receipt).await
     }
-    async fn note_blocked(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+    async fn note_blocked(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
         self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
     }
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
@@ -522,10 +529,10 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
         self.inner.committed_facts(build).await
     }
-    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
@@ -565,7 +572,7 @@ impl DeploymentProvider for FaultedProvider {
         if self.faults.in_force(Probe::ProviderTerminate { pid: handle.pid, deployment_id: handle.deployment_id.to_string() }) {
             return Err(DeployError::Terminate {
                 deployment: handle.deployment_id.to_string(),
-                reason: format!("testkit: {} refuses the terminate of pid {:?} while its provider-terminate cut is armed; nothing was signalled", self.faults.name, handle.pid),
+                reason: format!("testkit: {} refuses the terminate of pid {:?} while its provider-terminate cut is armed; nothing was signalled", self.faults.node_id, handle.pid),
             });
         }
         self.inner.terminate(handle, mode, deadline).await
@@ -663,8 +670,8 @@ struct FaultedDeclaration(Arc<AdminFaults>);
 
 #[async_trait]
 impl rdm_admin::wiring::DeclarationSeam for FaultedDeclaration {
-    async fn before_declaration(&self, node: &str, state: rdm_core::status::NodeState) {
-        self.0.hold(Probe::Declaration { node: node.to_string(), state: format!("{state:?}") }).await;
+    async fn before_declaration(&self, node_id: &rdm_core::NodeId, location: Option<&rdm_core::PathName>, state: rdm_core::status::NodeState) {
+        self.0.hold(Probe::Declaration { node_id: node_id.clone(), node: location.cloned(), state: format!("{state:?}") }).await;
     }
 }
 
@@ -690,7 +697,7 @@ impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
     }
 
     fn hold_storage_step(&self, node: &rdm_core::PathName, change_id: &rdm_core::ChangeId) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
-        let probe = Probe::StorageStep { node: node.to_string(), change_id: change_id.to_string() };
+        let probe = Probe::StorageStep { node: node.clone(), change_id: change_id.to_string() };
         let (id, release) = self.0.hold_at_cut(&probe)?;
         let faults = self.0.clone();
         Some(Box::pin(async move { faults.wait_release(&id, &probe, release).await }))
@@ -732,18 +739,23 @@ struct BootArm {
     spec: CutSpec,
 }
 
-/// Where a node's boot arms live: `<root>/faults/<path.name>.boot.json`, with `root` the directory
+/// Where a node's boot arms live: `<root>/faults/<location-index>.boot.json`, with `root` the directory
 /// holding every node's data dir.
 pub(crate) fn faults_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("faults")
 }
 
-/// Arm what `<root>/faults/<name>.boot.json` lists (`[{"id": .., "kind": .., ..}]`) and remove the
+/// The existing bounded composite index for boot controls installed before ID allocation.
+pub fn boot_cuts_file(root: &std::path::Path, location: &rdm_core::PathName) -> std::path::PathBuf {
+    crate::location_knob_file(&faults_dir(root), location).with_extension("boot.json")
+}
+
+/// Arm what `<root>/faults/<location-index>.boot.json` lists (`[{"id": .., "kind": .., ..}]`) and remove the
 /// file: a birth at this path arms its boot cuts once, so a later birth of the same path is clean.
 /// A cut that must be in force before the admin's Node RPC door is ready (which answers NotReady
 /// until then) is armed here.
-pub fn arm_boot_cuts(faults: &AdminFaults, root: &std::path::Path) -> Result<usize, String> {
-    let file = faults_dir(root).join(format!("{}.boot.json", faults.name));
+pub fn arm_boot_cuts(faults: &AdminFaults, root: &std::path::Path, location: &rdm_core::PathName) -> Result<usize, String> {
+    let file = boot_cuts_file(root, location);
     let bytes = match std::fs::read(&file) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -755,4 +767,30 @@ pub fn arm_boot_cuts(faults: &AdminFaults, root: &std::path::Path) -> Result<usi
     }
     std::fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     Ok(arms.len())
+}
+
+#[cfg(test)]
+mod declaration_selector_tests {
+    use super::*;
+
+    /// CONTRACT: declaration cuts select known nodes by globally unique ID; a cut armed
+    /// before allocation may use the explicit pair, with no joined-string or suffix matching.
+    // @feature: node-records
+    #[test]
+    fn declaration_selector_prefers_id_and_keeps_location_fields_separate() {
+        let id = rdm_core::NodeId::mint();
+        let location = rdm_core::PathName::new("arbitrary.location", "worker").unwrap();
+        let observed = Probe::Declaration { node_id: id.clone(), node: Some(location.clone()), state: "Ready".into() };
+        let other_location = rdm_core::PathName::new("another.location", "worker").unwrap();
+        let by_id = CutSpec::Declaration { node_id: Some(id.clone()), node: Some(other_location.clone()), state: Some("Ready".into()) };
+        assert!(by_id.matches(&observed), "ID wins over a stale descriptive location");
+        assert!(!CutSpec::Declaration { node_id: Some(rdm_core::NodeId::mint()), node: Some(location.clone()), state: None }.matches(&observed));
+        assert!(CutSpec::Declaration { node_id: None, node: Some(location.clone()), state: None }.matches(&observed));
+        assert!(!CutSpec::Declaration { node_id: None, node: Some(other_location), state: None }.matches(&observed));
+        assert!(!CutSpec::Declaration { node_id: None, node: Some(location.clone()), state: Some("Stopped".into()) }.matches(&observed));
+        let unknown_location = Probe::Declaration { node_id: id, node: None, state: "Ready".into() };
+        assert!(by_id.matches(&unknown_location));
+        assert!(!CutSpec::Declaration { node_id: None, node: Some(location), state: None }.matches(&unknown_location));
+        assert!(serde_json::from_value::<CutSpec>(serde_json::json!({"kind":"declaration", "node":"arbitrary.location.worker"})).is_err());
+    }
 }

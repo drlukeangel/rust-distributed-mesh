@@ -65,9 +65,9 @@ mod tests {
 
     fn mesh_nodes(m: &str, status: NodeStatus) -> Vec<Node> {
         let mut v = Vec::new();
-        for (kind, n) in [("admin", 2), ("rpc", 3)] {
+        for (kind, n) in [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)] {
             for i in 1..=n {
-                let mut node = Node::allocated(format!("{m}.{kind}.{i}").parse().unwrap());
+                let mut node = Node::allocated(rdm_core::PathName::numbered(m, kind, i), m, kind);
                 node.status = status;
                 v.push(node);
             }

@@ -131,8 +131,8 @@ impl ProofOp {
 pub struct Provenance {
     /// The executing node's id.
     pub node_id: String,
-    /// The executing node's `path.name`.
-    pub node: String,
+    /// The executing node's separate path and name.
+    pub node: rdm_core::PathName,
     /// The executing node's mesh.
     pub mesh: String,
     /// The executing node's incarnation id.
@@ -533,11 +533,11 @@ pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, name
 
 /// [`serve`], with the handler crossing `cuts` before and after its apply.
 pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, name: &HeldName, cuts: Arc<ApplyCuts>) -> ServerBuilder {
-    let (node_id, mesh, incarnation, name) = (launch.node_id.to_string(), launch.name.mesh.clone(), launch.incarnation.to_string(), name.clone());
+    let (node_id, mesh, incarnation, name) = (launch.node_id.to_string(), launch.mesh.clone(), launch.incarnation.to_string(), name.clone());
     b.serve::<ProofStore, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ProofRequest| {
         let at = Provenance {
             node_id: node_id.clone(),
-            node: name.now().to_string(),
+            node: name.now(),
             mesh: mesh.clone(),
             incarnation_id: incarnation.clone(),
             op: req.op(),
@@ -546,7 +546,7 @@ pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &La
         async move {
             let span = tracing::info_span!(
                 "rdm.node_rpc.proof_store.serve.via-request",
-                node = %at.node,
+                node_path = %at.node.path, node_name = %at.node.name,
                 node_id = %at.node_id,
                 incarnation_id = %at.incarnation_id,
                 op = at.op.as_str(),
@@ -596,7 +596,7 @@ mod tests {
     fn at(op: ProofOp) -> Provenance {
         Provenance {
             node_id: "n1".into(),
-            node: "mesh1.rpc.1".into(),
+            node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             mesh: "mesh1".into(),
             incarnation_id: "i1".into(),
             op,

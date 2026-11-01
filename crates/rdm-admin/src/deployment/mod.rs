@@ -16,6 +16,12 @@ use crate::model::ProviderKind;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+/// Default physical directory for a node, keyed by its globally unique ID.
+/// Explicit inherited or persisted data directories take precedence at the caller.
+pub fn node_data_dir(root: &std::path::Path, node_id: &crate::model::NodeId) -> std::path::PathBuf {
+    root.join(node_id.as_str())
+}
+
 /// The deployment hand of one fabric, as its policy selects it.
 pub struct Prepared {
     /// The provider that realises runtimes.

@@ -51,7 +51,7 @@ pub async fn log_read(estate: &Estate, id: &str) -> Result<Vec<BuildFact>, CallE
 pub async fn log_fact(estate: &Estate, id: &str, fact: &str, within: Duration, holds: impl Fn(&[BuildFact]) -> bool) -> Result<Vec<BuildFact>, CallEnd> {
     let at = builds_file(estate).display().to_string();
     let report = |facts: &Vec<BuildFact>| {
-        let last = facts.iter().rev().find_map(|f| if let BuildFact::Step(r) = f { Some(format!("{} {} of attempt {}", r.operation, r.step, r.attempt)) } else { None }).unwrap_or_else(|| "none".into());
+        let last = facts.iter().rev().find_map(|f| if let BuildFact::Step(r) = f { Some(format!("operation {:?}, step {}, attempt {}", r.operation, r.step, r.attempt)) } else { None }).unwrap_or_else(|| "none".into());
         format!("{} facts, the last step receipt {last}", facts.len())
     };
     await_fact("build log", &at, &format!("{fact} of Build {id}"), within, || log_read(estate, id), |facts: &Vec<BuildFact>| holds(facts), report).await
@@ -73,8 +73,8 @@ pub async fn build_fact(estate: &Estate, id: &str, fact: &str, within: Duration,
         projection(&facts, id).ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("{} facts of the Build and no acceptance of it", facts.len()) })
     };
     let report = |p: &BuildProjection| {
-        let last = p.steps.last().map(|r| format!("{} {} of attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());
-        let failed: Vec<String> = p.steps.iter().filter_map(|r| if let StepOutcome::Failed { reason, .. } = &r.outcome { Some(format!("{} {} of attempt {}: {reason}", r.operation, r.step, r.attempt)) } else { None }).collect();
+        let last = p.steps.last().map(|r| format!("operation {:?}, step {}, attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());
+        let failed: Vec<String> = p.steps.iter().filter_map(|r| if let StepOutcome::Failed { reason, .. } = &r.outcome { Some(format!("operation {:?}, step {}, attempt {}: {reason}", r.operation, r.step, r.attempt)) } else { None }).collect();
         format!("attempt {} state {:?}, {} step receipts, the last {last}; failed {failed:?}", p.attempt, p.state, p.steps.len())
     };
     await_fact("build log", &at, &format!("{fact} of Build {id}"), within, read, |p: &BuildProjection| holds(p), report).await

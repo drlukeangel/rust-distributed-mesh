@@ -18,8 +18,8 @@ mod tests {
     use rdm_core::status::{NodeState, RetryOn, StatusReply, StatusRequest};
     use std::time::Duration;
 
-    fn make_node(name: &str, status: NodeStatus) -> Node {
-        let mut n = Node::allocated(name.parse().unwrap());
+    fn make_node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus) -> Node {
+        let mut n = Node::allocated(name, mesh, kind);
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(IncarnationId::mint());
         n.status = status;
@@ -54,13 +54,13 @@ mod tests {
     #[tokio::test]
     async fn birth_answers_include_current_stopped_and_blocked_and_one_failed_peer_does_not_cancel_the_other()
     {
-        let caller = make_node("mesh1.admin.1", NodeStatus::Ready);
-        let target = make_node("mesh1.rpc.1", NodeStatus::PendingReconnect);
-        let peer1 = make_node("mesh1.rpc.2", NodeStatus::Ready);
-        let peer2 = make_node("mesh1.rpc.3", NodeStatus::Ready);
-        let peer3 = make_node("mesh1.rpc.4", NodeStatus::Ready);
-        let silent_peer = make_node("mesh1.rpc.5", NodeStatus::PendingReconnect);
-        let other_mesh = make_node("mesh2.rpc.1", NodeStatus::Ready);
+        let caller = make_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready);
+        let target = make_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::PendingReconnect);
+        let peer1 = make_node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
+        let peer2 = make_node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
+        let peer3 = make_node(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
+        let silent_peer = make_node(rdm_core::PathName::new("mesh1.rpc", "5").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::PendingReconnect);
+        let other_mesh = make_node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
 
         let target_id = target.node_id.clone();
         let target_inc = target.incarnation_id.clone().unwrap();
@@ -116,21 +116,22 @@ mod tests {
                 target.clone(),
                 peer1.clone(),
                 peer2.clone(),
-                peer3,
+                peer3.clone(),
                 silent_peer,
                 other_mesh,
             ],
         };
-        let eligible: Vec<String> = eligible_carriers(&view, &target, Some(&caller.node_id))
-            .map(|n| n.name.to_string())
+        let eligible: Vec<NodeId> = eligible_carriers(&view, &target, Some(&caller.node_id))
+            .map(|n| n.node_id.clone())
             .collect();
-        assert_eq!(eligible, vec!["mesh1.rpc.2", "mesh1.rpc.3", "mesh1.rpc.4"]);
+        assert_eq!(eligible, vec![peer1.node_id.clone(), peer2.node_id.clone(), peer3.node_id.clone()]);
 
         // 3. Ladder truncates to VIA_PEER_TICKLE_FANOUT (2) and a failure on peer1 does not cancel peer2.
         struct PeerFanoutCalls {
             caller_id: NodeId,
             target_id: NodeId,
             target_inc: IncarnationId,
+            disconnected_peer: NodeId,
         }
 
         #[async_trait::async_trait]
@@ -153,7 +154,7 @@ mod tests {
                 _node: &Node,
                 _probe: &StatusRequest,
             ) -> ProbeEnd {
-                if carrier.name.to_string() == "mesh1.rpc.2" {
+                if carrier.node_id == self.disconnected_peer {
                     ProbeEnd::ConnectionLost("connection dropped".into())
                 } else {
                     ProbeEnd::Reply(StatusReply::Blocked {
@@ -181,13 +182,14 @@ mod tests {
                 caller_id: caller.node_id.clone(),
                 target_id: target_id.clone(),
                 target_inc: target_inc.clone(),
+                disconnected_peer: peer1.node_id.clone(),
             },
         )
         .await
         .expect("tickle");
         match res {
             Tickle::Reached { answer, carrier } => {
-                assert_eq!(carrier, Some("mesh1.rpc.3".into()));
+                assert_eq!(carrier, Some(peer2.node_id.clone()));
                 assert_eq!(
                     answer,
                     StatusReply::Blocked {

@@ -37,8 +37,8 @@ fn num(sp: &Value, k: &str) -> Option<i64> {
     attr(sp, k).parse().ok()
 }
 
-fn names() -> BTreeSet<String> {
-    ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect()
+fn names() -> BTreeSet<rdm_core::PathName> {
+    ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| rdm_core::PathName::new(format!("{m}.admin"), i.to_string()).unwrap()).chain((1..=2).map(move |i| rdm_core::PathName::new(format!("{m}.rpc"), i.to_string()).unwrap()))).collect()
 }
 
 const OS_CLOCK_SKEW_MS: i64 = 3_600_000;
@@ -47,7 +47,7 @@ const DRIFT_PPM: i64 = -20_000;
 
 /// The heartbeats of `node` as `(start, clock_skew_ms)` in start order.
 fn skews(spans: &[Value], node: &str) -> Vec<(u64, i64)> {
-    let mut v: Vec<(u64, i64)> = named(spans, "rdm.mesh.node.update.via-heartbeat").into_iter().filter(|sp| attr(sp, "node") == node).filter_map(|sp| Some((sp["start_unix_nano"].as_u64()?, num(sp, "clock_skew_ms")?))).collect();
+    let mut v: Vec<(u64, i64)> = named(spans, "rdm.mesh.node.update.via-heartbeat").into_iter().filter(|sp| attr(sp, "node_id") == node).filter_map(|sp| Some((sp["start_unix_nano"].as_u64()?, num(sp, "clock_skew_ms")?))).collect();
     v.sort();
     v
 }
@@ -62,23 +62,26 @@ fn skews(spans: &[Value], node: &str) -> Vec<(u64, i64)> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
     let mut estate = Estate::bootstrap(owner("a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats"), "fabric1", "mesh1").await;
-    let write = |dir: std::path::PathBuf, node: &str, text: String| {
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(node), text).unwrap();
+    let write = |dir: std::path::PathBuf, node: &rdm_core::PathName, text: String| {
+        let file = rdm_test::location_knob_file(&dir, node);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
     };
-    write(rdm_test::rafka_time_knob_dir(&estate.root), "mesh2.rpc.1", format!("drift_ppm={DRIFT_PPM}\n"));
-    write(rdm_test::rafka_time_knob_dir(&estate.root), "mesh1.rpc.1", format!("ahead_ms={AHEAD_MS}\n"));
-    write(rdm_test::os_clock_skew_dir(&estate.root), "mesh2.rpc.2", OS_CLOCK_SKEW_MS.to_string());
+    write(rdm_test::rafka_time_knob_dir(&estate.root), &rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), format!("drift_ppm={DRIFT_PPM}\n"));
+    write(rdm_test::rafka_time_knob_dir(&estate.root), &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), format!("ahead_ms={AHEAD_MS}\n"));
+    write(rdm_test::os_clock_skew_dir(&estate.root), &rdm_core::PathName::new("mesh2.rpc", "2").unwrap(), OS_CLOCK_SKEW_MS.to_string());
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
-    let nodes = Estate::values(&estate.settles_to_named(&names(), Duration::from_secs(30)).await);
-    let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("mesh2 has a primary");
-    let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let nodes = estate.settles_to_named(&names(), Duration::from_secs(30)).await;
+    let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).expect("mesh2 has a primary").node_id.to_string();
+    let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).expect("one fabric primary").node_id.to_string();
+    let id_at = |path: &str, name: &str| nodes.iter().find(|n| n.name.path == path && n.name.name == name).expect("the named fixture node exists").node_id.to_string();
+    let (slow_id, ahead_id, skewed_id) = (id_at("mesh2.rpc", "1"), id_at("mesh1.rpc", "1"), id_at("mesh2.rpc", "2"));
 
     // The ahead node is told, by its mesh primary's stamps, that it is ahead; the slow node is stepped.
     // No object reports a node's clock discipline: the span the node records is the only place the fact lives.
     let slewing = wait_for("the ahead node shed its excess", Duration::from_secs(90), || {
         let spans = estate.spans();
-        let found = named(&spans, "rdm.mesh.entry.update.via-rafka-time-observed").into_iter().find(|sp| attr(sp, "node") == "mesh1.rpc.1" && attr(sp, "outcome") == "slew-started").cloned();
+        let found = named(&spans, "rdm.mesh.entry.update.via-rafka-time-observed").into_iter().find(|sp| attr(sp, "node") == ahead_id && attr(sp, "outcome") == "slew-started").cloned();
         async move { found }
     })
     .await;
@@ -89,8 +92,8 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
 
     // The knobs were applied, by the node they name.
     let knobs = named(&spans, "rdm.mesh.node.update.via-rafka-time-knob");
-    for (node, ahead, drift) in [("mesh2.rpc.1", 0, DRIFT_PPM), ("mesh1.rpc.1", AHEAD_MS, 0)] {
-        assert!(knobs.iter().any(|sp| attr(sp, "node") == node && num(sp, "ahead_ms") == Some(ahead) && num(sp, "drift_ppm") == Some(drift)), "{node} ran under its knob: {knobs:?}");
+    for (path, name, ahead, drift) in [("mesh2.rpc", "1", 0, DRIFT_PPM), ("mesh1.rpc", "1", AHEAD_MS, 0)] {
+        assert!(knobs.iter().any(|sp| attr(sp, "node_path") == path && attr(sp, "node_name") == name && num(sp, "ahead_ms") == Some(ahead) && num(sp, "drift_ppm") == Some(drift)), "path {path}, name {name} ran under its knob: {knobs:?}");
     }
 
     // The ahead node: one window of stamps behind by more than the allowance, a shed at the maximum
@@ -99,7 +102,7 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
     let excess = num(&slewing, "excess_ms").unwrap();
     assert!((800..=1_500).contains(&excess), "the excess is the 1.5 s offset less the 500 ms allowance, less the delivery delay: {excess}");
     let started = slewing["start_unix_nano"].as_u64().unwrap();
-    let ahead = skews(&spans, "mesh1.rpc.1");
+    let ahead = skews(&spans, &ahead_id);
     let after: Vec<&(u64, i64)> = ahead.iter().filter(|(t, _)| *t > started).collect();
     assert!(after.len() >= 4, "heartbeats after the shed began: {ahead:?}");
     let (first, last) = (after.first().unwrap().1, after.last().unwrap().1);
@@ -108,10 +111,10 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
     assert!(after.windows(2).all(|w| w[1].1 <= w[0].1 + 3), "the ahead node's offset never rises: {after:?}");
 
     // The slow node is stepped on its mesh primary's heartbeats and stays near the authority.
-    let steps: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-observed").into_iter().filter(|sp| attr(sp, "node") == "mesh2.rpc.1" && attr(sp, "outcome") == "stepped-forward").collect();
+    let steps: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-observed").into_iter().filter(|sp| attr(sp, "node") == slow_id && attr(sp, "outcome") == "stepped-forward").collect();
     assert!(steps.len() >= 5, "the slow node was stepped forward repeatedly: {}", steps.len());
     assert!(steps.iter().all(|sp| attr(sp, "source") == "mesh-primary-digest"), "a member observes only its mesh primary's digest");
-    let slow = skews(&spans, "mesh2.rpc.1");
+    let slow = skews(&spans, &slow_id);
     let primary = skews(&spans, &fabric_primary);
     assert!(slow.len() >= 8 && !primary.is_empty());
     let lowest = slow.iter().map(|(_, k)| *k).min().unwrap();
@@ -130,6 +133,6 @@ async fn a_node_off_its_primarys_time_is_brought_back_by_the_heartbeats() {
     }
 
     // The node on the OS clock an hour ahead: its rafka-time never read it.
-    let os = skews(&spans, "mesh2.rpc.2");
+    let os = skews(&spans, &skewed_id);
     assert!(!os.is_empty() && os.iter().all(|(_, k)| k.abs() < 1_000), "mesh2.rpc.2 stood within 1 s of the host clock on an OS clock an hour ahead: {os:?}");
 }

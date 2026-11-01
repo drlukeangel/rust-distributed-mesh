@@ -72,13 +72,13 @@ pub enum NodeAdminNotReady {
 impl std::fmt::Display for NodeAdminNotReady {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoCurrentBuild { me, wanted: None } => write!(f, "{me}: holds no current Build (no Build in its builds store is in progress or completed; not fetched from an existing authority)"),
-            Self::NoCurrentBuild { me, wanted: Some(id) } => write!(f, "{me}: holds no facts of Build {id}, the current Build of the admin that served its entry"),
-            Self::UnreadableBuild { me, build_id, error } => write!(f, "{me}: its entry named Build {build_id} and this admin's Build log cannot read it: {error}"),
-            Self::BuildStoreUnreadable { me, error } => write!(f, "{me}: its builds store cannot be read for the current Build: {error}"),
+            Self::NoCurrentBuild { me, wanted: None } => write!(f, "{me:?}: holds no current Build (no Build in its builds store is in progress or completed; not fetched from an existing authority)"),
+            Self::NoCurrentBuild { me, wanted: Some(id) } => write!(f, "{me:?}: holds no facts of Build {id}, the current Build of the admin that served its entry"),
+            Self::UnreadableBuild { me, build_id, error } => write!(f, "{me:?}: its entry named Build {build_id} and this admin's Build log cannot read it: {error}"),
+            Self::BuildStoreUnreadable { me, error } => write!(f, "{me:?}: its builds store cannot be read for the current Build: {error}"),
             Self::BehindFloor { me, build_id, held, floor } => write!(
                 f,
-                "{me}: holds attempt {held} of Build {build_id}; the admin that served its entry held attempt {floor} (its opens, claims and receipts are still arriving)"
+                "{me:?}: holds attempt {held} of Build {build_id}; the admin that served its entry held attempt {floor} (its opens, claims and receipts are still arriving)"
             ),
         }
     }
@@ -263,7 +263,7 @@ impl FetchBuild {
         let parent = tracing::Span::current();
         self.in_flight = Some(tokio::spawn(
             async move {
-                let span = tracing::info_span!("rdm.node_admin.build.update.via-read-committed", node = %me, build_id = tracing::field::Empty, blocker = kind, facts = tracing::field::Empty, outcome = tracing::field::Empty);
+                let span = tracing::info_span!("rdm.node_admin.build.update.via-read-committed", node_path = %me.path, node_name = %me.name, build_id = tracing::field::Empty, blocker = kind, facts = tracing::field::Empty, outcome = tracing::field::Empty);
                 let read = async {
                     match id {
                         Some(id) => store.committed_facts(Some(&id)).await.map(|facts| (id, facts)),
@@ -284,7 +284,7 @@ impl FetchBuild {
                     }
                     Err(e) => {
                         span.record("outcome", e.to_string().as_str());
-                        tracing::info_span!("rdm.node_admin.build.reject.via-read-committed-failed", node = %me, detail = %e)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-read-committed-failed", node_path = %me.path, node_name = %me.name, detail = %e)
                             .in_scope(|| tracing::info!("the Build's committed records could not be read: nothing is absorbed, and the read is made again"));
                         End::Failed(key)
                     }
@@ -319,7 +319,7 @@ mod tests {
     /// CONTRACT: docs/architecture/node-rpc-envelope.md "Build floor read (op `0x1F` reserved)": "The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer, unreadable-build, behind-floor. Every blocker reads the Build storage: no-pointer, which names no Build, reads the storage's current Build, selected once for the read; every other blocker reads the Build it names. [...] A read that fails is made again with bounded backoff, 250 ms doubling to 4 s."
     #[test]
     fn ready_blockers_select_typed_fetch_need_and_double_backoff_from_250ms_to_4s_cap() {
-        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
         let bid = BuildId::parse("cq2tyb03krac").unwrap();
 
         let no_current = NodeAdminNotReady::NoCurrentBuild {

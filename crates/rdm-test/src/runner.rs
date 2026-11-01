@@ -3,6 +3,7 @@
 //! Node RPC through `rdm-rpc-probe` (PRD §6: no in-process shortcut).
 
 use crate::estate::{Estate, Owner};
+use rdm_core::PathName;
 use crate::replay::{EvidenceOwner, Fault, ManifestError, ReplayManifest, ScheduledFault, Source, StepOutcome, SCHEMA_VERSION};
 use crate::scenario::{Assertion, Operation, Scenario};
 use serde_json::{json, Value};
@@ -56,20 +57,20 @@ pub async fn run(scenario: &Scenario, provider: Option<&str>, test: &str) -> Run
     for (i, op) in scenario.operations.iter().enumerate() {
         let (step, out, check): (String, Value, fn(&Value) -> bool) = match op {
             Operation::Put { target, key, value } => (
-                format!("operations[{i}] put {target} {key}"),
-                estate.probe(&["put", "--target", &format!("path:{target}"), "--key", &key.to_string(), "--value", value]),
+                format!("operations[{i}] put {target:?} {key}"),
+                estate.probe(&["put", "--target", &probe_target(&estate, &target).await, "--key", &key.to_string(), "--value", value]),
                 |v| v["outcome"] == "Reply",
             ),
             Operation::Cas { target, key, expected, value } => (
-                format!("operations[{i}] cas {target} {key}"),
+                format!("operations[{i}] cas {target:?} {key}"),
                 estate.probe(&[
-                    "cas", "--target", &format!("path:{target}"), "--key", &key.to_string(), "--expected", expected, "--value", value,
+                    "cas", "--target", &probe_target(&estate, &target).await, "--key", &key.to_string(), "--expected", expected, "--value", value,
                 ]),
                 |v| v["outcome"] == "Reply" && v["reply"]["result"]["swapped"] == true,
             ),
             Operation::Delete { target, key } => (
-                format!("operations[{i}] delete {target} {key}"),
-                estate.probe(&["delete", "--target", &format!("path:{target}"), "--key", &key.to_string()]),
+                format!("operations[{i}] delete {target:?} {key}"),
+                estate.probe(&["delete", "--target", &probe_target(&estate, &target).await, "--key", &key.to_string()]),
                 |v| v["outcome"] == "Reply",
             ),
         };
@@ -79,7 +80,7 @@ pub async fn run(scenario: &Scenario, provider: Option<&str>, test: &str) -> Run
     }
     for (i, a) in scenario.assert.iter().enumerate() {
         let Assertion::Get { target, key, equals, absent } = a;
-        let out = estate.probe(&["get", "--target", &format!("path:{target}"), "--key", &key.to_string()]);
+        let out = estate.probe(&["get", "--target", &probe_target(&estate, &target).await, "--key", &key.to_string()]);
         let ok = out["outcome"] == "Reply"
             && out["reply"]["executing_node"].is_string()
             && match (equals, absent) {
@@ -88,7 +89,7 @@ pub async fn run(scenario: &Scenario, provider: Option<&str>, test: &str) -> Run
                 _ => false,
             };
         if !ok {
-            failures.push(Failure { step: format!("assert[{i}] get {target} {key}"), reason: out.to_string() });
+            failures.push(Failure { step: format!("assert[{i}] get {target:?} {key}"), reason: out.to_string() });
         }
     }
     estate.artifact("nodes-after.json", &json!(estate.node_values().await));
@@ -168,7 +169,7 @@ pub async fn run_replayable(
         for sf in manifest.fault_schedule.iter().filter(|f| f.before_operation == i) {
             let Fault::RestartNode { node } = &sf.fault;
             let before = estate.node_value(node).await;
-            let path: rdm_client::PathName = node.parse().unwrap_or_else(|e| panic!("the fault names {node}, not a path.name: {e:?}"));
+            let path = node.clone();
             let step = format!("fault[{fault_no}]");
             fault_no += 1;
             // The node restarted by node.stop then node.start of the same process (Q183): it keeps the node
@@ -187,12 +188,12 @@ pub async fn run_replayable(
                 }
             }
             if let Some((verb, end)) = refused {
-                failures.push(Failure { step: step.clone(), reason: format!("{verb} {node}: {end}") });
+                failures.push(Failure { step: step.clone(), reason: format!("{verb} {node:?}: {end}") });
                 outcomes.push(StepOutcome { step, action: "restart_node".into(), target: node.clone(), key: None, outcome: format!("Refused({})", end.outcome()), result: Value::Null });
                 continue;
             }
             let after = estate
-                .until_node(node, &format!("{node} ready again as the same birth after its restart"), SETTLE, |n| {
+                .until_node(node, &format!("{node:?} ready again as the same birth after its restart"), SETTLE, |n| {
                     let n = serde_json::to_value(n?).expect("a view serializes");
                     (n["status"] == "ready" && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]).then_some(n)
                 })
@@ -207,16 +208,16 @@ pub async fn run_replayable(
             });
         }
         let Some(op) = sc.operations.get(i) else { break };
-        let (action, target, key, args, check): (&str, &String, u64, Vec<String>, fn(&Value) -> bool) = match op {
-            Operation::Put { target, key, value } => ("put", target, *key, vec!["put".into(), "--target".into(), format!("path:{target}"), "--key".into(), key.to_string(), "--value".into(), value.clone()], |v| v["outcome"] == "Reply"),
+        let (action, target, key, args, check): (&str, &PathName, u64, Vec<String>, fn(&Value) -> bool) = match op {
+            Operation::Put { target, key, value } => ("put", target, *key, vec!["put".into(), "--target".into(), probe_target(&estate, &target).await, "--key".into(), key.to_string(), "--value".into(), value.clone()], |v| v["outcome"] == "Reply"),
             Operation::Cas { target, key, expected, value } => (
                 "cas",
                 target,
                 *key,
-                vec!["cas".into(), "--target".into(), format!("path:{target}"), "--key".into(), key.to_string(), "--expected".into(), expected.clone(), "--value".into(), value.clone()],
+                vec!["cas".into(), "--target".into(), probe_target(&estate, &target).await, "--key".into(), key.to_string(), "--expected".into(), expected.clone(), "--value".into(), value.clone()],
                 |v| v["outcome"] == "Reply" && v["reply"]["result"]["swapped"] == true,
             ),
-            Operation::Delete { target, key } => ("delete", target, *key, vec!["delete".into(), "--target".into(), format!("path:{target}"), "--key".into(), key.to_string()], |v| v["outcome"] == "Reply"),
+            Operation::Delete { target, key } => ("delete", target, *key, vec!["delete".into(), "--target".into(), probe_target(&estate, &target).await, "--key".into(), key.to_string()], |v| v["outcome"] == "Reply"),
         };
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = estate.probe(&argv);
@@ -229,7 +230,7 @@ pub async fn run_replayable(
     }
     for (i, a) in sc.assert.iter().enumerate() {
         let Assertion::Get { target, key, equals, absent } = a;
-        let out = estate.probe(&["get", "--target", &format!("path:{target}"), "--key", &key.to_string()]);
+        let out = estate.probe(&["get", "--target", &probe_target(&estate, &target).await, "--key", &key.to_string()]);
         let ok = out["outcome"] == "Reply"
             && match (equals, absent) {
                 (Some(v), _) => out["reply"]["result"]["value"] == v.as_str(),
@@ -244,7 +245,7 @@ pub async fn run_replayable(
         outcomes.push(StepOutcome { step, action: "get".into(), target: target.clone(), key: Some(*key), outcome, result });
     }
     // The final proof state: every (target, key) the scenario touches, read once more.
-    let mut touched: std::collections::BTreeSet<(String, u64)> = std::collections::BTreeSet::new();
+    let mut touched: std::collections::BTreeSet<(PathName, u64)> = std::collections::BTreeSet::new();
     for o in &sc.operations {
         match o {
             Operation::Put { target, key, .. } | Operation::Cas { target, key, .. } | Operation::Delete { target, key } => touched.insert((target.clone(), *key)),
@@ -254,12 +255,16 @@ pub async fn run_replayable(
         touched.insert((target.clone(), *key));
     }
     for (target, key) in touched {
-        let out = estate.probe(&["get", "--target", &format!("path:{target}"), "--key", &key.to_string()]);
+        let out = estate.probe(&["get", "--target", &probe_target(&estate, &target).await, "--key", &key.to_string()]);
         let (outcome, result) = semantic(&out);
-        manifest.final_state.insert(format!("{target}/{key}"), json!({ "outcome": outcome, "found": result["found"], "value": result["value"] }));
+        manifest.final_state.insert((target, key), json!({ "outcome": outcome, "found": result["found"], "value": result["value"] }));
     }
     manifest.outcomes = outcomes;
     estate.artifact("replay-manifest.json", &serde_json::to_value(&manifest).expect("manifest serializes"));
     estate.shutdown().await;
     Ok(ReplayableRun { manifest, failures })
+}
+
+async fn probe_target(estate: &Estate, location: &PathName) -> String {
+    format!("exact:{}", estate.node_view(location).await.node_id)
 }

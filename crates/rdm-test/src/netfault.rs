@@ -149,9 +149,9 @@ impl Partition {
 }
 
 /// Udp ports.
-pub fn udp_ports(nodes: &[Value], names: &[String]) -> Vec<u16> {
+pub fn udp_ports(nodes: &[Value], names: &[rdm_core::PathName]) -> Vec<u16> {
     let mut out = Vec::new();
-    for n in nodes.iter().filter(|n| names.contains(&s(&n["name"]))) {
+    for n in nodes.iter().filter(|n| serde_json::from_value::<rdm_core::PathName>(n["name"].clone()).is_ok_and(|location| names.contains(&location))) {
         out.push(s(&n["transport_addr"]).rsplit(':').next().unwrap().parse().unwrap());
     }
     out

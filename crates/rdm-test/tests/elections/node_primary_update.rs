@@ -126,7 +126,8 @@ async fn replace_by_steps(estate: &Estate, entry: &rdm_client::PathName, p: &str
         }
     }
     let node: rdm_core::PathName = p.parse().unwrap();
-    let mut stream = nodes.steps(rdm_test::steps::replace(&node)).await.expect("the replace steps were accepted");
+    let subject = estate.node_view(p).await;
+    let mut stream = nodes.steps(rdm_test::steps::replace(&node, &subject.mesh, subject.kind).expect("valid replacement fixture name")).await.expect("the replace steps were accepted");
     let build = stream.accepted().build_id.to_string();
     let caller = Caller { peers, entry: entry.clone(), kind: stream.kind().clone(), accepted: stream.accepted().clone() };
     let frames = tokio::spawn(async move {
@@ -162,15 +163,16 @@ async fn fabric(cell: &str) -> (Estate, Vec<Value>) {
 const OS_CLOCK_SKEW_MS: i64 = 3_600_000;
 
 /// [`fabric`], with the OS clock of the ordinary node `skewed` (if any) an hour ahead from its start.
-async fn fabric_skewing(cell: &str, skewed: Option<&str>) -> (Estate, Vec<Value>) {
+async fn fabric_skewing(cell: &str, skewed: Option<&rdm_core::PathName>) -> (Estate, Vec<Value>) {
     born(Estate::bootstrap(owner(cell), "fabric1", "mesh1").await, skewed).await
 }
 
-async fn born(estate: Estate, skewed: Option<&str>) -> (Estate, Vec<Value>) {
+async fn born(estate: Estate, skewed: Option<&rdm_core::PathName>) -> (Estate, Vec<Value>) {
     if let Some(node) = skewed {
         let dir = rdm_test::os_clock_skew_dir(&estate.root);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(node), OS_CLOCK_SKEW_MS.to_string()).unwrap();
+        let file = rdm_test::location_knob_file(&dir, node);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, OS_CLOCK_SKEW_MS.to_string()).unwrap();
     }
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     let nodes = Estate::values(&estate.settles_to_named(&names(), Duration::from_secs(30)).await);
@@ -205,7 +207,7 @@ async fn kill(estate: &mut Estate, name: &str) {
 async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_mesh() {
     // One ordinary node of each mesh runs on an OS clock an hour ahead: rafka-time is adopted from
     // the primaries and no stamp of any node reads the OS clock.
-    let (mut estate, nodes) = fabric_skewing("a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_mesh", Some("mesh2.rpc.1")).await;
+    let (mut estate, nodes) = fabric_skewing("a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_mesh", Some(&rdm_core::PathName::new("mesh2.rpc", "1").unwrap())).await;
     let old = fabric_primary(&nodes).expect("one fabric primary");
     let mesh = old.split('.').next().unwrap().to_string();
     let heir = if old.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
@@ -525,7 +527,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let until = std::time::Instant::now() + Duration::from_secs(120);
     let mut successor_id = None;
     while std::time::Instant::now() < until && successor_id.is_none() {
-        let views = estate.node_views_at(&h_path).await.unwrap_or_else(|| panic!("{h_path} does not answer node.get while the hand-over runs"));
+        let views = estate.node_views_at(&h_path).await.unwrap_or_else(|| panic!("{h_path:?} does not answer node.get while the hand-over runs"));
         let r = Estate::values(&views);
         let held = r.iter().filter(|x| x["is_fabric_primary"] == true).count();
         worst = worst.max(held);
@@ -533,7 +535,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let successor_id = successor_id.expect("the replaced admin's path is ready again under a new birth");
-    let p_old = p.parse::<rdm_core::PathName>().unwrap().renamed().to_string();
+    let p_old = p.parse::<rdm_core::PathName>().unwrap().renamed().unwrap().to_string();
     assert_ne!(successor_id, p_id, "P's path holds a new birth");
     assert!(worst <= 1, "a view showed {worst} fabric primaries");
     // The fabric is ready once its planned births are all ready, set by the new

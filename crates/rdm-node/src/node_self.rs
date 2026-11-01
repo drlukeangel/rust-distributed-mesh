@@ -228,7 +228,7 @@ enum Cycle {
     /// (node-rpc-envelope.md: "Reissuing a naturally idempotent uncertain step can settle it with
     /// AlreadyApplied"); its node.joined and node.started were taken when it ran. A birth that never
     /// stopped holds `None`.
-    Live(Option<(String, String)>),
+    Live(Option<(String, rdm_core::OperationId)>),
     /// A stop is under way; later stops of the birth wait for the same receipt.
     Stopping(tokio::sync::watch::Receiver<Option<ConnectionsReceipt>>),
     /// Stopped, its process alive, with the receipt its node.connection.delete { All } established.
@@ -263,11 +263,13 @@ struct Completed {
 
 /// The surface a node kind gives the commands.
 pub struct NodeSelf {
+    /// This birth's immutable runtime kind.
+    pub kind: rdm_core::NodeKind,
     /// This birth's logical node.
     pub node_id: NodeId,
     /// This birth's incarnation.
     pub incarnation: IncarnationId,
-    /// This birth's `path.name` at its birth; the name it holds is [`Self::held_name`].
+    /// This birth's `(path, name)` at its birth; the name it holds is [`Self::held_name`].
     pub name: PathName,
     /// This birth's Node RPC server: it refuses new calls while connections-deleting and counts the work in flight.
     pub server: NodeRpcServer,
@@ -328,6 +330,7 @@ impl NodeSelf {
         node_id: NodeId,
         incarnation: IncarnationId,
         name: PathName,
+        kind: rdm_core::NodeKind,
         server: NodeRpcServer,
         client: Arc<NodeRpcClient>,
         resolver: Arc<rdm_transport::LiveNodeResolver>,
@@ -337,8 +340,8 @@ impl NodeSelf {
         declare: Option<Declare>,
         connections_delete_deadline: Duration,
     ) -> Self {
-        topology_view.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
+        topology_view.set_author(&rdm_core::PublisherId { node: name.name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }, None);
+        Self { kind, node_id, incarnation, name, server, client, resolver, topology_view, set_status, status, declare, connections_delete_deadline, birth_cancel: None, owed: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), completed: Mutex::new(Completed::default()), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), storage: Mutex::new(None) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -408,11 +411,11 @@ impl NodeSelf {
         let refuse = rdm_core::reply::status::rejected_cert;
         let signed = match rdm_core::certs::cert_from_bytes(cert) {
             Ok(s) => s,
-            Err(e) => return refuse(format!("{me} ({} {}): the cert does not decode: {e}", self.node_id, self.incarnation.as_str())),
+            Err(e) => return refuse(format!("{me:?} ({} {}): the cert does not decode: {e}", self.node_id, self.incarnation.as_str())),
         };
         if signed.cert.node_id != self.node_id || signed.cert.incarnation != self.incarnation {
             return refuse(format!(
-                "the cert names {} ({} {}), not this birth {me} ({} {})",
+                "the cert names {:?} ({} {}), not this birth {me:?} ({} {})",
                 signed.cert.name,
                 signed.cert.node_id,
                 signed.cert.incarnation.as_str(),
@@ -421,10 +424,10 @@ impl NodeSelf {
             ));
         }
         let Some(registry) = self.data_connections.lock().unwrap().clone() else {
-            return rdm_core::reply::status::not_ready(format!("{me} is still starting: it holds no connections registry to present a cert from"));
+            return rdm_core::reply::status::not_ready(format!("{me:?} is still starting: it holds no connections registry to present a cert from"));
         };
         registry.set_member_cert(cert.to_vec());
-        tracing::info_span!("rdm.node.cert.update.via-installed", node = %me, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str(), expires_at = signed.cert.expiry_ms)
+        tracing::info_span!("rdm.node.cert.update.via-installed", node_location = ?me, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str(), expires_at = signed.cert.expiry_ms)
             .in_scope(|| tracing::info!("the renewed member cert is installed: every connection opened from now presents it"));
         StatusReply::CertRenewed { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), expires_at: signed.cert.expiry_ms }
     }
@@ -454,7 +457,7 @@ impl NodeSelf {
                 }
                 Ok(routes)
             }
-            None => Err(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name())),
+            None => Err(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.node_id)),
         }
     }
 
@@ -468,7 +471,7 @@ impl NodeSelf {
         let registry = self.data_connections.lock().unwrap().clone();
         match writer {
             Some(w) => Ok(w.live_routes(data_plane.as_deref(), registry.as_ref())),
-            None => Err(format!("{}: this birth holds no connections writer, so the connections it has open cannot be read", self.held_name())),
+            None => Err(format!("{}: this birth holds no connections writer, so the connections it has open cannot be read", self.node_id)),
         }
     }
 
@@ -488,7 +491,7 @@ impl NodeSelf {
                 }
                 connections_answer(&held, filter)
             }
-            None => rdm_core::reply::status::not_ready(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name())),
+            None => rdm_core::reply::status::not_ready(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.node_id)),
         }
     }
 
@@ -584,9 +587,9 @@ impl NodeSelf {
                         }
                         tracing::info_span!(
                             "rdm.node_admin.connection.delete.via-connection-delete",
-                            node = %self.held_name(),
+                            node = %self.node_id,
                             entry = %route.id,
-                            destination = %route.destination.name,
+                            destination_path = %route.destination.name.path, destination_name = %route.destination.name.name,
                             peer = %c.key.peer.fmt_short(),
                             incarnation_id = %c.key.birth(),
                             connection = c.connection,
@@ -623,7 +626,7 @@ impl NodeSelf {
     /// and gossip are not connections and are untouched.
     fn block_new_connections(&self, cause: &str) {
         if let Some(data_plane) = self.data_plane.lock().unwrap().clone() {
-            data_plane.block_new_connections(format!("{} ({}): {cause}; it opens no new connection until it starts or joins its mesh again", self.held_name(), self.node_id));
+            data_plane.block_new_connections(format!("{} ({}): {cause}; it opens no new connection until it starts or joins its mesh again", self.node_id, self.node_id));
         }
         if let Some(reg) = self.data_connections.lock().unwrap().clone() {
             reg.block_new_connections();
@@ -708,18 +711,18 @@ impl NodeSelf {
             return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
         }
         if self.connections.lock().unwrap().is_none() {
-            return rdm_core::reply::node_command::not_ready(format!("{}: this birth holds no connections writer yet; nothing is cut", self.held_name()));
+            return rdm_core::reply::node_command::not_ready(format!("{}: this birth holds no connections writer yet; nothing is cut", self.node_id));
         }
         if let Some(reason) = scope.refusal() {
-            return rdm_core::reply::node_command::rejected_connection_scope(format!("{}: {reason}", self.held_name()));
+            return rdm_core::reply::node_command::rejected_connection_scope(format!("{}: {reason}", self.node_id));
         }
         let accepted = NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() };
         if let Err(e) = frames.accepted(accepted).await {
             // Nothing was accepted: the caller is gone before the acceptance left, so nothing runs.
-            return rdm_core::reply::node_command::not_ready(format!("{}: the command's caller is gone before its acceptance ({e}); nothing is cut", self.held_name()));
+            return rdm_core::reply::node_command::not_ready(format!("{}: the command's caller is gone before its acceptance ({e}); nothing is cut", self.node_id));
         }
         let sink = std::sync::Arc::new(tokio::sync::Mutex::new(frames));
-        let (node, node_id, incarnation) = (self.held_name(), self.node_id.clone(), self.incarnation.clone());
+        let (node, node_id, incarnation) = (self.node_id.clone(), self.node_id.clone(), self.incarnation.clone());
         let commander_name = named(commander);
         let report = {
             let sink = sink.clone();
@@ -738,7 +741,7 @@ impl NodeSelf {
         };
         let span = tracing::info_span!(
             "rdm.node_admin.connection.delete.via-delete-connections",
-            node = %self.held_name(), commander = %named(commander), scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
+            node = %self.node_id, commander = %named(commander), scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
             deadline_ms = tracing::field::Empty, closed = tracing::field::Empty, not_open = tracing::field::Empty, held = tracing::field::Empty, receipt = tracing::field::Empty,
             outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal"
         );
@@ -767,16 +770,16 @@ impl NodeSelf {
             return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
         }
         let Some(storage) = self.storage_moves() else {
-            return rdm_core::reply::node_command::not_ready(format!("{}: this birth holds no storage handle yet; nothing is done", self.held_name()));
+            return rdm_core::reply::node_command::not_ready(format!("{}: this birth holds no storage handle yet; nothing is done", self.node_id));
         };
         let Ok(build_id) = build_id.parse::<rdm_core::BuildId>() else {
-            return rdm_core::reply::node_command::not_ready(format!("{}: the storage step names Build {build_id:?}, which is no Build id; nothing is done", self.held_name()));
+            return rdm_core::reply::node_command::not_ready(format!("{}: the storage step names Build {build_id:?}, which is no Build id; nothing is done", self.node_id));
         };
         if let Some(refused) = storage.refusal(&build_id, change_id, provider).await {
             return refused;
         }
         if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
-            return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing done", self.held_name()));
+            return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing done", self.node_id));
         }
         match storage.serve(&build_id, change_id, provider).await {
             // Refused after the acceptance (an older change raced it): the command's terminal.
@@ -806,7 +809,7 @@ impl NodeSelf {
     /// mesh, which its check-in goes to. `None` for any other request.
     pub async fn serve(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &StatusRequest) -> Option<StatusReply> {
         if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::LeaveMesh { .. }) {
-            return Some(refuse_reserved(&self.held_name().to_string(), &named(commander), req));
+            return Some(refuse_reserved(&self.node_id.to_string(), &named(commander), req));
         }
         if let StatusRequest::JoinMesh { incarnation, build_id, attempt, operation, .. } = req {
             if *incarnation != self.incarnation {
@@ -832,8 +835,8 @@ impl NodeSelf {
         let refusal = {
             let cycle = self.cycle.lock().unwrap();
             match &*cycle {
-                Cycle::Starting { .. } if stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name()))),
-                Cycle::Stopping(_) if !stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a stopped process", self.held_name()))),
+                Cycle::Starting { .. } if stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.node_id))),
+                Cycle::Stopping(_) if !stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a stopped process", self.node_id))),
                 Cycle::Live(Some((build, op))) if !stopping && build == build_id && op == operation => None,
                 Cycle::Live(_) if !stopping => Some(rdm_core::reply::node_command::rejected_invalid_node_transition(crate::status::declared_of_member((self.status)()))),
                 _ => None,
@@ -841,10 +844,10 @@ impl NodeSelf {
         };
         if let Some(refusal) = refusal { return refusal; }
         if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
-            return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing executed", self.held_name()));
+            return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing executed", self.node_id));
         }
         let progress = Arc::new(tokio::sync::Mutex::new(frames));
-        let op = LifecycleOp { mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.held_name(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms(), traceparent: None, tracestate: None };
+        let op = LifecycleOp { kind: self.kind, mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.held_name(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms(), traceparent: None, tracestate: None };
         let result = if stopping {
             self.stop(commander.cloned(), spare, op, tracing::Span::current(), Some(progress)).await
         } else {
@@ -865,7 +868,7 @@ impl NodeSelf {
     /// before acceptance. Accepted, it acknowledges (`CommandAccepted`: leaving), leaves its mesh
     /// channel (and the backbone, a node-admin), cuts its Node RPC pool sparing the command's call,
     /// and completes with `MeshLeft`.
-    async fn serve_leave_mesh(&self, spare: Option<iroh::PublicKey>, incarnation: &IncarnationId, operation: &str, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
+    async fn serve_leave_mesh(&self, spare: Option<iroh::PublicKey>, incarnation: &IncarnationId, operation: &rdm_core::OperationId, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         if *incarnation != self.incarnation {
             return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
         }
@@ -876,11 +879,11 @@ impl NodeSelf {
                     let connections: Vec<rdm_core::ConnectionId> = open.into_iter().map(|r| r.id).collect();
                     tracing::info_span!(
                         "rdm.node.mesh.reject.via-busy-holding-connections",
-                        node = %self.held_name(),
+                        node = %self.node_id,
                         node_id = %self.node_id,
                         mesh = %self.topology_view.mesh_name(),
                         mesh_id = %self.topology_view.mesh_id(),
-                        operation = %operation,
+                        operation = %operation.action, operation_subject = ?operation.subject,
                         connections = ?connections,
                         "otel.kind" = "internal"
                     )
@@ -890,11 +893,11 @@ impl NodeSelf {
             }
         }
         if let Err(e) = frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await {
-            return rdm_core::reply::node_command::not_ready(format!("{}: the command's caller is gone before its acceptance ({e}); nothing is left", self.held_name()));
+            return rdm_core::reply::node_command::not_ready(format!("{}: the command's caller is gone before its acceptance ({e}); nothing is left", self.node_id));
         }
         let left = match already {
             Some(left) => left,
-            None => self.leave_mesh(spare.as_slice(), self.mesh_primary_endpoint(), operation).await.1,
+            None => self.leave_mesh(spare.as_slice(), self.mesh_primary_endpoint(), &operation.action).await.1,
         };
         NodeCommandReply::MeshLeft { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), left }
     }
@@ -902,7 +905,7 @@ impl NodeSelf {
     /// The endpoint of this birth's mesh-primary, when that is another node: the pooled connection to it
     /// its owed declarations ride stays open through a leave's cut (node-mesh-leave.md step 4, Q206).
     fn mesh_primary_endpoint(&self) -> Option<iroh::PublicKey> {
-        self.topology_view.primaries().mesh(&self.held_name().mesh).filter(|p| p.node_id != self.node_id).and_then(|p| self.client.endpoint_of(&p.node_id))
+        self.topology_view.primaries().mesh(self.topology_view.mesh_name()).filter(|p| p.node_id != self.node_id).and_then(|p| self.client.endpoint_of(&p.node_id))
     }
 
     /// The `node.mesh.leave` primitive (node-mesh-leave.md): shared by standalone `LeaveMesh` and
@@ -914,7 +917,7 @@ impl NodeSelf {
         use tracing::Instrument;
         let leaving_span = tracing::info_span!(
             "rdm.node.mesh.update.via-leaving",
-            node = %self.held_name(),
+            node = %self.node_id,
             node_id = %self.node_id,
             mesh = %self.topology_view.mesh_name(),
             mesh_id = %self.topology_view.mesh_id(),
@@ -969,10 +972,10 @@ impl NodeSelf {
     /// never by this.
     async fn serve_join_mesh(self: &Arc<Self>, spare: Option<iroh::PublicKey>, operation: rdm_core::status::DeclaredOperation) -> StatusReply {
         let Some(key) = spare else {
-            return rdm_core::reply::status::not_ready(format!("{}: commander-uncalled: JoinMesh came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()));
+            return rdm_core::reply::status::not_ready(format!("{}: commander-uncalled: JoinMesh came on no Node RPC call, so no endpoint names the admin to join back", self.node_id));
         };
         let Some(session) = self.session.lock().unwrap().clone() else {
-            return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to join its mesh with", self.held_name()));
+            return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to join its mesh with", self.node_id));
         };
         let (outcome_tx, outcome_rx) = tokio::sync::watch::channel(None);
         let (commander_tx, commander_rx) = tokio::sync::watch::channel(key);
@@ -980,8 +983,8 @@ impl NodeSelf {
             let mut cycle = self.cycle.lock().unwrap();
             match &*cycle {
                 Cycle::Live(_) => {}
-                Cycle::Starting { .. } => return rdm_core::reply::status::not_ready(format!("{}: a start is under way; node.mesh.join is decided on the cycle it ends in", self.held_name())),
-                Cycle::Stopping(_) | Cycle::Stopped(_) => return rdm_core::reply::status::not_ready(format!("{}: a stopped birth is started by node.start, not by node.mesh.join", self.held_name())),
+                Cycle::Starting { .. } => return rdm_core::reply::status::not_ready(format!("{}: a start is under way; node.mesh.join is decided on the cycle it ends in", self.node_id)),
+                Cycle::Stopping(_) | Cycle::Stopped(_) => return rdm_core::reply::status::not_ready(format!("{}: a stopped birth is started by node.start, not by node.mesh.join", self.node_id)),
             }
             *cycle = Cycle::Starting { outcome: outcome_rx.clone(), commander: Some(commander_tx), calls: vec![key] };
         }
@@ -1008,7 +1011,7 @@ impl NodeSelf {
                     // The sequence stopped at a step: the birth stays Pending and leaves its channels
                     // again, so its authority holds it unheard and commands it back once more
                     // (node-recovery.md step 2); nothing here retries by hand.
-                    tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %me.held_name(), step = failed.step, reason = %failed.reason)
+                    tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %me.node_id, step = failed.step, reason = %failed.reason)
                         .in_scope(|| tracing::info!("the commanded start stopped at its step: the birth leaves its channels for its authority's next command"));
                     session.leave_channels().await;
                     rdm_core::reply::status::start_failed(failed.step.to_string(), failed.reason)
@@ -1029,7 +1032,7 @@ impl NodeSelf {
                 },
                 changed = outcome.changed() => {
                     if changed.is_err() {
-                        return rdm_core::reply::status::not_ready(format!("{}: the start that was under way ended without an outcome", self.held_name()));
+                        return rdm_core::reply::status::not_ready(format!("{}: the start that was under way ended without an outcome", self.node_id));
                     }
                     if let Some(reply) = outcome.borrow().clone() {
                         return match reply {
@@ -1059,7 +1062,7 @@ impl NodeSelf {
                 Cycle::Stopped(r) => Next::Done(r.clone()),
                 // The start ends the stopped cycle: the receipt that stopped the birth does not
                 // answer for a birth on its way out of Leaving, as a start does not run beside a stop.
-                Cycle::Starting { .. } => return rdm_core::reply::status::not_ready(format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name())),
+                Cycle::Starting { .. } => return rdm_core::reply::status::not_ready(format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.node_id)),
                 Cycle::Stopping(rx) => Next::Wait(rx.clone()),
                 Cycle::Live(_) => {
                     let (tx, rx) = tokio::sync::watch::channel(None);
@@ -1076,7 +1079,7 @@ impl NodeSelf {
             Next::Wait(mut rx) => {
                 let receipt = match rx.wait_for(|r| r.is_some()).await {
                     Ok(r) => r.clone().expect("waited for a receipt"),
-                    Err(_) => return rdm_core::reply::status::not_ready(format!("{}: the stop that was under way ended without a receipt", self.held_name())),
+                    Err(_) => return rdm_core::reply::status::not_ready(format!("{}: the stop that was under way ended without a receipt", self.node_id)),
                 };
                 self.answer_completed(&progress, &receipt).await;
                 receipt
@@ -1085,7 +1088,7 @@ impl NodeSelf {
                 let span = tracing::info_span!(
                     parent: &parent,
                     "rdm.node_admin.status.update.via-stop-node",
-                    node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
+                    node = %self.node_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, build_id = %op.build_id, attempt = op.attempt,
                     commander = %named(commander.as_ref()), state = "Stopped", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
                 let (receipt, _) = self.stop_steps(StopBy::Command { commander: commander.as_ref(), spare, op: &op, progress: progress.clone() }).instrument(span.clone()).await;
@@ -1116,7 +1119,7 @@ impl NodeSelf {
             StopBy::Signal => (None, Vec::new(), None, None, 0, false),
             StopBy::FailedStart { commander, calls, op } => (commander, calls.to_vec(), Some(op), None, calls.len() as u64, false),
         };
-        let operation = op.map_or(SIGNAL_STOP, |o| o.operation.as_str());
+        let operation = op.map_or(SIGNAL_STOP, |o| o.operation.action.as_str());
         // A commanded stop leaves its live process stopped; a signal's process ends with its stop.
         if op.is_some() {
             process_stop().stop();
@@ -1134,7 +1137,7 @@ impl NodeSelf {
         // `StopConnectionsDeleted` (Q205). A birth already connections-deleted (an `All` completed
         // `Established` since it last started) answers both at once with that receipt and closes
         // nothing again.
-        let closure = tracing::info_span!("rdm.node_admin.connection.delete.via-stop", node = %self.held_name(), operation = %operation, commander = %named(commander), outcome = tracing::field::Empty);
+        let closure = tracing::info_span!("rdm.node_admin.connection.delete.via-stop", node = %self.node_id, operation = %operation, commander = %named(commander), outcome = tracing::field::Empty);
         let already = self.completed.lock().unwrap().deleted.clone();
         let deleting = Mutex::new(None);
         let ack = |progress: &Option<CommandProgress>| {
@@ -1186,7 +1189,7 @@ impl NodeSelf {
         if let Some(session) = &session {
             let span = tracing::info_span!(
                 "rdm.node_admin.node.update.via-stop-quiesce",
-                node = %self.held_name(), operation = %operation, commanded_by = commanded_by.unwrap_or(""), turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
+                node = %self.node_id, operation = %operation, commanded_by = commanded_by.unwrap_or(""), turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
             );
             let held = session.hold_tasks(commanded_by).instrument(span.clone()).await;
             span.record("turns_in_progress", held.turns_in_progress);
@@ -1196,11 +1199,11 @@ impl NodeSelf {
         // signal's alike. The one exception is R-NS1 item 2: when node.delete reaches a deleted mesh's
         // last admin, still its primary, its final mesh topology carries the mesh deleted and itself
         // deleting, then nothing. It follows the hold, so no gated turn publishes after it.
-        let mesh_deleted = self.topology_view.digest_view.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
+        let mesh_deleted = self.topology_view.digest_view.statuses.mesh(self.topology_view.mesh_name()).is_some_and(|h| h.status == "deleted" || h.status == "dead");
         // node.delete runs node.stop's steps: a deleted mesh's last admin is stopped only as its delete.
         let final_delete = op.filter(|_| by_command && mesh_deleted);
         if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), final_delete) {
-            let del_op = if op.is_stop() { LifecycleOp { operation: format!("node.delete:{}", self.held_name()), ..op.clone() } } else { op.clone() };
+            let del_op = if op.is_stop() { LifecycleOp { operation: op.operation.command("node.delete", &self.node_id), ..op.clone() } } else { op.clone() };
             self.topology_view.digest_view.deleting(del_op);
             let me = (self.set_status)(MemberStatus::Leaving);
             let mut members: Vec<MeshDigest> = backbone.own_members(&self.topology_view);
@@ -1215,7 +1218,7 @@ impl NodeSelf {
             if published == "true" && mesh_deleted {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %operation, status = "Leaving", members = count, published)
+            tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.node_id, mesh = %self.topology_view.mesh_name(), operation = %operation, status = "Leaving", members = count, published)
                 .in_scope(|| tracing::info!("the last mesh topology before the stop carries this node Leaving"));
         }
         // 5. node.mesh.leave, called after its connections are deleted (node-stop.md step 3;
@@ -1234,7 +1237,7 @@ impl NodeSelf {
                 let mesh_primary = self.mesh_primary_endpoint();
                 let cut = tracing::info_span!(
                     "rdm.node_admin.node.update.via-stop-transport-cut",
-                    node = %self.held_name(), operation = %operation,
+                    node = %self.node_id, operation = %operation,
                     spared = spare.len(), mesh_primary_spared = mesh_primary.is_some(), neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
                 );
                 let (report, left) = self.leave_mesh(spare.as_slice(), mesh_primary, operation).instrument(cut.clone()).await;
@@ -1268,9 +1271,9 @@ impl NodeSelf {
     fn owe(&self, state: NodeState, operation: Option<rdm_core::status::DeclaredOperation>) -> Option<(String, tokio::task::JoinHandle<()>)> {
         let declare = self.declare.clone()?;
         match &operation {
-            Some(op) => tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-stop", node = %self.held_name(), state = ?state, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt)
+            Some(op) => tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-stop", node = %self.node_id, state = ?state, operation = %op.operation.action, operation_subject = ?op.operation.subject, build_id = %op.build_id, attempt = op.attempt)
                 .in_scope(|| tracing::info!("the state is owed to the mesh-primary, naming the stop; the stop does not wait for its answer")),
-            None => tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-signal", node = %self.held_name(), state = ?state)
+            None => tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-signal", node = %self.node_id, state = ?state)
                 .in_scope(|| tracing::info!("the state is owed to the mesh-primary; the stop does not wait for its answer")),
         }
         Some((format!("{state:?}"), tokio::spawn(declare(state, operation))))
@@ -1287,7 +1290,7 @@ impl NodeSelf {
         let (receipt, mut declarations) = self.stop_steps(StopBy::Signal).await;
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-stop-declarations",
-            node = %self.held_name(), operation = SIGNAL_STOP, declarations = declarations.len(),
+            node = %self.node_id, operation = SIGNAL_STOP, declarations = declarations.len(),
             deadline_ms = self.connections_delete_deadline.as_millis() as u64, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty, delivered = tracing::field::Empty, left = tracing::field::Empty
         );
         let began = std::time::Instant::now();
@@ -1338,7 +1341,7 @@ impl NodeSelf {
         let span = tracing::info_span!(
             parent: &parent,
             "rdm.node_admin.status.update.via-start-node",
-            node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
+            node = %self.node_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, build_id = %op.build_id, attempt = op.attempt,
             commander = %named(commander.as_ref()), joined = tracing::field::Empty, outcome = tracing::field::Empty, failed_step = tracing::field::Empty, "otel.kind" = "internal"
         );
         let reply = async {
@@ -1351,7 +1354,7 @@ impl NodeSelf {
                 match &mut *cycle {
                     Cycle::Stopped(_) => {
                         let Some(session) = self.session.lock().unwrap().clone() else {
-                            return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to rejoin its mesh with", self.held_name()));
+                            return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to rejoin its mesh with", self.node_id));
                         };
                         let (tx, rx) = tokio::sync::watch::channel(None);
                         let (commander, commanded) = match spare {
@@ -1373,7 +1376,7 @@ impl NodeSelf {
                         }
                         Next::Join(outcome.clone())
                     }
-                    Cycle::Stopping(_) => return rdm_core::reply::status::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a stopped process", self.held_name())),
+                    Cycle::Stopping(_) => return rdm_core::reply::status::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a stopped process", self.node_id)),
                     Cycle::Live(Some((build_id, operation))) if *build_id == op.build_id && *operation == op.operation => return rdm_core::reply::already_applied(),
                     Cycle::Live(_) => {
                         return rdm_core::reply::status::rejected_invalid_node_transition(crate::status::declared_of_member((self.status)()));
@@ -1385,7 +1388,7 @@ impl NodeSelf {
                     tracing::Span::current().record("joined", true);
                     let reply = match rx.wait_for(|r| r.is_some()).await {
                         Ok(r) => r.clone().expect("waited for an outcome"),
-                        Err(_) => rdm_core::reply::status::not_ready(format!("{}: the start that was under way ended without an outcome", self.held_name())),
+                        Err(_) => rdm_core::reply::status::not_ready(format!("{}: the start that was under way ended without an outcome", self.node_id)),
                     };
                     if matches!(reply, StatusReply::Started) {
                         if let Some(progress) = &progress { let _ = progress.lock().await.progress(NodeCommandReply::NodeJoined).await; }
@@ -1412,7 +1415,7 @@ impl NodeSelf {
             // the call's endpoint key and path (node-start.md step 2).
             let joined = match commanded {
                 Some(commander) => session.rejoin(birth_cancel, commander, rows, declared(&op), progress, None).await,
-                None => Err(StartFailed { step: "node.join", reason: format!("{}: commander-uncalled: the start came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()) }),
+                None => Err(StartFailed { step: "node.join", reason: format!("{}: commander-uncalled: the start came on no Node RPC call, so no endpoint names the admin to join back", self.node_id) }),
             };
             let reply = match joined {
                 Ok(()) => {
@@ -1445,7 +1448,7 @@ impl NodeSelf {
         }
         .instrument(span.clone())
         .await;
-        span.record("node", self.held_name().to_string().as_str());
+        span.record("node", self.node_id.to_string().as_str());
         span.record("outcome", reply.name());
         reply
     }
@@ -1515,10 +1518,10 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
     let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::LeaveMesh { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
         unreachable!("refuse_reserved is called for the reserved positions only")
     };
-    let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
+    let reported = format!("{} {operation:?} (build {build_id}, attempt {attempt})", req.op());
     tracing::info_span!(
         "rdm.node_admin.status.reject.via-reserved-position",
-        node = %receiver, op = req.op(), operation = %operation, build_id = %build_id, attempt = *attempt, subject = %node_id, incarnation_id = %incarnation.as_str(),
+        node = %receiver, op = req.op(), operation = %operation.action, operation_subject = ?operation.subject, build_id = %build_id, attempt = *attempt, subject = %node_id, incarnation_id = %incarnation.as_str(),
         caller = %caller, field = "command", expected = RETIRED_PAIR_IS_RESERVED, reported = %reported, "otel.kind" = "internal"
     )
     .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
@@ -1540,18 +1543,18 @@ pub fn request_not_handled(receiver: &str, req: &StatusRequest) -> StatusReply {
 /// name"). A stop's completion is its `Stopped` reply, so no command is open that a node-left call
 /// completes: it is `RejectedUnmatchedCompletion { field: "command" }`, `expected` what the receiver
 /// holds instead ([`NODE_LEFT_IS_NEVER_A_CALL`]) and `reported` what the call named. Nothing is
-/// completed, whatever command is open for the birth. `name` is the subject's path.name as the
+/// completed, whatever command is open for the birth. `name` is the subject's path and name as the
 /// receiver holds it (empty when it holds none) and `caller` who called, both for the reject span
 /// only; nothing checks who is calling (node-rpc.md §14). Never `NotReady`, the readiness gate's
 /// answer (R-NR1).
 pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRequest) -> StatusReply {
     let StatusRequest::NodeLeft { node_id, incarnation, build_id, attempt, operation } = req else { unreachable!("refuse_node_left is called for node-left only") };
-    let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
+    let reported = format!("{} {operation:?} (build {build_id}, attempt {attempt})", req.op());
     tracing::info_span!(
         "rdm.node_admin.status.reject.via-node-left",
         node = %receiver,
         op = req.op(),
-        operation = %operation,
+        operation = %operation.action, operation_subject = ?operation.subject,
         build_id = %build_id,
         attempt = *attempt,
         subject = %node_id,
@@ -1572,8 +1575,8 @@ pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRe
 pub fn connection_view(f: &NodeConnection) -> ConnectionView {
     ConnectionView {
         id: f.id.to_string(),
-        source: f.source.name.to_string(),
-        destination: f.destination.name.to_string(),
+        source: f.source.node_id.to_string(),
+        destination: f.destination.node_id.to_string(),
         kind: match f.kind {
             ConnectionKind::Direct => "direct",
             ConnectionKind::Proxy => "proxy",
@@ -1586,7 +1589,7 @@ pub fn connection_view(f: &NodeConnection) -> ConnectionView {
             ConnectionState::Refused => "refused",
         }
         .into(),
-        carrier: f.carrier.as_ref().map(|c| c.name.to_string()),
+        carrier: f.carrier.as_ref().map(|c| c.node_id.to_string()),
         reason: f.reason.clone(),
         logged_at_ms: f.logged_at_ms,
     }
@@ -1600,13 +1603,13 @@ pub fn connection_view(f: &NodeConnection) -> ConnectionView {
 /// its set is complete.
 pub fn connections_answer(held: &HeldConnections, filter: &rdm_core::filter::Filter) -> StatusReply {
     let read = rdm_core::filter::Entity::Connections.read();
-    let node = &held.name;
+    let node = &held.node_id;
     if let Some(reason) = filter.refusal(rdm_core::filter::Entity::Connections) {
         tracing::info_span!("rdm.node_admin.node.reject.via-filter", node = %node, read, properties = %filter.properties(), detail = %reason, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the filter names a pair the connection schema refuses; nothing is read"));
         return rdm_core::reply::status::bounded_rejected_filter(&reason);
     }
-    let view = ConnectionsView { node: held.name.to_string(), complete: held.complete, connections: held.routes.iter().map(connection_view).filter(|c| filter.matches(c)).collect() };
+    let view = ConnectionsView { node: held.node_id.to_string(), complete: held.complete, connections: held.routes.iter().map(connection_view).filter(|c| filter.matches(c)).collect() };
     tracing::info_span!("rdm.node_admin.node.serve.via-connection-get", node = %node, properties = %filter.properties(), connections = view.connections.len(), complete = view.complete, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the connections the node holds answered"));
     StatusReply::Connections { connections: view }
@@ -1712,7 +1715,7 @@ mod tests {
             let ep_id = EndpointId(endpoint.secret_key().public().to_string());
             let node_id = NodeId::mint();
             let incarnation = IncarnationId::mint();
-            let name: PathName = "mesh1.rpc.1".parse().unwrap();
+            let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
@@ -1724,7 +1727,7 @@ mod tests {
                 &fabric_id,
                 "mesh1",
                 &mesh_id,
-                &name.to_string(),
+                node_id.as_str(),
                 clock,
                 Vec::new(),
                 &[],
@@ -1743,7 +1746,7 @@ mod tests {
             let digest = MeshDigest {
                 held_hash: [0u8; 32],
                 fabric_id,
-                node: MeshNode { mesh: name.mesh.clone(), kind: name.kind,
+                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: node_id.clone(),
                     name: name.clone(),
                     endpoint_id: ep_id.clone(),
@@ -1769,6 +1772,7 @@ mod tests {
                 node_id.clone(),
                 incarnation.clone(),
                 name.clone(),
+                digest.node.kind,
                 server,
                 client,
                 resolver.clone(),
@@ -1816,6 +1820,7 @@ mod tests {
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let own_end = ConnectionEnd {
+                mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 name: name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
@@ -1918,7 +1923,7 @@ mod tests {
             let ep_id = EndpointId(endpoint.secret_key().public().to_string());
             let node_id = NodeId::mint();
             let incarnation = IncarnationId::mint();
-            let name: PathName = "mesh1.rpc.1".parse().unwrap();
+            let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
@@ -1930,7 +1935,7 @@ mod tests {
                 &fabric_id,
                 "mesh1",
                 &mesh_id,
-                &name.to_string(),
+                node_id.as_str(),
                 clock,
                 Vec::new(),
                 &[],
@@ -1943,7 +1948,7 @@ mod tests {
                 &topology_view,
                 "mesh1",
                 rdm_core::PublisherId {
-                    node: name.to_string(),
+                    node: name.name.clone(),
                     node_id: node_id.clone(),
                     incarnation: incarnation.clone(),
                 },
@@ -1963,7 +1968,7 @@ mod tests {
             let digest = MeshDigest {
                 held_hash: [0u8; 32],
                 fabric_id,
-                node: MeshNode { mesh: name.mesh.clone(), kind: name.kind,
+                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: node_id.clone(),
                     name: name.clone(),
                     endpoint_id: ep_id,
@@ -1993,6 +1998,7 @@ mod tests {
                 node_id.clone(),
                 incarnation.clone(),
                 name.clone(),
+                digest.node.kind,
                 server,
                 client,
                 resolver,
@@ -2012,6 +2018,7 @@ mod tests {
             let conn_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let own_end = ConnectionEnd {
+                mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 name: name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
@@ -2028,6 +2035,7 @@ mod tests {
             assert!(matches!(
                 connections_answer(
                     &HeldConnections {
+                        node_id: node_id.clone(),
                         name: name.clone(),
                         complete: true,
                         routes: Vec::new(),

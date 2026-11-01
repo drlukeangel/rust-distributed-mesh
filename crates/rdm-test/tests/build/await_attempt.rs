@@ -40,11 +40,11 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     assert_eq!(shape.attempt, 1, "an accepted Build answers its first attempt: {shape:?}");
     estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
-    let first = "mesh1.rpc.1";
+    let first = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
     let mut spawn = estate.create_node("mesh1", NodeKind::RpcNode).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
     let created = Estate::complete(&mut spawn).await;
     assert_eq!(created.attempt, 1, "{created:?}");
-    estate.until_node(first, &format!("{first} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+    estate.until_node(&first, &format!("{first:?} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
     // A second rpc node, and the stop is of the one that is not the node-type primary: a stop
     // of the role's node moves the role first and needs a secondary to move it to
     // (node-primary-update-fabric-mesh-and-node-type.md Part C1, "no secondary"). The stop opens an
@@ -53,22 +53,22 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let created = Estate::complete(&mut second).await;
     assert_eq!(created.attempt, 1, "{created:?}");
     let build_id = created.build_id.to_string();
-    estate.until_node("mesh1.rpc.2", "mesh1.rpc.2 ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1.rpc.2 ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
     let views = estate.node_views().await;
-    let node_name = views.iter().find(|n| n.kind == NodeKind::RpcNode && n.mesh == "mesh1" && !n.is_primary).map(|n| n.name.to_string()).expect("one of mesh1's two rpc nodes does not hold the node-type primary role");
-    let node = node_name.as_str();
+    let subject = views.iter().find(|n| n.kind == NodeKind::RpcNode && n.mesh == "mesh1" && !n.is_primary).expect("one rpc node without a role");
+    let node = &subject.name;
 
     let primary = estate.node_views().await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1" && n.is_primary).expect("mesh1 has an admin primary");
-    let door = Door::at(&estate, &primary.name.to_string()).await;
+    let door = Door::at(&estate, &primary.name).await;
 
     let cut = "stop:StopNode";
-    door.arm(cut, json!({"kind": "receipt", "step": DeleteStep::StopNode.name(), "operation": "node.stop", "node": node})).await;
+    door.arm(cut, json!({"kind": "receipt", "step": DeleteStep::StopNode.name(), "operation": "node.stop", "node": rdm_core::OperationSubject::Node(subject.node_id.clone())})).await;
     // The initial fabric refuses a node stop until it has first reached ready (states.md "The initial fabric before ready").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The create put the fabric back to pending, so its Build is Complete at the attempt after its run,
     // claimed once the fabric's ready state was set (Q154): the stop opens the attempt after that one.
     let attempt = estate.attempt_of_build(&build_id).await as u32 + 1;
-    let mut stop = estate.nodes_obj().await.stop(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node}: {e}"));
+    let mut stop = estate.nodes_obj().await.stop(node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {node:?}: {e}"));
     let opened = stop.accepted().clone();
     assert_eq!(opened.build_id.to_string(), build_id, "a stop opens an attempt of the accepted Build: {opened:?}");
     assert_eq!(opened.attempt, attempt, "the stop answers the attempt it opened: {opened:?}");

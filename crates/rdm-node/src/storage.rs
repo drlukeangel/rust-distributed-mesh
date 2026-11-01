@@ -6,8 +6,6 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use rdm_core::connections::{ConnectionIndex, NodeConnection};
 
-#[cfg(feature = "file-backend")]
-use crate::model::PathName;
 use crate::storage_error::StorageError;
 
 // ---------------------------------------------------------------- connections.storage
@@ -65,7 +63,7 @@ impl ConnectionsStorage for MemoryConnectionsStorage {
 
 #[cfg(feature = "file-backend")]
 /// A connection fact's line in the root's `connections.jsonl`: the whole fact, at its index's key.
-const CONNECTION_FORMAT: &str = "node-connection/2";
+const CONNECTION_FORMAT: &str = "node-connection/3";
 #[cfg(feature = "file-backend")]
 const CONNECTION_KIND: &str = "node-connection";
 
@@ -99,27 +97,23 @@ struct ConnectionLine {
 #[derive(Debug)]
 pub struct FileConnectionsStorage {
     log: crate::store_log::StoreLog,
-    source: PathName,
     writer: crate::store_log::LogWriter,
 }
 
 #[cfg(feature = "file-backend")]
 impl FileConnectionsStorage {
-    /// Open the store of the node `node`, written by `writer`, on the fabric's store root, to append:
+    /// Open the store of the node identified by `writer`, on the fabric's store root, to append:
     /// the open reads no line of the file.
-    pub async fn open(root: &crate::store_root::StoreRoot, node: &PathName, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
+    pub async fn open(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
         let log = root.log_append(crate::store_root::CONNECTIONS_FILE, crate::store_log::Formats::new().with::<ConnectionLine>(CONNECTION_FORMAT)).await?;
-        Ok(Self { log, source: node.clone(), writer: writer.clone() })
+        Ok(Self { log, writer: writer.clone() })
     }
 
-    /// Whether `line`, read as `fact`, is this node's: written by this store's writer (under any name
-    /// the node held since: a rename keeps its rows), held by this store, or a fact whose source is the
-    /// path.name this store was opened at (a birth's predecessor's at that name).
+    /// This node's source facts, including its earlier names, and facts explicitly
+    /// persisted by this node's writer. Reusing a location never grants another ID's history.
     fn own(&self, line: &crate::store_log::Line, fact: &NodeConnection) -> bool {
-        match &line.op {
-            None => true,
-            Some(op) => op.node_id == self.writer.node_id.to_string() || fact.source.name == self.source,
-        }
+        fact.source.node_id == self.writer.node_id
+            || line.op.as_ref().is_some_and(|op| op.node_id == self.writer.node_id.as_str())
     }
 
     /// The current entry of every key (the latest line of each that is not removed), of every source
@@ -188,10 +182,10 @@ impl ConnectionsStorage for FileConnectionsStorage {
 
 #[cfg(feature = "file-backend")]
 /// The raw connection log of the node at `source` in the store root `root_dir`'s `connections.jsonl`:
-/// every fact a node that wrote at that path.name wrote, under any name it held (a rename keeps its
+/// every fact a node that wrote at that path and name wrote, under any name it held (a rename keeps its
 /// log), oldest first, read on the calling thread (a cell's look at a root while its nodes write it).
 /// A missing file holds none; a malformed line is refused by name.
-pub fn connection_history(root_dir: &std::path::Path, source: &str) -> Result<Vec<NodeConnection>, StorageError> {
+pub fn connection_history(root_dir: &std::path::Path, source: &crate::model::NodeId) -> Result<Vec<NodeConnection>, StorageError> {
     let file = root_dir.join(crate::store_root::CONNECTIONS_FILE);
     let mut facts = Vec::new();
     for l in crate::store_log::read_file(&file)? {
@@ -202,6 +196,5 @@ pub fn connection_history(root_dir: &std::path::Path, source: &str) -> Result<Ve
             }
         }
     }
-    let nodes: std::collections::BTreeSet<crate::model::NodeId> = facts.iter().filter(|f| f.source.name.to_string() == source).map(|f| f.source.node_id.clone()).collect();
-    Ok(facts.into_iter().filter(|f| nodes.contains(&f.source.node_id)).collect())
+    Ok(facts.into_iter().filter(|f| &f.source.node_id == source).collect())
 }

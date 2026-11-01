@@ -23,21 +23,25 @@ fn story(kind: StatusEvent, scenario: Story) {
         let addr = iroh::EndpointAddr::new(send_ep.id()).with_ip_addr(socket);
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let sender = TopologyView::join(&send_gossip, &send_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
+        let sender_id = NodeId::mint();
+        let receiver_id = NodeId::mint();
+        let successor_id = NodeId::mint();
+        let subject_id = NodeId::mint();
+        let sender = TopologyView::join(&send_gossip, &send_ep, &fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
         let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Stopped => "stop" };
-        let op = LifecycleOp { mesh: "mesh1".into(), build_id: "lifecycle-build".into(), attempt: 1, operation: format!("node.{command}:mesh1.rpc.2"), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let op = LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), build_id: rdm_core::BuildId::mint().to_string(), attempt: 1, operation: rdm_core::OperationId::node(format!("node.{command}"), &subject_id), node_id: subject_id, incarnation: IncarnationId::mint(), name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let publisher = PublisherId { node: sender_id.to_string(), incarnation: IncarnationId::mint(), node_id: sender_id.clone() };
         // The publisher that takes the role after it: another birth, which re-publishes the operation its
         // predecessor published under the same identity (a resumed attempt replays its receipted step).
-        let successor = PublisherId { node: "mesh1.admin.2".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
-        sender.set_author(&publisher);
-        receiver.digest_view.record(MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { mesh: op.mesh.clone(), kind: op.name.kind, node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });
-        assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.name));
+        let successor = PublisherId { node: successor_id.to_string(), incarnation: IncarnationId::mint(), node_id: successor_id };
+        sender.set_author(&publisher, None);
+        receiver.digest_view.record(MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None });
+        assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.name, &"mesh1"));
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
-        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: sender_id.to_string(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
         assert!(receiver.digest_view.routable(op.node_id.as_str()));
         if matches!(scenario, Story::Completed) {
@@ -45,8 +49,8 @@ fn story(kind: StatusEvent, scenario: Story) {
                 StatusEvent::Deleting => { assert!(receiver.digest_view.deleting(op.clone())); receiver.digest_view.deletions_from_facts(&std::collections::BTreeMap::from([(op.key(), "attempt-converged")]), &Default::default()); }
                 StatusEvent::Stopped => {
                     assert!(receiver.digest_view.stopped(op.clone()));
-                    let mut start = op.clone(); start.operation = "node.start:mesh1.rpc.2".into();
-                    assert!(receiver.digest_view.joined(&start)); assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.name));
+                    let mut start = op.clone(); start.operation = op.operation.command("node.start", &op.node_id);
+                    assert!(receiver.digest_view.joined(&start)); assert!(receiver.digest_view.started(&op.node_id, &op.incarnation, &op.name, &"mesh1"));
                 }
             }
             assert!(receiver.digest_view.routable(op.node_id.as_str()));
@@ -54,7 +58,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         let frame = |op: LifecycleOp, version| kind.frame(op, publisher.clone(), version);
         let successor_frame = |op: LifecycleOp, version| kind.frame(op, successor.clone(), version);
         if matches!(scenario, Story::Stale) {
-            let mut other = op.clone(); other.node_id = NodeId::mint(); other.incarnation = IncarnationId::mint(); other.name = "mesh1.rpc.3".parse().unwrap(); other.operation = format!("node.{command}:mesh1.rpc.3");
+            let mut other = op.clone(); other.node_id = NodeId::mint(); other.incarnation = IncarnationId::mint(); other.name = rdm_core::PathName::new("mesh1.rpc", "3").unwrap(); other.operation = rdm_core::OperationId::node(format!("node.{command}"), &other.node_id);
             let other_id = other.node_id.to_string();
             crate::forward_gossip_probe(&sender, &frame(other, 20)).await.unwrap();
             // An open overlay is visible before the same receive finishes its birth notification.
@@ -70,7 +74,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         for n in 1..=receipts {
             let mut offered = op.clone(); if n == 2 { offered.event_at_rafka_ms = 2; }
             if n == 2 && matches!(scenario, Story::Successor) {
-                sender.set_author(&successor);
+                sender.set_author(&successor, None);
                 crate::forward_gossip_probe(&sender, &successor_frame(offered, 10)).await.unwrap();
             } else {
                 crate::forward_gossip_probe(&sender, &frame(offered, if n == 2 && matches!(scenario, Story::Stale) { 21 } else { 10 })).await.unwrap();
@@ -82,7 +86,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         if matches!(scenario, Story::Stale) {
             // Operation identity was already seen at the refused v10. Its repeat at v21 runs no
             // effect, while that independent projection key still advances the publisher floor.
-            let mut third = op.clone(); third.node_id = NodeId::mint(); third.name = "mesh1.rpc.4".parse().unwrap(); third.operation = format!("node.{command}:mesh1.rpc.4");
+            let mut third = op.clone(); third.node_id = NodeId::mint(); third.name = rdm_core::PathName::new("mesh1.rpc", "4").unwrap(); third.operation = rdm_core::OperationId::node(format!("node.{command}"), &third.node_id);
             crate::forward_gossip_probe(&sender, &frame(third.clone(), 20)).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == third.node_id.to_string()) { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -92,7 +96,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         if matches!(scenario, Story::Successor) {
             // The successor's re-entry ran no effect, and its carried revision still advanced its own
             // floor: its later frame below that revision is refused as stale and never applied.
-            let mut below = op.clone(); below.node_id = NodeId::mint(); below.name = "mesh1.rpc.5".parse().unwrap(); below.operation = format!("node.{command}:mesh1.rpc.5");
+            let mut below = op.clone(); below.node_id = NodeId::mint(); below.name = rdm_core::PathName::new("mesh1.rpc", "5").unwrap(); below.operation = rdm_core::OperationId::node(format!("node.{command}"), &below.node_id);
             crate::forward_gossip_probe(&sender, &successor_frame(below.clone(), 9)).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == below.node_id.to_string()) { tokio::time::sleep(Duration::from_millis(10)).await; }
@@ -118,8 +122,7 @@ fn story(kind: StatusEvent, scenario: Story) {
     let apply_name = match kind { StatusEvent::Deleting => "rdm.mesh.topology.update.via-node-deleting", StatusEvent::Stopped => "rdm.mesh.topology.remove.via-node-stopped" };
     assert_eq!(spans.iter().filter(|s| s["name"] == apply_name && s["attributes"]["node_id"] == op.node_id.to_string()).count(), usize::from(!matches!(scenario, Story::Stale)), "exactly one ordinary apply, including the locally applied operation before completion; no apply of a version-refused fact");
     if !matches!(scenario, Story::Control) {
-        let identity = format!("{} {} {} {}/{}", op.build_id, op.attempt, op.operation, op.node_id, op.incarnation);
-        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate" && s["attributes"]["frame"] == kind.name() && s["attributes"]["identity"] == identity && s["attributes"]["outcome"] == "ignored"));
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate" && s["attributes"]["frame"] == kind.name() && s["attributes"]["build_id"] == op.build_id && s["attributes"]["attempt"] == op.attempt.to_string() && s["attributes"]["operation"] == op.operation.action && s["attributes"]["operation_subject"] == format!("{:?}", op.operation.subject) && s["attributes"]["node_id"] == op.node_id.as_str() && s["attributes"]["incarnation_id"] == op.incarnation.as_str() && s["attributes"]["outcome"] == "ignored"));
     }
     if matches!(scenario, Story::Stale) {
         assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["held_key"] == "topology_version=21" && s["attributes"]["frame_key"] == "topology_version=20"));

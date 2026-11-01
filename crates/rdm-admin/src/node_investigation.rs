@@ -23,8 +23,8 @@ pub enum Finding {
     Reached {
         /// The birth's own answer (`Current`, `CurrentStopped` or `Blocked`).
         answer: rdm_core::status::StatusReply,
-        /// The peer that carried the kick, by path.name; `None`: it answered the direct probe.
-        carrier: Option<String>,
+        /// The peer that carried the kick, by path and name; `None`: it answered the direct probe.
+        carrier: Option<NodeId>,
     },
     /// The provider inspected its exact runtime and it still runs.
     Running,
@@ -73,7 +73,7 @@ impl Finding {
     /// What the finding names beyond its name: the carrier, the exit code or what was missing.
     pub fn detail(&self) -> String {
         match self {
-            Self::Reached { carrier: Some(carrier), .. } => carrier.clone(),
+            Self::Reached { carrier: Some(carrier), .. } => carrier.to_string(),
             Self::Exited { code } => code.map(|c| c.to_string()).unwrap_or_else(|| "no code provable".into()),
             Self::Unproven { reason } => reason.clone(),
             _ => String::new(),
@@ -109,7 +109,7 @@ where
     V: std::future::Future<Output = Finding>,
 {
     if node.incarnation_id.is_none() {
-        return Finding::Unproven { reason: format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id) };
+        return Finding::Unproven { reason: format!("{} holds no recorded birth: there is no exact birth to tickle", node.node_id) };
     }
     let leads = crate::offline::leads_of(node, view, calls).await;
     let inspected = inspect.await;
@@ -157,7 +157,7 @@ pub fn runtime_of(digest: Option<&rdm_core::digest::MeshDigest>, row: Option<&cr
 /// read by its key ([`runtime_of`]). A birth lost before this admin heard it has no digest here; its
 /// row is still the runtime recorded at launch. `Err` names what was missing.
 pub async fn birth_runtime(digest_view: &rdm_transport::topology::DigestView, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Result<BirthRuntime, String> {
-    let Some(incarnation) = n.incarnation_id.clone() else { return Err(format!("{} ({}) holds no recorded birth: there is no exact runtime to inspect", n.name, n.node_id)) };
+    let Some(incarnation) = n.incarnation_id.clone() else { return Err(format!("{} holds no recorded birth: there is no exact runtime to inspect", n.node_id)) };
     let id = n.node_id.as_str();
     let exact = |d: &rdm_core::digest::MeshDigest| d.node.incarnation == incarnation;
     let digest = digest_view
@@ -191,7 +191,7 @@ pub async fn inspect_birth_with_handle(provider: &dyn crate::deployment::provide
 }
 
 /// node.runtime.inspect's span (node-runtime-inspect.md "Observability contract"), the one every
-/// caller's inspection emits: `inspector` the caller's path.name, `handle` the exact runtime handle the
+/// caller's inspection emits: `inspector` the caller's node ID, `handle` the exact runtime handle the
 /// provider was asked about (empty when nothing was asked), `verdict` the provider's answer and `why`
 /// the event naming what the caller asked it for.
 pub fn span_inspection(inspector: &str, node: &Node, outcome: &crate::deployment::provider::Inspected, handle: Option<&crate::deployment::provider::DeploymentHandle>, why: &str) {
@@ -203,7 +203,7 @@ pub fn span_inspection(inspector: &str, node: &Node, outcome: &crate::deployment
     };
     let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
     let handle = handle.map(|h| format!("{h:?}")).unwrap_or_default();
-    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %inspector, handle = %handle, verdict = crate::admin::verdict_name(outcome), exit_code, reason = %reason)
+    tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node_path = %node.name.path, node_name = %node.name.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %inspector, handle = %handle, verdict = crate::admin::verdict_name(outcome), exit_code, reason = %reason)
         .in_scope(|| tracing::info!("{why}"));
 }
 
@@ -243,7 +243,7 @@ pub fn leads_of(rows: &[NodeConnection], view: &Topology, node: &Node, me: Optio
             leads.push(source.clone());
         }
     }
-    leads.sort_by_key(|l| l.name.to_string());
+    leads.sort_by_key(|l| l.name.clone());
     leads
 }
 
@@ -257,8 +257,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
 
-    fn ready(name: &str) -> Node {
-        let mut n = Node::allocated(name.parse().unwrap());
+    fn ready(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
+        let mut n = Node::allocated(name, mesh, kind);
         n.node_id = NodeId::mint();
         n.incarnation_id = Some(IncarnationId::mint());
         n.status = NodeStatus::Ready;
@@ -267,18 +267,18 @@ mod tests {
 
     /// The silent `mesh1.rpc.1`, its mesh's ready members, this admin, and a ready node of mesh2.
     fn world() -> (Node, Topology) {
-        let mut node = ready("mesh1.rpc.1");
+        let mut node = ready(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         node.status = NodeStatus::PendingReconnect;
-        let nodes = vec![ready("mesh1.admin.1"), node.clone(), ready("mesh1.rpc.2"), ready("mesh1.rpc.3"), ready("mesh2.rpc.1"), ready("mesh2.rpc.2")];
+        let nodes = vec![ready(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node.clone(), ready(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), ready(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), ready(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), ready(rdm_core::PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode)];
         (node, Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![], nodes })
     }
 
-    fn of(view: &Topology, name: &str) -> Node {
-        view.members().find(|n| n.name.to_string() == name).cloned().unwrap()
+    fn of(view: &Topology, name: rdm_core::PathName) -> Node {
+        view.members().find(|n| n.name == name).cloned().unwrap()
     }
 
     fn end(n: &Node) -> ConnectionEnd {
-        ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone() }
+        ConnectionEnd { mesh: n.mesh.clone(), kind: n.kind, name: n.name.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone() }
     }
 
     fn row(source: &Node, destination: &Node, kind: ConnectionKind, state: ConnectionState) -> NodeConnection {
@@ -301,11 +301,11 @@ mod tests {
     #[test]
     fn the_leads_are_the_ready_sources_in_any_mesh_of_the_active_direct_rows_to_the_exact_birth() {
         let (node, view) = world();
-        let me = of(&view, "mesh1.admin.1");
-        let (r2, r3, m1, m2) = (of(&view, "mesh1.rpc.2"), of(&view, "mesh1.rpc.3"), of(&view, "mesh2.rpc.1"), of(&view, "mesh2.rpc.2"));
+        let me = of(&view, rdm_core::PathName::new("mesh1.admin", "1").unwrap());
+        let (r2, r3, m1, m2) = (of(&view, rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()), of(&view, rdm_core::PathName::new("mesh2.rpc", "1").unwrap()), of(&view, rdm_core::PathName::new("mesh2.rpc", "2").unwrap()));
         let other_birth = Node { incarnation_id: Some(IncarnationId::mint()), ..node.clone() };
         let earlier_source = Node { incarnation_id: Some(IncarnationId::mint()), ..r3.clone() };
-        let unheld = ready("mesh3.rpc.1");
+        let unheld = ready(rdm_core::PathName::new("mesh3.rpc", "1").unwrap(), "mesh3", rdm_core::NodeKind::RpcNode);
         let rows = vec![
             row(&m1, &node, ConnectionKind::Direct, ConnectionState::Connected),
             row(&r2, &node, ConnectionKind::Direct, ConnectionState::Connected),
@@ -318,11 +318,11 @@ mod tests {
             row(&me, &node, ConnectionKind::Direct, ConnectionState::Connected),
             row(&node, &node, ConnectionKind::Direct, ConnectionState::Connected),
         ];
-        let names = |v: Vec<Node>| v.into_iter().map(|n| n.name.to_string()).collect::<Vec<_>>();
-        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), ["mesh1.rpc.2", "mesh2.rpc.1"], "the active Direct sources in any mesh, once each, in path order");
+        let names = |v: Vec<Node>| v.into_iter().map(|n| n.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), [rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), rdm_core::PathName::new("mesh2.rpc", "1").unwrap()], "the active Direct sources in any mesh, once each, in path order");
         let mut view = view;
         view.nodes.iter_mut().find(|n| n.node_id == m1.node_id).unwrap().status = NodeStatus::PendingReconnect;
-        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), ["mesh1.rpc.2"], "a source the view holds off ready carries nothing");
+        assert_eq!(names(leads_of(&rows, &view, &node, Some(&me.node_id))), [rdm_core::PathName::new("mesh1.rpc", "2").unwrap()], "a source the view holds off ready carries nothing");
         assert!(leads_of(&rows, &view, &Node { incarnation_id: None, ..node.clone() }, None).is_empty(), "no birth, no leads");
     }
 
@@ -368,7 +368,7 @@ mod tests {
         let empty = rdm_transport::topology::DigestView::default();
         let none = birth_runtime(&empty, Some(&nodes), &node).await.unwrap_err();
         assert!(none.contains("no digest of this exact birth") && none.contains("no runtime row"), "{none}");
-        nodes.put_runtime(&crate::storage::RuntimeRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), runtime: fact(2), data_dir: Some("/data/from-the-row".into()) }).await.unwrap();
+        nodes.put_runtime(&crate::storage::RuntimeRow { kind: node.kind, mesh: node.mesh.clone(), node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), runtime: fact(2), data_dir: Some("/data/from-the-row".into()) }).await.unwrap();
         let from_row = BirthRuntime { fact: fact(2), data_dir: Some("/data/from-the-row".into()), incarnation: inc.clone() };
         assert_eq!(birth_runtime(&empty, Some(&nodes), &node).await, Ok(from_row.clone()), "no digest: the durable row");
         for (held_digest, why) in [(digest(&node, IncarnationId::mint(), Some(fact(3))), "a digest of another birth"), (digest(&node, inc.clone(), None), "a digest with no runtime fact")] {
@@ -384,14 +384,14 @@ mod tests {
     /// A caller whose direct probe and carried probes answer as the cell says.
     struct Rig {
         direct: Option<StatusReply>,
-        carried: Option<(&'static str, StatusReply)>,
+        carried: Option<(NodeId, StatusReply)>,
         asked: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
     impl TickleCalls for Rig {
         fn caller(&self) -> String {
-            "mesh1.admin.1".into()
+            "100000000000".into()
         }
         fn deadline(&self) -> std::time::Duration {
             std::time::Duration::from_secs(1)
@@ -404,14 +404,14 @@ mod tests {
             }
         }
         async fn via_peer(&self, carrier: &Node, _node: &Node, _probe: &StatusRequest) -> ProbeEnd {
-            self.asked.lock().unwrap().push(carrier.name.to_string());
+            self.asked.lock().unwrap().push(carrier.node_id.to_string());
             match &self.carried {
-                Some((c, r)) if carrier.name.to_string() == *c => ProbeEnd::Reply(r.clone()),
+                Some((c, r)) if carrier.node_id == *c => ProbeEnd::Reply(r.clone()),
                 _ => ProbeEnd::Other { end: "NotSent", detail: "not sent: Deadline".into() },
             }
         }
         fn carriers(&self, view: &Topology, node: &Node) -> Vec<Node> {
-            let me = of(view, "mesh1.admin.1").node_id;
+            let me = of(view, rdm_core::PathName::new("mesh1.admin", "1").unwrap()).node_id;
             crate::offline::eligible_carriers(view, node, Some(&me)).cloned().collect()
         }
         async fn leads(&self, _view: &Topology, _node: &Node) -> Result<Vec<Node>, String> {
@@ -434,7 +434,7 @@ mod tests {
     ///  Only an answer from the exact birth counts as `reached`."
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:20
     /// "The verdict is the one decision (Q111). Reached: the node is commanded back through
-    ///  [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path.name with a
+    ///  [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path and name with a
     ///  new node.id (Q110)."
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:55
     /// "Target: One node, by `(node.id, incarnation)`
@@ -443,11 +443,11 @@ mod tests {
     #[tokio::test]
     async fn only_the_exact_births_answer_is_reached_and_only_the_provider_proves_an_exit() {
         let (node, view) = world();
-        let rig = |direct: Option<StatusReply>, carried: Option<(&'static str, StatusReply)>| Rig { direct, carried, asked: Mutex::default() };
+        let rig = |direct: Option<StatusReply>, carried: Option<(NodeId, StatusReply)>| Rig { direct, carried, asked: Mutex::default() };
         // The inspect first (Q273): exited or os-stopped is the verdict, and no tickle is sent.
         for said in [Finding::Exited { code: Some(137) }, Finding::OsStopped] {
             let asked = AtomicBool::new(false);
-            let r = rig(Some(current(&node)), Some(("mesh1.rpc.3", current(&node))));
+            let r = rig(Some(current(&node)), Some((of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id, current(&node))));
             assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "the provider proved the runtime gone: its verdict");
             assert!(asked.load(Ordering::SeqCst), "the provider is asked first");
             assert!(r.asked.lock().unwrap().is_empty(), "no tickle is sent once the inspect proved it gone: {:?}", r.asked.lock().unwrap());
@@ -458,11 +458,11 @@ mod tests {
             let asked = AtomicBool::new(false);
             let found = investigate(&node, &view, &rig(Some(current(&node)), None), provider_says(said.clone(), &asked)).await;
             assert_eq!(found, Finding::Reached { answer: current(&node), carrier: None });
-            let found = investigate(&node, &view, &rig(None, Some(("mesh1.rpc.3", current(&node)))), provider_says(said.clone(), &asked)).await;
-            assert_eq!(found, Finding::Reached { answer: current(&node), carrier: Some("mesh1.rpc.3".into()) });
-            assert_eq!((found.name(), found.detail()), ("reached", "mesh1.rpc.3".to_string()));
+            let found = investigate(&node, &view, &rig(None, Some((of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id, current(&node)))), provider_says(said.clone(), &asked)).await;
+            assert_eq!(found, Finding::Reached { answer: current(&node), carrier: Some(of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id) });
+            assert_eq!((found.name(), found.detail()), ("reached", of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id.to_string()));
             let another_birth = Node { incarnation_id: Some(IncarnationId::mint()), ..node.clone() };
-            let r = rig(Some(current(&another_birth)), Some(("mesh1.rpc.2", current(&another_birth))));
+            let r = rig(Some(current(&another_birth)), Some((of(&view, rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).node_id, current(&another_birth))));
             assert_eq!(investigate(&node, &view, &r, provider_says(said.clone(), &asked)).await, said, "nobody reached the exact birth: the inspect's answer");
             assert_eq!(r.asked.lock().unwrap().first().map(String::as_str), Some("direct"), "the direct probe first");
         }
@@ -511,8 +511,8 @@ mod tests {
     #[tokio::test]
     async fn a_birth_with_a_command_unanswered_past_the_floor_is_not_reached_by_its_tickle_answer() {
         let (node, view) = world();
-        let silent = |unanswered: bool, direct: Option<StatusReply>, carried: Option<(&'static str, StatusReply)>| Silent { rig: Rig { direct, carried, asked: Mutex::default() }, unanswered };
-        for (direct, carried) in [(Some(current(&node)), None), (None, Some(("mesh1.rpc.3", current(&node))))] {
+        let silent = |unanswered: bool, direct: Option<StatusReply>, carried: Option<(NodeId, StatusReply)>| Silent { rig: Rig { direct, carried, asked: Mutex::default() }, unanswered };
+        for (direct, carried) in [(Some(current(&node)), None), (None, Some((of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id, current(&node))))] {
             let asked = AtomicBool::new(false);
             let found = investigate(&node, &view, &silent(true, direct.clone(), carried.clone()), provider_says(Finding::Running, &asked)).await;
             assert_eq!(found, Finding::Running, "the answer of a birth that answers no command is not reached: the provider's verdict");
@@ -546,7 +546,7 @@ mod tests {
         #[async_trait::async_trait]
         impl TickleCalls for LeadsRig {
             fn caller(&self) -> String {
-                "mesh1.admin.1".into()
+                "100000000000".into()
             }
             fn deadline(&self) -> std::time::Duration {
                 std::time::Duration::from_secs(1)
@@ -564,27 +564,27 @@ mod tests {
                 _node: &Node,
                 _probe: &StatusRequest,
             ) -> ProbeEnd {
-                self.asked.lock().unwrap().push(carrier.name.to_string());
+                self.asked.lock().unwrap().push(carrier.node_id.to_string());
                 ProbeEnd::Other {
                     end: "NotSent",
                     detail: "not sent: Deadline".into(),
                 }
             }
             fn carriers(&self, view: &Topology, node: &Node) -> Vec<Node> {
-                let me = of(view, "mesh1.admin.1").node_id;
+                let me = of(view, rdm_core::PathName::new("mesh1.admin", "1").unwrap()).node_id;
                 crate::offline::eligible_carriers(view, node, Some(&me))
                     .cloned()
                     .collect()
             }
             async fn leads(&self, view: &Topology, node: &Node) -> Result<Vec<Node>, String> {
-                let me = of(view, "mesh1.admin.1").node_id;
+                let me = of(view, rdm_core::PathName::new("mesh1.admin", "1").unwrap()).node_id;
                 Ok(leads_of(&self.rows, view, node, Some(&me)))
             }
         }
 
         let (node, view) = world();
-        let m1 = of(&view, "mesh2.rpc.1");
-        let r3 = of(&view, "mesh1.rpc.3");
+        let m1 = of(&view, rdm_core::PathName::new("mesh2.rpc", "1").unwrap());
+        let r3 = of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap());
         let rows = vec![
             row(&m1, &node, ConnectionKind::Direct, ConnectionState::Connected),
             row(&r3, &node, ConnectionKind::Direct, ConnectionState::Connected),

@@ -80,7 +80,7 @@ pub struct StepView {
     /// The attempt the receipt belongs to.
     pub attempt: u32,
     /// The operation the step belongs to.
-    pub operation: String,
+    pub operation: crate::OperationId,
     /// The step.
     pub step: String,
     /// `"complete"` or `{"failed": {"reason"}}`.
@@ -92,7 +92,7 @@ pub struct StepView {
 pub struct BuildView {
     /// The Build's id.
     pub build_id: BuildId,
-    /// The complete accepted topology this Build realizes: per mesh, its node `path.name`s.
+    /// The complete accepted topology this Build realizes: per mesh, its node `(path, name)`s.
     pub topology: serde_json::Value,
     /// The change that produced it, tagged by `kind` (`add_node`, `remove_node`, ...): history.
     #[serde(default)]

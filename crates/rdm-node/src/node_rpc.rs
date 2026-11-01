@@ -68,7 +68,7 @@ impl ProcessNodeRpc {
 /// The resolver's view of a held birth; `None` when its transport id is not an
 /// Iroh key (it cannot be dialed).
 pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
-    Some(ResolvedNode {
+    Some(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind,
         node_id: d.node.node_id.clone(),
         name: d.node.name.clone(),
         endpoint_id: d.node.endpoint_id.0.parse().ok()?,
@@ -84,7 +84,7 @@ pub fn feed_once(digest_view: &DigestView, resolver: &LiveNodeResolver, node: &s
     for op in digest_view.deleted() {
         let applied = resolver.depart(&op.node_id, &op.incarnation, &op.name);
         if applied == Applied::Deleted {
-            tracing::info_span!("rdm.node_rpc.node.remove.via-topology", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())
+            tracing::info_span!("rdm.node_rpc.node.remove.via-topology", node, target_path = %op.name.path, target_name = %op.name.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
         }
     }
@@ -92,13 +92,13 @@ pub fn feed_once(digest_view: &DigestView, resolver: &LiveNodeResolver, node: &s
     let stopped = digest_view.stopped_digests().into_iter().map(|d| (d.node.node_id, d.node.incarnation, d.node.name)).chain(digest_view.stopped_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
     for (node_id, incarnation, name) in stopped {
         if resolver.stop(&node_id, &incarnation) {
-            tracing::info_span!("rdm.node_rpc.node.update.via-topology", node, target = %name, target_id = %node_id, incarnation_id = %incarnation.as_str(), change = "Stopped")
+            tracing::info_span!("rdm.node_rpc.node.update.via-topology", node, target_path = %name.path, target_name = %name.name, target_id = %node_id, incarnation_id = %incarnation.as_str(), change = "Stopped")
                 .in_scope(|| tracing::info!("the resolver holds the stopped birth by its exact id only: its path is given up"));
         }
     }
     for d in digest_view.all().into_iter().chain(digest_view.projected_unheard_at(std::time::Instant::now()).into_iter().map(|(d, _)| d)) {
         let Some(birth) = resolved(&d) else { continue };
-        let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.to_string());
+        let (target, target_id, incarnation) = (birth.node_id.to_string(), birth.node_id.to_string(), birth.incarnation.to_string());
         match resolver.apply(birth, d.node.supersedes.as_ref()) {
             Applied::Unchanged | Applied::Deleted => {}
             Applied::Refused(r) => tracing::info_span!("rdm.node_rpc.node.reject.via-topology", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, reason = ?r)

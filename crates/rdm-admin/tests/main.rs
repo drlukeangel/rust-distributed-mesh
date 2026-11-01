@@ -133,7 +133,7 @@ pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: 
         .map(|s| {
             let mut s = s.clone();
             if !current.topology.contains(&s.path) && s.executable.is_none() {
-                s.executable = Some(test_executable(s.path.kind));
+                s.executable = Some(test_executable(s.kind));
             }
             s
         })
@@ -149,11 +149,11 @@ pub async fn records_of(t: &rdm_admin::topology::Topology) -> std::sync::Arc<rdm
     use rdm_admin::node_rows::WriteRecord as _;
     let rows = std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     for n in &t.nodes {
-        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), rdm_admin::model::NodeStatus::Ready);
+        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), rdm_admin::model::NodeStatus::Ready);
         if let Some(incarnation) = &n.incarnation_id {
             row.birth_mut(incarnation, &n.name);
         }
-        rows.write_record(&row).await.unwrap_or_else(|e| panic!("{}'s record is written: {e}", n.name));
+        rows.write_record(&row).await.unwrap_or_else(|e| panic!("{:?}'s record is written: {e}", n.name));
     }
     rows
 }

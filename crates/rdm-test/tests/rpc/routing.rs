@@ -34,7 +34,7 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await;
     estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
-    let (b, c, p) = (estate.node_value("mesh1.rpc.1").await, estate.node_value("mesh1.rpc.2").await, estate.node_value("mesh1.rpc.3").await);
+    let (b, c, p) = (estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await);
     let (b_id, c_id) = (b["node_id"].as_str().unwrap().to_string(), c["node_id"].as_str().unwrap().to_string());
     let exact_b = format!("exact:{b_id}");
 
@@ -47,8 +47,10 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     assert_eq!(direct["reply"]["result"], json!({"found": true, "value": "one"}));
 
     // 2. ViaPeer through P to the same B: P's one inner call reaches B, which served.
-    estate.witness_holds_birth("mesh1.rpc.3", "mesh1.rpc.1").await;
-    let carried = estate.probe(&["get", "--target", &exact_b, "--via", "path:mesh1.rpc.3", "--key", "d1"]);
+    let carrier_id = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).await.node_id;
+    let carrier_target = format!("exact:{carrier_id}");
+    estate.witness_holds_birth(&rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
+    let carried = estate.probe(&["get", "--target", &exact_b, "--via", &carrier_target, "--key", "d1"]);
     assert_eq!((carried["outcome"].as_str(), carried["route"].as_str()), (Some("Reply"), Some("via-peer")), "{carried}");
     assert_eq!(carried["reply"]["executing_node"], b["node_id"], "the carrier reached exactly B: {carried}");
     assert_eq!(carried["reply"]["result"], json!({"found": true, "value": "one"}));
@@ -81,16 +83,17 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
         .collect();
     assert!(!direct_b.is_empty() && direct_b.iter().all(|r| r["attributes"]["outcome"] == "Reply"), "{direct_b:?}");
     let direct_served = served_in(&direct_b);
-    assert!(!direct_served.is_empty() && direct_served.iter().all(|s| s["attributes"]["incarnation_id"] == b["incarnation_id"]), "the direct calls were served by B's birth only: {direct_served:?}");
+    assert!(!direct_served.is_empty() && direct_served.iter().all(|s| s["attributes"]["node_id"] == b["node_id"] && s["attributes"]["incarnation_id"] == b["incarnation_id"]), "the direct calls were served by B's birth only: {direct_served:?}");
 
     let carried_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.serve.via-carried-inner").collect();
     assert_eq!(carried_t.len(), 1, "exactly one carried inner call in the whole run: {carried_t:?}");
     assert_eq!(carried_t[0]["attributes"]["target"], b_id, "the carrier was handed exactly B");
     let via = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "via-peer").collect::<Vec<_>>();
     assert_eq!(via.len(), 1, "{via:?}");
-    assert_eq!((via[0]["attributes"]["target"].as_str(), via[0]["attributes"]["carrier"].as_str(), via[0]["attributes"]["outcome"].as_str()), (Some(b_id.as_str()), Some("mesh1.rpc.3"), Some("Reply")));
+    assert_eq!((via[0]["attributes"]["target"].as_str(), via[0]["attributes"]["carrier"].as_str(), via[0]["attributes"]["outcome"].as_str()), (Some(b_id.as_str()), Some(carrier_id.as_str()), Some("Reply")));
     let via_served = served_in(&via);
-    assert!(via_served.iter().all(|s| s["attributes"]["incarnation_id"] == b["incarnation_id"]), "the carried call was served by B's birth only: {via_served:?}");
+    assert_eq!(via_served.len(), 1, "one carried proof-store request was served: {via_served:?}");
+    assert!(via_served.iter().all(|s| s["attributes"]["node_id"] == b["node_id"] && s["attributes"]["incarnation_id"] == b["incarnation_id"]), "the carried call was served by B's birth only: {via_served:?}");
 
     let none_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "no-active-route").collect();
     assert_eq!(none_t.len(), 1, "{none_t:?}");
@@ -101,10 +104,10 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     // NoActiveRoute choice opens none.
     let entry = estate.entry_birth();
     let opened: Vec<&Value> = spans.iter().filter(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")).collect();
-    assert!(opened.iter().all(|s| s["attributes"]["incarnation_id"] == entry.incarnation.as_str()), "no route: no connection was opened but the entry admin {}'s view read: {opened:?}", entry.name);
+    assert!(opened.iter().all(|s| s["attributes"]["incarnation_id"] == entry.incarnation.as_str()), "no route: no connection was opened but the entry admin {:?}'s view read: {opened:?}", entry.name);
     assert!(served_in(&none_t).is_empty(), "no route: nothing served");
 
-    let c_served: Vec<_> = served.iter().filter(|s| s["attributes"]["incarnation_id"] == c["incarnation_id"]).collect();
+    let c_served: Vec<_> = served.iter().filter(|s| s["attributes"]["node_id"] == c["node_id"] && s["attributes"]["incarnation_id"] == c["incarnation_id"]).collect();
     assert_eq!(c_served.len(), 1, "C served exactly the one call the domain selected it for: {c_served:?}");
     let _ = p;
 }

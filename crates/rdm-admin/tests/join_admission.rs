@@ -77,7 +77,7 @@ impl Capture {
 
 fn deployed() -> Deployed {
     Deployed { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
-        name: "mesh1.rpc.1".parse().unwrap(),
+        name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -93,7 +93,7 @@ fn deployed() -> Deployed {
 fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::mint(),
-        node: MeshNode { mesh: d.name.mesh.clone(), kind: d.name.kind,
+        node: MeshNode { mesh: d.mesh.clone(), kind: d.kind,
             node_id: d.node_id.clone(),
             name: d.name.clone(),
             endpoint_id: d.endpoint_id.clone(),
@@ -135,12 +135,12 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         let log = installed.clone();
         let door = JoinDoor {
             nodes: None,
-            me: "mesh1.admin.1".parse().unwrap(),
+            me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
             joins: joins.clone(),
             answer: Arc::new(|| {
                 Box::pin(async {
                     Ok(rdm_admin::wire::JoinAnswer {
-                        served_by: "mesh1.admin.1".into(),
+                        served_by: NodeId::parse("0123456789ab").unwrap(),
                         control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
@@ -150,7 +150,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
-            primary: Arc::new(|| Some("mesh1.admin.2".into())),
+            primary: Arc::new(|| Some(rdm_core::NodeId::parse("0123456789ab").unwrap())),
             atlas: None,
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
                 let t = rdm_transport::clock::RafkaTime::unadopted();
@@ -176,7 +176,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         let mut wrong_node = digest_of(&dep, "127.0.0.1:34567");
         wrong_node.node.node_id = NodeId::mint();
         let unknown = door.serve(peer.clone(), ask(&wrong_node)).await;
-        assert_eq!(unknown, JoinReply::NotPrimary { primary: Some("mesh1.admin.2".into()) });
+        assert_eq!(unknown, JoinReply::NotPrimary { primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) });
         assert!(installed.lock().unwrap().is_empty(), "a refused join installs nothing");
         assert!(reported.borrow().is_none(), "a refused join completes no WaitForBind");
 
@@ -217,12 +217,12 @@ fn atlas_holding(row: rdm_admin::storage::NodeRow) -> Arc<rdm_admin::atlas::Atla
 fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row: rdm_admin::storage::NodeRow) -> JoinDoor {
     JoinDoor {
         nodes: None,
-        me: "mesh1.admin.1".parse().unwrap(),
+        me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
         joins,
         answer: Arc::new(|| {
             Box::pin(async {
                 Ok(rdm_admin::wire::JoinAnswer {
-                    served_by: "mesh1.admin.1".into(),
+                    served_by: NodeId::parse("0123456789ab").unwrap(),
                     control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
                     statuses: vec![],
                 })
@@ -232,7 +232,7 @@ fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row:
         install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
         known: Arc::new(|| Box::pin(async {})),
         pending: Arc::new(|_, _| Box::pin(async {})),
-        primary: Arc::new(|| Some("mesh1.admin.2".into())),
+        primary: Arc::new(|| Some(rdm_core::NodeId::parse("0123456789ab").unwrap())),
         atlas: Some(atlas_holding(row)),
         issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
             let t = rdm_transport::clock::RafkaTime::unadopted();
@@ -257,7 +257,7 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: dep.kind, mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34569");
@@ -265,7 +265,7 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.config.as_ref().and_then(|c| c.get("tier")).map(String::as_str), Some("gold"), "the held birth is handed its row's config: {answer:?}");
-        assert_eq!(answer.control.name.as_ref().map(|n| n.to_string()).as_deref(), Some("mesh1.rpc.1"), "and its row's name");
+        assert_eq!(answer.control.name.as_ref(), Some(&dep.name), "and its row's name");
         json!({ "cell": cell, "joined": format!("{joined:?}") })
     });
     let spans = cap.spans();
@@ -276,11 +276,11 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
 }
 
 /// CONTRACT (R-JN1 items 1, 2 and 4; node-start.md step 2): the real admin door holds a birth stopped
-/// as `mesh1.rpc.1` whose row its mesh-primary renamed `mesh1.rpc.1.old` while it was stopped. A join
+/// as `mesh1.rpc.1` whose row its mesh-primary renamed `(mesh1.rpc, 1-old)` while it was stopped. A join
 /// of that exact birth naming `mesh1.rpc.7`, neither the row's name nor the name the authority last
 /// accepted, is refused `JoinMismatch("name")` naming all three, installs nothing and completes no
 /// report (`via-join-mismatch`, field `name`). The join naming `mesh1.rpc.1`, the last accepted name,
-/// is admitted under the row's: the installed digest and the answer name `mesh1.rpc.1.old`. Not a
+/// is admitted under the row's: the installed digest and the answer name `(mesh1.rpc, 1-old)`. Not a
 /// scenario cell: a real node presents the name it holds, which is the name its authority last
 /// accepted (it publishes only that name, and `node.update` of a stopped node tells it nothing), so no
 /// sequence of operations makes a real node present a third name.
@@ -290,47 +290,47 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);
-    let dep = Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), held: true, ..deployed() };
+    let dep = Deployed { name: rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap(), last_accepted_name: Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), held: true, ..deployed() };
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34570");
-        third.node.name = "mesh1.rpc.7".parse().unwrap();
+        third.node.name = rdm_core::PathName::new("mesh1.rpc", "7").unwrap();
         let refused = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&third).into(), listeners: Vec::new() }).await;
         match &refused {
             JoinReply::JoinMismatch { field, deployed, reported } => {
                 assert_eq!(field, "name", "{refused:?}");
-                assert!(deployed.contains("mesh1.rpc.1.old") && deployed.contains("last accepted") && deployed.contains("\"mesh1.rpc.1\"") && reported.contains("mesh1.rpc.7"), "the refusal names the row's, the last accepted and the reported name: {refused:?}");
+                assert!(deployed.contains("\"1-old\"") && deployed.contains("last accepted") && deployed.contains("\"1\"") && reported.contains("\"7\""), "the refusal names the row's, the last accepted and the reported name: {refused:?}");
             }
             other => panic!("a third name is refused by name: {other:?}"),
         }
         assert!(installed.lock().unwrap().is_empty(), "a refused join installs nothing");
         assert!(reported.borrow().is_none(), "a refused join completes no report");
         let mut held = digest_of(&dep, "127.0.0.1:34570");
-        held.node.name = "mesh1.rpc.1".parse().unwrap();
+        held.node.name = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&held).into(), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("the last accepted name is admitted: {joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
-        assert_eq!(answer.control.name.as_ref().map(|n| n.to_string()).as_deref(), Some("mesh1.rpc.1.old"), "the answer hands the row's name");
-        assert_eq!(reported.borrow().as_ref().map(|d| d.digest.node.name.to_string()).as_deref(), Some("mesh1.rpc.1.old"), "the digest installed is canonicalized to the row's name");
+        assert_eq!(answer.control.name.as_ref(), Some(&dep.name), "the answer hands the row's name");
+        assert_eq!(reported.borrow().as_ref().map(|d| d.digest.node.name.clone()), Some(dep.name.clone()), "the digest installed is canonicalized to the row's name");
         json!({ "cell": cell, "refused": format!("{refused:?}"), "joined": format!("{joined:?}") })
     });
     let spans = cap.spans();
     let refusal = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.reject.via-join-mismatch").expect("the refusal is a span of its own");
-    assert_eq!((refusal["attributes"]["field"].as_str(), refusal["attributes"]["node"].as_str()), (Some("name"), Some("mesh1.rpc.7")), "{refusal}");
+    assert_eq!((refusal["attributes"]["field"].as_str(), refusal["attributes"]["node_path"].as_str(), refusal["attributes"]["node_name"].as_str()), (Some("name"), Some("mesh1.rpc"), Some("7")), "{refusal}");
     let admitted = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["outcome"] == "installed").expect("the held name's join is installed");
-    assert_eq!((admitted["attributes"]["node"].as_str(), admitted["attributes"]["admitted_as"].as_str()), (Some("mesh1.rpc.1"), Some("mesh1.rpc.1.old")), "{admitted}");
+    assert_eq!((admitted["attributes"]["node_path"].as_str(), admitted["attributes"]["node_name"].as_str(), admitted["attributes"]["admitted_path"].as_str(), admitted["attributes"]["admitted_name"].as_str()), (Some("mesh1.rpc"), Some("1"), Some("mesh1.rpc"), Some("1-old")), "{admitted}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
 /// CONTRACT (R-JN1 item 6; node-create.md step 4; node-recovery.md steps 3-4): a first start (a
 /// birth this authority does not hold: no last accepted name) is admitted under its create spec's
-/// name whatever row stands at that `path.name`. A recovery creates the new node at the exited
-/// node's `path.name`; where another node's row stands there at the join (a create that wrote no
+/// name whatever row stands at that `(path, name)`. A recovery creates the new node at the exited
+/// node's `(path, name)`; where another node's row stands there at the join (a create that wrote no
 /// claim over the predecessor's `Deleted` row), the join installs the reported address and answers
 /// `Joined` with no config handed, never `JoinMismatch` naming the predecessor's row. Only a held
 /// birth's join is refused over another node's row.
@@ -346,7 +346,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
         let log = installed.clone();
-        let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, writer: None,
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: dep.kind, mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
             name: dep.name.clone(),
             node_id: predecessor.clone(),
             status: rdm_admin::model::NodeStatus::Deleted,
@@ -362,12 +362,12 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         };
         let door = JoinDoor {
             nodes: None,
-            me: "mesh1.admin.1".parse().unwrap(),
+            me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
             joins: joins.clone(),
             answer: Arc::new(|| {
                 Box::pin(async {
                     Ok(rdm_admin::wire::JoinAnswer {
-                        served_by: "mesh1.admin.1".into(),
+                        served_by: NodeId::parse("0123456789ab").unwrap(),
                         control: rdm_admin::wire::JoinControl { cert_policy: None, provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
@@ -377,7 +377,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
-            primary: Arc::new(|| Some("mesh1.admin.2".into())),
+            primary: Arc::new(|| Some(rdm_core::NodeId::parse("0123456789ab").unwrap())),
             atlas: Some(atlas_holding(row)),
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
                 let t = rdm_transport::clock::RafkaTime::unadopted();
@@ -397,7 +397,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
     });
     let spans = cap.spans();
     let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
-    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["admitted_as"].as_str()), (Some("installed"), Some("mesh1.rpc.1")), "{join}");
+    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["admitted_path"].as_str(), join["attributes"]["admitted_name"].as_str()), (Some("installed"), Some("mesh1.rpc"), Some("1")), "{join}");
     assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.reject.via-join-mismatch").count(), 0, "no refusal names the predecessor's row");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
@@ -424,16 +424,16 @@ fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_the_rows_config() {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<String>>> = Arc::default();
         let log = installed.clone();
-        let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: dep.kind, mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
         let mut door = door_over(joins.clone(), Arc::default(), row);
-        door.install = Arc::new(move |d| log.lock().unwrap().push(d.node.name.to_string()));
+        door.install = Arc::new(move |d| log.lock().unwrap().push(d.node.node_id.to_string()));
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34570");
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into(), listeners: Vec::new() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.config.as_ref(), Some(&gold), "the first start is handed its own row's config: {answer:?}");
-        assert_eq!(*installed.lock().unwrap(), vec![dep.name.to_string()], "the birth is installed once");
+        assert_eq!(*installed.lock().unwrap(), vec![dep.node_id.to_string()], "the birth is installed once");
         json!({ "cell": cell, "joined": format!("{joined:?}") })
     });
     let spans = cap.spans();
@@ -452,7 +452,7 @@ fn a_join_over_the_types_bound_is_malformed_by_name_and_never_a_member() {
         let installed = Arc::new(Mutex::new(Vec::new()));
         let dep = deployed();
         let reported = joins.expect(dep.clone());
-        let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: dep.kind, mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
         let mut door = door_over(joins, installed.clone(), row);
         let declarations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         door.types = Arc::new({let declarations=declarations.clone(); move |_, _| {declarations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);Box::pin(async{Ok(())})}});
@@ -478,7 +478,7 @@ fn an_exact_birth_cannot_change_its_declared_types_on_a_repeated_join() {
     cap.run(async {
         let dep=deployed();let joins=Arc::new(Joins::default());let reported=joins.expect(dep.clone());
         let installed=Arc::new(Mutex::new(Vec::new()));
-        let row=rdm_admin::storage::NodeRow{initial_properties:None,writer:None,name:dep.name.clone(),node_id:dep.node_id.clone(),status:rdm_admin::model::NodeStatus::Pending,config:Default::default(),tags:Default::default(),allocated:None,renamed_from:None,inherited_by:None,app_types:Some(rdm_admin::storage::AppTypes{incarnation:dep.incarnation.clone(),types:["app.one".to_string()].into()}),executable:None,births:Vec::new(),predecessor:None,mesh_id:None,storage_persistence:None,topology_storage_provider:None,placement:None, revision: 0};
+        let row=rdm_admin::storage::NodeRow{ replacement_from: None, kind: dep.kind, mesh: dep.mesh.clone(),initial_properties:None,writer:None,name:dep.name.clone(),node_id:dep.node_id.clone(),status:rdm_admin::model::NodeStatus::Pending,config:Default::default(),tags:Default::default(),allocated:None,renamed_from:None,inherited_by:None,app_types:Some(rdm_admin::storage::AppTypes{incarnation:dep.incarnation.clone(),types:["app.one".to_string()].into()}),executable:None,births:Vec::new(),predecessor:None,mesh_id:None,storage_persistence:None,topology_storage_provider:None,placement:None, revision: 0};
         let door=door_over(joins,installed.clone(),row);
         let digest=digest_of(&dep,"127.0.0.1:34567");
         let changed=door.serve(dep.endpoint_id.clone(),JoinRequest::JoinNode{digest:(&digest).into(),types:vec!["app.two".into()],listeners:Vec::new()}).await;
@@ -499,17 +499,17 @@ fn an_exact_birth_cannot_change_its_declared_types_on_a_repeated_join() {
 fn the_door_records_every_accepted_join_reports_pending_before_it_answers_and_no_refused_ones() {
     let cell = "the_door_records_every_accepted_join_reports_pending_before_it_answers_and_no_refused_ones";
     let cap = capture(cell);
-    let dep = Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), held: true, ..deployed() };
+    let dep = Deployed { name: rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap(), last_accepted_name: Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), held: true, ..deployed() };
     cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
         let mut door = door_over(joins.clone(), installed.clone(), row);
         let order: Arc<Mutex<Vec<String>>> = Arc::default();
         door.pending = {
             let order = order.clone();
             Arc::new(move |d, _| {
-                order.lock().unwrap().push(format!("pending {} {}", d.node.name, d.node.incarnation.as_str()));
+                order.lock().unwrap().push(format!("pending {} {}", d.node.node_id, d.node.incarnation.as_str()));
                 Box::pin(async {})
             })
         };
@@ -523,17 +523,17 @@ fn the_door_records_every_accepted_join_reports_pending_before_it_answers_and_no
         };
         let _reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34571");
-        third.node.name = "mesh1.rpc.7".parse().unwrap();
+        third.node.name = rdm_core::PathName::new("mesh1.rpc", "7").unwrap();
         let refused = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&third).into(), listeners: Vec::new() }).await;
         assert!(matches!(refused, JoinReply::JoinMismatch { .. }), "{refused:?}");
         assert!(order.lock().unwrap().is_empty(), "a refused report records no Pending: {:?}", order.lock().unwrap());
         let mut report = digest_of(&dep, "127.0.0.1:34571");
-        report.node.name = "mesh1.rpc.1".parse().unwrap();
+        report.node.name = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         for _ in 0..2 {
             let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&report).into(), listeners: Vec::new() }).await;
             assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
         }
-        let pending = format!("pending mesh1.rpc.1.old {}", dep.incarnation.as_str());
+        let pending = format!("pending {} {}", dep.node_id, dep.incarnation.as_str());
         assert_eq!(*order.lock().unwrap(), vec![pending.clone(), "answer".to_string(), pending, "answer".to_string()], "each accepted report's Pending, under the row's name, precedes its answer");
     });
 }
@@ -554,11 +554,11 @@ fn a_join_report_whose_listeners_are_not_exactly_the_assigned_is_refused_by_name
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);
     let assigned: Vec<(String, std::net::SocketAddr)> = ["kafka", "rest", "proxy"].iter().map(|n| (n.to_string(), "127.0.0.1:0".parse().unwrap())).collect();
-    let dep = Deployed { kind: rdm_core::NodeKind::Gateway, name: "mesh1.gateway.1".parse().unwrap(), listeners: assigned, ..deployed() };
+    let dep = Deployed { kind: rdm_core::NodeKind::Gateway, name: rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), listeners: assigned, ..deployed() };
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::Gateway, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let digest = digest_of(&dep, "127.0.0.1:34580");
@@ -618,10 +618,10 @@ fn a_join_is_handed_its_rows_config_from_the_atlas_with_the_store_unreadable() {
         std::fs::create_dir_all(&store).unwrap();
         let writer = rdm_admin::store_log::LogWriter::new(&NodeId::mint(), &IncarnationId::mint());
         let storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&store, &rdm_admin::store_root::StoreRoot::at(&store), "mesh1", &writer).await.unwrap());
-        let row = rdm_admin::storage::NodeRow { initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: dep.kind, mesh: dep.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, revision: 0, writer: None };
         let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
         let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
-        written.feeds(atlas.clone());
+        written.feeds(atlas.clone()).await;
         written.put(&*storage, &row).await.unwrap();
         let file = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().is_some_and(|n| n == "nodes.jsonl")).expect("the nodes store's file");
         use std::io::Write as _;

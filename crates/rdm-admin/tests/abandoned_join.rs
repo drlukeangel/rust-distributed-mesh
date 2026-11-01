@@ -113,19 +113,20 @@ fn receipt_output(view: &rdm_admin::build_state::BuildProjection, step: &str) ->
 fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_and_birth() {
     let cap = capture();
     cap.run(async {
+        let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
-        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: executor.clone() }).await.unwrap();
         let data_root = std::env::temp_dir().join(format!("i143-rb2-{}", NodeId::mint()));
         let template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rb2-none".into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -146,8 +147,8 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             template: &template,
             timeouts: Timeouts { bind: Duration::from_millis(300), ..Timeouts::default() },
         };
-        let name: rdm_admin::model::PathName = "mesh1.rpc.1".parse().unwrap();
-        let err = pipeline.create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 3, node: name.clone(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None }).await.unwrap_err();
+        let name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let err = pipeline.create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(name)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 3, node: name.clone(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None }).await.unwrap_err();
         assert_eq!(err.step, "WaitForBind", "{err}");
 
         // The exact birth the create deployed, from its own receipts and data dir.
@@ -156,11 +157,11 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let node_id = NodeId::parse(identity["node_id"].as_str().unwrap()).unwrap();
         let incarnation = IncarnationId::parse(identity["incarnation"].as_str().unwrap()).unwrap();
         let endpoint_id = EndpointId(receipt_output(&view, "PrepareStorage").as_str().unwrap().to_string());
-        let data_dir = data_root.join(format!("{name}-{node_id}"));
+        let data_dir = rdm_admin::deployment::node_data_dir(&data_root, &node_id);
         let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
         let digest = |incarnation: &IncarnationId| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: MeshNode { mesh: name.mesh.clone(), kind: name.kind,
+            node: MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: node_id.clone(),
                 name: name.clone(),
                 endpoint_id: endpoint_id.clone(),
@@ -184,7 +185,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let count = installed.clone();
         let door = JoinDoor {
             nodes: None,
-            me: "mesh1.admin.1".parse().unwrap(),
+            me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
             joins: joins.clone(),
             answer: Arc::new(|| Box::pin(async { Err("a refused join is never answered".to_string()) })),
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
@@ -193,7 +194,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             }),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
-            primary: Arc::new(|| Some("mesh1.admin.1".into())),
+            primary: { let id = executor.node_id.clone(); Arc::new(move || Some(id.clone())) },
             atlas: None,
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
                 let t = rdm_transport::clock::RafkaTime::unadopted();

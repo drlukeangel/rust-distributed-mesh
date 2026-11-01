@@ -13,7 +13,7 @@
 
 use rdm_client::{NodeStatus, NodeView};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
-use rdm_test::typed::fabric_view_of;
+use rdm_test::typed::fabric_view_of_id;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -59,9 +59,9 @@ fn mesh(name: &str) -> (&str, u32, u32) {
 
 /// One process of the run, as the control APIs and the host describe it.
 async fn describe(estate: &Estate, node: &Value) -> Value {
-    let name = s(&node["name"]);
+    let name: rdm_core::PathName = serde_json::from_value(node["name"].clone()).expect("structured location");
     let pid = match estate.bootstrap_pid() {
-        Some(p) if name == "mesh1.admin.1" => u64::from(p),
+        Some(p) if name == rdm_core::PathName::new("mesh1.admin", "1").unwrap() => u64::from(p),
         _ => estate.pid_of(&name).await,
     };
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
@@ -96,23 +96,26 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
 
     // The role's primary and the mesh that outlives it.
     let primary = estate.fabric_view().await.fabric_primary.expect("the fabric names its primary").to_string();
-    let lost_mesh = primary.split('.').next().unwrap().to_string();
+    let primary_record = before.iter().find(|n| s(&n["node_id"]) == primary).expect("fabric primary in view");
+    let primary_location: rdm_core::PathName = serde_json::from_value(primary_record["name"].clone()).unwrap();
+    let lost_mesh = s(&primary_record["mesh"]);
     let survivor_mesh = if lost_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
 
     // Every process of the run before the loss: API/control endpoints, data-dir bindings, host.
     let mut described: BTreeMap<String, Value> = BTreeMap::new();
     for n in &before {
-        described.insert(s(&n["name"]), describe(&estate, n).await);
+        described.insert(s(&n["node_id"]), describe(&estate, n).await);
     }
     let run_bases: BTreeSet<String> = described.values().filter(|d| d["kind"] == "node_admin").map(|d| s(&d["admin_api_base"])).collect();
-    let admin_base_owner: BTreeMap<String, String> = described.values().filter(|d| d["kind"] == "node_admin").map(|d| (s(&d["admin_api_base"]), s(&d["name"]))).collect();
+    let admin_base_owner: BTreeMap<String, String> = described.values().filter(|d| d["kind"] == "node_admin").map(|d| (s(&d["admin_api_base"]), s(&d["node_id"]))).collect();
     assert_eq!(run_bases.len(), 4, "four admins, four control endpoints: {run_bases:?}");
-    let lost_pids: Vec<(String, u64)> = described.values().filter(|d| d["mesh"] == lost_mesh.as_str()).map(|d| (s(&d["name"]), d["host"]["pid"].as_u64().unwrap())).collect();
-    let survivors: Vec<String> = described.values().filter(|d| d["mesh"] == survivor_mesh.as_str() && d["kind"] == "node_admin").map(|d| s(&d["name"])).collect();
-    let survivor_pids: BTreeMap<String, u64> = described.values().filter(|d| survivors.contains(&s(&d["name"]))).map(|d| (s(&d["name"]), d["host"]["pid"].as_u64().unwrap())).collect();
+    let lost_pids: Vec<(String, u64)> = described.values().filter(|d| d["mesh"] == lost_mesh.as_str()).map(|d| (s(&d["node_id"]), d["host"]["pid"].as_u64().unwrap())).collect();
+    let survivors: Vec<String> = described.values().filter(|d| d["mesh"] == survivor_mesh.as_str() && d["kind"] == "node_admin").map(|d| s(&d["node_id"])).collect();
+    let survivor_pids: BTreeMap<String, u64> = described.values().filter(|d| survivors.contains(&s(&d["node_id"]))).map(|d| (s(&d["node_id"]), d["host"]["pid"].as_u64().unwrap())).collect();
     let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| s(&described[n]["admin_api_base"])).collect();
     // Control moves to the surviving mesh's admins before the loss: they execute the delete.
-    estate.enter(&Estate::path(&survivors[0])).await;
+    let entry: rdm_core::PathName = serde_json::from_value(described[&survivors[0]]["name"].clone()).unwrap();
+    estate.enter(&entry).await;
     let fabric_id = estate.fabric_id.clone();
 
     // Every survivor is asked, continuously through the loss, who holds the fabric, and the
@@ -127,7 +130,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
             while !stop.load(Ordering::SeqCst) {
                 for (from, from_base) in &asked {
                     let at = now_ns();
-                    let row = match fabric_view_of(&peers, &from.parse().unwrap(), &fabric_id).await {
+                    let row = match fabric_view_of_id(&peers, &from.parse().unwrap(), &fabric_id).await {
                         None => json!({"at_unix_nano": at, "asked": from_base, "answered": false}),
                         Some(f) => {
                             let advertised = f.admin_api_base.clone().unwrap_or_default();
@@ -135,9 +138,9 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
                             if advertised.is_empty() {
                                 json!({"at_unix_nano": at, "asked": from_base, "answered": true, "fabric_primary": primary, "advertised": null})
                             } else {
-                                // The advertised primary is asked straight after, by the name the view gave.
+                                // The advertised primary is asked straight after, by the node ID the view gave.
                                 let followed = match f.fabric_primary.as_ref() {
-                                    Some(h) => fabric_view_of(&peers, h, &fabric_id).await,
+                                    Some(h) => fabric_view_of_id(&peers, h, &fabric_id).await,
                                     None => None,
                                 };
                                 json!({
@@ -170,7 +173,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
             (left.len() == 1 && left[0].status == NodeStatus::Ready).then(|| left[0].name.clone())
         })
         .await;
-    let mut delete = estate.nodes_obj().await.delete(&last).await.unwrap_or_else(|e| panic!("the node.delete of the lost mesh's last admin {last} was refused: {e}"));
+    let mut delete = estate.nodes_obj().await.delete(&last).await.unwrap_or_else(|e| panic!("the node.delete of the lost mesh's last admin {last:?} was refused: {e}"));
     Estate::complete(&mut delete).await;
     // The former primary's runtimes: terminal, observed by the host.
     for (name, pid) in &lost_pids {
@@ -182,10 +185,11 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let consistent = std::sync::atomic::AtomicUsize::new(0);
     let agrees = || async {
         for name in &survivors {
-            let f = estate.fabric_view_at(&name.parse().unwrap()).await?;
+            let peers = estate.peers().await;
+            let f = fabric_view_of_id(&peers, &name.parse().unwrap(), &fabric_id).await?;
             let (primary, advertised) = (f.fabric_primary.clone()?, f.admin_api_base.clone().unwrap_or_default());
-            let own = estate.fabric_view_at(&primary).await?;
-            if !primary.to_string().starts_with(&format!("{survivor_mesh}.admin.")) || own.fabric_primary.as_ref() != Some(&primary) || !survivor_bases.contains(&advertised) {
+            let own = fabric_view_of_id(&peers, &primary, &fabric_id).await?;
+            if !after.iter().any(|n| n["node_id"] == primary.as_str() && n["mesh"] == survivor_mesh && n["kind"] == "node_admin" && n["status"] == "ready") || own.fabric_primary.as_ref() != Some(&primary) || !survivor_bases.contains(&advertised) {
                 return None;
             }
         }
@@ -207,19 +211,22 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let fabric_now = estate.fabric_view().await;
     let new_primary = fabric_now.fabric_primary.as_ref().map(|h| h.to_string()).unwrap_or_default();
     let new_base = fabric_now.admin_api_base.clone().unwrap_or_default();
-    let primary_record = after.iter().find(|n| s(&n["name"]) == new_primary).unwrap_or_else(|| panic!("the new primary {new_primary} is a ready admin of the surviving view: {after:#?}")).clone();
+    let primary_record = after.iter().find(|n| s(&n["node_id"]) == new_primary).unwrap_or_else(|| panic!("the new primary {new_primary} is a ready admin of the surviving view: {after:#?}")).clone();
     assert_eq!(s(&primary_record["admin_api_base"]), new_base, "the advertised authority is the holder's own control endpoint");
     assert!(survivor_bases.contains(&new_base), "the authority endpoint belongs to a surviving birth of this run: {new_base} not in {survivor_bases:?}");
     let mut survivors_after = BTreeMap::new();
     for n in after.iter().filter(|n| n["kind"] == "node_admin") {
-        let name = s(&n["name"]);
+        let name = s(&n["node_id"]);
         let base = s(&n["admin_api_base"]);
-        let fabric_view = estate.fabric_view_at(&name.parse().unwrap()).await.map(|f| serde_json::to_value(f).expect("a view serializes"));
-        let nodes_view = estate.node_values_at(&name).await;
+        let peers = estate.peers().await;
+        let node_id: rdm_core::NodeId = name.parse().unwrap();
+        let fabric_view = fabric_view_of_id(&peers, &node_id, &fabric_id).await.map(|f| serde_json::to_value(f).expect("a view serializes"));
+        let nodes_view = rdm_client::Nodes::new(peers.carrier_for(node_id)).get(&rdm_client::Filter::new()).await.expect("survivor node view").into_iter().map(|n| serde_json::to_value(n).unwrap()).collect::<Vec<_>>();
         survivors_after.insert(name.clone(), json!({"admin_api_base": base, "node": describe(&estate, n).await, "fabric": fabric_view, "nodes_seen": nodes_view.iter().map(|v| json!({"name": v["name"], "status": v["status"], "is_primary": v["is_primary"], "is_fabric_primary": v["is_fabric_primary"], "admin_api_base": v["admin_api_base"]})).collect::<Vec<_>>()}));
     }
 
-    estate.enter(&Estate::path(&new_primary)).await;
+    let entry: rdm_core::PathName = serde_json::from_value(primary_record["name"].clone()).unwrap();
+    estate.enter(&entry).await;
     estate.stop().await;
     let spans = estate.spans();
 
@@ -239,11 +246,11 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     // The hand-off precedes the former primary's end: a surviving admin announced the new fabric
     // primary (survivor mesh) before the former primary's runtime was gone (the delete pipeline's terminate step ended).
     let recompute = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
-    let handed_off: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["election_level"] == "fabric_primary" && sp["attributes"]["winner_mesh"] == survivor_mesh.as_str() && s(&sp["attributes"]["previous"]).starts_with(&format!("{lost_mesh}."))).collect();
+    let handed_off: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["election_level"] == "fabric_primary" && sp["attributes"]["winner_mesh"] == survivor_mesh.as_str() && sp["attributes"]["previous_node_id"] == primary).collect();
     assert!(!handed_off.is_empty(), "a surviving admin announced the new fabric primary of {survivor_mesh}, succeeding {lost_mesh}'s");
     let first_handoff = handed_off.iter().map(|sp| sp["start_unix_nano"].as_u64().unwrap()).min().unwrap();
     let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
-    let primary_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == primary.as_str() && sp["attributes"]["build_id"] == build_id.as_str()).collect();
+    let primary_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node_path"] == primary_location.path && sp["attributes"]["node_name"] == primary_location.name && sp["attributes"]["build_id"] == build_id.as_str()).collect();
     assert_eq!(primary_terminate.len(), 1, "the delete pipeline terminated the former primary {primary} once under {build_id}: {primary_terminate:?}");
     assert_eq!(primary_terminate[0]["attributes"]["outcome"], "complete");
     let terminate_began = primary_terminate[0]["start_unix_nano"].as_u64().unwrap();

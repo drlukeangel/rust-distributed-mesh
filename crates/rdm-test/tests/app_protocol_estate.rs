@@ -102,8 +102,8 @@ async fn day0(dir: &Path) -> Day0 {
         .expect("the Day-0 admin comes up");
     let (dialer, acceptor) = running.connections(APP_PROTOCOL).expect("the app takes its protocol's Connections from the admin").split();
     let me = running.birth();
-    let echo = echo_streams(acceptor, me.name.to_string());
-    let admin = ResolvedNode { node_id: me.node_id.clone(), name: me.name.clone(), endpoint_id: me.endpoint_id.0.parse().unwrap(), incarnation: me.incarnation.clone(), transport_addr: me.transport_addr };
+    let echo = echo_streams(acceptor, me.node_id.to_string());
+    let admin = ResolvedNode { mesh: me.mesh.clone(), kind: me.kind, node_id: me.node_id.clone(), name: me.name.clone(), endpoint_id: me.endpoint_id.0.parse().unwrap(), incarnation: me.incarnation.clone(), transport_addr: me.transport_addr };
     let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(admin);
@@ -152,7 +152,7 @@ impl Day0 {
     async fn until_ready(&self, node: &PathName) {
         tokio::time::timeout(WRONG, async {
             loop {
-                let listed = rdm_test::typed::mesh_nodes(&self.nodes, &node.mesh).await.unwrap_or_else(|e| panic!("node.get [mesh: {}]: {e}", node.mesh));
+                let listed = self.nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [{node:?}]: {e}"));
                 if listed.iter().any(|n| &n.name == node && n.status == NodeStatus::Ready) {
                     return;
                 }
@@ -160,10 +160,10 @@ impl Day0 {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("{node} never listed ready"));
+        .unwrap_or_else(|_| panic!("{node:?} never listed ready"));
     }
 
-    /// The fabric's own status ready: a node.restart and a new mesh are run once the fabric
+    /// The fabric's own status ready: a node.stop then node.start and a new mesh are run once the fabric
     /// first reached it (states.md, "The initial fabric before ready").
     async fn until_fabric_ready(&self) {
         tokio::time::timeout(WRONG, async {
@@ -191,40 +191,40 @@ impl Day0 {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("the Day-0 admin never resolved {node}"))
+        .unwrap_or_else(|_| panic!("the Day-0 admin never resolved {node:?}"))
     }
 
     /// The Day-0 admin dials `node` on the app protocol: admitted, its stream echoed by the node's app.
     async fn dials(&self, node: &ResolvedNode) {
-        let to = Birth { name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
+        let to = Birth { mesh: node.mesh.clone(), kind: node.kind, name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
         let conn = match tokio::time::timeout(WRONG, self.dialer.open(&to)).await {
             Ok(Ok(c)) => c,
-            Ok(Err(e)) => panic!("the Day-0 admin's dial to {} on an app protocol is refused: {e:?}", node.name),
-            Err(_) => panic!("the Day-0 admin's dial to {} never ended", node.name),
+            Ok(Err(e)) => panic!("the Day-0 admin's dial to {:?} on an app protocol is refused: {e:?}", node.name),
+            Err(_) => panic!("the Day-0 admin's dial to {:?} never ended", node.name),
         };
-        let (mut send, mut recv) = conn.open_bi().await.unwrap_or_else(|e| panic!("a stream to {}: {e:?}", node.name));
+        let (mut send, mut recv) = conn.open_bi().await.unwrap_or_else(|e| panic!("a stream to {:?}: {e:?}", node.name));
         send.write_all(b"from the Day-0 admin").await.unwrap();
         send.finish().unwrap();
         let answered = tokio::time::timeout(WRONG, recv.read_to_end(1 << 16)).await.expect("the node answers").expect("the answer reads whole");
-        assert_eq!(String::from_utf8_lossy(&answered), format!("echo {}: from the Day-0 admin", node.name), "{}'s app answered the Day-0 admin's admitted connection", node.name);
+        assert_eq!(String::from_utf8_lossy(&answered), format!("echo {}: from the Day-0 admin", node.node_id), "{:?}'s app answered the Day-0 admin's admitted connection", node.name);
     }
 
     /// `node` dials the Day-0 admin on the app protocol through its originate door: admitted, its stream
     /// echoed by the admin's app.
     async fn dialed_by(&self, node: &ResolvedNode) {
-        let me = self.running.birth().name.to_string();
-        let req = OriginateRequest::Stream { destination: me.clone(), payload: format!("from {}", node.name).into_bytes() };
+        let me = self.running.birth().node_id.clone();
+        let req = OriginateRequest::Stream { destination: me.clone(), payload: format!("from {}", node.node_id).into_bytes() };
         let opts = CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(30)), ..CallOptions::default() };
         let (out, _) = self.running.node_rpc.client.call::<Originate>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
         match out {
             rdm_core::outcome::RpcOutcome::Reply(r) => match r.into_value() {
                 OriginateReply::Streamed { answered, peer, .. } => {
-                    assert_eq!(peer.node, me, "{} reached the Day-0 admin", node.name);
-                    assert_eq!(String::from_utf8_lossy(&answered), format!("echo {me}: from {}", node.name), "the Day-0 admin's app answered {}'s admitted connection", node.name);
+                    assert_eq!(peer.node_id, me.as_str(), "{:?} reached the Day-0 admin", node.name);
+                    assert_eq!(String::from_utf8_lossy(&answered), format!("echo {me}: from {}", node.node_id), "the Day-0 admin's app answered {:?}'s admitted connection", node.name);
                 }
-                other => panic!("{}'s dial to the Day-0 admin on an app protocol failed: {other:?}", node.name),
+                other => panic!("{:?}'s dial to the Day-0 admin on an app protocol failed: {other:?}", node.name),
             },
-            other => panic!("the originate door of {} ended {other:?}", node.name),
+            other => panic!("the originate door of {:?} ended {other:?}", node.name),
         }
     }
 
@@ -247,7 +247,7 @@ fn run(cell: &str, body: impl FnOnce(PathBuf) -> std::pin::Pin<Box<dyn std::futu
 /// CONTRACT (fabric-certs.md §When a cert is issued, §On a connection; node-connections-admit.md): in a
 /// one-mesh fabric the Day-0 node-admin dials an rpc node of its mesh on a registered app protocol and is
 /// admitted (its stream answered by the node's app), and the rpc node's dial to the Day-0 admin is
-/// admitted; after the rpc node's `node.restart` (the same birth, its start's join issuing it a fresh cert, and its drop record of the Day-0 admin dialled again, connections.md §7) both
+/// admitted; after the rpc node's `node.stop then node.start` (the same birth, its start's join issuing it a fresh cert, and its drop record of the Day-0 admin dialled again, connections.md §7) both
 /// directions are admitted again. A second node-admin stopped and started as the same birth installs a
 /// fresh member cert at its start's join. Must NOT happen: the Day-0 admin refused `no-credential` (Rafka 141).
 #[test]
@@ -257,14 +257,14 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
             let d = day0(&dir).await;
             // Two rpc nodes: a restart of the type primary hands the role to the other first (node-stop.md "Primary": a sole one is refused no-secondary).
             d.reconcile(&[MeshDesired::of("mesh1", [(LaunchKind::NodeAdmin, 2), (LaunchKind::RpcNode, 2)])]).await;
-            let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
+            let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
             d.until_ready(&rpc).await;
             d.until_fabric_ready().await;
             // A launched admin restarted as the same birth (node.stop, then node.start: same node.id and
             // incarnation) is issued a fresh member cert by its start's join and installs it. A process
             // admin takes no app protocol (`entry::run_on`), so its dials are proved in process
             // (`rdm-admin`'s `app_protocol_dials`); here the install is read from its evidence.
-            let admin2: PathName = "mesh1.admin.2".parse().unwrap();
+            let admin2: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
             d.until_ready(&admin2).await;
             let before = d.resolved(&admin2, None).await;
             Estate::workflow("node.stop of mesh1.admin.2", d.nodes.stop(&admin2).await).await;
@@ -273,7 +273,7 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
             let same = before.incarnation.as_str().to_string();
             let installs = tokio::time::timeout(WRONG, async {
                 loop {
-                    let of_birth: Vec<(String, u64)> = installs_of(&dir, "mesh1.admin.2").into_iter().filter(|(i, l)| *i == same && *l > 0).collect();
+                    let of_birth: Vec<(String, u64)> = installs_of(&dir, before.node_id.as_str()).into_iter().filter(|(i, l)| *i == same && *l > 0).collect();
                     if of_birth.len() >= 2 {
                         return of_birth;
                     }
@@ -281,7 +281,7 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
                 }
             })
             .await
-            .unwrap_or_else(|_| panic!("mesh1.admin.2 ({same}) installed no member cert at its start after its stop: {:?}", installs_of(&dir, "mesh1.admin.2")));
+            .unwrap_or_else(|_| panic!("mesh1.admin.2 ({same}) installed no member cert at its start after its stop: {:?}", installs_of(&dir, before.node_id.as_str())));
             assert!(installs.len() >= 2, "a cert at its create and another at its start, same birth: {installs:?}");
             let first = d.resolved(&rpc, None).await;
             d.both_ways(&first).await;
@@ -294,7 +294,7 @@ fn the_day0_admin_and_an_rpc_node_dial_each_other_on_an_app_protocol_in_a_one_me
             // node-start.md): its start's join issues it a fresh member cert, and the dials are admitted
             // again on that birth.
             let again = d.resolved(&rpc, None).await;
-            assert_eq!(again.incarnation, first.incarnation, "a stop then a start keep the birth");
+            assert_eq!((&again.node_id, &again.incarnation), (&first.node_id, &first.incarnation), "a stop then a start keep the birth");
             d.both_ways(&again).await;
 
             d.running.leave().await;
@@ -315,11 +315,10 @@ fn the_day0_admin_and_rpc_nodes_of_both_meshes_dial_each_other_on_an_app_protoco
             let d = day0(&dir).await;
             let mesh = |m: &str| MeshDesired::of(m, [(LaunchKind::NodeAdmin, 1), (LaunchKind::RpcNode, 1)]);
             d.reconcile(&[mesh("mesh1")]).await;
-            d.until_ready(&"mesh1.rpc.1".parse().unwrap()).await;
+            d.until_ready(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
             d.until_fabric_ready().await;
             d.reconcile(&[mesh("mesh1"), mesh("mesh2")]).await;
-            for node in ["mesh2.rpc.1", "mesh1.rpc.1"] {
-                let node: PathName = node.parse().unwrap();
+            for node in [PathName::new("mesh2.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()] {
                 d.until_ready(&node).await;
                 let resolved = d.resolved(&node, None).await;
                 d.both_ways(&resolved).await;

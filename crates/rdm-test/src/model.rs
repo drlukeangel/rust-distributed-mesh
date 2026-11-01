@@ -12,6 +12,7 @@
 //! collection the generator walks is ordered).
 
 use crate::scenario::Operation;
+use rdm_core::PathName;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -28,7 +29,7 @@ pub enum NodeClass {
 }
 
 impl NodeClass {
-    /// The path segment of the class (`<mesh>.<segment>.<ordinal>`).
+    /// The path segment of the class (path `<mesh>.<segment>` and name `<ordinal>`).
     pub fn segment(self) -> &'static str {
         match self {
             NodeClass::NodeAdmin => "admin",
@@ -72,19 +73,22 @@ pub struct Capabilities {
     pub network_faults: bool,
 }
 
-/// One node of the model: its path.name, class, birth (a replacement is a new NodeId at the same
-/// path.name) and incarnation within that birth (a restart keeps the NodeId).
+/// One node of the model: its path/name pair, class, birth (a replacement is a new NodeId at the same
+/// path/name pair) and incarnation within that birth (a restart keeps the NodeId).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelNode {
     pub class: NodeClass,
+    /// Explicit generation ordinal; never recovered from the location.
+    pub ordinal: u32,
     pub birth: u32,
     pub incarnation: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ModelMesh {
-    /// path.name -> node.
-    pub nodes: BTreeMap<String, ModelNode>,
+    /// path/name pair -> node.
+    #[serde(with = "crate::structured_map")]
+    pub nodes: BTreeMap<PathName, ModelNode>,
     /// The mesh is unheard by every other mesh (a network fault in force).
     pub unheard: bool,
 }
@@ -97,11 +101,11 @@ pub enum Action {
     /// A Build adds one node of `class` to `mesh`, born at the lowest free ordinal.
     Grow { mesh: String, class: NodeClass },
     /// A Build deletes the node (connections delete, then terminate).
-    Shrink { node: String },
+    Shrink { node: PathName },
     /// node.stop then node.start of the node (Q183): the same NodeId and incarnation start again on the live process.
-    Restart { node: String },
-    /// A Build replaces the node: a new NodeId born at the same path.name.
-    Replace { node: String },
+    Restart { node: PathName },
+    /// A Build replaces the node: a new NodeId born at the same path/name pair.
+    Replace { node: PathName },
     /// A Build deletes the connections of the mesh's primary; the remaining admins elect.
     HandOff { mesh: String },
     /// The provider cuts the mesh off from every other mesh.
@@ -111,10 +115,10 @@ pub enum Action {
     /// The provider ends the node's runtime (SIGKILL of the exact process; a container's
     /// interface removed): drift recovery re-creates the path as a new birth. The model knows no
     /// authority, so a scenario refuses a target that is the live fabric-primary.
-    Kill { node: String },
+    Kill { node: PathName },
     /// The provider holds the node's runtime in place (alive and silent) until the view marks it
     /// unheard, then releases it: the same birth comes back.
-    Wedge { node: String },
+    Wedge { node: PathName },
     /// One proof-store operation on an rpc node.
     Proof(Operation),
 }
@@ -171,7 +175,7 @@ impl Model {
             let mut mesh = ModelMesh::default();
             for (class, n) in classes {
                 for i in 1..=*n {
-                    mesh.nodes.insert(format!("{name}.{}.{i}", class.segment()), ModelNode { class: *class, birth: 1, incarnation: 1 });
+                    mesh.nodes.insert(PathName::new(format!("{name}.{}", class.segment()), i.to_string()).expect("valid generated location"), ModelNode { class: *class, ordinal: i, birth: 1, incarnation: 1 });
                 }
             }
             m.meshes.insert((*name).to_string(), mesh);
@@ -179,9 +183,9 @@ impl Model {
         m
     }
 
-    /// The topology alone: every mesh's path.names and their classes, with no birth or
+    /// The topology alone: every mesh's path/name pairs and their classes, with no birth or
     /// incarnation.
-    pub fn shape(&self) -> BTreeMap<String, BTreeMap<String, NodeClass>> {
+    pub fn shape(&self) -> BTreeMap<String, Vec<(PathName, NodeClass)>> {
         self.meshes.iter().map(|(m, ms)| (m.clone(), ms.nodes.iter().map(|(p, n)| (p.clone(), n.class)).collect())).collect()
     }
 
@@ -189,8 +193,8 @@ impl Model {
         self.meshes.get(mesh).map(|m| m.nodes.values().filter(|n| n.class == class).count() as u32).unwrap_or(0)
     }
 
-    /// The mesh a node's path.name belongs to, and the node.
-    pub fn node(&self, path: &str) -> Option<(&str, &ModelNode)> {
+    /// The mesh a node's path/name pair belongs to, and the node.
+    pub fn node(&self, path: &PathName) -> Option<(&str, &ModelNode)> {
         self.meshes.iter().find_map(|(name, m)| m.nodes.get(path).map(|n| (name.as_str(), n)))
     }
 
@@ -206,9 +210,9 @@ impl Model {
         }
     }
 
-    fn live_node(&self, step: usize, action: &Action, node: &str) -> Result<(String, NodeClass), Illegal> {
+    fn live_node(&self, step: usize, action: &Action, node: &PathName) -> Result<(String, NodeClass), Illegal> {
         let Some((mesh, n)) = self.node(node) else {
-            return Err(illegal(step, action, "node-exists", format!("{node} is not a node of the fabric")));
+            return Err(illegal(step, action, "node-exists", format!("{node:?} is not a node of the fabric")));
         };
         let (mesh, class) = (mesh.to_string(), n.class);
         self.heard_mesh(step, action, &mesh)?;
@@ -270,7 +274,7 @@ impl Model {
                 };
                 let (_, class) = self.live_node(step, action, target)?;
                 if !class.serves_proof() {
-                    return Err(illegal(step, action, "target-serves-proof", format!("{target} is a {class:?}; it serves no proof store")));
+                    return Err(illegal(step, action, "target-serves-proof", format!("{target:?} is a {class:?}; it serves no proof store")));
                 }
                 if key >= PROOF_KEYS {
                     return Err(illegal(step, action, "key-in-space", format!("key {key} is outside 0..{PROOF_KEYS}")));
@@ -286,8 +290,8 @@ impl Model {
         match action {
             Action::Grow { mesh, class } => {
                 let m = self.meshes.get_mut(mesh).expect("checked");
-                let ordinal = (1..).find(|i| !m.nodes.contains_key(&format!("{mesh}.{}.{i}", class.segment()))).expect("a free ordinal");
-                m.nodes.insert(format!("{mesh}.{}.{ordinal}", class.segment()), ModelNode { class: *class, birth: 1, incarnation: 1 });
+                let ordinal = (1..).find(|i| !m.nodes.contains_key(&PathName::new(format!("{mesh}.{}", class.segment()), i.to_string()).expect("valid generated location"))).expect("a free ordinal");
+                m.nodes.insert(PathName::new(format!("{mesh}.{}", class.segment()), ordinal.to_string()).expect("valid generated location"), ModelNode { class: *class, ordinal, birth: 1, incarnation: 1 });
             }
             Action::Shrink { node } => {
                 for m in self.meshes.values_mut() {

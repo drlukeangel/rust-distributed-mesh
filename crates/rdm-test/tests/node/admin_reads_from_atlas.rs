@@ -36,7 +36,7 @@ pub(crate) fn day0_config(dir: &std::path::Path) -> AdminConfig {
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-pub(crate) fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store: &std::path::Path) -> Launch {
+pub(crate) fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path, store: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -47,14 +47,14 @@ pub(crate) fn launch_by(root: &Running, name: &str, dir: &std::path::Path, store
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::NodeAdmin,
-        name: name.parse().unwrap(),
+        name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -124,7 +124,7 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         let root_digest = root.digest.lock().unwrap().clone();
 
-        let launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
@@ -132,15 +132,15 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
         until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
         // Its start's hydration sync carried its own whole row from its mesh-primary's atlas (Q234).
         let own = admin.topology_view.own_row().expect("mesh1.admin.2 holds its own row from its hydration sync");
-        assert_eq!((own.node_id.clone(), own.name.to_string()), (launch.node_id.clone(), "mesh1.admin.2".to_string()), "the row held is the node's own: {own:?}");
+        assert_eq!((own.node_id.clone(), own.name.clone()), (launch.node_id.clone(), launch.name.clone()), "the row held is the node's own: {own:?}");
 
         // The store's tail: an object another writer is still writing, never ended.
         let file = nodes_file(&root_dir, &root);
-        std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(br#"{"v":1,"kind":"record","key":"unended","record":{"name":"mesh1.rpc.9""#).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(br#"{"v":1,"kind":"record","key":"unended","record":{"name":{"path":"mesh1.rpc","name":"9""#).unwrap();
 
         let target = rdm_transport::NodeTarget::ExactNode(root_digest.node.node_id.clone());
         for mesh in [None, Some("mesh1")] {
-            let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, "mesh1.admin.2", mesh, None))
+            let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, launch.node_id.as_str(), mesh, None))
                 .await
                 .expect("the read ends")
                 .unwrap_or_else(|e| panic!("the mesh-primary refused the read of {mesh:?} with its store unreadable: {e}"));
@@ -222,7 +222,7 @@ async fn root_and_launch(tag: &str) -> (std::path::PathBuf, Running, Launch, std
     let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
     root.stop_reconciling().await;
     until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-    let launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir);
+    let launch = launch_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
     let _ = root.runner.joins.expect(deployed(&launch));
     let store = nodes_file(&root_dir, &root).parent().unwrap().to_path_buf();
     (base, root, launch, store)

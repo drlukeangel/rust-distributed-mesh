@@ -299,7 +299,7 @@ async fn served_on(me: Birth, key: SecretKey, ep: iroh::Endpoint, build: impl Fn
     let server = build(builder).with_delivery(delivery.clone()).build(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
-    let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
+    let node = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: me.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
     Served { _router: router, stats: server.stats(), server, delivery, node, runs, seen, gate }
 }
 
@@ -381,7 +381,7 @@ async fn raw() -> Raw {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let (tx, conns) = mpsc::unbounded_channel();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, Accepted(tx)).spawn();
-    let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.9".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
+    let node = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: me.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "9").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
     Raw { _router: router, node, me, conns }
 }
 
@@ -1029,7 +1029,7 @@ async fn a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_ori
         let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver).with_delivery(delivery.clone()));
         let server = ServerBuilder::new().ledger(ledger()).carry::<Command>().serve_forward(client).with_delivery(delivery).build(ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.to_string() }).unwrap();
         let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
-        carriers.push((router, ResolvedNode { node_id: b.node_id.clone(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.incarnation }));
+        carriers.push((router, ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: b.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.incarnation }));
     }
     let (origin, _) = client_of(&[&target.node, &carriers[0].1, &carriers[1].1]).await;
     let identity = CarriedIdentity { id: DeliveryId { sender: origin.delivery().me().clone(), delivery_seq: 7 }, forget_below: 7 };
@@ -1148,7 +1148,7 @@ async fn a_new_sender_birth_starts_at_one_and_the_old_window_stays_until_its_end
     let node_id = NodeId::mint();
     let old = Birth { node_id: node_id.clone(), incarnation: IncarnationId::mint() };
     let new = Birth { node_id: node_id.clone(), incarnation: IncarnationId::mint() };
-    let as_birth = |b: &Birth| ResolvedNode { node_id: b.node_id.clone(), name: "mesh1.rpc.5".parse().unwrap(), endpoint_id: SecretKey::generate().public(), transport_addr: "127.0.0.1:9".parse().unwrap(), incarnation: b.incarnation.clone() };
+    let as_birth = |b: &Birth| ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: b.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "5").unwrap(), endpoint_id: SecretKey::generate().public(), transport_addr: "127.0.0.1:9".parse().unwrap(), incarnation: b.incarnation.clone() };
     receiver_view.insert(as_birth(&old));
     let sender = |b: &Birth| {
         let resolver = Arc::new(StaticResolver::new());
@@ -1300,7 +1300,7 @@ async fn unreachable() -> (Birth, SecretKey, ResolvedNode) {
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     ep.close().await;
-    let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
+    let node = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: me.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
     (me, key, node)
 }
 
@@ -1316,7 +1316,7 @@ async fn an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_co
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     ep.set_alpns(vec![]);
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
+    let node = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: me.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
     let (client, _) = client_of(&[&node]).await;
     let cd = client.delivery().clone();
     let target = NodeTarget::ExactNode(node.node_id.clone());

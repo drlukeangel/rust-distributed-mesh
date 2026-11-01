@@ -184,12 +184,12 @@ pub enum ReadReply {
         reason: String,
     },
     /// A batch of `node.connection.get`'s rows, in the read's order: every frame of one read carries
-    /// the same `node` (the answering node's held `path.name`) and `complete` (whether it holds the
+    /// the same `node` (the answering node's held `(path, name)`) and `complete` (whether it holds the
     /// complete set).
     ///
     /// Position 14 on the wire.
     Connections {
-        /// The answering node's held `path.name`.
+        /// The answering node's held `(path, name)`.
         node: String,
         /// Whether the node holds the complete set.
         complete: bool,
@@ -382,7 +382,7 @@ pub enum Row {
     Fabric(FabricView),
     /// A connection row of `(node, complete)`.
     Connection {
-        /// The answering node's held `path.name`.
+        /// The answering node's held `(path, name)`.
         node: String,
         /// Whether the node holds the complete set.
         complete: bool,
@@ -396,7 +396,7 @@ impl Row {
     /// The row by its name, as a refusal names it.
     pub fn name(&self) -> String {
         match self {
-            Self::Node(n) => n.name.to_string(),
+            Self::Node(n) => n.node_id.to_string(),
             Self::Mesh(m) => m.name.clone(),
             Self::Fabric(f) => f.name.clone(),
             Self::Connection { connection: Some(c), .. } => c.id.clone(),

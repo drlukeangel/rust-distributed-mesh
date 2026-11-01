@@ -40,7 +40,7 @@ async fn a_call_to_an_exited_birth_dials_nothing_and_the_successor_is_dialled() 
     let old_addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let ep_handle = ep.clone();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, serve(&old_inc)).spawn();
-    let old = ResolvedNode { node_id: node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: old_addr, incarnation: old_inc.clone() };
+    let old = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: key.public(), transport_addr: old_addr, incarnation: old_inc.clone() };
 
     let resolver = Arc::new(LiveNodeResolver::default());
     resolver.apply(old.clone(), None);

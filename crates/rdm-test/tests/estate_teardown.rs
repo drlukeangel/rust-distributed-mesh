@@ -47,18 +47,18 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
     wait_for("the bootstrap admin's Fabric row is durable", Duration::from_secs(30), || async { holds_fabric_identity_row(&estate.fabric_store_root()).then_some(()) }).await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    estate.enter(&Estate::path("mesh1.admin.2")).await;
-    let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.admin.1")).await.expect("node.stop of mesh1.admin.1");
+    let mut admin_pids = Vec::new();
+    for admin in estate.node_views().await.into_iter().filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.name != Estate::path("mesh1.admin", "1")) {
+        admin_pids.push(estate.pid_of(&admin.name).await);
+    }
+    estate.enter(&Estate::path("mesh1.admin", "2")).await;
+    let mut stop = estate.nodes_obj().await.stop(&Estate::path("mesh1.admin", "1")).await.expect("node.stop of mesh1.admin.1");
     let accepted = stop.accepted().clone();
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.kill_bootstrap();
-    for (path, pid) in estate.live_runtimes() {
-        if path.file_name().is_some_and(|n| n.to_string_lossy().contains(".admin.")) {
-            estate.kill_pid(pid);
-        }
-    }
+    for pid in admin_pids { estate.kill_pid(pid.try_into().expect("OS pid fits u32")); }
     estate.restart_admin_with(&data_dir, &[]);
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!processes_of(&root).is_empty(), "the restarted node-admin runs under the estate's root");
@@ -80,7 +80,7 @@ async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before
     let mut estate = Estate::bootstrap(owner("signal-stop", test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
-    let rpc: Vec<String> = estate.node_values().await.iter().filter(|n| n["kind"] == "rpc_node").filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
+    let rpc: Vec<String> = estate.node_values().await.iter().filter(|n| n["kind"] == "rpc_node").filter_map(|n| n["node_id"].as_str().map(str::to_string)).collect();
     assert_eq!(rpc.len(), 3, "three rpc nodes: {rpc:?}");
 
     let killed = estate.stop().await;
@@ -101,7 +101,7 @@ async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before
         let left = of("rdm.node.mesh.update.via-left", node);
         assert!(!left.is_empty(), "{node} left its mesh channel");
         assert!(start(deleting) <= start(leaving[0]) && start(leaving[0]) <= start(stopped), "{node}: connections-deleting owed, then the leave, then stopped owed");
-        let published_after: Vec<&Value> = of("rdm.mesh.node.update.via-heartbeat", node).into_iter().filter(|h| start(h) > start(left[0])).collect();
+        let published_after: Vec<&Value> = spans.iter().filter(|sp| sp["name"] == "rdm.mesh.node.update.via-heartbeat" && sp["attributes"]["node_id"] == *node).filter(|h| start(h) > start(left[0])).collect();
         assert!(published_after.is_empty(), "{node} published nothing after it left its mesh: {published_after:?}");
         evidence.push(json!({"node": node, "connections_deleting_owed": deleting["trace_id"], "left": leaving[0]["trace_id"], "stopped_owed": stopped["trace_id"]}));
     }

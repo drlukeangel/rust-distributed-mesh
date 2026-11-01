@@ -1,14 +1,14 @@
 //! The adoption launch (Q156; fabric-recovery.md "Nothing alive"): no node-admin is alive, the fabric's
 //! other nodes alive or not, and a person or a script launches a node-admin at the lost fabric-primary's
-//! path.name with no launcher, given the fabric id, its mesh and the store root. It is told from Day 0 by
+//! path and name with no launcher, given the fabric id, its mesh and the store root. It is told from Day 0 by
 //! that intent (`RDM_NODE_NAME`, [`AdminConfig::adopt`]), never by what the store holds.
 //!
 //! In order, each step before the next: what the store holds is read with nothing written ([`read`]: the
-//! Fabric record and its provider, the mesh's row, the lost fabric-primary's birth at the path.name, the
+//! Fabric record and its provider, the mesh's row, the lost fabric-primary's birth at the path and name, the
 //! current Build), and a store that does not hold them refuses the start by name. The claim of the
 //! fabric-recovery attempt of the current Build in the mesh's lane is the launch's first recovery
 //! mutation ([`claim`]): the mesh's in-flight row on the store root decides it (build.md §5.2, Q142), the
-//! row naming this birth, so two launches at one path.name are two claimants and one loses; the attempt's
+//! row naming this birth, so two launches at one path and name are two claimants and one loses; the attempt's
 //! open and claim are then recorded on the Build journal. Then node investigation of the lost birth, and,
 //! last before the first other mutation, whether any node-admin the store records answers ([`check`]): an
 //! answer refuses the launch `NameHeld`, the attempt closed through the failure path ([`fail`]). Otherwise
@@ -20,10 +20,10 @@
 //! mesh and node records its own operations require, never as mesh-primary.
 //!
 //! Under an in-force fabric.delete (Q159; "Nothing alive", its delete bullet) the launch is created at a
-//! new path.name of the node-admin type in an existing, not-yet-deleted mesh, never at the lost
+//! new path and name of the node-admin type in an existing, not-yet-deleted mesh, never at the lost
 //! fabric-primary's, which the delete removes: the one create a delete admits. Its claim is of the delete's
 //! next attempt; it releases and re-creates nothing of the lost birth, whose row the teardown deletes; it
-//! claims its own path.name ([`take_new_name`]) and its attempt is the delete's own, which the teardown
+//! claims its own path and name ([`take_new_name`]) and its attempt is the delete's own, which the teardown
 //! ends, never completed at its Ready. With no not-yet-deleted mesh left the launch is refused by name:
 //! the remaining work is the dead fabric-primary's own node.delete from outside, and nothing is created.
 
@@ -42,11 +42,11 @@ pub struct Adoptable {
     pub provider: ProviderKind,
     /// The mesh's row.
     pub mesh: crate::storage::MeshRecord,
-    /// The lost fabric-primary's birth at the launch's path.name, as its node row records it.
+    /// The lost fabric-primary's birth at the launch's path and name, as its node row records it.
     pub lost: crate::storage::NodeRecord,
     /// The current Build.
     pub current: BuildProjection,
-    /// The fabric.delete in force (Q159): the launch is then at a new path.name and claims the delete's
+    /// The fabric.delete in force (Q159): the launch is then at a new path and name and claims the delete's
     /// next attempt. `None` when no fabric.delete is in force.
     pub delete: Option<BuildProjection>,
 }
@@ -78,6 +78,7 @@ fn provider_name(p: ProviderKind) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 pub async fn read(
     name: &PathName,
+    mesh_name: &str,
     fabric_id: &FabricId,
     store: &Path,
     spawn_type: Option<&str>,
@@ -87,7 +88,7 @@ pub async fn read(
     builds: &dyn BuildStateAdapter,
 ) -> Result<Adoptable, String> {
     let root = store.join(fabric_id.to_string());
-    let of = format!("the adoption launch at {name} of Fabric {fabric_id}");
+    let of = format!("the adoption launch at path={} name={} of Fabric {fabric_id}", name.path, name.name);
     let record = fabric.fabric().await.map_err(|e| format!("{of}: the Fabric record on the store root {} could not be read: {e}", root.display()))?;
     let Some(record) = record.filter(|r| r.fabric_id == *fabric_id) else {
         return Err(format!("{of}: the store root {} holds no Fabric record of {fabric_id}: an adoption launch adopts a fabric its store root holds and creates none", root.display()));
@@ -118,41 +119,42 @@ pub async fn read(
                 d.build_id
             ));
         }
-        if !left.contains(&name.mesh) {
-            return Err(format!("{of}: fabric.delete {} is in force and mesh {} is deleted: the adoption launch is created in an existing, not-yet-deleted mesh, one of {} (Q159)", d.build_id, name.mesh, left.join(", ")));
+        if !left.iter().any(|name| name == mesh_name) {
+            return Err(format!("{of}: fabric.delete {} is in force and mesh {} is deleted: the adoption launch is created in an existing, not-yet-deleted mesh, one of {} (Q159)", d.build_id, mesh_name, left.join(", ")));
         }
     }
-    let mesh = meshes.mesh_named(&name.mesh).await.map_err(|e| format!("{of}: mesh.storage could not read mesh {}: {e}", name.mesh))?;
+    let mesh = meshes.mesh_named(&mesh_name).await.map_err(|e| format!("{of}: mesh.storage could not read mesh {}: {e}", mesh_name))?;
     let mesh = match mesh {
         Some(m) if !m.dead => m,
-        Some(m) => return Err(format!("{of}: mesh {} ({}) is Dead: a dead mesh is never adopted", name.mesh, m.mesh_id)),
-        None => return Err(format!("{of}: the store root {} holds no row of mesh {}", root.display(), name.mesh)),
+        Some(m) => return Err(format!("{of}: mesh {} ({}) is Dead: a dead mesh is never adopted", mesh_name, m.mesh_id)),
+        None => return Err(format!("{of}: the store root {} holds no row of mesh {}", root.display(), mesh_name)),
     };
     // The fabric-primary the node rows record (`is_fabric_primary` on a birth, the newest revision): the
-    // lost birth the launch is at the path.name of.
-    let rows = crate::storage::records(meshes, nodes, &name.mesh).await.map_err(|e| format!("{of}: nodes.storage could not read the node rows: {e}"))?;
+    // lost birth the launch is at the path and name of.
+    let rows = crate::storage::records(meshes, nodes, &mesh_name).await.map_err(|e| format!("{of}: nodes.storage could not read the node rows: {e}"))?;
     let recorded = rows.iter().filter(|r| r.status != NodeStatus::Deleted).filter_map(|r| r.newest_birth().and_then(|b| b.is_fabric_primary.map(|rev| (rev, r, b)))).max_by_key(|(rev, _, _)| *rev);
     let Some((_, row, birth)) = recorded else {
-        return Err(format!("{of}: the node rows on the store root {} record no fabric-primary: an adoption launch is at the lost fabric-primary's path.name", root.display()));
+        return Err(format!("{of}: the node rows on the store root {} record no fabric-primary: an adoption launch is at the lost fabric-primary's (path, name)", root.display()));
     };
     match &delete {
         None if row.name != *name => {
-            return Err(format!("{of}: the node rows record the fabric-primary at {} ({}): an adoption launch is at the lost fabric-primary's path.name", row.name, row.node_id));
+            return Err(format!("{of}: the node rows record fabric-primary node_id={} at path={} name={}; an adoption launch uses that location", row.node_id, row.name.path, row.name.name));
         }
         None => {}
         Some(d) if row.name == *name => {
             return Err(format!(
-                "{of}: fabric.delete {} is in force and {name} is the lost fabric-primary's path.name, which the delete removes: under a delete the adoption launch is created at a new path.name of the node-admin type in an existing, not-yet-deleted mesh (Q159)",
+                "{of}: fabric.delete {} is in force and the supplied location is the lost fabric-primary's location, which the delete removes: under a delete the adoption launch is created at a new path and name of the node-admin type in an existing, not-yet-deleted mesh (Q159)",
                 d.build_id
             ));
         }
         Some(d) => {
             if let Some(held) = rows.iter().find(|r| r.name == *name && r.status != NodeStatus::Deleted) {
-                return Err(format!("{of}: fabric.delete {} is in force and {name} is held by {}: the adoption launch under a delete is created at a new path.name (Q159)", d.build_id, held.node_id));
+                return Err(format!("{of}: fabric.delete {} is in force and the supplied location is held by {}: the adoption launch under a delete is created at a new path and name (Q159)", d.build_id, held.node_id));
             }
         }
     }
     let lost = crate::storage::NodeRecord {
+        mesh: row.mesh.clone(),
         node_id: row.node_id.clone(),
         fabric_id: fabric_id.clone(),
         name: row.name.clone(),
@@ -183,15 +185,15 @@ pub struct Claimed {
     pub row: InFlight,
     /// The lost fabric-primary's birth.
     pub lost: crate::storage::NodeRecord,
-    /// Under an in-force fabric.delete (Q159): the launch's own new path.name. `None` for the adoption at
-    /// the lost birth's path.name.
+    /// Under an in-force fabric.delete (Q159): the launch's own new path and name. `None` for the adoption at
+    /// the lost birth's path and name.
     pub under_delete: Option<PathName>,
 }
 
 impl Claimed {
     /// The mesh whose in-flight row the claim holds.
     fn mesh(&self) -> &str {
-        &self.lost.name.mesh
+        &self.lost.mesh
     }
 
     /// The Build lane the claimed attempt is numbered in: the fabric lane under a delete, else the mesh's.
@@ -202,7 +204,7 @@ impl Claimed {
 
 /// The action the fabric-recovery attempt of `lost` carries.
 fn action_of(lost: &crate::storage::NodeRecord) -> AttemptAction {
-    AttemptAction::Recover { path: lost.name.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation_id.clone(), backbone: false }
+    AttemptAction::Recover { kind: NodeKind::NodeAdmin, mesh: lost.mesh.clone(), path: lost.name.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation_id.clone(), backbone: false }
 }
 
 /// The attempt of `current` in `mesh`'s lane the recovery `action` resolves to: the lane's attempt
@@ -222,15 +224,16 @@ fn attempt_for(current: &BuildProjection, mesh: &str, action: &AttemptAction) ->
 /// lost claim, refused by name naming that claimant; a row of another attempt refuses by name naming it.
 /// Won, the attempt's open and claim are recorded on the journal. A lost birth a workflow already
 /// recovered refuses by name. One `rdm.node_admin.fabric.update.via-adoption-claim` span.
-pub async fn claim(me: &PathName, me_id: &NodeId, a: &Adoptable, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts, now_ms: u64) -> Result<Claimed, String> {
+pub async fn claim(me: &PathName, me_mesh: &str, own: &rdm_core::framing::Birth, a: &Adoptable, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts, now_ms: u64) -> Result<Claimed, String> {
+    let me_id = &own.node_id;
     if let Some(delete) = &a.delete {
-        return claim_under_delete(me, me_id, a, delete, builds, claims, contexts).await;
+        return claim_under_delete(me, me_mesh, own, a, delete, builds, claims, contexts).await;
     }
     let lost = &a.lost;
-    let mesh = lost.name.mesh.clone();
+    let mesh = lost.mesh.clone();
     let span = tracing::info_span!(
         "rdm.node_admin.fabric.update.via-adoption-claim",
-        node = %me,
+        node_path = %me.path, node_name = %me.name,
         node_id = %me_id,
         lost_node_id = %lost.node_id,
         lost_incarnation_id = %lost.incarnation_id.as_str(),
@@ -243,12 +246,19 @@ pub async fn claim(me: &PathName, me_id: &NodeId, a: &Adoptable, builds: &dyn Bu
     );
     let decided = async {
         if let Some((build_id, _, attempt, operation)) = builds.recovery_of(&lost.name, &lost.node_id, &lost.incarnation_id).await.map_err(|e| ("unreadable", format!("the Build journal could not be read: {e}")))? {
-            return Err(("already-recovered", format!("the lost birth {} ({}) at {} was recovered already, by {operation} at attempt {attempt} of {build_id}: there is nothing to adopt", lost.node_id, lost.incarnation_id.as_str(), lost.name)));
+            return Err(("already-recovered", format!("node_id={} incarnation={} path={} name={} was recovered already, by {operation:?} at attempt {attempt} of {build_id}", lost.node_id, lost.incarnation_id, lost.name.path, lost.name.name)));
         }
         let action = action_of(lost);
         let attempt = attempt_for(&a.current, &mesh, &action);
         tracing::Span::current().record("attempt", attempt);
-        let row = InFlight { build_id: a.current.build_id.clone(), lane: Some(mesh.clone()), attempt, claimant: me.to_string(), claimant_node: Some(me_id.clone()) };
+        let row = InFlight { build_id: a.current.build_id.clone(), lane: Some(mesh.clone()), attempt, claimant: me_id.clone() };
+        let claim = BuildAttemptClaim { claimed_mesh: Some(mesh.clone()), executor_mesh: me_mesh.to_owned(), build_id: row.build_id.clone(), attempt, executor: own.clone(), claimant: Some(me_id.clone()), mesh: row.lane.clone() };
+        if let Some(held) = crate::build_state::committed_claim(builds, &row.build_id, row.lane.as_deref(), attempt).await.map_err(|e| ("unreadable", e.to_string()))? {
+            if held == claim {
+                return Ok(Claimed { row, lost: lost.clone(), under_delete: None });
+            }
+            return Err(("lost", format!("the adoption attempt {attempt} is committed to executor {}: this launch's claim lost", held.executor)));
+        }
         match claims.take_in_flight(&mesh, &row).await {
             Ok(Taken::Won) => {}
             Ok(Taken::Held(held)) if held.same_attempt(&row) => {
@@ -271,9 +281,8 @@ pub async fn claim(me: &PathName, me_id: &NodeId, a: &Adoptable, builds: &dyn Bu
         // releases the row taken for it.
         let recorded = async {
             contexts.put_lane(&row.build_id, Some(&mesh), attempt, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
-            let opened = AttemptOpened { build_id: row.build_id.clone(), attempt, reason: AttemptReason::Adoption, action: Some(action), opened_by: me.to_string(), opened_at_ms: now_ms, mesh: Some(mesh.clone()), context: None };
+            let opened = AttemptOpened { build_id: row.build_id.clone(), attempt, reason: AttemptReason::Adoption, action: Some(action), opened_by: me_id.clone(), opened_at_ms: now_ms, mesh: Some(mesh.clone()), context: None };
             builds.open_attempt(&opened).await.map_err(|e| format!("attempt {attempt} of {} in mesh {mesh}'s lane could not be opened: {e}", row.build_id))?;
-            let claim = BuildAttemptClaim { build_id: row.build_id.clone(), attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: Some(mesh.clone()) };
             match builds.claim_attempt(&claim).await.map_err(|e| format!("the claim of attempt {attempt} could not be recorded: {e}"))? {
                 ClaimOutcome::Won => Ok(()),
                 other => Err(format!("the Build journal answers the claim of attempt {attempt} of {} {other:?}", row.build_id)),
@@ -292,11 +301,11 @@ pub async fn claim(me: &PathName, me_id: &NodeId, a: &Adoptable, builds: &dyn Bu
         Err((outcome, _)) => span.record("outcome", *outcome),
     };
     span.in_scope(|| tracing::info!("the adoption launch's claim of the fabric-recovery attempt is decided on the store root"));
-    decided.map_err(|(_, e)| format!("{me} ({me_id}): {e}"))
+    decided.map_err(|(_, e)| format!("path={} name={} node_id={me_id}: {e}", me.path, me.name))
 }
 
 /// The claim of the in-force fabric.delete `delete`'s next attempt (Q159: "It claims the delete's next
-/// attempt") by the launch `me`, born `me_id`, at its new path.name: the attempt the lost fabric-primary
+/// attempt") by the launch `me`, born `me_id`, at its new path and name: the attempt the lost fabric-primary
 /// claimed (the delete's current, in the fabric lane) holds the lost executor's mesh's in-flight row,
 /// which this claim supersedes and so releases (a removal that takes the row only while it names that
 /// attempt); then the lost fabric-primary's mesh's in-flight row is taken for the next attempt, naming
@@ -304,13 +313,14 @@ pub async fn claim(me: &PathName, me_id: &NodeId, a: &Adoptable, builds: &dyn Bu
 /// an executor, are two claimants and one loses by name; won, the claim is recorded on the journal in the
 /// fabric lane, `me` its executor. One `rdm.node_admin.fabric.update.via-adoption-claim` span, `lane`
 /// `fabric`.
-async fn claim_under_delete(me: &PathName, me_id: &NodeId, a: &Adoptable, delete: &BuildProjection, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts) -> Result<Claimed, String> {
+async fn claim_under_delete(me: &PathName, me_mesh: &str, own: &rdm_core::framing::Birth, a: &Adoptable, delete: &BuildProjection, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts) -> Result<Claimed, String> {
+    let me_id = &own.node_id;
     let lost = &a.lost;
-    let mesh = lost.name.mesh.clone();
+    let mesh = lost.mesh.clone();
     let attempt = delete.attempt + 1;
     let span = tracing::info_span!(
         "rdm.node_admin.fabric.update.via-adoption-claim",
-        node = %me,
+        node_path = %me.path, node_name = %me.name,
         node_id = %me_id,
         lost_node_id = %lost.node_id,
         lost_incarnation_id = %lost.incarnation_id.as_str(),
@@ -323,15 +333,30 @@ async fn claim_under_delete(me: &PathName, me_id: &NodeId, a: &Adoptable, delete
         "otel.kind" = "internal",
     );
     let decided = async {
-        // The lost fabric-primary's attempt holds its executor's mesh: this claim supersedes it.
-        let lost_executor = delete.executor.as_deref().and_then(|e| e.parse::<PathName>().ok()).filter(|e| *e == lost.name);
-        if let Some(executor) = lost_executor.filter(|_| delete.state == BuildState::Running) {
-            let held = claims.in_flight(&executor.mesh).await.map_err(|e| ("unreadable", format!("mesh {}'s in-flight row could not be read: {e}", executor.mesh)))?;
-            if let Some(held) = held.filter(|h| h.build_id == delete.build_id && h.lane.is_none() && h.attempt == delete.attempt && h.claimant == lost.name.to_string()) {
-                claims.release_in_flight(&executor.mesh, &held).await.map_err(|e| ("unreleased", format!("mesh {}'s in-flight row of the lost fabric-primary's attempt {} could not be released: {e}", executor.mesh, delete.attempt)))?;
+        // A committed claim names both the exact executor and the row's deciding claimant.
+        if delete.state == BuildState::Running {
+            let claim = crate::build_state::committed_claim(builds, &delete.build_id, None, delete.attempt).await
+                .map_err(|e| ("unreadable", format!("the delete's committed claim could not be read: {e}")))?
+                .ok_or_else(|| ("unreadable", "the running delete has no committed claim".to_string()))?;
+            if claim.executor.node_id != lost.node_id || claim.executor.incarnation != lost.incarnation_id {
+                return Err(("lost", format!("the delete's attempt {} belongs to executor {}, not the exact lost birth", delete.attempt, claim.executor)));
+            }
+            let (Some(claimant), Some(claimed_mesh)) = (claim.claimant, claim.claimed_mesh) else {
+                return Err(("unreadable", "the delete's committed claim has no claimant or claimed mesh".to_string()));
+            };
+            let expected = InFlight { build_id: delete.build_id.clone(), lane: None, attempt: delete.attempt, claimant };
+            if let Some(held) = claims.in_flight(&claimed_mesh).await.map_err(|e| ("unreadable", e.to_string()))?.filter(|held| held.same_claim(&expected)) {
+                claims.release_in_flight(&claimed_mesh, &held).await.map_err(|e| ("unreleased", format!("the lost birth's claim row could not be released: {e}")))?;
             }
         }
-        let row = InFlight { build_id: delete.build_id.clone(), lane: None, attempt, claimant: me.to_string(), claimant_node: Some(me_id.clone()) };
+        let row = InFlight { build_id: delete.build_id.clone(), lane: None, attempt, claimant: me_id.clone() };
+        let claim = BuildAttemptClaim { claimed_mesh: Some(mesh.clone()), executor_mesh: me_mesh.to_owned(), build_id: row.build_id.clone(), attempt, executor: own.clone(), claimant: Some(me_id.clone()), mesh: row.lane.clone() };
+        if let Some(held) = crate::build_state::committed_claim(builds, &row.build_id, row.lane.as_deref(), attempt).await.map_err(|e| ("unreadable", e.to_string()))? {
+            if held == claim {
+                return Ok(Claimed { row, lost: lost.clone(), under_delete: Some(me.clone()) });
+            }
+            return Err(("lost", format!("the adoption attempt {attempt} is committed to executor {}: this launch's claim lost", held.executor)));
+        }
         match claims.take_in_flight(&mesh, &row).await {
             Ok(Taken::Won) => {}
             Ok(Taken::Held(held)) if held.same_attempt(&row) => {
@@ -349,7 +374,6 @@ async fn claim_under_delete(me: &PathName, me_id: &NodeId, a: &Adoptable, delete
         }
         let recorded = async {
             contexts.put_lane(&row.build_id, None, attempt, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
-            let claim = BuildAttemptClaim { build_id: row.build_id.clone(), attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: None };
             match builds.claim_attempt(&claim).await.map_err(|e| format!("the claim of attempt {attempt} could not be recorded: {e}"))? {
                 ClaimOutcome::Won => Ok(()),
                 other => Err(format!("the Build journal answers the claim of attempt {attempt} of {} {other:?}", row.build_id)),
@@ -368,7 +392,7 @@ async fn claim_under_delete(me: &PathName, me_id: &NodeId, a: &Adoptable, delete
         Err((outcome, _)) => span.record("outcome", *outcome),
     };
     span.in_scope(|| tracing::info!("the adoption launch's claim of the in-force fabric.delete's next attempt is decided on the store root"));
-    decided.map_err(|(_, e)| format!("{me} ({me_id}): {e}"))
+    decided.map_err(|(_, e)| format!("path={} name={} node_id={me_id}: {e}", me.path, me.name))
 }
 
 /// Who answers an adoption launch before its first mutation (fabric-recovery.md "Nothing alive").
@@ -377,8 +401,8 @@ pub trait Answers: Send + Sync {
     /// Node investigation of the exact lost birth `lost`: its verdict.
     async fn investigate(&self, lost: &crate::storage::NodeRecord) -> Finding;
     /// The node-admins of the fabric the store records, the lost birth among them, that answer a probe
-    /// now, by path.name.
-    async fn admins_answering(&self) -> Vec<String>;
+    /// now, by path and name.
+    async fn admins_answering(&self) -> Result<Vec<NodeId>, String>;
 }
 
 /// The checks before the claimed attempt's first mutation: node investigation of the lost birth, then,
@@ -402,18 +426,18 @@ pub async fn check(c: &Claimed, answers: &dyn Answers) -> Result<Finding, Refuse
         let finding = answers.investigate(&c.lost).await;
         tracing::Span::current().record("verdict", finding.name());
         if let Finding::Reached { .. } = finding {
-            tracing::Span::current().record("answered", c.lost.name.to_string().as_str());
-            return Err(Refused { reason: format!("NameHeld: the lost birth {} ({}) at {} answered node investigation: it is alive, and {} is held by it", c.lost.node_id, c.lost.incarnation_id.as_str(), c.lost.name, c.lost.name), answered: c.lost.name.to_string() });
+            tracing::Span::current().record("answered", c.lost.node_id.as_str());
+            return Err(Refused { reason: format!("NameHeld: node_id={} incarnation={} path={} name={} answered node investigation", c.lost.node_id, c.lost.incarnation_id, c.lost.name.path, c.lost.name.name), answered: Some(c.lost.node_id.clone()) });
         }
         if let Some(refused) = admin_answered(&c.lost, answers).await {
-            tracing::Span::current().record("answered", refused.answered.as_str());
+            tracing::Span::current().record("answered", refused.answered.as_ref().map(|id| id.as_str()).unwrap_or(""));
             return Err(refused);
         }
         Ok(finding)
     }
     .instrument(span.clone())
     .await;
-    span.record("outcome", if decided.is_ok() { "clear" } else { "name-held" });
+    span.record("outcome", match &decided { Ok(_) => "clear", Err(refusal) if refusal.answered.is_some() => "name-held", Err(_) => "unreadable" });
     span.in_scope(|| tracing::info!("the adoption launch's checks before its first mutation"));
     decided
 }
@@ -422,11 +446,14 @@ pub async fn check(c: &Claimed, answers: &dyn Answers) -> Result<Finding, Refuse
 /// inherited data dir's alike (Q156: "a launch that finds a living admin is refused, never an ordinary
 /// admin at the primary's name"; Q199): whether any node-admin the store records answers a probe now.
 /// `Some` refusal, `NameHeld` naming who answered, when one does: the fabric has a live admin, and the
-/// lost birth `lost`'s path.name is its fabric recovery's to re-create.
+/// lost birth `lost`'s path and name is its fabric recovery's to re-create.
 pub async fn admin_answered(lost: &crate::storage::NodeRecord, answers: &dyn Answers) -> Option<Refused> {
-    let answering = answers.admins_answering().await;
+    let answering = match answers.admins_answering().await {
+        Ok(answering) => answering,
+        Err(error) => return Some(Refused { reason: format!("the answering admins could not be determined: {error}"), answered: None }),
+    };
     let first = answering.first()?.clone();
-    Some(Refused { reason: format!("NameHeld: node-admin {} answered before this launch's first mutation: the fabric has a live admin, and {} is held by {}", answering.join(", "), lost.name, lost.node_id), answered: first })
+    Some(Refused { reason: format!("NameHeld: answering node IDs {answering:?}; path={} name={} belongs to node_id={}", lost.name.path, lost.name.name, lost.node_id), answered: Some(first) })
 }
 
 /// Why the checks refused the launch, and the admin that answered.
@@ -434,8 +461,8 @@ pub async fn admin_answered(lost: &crate::storage::NodeRecord, answers: &dyn Ans
 pub struct Refused {
     /// The refusal, `NameHeld` by name.
     pub reason: String,
-    /// The path.name of the admin, or of the lost birth, that answered.
-    pub answered: String,
+    /// The exact node ID that answered; None for an error without an answering admin.
+    pub answered: Option<NodeId>,
 }
 
 impl std::fmt::Display for Refused {
@@ -449,13 +476,14 @@ impl std::fmt::Display for Refused {
 /// birth or an admin answered owes no exit (`build_state::BirthIndex::exits_owed`, node-recovery.md
 /// "Failure and receipts"). Under an in-force fabric.delete (Q159) the claimed attempt is the delete's own:
 /// it is handed off to the admin that answered (`HandedOff { to }`), whose executor continues the delete,
-/// and the delete is never failed by the abandoned launch.
+/// and a refusal naming an answering admin does not fail the delete. A local/read error with no
+/// answering admin fails this attempt as Unavailable; the deletion intent remains in force for retry.
 pub async fn fail(c: &Claimed, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, refused: &Refused) -> Result<(), String> {
     let reason = refused.reason.as_str();
     let span = tracing::info_span!("rdm.node_admin.build.update.via-adoption-failed", node = %c.row.claimant, build_id = %c.row.build_id.log(), lane = c.numbered_in().as_deref().unwrap_or("fabric"), attempt = c.row.attempt, reason, outcome = tracing::field::Empty);
-    let outcome = match &c.under_delete {
-        Some(_) => AttemptOutcome::HandedOff { to: refused.answered.clone() },
-        None => AttemptOutcome::Failed { reason: reason.to_string(), code: rdm_core::outcome::Code::AlreadyExists },
+    let outcome = match (&c.under_delete, &refused.answered) {
+        (Some(_), Some(to)) => AttemptOutcome::HandedOff { to: to.clone() },
+        (_, answered) => AttemptOutcome::Failed { reason: reason.to_string(), code: if answered.is_some() { rdm_core::outcome::Code::AlreadyExists } else { rdm_core::outcome::Code::Unavailable } },
     };
     let verdict = BuildAttemptReceipt { build_id: c.row.build_id.clone(), attempt: c.row.attempt, outcome, mesh: c.numbered_in() };
     let r = async {
@@ -469,33 +497,39 @@ pub async fn fail(c: &Claimed, builds: &dyn BuildStateAdapter, claims: &dyn crat
     r
 }
 
-/// Under an in-force fabric.delete (Q159), the launch `me_id` claims its own new path.name `me`, the one
+/// Under an in-force fabric.delete (Q159), the launch `me_id` claims its own new path and name `me`, the one
 /// create a delete admits ([`crate::node_rows::claim_adopted_name`]): nothing of the lost birth is written,
 /// its row deleted by the teardown.
-pub async fn take_new_name(me: &PathName, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows) -> Result<(), String> {
-    crate::node_rows::claim_adopted_name(nodes, written, me, me_id).await.map(|_| ()).map_err(|e| format!("{me_id} claims its path.name {me}: {e}"))
+pub async fn take_new_name(me: &PathName, mesh: &str, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows) -> Result<(), String> {
+    crate::node_rows::claim_adopted_name(nodes, written, me, mesh, me_id).await.map(|_| ()).map_err(|e| format!("node_id={me_id} claims path={} name={}: {e}", me.path, me.name))
 }
 
 /// The claimed attempt releases the lost birth's name and the launch, `me_id`, takes it
 /// ([`crate::node_rows::take_inherited_name`]: the lost birth's row written `Deleted`, then this node's
-/// claim of the path.name), then the deletion's receipt (`node.delete:<path>` `NodeDeleted`, naming the
+/// claim of the path and name), then the deletion's receipt (`node.delete:<path>` `NodeDeleted`, naming the
 /// exact birth) on the journal.
-pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, builds: &dyn BuildStateAdapter) -> Result<(), String> {
-    crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map_err(|e| format!("{me_id} takes {} over the lost birth {}: {e}", c.lost.name, c.lost.node_id))?;
+pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, builds: &dyn BuildStateAdapter, event_at_rafka_ms: u64) -> Result<(), String> {
+    crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.name.path, c.lost.name.name, c.lost.node_id))?;
     let receipt = BuildStepReceipt {
         build_id: c.row.build_id.clone(),
         attempt: c.row.attempt,
-        operation: format!("node.delete:{}", c.lost.name),
+        operation: rdm_core::OperationId::node("node.delete", &c.lost.node_id),
         step: "NodeDeleted".into(),
         outcome: StepOutcome::Complete,
-        output: Some(serde_json::json!({ "node_id": c.lost.node_id, "incarnation": c.lost.incarnation_id })),
+        output: Some(serde_json::to_value(rdm_core::lifecycle::LifecycleOp {
+            kind: NodeKind::NodeAdmin, mesh: c.lost.mesh.clone(), name: c.lost.name.clone(),
+            build_id: c.row.build_id.to_string(), attempt: c.row.attempt,
+            operation: rdm_core::OperationId::node("node.delete", &c.lost.node_id),
+            node_id: c.lost.node_id.clone(), incarnation: c.lost.incarnation_id.clone(),
+            event_at_rafka_ms, traceparent: None, tracestate: None,
+        }).map_err(|e| format!("the deletion receipt could not be encoded: {e}"))?),
         executor: None,
         mesh: Some(c.mesh().to_string()),
     };
     builds.append_step_receipt(&receipt).await.map_err(|e| format!("the NodeDeleted receipt of the lost birth {} could not be written: {e}", c.lost.node_id))
 }
 
-/// The claimed attempt completes once the launch, `me_id`, is Ready at the path.name: the
+/// The claimed attempt completes once the launch, `me_id`, is Ready at the path and name: the
 /// re-create's `node.create:<path>` `Complete` receipt, the attempt's `Converged` verdict, then the
 /// mesh's in-flight row released.
 pub async fn complete(c: &Claimed, me_id: &NodeId, builds: &dyn BuildStateAdapter, claims: &dyn crate::storage::MeshStorage) -> Result<(), String> {
@@ -504,7 +538,7 @@ pub async fn complete(c: &Claimed, me_id: &NodeId, builds: &dyn BuildStateAdapte
         let receipt = BuildStepReceipt {
             build_id: c.row.build_id.clone(),
             attempt: c.row.attempt,
-            operation: format!("node.create:{}", c.lost.name),
+            operation: rdm_core::OperationId::location("node.create", &c.lost.name),
             step: "Complete".into(),
             outcome: StepOutcome::Complete,
             output: Some(serde_json::json!({ "node_id": me_id })),
@@ -527,7 +561,9 @@ pub async fn complete(c: &Claimed, me_id: &NodeId, builds: &dyn BuildStateAdapte
 /// holds carriers yet), the provider's inspection of its recorded runtime first (Q273); the probe of every
 /// node-admin birth the store's live rows record, at once.
 pub struct ProbeAnswers {
-    /// This launch's path.name.
+    /// This launch's explicit owning mesh.
+    pub mesh: String,
+    /// This launch's path and name.
     pub me: PathName,
     /// This launch's node id.
     pub me_id: NodeId,
@@ -548,21 +584,21 @@ pub struct ProbeAnswers {
 }
 
 impl ProbeAnswers {
-    fn resolve(&self, node_id: &NodeId, name: &PathName, endpoint: &EndpointId, addr: SocketAddr, incarnation: &IncarnationId) -> bool {
+    fn resolve(&self, node_id: &NodeId, name: &PathName, mesh: &str, kind: NodeKind, endpoint: &EndpointId, addr: SocketAddr, incarnation: &IncarnationId) -> bool {
         let Ok(endpoint_id) = endpoint.0.parse::<iroh::PublicKey>() else { return false };
-        self.resolver.apply(rdm_transport::ResolvedNode { node_id: node_id.clone(), name: name.clone(), endpoint_id, transport_addr: addr, incarnation: incarnation.clone() }, None);
+        self.resolver.apply(rdm_transport::ResolvedNode { mesh: mesh.to_owned(), kind, node_id: node_id.clone(), name: name.clone(), endpoint_id, transport_addr: addr, incarnation: incarnation.clone() }, None);
         true
     }
 
     fn calls(&self) -> crate::offline::TickleClient {
-        crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me.to_string(), connections: None, commands: None }
+        crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me_id.to_string(), connections: None, commands: None }
     }
 }
 
 #[async_trait::async_trait]
 impl Answers for ProbeAnswers {
     async fn investigate(&self, lost: &crate::storage::NodeRecord) -> Finding {
-        let mut node = Node::allocated(lost.name.clone());
+        let mut node = Node::allocated(lost.name.clone(), lost.mesh.clone(), NodeKind::NodeAdmin);
         node.node_id = lost.node_id.clone();
         node.incarnation_id = Some(lost.incarnation_id.clone());
         let view = Topology { fabric: self.fabric.clone(), meshes: Vec::new(), nodes: Vec::new() };
@@ -570,34 +606,34 @@ impl Answers for ProbeAnswers {
             let row = self.nodes.runtime(&lost.node_id, &lost.incarnation_id).await.ok().flatten();
             Finding::from(super::rows_writer::inspection_of(&*self.provider, &None, row.as_ref()).await)
         };
-        if !self.resolve(&lost.node_id, &lost.name, &lost.endpoint_id, lost.transport_addr, &lost.incarnation_id) {
+        if !self.resolve(&lost.node_id, &lost.name, &lost.mesh, NodeKind::NodeAdmin, &lost.endpoint_id, lost.transport_addr, &lost.incarnation_id) {
             return inspect.await;
         }
         crate::node_investigation::investigate(&node, &view, &self.calls(), inspect).await
     }
 
-    async fn admins_answering(&self) -> Vec<String> {
-        let rows = match crate::storage::live_records(&*self.meshes, &*self.nodes, &self.me.mesh).await {
+    async fn admins_answering(&self) -> Result<Vec<NodeId>, String> {
+        let rows = match crate::storage::live_records(&*self.meshes, &*self.nodes, &self.mesh).await {
             Ok(rows) => rows,
-            Err(e) => return vec![format!("(the node rows could not be read: {e})")],
+            Err(e) => return Err(format!("the node rows could not be read: {e}")),
         };
         let calls = self.calls();
-        let probes = rows.iter().filter(|r| r.name.kind == NodeKind::NodeAdmin && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)).filter_map(|r| {
+        let probes = rows.iter().filter(|r| r.kind == NodeKind::NodeAdmin && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)).filter_map(|r| {
             let b = r.newest_birth()?;
             let (endpoint, addr) = (b.endpoint_id.clone()?, b.transport_addr?);
-            self.resolve(&r.node_id, &r.name, &endpoint, addr, &b.incarnation_id).then(|| {
-                let mut node = Node::allocated(r.name.clone());
+            self.resolve(&r.node_id, &r.name, &r.mesh, r.kind, &endpoint, addr, &b.incarnation_id).then(|| {
+                let mut node = Node::allocated(r.name.clone(), r.mesh.clone(), r.kind);
                 node.node_id = r.node_id.clone();
                 node.incarnation_id = Some(b.incarnation_id.clone());
                 let probe = rdm_core::status::StatusRequest::ProbeNodeState { node_id: r.node_id.clone(), incarnation: b.incarnation_id.clone() };
                 let calls = &calls;
                 async move {
                     let end = crate::offline::TickleCalls::direct(calls, &node, &probe).await;
-                    matches!(end, crate::offline::ProbeEnd::Reply(_)).then(|| node.name.to_string())
+                    matches!(end, crate::offline::ProbeEnd::Reply(_)).then(|| node.node_id.clone())
                 }
             })
         });
-        futures_util::future::join_all(probes).await.into_iter().flatten().collect()
+        Ok(futures_util::future::join_all(probes).await.into_iter().flatten().collect())
     }
 }
 
@@ -614,7 +650,7 @@ mod tests {
 
     struct StubAnswers {
         finding: Finding,
-        answering: Vec<String>,
+        answering: Result<Vec<NodeId>, String>,
     }
 
     #[async_trait::async_trait]
@@ -622,7 +658,7 @@ mod tests {
         async fn investigate(&self, _lost: &crate::storage::NodeRecord) -> Finding {
             self.finding.clone()
         }
-        async fn admins_answering(&self) -> Vec<String> {
+        async fn admins_answering(&self) -> Result<Vec<NodeId>, String> {
             self.answering.clone()
         }
     }
@@ -642,7 +678,7 @@ mod tests {
         let _guard = tracing::dispatcher::set_default(&d);
 
         rt.block_on(async move {
-            let path: PathName = "mesh1.admin.1".parse().unwrap();
+            let path: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
             let fabric_id = FabricId::parse("fab000000001").unwrap();
             let mesh_id = MeshId::parse("meshd0000001").unwrap();
             let store = PathBuf::from("/tmp/rdm-adoption-unit");
@@ -654,8 +690,7 @@ mod tests {
             let contexts = crate::build_claim::AttemptContexts::in_memory();
 
             // 1. Missing Fabric record refuses by name.
-            let err = read(
-                &path,
+            let err = read( &path, "mesh1",
                 &fabric_id,
                 &store,
                 Some("process"),
@@ -676,8 +711,7 @@ mod tests {
             f_rec.provider = Some(ProviderKind::Process);
             fabric_store.put_fabric(&f_rec).await.unwrap();
 
-            let err = read(
-                &path,
+            let err = read( &path, "mesh1",
                 &fabric_id,
                 &store,
                 Some("container"),
@@ -702,7 +736,7 @@ mod tests {
 
             let lost_id = NodeId::mint();
             let lost_inc = IncarnationId::mint();
-            let mut row = NodeRow::new(path.clone(), lost_id.clone(), NodeStatus::Ready);
+            let mut row = NodeRow::new(path.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, lost_id.clone(), NodeStatus::Ready);
             row.mesh_id = Some(mesh_id.clone());
             let b = row.birth_mut(&lost_inc, &path);
             b.is_primary = Some(1);
@@ -725,8 +759,7 @@ mod tests {
             .await
             .unwrap();
 
-            let adoptable = read(
-                &path,
+            let adoptable = read( &path, "mesh1",
                 &fabric_id,
                 &store,
                 Some("process"),
@@ -743,9 +776,9 @@ mod tests {
 
             // 2. First adoption launch claims attempt 1; concurrent second launch resolves to attempt 1 and loses.
             let me_1 = NodeId::mint();
-            let claimed_1 = claim(
-                &path,
-                &me_1,
+            let birth_1 = rdm_core::framing::Birth { node_id: me_1.clone(), incarnation: IncarnationId::mint() };
+            let claimed_1 = claim( &path, "mesh1",
+                &birth_1,
                 &adoptable,
                 &builds_store,
                 &mesh_store,
@@ -756,8 +789,7 @@ mod tests {
             .expect("first launch wins recovery claim");
             assert_eq!(claimed_1.row.attempt, 1);
 
-            let adoptable_2 = read(
-                &path,
+            let adoptable_2 = read( &path, "mesh1",
                 &fabric_id,
                 &store,
                 Some("process"),
@@ -769,9 +801,9 @@ mod tests {
             .await
             .unwrap();
             let me_2 = NodeId::mint();
-            let lost_claim = claim(
-                &path,
-                &me_2,
+            let birth_2 = rdm_core::framing::Birth { node_id: me_2.clone(), incarnation: IncarnationId::mint() };
+            let lost_claim = claim( &path, "mesh1",
+                &birth_2,
                 &adoptable_2,
                 &builds_store,
                 &mesh_store,
@@ -783,17 +815,25 @@ mod tests {
             assert!(lost_claim.contains("this launch's claim lost"), "{lost_claim}");
 
             // 3. Check refuses NameHeld when an admin answers, and fail closes attempt 1 and releases in-flight.
+            let answering_id = NodeId::mint();
             let refused = check(
                 &claimed_1,
                 &StubAnswers {
                     finding: Finding::Exited { code: Some(0) },
-                    answering: vec!["mesh1.admin.2".into()],
+                    answering: Ok(vec![answering_id.clone()]),
                 },
             )
             .await
             .expect_err("answering admin refuses NameHeld");
             assert!(refused.reason.contains("NameHeld"), "{}", refused.reason);
-            assert_eq!(refused.answered, "mesh1.admin.2");
+            assert_eq!(refused.answered, Some(answering_id));
+
+            let unreadable = check(&claimed_1, &StubAnswers {
+                finding: Finding::Exited { code: Some(0) },
+                answering: Err("injected node-store read failure".into()),
+            }).await.expect_err("read failure cannot be mistaken for no live admins");
+            assert_eq!(unreadable.answered, None, "an error is not an answering node ID");
+            assert!(unreadable.reason.contains("injected node-store read failure"));
 
             fail(&claimed_1, &builds_store, &mesh_store, &refused)
                 .await
@@ -801,8 +841,7 @@ mod tests {
             assert!(mesh_store.in_flight("mesh1").await.unwrap().is_none());
 
             // 4. Subsequent adoption launch claims attempt 2, passes check, releases name, and completes.
-            let adoptable_3 = read(
-                &path,
+            let adoptable_3 = read( &path, "mesh1",
                 &fabric_id,
                 &store,
                 Some("process"),
@@ -814,9 +853,9 @@ mod tests {
             .await
             .unwrap();
             let me_3 = NodeId::mint();
-            let claimed_3 = claim(
-                &path,
-                &me_3,
+            let birth_3 = rdm_core::framing::Birth { node_id: me_3.clone(), incarnation: IncarnationId::mint() };
+            let claimed_3 = claim( &path, "mesh1",
+                &birth_3,
                 &adoptable_3,
                 &builds_store,
                 &mesh_store,
@@ -831,7 +870,7 @@ mod tests {
                 &claimed_3,
                 &StubAnswers {
                     finding: Finding::Exited { code: Some(0) },
-                    answering: Vec::new(),
+                    answering: Ok(Vec::new()),
                 },
             )
             .await
@@ -839,9 +878,13 @@ mod tests {
             assert_eq!(finding, Finding::Exited { code: Some(0) });
 
             let written = WrittenRows::default();
-            release_name(&claimed_3, &me_3, &nodes_store, &written, &builds_store)
+            release_name(&claimed_3, &me_3, &nodes_store, &written, &builds_store, 3000)
                 .await
                 .expect("release_name marks lost birth Deleted and claims path for me_3");
+
+            let recovered = builds_store.read_build(&claimed_3.row.build_id).await.unwrap();
+            let deletion = recovered.lanes[claimed_3.mesh()].steps.iter().find(|r| r.step == "NodeDeleted").expect("adoption records the deletion");
+            assert_eq!(crate::build_state::delete_step_birth(deletion, "NodeDeleted"), Some((claimed_3.lost.name.clone(), claimed_3.lost.node_id.clone(), claimed_3.lost.incarnation_id.clone())));
 
             complete(&claimed_3, &me_3, &builds_store, &mesh_store)
                 .await
@@ -850,9 +893,9 @@ mod tests {
 
             // Attempting to claim again for an already-recovered birth is refused by name.
             let me_4 = NodeId::mint();
-            let already = claim(
-                &path,
-                &me_4,
+            let birth_4 = rdm_core::framing::Birth { node_id: me_4.clone(), incarnation: IncarnationId::mint() };
+            let already = claim( &path, "mesh1",
+                &birth_4,
                 &adoptable_3,
                 &builds_store,
                 &mesh_store,
@@ -876,7 +919,7 @@ mod tests {
             .iter()
             .filter_map(|s| s.attributes.get("outcome").map(String::as_str))
             .collect();
-        assert_eq!(check_outcomes, vec!["name-held", "clear"]);
+        assert_eq!(check_outcomes, vec!["name-held", "unreadable", "clear"]);
 
         let fails = capture.named("rdm.node_admin.build.update.via-adoption-failed");
         assert_eq!(fails.len(), 1);

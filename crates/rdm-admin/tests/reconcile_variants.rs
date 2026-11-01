@@ -70,8 +70,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
@@ -85,12 +85,12 @@ fn view() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-        nodes: vec![node("mesh1.admin.1", false, true), node("mesh1.admin.2", true, false), node("mesh1.rpc.1", false, false)],
+        nodes: vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false, true), node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, false), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false)],
     }
 }
 
-fn path(p: &str) -> PathName {
-    p.parse().unwrap()
+fn path(p: &str, name: &str) -> PathName {
+    PathName::new(p, name).unwrap()
 }
 
 /// A binding no launch reads: a held path's, which the door hashes only when the request creates the path
@@ -100,7 +100,7 @@ fn recorded_binding(kind: NodeKind, sha: &str) -> rdm_core::binding::Binding {
 }
 
 /// What each node's row records: the Day-0 admin `a1`, `mesh1.admin.2` `a2`, `mesh1.rpc.1` `r1`.
-const ROWS: [(&str, &str); 3] = [("mesh1.admin.1", "a1"), ("mesh1.admin.2", "a2"), ("mesh1.rpc.1", "r1")];
+const ROWS: [(&str, &str, &str); 3] = [("mesh1.admin", "1", "a1"), ("mesh1.admin", "2", "a2"), ("mesh1.rpc", "1", "r1")];
 
 #[derive(Clone, Copy, Debug)]
 enum Variant {
@@ -118,30 +118,30 @@ impl Variant {
     /// The request, from the accepted topology's entries.
     fn request(self, held: &FabricTopology) -> Vec<NodeSpec> {
         let mut r: Vec<NodeSpec> = held.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
-        let at = |r: &mut Vec<NodeSpec>, p: &str| -> usize { r.iter().position(|s| s.path.to_string() == p).expect("the request lists the path") };
+        let at = |r: &mut Vec<NodeSpec>, p: &PathName| -> usize { r.iter().position(|s| &s.path == p).expect("the request lists the path") };
         match self {
             Self::Day0AdminNamedOnItsRecordedExecutable => {
-                let i = at(&mut r, "mesh1.admin.1");
+                let i = at(&mut r, &path("mesh1.admin", "1"));
                 r[i].executable = Some(recorded_binding(NodeKind::NodeAdmin, "a1"));
             }
             Self::EveryPathNamedOnItsEntrysExecutable => {}
             Self::Unchanged => r.iter_mut().for_each(|s| s.executable = None),
             Self::TagsOnly => {
-                let i = at(&mut r, "mesh1.rpc.1");
+                let i = at(&mut r, &path("mesh1.rpc", "1"));
                 r[i].tags = ["zone_a".to_string()].into();
             }
             Self::StorageOnly => {
-                let i = at(&mut r, "mesh1.rpc.1");
+                let i = at(&mut r, &path("mesh1.rpc", "1"));
                 r[i].storage_persistence = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
             }
             Self::NewPath => {
-                let mut s = NodeSpec::default_for(path("mesh1.rpc.2"), "mesh1", rdm_core::NodeKind::RpcNode);
+                let mut s = NodeSpec::default_for(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode);
                 s.executable = Some(crate::test_executable(NodeKind::RpcNode));
                 r.push(s);
             }
-            Self::RemovedPath => r.retain(|s| s.path.to_string() != "mesh1.rpc.1"),
+            Self::RemovedPath => r.retain(|s| s.path != path("mesh1.rpc", "1")),
             Self::AnotherExecutable => {
-                let i = at(&mut r, "mesh1.rpc.1");
+                let i = at(&mut r, &path("mesh1.rpc", "1"));
                 r[i].executable = Some(crate::test_executable(NodeKind::RpcNode));
             }
         }
@@ -149,11 +149,11 @@ impl Variant {
     }
 
     /// The operations the request owes, by key.
-    fn owes(self) -> Vec<&'static str> {
+    fn owes(self, rpc: &NodeId) -> Vec<rdm_core::OperationId> {
         match self {
-            Self::NewPath => vec!["node.create:mesh1.rpc.2"],
-            Self::RemovedPath => vec!["node.delete:mesh1.rpc.1"],
-            Self::AnotherExecutable => vec!["node.create:mesh1.rpc.1", "node.delete:mesh1.rpc.1"],
+            Self::NewPath => vec![rdm_core::OperationId::location("node.create", &path("mesh1.rpc", "2"))],
+            Self::RemovedPath => vec![rdm_core::OperationId::node("node.delete", rpc)],
+            Self::AnotherExecutable => vec![rdm_core::OperationId::location("node.create", &path("mesh1.rpc", "1")), rdm_core::OperationId::node("node.delete", rpc)],
             _ => vec![],
         }
     }
@@ -190,7 +190,7 @@ impl Gate for Readiness {
 /// Records what ran and commits each operation's `Complete` receipt, as the create pipeline does; a create
 /// records on its row the executable its entry names, a delete leaves no live row (build-deployment.md §2.3).
 struct Runs {
-    ran: Mutex<Vec<String>>,
+    ran: Mutex<Vec<rdm_core::OperationId>>,
     builds: Arc<MemoryBuildStateAdapter>,
     recorded: Arc<Mutex<Recorded>>,
 }
@@ -203,7 +203,7 @@ impl OperationRunner for Runs {
             BuildOperation::CreateNode { node, .. } => {
                 let topology = self.builds.read_build(build).await.map_err(|e| e.to_string())?.topology;
                 let sha = rdm_admin::accepted::target_executable(&topology, node).map(|b| b.sha256.clone());
-                self.recorded.lock().unwrap().insert(node.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: sha });
+                self.recorded.lock().unwrap().insert(node.clone(), RecordedRow { mesh: op.mesh().unwrap().to_owned(), kind: op.kind().unwrap(), applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: sha });
             }
             BuildOperation::DeleteNode { node, .. } | BuildOperation::DeleteLiveNode { node, .. } => {
                 self.recorded.lock().unwrap().remove(node);
@@ -224,7 +224,7 @@ struct Dispatch {
 
 #[async_trait::async_trait]
 impl rdm_admin::build_drive::Dispatcher for Dispatch {
-    async fn dispatch(&self, turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
+    async fn dispatch(&self, turn: &rdm_admin::stop_gate::Turn, executor: &rdm_core::framing::Birth, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, plan: rdm_admin::executor::RunPlan) -> rdm_admin::build_drive::Dispatched {
         let run = self.inner.dispatch(turn, executor, build_id, attempt, context, plan).await;
         if let Some(fabric) = &self.during {
             fabric.ready.store(true, Ordering::SeqCst);
@@ -237,6 +237,7 @@ impl rdm_admin::build_drive::Dispatcher for Dispatch {
 }
 
 struct Row {
+    owed: Vec<rdm_core::OperationId>,
     builds: Arc<MemoryBuildStateAdapter>,
     env: Arc<DriveEnv>,
     fabric: Arc<Readiness>,
@@ -248,28 +249,31 @@ struct Row {
 /// that runs it under `timing`.
 async fn row(variant: Variant, timing: Timing) -> Row {
     let t = view();
+    let admin = t.node(&path("mesh1.admin", "1")).unwrap();
+    let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
+    let owed = variant.owes(&t.node(&path("mesh1.rpc", "1")).unwrap().node_id);
     let mut held = FabricTopology::of_observed(&t);
     // Day 0's entry for the Day-0 admin names no executable; every later path's names what it runs.
-    for (p, sha) in ROWS.iter().skip(1) {
-        let p = path(p);
+    for (p, name, sha) in ROWS.iter().skip(1) {
+        let p = path(p, name);
         let mesh = held.meshes.get_mut("mesh1").unwrap();
         let mut c = mesh.spec(&p).cloned().unwrap();
-        c.executable = Some(recorded_binding(p.kind, sha));
+        c.executable = Some(recorded_binding(c.kind, sha));
         mesh.set_spec(c).unwrap();
     }
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), held.clone(), "mesh1.admin.1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), held.clone(), &executor, "mesh1").await.unwrap();
     let topology = Arc::new(RwLock::new(t.clone()));
     let store = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
     let mut recorded = Recorded::new();
-    for (p, sha) in ROWS {
-        let n = t.node(&path(p)).expect("the view holds the node");
-        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), NodeStatus::Ready);
-        row.executable = Some(recorded_binding(n.name.kind, sha));
+    for (p, name, sha) in ROWS {
+        let n = t.node(&path(p, name)).expect("the view holds the node");
+        let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
+        row.executable = Some(recorded_binding(n.kind, sha));
         store.write_record(&row).await.unwrap();
-        recorded.insert(n.name.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
+        recorded.insert(n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
     }
-    let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), path("mesh1.admin.1"), t.clone(), crate::adopted_time());
+    let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), path("mesh1.admin", "1"), t.clone(), crate::adopted_time());
     cp.topology = topology.clone();
     let _ = cp.node_rows.set(store);
     let change = TopologyChange::Reconcile { topology_storage_provider: None, based_on: builds.current().await.unwrap().expect("day 0's Build is current").build_id, nodes: variant.request(&held) };
@@ -278,13 +282,14 @@ async fn row(variant: Variant, timing: Timing) -> Row {
     let fabric = Arc::new(Readiness { ready: AtomicBool::new(timing == Timing::Before), recorded: recorded.clone() });
     let runs = Arc::new(Runs { ran: Mutex::new(Vec::new()), builds: builds.clone(), recorded });
     let loopback = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runs.clone());
-    let me = path("mesh1.admin.1");
+    let me = path("mesh1.admin", "1");
     let fp_id = t.node(&me).unwrap().node_id.clone();
-    let env = Arc::new(DriveEnv {
+    let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
         me: me.clone(),
         topology: topology.clone(),
         builds: builds.clone(),
         door: Arc::new(ClaimDoor {
+            incarnation: executor.incarnation.clone(),
             node_id: fp_id,
             me,
             topology,
@@ -300,7 +305,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
         notices: Default::default(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Row { builds, env, fabric, runs, build: opened.build_id }
+    Row { owed, builds, env, fabric, runs, build: opened.build_id }
 }
 
 /// One pass of the drive, bounded: a pass that does not end is the defect, named.
@@ -367,7 +372,7 @@ async fn check(variant: Variant, timing: Timing) {
     once.sort();
     once.dedup();
     assert_eq!(once.len(), ran.len(), "{what}: no operation runs twice: {ran:?}");
-    let mut owed: Vec<String> = variant.owes().into_iter().map(String::from).collect();
+    let mut owed = r.owed.clone();
     owed.sort();
     assert_eq!(once, owed, "{what}: the request's operations ran, and only those");
     assert_eq!(done.state, BuildState::Complete, "{what}: the Build is Complete after its own ready: {done:?}");

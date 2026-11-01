@@ -7,15 +7,16 @@
 //! `rdm-rpc-probe` over real Node RPC: a restart is a Build the rectifier executes and keeps the
 //! node.id and the incarnation (node-restart.md: stop then start on the stopped process); the new
 //! birth is node recovery (node-recovery.md), the mesh-primary's answer to the runtime's death (an
-//! attempt of the accepted Build, reason recovery, a new node.id at the same path.name).
+//! attempt of the accepted Build, reason recovery, a new node.id at the same (path, name)).
 
 use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const NODE: &str = "mesh1.rpc.1";
-const OTHER: &str = "mesh1.rpc.2";
+fn node() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }
+fn other() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.rpc", "2").unwrap() }
+fn at_node(sp: &Value, location: &rdm_core::PathName) -> bool { sp["attributes"]["node_path"] == location.path && sp["attributes"]["node_name"] == location.name }
 
 fn owner(test: &str) -> Owner {
     Owner {
@@ -64,7 +65,7 @@ async fn estate(cell: &str) -> (Estate, rdm_client::BuildId) {
 }
 
 /// `node.get` of `name`, as the JSON the cell records.
-async fn view(estate: &Estate, name: &str) -> Value {
+async fn view(estate: &Estate, name: &rdm_core::PathName) -> Value {
     serde_json::to_value(estate.node_view(name).await).expect("a view serializes")
 }
 
@@ -85,10 +86,10 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let cell = "proof_holder_restarts_preserves_same_node_store";
     let dir = acceptance_dir(cell);
     let (mut estate, _) = estate(cell).await;
-    let path = format!("path:{NODE}");
-    let first = view(&estate, NODE).await;
+    let path = format!("path:{}", serde_json::to_string(&node()).unwrap());
+    let first = view(&estate, &node()).await;
     let exact = format!("exact:{}", s(&first["node_id"]));
-    let first_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
+    let first_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
     let put = estate.probe(&["put", "--target", &path, "--key", "41", "--value", "before-restart"]);
     landed_on(&put, &first, "put");
     let before = estate.probe(&["get", "--target", &exact, "--key", "41"]);
@@ -96,25 +97,28 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     assert_eq!(before["reply"]["result"], json!({"found": true, "value": "before-restart"}), "presence control: {before}");
 
     // Whether the restarted node holds its type's role: then the request's attempt moves the role first.
-    let is_primary = view(&estate, NODE).await["is_primary"] == true;
+    let is_primary = view(&estate, &node()).await["is_primary"] == true;
     // The restart: node.stop then node.start (Q183).
-    let (restart_attempt, _) = estate.stop_then_start(&NODE.parse().unwrap()).await;
+    let (restart_attempt, _) = estate.stop_then_start(&node()).await;
     let restart_build = restart_attempt.build_id.to_string();
-    let restarted = view(&estate, NODE).await;
+    let restarted = view(&estate, &node()).await;
     assert_eq!(restarted["status"], "ready", "the restarted birth is ready: {restarted}");
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
     assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "a restart is node.stop then node.start on the stopped process: the same birth (ops-naming-proposal.md, Restart is not a re-birth)");
-    let restarted_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
+    let restarted_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
     assert_eq!(restarted_dir, first_dir, "a restart keeps the node's data dir");
     let kept = estate.probe(&["get", "--target", &exact, "--key", "41"]);
     landed_on(&kept, &restarted, "get");
     assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the restarted node serves the old value: {kept}");
     let store_file = std::fs::read_dir(&restarted_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().contains("proof"))).map(|p| p.display().to_string());
+    let receipts = estate.carrier().await.build(&restart_attempt.build_id).await.expect("stop receipts");
+    let stop_operation = receipts.steps.iter().find(|r| r.operation.action == "node.stop" && r.operation.subject == Some(rdm_core::OperationSubject::Node(s(&first["node_id"]).parse().unwrap()))).expect("stop operation").operation.clone();
+    let primary_operation = rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode), &stop_operation);
     estate.stop().await;
 
     let spans = estate.spans();
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
-    let at = |inc: &Value, op: &str, outcome: &str| served.iter().find(|s| s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).cloned().cloned();
+    let at = |inc: &Value, op: &str, outcome: &str| served.iter().find(|s| s["attributes"]["node_id"] == first["node_id"] && s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).cloned().cloned();
     let put_span = at(&first["incarnation_id"], "put", "stored").expect("the first birth served the put");
     let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
     // The stop ran as the Build its node.stop call was accepted as: the call, then the rectifier's
@@ -122,21 +126,19 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     // first (node-stop.md, PrimaryRole holder): the request's attempt carries the node.primary.update and
     // ends handed-off, and the stop runs in the attempt the fabric-primary claims next
     // (node-rpc-envelope.md: "Hand-off is the fabric-primary's next claim and call").
-    let bare = |v: &Value| s(v).trim_start_matches("bid_").replace('-', "");
-    let build = bare(&json!(restart_build));
-    let of_build = |sp: &&Value| bare(&sp["attributes"]["build_id"]) == build;
+    let of_build = |sp: &&Value| s(&sp["attributes"]["build_id"]) == restart_build;
     let attempt_of = |sp: &Value| s(&sp["attributes"]["attempt"]).parse::<u32>().unwrap_or_else(|_| panic!("a span without its attempt: {sp}"));
     let opened = restart_attempt.attempt;
-    let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(of_build).find(|sp| sp["attributes"]["node"] == NODE && attempt_of(sp) == opened).cloned().expect("the stop's build.create span");
-    let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().filter(of_build).filter(|sp| sp["attributes"]["node"] == NODE && attempt_of(sp) >= opened).min_by_key(|sp| attempt_of(sp)).cloned().expect("the stop's node update");
+    let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(of_build).find(|sp| at_node(sp, &node()) && attempt_of(sp) == opened).cloned().expect("the stop's build.create span");
+    let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().filter(of_build).filter(|sp| at_node(sp, &node()) && attempt_of(sp) >= opened).min_by_key(|sp| attempt_of(sp)).cloned().expect("the stop's node update");
     assert_eq!(attempt_of(&accepted), opened, "the call's span names the attempt it opened");
     let role_move = if is_primary {
         let moved = named(&spans, "rdm.node_admin.primary.update.via-command")
             .into_iter()
             .filter(of_build)
-            .find(|sp| attempt_of(sp) == opened && s(&sp["attributes"]["operation"]).ends_with(&format!(":{opened}:node.stop:{NODE}")))
+            .find(|sp| s(&sp["attributes"]["run"]) == opened.to_string() && sp["attributes"]["operation"] == primary_operation.action && s(&sp["attributes"]["operation_subject"]) == format!("{:?}", primary_operation.subject))
             .cloned()
-            .unwrap_or_else(|| panic!("{NODE} held its type's role: the request's attempt {opened} moves it first"));
+            .unwrap_or_else(|| panic!("the selected node held its type's role: the request's attempt {opened} moves it first"));
         let handed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(of_build).find(|sp| attempt_of(sp) == opened && sp["attributes"]["outcome"] == "handed-off").cloned();
         assert!(handed.is_some(), "the role move's attempt {opened} ends handed-off");
         assert_eq!(attempt_of(&update), opened + 1, "the stop runs in the attempt the fabric-primary claims after the role move's hand-off");
@@ -175,8 +177,8 @@ async fn proof_holder_restarts_preserves_same_node_store() {
 }
 
 /// CONTRACT (#2775; node-recovery.md: "node.delete of the exited instance, node.create at the same
-/// path.name over the inherited data dir, then node[2].update"): the runtime's death is answered by
-/// node recovery under the accepted Build, a new NodeId at the same path.name over the old birth's
+/// (path, name) over the inherited data dir, then node[2].update"): the runtime's death is answered by
+/// node recovery under the accepted Build, a new NodeId at the same (path, name) over the old birth's
 /// data dir: `path:` reaches the new primary, which serves what the old birth stored there; the old
 /// exact NodeId never follows the path:
 /// the probe's current-only resolver answers Unknown (NotSent), a node's own retained departure
@@ -188,23 +190,23 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let cell = "proof_replacement_inherits_the_data_dir_exact_old_never_follows_path";
     let dir = acceptance_dir(cell);
     let (mut estate, build) = estate(cell).await;
-    let path = format!("path:{NODE}");
-    let first = view(&estate, NODE).await;
+    let path = format!("path:{}", serde_json::to_string(&node()).unwrap());
+    let first = view(&estate, &node()).await;
     let exact_old = format!("exact:{}", s(&first["node_id"]));
-    let first_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
+    let first_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
     let put = estate.probe(&["put", "--target", &path, "--key", "41", "--value", "old-birth"]);
     landed_on(&put, &first, "put");
     let build_id = build.to_string();
 
     // The runtime dies (a fault); its mesh-primary answers it with node recovery.
-    estate.kill_node(NODE).await;
+    estate.kill_node(&node()).await;
     let replacement = estate
-        .until_node(NODE, "a new logical node holds the path", Duration::from_secs(120), |n| {
+        .until_node(&node(), "a new logical node holds the path", Duration::from_secs(120), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["status"] == "ready" && n["node_id"] != first["node_id"]).then_some(n)
         })
         .await;
-    let replacement_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
+    let replacement_dir = estate.node_view(&node()).await.data_dir.expect("the launching admin advertises the node's data dir");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
     assert_eq!(replacement_dir, first_dir, "node recovery creates the new node over the old birth's data dir");
@@ -212,14 +214,14 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let old = estate.probe(&["get", "--target", &exact_old, "--key", "41"]);
     // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
-    let other = format!("path:{OTHER}");
-    estate.holds_departure(OTHER, "mesh1", &s(&first["node_id"])).await;
-    let gone = estate.probe(&["resolve", "--target", &other, "--query", &exact_old]);
+    let other_target = format!("path:{}", serde_json::to_string(&other()).unwrap());
+    estate.holds_departure(&other(), "mesh1", &s(&first["node_id"])).await;
+    let gone = estate.probe(&["resolve", "--target", &other_target, "--query", &exact_old]);
     assert_eq!(gone["reply"]["resolution"], "gone", "the other rpc node holds the old birth's departure: {gone}");
-    let holder = estate.probe(&["resolve", "--target", &other, "--query", &path]);
+    let holder = estate.probe(&["resolve", "--target", &other_target, "--query", &path]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
     assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current primary is the replacement: {holder}");
-    let never = estate.probe(&["resolve", "--target", &other, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
+    let never = estate.probe(&["resolve", "--target", &other_target, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
     assert_eq!(never["reply"]["resolution"], "unknown", "{never}");
     estate.stop().await;
 
@@ -231,15 +233,18 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     // also names an attempt of the fabric lane.
     let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
         .into_iter()
-        .find(|d| d["attributes"]["node"] == NODE && d["attributes"]["build_id"] == build_id.as_str() && s(&d["attributes"]["outcome"]).starts_with("complete"))
+        .find(|d| d["attributes"]["node_id"] == first["node_id"] && d["attributes"]["build_id"] == build_id.as_str() && s(&d["attributes"]["outcome"]).starts_with("complete"))
         .cloned()
-        .unwrap_or_else(|| panic!("node recovery of {NODE} completed under the accepted Build"));
+        .unwrap_or_else(|| panic!("node recovery of the selected node completed under the accepted Build"));
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && r["trace_id"] == recovery["trace_id"] && r["attributes"]["lane"] == "mesh1").collect();
     let replace = reconciles
         .iter()
-        .find(|r| r["attributes"]["reason"] == "recovery" && s(&r["attributes"]["operations"]) == format!("node.delete:{NODE},node.create:{NODE}"))
+        .find(|r| {
+            let children: Vec<_> = spans.iter().filter(|sp| s(&sp["name"]).ends_with(".via-build") && sp["parent_span_id"] == r["span_id"] && sp["trace_id"] == r["trace_id"]).collect();
+            r["attributes"]["reason"] == "recovery" && children.len() == 2 && ["rdm.node_admin.node.delete.via-build", "rdm.node_admin.node.create.via-build"].iter().all(|name| children.iter().filter(|sp| sp["name"] == *name && sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation_id"]).count() == 1)
+        })
         .cloned()
-        .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting and creating {NODE}, and nothing else, in the recovery's trace: {reconciles:?}"));
+        .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting and creating the selected node, and nothing else, in the recovery's trace: {reconciles:?}"));
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
     // The old birth's own serve span of the put is not evidence here: the cell SIGKILLs that process,
     // and spans still queued in its batch exporter die with it (rafka-mesh-telemetry init_telemetry:

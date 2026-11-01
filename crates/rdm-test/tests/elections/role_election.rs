@@ -53,14 +53,14 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     assert_eq!(nodes.iter().filter(|n| n["kind"] == "broker").count(), 3, "{nodes:#?}");
     let primaries = advertised_primaries(&nodes);
     assert_eq!(primaries.keys().map(|c| c.1.as_str()).collect::<Vec<_>>(), ["broker", "compute", "gateway", "node_admin"]);
-    let killed = primaries[&brokers][0].clone();
-    let killed_id = s(&nodes.iter().find(|n| n["name"] == killed.as_str()).unwrap()["node_id"]);
+    let killed_id = primaries[&brokers][0].clone();
+    let killed: rdm_core::PathName = serde_json::from_value(nodes.iter().find(|n| n["node_id"] == killed_id).unwrap()["name"].clone()).expect("the node view carries separate path/name fields");
 
     // The successor, decided from the pre-kill view: the lowest NodeId among the other ready brokers.
     let (succ, succ_id) = nodes
         .iter()
         .filter(|n| n["kind"] == "broker" && n["node_id"] != killed_id.as_str())
-        .map(|n| (s(&n["name"]), s(&n["node_id"])))
+        .map(|n| (serde_json::from_value::<rdm_core::PathName>(n["name"].clone()).expect("a structured node location"), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap();
     estate.kill_node(&killed).await;
@@ -68,7 +68,7 @@ async fn the_brokers_elect_the_next_lowest_ready_node_id() {
     // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
     // winner it elected and the birth it replaced: the election's span is the only place that fact lives,
     // so the span is awaited.
-    wait_for(&format!("{succ} ({succ_id}) announced as the broker successor to {killed_id}"), crate::node_recovery_due(), || async {
+    wait_for(&format!("{succ:?} ({succ_id}) announced as the broker successor to {killed_id}"), crate::node_recovery_due(), || async {
         named(&estate.spans(), "rdm.mesh.election.resolve.via-recompute")
             .iter()
             .any(|sp| {

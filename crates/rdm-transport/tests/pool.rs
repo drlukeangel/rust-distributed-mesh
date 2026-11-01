@@ -67,7 +67,7 @@ async fn node() -> Node {
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
-    let resolved = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
+    let resolved = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Node { _router: router, _server: server, resolved, release }
 }
 
@@ -132,9 +132,9 @@ fn attr(s: &SpanData, key: &str) -> Option<String> {
 async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewhere_does_not() {
     let key = SecretKey::generate();
     let (_h0, a0) = blackhole();
-    let record = ResolvedNode {
+    let record = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
         node_id: NodeId::mint(),
-        name: "mesh1.rpc.1".parse().unwrap(),
+        name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
         endpoint_id: key.public(),
         transport_addr: a0,
         incarnation: IncarnationId::mint(),

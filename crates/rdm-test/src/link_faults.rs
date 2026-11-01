@@ -2,7 +2,7 @@
 //! a partition of an arbitrary node set against the rest, a link that flaps on a schedule, and
 //! inbound UDP dropped to one node only.
 //!
-//! Every target is a node NAME resolved to its published UDP port in the admin's node view, and
+//! Every target is a node ID resolved to its published UDP port in the admin's node view, and
 //! refused by name when it is unknown, empty, the whole estate, or one the caller protects (a
 //! fabric-primary). Each fault is a packet-filter table the installing process owns
 //! ([`crate::netfault::Held`]): it ends with that process, however the process ends. Where the
@@ -32,22 +32,22 @@ pub enum LinkRefusal {
         /// Why.
         reason: String,
     },
-    /// A named node is not in the node view, or its view row names no UDP port.
+    /// A selected node is not in the node view, or its view row publishes no UDP port.
     NoSuchNode {
-        /// The name.
-        name: String,
+        /// The node ID.
+        node_id: String,
     },
-    /// A set names no node.
+    /// A set selects no node.
     EmptySet {
         /// Which set (`subset`, `a`, `b`, `target`).
         set: String,
     },
     /// The subset is every node: there is no rest to cut it from.
     WholeEstate,
-    /// A named node is one the caller protects.
+    /// A selected node is one the caller protects.
     Protected {
-        /// The name.
-        name: String,
+        /// The node ID.
+        node_id: String,
     },
     /// A flap asked for more cycles or a longer phase than a flap may run.
     Unbounded {
@@ -65,36 +65,35 @@ pub enum LinkRefusal {
     },
 }
 
-fn name_of(n: &Value) -> String {
-    n["name"].as_str().unwrap_or_default().to_string()
+fn node_id_of(n: &Value) -> String {
+    n["node_id"].as_str().unwrap_or_default().to_string()
 }
 
-/// The UDP port each of `names` published, in the order named; refused by name when one is
-/// unknown or names no port.
-pub fn ports_of(nodes: &[Value], names: &[String]) -> Result<Vec<u16>, LinkRefusal> {
-    names
+/// The UDP port each node ID published, in the requested order; unknown IDs or missing ports are refused.
+pub fn ports_of(nodes: &[Value], node_ids: &[String]) -> Result<Vec<u16>, LinkRefusal> {
+    node_ids
         .iter()
         .map(|name| {
             nodes
                 .iter()
-                .find(|n| name_of(n) == *name)
+                .find(|n| node_id_of(n) == *name)
                 .and_then(|n| n["transport_addr"].as_str())
                 .and_then(|a| a.rsplit(':').next())
                 .and_then(|p| p.parse::<u16>().ok())
-                .ok_or_else(|| LinkRefusal::NoSuchNode { name: name.clone() })
+                .ok_or_else(|| LinkRefusal::NoSuchNode { node_id: name.clone() })
         })
         .collect()
 }
 
-fn refuse_protected(names: &[String], protected: &[String]) -> Result<(), LinkRefusal> {
-    match names.iter().find(|n| protected.contains(n)) {
-        Some(name) => Err(LinkRefusal::Protected { name: name.clone() }),
+fn refuse_protected(node_ids: &[String], protected: &[String]) -> Result<(), LinkRefusal> {
+    match node_ids.iter().find(|n| protected.contains(n)) {
+        Some(name) => Err(LinkRefusal::Protected { node_id: name.clone() }),
         None => Ok(()),
     }
 }
 
-fn non_empty(set: &str, names: &[String]) -> Result<(), LinkRefusal> {
-    if names.is_empty() {
+fn non_empty(set: &str, node_ids: &[String]) -> Result<(), LinkRefusal> {
+    if node_ids.is_empty() {
         Err(LinkRefusal::EmptySet { set: set.into() })
     } else {
         Ok(())
@@ -136,7 +135,7 @@ impl PartitionSubset {
         non_empty("subset", subset)?;
         refuse_protected(subset, protected)?;
         let subset_ports = ports_of(nodes, subset)?;
-        let rest: Vec<String> = nodes.iter().map(name_of).filter(|n| !n.is_empty() && !subset.contains(n)).collect();
+        let rest: Vec<String> = nodes.iter().map(node_id_of).filter(|n| !n.is_empty() && !subset.contains(n)).collect();
         if rest.is_empty() {
             return Err(LinkRefusal::WholeEstate);
         }
@@ -267,37 +266,37 @@ mod tests {
     use serde_json::json;
 
     fn view() -> Vec<Value> {
-        (1..=4).map(|i| json!({"name": format!("mesh1.rpc.{i}"), "transport_addr": format!("127.0.0.1:{}", 40000 + i)})).collect()
+        (1..=4).map(|i| json!({"node_id": format!("{i:064x}"), "name": {"path": "arbitrary.path", "name": "same-name"}, "transport_addr": format!("127.0.0.1:{}", 40000 + i)})).collect()
     }
 
-    fn names(v: &[&str]) -> Vec<String> {
+    fn node_ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
-    fn ports_come_from_the_view_and_an_unknown_node_is_refused_by_name() {
-        assert_eq!(ports_of(&view(), &names(&["mesh1.rpc.2", "mesh1.rpc.4"])), Ok(vec![40002, 40004]));
-        assert_eq!(ports_of(&view(), &names(&["mesh1.rpc.9"])), Err(LinkRefusal::NoSuchNode { name: "mesh1.rpc.9".into() }));
+    fn ports_come_from_the_view_and_an_unknown_node_is_refused_by_id() {
+        assert_eq!(ports_of(&view(), &node_ids(&["0000000000000000000000000000000000000000000000000000000000000002", "0000000000000000000000000000000000000000000000000000000000000004"])), Ok(vec![40002, 40004]));
+        assert_eq!(ports_of(&view(), &node_ids(&["0000000000000000000000000000000000000000000000000000000000000009"])), Err(LinkRefusal::NoSuchNode { node_id: "0000000000000000000000000000000000000000000000000000000000000009".into() }));
     }
 
     #[test]
     fn a_subset_cut_refuses_an_empty_whole_unknown_or_protected_set_before_touching_the_host() {
-        let all: Vec<String> = view().iter().map(name_of).collect();
+        let all: Vec<String> = view().iter().map(node_id_of).collect();
         assert_eq!(PartitionSubset::start(&view(), &[], &[]).err(), Some(LinkRefusal::EmptySet { set: "subset".into() }));
         assert_eq!(PartitionSubset::start(&view(), &all, &[]).err(), Some(LinkRefusal::WholeEstate));
-        assert_eq!(PartitionSubset::start(&view(), &names(&["mesh1.rpc.1", "mesh1.rpc.2"]), &names(&["mesh1.rpc.2"])).err(), Some(LinkRefusal::Protected { name: "mesh1.rpc.2".into() }));
-        assert_eq!(PartitionSubset::start(&view(), &names(&["nope"]), &[]).err(), Some(LinkRefusal::NoSuchNode { name: "nope".into() }));
+        assert_eq!(PartitionSubset::start(&view(), &node_ids(&["0000000000000000000000000000000000000000000000000000000000000001", "0000000000000000000000000000000000000000000000000000000000000002"]), &node_ids(&["0000000000000000000000000000000000000000000000000000000000000002"])).err(), Some(LinkRefusal::Protected { node_id: "0000000000000000000000000000000000000000000000000000000000000002".into() }));
+        assert_eq!(PartitionSubset::start(&view(), &node_ids(&["nope"]), &[]).err(), Some(LinkRefusal::NoSuchNode { node_id: "nope".into() }));
     }
 
     #[test]
     fn a_flap_is_bounded_and_refuses_a_protected_or_empty_side_before_touching_the_host() {
-        let (a, b) = (names(&["mesh1.rpc.1"]), names(&["mesh1.rpc.2"]));
+        let (a, b) = (node_ids(&["0000000000000000000000000000000000000000000000000000000000000001"]), node_ids(&["0000000000000000000000000000000000000000000000000000000000000002"]));
         let ms = Duration::from_millis(1);
         assert!(matches!(flap_link(&view(), &a, &b, &[], 0, ms, ms), Err(LinkRefusal::Unbounded { max, .. }) if max == MAX_FLAP_CYCLES as u64));
         assert!(matches!(flap_link(&view(), &a, &b, &[], MAX_FLAP_CYCLES + 1, ms, ms), Err(LinkRefusal::Unbounded { .. })));
         assert!(matches!(flap_link(&view(), &a, &b, &[], 1, MAX_FLAP_PHASE + ms, ms), Err(LinkRefusal::Unbounded { .. })));
         assert_eq!(flap_link(&view(), &a, &[], &[], 1, ms, ms), Err(LinkRefusal::EmptySet { set: "b".into() }));
-        assert_eq!(flap_link(&view(), &a, &b, &a, 1, ms, ms), Err(LinkRefusal::Protected { name: "mesh1.rpc.1".into() }));
+        assert_eq!(flap_link(&view(), &a, &b, &a, 1, ms, ms), Err(LinkRefusal::Protected { node_id: "0000000000000000000000000000000000000000000000000000000000000001".into() }));
     }
 
     #[test]
@@ -305,6 +304,6 @@ mod tests {
         let rule = inbound_drop_rule(&[40002, 40001]);
         assert_eq!(rule, r#"iifname "lo" udp dport { 40001, 40002 } drop"#);
         assert!(!rule.contains("sport"), "the node's own sends are not dropped");
-        assert_eq!(FirewallInbound::start(&view(), "mesh1.rpc.3", &names(&["mesh1.rpc.3"])).err(), Some(LinkRefusal::Protected { name: "mesh1.rpc.3".into() }));
+        assert_eq!(FirewallInbound::start(&view(), "0000000000000000000000000000000000000000000000000000000000000003", &node_ids(&["0000000000000000000000000000000000000000000000000000000000000003"])).err(), Some(LinkRefusal::Protected { node_id: "0000000000000000000000000000000000000000000000000000000000000003".into() }));
     }
 }

@@ -2,20 +2,20 @@
 //! (PRD §6: no in-process shortcut).
 //!
 //! ```text
-//! rdm-rpc-probe --admin-birth <birth> get    --target exact:<node_id>|path:<path.name> --key <k>
+//! rdm-rpc-probe --admin-birth <birth> get    --target exact:<node_id>|path:<JSON object with path and name> --key <k>
 //! rdm-rpc-probe --admin-birth <birth> put    --target ... --key <k> --value <v>
 //! rdm-rpc-probe --admin-birth <birth> delete --target ... --key <k>
 //! rdm-rpc-probe --admin-birth <birth> cas    --target ... --key <k> [--expected <v>] [--value <v>]
 //! rdm-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]
 //! rdm-rpc-probe --admin-birth <birth> fabric-delete --target path:<the entry admin>
-//! rdm-rpc-probe --admin-birth <birth> node-delete   --target path:<path.name>
+//! rdm-rpc-probe --admin-birth <birth> node-delete   --target path:<JSON object with path and name>
 //! ```
 //!
 //! `<birth>` is the entry node-admin's birth, the JSON it prints on its birth line
 //! (`rdm_client::BIRTH_LINE`). The probe reads that admin's view over Node RPC
 //! (`fabric.get`, then `mesh.nodes.get` for each mesh the fabric lists) and resolves the target from it:
 //! `exact:` is exactly that logical node and never follows a replacement;
-//! `path:` is whoever holds the path now. `cas` without `--expected` expects
+//! `path:` carries a JSON object with separate path and name fields and selects their current occupant. `cas` without `--expected` expects
 //! the key absent; without `--value` it deletes. `fabric-delete` submits fabric.delete at the entry
 //! admin and reads its stream to the terminal; `node-delete` submits node.delete of the target's path
 //! and reads its stream to its last reply (fabric-delete.md step 4: the fabric-primary's own
@@ -40,7 +40,7 @@ struct Args {
     key: String,
     value: Option<String>,
     expected: Option<String>,
-    /// Carry the call through this node (`path:<path.name>` or `exact:<node_id>`) to the exact
+    /// Carry the call through this node (`path:<JSON object with path and name>` or `exact:<node_id>`) to the exact
     /// target: the `ViaPeer` route, executed as the composition seam does.
     via: Option<String>,
     /// Execute the `NoActiveRoute` choice: the seam sends nothing and answers by name.
@@ -55,7 +55,7 @@ struct Args {
     state: Option<String>,
     as_node_id: Option<String>,
     as_incarnation: Option<String>,
-    /// `originate`: the destination path the target node calls over its own held projection.
+    /// `originate`: the destination node ID the target node calls over its own held projection.
     destination: Option<String>,
     /// `fault`: how many index writes and history appends the target node refuses next, or
     /// `--release`.
@@ -63,7 +63,7 @@ struct Args {
     refuse_history: u32,
     pass_history: u32,
     release: bool,
-    /// `record-proxy`: the carrier path, and how many Direct Failed observations precede the Proxy.
+    /// `record-proxy`: the carrier node ID, and how many Direct Failed observations precede the Proxy.
     carrier: Option<String>,
     failed_attempts: u32,
     /// `throughput`: the streams opened in turn on one connection, and the bytes each writes.
@@ -156,8 +156,8 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let to = a.to.as_deref().ok_or("declare needs --to <path:..|exact:..>")?;
     let to = match to.split_once(':') {
         Some(("exact", id)) => DeclareTarget::Exact(id.to_string()),
-        Some(("path", p)) => DeclareTarget::Path(p.to_string()),
-        _ => return Err(format!("--to {to:?} is neither exact:<node_id> nor path:<path.name>")),
+        Some(("path", p)) => DeclareTarget::Path(serde_json::from_str(p).map_err(|e| format!("--to path/name fields: {e}"))?),
+        _ => return Err(format!("--to {to:?} is neither exact:<node_id> nor path:<JSON object with path and name>")),
     };
     let state = match a.state.as_deref().ok_or("declare needs --state")? {
         "pending" => NodeState::Pending,
@@ -193,8 +193,8 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 fn target(spec: &str) -> Result<NodeTarget, String> {
     match spec.split_once(':') {
         Some(("exact", id)) => NodeId::parse(id).map(NodeTarget::ExactNode).map_err(|e| format!("exact target {id:?}: {e}")),
-        Some(("path", p)) => p.parse::<PathName>().map(NodeTarget::CurrentPath).map_err(|e| format!("path target {p:?}: {e}")),
-        _ => Err(format!("target {spec:?} is neither exact:<node_id> nor path:<path.name>")),
+        Some(("path", p)) => serde_json::from_str::<PathName>(p).map(NodeTarget::CurrentPath).map_err(|e| format!("path target {p:?}: {e}")),
+        _ => Err(format!("target {spec:?} is neither exact:<node_id> nor path:<JSON object with path and name>")),
     }
 }
 
@@ -205,11 +205,11 @@ fn target(spec: &str) -> Result<NodeTarget, String> {
 /// the call by name, and the endpoint is closed first: an endpoint dropped open aborts the process
 /// ungracefully and its span file is lost.
 async fn enter(admin: &MeshNode) -> Result<(Arc<NodeRpcClient>, Arc<StaticResolver>), String> {
-    let endpoint_id = admin.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| format!("--admin-birth names {} (node {}) at the endpoint {:?}, no Iroh key: {e}", admin.name, admin.node_id, admin.endpoint_id.0))?;
+    let endpoint_id = admin.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| format!("--admin-birth names {:?} (node {}) at the endpoint {:?}, no Iroh key: {e}", admin.name, admin.node_id, admin.endpoint_id.0))?;
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { node_id: admin.node_id.clone(), name: admin.name.clone(), endpoint_id, transport_addr: admin.transport_addr, incarnation: admin.incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: admin.mesh.clone(), kind: admin.kind, node_id: admin.node_id.clone(), name: admin.name.clone(), endpoint_id, transport_addr: admin.transport_addr, incarnation: admin.incarnation.clone() });
     let client = Arc::new(NodeRpcClient::new(bind_endpoint().await?, resolver.clone()).with_caller_system("rdm"));
-    let read = async { resolved(&views_of(&client, &admin.name).await?) };
+    let read = async { resolved(&views_of(&client, &admin.node_id).await?) };
     match read.await {
         Ok(nodes) => {
             for n in nodes {
@@ -227,13 +227,13 @@ async fn enter(admin: &MeshNode) -> Result<(Arc<NodeRpcClient>, Arc<StaticResolv
 /// Every node the node-admin `admin` holds in its view: `fabric.get`, then `node.get [mesh: m]` for each mesh the
 /// fabric lists with nodes, read from that admin. A read that does not answer is refused naming the
 /// admin, the read and how it ended.
-async fn views_of(client: &Arc<NodeRpcClient>, admin: &PathName) -> Result<Vec<NodeView>, String> {
-    let carrier = BuildCarrier::new(client.clone(), admin.clone());
-    let fabric = rdm_test::typed::the_fabric(&Fabrics::new(carrier.clone())).await.map_err(|e| format!("fabric.get at the entry admin {admin}: {e}"))?;
+async fn views_of(client: &Arc<NodeRpcClient>, admin: &rdm_core::NodeId) -> Result<Vec<NodeView>, String> {
+    let carrier = BuildCarrier::at_node(client.clone(), admin.clone());
+    let fabric = rdm_test::typed::the_fabric(&Fabrics::new(carrier.clone())).await.map_err(|e| format!("fabric.get at the entry admin {admin:?}: {e}"))?;
     let nodes = Nodes::new(carrier);
     let mut all = Vec::new();
     for mesh in fabric.meshes.iter().filter(|m| !m.nodes.is_empty()) {
-        all.extend(rdm_test::typed::mesh_nodes(&nodes, &mesh.name).await.map_err(|e| format!("node.get [mesh: {}] at the entry admin {admin}: {e}", mesh.name))?);
+        all.extend(rdm_test::typed::mesh_nodes(&nodes, &mesh.name).await.map_err(|e| format!("node.get [mesh: {}] at the entry admin {admin:?}: {e}", mesh.name))?);
     }
     Ok(all)
 }
@@ -249,16 +249,16 @@ fn resolved(views: &[NodeView]) -> Result<Vec<ResolvedNode>, String> {
     for n in views {
         let endpoint_id = match n.endpoint_id.as_deref() {
             None => None,
-            Some(v) => Some(v.parse::<iroh::PublicKey>().map_err(|e| format!("view node {} ({}): endpoint_id {v:?} does not parse: {e}", n.node_id, n.name))?),
+            Some(v) => Some(v.parse::<iroh::PublicKey>().map_err(|e| format!("view node {} ({:?}): endpoint_id {v:?} does not parse: {e}", n.node_id, n.name))?),
         };
         match (endpoint_id, n.transport_addr, n.incarnation_id.clone()) {
-            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
+            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { mesh: n.mesh.clone(), kind: n.kind, node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
             (endpoint_id, transport_addr, incarnation) => {
                 let absent: Vec<&str> = [(endpoint_id.is_none(), "endpoint_id"), (transport_addr.is_none(), "transport_addr"), (incarnation.is_none(), "incarnation_id")]
                     .into_iter()
                     .filter_map(|(is_absent, field)| is_absent.then_some(field))
                     .collect();
-                tracing::info!(node_id = %n.node_id, node = %n.name, absent = absent.join(","), "the admin's view holds this node with no value yet for these fields: it cannot be dialled");
+                tracing::info!(node_id = %n.node_id, node_path = %n.name.path, node_name = %n.name.name, absent = absent.join(","), "the admin's view holds this node with no value yet for these fields: it cannot be dialled");
             }
         }
     }
@@ -312,7 +312,7 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     let target = target(&a.target)?;
     if a.op == "nodes" {
         let (client, _) = enter(&a.admin_birth).await?;
-        let nodes = views_of(&client, &a.admin_birth.name).await;
+        let nodes = views_of(&client, &a.admin_birth.node_id).await;
         client.endpoint().close().await;
         return nodes.map(|nodes| (json!({"outcome": "Reply", "nodes": nodes}), None));
     }
@@ -343,7 +343,7 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
         (None, false) => Ok(rdm_transport::RouteChoice::Direct),
         (Some(v), false) => {
             let carrier = self::target(v)?;
-            resolver.resolve(&carrier).map(|c| rdm_transport::RouteChoice::ViaPeer { carrier: c.node_id, path: c.name })
+            resolver.resolve(&carrier).map(|c| rdm_transport::RouteChoice::ViaPeer { carrier: c.node_id })
         }
     };
     let mut opts = CallOptions { cut_before_finish: a.cut_before_finish, ..CallOptions::default() };
@@ -436,8 +436,8 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     use rdm_test::resolve_probe::{ProbeTarget, ResolveProbe, ResolveReply, ResolveRequest};
     let query = match a.key.split_once(':') {
         Some(("exact", id)) => ProbeTarget::Exact(id.to_string()),
-        Some(("path", p)) => ProbeTarget::Path(p.to_string()),
-        _ => return Err(format!("--query {:?} is neither exact:<node_id> nor path:<path.name>", a.key)),
+        Some(("path", p)) => ProbeTarget::Path(serde_json::from_str(p).map_err(|e| format!("--query path/name fields: {e}"))?),
+        _ => return Err(format!("--query {:?} is neither exact:<node_id> nor path:<JSON object with path and name>", a.key)),
     };
     let (client, _) = enter(&a.admin_birth).await?;
     let req = ResolveRequest::Resolve { target: query };
@@ -475,15 +475,18 @@ fn probe_bind() -> std::net::SocketAddr {
     std::net::SocketAddr::new(ip, 0)
 }
 
-/// `originate --target <source> --destination path:<dest> get|put --key k [--value v]`,
+/// `originate --target <source> --destination exact:<node_id> get|put --key k [--value v]`,
 /// `fault --target <source> --refuse-index N --refuse-history M | --release`, and
 /// `snapshot --target <source>`: the testkit's originate door on the source node (op 0x73).
 async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     use rdm_test::originate::{Originate, OriginateReply, OriginateRequest, ProofOp};
+    let exact = |what: &str, value: &Option<String>| -> Result<NodeId, String> {
+        let id = value.as_deref().and_then(|v| v.strip_prefix("exact:")).ok_or_else(|| format!("{what} requires exact:<node_id>"))?;
+        NodeId::parse(id).map_err(|e| format!("{what}: {e}"))
+    };
     let req = match a.op.as_str() {
         "originate" => {
-            let destination = a.destination.clone().ok_or("originate needs --destination path:<path.name>")?;
-            let destination = destination.strip_prefix("path:").map(str::to_string).ok_or("--destination is path:<path.name>")?;
+            let destination = exact("--destination", &a.destination)?;
             let key = a.key.as_bytes().to_vec();
             let op = match a.value.as_ref() {
                 Some(v) => ProofOp::Put { key, value: v.as_bytes().to_vec() },
@@ -491,25 +494,22 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             };
             OriginateRequest::Call { destination, op }
         }
-        "dial" => OriginateRequest::Dial { destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("dial needs --destination path:<path.name>")? },
+        "dial" => OriginateRequest::Dial { destination: exact("--destination", &a.destination)? },
         "stream" => OriginateRequest::Stream {
-            destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("stream needs --destination path:<path.name>")?,
+            destination: exact("--destination", &a.destination)?,
             payload: a.value.clone().unwrap_or_default().into_bytes(),
         },
         "throughput" => OriginateRequest::Throughput {
-            destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("throughput needs --destination path:<path.name>")?,
+            destination: exact("--destination", &a.destination)?,
             streams: a.streams,
             bytes: a.bytes,
         },
         "record-proxy" => {
-            let path = |what: &str, v: &Option<String>| -> Result<String, String> {
-                v.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or(format!("record-proxy needs {what} path:<path.name>"))
-            };
-            OriginateRequest::RecordProxy { destination: path("--destination", &a.destination)?, carrier: path("--carrier", &a.carrier)?, failed_attempts: a.failed_attempts }
+            OriginateRequest::RecordProxy { destination: exact("--destination", &a.destination)?, carrier: exact("--carrier", &a.carrier)?, failed_attempts: a.failed_attempts }
         }
         "stop-transport" => OriginateRequest::StopTransport { reason: "testkit stop-transport".to_string() },
         "block-direct" => OriginateRequest::BlockDirect {
-            destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("block-direct needs --destination path:<path.name>")?,
+            destination: exact("--destination", &a.destination)?,
             blocked: !a.release,
         },
         // `own-config --target <node> --value k=v[,k=v...]`: the node puts its own config, the whole map.
@@ -571,7 +571,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 /// after it). Each prints the replies in order and how long the call took.
 async fn run_delete(a: &Args) -> Result<Value, String> {
     let (client, _) = enter(&a.admin_birth).await?;
-    let carrier = BuildCarrier::new(client.clone(), a.admin_birth.name.clone());
+    let carrier = BuildCarrier::at_node(client.clone(), a.admin_birth.node_id.clone());
     let begun = std::time::Instant::now();
     let mut replies = Vec::new();
     let result = if a.op == "fabric-delete" {
@@ -604,7 +604,9 @@ async fn run_delete(a: &Args) -> Result<Value, String> {
             }
         }
     } else {
-        let path: PathName = a.target.strip_prefix("path:").ok_or_else(|| format!("node-delete needs --target path:<path.name>, not {:?}", a.target))?.parse().map_err(|e| format!("--target {:?}: {e:?}", a.target))?;
+        let NodeTarget::CurrentPath(path) = self::target(&a.target)? else {
+            return Err("node-delete requires a structured path/name target".into());
+        };
         match Nodes::new(carrier).delete(&path).await {
             Err(end) => json!({"outcome": "Rejected", "reason": end.to_string()}),
             Ok(mut stream) => {
@@ -625,7 +627,7 @@ async fn run_delete(a: &Args) -> Result<Value, String> {
                         }
                     }
                 }
-                json!({"outcome": "Reply", "node": path.to_string(), "deleted": deleted, "replies": replies, "elapsed_ms": begun.elapsed().as_millis() as u64})
+                json!({"outcome": "Reply", "node": path, "deleted": deleted, "replies": replies, "elapsed_ms": begun.elapsed().as_millis() as u64})
             }
         }
     };
@@ -661,7 +663,7 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                         TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted } => json!({
                             "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
                             "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
-                            "members": digests.into_iter().map(|d| rdm_core::MeshDigest::from(d).node.name.to_string()).collect::<Vec<_>>(),
+                            "members": digests.into_iter().map(|d| rdm_core::MeshDigest::from(d).node.node_id).collect::<Vec<_>>(),
                             "in_flight": in_flight.len(), "deleted": deleted.len(),
                         }),
                         TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
@@ -687,11 +689,10 @@ mod tests {
 
     /// A node of `name` as an admin's view holds it: born when `endpoint`, `addr` and `incarnation`
     /// are all given.
-    fn view(name: &str, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
-        let name: PathName = name.parse().unwrap();
+    fn view(name: PathName, mesh: &str, kind: rdm_core::NodeKind, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
         NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
-            kind: name.kind,
-            mesh: name.mesh.clone(),
+            kind,
+            mesh: mesh.to_owned(),
             name,
             node_id: NodeId::mint(),
             endpoint_id: endpoint.map(str::to_string),
@@ -716,26 +717,26 @@ mod tests {
         }
     }
 
-    fn born(name: &str) -> NodeView {
-        view(name, Some(&iroh::SecretKey::generate().public().to_string()), Some("127.0.0.1:9"), Some(IncarnationId::mint()))
+    fn born(name: PathName) -> NodeView {
+        view(name, "mesh1", rdm_core::NodeKind::RpcNode, Some(&iroh::SecretKey::generate().public().to_string()), Some("127.0.0.1:9"), Some(IncarnationId::mint()))
     }
 
     /// CONTRACT: a view whose nodes are all born resolves every one of them, in order.
     #[test]
     fn view_with_born_nodes_resolves_each() {
-        let views = [born("mesh1.rpc.1"), born("mesh1.rpc.2")];
+        let views = [born(PathName::new("mesh1.rpc", "1").unwrap()), born(PathName::new("mesh1.rpc", "2").unwrap())];
         let ids: Vec<NodeId> = resolved(&views).unwrap().into_iter().map(|n| n.node_id).collect();
         assert_eq!(ids, views.iter().map(|v| v.node_id.clone()).collect::<Vec<_>>());
     }
 
     /// CONTRACT: a node whose endpoint is present and is no Iroh key refuses the whole call, and the
-    /// refusal names the node's id and path.name, the field, the value and the parse error. What must
+    /// refusal names the node's id, path and name, the field, the value and the parse error. What must
     /// NOT happen: the node vanishing while the readable ones resolve.
     #[test]
     fn view_node_with_unparseable_endpoint_refuses_naming_node_field_value_and_error() {
-        let bad = view("mesh1.rpc.2", Some("not-an-endpoint-id"), Some("127.0.0.1:9"), Some(IncarnationId::mint()));
-        let err = resolved(&[born("mesh1.rpc.1"), bad.clone()]).unwrap_err();
-        for part in [bad.node_id.to_string(), "mesh1.rpc.2".into(), "endpoint_id".into(), "\"not-an-endpoint-id\"".into(), "does not parse: ".into()] {
+        let bad = view(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("not-an-endpoint-id"), Some("127.0.0.1:9"), Some(IncarnationId::mint()));
+        let err = resolved(&[born(PathName::new("mesh1.rpc", "1").unwrap()), bad.clone()]).unwrap_err();
+        for part in [bad.node_id.to_string(), "path: \"mesh1.rpc\"".into(), "name: \"2\"".into(), "endpoint_id".into(), "\"not-an-endpoint-id\"".into(), "does not parse: ".into()] {
             assert!(err.contains(&part), "the refusal names {part:?}: {err}");
         }
     }
@@ -745,8 +746,8 @@ mod tests {
     /// beside it still resolve.
     #[test]
     fn view_with_an_unborn_node_leaves_it_out_and_resolves_the_rest() {
-        let readable = born("mesh1.rpc.1");
-        let nodes = resolved(&[view("mesh1.rpc.2", None, None, None), readable.clone()]).unwrap();
+        let readable = born(PathName::new("mesh1.rpc", "1").unwrap());
+        let nodes = resolved(&[view(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None, None, None), readable.clone()]).unwrap();
         assert_eq!(nodes.into_iter().map(|n| n.node_id).collect::<Vec<_>>(), vec![readable.node_id]);
     }
 
@@ -754,7 +755,7 @@ mod tests {
     /// yet and an endpoint that is no Iroh key still refuses.
     #[test]
     fn view_node_with_an_absent_field_and_an_unparseable_one_refuses() {
-        let bad = view("mesh1.rpc.2", Some("not-an-endpoint-id"), Some("127.0.0.1:9"), None);
+        let bad = view(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("not-an-endpoint-id"), Some("127.0.0.1:9"), None);
         let err = resolved(&[bad.clone()]).unwrap_err();
         assert!(err.contains(&bad.node_id.to_string()) && err.contains("endpoint_id"), "{err}");
     }

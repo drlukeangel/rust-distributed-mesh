@@ -157,6 +157,11 @@ macro_rules! product_id {
 }
 
 product_id!(
+    /// One logical occurrence of a standalone operation, independent of transport retries.
+    OperationOccurrenceId, "operation-occurrence", PartialOrd, Ord
+);
+
+product_id!(
     /// Logical node identity: minted once, kept across restarts, never
     /// reused; a permanent replacement mints a new one. Ordered: lexical order
     /// of two canonical NodeIds is the order of their values (the election

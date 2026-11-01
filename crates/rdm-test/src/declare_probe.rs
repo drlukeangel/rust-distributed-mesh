@@ -31,10 +31,10 @@ pub enum DeclareTarget {
     ///
     /// Position 0 on the wire.
     Exact(String),
-    /// Whoever holds this `path.name`.
+    /// Whoever holds this separate path and name.
     ///
     /// Position 1 on the wire.
-    Path(String),
+    Path(PathName),
 }
 
 /// A declare probe call.
@@ -188,7 +188,7 @@ pub fn serve(b: ServerBuilder, client: Arc<OnceLock<crate::node_rpc::ProcessNode
             let Some(rpc) = client.get() else { return Ok(DeclareReply::NotReady { reason: "the node's client is not up yet".into() }) };
             let target = match &to {
                 DeclareTarget::Exact(id) => NodeId::parse(id).map(NodeTarget::ExactNode).map_err(|e| format!("exact {id:?}: {e}")),
-                DeclareTarget::Path(p) => p.parse::<PathName>().map(NodeTarget::CurrentPath).map_err(|e| format!("path {p:?}: {e}")),
+                DeclareTarget::Path(p) => Ok(NodeTarget::CurrentPath(p.clone())),
             };
             let target = match target {
                 Ok(t) => t,
@@ -238,7 +238,7 @@ mod tests {
         for r in all {
             assert_eq!(DeclareProbe::decode_reply(&DeclareProbe::encode_reply(&r).unwrap()).unwrap(), r);
         }
-        let req = DeclareRequest::Declare { to: DeclareTarget::Path("mesh1.admin.1".into()), state: NodeState::Ready, node_id: None, incarnation: None };
+        let req = DeclareRequest::Declare { to: DeclareTarget::Path(PathName::new("mesh1.admin", "1").unwrap()), state: NodeState::Ready, node_id: None, incarnation: None };
         assert_eq!(DeclareProbe::decode_request(&DeclareProbe::encode_request(&req).unwrap()).unwrap(), req);
     }
 }

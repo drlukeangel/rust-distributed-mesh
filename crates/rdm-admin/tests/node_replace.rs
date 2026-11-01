@@ -74,23 +74,23 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         .unwrap();
 
     rt.block_on(async {
-        let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
-        let mut admin = Node::allocated(admin_name.clone());
+        let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let mut admin = Node::allocated(admin_name.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin.status = NodeStatus::Ready;
         admin.is_primary = true;
         admin.is_fabric_primary = true;
         admin.incarnation_id = Some(IncarnationId::mint());
         let admin_id = admin.node_id.clone();
 
-        let name1: PathName = "mesh1.rpc.1".parse().unwrap();
-        let old1 = name1.renamed();
-        let mut pred1 = Node::allocated(name1.clone());
+        let name1: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let old1 = name1.renamed().unwrap();
+        let mut pred1 = Node::allocated(name1.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         pred1.status = NodeStatus::Ready;
         pred1.incarnation_id = Some(IncarnationId::mint());
         let pred1_id = pred1.node_id.clone();
 
-        let name2: PathName = "mesh1.rpc.2".parse().unwrap();
-        let mut pred2 = Node::allocated(name2.clone());
+        let name2: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+        let mut pred2 = Node::allocated(name2.clone(), "mesh1", rdm_core::NodeKind::RpcNode);
         pred2.status = NodeStatus::Ready;
         pred2.incarnation_id = Some(IncarnationId::mint());
         let pred2_id = pred2.node_id.clone();
@@ -111,14 +111,14 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         }));
 
         let store = Arc::new(MemoryNodesStorage::default());
-        let mut pred1_row = NodeRow::new(name1.clone(), pred1_id.clone(), NodeStatus::Ready);
+        let mut pred1_row = NodeRow::new(name1.clone(), "mesh1", rdm_core::NodeKind::RpcNode, pred1_id.clone(), NodeStatus::Ready);
         pred1_row
             .config
             .insert("topic".into(), "orders-v1".into());
         pred1_row.tags = BTreeSet::from(["tier-a".to_string(), "canary".to_string()]);
         store.write_record(&pred1_row).await.unwrap();
 
-        let mut pred2_row = NodeRow::new(name2.clone(), pred2_id.clone(), NodeStatus::Ready);
+        let mut pred2_row = NodeRow::new(name2.clone(), "mesh1", rdm_core::NodeKind::RpcNode, pred2_id.clone(), NodeStatus::Ready);
         pred2_row
             .config
             .insert("topic".into(), "payments-v1".into());
@@ -144,14 +144,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
 
         // 1. Before predecessor node[1] releases `mesh1.rpc.1`, successor node[2]'s claim is refused NameHeld.
         let refused = rows
-            .claim(
-                &name1,
-                &succ1_id,
-                "node.create:mesh1.rpc.1",
-                None,
-                Some(&v2_binding),
-                ClaimFor::Successor,
-            )
+            .claim(&name1, "mesh1", rdm_core::NodeKind::RpcNode, &succ1_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), None, Some(&v2_binding), ClaimFor::Successor)
             .await;
         assert_eq!(
             refused,
@@ -161,7 +154,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
             }))
         );
 
-        // 2. Rename predecessor node[1] to `mesh1.rpc.1.old` (step 2 of node-replace.md).
+        // 2. Rename predecessor node[1] to `mesh1.rpc.old.1` (step 2 of node-replace.md).
         let renamed_row = rows.rename_row(&pred1, &old1).await.expect("rename_row");
         assert_eq!(renamed_row.name, old1);
         assert_eq!(renamed_row.renamed_from, Some(name1.clone()));
@@ -171,23 +164,13 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         );
 
         // 3. Successor node[2] claims `mesh1.rpc.1` with ClaimFor::Successor: its row takes its Build
-        //    entry's config and tags (Q305), never `mesh1.rpc.1.old`'s; it indexes the entry's tags under
+        //    entry's config and tags (Q305), never `mesh1.rpc.old.1`'s; it indexes the entry's tags under
         //    succ1_id and removes pred1_id from the active tag index while keeping tags on the retained
         //    `.old` row with `inherited_by = Some(succ1_id)`.
         let entry_tags = BTreeSet::from(["tier-a".to_string(), "canary".to_string()]);
         let entry_config = BTreeMap::from([("zone".to_string(), "b".to_string())]);
         let claimed1 = rows
-            .claim_spec(
-                &name1,
-                &succ1_id,
-                "node.create:mesh1.rpc.1",
-                None,
-                Some(&v2_binding),
-                &entry_tags,
-                &entry_config,
-                None,
-                ClaimFor::Successor,
-            )
+            .claim_spec(&name1, "mesh1", rdm_core::NodeKind::RpcNode, &succ1_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), None, Some(&v2_binding), &entry_tags, &entry_config, None, ClaimFor::Successor)
             .await
             .expect("successor claim after rename");
         let Claimed::Written {
@@ -232,14 +215,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
             .await
             .unwrap();
         let repeated = rows
-            .claim(
-                &name1,
-                &succ1_id,
-                "node.create:mesh1.rpc.1",
-                None,
-                Some(&v2_binding),
-                ClaimFor::Successor,
-            )
+            .claim(&name1, "mesh1", rdm_core::NodeKind::RpcNode, &succ1_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), None, Some(&v2_binding), ClaimFor::Successor)
             .await
             .expect("repeated successor claim");
         let Claimed::HeldByNode(held_row) = repeated else {
@@ -253,7 +229,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
 
         // 5. Delete-instead-of-rename path (`mesh1.rpc.2`): predecessor is deleted, successor inherits
         //    config and tags from the Deleted predecessor row at `mesh1.rpc.2`.
-        rows.deleted(&pred2, "node.delete:mesh1.rpc.2")
+        rows.deleted(&pred2, &rdm_core::OperationId::node("node.delete", &pred2.node_id))
             .await
             .expect("delete pred2");
         assert!(
@@ -265,17 +241,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         let entry2_tags = BTreeSet::from(["tier-c".to_string()]);
         let entry2_config = BTreeMap::new();
         let claimed2 = rows
-            .claim_spec(
-                &name2,
-                &succ2_id,
-                "node.create:mesh1.rpc.2",
-                None,
-                Some(&v2_binding),
-                &entry2_tags,
-                &entry2_config,
-                None,
-                ClaimFor::Successor,
-            )
+            .claim_spec(&name2, "mesh1", rdm_core::NodeKind::RpcNode, &succ2_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), None, Some(&v2_binding), &entry2_tags, &entry2_config, None, ClaimFor::Successor)
             .await
             .expect("successor claim over deleted predecessor");
         let Claimed::Written {
@@ -301,7 +267,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
         let ports = BTreeMap::from([("rafka.kafka-endpoint".to_string(), "10.231.7.5:60371".to_string())]);
         rows.written().update(&*store, &succ2_id, None, |r| r.config = ports.clone()).await.expect("the successor's own update").expect("its row");
         let rerun = rows
-            .claim_spec(&name2, &succ2_id, "node.create:mesh1.rpc.2", None, Some(&v2_binding), &entry2_tags, &entry2_config, None, ClaimFor::Successor)
+            .claim_spec(&name2, "mesh1", rdm_core::NodeKind::RpcNode, &succ2_id, &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), None, Some(&v2_binding), &entry2_tags, &entry2_config, None, ClaimFor::Successor)
             .await
             .expect("the re-run claim");
         assert!(matches!(rerun, Claimed::HeldByNode(_)), "the re-run finds its own birth's row: {rerun:?}");

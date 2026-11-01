@@ -32,7 +32,7 @@ use tracing::Instrument;
 /// The exact birth the hook runs for.
 #[derive(Debug, Clone)]
 pub struct Birth {
-    /// The birth's `path.name`.
+    /// The birth's `(path, name)`.
     pub name: PathName,
     /// Its node id.
     pub node_id: NodeId,
@@ -48,13 +48,12 @@ pub struct Birth {
 
 /// The node-admin that accepted this birth's `JoinNode`: the accepting primary the hook pulls from (`fabric-node-hooks.md` "What the context carries"). A start after
 /// a stop reached it back over the call that commanded the start, holding no record of it
-/// (`lifecycles/node-start.md` step 2): it is known by the name its join answer gave and the endpoint it answered
+/// (`lifecycles/node-start.md` step 2): it is known by the node ID its join answer gave and the endpoint it answered
 /// on, and the hook calls it through `target`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptingPrimary {
-    /// The admin's `path.name`, as the join answer's `served_by` (or, at a first start, the
-    /// launcher's record) names it.
-    pub name: PathName,
+    /// The globally unique admin ID supplied by the join answer.
+    pub node_id: NodeId,
     /// Its endpoint key.
     pub endpoint: iroh::PublicKey,
     /// Where a call to it goes: the launcher's birth at a first start; after a stop, the endpoint
@@ -311,12 +310,10 @@ impl Events {
         }
     }
 
-    /// The birth this node's view holds at the authority's endpoint, and how long it has been silent:
-    /// the authority is known by its endpoint, which names one process.
+    /// The birth held for the accepting admin's globally unique ID and its silence duration.
+    /// An endpoint reused by another node never substitutes for this identity.
     fn birth_of(&self, accepting_primary: &AcceptingPrimary) -> Option<(MeshDigest, Duration)> {
-        let key = accepting_primary.endpoint.to_string();
-        let held = self.digest_view.all().into_iter().find(|d| d.node.endpoint_id.0 == key)?;
-        self.digest_view.get(held.node.node_id.as_str())
+        self.digest_view.get(accepting_primary.node_id.as_str())
     }
 
     fn holds(&self, on: &RetryOn, accepting_primary: Option<&AcceptingPrimary>, mark: &Mark) -> bool {
@@ -389,10 +386,10 @@ impl PreNodeReadyState {
     pub fn blocker(&self, me: &PathName) -> Option<String> {
         match self {
             Self::Passed => None,
-            Self::Running { attempt } => Some(format!("{me}: pre_node_ready is running (attempt {attempt})")),
-            Self::Blocked { attempt, reason, retry_on } => Some(format!("{me}: pre_node_ready is blocked (attempt {attempt}): {reason}; it runs again on {}", retry_on.name())),
-            Self::Failed(why) => Some(format!("{me}: pre_node_ready failed: {why}")),
-            Self::Cancelled => Some(format!("{me}: cancelled before pre_node_ready passed")),
+            Self::Running { attempt } => Some(format!("{me:?}: pre_node_ready is running (attempt {attempt})")),
+            Self::Blocked { attempt, reason, retry_on } => Some(format!("{me:?}: pre_node_ready is blocked (attempt {attempt}): {reason}; it runs again on {}", retry_on.name())),
+            Self::Failed(why) => Some(format!("{me:?}: pre_node_ready failed: {why}")),
+            Self::Cancelled => Some(format!("{me:?}: cancelled before pre_node_ready passed")),
         }
     }
 
@@ -512,12 +509,12 @@ impl HookDriver {
         let span = tracing::info_span!(
             parent: &self.boot,
             "rdm.mesh.node.update.via-pre-node-ready-attempt",
-            node = %self.ctx.birth.name,
+            node_path = %self.ctx.birth.name.path, node_name = %self.ctx.birth.name.name,
             node_id = %self.ctx.birth.node_id,
             incarnation_id = %self.ctx.birth.incarnation.as_str(),
             attempt = n,
             inherited = self.ctx.inherited,
-            accepting_primary = %match &self.ctx.accepting_primary { AcceptingPrimarySource::Accepted(a) => a.name.to_string(), AcceptingPrimarySource::None(why) => format!("none: {}", why.reason()) },
+            accepting_primary = %match &self.ctx.accepting_primary { AcceptingPrimarySource::Accepted(a) => a.node_id.to_string(), AcceptingPrimarySource::None(why) => format!("none: {}", why.reason()) },
             outcome = tracing::field::Empty,
             retry_on = tracing::field::Empty,
             reason = tracing::field::Empty,
@@ -568,7 +565,7 @@ impl HookDriver {
                 let blocked = tracing::info_span!(
                     parent: &self.boot,
                     "rdm.mesh.node.reject.via-pre-node-ready-blocked",
-                    node = %self.ctx.birth.name,
+                    node_path = %self.ctx.birth.name.path, node_name = %self.ctx.birth.name.name,
                     attempt = n,
                     blocker = %reason,
                     retry_on = retry_on.name(),
@@ -626,7 +623,7 @@ impl HookDriver {
         let Some(after) = self.after.clone() else { return };
         let me = self.clone();
         tokio::spawn(async move {
-            let span = tracing::info_span!(parent: &me.boot, "rdm.mesh.node.update.via-on-node-ready", node = %me.ctx.birth.name);
+            let span = tracing::info_span!(parent: &me.boot, "rdm.mesh.node.update.via-on-node-ready", node_path = %me.ctx.birth.name.path, node_name = %me.ctx.birth.name.name);
             let ctx = me.ctx.clone();
             let cancel = me.ctx.cancel.clone();
             tokio::select! {
@@ -709,14 +706,14 @@ mod tests {
             let _ = rafka_time.adopt(1_000);
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
-            let name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+            let name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
             let topology_view = TopologyView::join(
                 &gossip,
                 &ep,
                 &fabric_id,
                 "mesh1",
                 &mesh_id,
-                &name.to_string(),
+                &name.name,
                 Arc::new(rafka_time.clone()),
                 Vec::new(),
                 &[],
@@ -733,10 +730,11 @@ mod tests {
                 kind: NodeKind::RpcNode,
             };
             let auth_key = iroh::SecretKey::generate().public();
+            let accepting_id = NodeId::mint();
             let accepting = AcceptingPrimary {
-                name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
+                node_id: accepting_id.clone(),
                 endpoint: auth_key,
-                target: rdm_transport::NodeTarget::ExactNode(NodeId::mint()),
+                target: rdm_transport::NodeTarget::ExactNode(accepting_id),
             };
 
             // 1. Blank reason in `Blocked` is refused by name (`Step::Failed`).
@@ -979,7 +977,7 @@ mod tests {
         let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-on-node-ready-unit")
             .expect("evidence capture starts");
 
-        let expected_name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+        let expected_name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
         let expected_name_for_assert = expected_name.clone();
         capture.run(2, async move {
             let ep = rdm_transport::endpoint::bind(
@@ -1001,7 +999,7 @@ mod tests {
                 &fabric_id,
                 "mesh1",
                 &mesh_id,
-                &expected_name.to_string(),
+                &expected_name.name,
                 Arc::new(rafka_time.clone()),
                 Vec::new(),
                 &[],
@@ -1049,7 +1047,7 @@ mod tests {
                 done_tx: Mutex::new(Some(done_tx)),
             });
             let hooks = NodeHooks::new(Arc::new(PassBefore)).with_on_node_ready(after.clone());
-            let boot_span = tracing::info_span!("rdm.mesh.node.create.via-boot", node = %birth.name);
+            let boot_span = tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = %birth.name.path, node_name = %birth.name.name);
             let driver = hooks
                 .driver(
                     NodeReadyCtx {
@@ -1121,7 +1119,7 @@ mod tests {
         assert!(
             on_ready_spans
                 .iter()
-                .any(|s| s["attributes"]["node"] == expected_name_for_assert.to_string()),
+                .any(|s| s["attributes"]["node_path"] == expected_name_for_assert.path && s["attributes"]["node_name"] == expected_name_for_assert.name),
             "expected rdm.mesh.node.update.via-on-node-ready span for node: {on_ready_spans:?}"
         );
     }

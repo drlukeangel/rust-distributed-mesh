@@ -30,13 +30,14 @@ fn attr(sp: &Value, k: &str) -> String {
     }
 }
 
-fn digest(name: &str, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: u16) -> MeshDigest {
+    let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
-            node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
-            endpoint_id: EndpointId(format!("key-{name}")),
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+            node_id: node_id.clone(),
+            name,
+            endpoint_id: EndpointId(format!("key-{node_id}")),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -89,7 +90,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 }
 
 fn op_of(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { mesh: d.node.mesh.clone(), build_id: "81ey2zm6h456".into(), attempt: 1, operation: format!("{operation}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+    LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(), build_id: "81ey2zm6h456".into(), attempt: 1, operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
 fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
@@ -125,15 +126,15 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         }
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest("mesh1.admin.1", 41_001), digest("mesh1.admin.2", 41_002), digest("mesh1.rpc.1", 41_011), digest("mesh1.rpc.2", 41_012), digest("mesh1.rpc.3", 41_013), digest("mesh1.rpc.4", 41_014));
-        let m1 = TopologyView::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
-        let m2 = TopologyView::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.2", clock(), vec![a1.clone()], &[]).await.unwrap();
-        let m = TopologyView::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![a1.clone()], &[]).await.unwrap();
-        let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
-        let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
+        let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 41_001), digest(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 41_002), digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 41_011), digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 41_012), digest(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 41_013), digest(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 41_014));
+        let m1 = TopologyView::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, p1_d.node.node_id.as_str(), clock(), vec![], &[]).await.unwrap();
+        let m2 = TopologyView::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, p2_d.node.node_id.as_str(), clock(), vec![a1.clone()], &[]).await.unwrap();
+        let m = TopologyView::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, rpc1.node.node_id.as_str(), clock(), vec![a1.clone()], &[]).await.unwrap();
+        let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { node: p1_d.node.node_id.to_string(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
+        let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { node: p2_d.node.node_id.to_string(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
         m2.wait_for_neighbour().await;
         m.wait_for_neighbour().await;
-        let (pub1, pub2) = (PublisherId { node: "mesh1.admin.1".into(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { node: "mesh1.admin.2".into(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
+        let (pub1, pub2) = (PublisherId { node: p1_d.node.node_id.to_string(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { node: p2_d.node.node_id.to_string(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
         let held_at_member = || m.held_source_version("mesh1");
         let seq_at_member = |d: &MeshDigest| m.digest_view.get(d.node.node_id.as_str()).map(|(h, _)| h.digest_seq);
         for digest_view in [&m1.digest_view, &m2.digest_view] {
@@ -256,13 +257,13 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         learn_addresses(&forwarder.ep, &[source_addr.clone()]).unwrap();
         learn_addresses(&member.ep, &[forwarder_addr.clone()]).unwrap();
         let (source_mesh, own_mesh) = (MeshId::mint(), MeshId::mint());
-        let source_birth = digest("mesh2.admin.1", 42001);
-        let forwarder_birth = digest("mesh1.admin.1", 42002);
+        let source_birth = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 42001);
+        let forwarder_birth = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 42002);
         let author = PublisherId::from(&source_birth.node);
-        let src = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fwd = TopologyView::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let src = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, source_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fwd = TopologyView::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, forwarder_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         // Deliberately a different exact birth at the author's descriptive path.
-        let impostor = digest("mesh2.admin.1", 42003);
+        let impostor = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 42003);
         assert_ne!(impostor.node.node_id, author.node_id);
         fwd.digest_view.record(impostor);
         let source_bb = Backbone::join(&source.gossip, &source.ep, &src, "mesh2", author.clone(), vec![]).await.unwrap();
@@ -277,20 +278,21 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         assert_eq!(held_author, author, "receipt keeps the supplied author, not the same-name member");
 
         // This neighbour joins after the empty source installed: its baseline is a replayed full.
-        let mem = TopologyView::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![forwarder_addr], &[]).await.unwrap();
+        let own = digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, 42004);
+        let mem = TopologyView::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![forwarder_addr], &[]).await.unwrap();
         until("the new neighbour to install the forwarded replay", || mem.held_source_version("mesh2").is_some()).await;
         assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
-        let own = digest("mesh1.rpc.1", 42004);
         let served = mem.held_topology(&own).into_iter().find(|s| s.mesh == "mesh2").unwrap();
         assert_eq!(served.publisher, author);
         assert!(served.digests.is_empty(), "the author is carried even without an author digest");
-        let read = TopologyView::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let reader_id = NodeId::mint();
+        let read = TopologyView::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let chunk = rdm_transport::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, deleted: served.deleted };
         assert!(matches!(read.take_read_chunk(chunk, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
 
         // A subsequent material change uses the same author through the delta path.
-        source_bb.publish(&src, vec![digest("mesh2.rpc.1", 42005)]).await;
+        source_bb.publish(&src, vec![digest(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, 42005)]).await;
         until("the member to apply the next source version", || mem.held_source_version("mesh2").is_some_and(|(_, v)| v > version)).await;
         assert_eq!(mem.held_source_version("mesh2").unwrap().0, author);
         for n in [&source, &forwarder, &member, &reader] { n.ep.close().await; }
@@ -308,8 +310,9 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         learn_addresses(&probe.ep, &[addr_of(&source.ep)]).unwrap();
         learn_addresses(&source.ep, &[addr_of(&probe.ep)]).unwrap();
         let mesh = MeshId::mint();
-        let author = PublisherId { node: "mesh1.admin.1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let topology_view = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let node_id = NodeId::mint();
+        let author = PublisherId { node: node_id.to_string(), node_id, incarnation: IncarnationId::mint() };
+        let topology_view = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let backbone = Backbone::join(&source.gossip, &source.ep, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
         let mut local = probe.gossip.subscribe(rdm_transport::topology::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();

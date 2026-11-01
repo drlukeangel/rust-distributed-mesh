@@ -93,7 +93,7 @@ fn node_backend(launch: &Launch) -> rdm_node::storage_backend::NodeStorageProvid
 /// The file, under the root that holds an estate's data dirs, that has the birth `node_id` refuse to
 /// open the testkit's [`crate::test_app::TOPOLOGY_STORAGE_TARGET`]: a storage change's move of that
 /// birth onto it is refused by name (storage.md §2 step 4), and the birth writes the provider it wrote.
-/// Keyed on the birth: a birth re-created at the same `path.name` opens it.
+/// Keyed on the birth: a birth re-created at the same node ID opens it.
 pub fn target_refused_knob(root: &std::path::Path, node_id: &str) -> std::path::PathBuf {
     root.join(format!("{node_id}.target-refused.knob"))
 }
@@ -123,27 +123,27 @@ pub const APP_PROTOCOL: &[u8] = b"rdm-test/echo/1";
 pub const APP_PROTOCOL_KNOB: &str = "app-protocol.knob";
 
 /// The directory, under the root that holds an estate's data dirs, of the node-row knob: a file named
-/// by an rpc node's `path.name` whose text is another node's `path.name` has that node read the other's
+/// by an rpc node's node ID whose text is another node's node ID has that node read the other's
 /// row from the nodes storage ([`watch_node_row_knob`]).
 pub fn node_row_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("node-row-knob")
 }
 
 /// The rpc node `launch` names reads another node's row when the estate's root holds its node-row
-/// knob ([`node_row_knob_dir`]`/<path.name>`): looked at every 200 ms for the process's life, the knob
+/// knob ([`node_row_knob_dir`]`/<node-id>`): looked at every 200 ms for the process's life, the knob
 /// is taken (removed), the row it names is read once through `read` (`RunningNode::node_row`), and the
-/// answer is written beside it as `<path.name>.answer`, JSON: `outcome` (`found`, `none` or `refused`)
+/// answer is written beside it as `<node-id>.answer`, JSON: `outcome` (`found`, `none` or `refused`)
 /// with the row's `node_id` and `config`, or the refusal's `cause`.
 pub fn watch_node_row_knob(launch: &Launch, read: rdm_node::node::NodeRowRead) {
     let Some(root) = launch.data_dir.parent() else { return };
-    let (dir, name) = (node_row_knob_dir(root), launch.name.to_string());
+    let (dir, name) = (node_row_knob_dir(root), launch.node_id.to_string());
     tokio::spawn(async move {
         let knob = dir.join(&name);
         loop {
             if let Ok(text) = tokio::fs::read_to_string(&knob).await {
                 let _ = tokio::fs::remove_file(&knob).await;
-                let answer = match text.trim().parse::<rdm_core::PathName>() {
-                    Err(e) => serde_json::json!({"outcome": "refused", "cause": format!("the knob names no path.name ({:?}): {e}", text.trim())}),
+                let answer = match rdm_core::NodeId::parse(text.trim()) {
+                    Err(e) => serde_json::json!({"outcome": "refused", "cause": format!("the knob names no node ID ({:?}): {e}", text.trim())}),
                     Ok(target) => match read.read(target).await {
                         Ok(Some(row)) => serde_json::json!({"outcome": "found", "node_id": row.node_id.to_string(), "config": row.config}),
                         Ok(None) => serde_json::json!({"outcome": "none"}),
@@ -305,7 +305,7 @@ fn rafka_time_knob(
     boot: &tracing::Span,
 ) -> Option<Box<dyn FnOnce() + Send>> {
     let root = launch.data_dir.parent()?.to_path_buf();
-    let (name, rafka_time, boot) = (launch.name.to_string(), rafka_time.clone(), boot.clone());
+    let (name, rafka_time, boot) = (launch.name.clone(), rafka_time.clone(), boot.clone());
     Some(Box::new(move || {
         crate::apply_rafka_time_knob(&root, &name, &rafka_time, &boot);
     }))

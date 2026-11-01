@@ -28,14 +28,16 @@ fn owner() -> Owner {
 async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_processes() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 1), (NodeKind::Gateway, 1)])] }).await;
-    let want = ["mesh1.admin.1", "mesh1.broker.1", "mesh1.gateway.1"].iter().map(|n| n.to_string()).collect();
+    let want = [rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "1").unwrap(), rdm_core::PathName::new("mesh1.gateway", "1").unwrap()].into_iter().collect();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
-    let broker = estate.node_value("mesh1.broker.1").await;
+    let broker = estate.node_value(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await;
     let broker_id = broker["node_id"].as_str().unwrap().to_string();
     let exact = format!("exact:{broker_id}");
 
-    estate.witness_holds_birth("mesh1.gateway.1", "mesh1.broker.1").await;
-    let put = estate.probe(&["put", "--target", &exact, "--via", "path:mesh1.gateway.1", "--key", "t1", "--value", "traced"]);
+    let carrier_id = estate.node_view(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).await.node_id;
+    let carrier_target = format!("exact:{carrier_id}");
+    estate.witness_holds_birth(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), &rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await;
+    let put = estate.probe(&["put", "--target", &exact, "--via", &carrier_target, "--key", "t1", "--value", "traced"]);
     assert_eq!((put["outcome"].as_str(), put["route"].as_str()), (Some("Reply"), Some("via-peer")), "{put}");
     assert_eq!(put["reply"]["executing_node"], broker_id, "{put}");
     estate.stop().await;
@@ -43,7 +45,7 @@ async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_proces
     let spans = estate.spans();
     let root = named(&spans, "rdm.node_rpc.proof_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put").cloned().expect("the probe's call span");
     let carried = named(&spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().find(|s| s["attributes"]["target"] == broker_id.as_str()).cloned().expect("the gateway's carried inner invocation");
-    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").into_iter().find(|s| s["attributes"]["incarnation_id"] == broker["incarnation_id"]).cloned().expect("the broker's serve span");
+    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").into_iter().find(|s| s["attributes"]["node_id"] == broker["node_id"] && s["attributes"]["incarnation_id"] == broker["incarnation_id"]).cloned().expect("the broker's serve span");
     let op_is = |v: &Value, op: u64| v.as_u64() == Some(op) || v.as_str() == Some(&op.to_string());
     // Every role runs the one node executable, so the process is told apart by what it served: the
     // one direct serve of the proof-store op in the probe's trace is the broker's (the broker's

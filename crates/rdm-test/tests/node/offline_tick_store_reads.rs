@@ -146,7 +146,7 @@ pub(crate) fn day0_config(dir: &Path) -> AdminConfig {
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-fn launch_by(root: &Running, name: &str, dir: &Path, store: &Path) -> Launch {
+fn launch_by(root: &Running, name: rdm_core::PathName, dir: &Path, store: &Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -157,14 +157,14 @@ fn launch_by(root: &Running, name: &str, dir: &Path, store: &Path) -> Launch {
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::NodeAdmin,
-        name: name.parse().unwrap(),
+        name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -226,7 +226,7 @@ fn the_offline_tick_reads_the_runtime_rows_once_on_the_mesh_primary_and_never_on
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        let launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");

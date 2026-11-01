@@ -25,7 +25,7 @@ async fn read_to_complete(stream: &mut BuildStream) {
         match frame.expect("stream frame") {
             BuildFrame::Complete { .. } => return,
             BuildFrame::Failed { operation, step, reason, .. } => {
-                panic!("Build failed at {operation} {step}: {reason}")
+                panic!("Build failed at {operation:?} {step}: {reason}")
             }
             _ => {}
         }
@@ -79,10 +79,13 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
     // 1. Gate: The receiver is the fabric-primary -> `not-fabric-primary`, naming the fabric-primary,
     //    which redirects the carrier to `mesh1.admin.1`, where Gate 7 (`A primary's stop, connections
     //    delete or delete has a successor`) refuses stopping the sole rpc-node with `no-secondary`.
-    let non_fp_carrier = estate.carrier_at(&"mesh1.admin.2".parse::<PathName>().unwrap()).await;
-    assert_eq!(non_fp_carrier.fabric_primary().to_string(), "mesh1.admin.2");
+    let views = estate.node_views().await;
+    let non_fp = views.iter().find(|n| n.kind == NodeKind::NodeAdmin && !n.is_fabric_primary).expect("other admin");
+    let fp = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
+    let non_fp_carrier = estate.peers().await.carrier_for(non_fp.node_id.clone());
+    assert_eq!(non_fp_carrier.target(), &rdm_transport::NodeTarget::ExactNode(non_fp.node_id.clone()));
     let primary_stop_err = Nodes::new(non_fp_carrier)
-        .stop(&"mesh1.rpc.1".parse().unwrap())
+        .stop(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap())
         .await
         .err()
         .expect("stop of sole rpc-node must be refused");
@@ -95,7 +98,7 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
 
     // 2. Gate: A node stands at the path -> `unknown-node`.
     let unknown_err = Nodes::new(carrier.clone())
-        .stop(&"mesh1.rpc.99".parse().unwrap())
+        .stop(&rdm_core::PathName::new("mesh1.rpc", "99").unwrap())
         .await
         .err()
         .expect("unknown node must be refused");
@@ -108,7 +111,7 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
 
     // 3. Gate: The node's state admits the action (a start needs a stopped birth) -> `node-not-live`.
     let start_live_err = Nodes::new(carrier.clone())
-        .start(&"mesh1.rpc.1".parse().unwrap())
+        .start(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap())
         .await
         .err()
         .expect("starting a Ready node must be refused");
@@ -120,7 +123,7 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
     }
 
     // 4. Gate: The current Build is settled -> `build-in-progress`, naming the Build.
-    rdm_test::write_pre_node_ready_knob(&estate.root, "mesh1.rpc.2", "hold-for-gate-check")
+    rdm_test::write_pre_node_ready_knob(&estate.root, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "hold-for-gate-check")
         .unwrap();
     let grown = FabricDesired {
         fabric: FABRIC.into(),
@@ -138,7 +141,7 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
     assert_eq!(blocked_step, "WaitForNodeReady");
 
     let in_progress_err = Nodes::new(carrier.clone())
-        .stop(&"mesh1.rpc.1".parse().unwrap())
+        .stop(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap())
         .await
         .err()
         .expect("stop during active Build must be refused");
@@ -152,7 +155,7 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
         other => panic!("expected BuildInProgress naming {active_build_id}, got {other:?}"),
     }
 
-    rdm_test::write_pre_node_ready_knob(&estate.root, "mesh1.rpc.2", "pass").unwrap();
+    rdm_test::write_pre_node_ready_knob(&estate.root, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "pass").unwrap();
     read_to_complete(&mut active_stream).await;
     estate.settles_to(&SHAPE_GROWN, Duration::from_secs(90)).await;
     estate.stop().await;
@@ -161,8 +164,8 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
     let not_fp_spans = named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary");
     assert!(
         not_fp_spans.iter().any(|s| {
-            s["attributes"]["node"].as_str() == Some("mesh1.admin.2")
-                && s["attributes"]["fabric_primary"].as_str() == Some("mesh1.admin.1")
+            s["attributes"]["node_path"] == non_fp.name.path && s["attributes"]["node_name"] == non_fp.name.name
+                && s["attributes"]["fabric_primary"].as_str() == Some(fp.node_id.as_str())
         }),
         "expected rdm.node_admin.build.reject.via-not-fabric-primary on mesh1.admin.2 naming mesh1.admin.1"
     );

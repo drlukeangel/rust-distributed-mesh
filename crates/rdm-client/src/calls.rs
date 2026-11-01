@@ -83,7 +83,7 @@ pub enum CallEnd {
     /// that does not recognise a value refuses it by name.
     UnrecognisedReceipt {
         /// The receipt's operation key.
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The receipt's step.
         step: String,
     },
@@ -107,7 +107,7 @@ impl std::fmt::Display for CallEnd {
             Self::Rejected { reason, detail } => write!(f, "rejected ({reason}): {detail}"),
             Self::BuildInProgress { current } => write!(f, "Build {current} is still reconciling; one Build at a time"),
             Self::NotBackedToday { op, why } => write!(f, "{} is not backed by an op today: {why}", op.name()),
-            Self::UnrecognisedReceipt { operation, step } => write!(f, "a receipt names operation {operation} step {step}, which this client does not recognise"),
+            Self::UnrecognisedReceipt { operation, step } => write!(f, "a receipt names operation {operation:?} step {step}, which this client does not recognise"),
             Self::NotFound { read, detail } => write!(f, "{read}: not found: {detail}"),
         }
     }
@@ -220,49 +220,49 @@ impl HeldView {
     /// The overlay the node holds for `node_id` whose operation starts with `prefix`
     /// (`node.stop:`, `node.delete:`), if it holds one.
     pub fn overlay(&self, node_id: &NodeId, prefix: &str) -> Option<&rdm_core::LifecycleOp> {
-        self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.starts_with(prefix))
+        self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.action == prefix)
     }
 }
 
-/// The Build, attempt and node a `node.stop` belongs to. The operation key (`node.stop:<path.name>`)
+/// The Build, attempt and node a `node.stop` belongs to. The operation key (`node.stop:<path and name>`)
 /// is derived here and never written by a caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StopContext {
     build_id: BuildId,
     attempt: u32,
-    node: PathName,
+    operation: rdm_core::OperationId,
 }
 
 impl StopContext {
     /// The stop of `node` that attempt `attempt` of Build `build_id` holds.
-    pub fn new(build_id: BuildId, attempt: u32, node: PathName) -> Self {
-        Self { build_id, attempt, node }
+    pub fn new(build_id: BuildId, attempt: u32, operation: rdm_core::OperationId) -> Self {
+        Self { build_id, attempt, operation }
     }
 
     /// The operation key the Build records the stop under.
-    pub fn operation(&self) -> String {
-        format!("node.stop:{}", self.node)
+    pub fn operation(&self) -> rdm_core::OperationId {
+        self.operation.clone()
     }
 }
 
-/// The Build, attempt and node a `node.start` belongs to. The operation key (`node.start:<path.name>`)
+/// The Build, attempt and node a `node.start` belongs to. The operation key (`node.start:<path and name>`)
 /// is derived here and never written by a caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartContext {
     build_id: BuildId,
     attempt: u32,
-    node: PathName,
+    operation: rdm_core::OperationId,
 }
 
 impl StartContext {
     /// The start of `node` that attempt `attempt` of Build `build_id` holds.
-    pub fn new(build_id: BuildId, attempt: u32, node: PathName) -> Self {
-        Self { build_id, attempt, node }
+    pub fn new(build_id: BuildId, attempt: u32, operation: rdm_core::OperationId) -> Self {
+        Self { build_id, attempt, operation }
     }
 
     /// The operation key the Build records the start under.
-    pub fn operation(&self) -> String {
-        format!("node.start:{}", self.node)
+    pub fn operation(&self) -> rdm_core::OperationId {
+        self.operation.clone()
     }
 }
 
@@ -418,8 +418,8 @@ impl<'a> NodeRpc<'a> {
     /// the birth answered; a stopped birth is told nothing and the call completes on the row. `route`
     /// is the caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward
     /// `0x1A`), executed exactly as chosen (`NodeRpcClient::call_routed`).
-    pub async fn name_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &str, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::UpdateName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+    pub async fn name_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &rdm_core::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::UpdateName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.clone() };
         self.row_writer_call(NodeOp::NameUpdate, mesh_primary, route, &req, opts).await
     }
 
@@ -446,7 +446,7 @@ impl<'a> NodeRpc<'a> {
     /// connection it holds while it holds any (R-CR1). `route` is executed exactly as chosen
     /// (`NodeRpcClient::call_routed`).
     pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rdm_core::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+        let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.clone() };
         let span = NodeOp::NameUpdate.span();
         let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(&birth.node_id, route, &req, opts), span.clone()).await;
         let r = ended(out);
@@ -596,17 +596,17 @@ impl<'a> NodeRpc<'a> {
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
     /// to move its primary (and the fabric-primary with it when it is both) to the successor the
     /// election names in its own view.
-    pub async fn primary_update(&self, _fabric: &str, primary: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
-            node_type: primary.node_type().to_string(),
+            node_type: rdm_core::NodeKind::NodeAdmin.node_type().to_string(),
             build_id: build_id.to_string(),
             run: attempt,
-            operation: format!("node.primary.update:{build_id}:{attempt}:{primary}"),
+            operation: rdm_core::OperationId::node("node.primary.update", primary),
             successor: None,
         };
         let span = NodeOp::PrimaryUpdate.span();
-        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(primary.clone()), &req, opts), span.clone()).await;
+        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::ExactNode(primary.clone()), &req, opts), span.clone()).await;
         let r = ended(out);
         span.record("outcome", match &r {
             Ok(_) => "ok",
@@ -619,17 +619,17 @@ impl<'a> NodeRpc<'a> {
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"):
     /// command the fabric-primary to move the fabric-primary: its own mesh first, so both
     /// move together when a same-mesh node-admin is Ready, else another mesh's mesh-primary.
-    pub async fn fabric_primary_update(&self, _fabric: &str, primary: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn fabric_primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
             node_type: rdm_core::handover::FABRIC.to_string(),
             build_id: build_id.to_string(),
             run: attempt,
-            operation: format!("node.fabric-primary.update:{build_id}:{attempt}:{primary}"),
+            operation: rdm_core::OperationId::node("node.fabric-primary.update", primary),
             successor: None,
         };
         let span = NodeOp::FabricPrimaryUpdate.span();
-        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(primary.clone()), &req, opts), span.clone()).await;
+        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::ExactNode(primary.clone()), &req, opts), span.clone()).await;
         let r: Result<NodePrimaryUpdateReply, CallEnd> = ended(out);
         span.record("outcome", match &r {
             Ok(_) => "ok",

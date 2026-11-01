@@ -115,7 +115,7 @@ pub const NODE_STATUSES: &[&str] = &[
 ];
 /// A mesh's or the fabric's lifecycle states, by their page names.
 pub const SCOPE_STATUSES: &[&str] = &["pending", "ready", "leaving", "dead", "degraded"];
-/// The node kinds, by their `path.name` segment.
+/// The node kinds, by their `(path, name)` segment.
 pub const KINDS: &[&str] = &["admin", "rpc", "broker", "gateway", "compute"];
 /// The deployment providers.
 pub const PROVIDERS: &[&str] = &["process", "container"];
@@ -290,9 +290,9 @@ impl Row for MeshDigest {
             "transport_addr" => Value::One(self.node.transport_addr.to_string()),
             "status" => Value::of(page_name(&self.status)),
             "path" => Value::One(name.path()),
-            "mesh" => Value::One(name.mesh.clone()),
-            "kind" => Value::One(name.kind.segment().to_string()),
-            "node_type" => Value::One(name.node_type().to_string()),
+            "mesh" => Value::One(self.node.mesh.clone()),
+            "kind" => Value::One(self.node.kind.segment().to_string()),
+            "node_type" => Value::One(self.node.kind.node_type().to_string()),
             "name" => Value::One(name.name()),
             "is_primary" => Value::bool(self.is_primary.is_some()),
             "is_fabric_primary" => Value::bool(self.is_fabric_primary.is_some()),
@@ -339,7 +339,7 @@ impl Row for crate::build::BuildHeader {
             "current" => Value::bool(self.current),
             "phase" => Value::One(self.phase.page_name().to_string()),
             "attempt" => Value::One(self.attempt.to_string()),
-            "executor" => Value::of(self.executor.as_ref()),
+            "executor" => Value::of(self.executor.as_ref().map(|birth| &birth.node_id)),
             _ => Value::Absent,
         }
     }
@@ -511,9 +511,9 @@ mod tests {
     use crate::views::{NodeStatus, ScopeStatus};
     use crate::{NodeId, NodeKind};
 
-    fn node(name: &str, kind: NodeKind, tags: &[&str], config: &[(&str, &str)]) -> NodeView {
+    fn node(name: crate::PathName, mesh: &str, kind: NodeKind, tags: &[&str], config: &[(&str, &str)]) -> NodeView {
         let mut v: NodeView = serde_json::from_value(serde_json::json!({
-            "name": name, "kind": kind, "mesh": name.split('.').next().unwrap(), "node_id": NodeId::mint(), "endpoint_id": null,
+            "name": name, "kind": kind, "mesh": mesh, "node_id": NodeId::mint(), "endpoint_id": null,
             "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
             "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
             "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {}, "data_dir_lost": null,
@@ -526,9 +526,9 @@ mod tests {
         v
     }
 
-    fn names(rows: &[NodeView], f: &Filter) -> Vec<String> {
+    fn names(rows: &[NodeView], f: &Filter) -> Vec<crate::PathName> {
         assert_eq!(f.refusal(Entity::Nodes), None, "{f:?}");
-        rows.iter().filter(|r| f.matches(*r)).map(|r| r.name.to_string()).collect()
+        rows.iter().filter(|r| f.matches(*r)).map(|r| r.name.clone()).collect()
     }
 
     /// CONTRACT (Q306; query.md): a pair whose property is written `!<property>` matches a row whose
@@ -539,15 +539,15 @@ mod tests {
     /// positive, a row lacking the property excluded by a negated pair, an unknown `!` property served.
     #[test]
     fn a_negated_pair_matches_every_row_whose_property_is_none_of_its_values() {
-        let mut dead = node("mesh1.broker.1", NodeKind::Broker, &["gold"], &[("zone", "eu-1")]);
+        let mut dead = node(crate::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", NodeKind::Broker, &["gold"], &[("zone", "eu-1")]);
         dead.status = NodeStatus::Dead;
-        let ready = node("mesh1.gateway.1", NodeKind::Gateway, &["silver"], &[("zone", "us-2")]);
-        let bare = node("mesh2.gateway.1", NodeKind::Gateway, &[], &[]);
+        let ready = node(crate::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", NodeKind::Gateway, &["silver"], &[("zone", "us-2")]);
+        let bare = node(crate::PathName::new("mesh2.gateway", "1").unwrap(), "mesh2", NodeKind::Gateway, &[], &[]);
         let rows = [dead.clone(), ready.clone(), bare.clone()];
-        assert_eq!(names(&rows, &Filter::new().not("status", ["dead", "deleted"])), ["mesh1.gateway.1", "mesh2.gateway.1"], "every status but dead and deleted");
-        assert_eq!(names(&rows, &Filter::new().not("config.zone", ["eu-1"])), ["mesh1.gateway.1", "mesh2.gateway.1"], "a row without the key matches a negated pair");
-        assert_eq!(names(&rows, &Filter::new().not("tags", ["gold", "silver"])), ["mesh2.gateway.1"], "a negated set field: none of the values carried");
-        assert_eq!(names(&rows, &Filter::new().not("status", ["dead"]).eq("kind", ["gateway"]).eq("mesh", ["mesh1"])), ["mesh1.gateway.1"], "a negated pair ANDs with positive pairs");
+        assert_eq!(names(&rows, &Filter::new().not("status", ["dead", "deleted"])), [crate::PathName::new("mesh1.gateway", "1").unwrap(), crate::PathName::new("mesh2.gateway", "1").unwrap()], "every status but dead and deleted");
+        assert_eq!(names(&rows, &Filter::new().not("config.zone", ["eu-1"])), [crate::PathName::new("mesh1.gateway", "1").unwrap(), crate::PathName::new("mesh2.gateway", "1").unwrap()], "a row without the key matches a negated pair");
+        assert_eq!(names(&rows, &Filter::new().not("tags", ["gold", "silver"])), [crate::PathName::new("mesh2.gateway", "1").unwrap()], "a negated set field: none of the values carried");
+        assert_eq!(names(&rows, &Filter::new().not("status", ["dead"]).eq("kind", ["gateway"]).eq("mesh", ["mesh1"])), [crate::PathName::new("mesh1.gateway", "1").unwrap()], "a negated pair ANDs with positive pairs");
         assert_eq!(Filter::new().not("status", ["dead"]).pairs, vec![("!status".to_string(), vec!["dead".to_string()])], "on the wire as a pair whose property carries the prefix");
         let unknown = Filter::new().not("colour", ["red"]).refusal(Entity::Nodes).expect("an unknown negated property is refused");
         assert!(unknown.contains("(!colour, [red])"), "{unknown}");
@@ -564,22 +564,22 @@ mod tests {
     /// any-of read as all-of, a repeated property read as any-of, an absent key matching `""`.
     #[test]
     fn a_filter_ands_its_pairs_ors_a_pairs_values_and_reads_config_by_its_key() {
-        let gold = node("mesh1.gateway.1", NodeKind::Gateway, &["gold", "ssd"], &[("zone", "eu-1"), ("rack.row", "7"), ("note", "")]);
-        let silver = node("mesh1.broker.1", NodeKind::Broker, &["silver"], &[("zone", "us-2")]);
-        let other = node("mesh2.gateway.1", NodeKind::Gateway, &["gold"], &[]);
+        let gold = node(crate::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", NodeKind::Gateway, &["gold", "ssd"], &[("zone", "eu-1"), ("rack.row", "7"), ("note", "")]);
+        let silver = node(crate::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", NodeKind::Broker, &["silver"], &[("zone", "us-2")]);
+        let other = node(crate::PathName::new("mesh2.gateway", "1").unwrap(), "mesh2", NodeKind::Gateway, &["gold"], &[]);
         let rows = [gold.clone(), silver.clone(), other.clone()];
-        assert_eq!(names(&rows, &Filter::new()), ["mesh1.gateway.1", "mesh1.broker.1", "mesh2.gateway.1"], "no pair is every row");
-        assert_eq!(names(&rows, &Filter::new().eq("config.zone", ["eu-1"])), ["mesh1.gateway.1"]);
-        assert_eq!(names(&rows, &Filter::new().eq("config.rack.row", ["7"])), ["mesh1.gateway.1"], "the key is everything after the first dot");
-        assert_eq!(names(&rows, &Filter::new().eq("config.zone", ["eu-1", "us-2"])), ["mesh1.gateway.1", "mesh1.broker.1"], "a key mesh2.gateway.1 lacks matches the others");
-        assert_eq!(names(&rows, &Filter::new().eq("config.note", [""])), ["mesh1.gateway.1"], "\"\" matches an empty value, never an absent one");
-        assert_eq!(names(&rows, &Filter::new().eq("tags", ["gold"]).eq("tags", ["ssd"])), ["mesh1.gateway.1"], "a repeated property is all of");
-        assert_eq!(names(&rows, &Filter::new().eq("tags", ["gold", "silver"])), ["mesh1.gateway.1", "mesh1.broker.1", "mesh2.gateway.1"], "one pair's values are any of");
-        assert_eq!(names(&rows, &Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["gateway"])), ["mesh1.gateway.1"], "pairs are AND");
+        assert_eq!(names(&rows, &Filter::new()), [crate::PathName::new("mesh1.gateway", "1").unwrap(), crate::PathName::new("mesh1.broker", "1").unwrap(), crate::PathName::new("mesh2.gateway", "1").unwrap()], "no pair is every row");
+        assert_eq!(names(&rows, &Filter::new().eq("config.zone", ["eu-1"])), [crate::PathName::new("mesh1.gateway", "1").unwrap()]);
+        assert_eq!(names(&rows, &Filter::new().eq("config.rack.row", ["7"])), [crate::PathName::new("mesh1.gateway", "1").unwrap()], "the key is everything after the first dot");
+        assert_eq!(names(&rows, &Filter::new().eq("config.zone", ["eu-1", "us-2"])), [crate::PathName::new("mesh1.gateway", "1").unwrap(), crate::PathName::new("mesh1.broker", "1").unwrap()], "a key mesh2.gateway.1 lacks matches the others");
+        assert_eq!(names(&rows, &Filter::new().eq("config.note", [""])), [crate::PathName::new("mesh1.gateway", "1").unwrap()], "\"\" matches an empty value, never an absent one");
+        assert_eq!(names(&rows, &Filter::new().eq("tags", ["gold"]).eq("tags", ["ssd"])), [crate::PathName::new("mesh1.gateway", "1").unwrap()], "a repeated property is all of");
+        assert_eq!(names(&rows, &Filter::new().eq("tags", ["gold", "silver"])), [crate::PathName::new("mesh1.gateway", "1").unwrap(), crate::PathName::new("mesh1.broker", "1").unwrap(), crate::PathName::new("mesh2.gateway", "1").unwrap()], "one pair's values are any of");
+        assert_eq!(names(&rows, &Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["gateway"])), [crate::PathName::new("mesh1.gateway", "1").unwrap()], "pairs are AND");
         assert!(names(&rows, &Filter::new().eq("mesh", ["mesh9"])).is_empty(), "a mesh no row is in matches nothing");
         assert_eq!(names(&rows, &Filter::new().eq("status", ["ready"]).eq("is_primary", ["false"])).len(), 3);
-        assert_eq!(names(&rows, &Filter::new().eq("id", [silver.node_id.to_string()])), ["mesh1.broker.1"]);
-        assert_eq!(names(&rows, &Filter::new().eq("path", ["mesh1.gateway"]).eq("name", ["1"])), ["mesh1.gateway.1"], "path and name are the page's two fields");
+        assert_eq!(names(&rows, &Filter::new().eq("id", [silver.node_id.to_string()])), [crate::PathName::new("mesh1.broker", "1").unwrap()]);
+        assert_eq!(names(&rows, &Filter::new().eq("path", ["mesh1.gateway"]).eq("name", ["1"])), [crate::PathName::new("mesh1.gateway", "1").unwrap()], "path and name are the page's two fields");
         assert!(names(&rows, &Filter::new().eq("incarnation", [NodeId::mint().to_string()])).is_empty(), "a row lacking the property does not match");
         let _ = (NodeStatus::Pending, ScopeStatus::Pending);
     }
@@ -610,14 +610,14 @@ mod tests {
         assert_eq!(Filter::new().eq("state", ["connected"]).eq("kind", ["direct", "proxy"]).refusal(Entity::Connections), None);
     }
 
-    fn digest(name: &str, status: crate::MemberStatus, is_primary: bool) -> MeshDigest {
+    fn digest(name: crate::PathName, mesh: &str, kind: NodeKind, status: crate::MemberStatus, is_primary: bool) -> MeshDigest {
         MeshDigest {
             held_hash: Default::default(),
             fabric_id: crate::FabricId::mint(),
-            node: crate::MeshNode { mesh: (name.parse::<crate::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<crate::PathName>().unwrap()).kind,
+            node: crate::MeshNode { mesh: mesh.into(), kind,
                 node_id: NodeId::mint(),
-                name: name.parse().unwrap(),
-                endpoint_id: crate::EndpointId(format!("key-{name}")),
+                name,
+                endpoint_id: crate::EndpointId("test-endpoint".into()),
                 transport_addr: "127.0.0.1:20001".parse().unwrap(),
                 incarnation: crate::IncarnationId::mint(),
                 supersedes: None,
@@ -648,19 +648,19 @@ mod tests {
     #[test]
     fn a_local_query_matches_the_digests_held_and_refuses_a_row_only_property_naming_nodes_get() {
         use crate::MemberStatus as M;
-        let ready = digest("mesh1.broker.1", M::Ready, false);
-        let pending = digest("mesh1.broker.2", M::Pending, false);
-        let admin = digest("mesh1.admin.1", M::Ready, true);
+        let ready = digest(crate::PathName::new("mesh1.broker", "1").unwrap(), "mesh1", NodeKind::Broker, M::Ready, false);
+        let pending = digest(crate::PathName::new("mesh1.broker", "2").unwrap(), "mesh1", NodeKind::Broker, M::Pending, false);
+        let admin = digest(crate::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", NodeKind::NodeAdmin, M::Ready, true);
         let held = [ready.clone(), pending.clone(), admin.clone()];
-        let local = |f: &Filter| -> Vec<String> {
+        let local = |f: &Filter| -> Vec<crate::PathName> {
             assert_eq!(f.local_refusal(), None, "{f:?}");
-            held.iter().filter(|d| f.matches(*d)).map(|d| d.node.name.to_string()).collect()
+            held.iter().filter(|d| f.matches(*d)).map(|d| d.node.name.clone()).collect()
         };
-        assert_eq!(local(&Filter::new().eq("kind", ["broker"]).eq("status", ["ready"])), ["mesh1.broker.1"]);
-        assert_eq!(local(&Filter::new().eq("mesh", ["mesh1"]).eq("is_primary", ["true"])), ["mesh1.admin.1"]);
-        assert_eq!(local(&Filter::new().eq("id", [pending.node.node_id.to_string()])), ["mesh1.broker.2"]);
-        assert_eq!(local(&Filter::new().eq("path", ["mesh1.broker"]).eq("name", ["2"])), ["mesh1.broker.2"]);
-        assert_eq!(local(&Filter::new().eq("incarnation", [ready.node.incarnation.as_str().to_string()]).eq("endpoint", ["key-mesh1.broker.1"]).eq("transport_addr", ["127.0.0.1:20001"])), ["mesh1.broker.1"]);
+        assert_eq!(local(&Filter::new().eq("kind", ["broker"]).eq("status", ["ready"])), [crate::PathName::new("mesh1.broker", "1").unwrap()]);
+        assert_eq!(local(&Filter::new().eq("mesh", ["mesh1"]).eq("is_primary", ["true"])), [crate::PathName::new("mesh1.admin", "1").unwrap()]);
+        assert_eq!(local(&Filter::new().eq("id", [pending.node.node_id.to_string()])), [crate::PathName::new("mesh1.broker", "2").unwrap()]);
+        assert_eq!(local(&Filter::new().eq("path", ["mesh1.broker"]).eq("name", ["2"])), [crate::PathName::new("mesh1.broker", "2").unwrap()]);
+        assert_eq!(local(&Filter::new().eq("incarnation", [ready.node.incarnation.as_str().to_string()]).eq("endpoint", ["test-endpoint"]).eq("transport_addr", ["127.0.0.1:20001"])), [crate::PathName::new("mesh1.broker", "1").unwrap()]);
         assert_eq!(local(&Filter::new()).len(), 3, "no pair: every node held");
         for (f, pair) in [
             (Filter::new().eq("kind", ["broker"]).eq("tags", ["gold"]), "the pair (tags, [gold]) names tags"),
@@ -684,9 +684,9 @@ mod tests {
     #[test]
     fn a_builds_get_filter_matches_the_build_header_and_refuses_anything_else_naming_the_pair() {
         use crate::build::{BuildHeader, BuildPhase};
-        let header = |id: &str, phase, current, executor: Option<&str>| BuildHeader { build_id: id.into(), phase, attempt: 2, executor: executor.map(Into::into), reason: "requested".into(), last_failure: None, current };
+        let header = |id: &str, phase, current, executor: Option<&str>| BuildHeader { build_id: id.into(), phase, attempt: 2, executor: executor.map(|id| crate::framing::Birth { node_id: crate::NodeId::parse(id).unwrap(), incarnation: crate::IncarnationId::mint() }), reason: "requested".into(), last_failure: None, current };
         let (a, b) = (crate::BuildId::mint().to_string(), crate::BuildId::mint().to_string());
-        let rows = [header(&a, BuildPhase::Failed, false, None), header(&b, BuildPhase::Complete, true, Some("mesh1.admin.1"))];
+        let rows = [header(&a, BuildPhase::Failed, false, None), header(&b, BuildPhase::Complete, true, Some("3123456789ab"))];
         let ids = |f: Filter| -> Vec<String> {
             assert_eq!(f.builds_refusal(), None, "{f:?}");
             rows.iter().filter(|r| f.matches(*r)).map(|r| r.build_id.clone()).collect()
@@ -695,7 +695,7 @@ mod tests {
         assert_eq!(ids(Filter::new().eq("current", ["true"])), [b.clone()]);
         assert_eq!(ids(Filter::new().eq("phase", ["failed", "pending"])), [a.clone()]);
         assert_eq!(ids(Filter::new().eq("id", [a.clone()]).eq("attempt", ["2"])), [a.clone()]);
-        assert_eq!(ids(Filter::new().eq("executor", ["mesh1.admin.1"])), [b.clone()], "a Build no executor holds lacks the property");
+        assert_eq!(ids(Filter::new().eq("executor", ["3123456789ab"])), [b.clone()], "a Build no executor holds lacks the property");
         for (f, wanted) in [
             (Filter::new().eq("phase", ["Failed"]), "build.get: the pair (phase, [Failed])"),
             (Filter::new().eq("tags", ["gold"]), "build.get: the pair (tags, [gold]) names no property of a Build header row"),

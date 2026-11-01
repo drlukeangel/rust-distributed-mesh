@@ -56,7 +56,7 @@ pub struct CommandKey {
     /// The Build attempt that holds it.
     pub attempt: u32,
     /// `node.stop:<path>` or `node.start:<path>`.
-    pub operation: String,
+    pub operation: rdm_core::OperationId,
     /// The exact birth commanded.
     pub node_id: NodeId,
     /// Its incarnation.
@@ -222,10 +222,10 @@ impl CommandView {
                 let mut held: Vec<&CommandKey> = open.keys().filter(|k| k.node_id == key.node_id && k.incarnation == key.incarnation).collect();
                 held.sort_by_key(|k| (k.operation != key.operation, k.operation.clone(), k.build_id.clone(), k.attempt));
                 match held.first() {
-                    None => Accepted::NoOpenCommand { field: "command".into(), expected: "an open stop-node or start-node for this birth".into(), reported: format!("{} (build {}, attempt {})", key.operation, key.build_id, key.attempt) },
+                    None => Accepted::NoOpenCommand { field: "command".into(), expected: "an open stop-node or start-node for this birth".into(), reported: format!("{:?} (build {}, attempt {})", key.operation, key.build_id, key.attempt) },
                     Some(k) if k.build_id != key.build_id => Accepted::NoOpenCommand { field: "build_id".into(), expected: k.build_id.clone(), reported: key.build_id.clone() },
                     Some(k) if k.attempt != key.attempt => Accepted::NoOpenCommand { field: "attempt".into(), expected: k.attempt.to_string(), reported: key.attempt.to_string() },
-                    Some(k) => Accepted::NoOpenCommand { field: "operation".into(), expected: k.operation.clone(), reported: key.operation.clone() },
+                    Some(k) => Accepted::NoOpenCommand { field: "operation".into(), expected: format!("{:?}", k.operation), reported: format!("{:?}", key.operation) },
                 }
             }
         }
@@ -244,7 +244,7 @@ impl CommandView {
 
     /// Whether any stop command is open for this exact birth.
     pub fn stop_open_for(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        self.open.lock().unwrap().keys().any(|k| &k.node_id == node_id && &k.incarnation == incarnation && k.operation.starts_with("node.stop:"))
+        self.open.lock().unwrap().keys().any(|k| &k.node_id == node_id && &k.incarnation == incarnation && k.operation.action == "node.stop")
     }
 
     /// Forget the command: its step receipt is the record.
@@ -323,11 +323,11 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandView, target
 /// [`send_command`], with the reachability cause of a command that was never sent ([`unreachable_of`]).
 pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandView, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> (CommandAdmission, Option<Unreachable>) {
     let Some(incarnation) = node.incarnation_id.clone() else {
-        return (CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) , code: rdm_core::outcome::Code::FailedPrecondition }, None);
+        return (CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.node_id) , code: rdm_core::outcome::Code::FailedPrecondition }, None);
     };
     let build_id = match rdm_client::BuildId::parse(&ctx.build_id) {
         Ok(build_id) => build_id,
-        Err(e) => return (CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) , code: rdm_core::outcome::Code::FailedPrecondition }, None),
+        Err(e) => return (CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.node_id, ctx.build_id) , code: rdm_core::outcome::Code::FailedPrecondition }, None),
     };
     let key = CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     // A mesh-primary that replied `blocked` issues no new command until it is unblocked (storage.md §2).
@@ -345,7 +345,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandVie
         }
         NodeCommand::Stop => {
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let stop = rdm_client::StopContext::new(build_id, attempt, node.name.clone());
+            let stop = rdm_client::StopContext::new(build_id, attempt, ctx.operation.clone());
             let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
             let end = rdm_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await;
             unreachable = not_sent_cause(&end);
@@ -353,7 +353,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandVie
         }
         NodeCommand::Start => {
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let start = rdm_client::StartContext::new(build_id, attempt, node.name.clone());
+            let start = rdm_client::StartContext::new(build_id, attempt, ctx.operation.clone());
             let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..Default::default() };
             let end = rdm_client::NodeRpc::new(client).start(&birth, &start, &opts).await;
             unreachable = not_sent_cause(&end);
@@ -376,7 +376,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandVie
         CommandAdmission::Refused { .. } | CommandAdmission::NotSent { .. } | CommandAdmission::Indeterminate { .. } | CommandAdmission::StartFailed { .. } => format!("{admission:?}"),
         _ => String::new(),
     };
-    tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node_path = %node.name.path, node_name = %node.name.name, command = cmd.operation_prefix(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the command was sent to the exact birth"));
     (admission, unreachable)
 }
@@ -453,7 +453,7 @@ fn admission_of(r: Result<StatusReply, rdm_client::CallEnd>) -> CommandAdmission
 /// a step reads writes, whether a wait received it or the command's own reply carried it (a stop's
 /// `Stopped`, node-stop.md).
 pub fn completion_span(node: &Node, cmd: NodeCommand, ctx: &CommandContext, received: bool) {
-    tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node = %node.name, completion = cmd.completion(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, received = received, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node_path = %node.name.path, node_name = %node.name.name, completion = cmd.completion(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, received = received, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the completion was awaited"));
 }
 
@@ -461,7 +461,7 @@ pub fn completion_span(node: &Node, cmd: NodeCommand, ctx: &CommandContext, rece
 /// call, or the `Stopped` reply of its `stop-node` call (node-left).
 pub async fn await_completion(commands: &CommandView, node: &Node, cmd: NodeCommand, ctx: &CommandContext, within: Duration) -> Completion {
     let Some(incarnation) = node.incarnation_id.clone() else {
-        return Completion::NotAwaited { admission: format!("{} has no known birth", node.name) };
+        return Completion::NotAwaited { admission: format!("{} has no known birth", node.node_id) };
     };
     let key = CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation };
     let mut rx = commands.open(key);
@@ -483,7 +483,7 @@ mod tests {
     use super::*;
 
     fn key(op: &str) -> CommandKey {
-        CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: op.into(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }
+        CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: rdm_core::OperationId::unscoped(op), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }
     }
 
     /// CONTRACT (node-tickle.md step 1; i144 R9): a command never sent because its birth refused or
@@ -512,13 +512,13 @@ mod tests {
     #[tokio::test]
     async fn a_completion_resolves_only_its_open_command() {
         let commands = CommandView::default();
-        let k = key("node.start:mesh1.rpc.1");
+        let k = key("node.start");
         let mut rx = commands.open(k.clone());
         assert!(!*rx.borrow());
         assert_eq!(commands.complete(&k), Accepted::First);
         rx.wait_for(|v| *v).await.unwrap();
         assert_eq!(commands.complete(&k), Accepted::Again);
-        let other = CommandKey { operation: "node.stop:mesh1.rpc.1".into(), ..k.clone() };
+        let other = CommandKey { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), ..k.clone() };
         assert_eq!(commands.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: "node.start:mesh1.rpc.1".into(), reported: "node.stop:mesh1.rpc.1".into() });
         let attempt = CommandKey { attempt: 2, ..k.clone() };
         assert_eq!(commands.complete(&attempt), Accepted::NoOpenCommand { field: "attempt".into(), expected: "1".into(), reported: "2".into() });
@@ -535,8 +535,8 @@ mod tests {
     fn a_command_left_unanswered_is_known_from_its_send_once_a_floor_old_and_an_answer_ends_it() {
         let floor = Duration::from_secs(30);
         let commands = CommandView::default();
-        let stop = key("node.stop:mesh1.rpc.1");
-        let start = CommandKey { operation: "node.start:mesh1.rpc.1".into(), ..stop.clone() };
+        let stop = key("node.stop");
+        let start = CommandKey { operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), ..stop.clone() };
         let (before, _) = (Instant::now(), commands.open(stop.clone()));
         let after = Instant::now();
         assert_eq!(commands.unanswered_since(&stop.node_id, &stop.incarnation, floor, after + floor * 2), None, "an open command has not been left unanswered");
@@ -551,7 +551,7 @@ mod tests {
         assert_eq!(commands.unanswered_since(&stop.node_id, &stop.incarnation, floor, after + floor * 2), None, "a completion from the birth ends it");
         // Answered within the floor: nothing is left unanswered.
         let answered = CommandView::default();
-        let k = key("node.start:mesh1.rpc.2");
+        let k = key("node.start");
         let _ = answered.open(k.clone());
         answered.close_answered(&k);
         assert_eq!(answered.unanswered_since(&k.node_id, &k.incarnation, floor, Instant::now() + floor * 2), None, "an answered command is no silence");
@@ -559,7 +559,7 @@ mod tests {
         let _ = answered.open(k.clone());
         answered.close_unanswered(&k);
         assert!(answered.unanswered_since(&k.node_id, &k.incarnation, floor, Instant::now() + floor * 2).is_some());
-        let later = CommandKey { operation: "node.stop:mesh1.rpc.2".into(), ..k.clone() };
+        let later = CommandKey { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), ..k.clone() };
         let _ = answered.open(later.clone());
         answered.close_answered(&later);
         assert_eq!(answered.unanswered_since(&k.node_id, &k.incarnation, floor, Instant::now() + floor * 2), None, "an answer to a later command ends it");

@@ -95,7 +95,7 @@ mod tests {
             let server_inc = IncarnationId::mint();
             let caller_node_id = NodeId::mint();
             let caller_inc = IncarnationId::mint();
-            let caller_path = PathName::new("mesh1", NodeKind::RpcNode, 1);
+            let caller_path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
 
             let pub_id = PublisherId {
                 node: "mesh1.admin.1".to_string(),
@@ -107,7 +107,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".to_string(), kind: NodeKind::NodeAdmin,
                     node_id: server_node_id.clone(),
-                    name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
+                    name: PathName::numbered("mesh1", NodeKind::NodeAdmin, 1),
                     endpoint_id: EndpointId(server_ep.id().to_string()),
                     transport_addr: server_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4"),
                     incarnation: server_inc.clone(),
@@ -226,9 +226,9 @@ mod tests {
                 Box::pin(async move {
                     let mut map = StoredMap::default();
                     map.mesh_ids.insert("mesh2".to_string(), m2);
-                    map.nodes.push(StoredNode {
+                    map.nodes.push(StoredNode { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin,
                         node_id: NodeId::mint(),
-                        name: "mesh2.admin.1".to_string(),
+                        name: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
                         endpoint_id: EndpointId("ep-mesh2-admin-1".to_string()),
                         incarnation: IncarnationId::mint(),
                         transport_addr: "127.0.0.1:29001".parse().expect("addr"),
@@ -261,9 +261,9 @@ mod tests {
 
             let resolver = Arc::new(StaticResolver::new());
             let server_addr = server_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4");
-            resolver.insert(ResolvedNode {
+            resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin,
                 node_id: server_node_id.clone(),
-                name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
+                name: PathName::numbered("mesh1", NodeKind::NodeAdmin, 1),
                 endpoint_id: server_ep.id(),
                 transport_addr: server_addr,
                 incarnation: server_inc.clone(),

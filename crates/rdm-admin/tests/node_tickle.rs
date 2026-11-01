@@ -59,8 +59,8 @@ impl Capture {
     }
 }
 
-fn ready_node(name: &str) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn ready_node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.status = NodeStatus::Ready;
@@ -146,15 +146,15 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
         .unwrap();
 
     rt.block_on(async {
-        let admin = ready_node("mesh1.admin.1");
-        let mut target = ready_node("mesh1.rpc.1");
+        let admin = ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut target = ready_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         target.status = NodeStatus::PendingReconnect;
         let target_id = target.node_id.clone();
         let target_inc = target.incarnation_id.clone().unwrap();
 
-        let peer1 = ready_node("mesh1.rpc.2");
-        let peer2 = ready_node("mesh1.rpc.3");
-        let peer3 = ready_node("mesh1.rpc.4");
+        let peer1 = ready_node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let peer2 = ready_node(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let peer3 = ready_node(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
 
         let view = Topology {
             fabric: Fabric {
@@ -253,14 +253,14 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
             .spawn();
 
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode {
+        resolver.insert(ResolvedNode { mesh: peer1.mesh.clone(), kind: peer1.kind,
             node_id: peer1.node_id.clone(),
             name: peer1.name.clone(),
             endpoint_id: p1_key.public(),
             transport_addr: p1_addr,
             incarnation: peer1.incarnation_id.clone().unwrap(),
         });
-        resolver.insert(ResolvedNode {
+        resolver.insert(ResolvedNode { mesh: peer2.mesh.clone(), kind: peer2.kind,
             node_id: peer2.node_id.clone(),
             name: peer2.name.clone(),
             endpoint_id: p2_key.public(),
@@ -278,7 +278,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
         let tickle_client = TickleClient {
             client,
             me_id: admin.node_id.clone(),
-            me: admin.name.to_string(),
+            me: admin.node_id.to_string(),
             connections: None,
             commands: None,
         };
@@ -289,7 +289,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
             .expect("tickle 1");
         match res1 {
             Tickle::Reached { answer, carrier } => {
-                assert_eq!(carrier, Some("mesh1.rpc.3".into()));
+                assert_eq!(carrier, Some(peer2.node_id.clone()));
                 assert_eq!(
                     answer,
                     StatusReply::CurrentStopped {
@@ -308,7 +308,7 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
             .expect("tickle 2");
         match res2 {
             Tickle::Unreached(unreached) => {
-                assert_eq!(unreached.carriers(), "mesh1.rpc.2,mesh1.rpc.3");
+                assert_eq!(unreached.carriers(), [peer1.node_id.as_str(), peer2.node_id.as_str()].join(","));
                 unreached.next("inspect");
             }
             other => panic!("expected Unreached, got {other:?}"),

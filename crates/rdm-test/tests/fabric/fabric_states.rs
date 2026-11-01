@@ -6,7 +6,7 @@
 //! of ready by holding a planned node's `pre_node_ready` (`rdm_test::write_pre_node_ready_knob`).
 //! Evidence is read from the spans every process wrote.
 
-use rdm_client::{BuildFrame, BuildStream, FabricDesired, FabricView, LaunchKind as NodeKind, MeshDesired, ScopeStatus};
+use rdm_client::{BuildFrame, BuildStream, FabricDesired, FabricView, LaunchKind as NodeKind, MeshDesired, ScopeStatus, PathName};
 use rdm_test::typed::BuildSpec;
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, binding_set_with_roles, candidate_sha};
@@ -83,7 +83,7 @@ fn change_of<'a>(spans: &'a [Value], build_id: &str) -> (&'a Value, Vec<&'a Valu
 async fn a_two_mesh_fabric_is_ready_once_every_mesh_is_ready() {
     let test = "a_two_mesh_fabric_is_ready_once_every_mesh_is_ready";
     let estate = estate_with(test).await;
-    let members = ["rpc.1", "rpc.2", "rpc.3"];
+    let members = [("rpc", "1"), ("rpc", "2"), ("rpc", "3")];
     two_mesh_change(estate, &[(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)], &members).await;
 }
 
@@ -93,7 +93,7 @@ async fn a_two_mesh_fabric_is_ready_once_every_mesh_is_ready() {
 async fn a_two_mesh_fabric_of_role_nodes_is_ready_once_every_mesh_is_ready() {
     let test = "a_two_mesh_fabric_of_role_nodes_is_ready_once_every_mesh_is_ready";
     let estate = estate_with_roles(test).await;
-    let members = ["broker.1", "gateway.1", "compute.1"];
+    let members = [("broker", "1"), ("gateway", "1"), ("compute", "1")];
     two_mesh_change(estate, &[(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)], &members).await;
 }
 
@@ -108,29 +108,21 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
     let mut estate = estate_with_roles(test).await;
     let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
-    let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain(["broker.1", "gateway.1", "compute.1"].iter().map(move |n| format!("{m}.{n}")))).collect();
-    let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
+    let want: std::collections::BTreeSet<PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| PathName::new(&format!("{m}.admin"), &i.to_string()).unwrap()).chain(["broker", "gateway", "compute"].iter().map(move |kind| PathName::new(&format!("{m}.{kind}"), "1").unwrap()))).collect();
+    let nodes = estate.settles_to_named(&want, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    // The mesh that is not the fabric-primary's loses its mesh-primary.
-    let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
-    let lost_mesh = if fp.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
-    let old = nodes.iter().find(|n| n["mesh"] == lost_mesh && n["is_primary"] == true && n["kind"] == "node_admin").map(|n| s(&n["name"])).expect("a primary admin");
-    let heir = if old.ends_with(".1") { format!("{lost_mesh}.admin.2") } else { format!("{lost_mesh}.admin.1") };
-    let heir_id = s(&nodes.iter().find(|n| n["name"] == heir.as_str()).unwrap()["node_id"]);
-    if old == "mesh1.admin.1" {
-        estate.kill_bootstrap();
-    } else {
-        estate.kill_node(&old).await;
-    }
-    let roles: Vec<String> = ["broker.1", "gateway.1", "compute.1"].iter().map(|n| format!("{lost_mesh}.{n}")).collect();
+    let fp = nodes.iter().find(|n| n.is_fabric_primary).expect("one fabric primary");
+    let old = nodes.iter().find(|n| n.mesh != fp.mesh && n.is_primary && n.kind == NodeKind::NodeAdmin).expect("another mesh's primary admin");
+    let heir = nodes.iter().find(|n| n.mesh == old.mesh && n.kind == NodeKind::NodeAdmin && n.node_id != old.node_id).expect("another admin in the lost mesh");
+    let heir_id = heir.node_id.as_str();
+    estate.kill_node(&old.name).await;
+    let roles: Vec<_> = nodes.iter().filter(|n| n.mesh == old.mesh && matches!(n.kind, NodeKind::Broker | NodeKind::Gateway | NodeKind::Compute)).map(|n| n.node_id.to_string()).collect();
     // A role node's re-declaration to the new mesh-primary is a call it makes: no object reports it, and the
-    // span the node records is the only place the fact lives. Its `to` names the mesh-primary by path.name
-    // when the node's view holds its digest, else by its node id; the call is to that exact birth either
-    // way (rdm-node node.rs `declare_once`).
+    // span the node records is the only place the fact lives. Both source and destination are IDs.
     wait_for("every role node of the mesh declared its state to the new primary", Duration::from_secs(90), || {
         let spans = estate.spans();
         let done = roles.iter().all(|r| {
-            named(&spans, "rdm.node_rpc.status.update.via-declare-own").iter().any(|d| s(&d["attributes"]["node"]) == *r && (s(&d["attributes"]["to"]) == heir || s(&d["attributes"]["to"]) == heir_id) && flag(&d["attributes"]["definitive"]))
+            named(&spans, "rdm.node_rpc.status.update.via-declare-own").iter().any(|d| s(&d["attributes"]["node"]) == *r && s(&d["attributes"]["to"]) == heir_id && flag(&d["attributes"]["definitive"]))
         });
         async move { done.then_some(()) }
     })
@@ -139,31 +131,31 @@ async fn role_nodes_declare_their_state_again_to_the_mesh_primary_the_election_n
     let spans = estate.spans();
     for r in &roles {
         let moved: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-mesh-primary-moved").into_iter().filter(|m| s(&m["attributes"]["node"]) == *r).collect();
-        assert!(moved.iter().any(|m| s(&m["attributes"]["to"]) == heir_id), "{r} saw the mesh-primary move to {heir} ({heir_id}): {:?}", moved.iter().map(|m| &m["attributes"]).collect::<Vec<_>>());
+        assert!(moved.iter().any(|m| s(&m["attributes"]["to"]) == heir_id), "{r} saw the mesh-primary move to {heir_id}: {:?}", moved.iter().map(|m| &m["attributes"]).collect::<Vec<_>>());
     }
     estate.record_trace_url(&s(&named(&spans, "rdm.node_rpc.status.update.via-mesh-primary-moved").first().expect("a re-owe")["trace_id"]));
 }
 
 /// The two-mesh change over meshes of `shape` (their node-admins and members), whose members are named
 /// `members` under each mesh.
-async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members: &[&str]) {
+async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members: &[(&str, &str)]) {
     let mesh = |m: &str| MeshDesired::of(m, shape.iter().copied());
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
     let two_meshes = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.to_string();
-    let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"]
+    let want: std::collections::BTreeSet<PathName> = ["mesh1", "mesh2"]
         .iter()
-        .flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain(members.iter().map(move |n| format!("{m}.{n}"))))
+        .flat_map(|m| (1..=2).map(move |i| PathName::new(&format!("{m}.admin"), &i.to_string()).unwrap()).chain(members.iter().map(move |(kind, name)| PathName::new(&format!("{m}.{kind}"), *name).unwrap())))
         .collect();
     estate.settles_to_named(&want, Duration::from_secs(60)).await;
     until_fabric(&estate, ScopeStatus::Ready, Some(two_meshes.as_str()), Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
     estate.artifact("nodes.json", &json!(nodes));
-    let primaries: std::collections::BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
+    let primaries: std::collections::BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).collect();
+    let fabric_id = estate.fabric_view().await.id.to_string();
     estate.stop().await;
     let spans = estate.spans();
     assert_eq!(primaries.len(), 2, "one primary per mesh: {primaries:?}");
     let (root, change) = change_of(&spans, &two_meshes);
-    let fp = s(&root["attributes"]["node"]);
     let at = |name: &str, f: &dyn Fn(&Value) -> bool| -> &Value { change.iter().copied().find(|sp| sp["name"] == name && f(sp)).unwrap_or_else(|| panic!("no {name} in the change")) };
     let entered = |to: &str| at("rdm.node_admin.fabric.update.via-state-entered", &|sp| sp["attributes"]["to"] == to);
     let every_mesh_ready = at("rdm.node_admin.fabric.update.via-every-mesh-ready", &|_| true);
@@ -189,7 +181,11 @@ async fn two_mesh_change(mut estate: Estate, shape: &[(NodeKind, u32)], members:
     // The fabric states went out as FabricStatus authored by the fabric-primary only.
     let sends: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| sp["attributes"]["scope"].as_str().is_some_and(|x| x.contains("fabric")) && start(sp) >= start(root)).collect();
     assert!(!sends.is_empty(), "FabricStatus sends are in the evidence");
-    assert!(sends.iter().all(|sp| s(&sp["attributes"]["node"]) == fp), "only the fabric-primary authors FabricStatus: {:?}", sends.iter().map(|sp| (&sp["attributes"]["node"], &sp["attributes"]["status"])).collect::<Vec<_>>());
+    let publisher_roles = named(&spans, "rdm.mesh.fabric.update.via-status-publisher");
+    for send in &sends {
+        let role = publisher_roles.iter().filter(|event| event["attributes"]["node"] == send["attributes"]["node"] && event["attributes"]["fabric"] == fabric_id && start(event) <= start(send)).max_by_key(|event| start(event)).expect("the sender recorded its publisher role");
+        assert_eq!(role["attributes"]["role"], "start", "the sender held the fabric status publisher role when it sent: {send}, role: {role}");
+    }
     // The resize put the fabric back to pending at its acceptance, before the change's root opened: the
     // states are read over every FabricStatus send of the run.
     let mut every: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| sp["attributes"]["scope"].as_str().is_some_and(|x| x.contains("fabric"))).collect();
@@ -237,19 +233,19 @@ async fn ready_under(estate: &Estate, build: &str) {
 
 /// Read `stream`'s frames until the drive reports its Build Blocked naming `node`, bounded by `within`. A
 /// `Complete` before it is the defect: the Build said Complete while a planned node was not ready.
-async fn until_blocked_on(stream: &mut BuildStream, node: &str, within: Duration) -> BuildFrame {
+async fn until_blocked_on(stream: &mut BuildStream, node: &rdm_core::NodeId, within: Duration) -> BuildFrame {
     let build = stream.build_id().to_string();
     let deadline = tokio::time::Instant::now() + within;
     loop {
         let frame = match tokio::time::timeout_at(deadline, stream.next()).await {
-            Err(_) => panic!("Build {build} reported no Blocked naming {node} within {within:?}"),
-            Ok(None) => panic!("the stream of Build {build} ended before it reported Blocked naming {node}"),
-            Ok(Some(Err(e))) => panic!("the stream of Build {build} broke before it reported Blocked naming {node}: {e}"),
+            Err(_) => panic!("Build {build} reported no Blocked naming {node:?} within {within:?}"),
+            Ok(None) => panic!("the stream of Build {build} ended before it reported Blocked naming {node:?}"),
+            Ok(Some(Err(e))) => panic!("the stream of Build {build} broke before it reported Blocked naming {node:?}: {e}"),
             Ok(Some(Ok(frame))) => frame,
         };
         match &frame {
-            BuildFrame::Blocked { reason, .. } if reason.contains(node) => return frame,
-            BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. } => panic!("Build {build} ended {frame:?} before it reported Blocked naming {node}"),
+            BuildFrame::Blocked { reason, .. } if reason.contains(node.as_str()) => return frame,
+            BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::FabricPrimaryMoved { .. } => panic!("Build {build} ended {frame:?} before it reported Blocked naming {node:?}"),
             _ => {}
         }
     }
@@ -273,11 +269,12 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
     let test = "a_resize_is_complete_only_after_its_own_ready_state_is_set";
     let mut estate = estate_with(test).await;
     // Day 0's Build is Complete; the resize's mesh2.rpc.1 is held at its pre_node_ready from its first attempt.
-    rdm_test::write_pre_node_ready_knob(&estate.root, "mesh2.rpc.1", "held by the cell").unwrap();
+    rdm_test::write_pre_node_ready_knob(&estate.root, &rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "held by the cell").unwrap();
     let shape = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]);
     let mut stream = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1"), shape("mesh2")] })).await;
     let build = stream.build_id().to_string();
-    let blocked = until_blocked_on(&mut stream, "mesh2.rpc.1", Duration::from_secs(90)).await;
+    let held = estate.until_node(&PathName::new("mesh2.rpc", "1").unwrap(), "the held node has been allocated", Duration::from_secs(90), |node| node.map(|n| n.node_id.clone())).await;
+    let blocked = until_blocked_on(&mut stream, &held, Duration::from_secs(90)).await;
     estate.artifact("blocked-on-the-held-node.json", &json!(format!("{blocked:?}")));
     // The node is held: through the window fabric.get says pending under the Build, and neither the
     // Build's stream nor build.get says Complete.
@@ -294,7 +291,7 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
             assert!(!matches!(frame, BuildFrame::Complete { .. } | BuildFrame::Failed { .. }), "Build {build} ended {frame:?} while fabric.get says pending under it");
         }
     }
-    rdm_test::write_pre_node_ready_knob(&estate.root, "mesh2.rpc.1", "pass").unwrap();
+    rdm_test::write_pre_node_ready_knob(&estate.root, &rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "pass").unwrap();
     let done = followed(&estate, stream, &format!("Build {build} after mesh2.rpc.1's pre_node_ready was released"), Duration::from_secs(90)).await;
     assert_eq!(carrier.build(&id).await.unwrap_or_else(|e| panic!("build.get [id: {build}]: {e}")).phase, rdm_core::build::BuildPhase::Complete, "build.get says {build} Complete once its stream did");
     ready_under(&estate, &build).await;
@@ -330,7 +327,7 @@ async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follo
     let resize = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await;
     let resize_id = resize.build_id.to_string();
     ready_under(&estate, &resize_id).await;
-    let node: rdm_client::PathName = "mesh1.rpc.1".parse().unwrap();
+    let node: rdm_client::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
     let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
     let stream = estate
         .submit_named("the config-only Reconcile of mesh1.rpc.1", |current, executables| {
@@ -409,14 +406,15 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     // The first Build is the Day-0 Build (fabric-create.md, Q170), Complete once its own ready
     // state is set (Q154): the estate followed it there.
     let first = estate.accepted_build_id().await;
-    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1"].iter().map(|n| n.to_string()).collect();
+    let want: std::collections::BTreeSet<PathName> = [PathName::new("mesh1.admin", "1").unwrap()].into_iter().collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
     ready_under(&estate, &first).await;
     let before = rows_on(&root);
     estate.artifact("rows-before-ready.json", &json!(before));
     let holds = |rows: &[String], prefix: &str| rows.iter().any(|r| r.starts_with(prefix));
     for n in &nodes {
-        let name = s(&n["name"]);
+        let name = s(&n["node_id"]);
+        let location: PathName = serde_json::from_value(n["name"].clone()).expect("structured node location");
         let want: &[&str] = &["Ready"];
         // A mesh-primary's own Ready has no Applied reply to be durable before (states.md): its
         // writer records it on its own record after the view shows it, so the cell reads until it is there.
@@ -434,7 +432,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         assert_eq!(declared, json!(want), "{name}'s record holds the state its ready recorded within 30 s: {record}");
-        assert!(before.iter().any(|r| *r == format!("locks/name/{name}")), "{name}'s name claim stands on the root: {before:#?}");
+        assert!(before.iter().any(|r| *r == format!("locks/name/{}", location.physical_index_key())), "{name}'s name claim stands on the root: {before:#?}");
     }
     assert!(holds(&before, "fabric.jsonl#fabric-record/"), "the Fabric row stands on the root: {before:#?}");
     assert!(before.iter().any(|r| r == "locks/name/mesh1"), "mesh1's name claim stands on the root: {before:#?}");
@@ -452,8 +450,8 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let only_identity_builds_and_events = |rows: &[String]| !rows.iter().any(|r| r.starts_with("fabric/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
     assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no primary row stands beside it: {after:#?}");
     // A mesh's primary records each member's address on its Node record.
-    let addressed = |mesh: &str, name: &str, id: &str| {
-        let (mesh, name, id) = (mesh.to_string(), name.to_string(), id.to_string());
+    let addressed = |mesh: &str, id: &str| {
+        let (mesh, id) = (mesh.to_string(), id.to_string());
         let estate = &estate;
         async move {
             let addressed = || estate.node_record(&id).filter(|r| r["record"]["births"].as_array().and_then(|b| b.last()).is_some_and(|b| b["transport_addr"].is_string()));
@@ -461,39 +459,43 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
             while addressed().is_none() && std::time::Instant::now() < until {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            assert!(addressed().is_some(), "{mesh}'s primary recorded {name}'s address on its Node record: {:?}", estate.node_record(&id));
+            assert!(addressed().is_some(), "{mesh}'s primary recorded {id}'s address on its Node record: {:?}", estate.node_record(&id));
         }
     };
     let fp_id = s(&nodes[0]["node_id"]);
-    addressed("mesh1", "mesh1.admin.1", &fp_id).await;
+    addressed("mesh1", &fp_id).await;
 
     // The growth Build, accepted after the first ready (Q170), adds mesh2 and an rpc node to
     // mesh1: every row its nodes write goes straight to the store.
     let shape = |m: &str, rpc: u32| MeshDesired::of(m, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, rpc)]);
     let second = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 1)] }).await.build_id.to_string();
     let mut want_later = want.clone();
-    want_later.extend(["mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|n| n.to_string()));
-    let later_nodes = Estate::values(&estate.settles_to_named(&want_later, Duration::from_secs(60)).await);
+    want_later.extend([("mesh1.rpc", "1"), ("mesh2.admin", "1"), ("mesh2.rpc", "1")].into_iter().map(|(path, name)| PathName::new(path, name).unwrap()));
+    let later_nodes = estate.settles_to_named(&want_later, Duration::from_secs(60)).await;
+    let source = later_nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode).expect("source RPC");
+    let destination = later_nodes.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode).expect("destination RPC");
+    let source_target = format!("exact:{}", source.node_id);
+    let destination_target = format!("exact:{}", destination.node_id);
     ready_under(&estate, &second).await;
     // mesh2.rpc.1 learns of mesh1.rpc.1 from the MeshTopologyDelta its mesh-primary forwards (gossip.md §3.3),
     // not from the admin's view the cell settled on: the origination waits until mesh2.rpc.1's own
     // resolver holds the destination.
     wait_for("mesh2.rpc.1's own resolver holds mesh1.rpc.1", Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", "path:mesh2.rpc.1", "--query", "path:mesh1.rpc.1"]);
+        let r = estate.probe(&["resolve", "--target", &source_target, "--query", &destination_target]);
         (r["reply"]["resolution"] == "found").then_some(())
     })
     .await;
-    let straight = estate.probe(&["originate", "--target", "path:mesh2.rpc.1", "--destination", "path:mesh1.rpc.1", "--key", "after-commit"]);
+    let straight = estate.probe(&["originate", "--target", &source_target, "--destination", &destination_target, "--key", "after-commit"]);
     estate.artifact("originate-after-growth.json", &straight);
     assert_eq!(straight["call_outcome"].as_str(), Some("reply"), "mesh2.rpc.1 originated its connection to mesh1.rpc.1: {straight}");
-    let id_of: std::collections::BTreeMap<String, String> = later_nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
-    for name in &want_later {
-        addressed(name.split('.').next().unwrap(), name, &id_of[name]).await;
+    for node in &later_nodes {
+        addressed(&node.mesh, node.node_id.as_str()).await;
     }
     // The originated connection's row is owed on mesh2.rpc.1's writer queue and lands after the open
     // answered (Q169): the store is read once it stands, within the bound.
+    let connection_written = || estate.connection_history(&source.node_id).iter().any(|fact| fact["source"]["node_id"] == source.node_id.as_str() && fact["destination"]["node_id"] == destination.node_id.as_str());
     let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !holds(&rows_on(&root), "connections.jsonl#node-connection/mesh2.rpc.1--") && std::time::Instant::now() < until {
+    while !connection_written() && std::time::Instant::now() < until {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     let later = rows_on(&root);
@@ -502,15 +504,15 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
         assert!(later.iter().any(|r| *r == format!("locks/name/{mesh}")), "{mesh}'s primary's Mesh name claim stands on the root: {later:#?}");
     }
     assert_eq!(later.iter().filter(|r| r.starts_with("meshes.jsonl#mesh-record/")).count(), 2, "each mesh's record stands on the root: {later:#?}");
-    assert!(holds(&later, "connections.jsonl#node-connection/mesh2.rpc.1--"), "mesh2.rpc.1 wrote the connection it originated straight to the store: {later:#?}");
-    for name in want_later.iter().filter(|n| *n != "mesh2.rpc.1") {
-        assert!(!holds(&later, &format!("connections.jsonl#node-connection/{name}--")), "{name} originated no connection, so it wrote no connections row; the control plane writes none: {later:#?}");
+    assert!(connection_written(), "mesh2.rpc.1 wrote the connection it originated straight to the store: {later:#?}");
+    for node in later_nodes.iter().filter(|n| n.node_id != source.node_id) {
+        assert!(estate.connection_history(&node.node_id).is_empty(), "{node:?} originated no connection, so it wrote no connections row; the control plane writes none: {later:#?}");
     }
     // The fabric-primary accepted the growth Build after the first ready: the Build is its own
     // entity in the builds store, so no pointer row under `fabric/` names it, and mesh2's primary reads it
     // as the current Build.
     assert!(only_identity_builds_and_events(&later), "accepting the growth Build writes no pointer row under `fabric/` for it: {later:#?}");
-    let other_fabric = estate.fabric_view_at(&"mesh2.admin.1".parse().unwrap()).await.expect("mesh2.admin.1 answers fabric.get for this Fabric");
+    let other_fabric = estate.fabric_view_at(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await.expect("mesh2.admin.1 answers fabric.get for this Fabric");
     estate.artifact("mesh2-admin-fabric-after-growth.json", &serde_json::to_value(&other_fabric).expect("a view serializes"));
     assert_eq!(other_fabric.build_id.as_deref(), Some(second.as_str()), "mesh2's primary reads the growth Build as the current Build: {other_fabric:?}");
     estate.stop().await;
@@ -521,7 +523,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let door_span = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the growth Build's build.create door is spanned"));
     let resets = named(&spans, "rdm.node_admin.fabric.update.via-state-reset");
     let reset = resets.iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the fabric-primary put the fabric back to pending for the growth Build {second}: resets {:?}", resets.iter().map(|sp| &sp["attributes"]).collect::<Vec<_>>()));
-    assert_eq!((s(&reset["attributes"]["node"]), s(&reset["attributes"]["from"])), ("mesh1.admin.1".to_string(), "ready".to_string()), "the fabric-primary put the ready fabric back to pending: {reset}");
+    assert_eq!((s(&reset["attributes"]["node_path"]), s(&reset["attributes"]["node_name"]), s(&reset["attributes"]["from"])), ("mesh1.admin".to_string(), "1".to_string(), "ready".to_string()), "the fabric-primary put the ready fabric back to pending: {reset}");
     let answered = door_span["end_unix_nano"].as_u64().unwrap();
     assert!(start(reset) <= answered, "the fabric is pending before the door answers the growth Build: reset at {}, door answered at {answered} ({} us later than the answer): {reset}", start(reset), start(reset).saturating_sub(answered) / 1000);
 
@@ -529,10 +531,10 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     // its own entity, in acceptance order).
     let accepted = named(&spans, "rdm.node_admin.build.create.via-accepted");
     let written = accepted.iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the growth Build's acceptance is spanned: {:?}", accepted.iter().map(|sp| &sp["attributes"]).collect::<Vec<_>>()));
-    assert_eq!((s(&written["attributes"]["node"]), s(&written["attributes"]["previous_build_id"])), ("mesh1.admin.1".to_string(), first.clone()), "the fabric-primary wrote the growth Build after the Day-0 Build: {written}");
-    assert!(accepted.iter().all(|sp| sp["attributes"]["node"] == "mesh1.admin.1"), "only the fabric-primary writes a Build: {:?}", accepted.iter().map(|sp| (&sp["attributes"]["node"], &sp["attributes"]["via"])).collect::<Vec<_>>());
+    assert_eq!((s(&written["attributes"]["node"]), s(&written["attributes"]["previous_build_id"])), (fp_id.clone(), first.clone()), "the fabric-primary wrote the growth Build after the Day-0 Build: {written}");
+    assert!(accepted.iter().all(|sp| sp["attributes"]["node"] == fp_id), "only the fabric-primary writes a Build: {:?}", accepted.iter().map(|sp| (&sp["attributes"]["node"], &sp["attributes"]["via"])).collect::<Vec<_>>());
 
-    let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().find(|sp| sp["attributes"]["node"] == "mesh2.rpc.1").expect("mesh2.rpc.1 opened its connections store");
+    let opened = named(&spans, "rdm.mesh.node.create.via-connections-opened").into_iter().find(|sp| sp["attributes"]["node_path"] == source.name.path && sp["attributes"]["node_name"] == source.name.name).expect("mesh2.rpc.1 opened its connections store");
     assert_eq!(opened["attributes"]["writes_to"], "store-root", "a node writes to the store root: {opened}");
     let (first_root, _) = change_of(&spans, &first);
     estate.record_trace_url(&s(&first_root["trace_id"]));
@@ -557,18 +559,21 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     until_fabric(&estate, ScopeStatus::Ready, None, Duration::from_secs(60)).await;
     let build = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)])] }).await.build_id.to_string();
     until_fabric(&estate, ScopeStatus::Ready, Some(build.as_str()), Duration::from_secs(60)).await;
+    let nodes = estate.node_views().await;
+    let rpc = nodes.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode).expect("RPC fixture");
+    let primary = nodes.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.is_primary).expect("mesh primary");
     estate.stop().await;
     let spans = estate.spans();
     let ready = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
-        .filter(|d| d["attributes"]["op"] == "declare-node-state" && d["attributes"]["state"] == "Ready" && d["attributes"]["sender"] == "mesh1.rpc.1" && d["attributes"]["outcome"] == "applied")
+        .filter(|d| d["attributes"]["op"] == "declare-node-state" && d["attributes"]["state"] == "Ready" && d["attributes"]["sender"] == rpc.node_id.as_str() && d["attributes"]["outcome"] == "applied")
         .min_by_key(|d| start(d))
         .expect("mesh1.rpc.1's ready was applied by its mesh-primary");
     let (_, change) = change_of(&spans, &build);
     let entered = change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-every-mesh-ready").unwrap_or_else(|| panic!("every mesh was ready under {build}"));
     let announced = named(&spans, "rdm.mesh.primary.update.via-announcement")
         .into_iter()
-        .filter(|a| a["attributes"]["role"] == "rpc_node-primary" && a["attributes"]["via"] == "own" && s(&a["attributes"]["node"]).starts_with("mesh1.admin."))
+        .filter(|a| a["attributes"]["role"] == "rpc_node-primary" && a["attributes"]["via"] == "own" && a["attributes"]["node"] == primary.node_id.as_str())
         .min_by_key(|a| start(a))
         .expect("the mesh-primary announced mesh1's rpc_node primary");
     // The Day-0 Build: the first Build whose change found every mesh ready, and its attempt's claim. The

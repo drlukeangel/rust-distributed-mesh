@@ -43,8 +43,8 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
-        let born: PathName = "mesh1.rpc.7".parse().unwrap();
-        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        let born: PathName = rdm_core::PathName::new("mesh1.rpc", "7").unwrap();
+        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let launch = Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: "fabric1".into(),
             fabric_id: fabric,
@@ -91,7 +91,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         }
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         assert_eq!(d.node.name, born);
-        admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         let client = &admin.observer.client;
@@ -104,7 +104,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
                 }
             }
         };
-        let apply = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.to_string() };
+        let apply = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.clone() };
 
         // The node originates a data-plane connection to its admin: a Direct entry of its log.
         match seams.client.call::<Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &CallOptions::default()).await.0 {
@@ -165,7 +165,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
 
         // The same name again is done; a stale incarnation is refused naming the one held.
         assert_eq!(call(apply.clone()).await, StatusReply::AlreadyApplied);
-        let stale = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: IncarnationId::mint(), name: taken.to_string() };
+        let stale = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: IncarnationId::mint(), name: taken.clone() };
         assert_eq!(call(stale).await, StatusReply::RejectedStaleIncarnation { held: launch.incarnation.clone() });
         let _ = std::fs::remove_dir_all(&dir);
     })

@@ -31,12 +31,12 @@ mod tests {
         // names the operation that produced the state when one did ([DeclaredOperation]): a
         // stop's `Stopped`, from which the mesh-primary publishes NodeStopped ([node.stop]
         // step 5), and a start's `Pending` and `Ready`."
-        let path = PathName::new("mesh1", NodeKind::RpcNode, 1);
+        let path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
         let node_id = NodeId::mint();
         let older_inc = IncarnationId::mint();
         let current_inc = IncarnationId::mint();
 
-        let mut row = NodeRow::new(path.clone(), node_id.clone(), NodeStatus::Starting);
+        let mut row = NodeRow::new(path.clone(), "mesh1", NodeKind::RpcNode, node_id.clone(), NodeStatus::Starting);
         let mut older_birth = BirthFacts::new(older_inc.clone(), path.clone());
         older_birth.declared.insert(NodeState::Pending);
         let mut current_birth = BirthFacts::new(current_inc.clone(), path.clone());
@@ -45,12 +45,12 @@ mod tests {
         let start_op = DeclaredOperation {
             build_id: "build-status-1".to_string(),
             attempt: 1,
-            operation: format!("node.start:{path}"),
+            operation: rdm_core::OperationId::node("node.start", &node_id),
         };
         let stop_op = DeclaredOperation {
             build_id: "build-status-2".to_string(),
             attempt: 1,
-            operation: format!("node.stop:{path}"),
+            operation: rdm_core::OperationId::node("node.stop", &node_id),
         };
         current_birth.operations.push(NodeOperation {
             operation: start_op.clone(),
@@ -68,19 +68,19 @@ mod tests {
         assert_eq!(
             declarations,
             vec![
-                Declaration {
+                Declaration { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
                     node_id: node_id.clone(),
                     incarnation_id: older_inc.clone(),
                     name: path.clone(),
                     state: NodeState::Pending,
                 },
-                Declaration {
+                Declaration { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
                     node_id: node_id.clone(),
                     incarnation_id: current_inc.clone(),
                     name: path.clone(),
                     state: NodeState::Pending,
                 },
-                Declaration {
+                Declaration { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
                     node_id: node_id.clone(),
                     incarnation_id: current_inc.clone(),
                     name: path.clone(),
@@ -162,25 +162,32 @@ mod tests {
         assert_eq!(declared_of_member(MemberStatus::ConnectionsDeleting), NodeState::ConnectionsDeleting);
         assert_eq!(declared_of_member(MemberStatus::Leaving), NodeState::Stopped);
 
+        let mut distinct = Declared::default();
+        let mut current = Node::allocated(PathName::new("place", "primary").unwrap(), "mesh1", NodeKind::NodeAdmin);
+        current.incarnation_id = Some(current_inc.clone());
+        let other = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: current_inc.clone() };
+        distinct.record_report("mesh1", Reporter::Birth(other.clone()), Instant::now());
+        assert_eq!(distinct.report_of("mesh1", Some(&current)).unwrap().birth, other);
+        assert_ne!(distinct.report_of("mesh1", Some(&current)).unwrap().birth, current.birth().unwrap());
         let t0 = Instant::now();
         let t1 = t0 + Duration::from_millis(10);
         declared.record_report("mesh1", Reporter::Endpoint("ep-primary".to_string()), t0);
-        declared.record_report("mesh1", Reporter::Birth(older_inc.clone()), t1);
-        let mut primary_node = Node::allocated(PathName::new("mesh1", NodeKind::NodeAdmin, 1));
-        primary_node.node_id = node_id;
+        declared.record_report("mesh1", Reporter::Birth(rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: older_inc.clone() }), t1);
+        let mut primary_node = Node::allocated(PathName::numbered("mesh1", NodeKind::NodeAdmin, 1), "mesh1", NodeKind::NodeAdmin);
+        primary_node.node_id = node_id.clone();
         primary_node.incarnation_id = Some(current_inc.clone());
         primary_node.endpoint_id = Some(EndpointId("ep-primary".to_string()));
         assert_eq!(
             declared.report_of("mesh1", Some(&primary_node)),
             Some(MeshReport {
-                incarnation: current_inc,
+                birth: rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: current_inc },
                 at: t0,
             })
         );
         assert_eq!(
             declared.report_of("mesh1", None),
             Some(MeshReport {
-                incarnation: older_inc,
+                birth: rdm_core::framing::Birth { node_id, incarnation: older_inc },
                 at: t1,
             })
         );
@@ -220,10 +227,10 @@ mod tests {
             Transition::Backward { current: NodeState::Ready }
         );
 
-        let admin_path = PathName::new("mesh1", NodeKind::NodeAdmin, 1);
+        let admin_path = PathName::numbered("mesh1", NodeKind::NodeAdmin, 1);
         let admin_id = NodeId::mint();
         let admin_inc = IncarnationId::mint();
-        let mut admin_node = Node::allocated(admin_path.clone());
+        let mut admin_node = Node::allocated(admin_path.clone(), "mesh1", NodeKind::NodeAdmin);
         admin_node.kind = NodeKind::NodeAdmin;
         admin_node.mesh = "mesh1".to_string();
         admin_node.node_id = admin_id.clone();
@@ -235,10 +242,10 @@ mod tests {
         admin_node.is_primary = true;
         admin_node.is_fabric_primary = true;
 
-        let rpc_path = PathName::new("mesh1", NodeKind::RpcNode, 1);
+        let rpc_path = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
         let rpc_id = NodeId::mint();
         let rpc_inc = IncarnationId::mint();
-        let mut rpc_node = Node::allocated(rpc_path.clone());
+        let mut rpc_node = Node::allocated(rpc_path.clone(), "mesh1", NodeKind::RpcNode);
         rpc_node.kind = NodeKind::RpcNode;
         rpc_node.mesh = "mesh1".to_string();
         rpc_node.node_id = rpc_id.clone();
@@ -274,9 +281,9 @@ mod tests {
         let start_op = DeclaredOperation {
             build_id: "build-1".to_string(),
             attempt: 1,
-            operation: format!("node.start:{rpc_path}"),
+            operation: rdm_core::OperationId::node("node.start", &rpc_id),
         };
-        declarer.owe_own(&rpc_path, &rpc_id, &rpc_inc, NodeState::Ready, Some(start_op.clone()));
+        declarer.owe_own("mesh1", &rpc_id, &rpc_inc, NodeState::Ready, Some(start_op.clone()));
         let mut view = Topology {
             fabric: Fabric {
                 id: FabricId::mint(),
@@ -388,7 +395,7 @@ mod tests {
         let stop_op = DeclaredOperation {
             build_id: "build-2".to_string(),
             attempt: 1,
-            operation: format!("node.stop:{rpc_path}"),
+            operation: rdm_core::OperationId::node("node.stop", &rpc_id),
         };
         let stop_req = StatusRequest::DeclareNodeState {
             node_id: rpc_id.clone(),

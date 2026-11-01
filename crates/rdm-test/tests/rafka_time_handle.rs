@@ -30,7 +30,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
             fabric_id: fabric.clone(),
             mesh: "mesh1".into(),
             kind: rdm_core::NodeKind::RpcNode,
-            name: "mesh1.rpc.1".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,

@@ -63,7 +63,7 @@ pub struct Starting {
     pub root: tracing::Span,
     /// The name the steps and their refusals carry.
     pub name: String,
-    /// The birth's `path.name`: rafka-time is adopted for its mesh.
+    /// The birth's `(path, name)`: rafka-time is adopted for its mesh.
     pub path: PathName,
     /// The birth's node id.
     pub node_id: NodeId,
@@ -94,10 +94,8 @@ pub struct JoinThrough {
     pub target: NodeTarget,
     /// The admin's endpoint key.
     pub endpoint: iroh::PublicKey,
-    /// Who answered: the launcher's `path.name` at a first start; after a stop, the name the join
-    /// answer's `served_by` hands (node-start.md step 2: the node "learns who answered from the join
-    /// answer").
-    pub name: PathName,
+    /// The answering admin's explicit node ID.
+    pub node_id: NodeId,
     /// The short endpoint id the join's attempts name.
     pub anchor: String,
 }
@@ -110,7 +108,7 @@ pub enum JoinTo {
         target: NodeTarget,
         /// Its endpoint key.
         endpoint: iroh::PublicKey,
-        /// Its `path.name`.
+        /// Its `(path, name)`.
         name: PathName,
     },
     /// A start after a stop: the admin whose call commands the start, reached back over that call's
@@ -154,7 +152,7 @@ where
     F: Fn(NodeTarget) -> Fut,
     Fut: Future<Output = Result<T, E>>,
 {
-    let (mut target, mut key, mut who) = (through.target.clone(), through.endpoint, through.name.to_string());
+    let (mut target, mut key, mut who) = (through.target.clone(), through.endpoint, through.node_id.to_string());
     loop {
         if let Some(c) = commander.as_deref_mut() {
             let now = *c.borrow_and_update();
@@ -230,7 +228,7 @@ pub trait AfterHook: Send + 'static {
 
     /// The topology step is about to make its read of `primary`: the kind may wait here before the read is
     /// made. Runs inside the topology step's span. A kind with nothing to wait on makes the read at once.
-    async fn before_topology_read(&mut self, primary: &PathName) {
+    async fn before_topology_read(&mut self, primary: &NodeId) {
         let _ = primary;
     }
 
@@ -267,7 +265,7 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
     async fn resolve_join_to(&mut self) -> Result<JoinTo, StartFailed>;
     /// The operation the start's join runs for, when the start was commanded with one (a start after
     /// a stop: its `node.start`; a commanded `node.mesh.join`: that command's); `None` names the kind's.
-    fn operation(&self) -> Option<String> {
+    fn operation(&self) -> Option<rdm_core::OperationId> {
         None
     }
 
@@ -288,6 +286,7 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
 /// refresh and the report, in that order, for `node` as it plugs into each step.
 pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(), N::Error> {
     let Starting { root, mut name, path, node_id, client, rafka_time } = node.starting();
+    let mesh = node.join_digest().node.mesh;
     // 1. and 2. node.mesh.join (node-mesh-join.md), the one primitive: the report, the answer's
     //    rafka-time, cert and name taken before the node says anything, then the mesh channel holding
     //    that name and the status frames the join answered: node.joined. With no authority, the
@@ -296,15 +295,15 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     let mut commander: Option<tokio::sync::watch::Receiver<iroh::PublicKey>> = None;
     let (through, joined, topology_view) = match node.joining() {
         Joining::AcceptingPrimary { label } => {
-            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
+            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
             let to = node.resolve_join_to().await?;
             let mesh_id = node.join_digest().mesh_id.as_ref().map(ToString::to_string).unwrap_or_default();
             let operation = node.operation().unwrap_or_else(|| match kind {
-                StartKind::FirstStart => format!("node.create:{name}"),
-                StartKind::AfterStop => format!("node.start:{name}"),
+                StartKind::FirstStart => rdm_core::OperationId::location("node.create", &path),
+                StartKind::AfterStop => rdm_core::OperationId::node("node.start", &node_id),
             });
             let report_parent = matches!(kind, StartKind::FirstStart).then(|| step.clone());
-            let call = super::node_mesh_join::JoinCall { name: name.clone(), node_id: &node_id, mesh: &path.mesh, mesh_id: &mesh_id, client: &client, rafka_time: &rafka_time, to: &to, primary: &label, operation: &operation, report_parent, reported: step, channel_parent: Some(root.clone()) };
+            let call = super::node_mesh_join::JoinCall { name: name.clone(), node_id: &node_id, mesh: &mesh, mesh_id: &mesh_id, client: &client, rafka_time: &rafka_time, to: &to, primary: &label, operation: &operation, report_parent, reported: step, channel_parent: Some(root.clone()) };
             let joined = super::node_mesh_join::node_mesh_join(node, call).await?;
             name = joined.name;
             commander = match &to {
@@ -314,7 +313,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             (Ok((joined.through, label)), Some(joined.answer), joined.topology_view)
         }
         Joining::None(why) => {
-            let channel = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty);
+            let channel = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-joined", node_path = %path.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty);
             (Err(why), None, node.enter_channel(channel, None).await?)
         }
     };
@@ -322,7 +321,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     let parts = node.joined(&topology_view, through.as_ref().ok().map(|(t, _)| t), joined.as_ref()).await?;
     // 3. The hook, with no topology read.
     let accepting_primary = match &through {
-        Ok((t, _)) => AcceptingPrimarySource::Accepted(AcceptingPrimary { name: t.name.clone(), endpoint: t.endpoint, target: t.target.clone() }),
+        Ok((t, _)) => AcceptingPrimarySource::Accepted(AcceptingPrimary { node_id: t.node_id.clone(), endpoint: t.endpoint, target: t.target.clone() }),
         Err(why) => AcceptingPrimarySource::None(*why),
     };
     let HookParts { birth, node_hooks, events, cancel, state, runs, after } = parts;
@@ -413,9 +412,9 @@ impl AfterTheHook {
     /// The steps in the task a blocked or spawned hook ran in: no caller waits on them, so a failed
     /// step is named on its own span under the start's root, and the node stays Pending.
     async fn run_on(self, driver: Option<Arc<HookDriver>>) {
-        let (root, name) = (self.root.clone(), self.name.clone());
+        let (root, name, path, node_id) = (self.root.clone(), self.name.clone(), self.path.clone(), self.node_id.clone());
         if let Err((failed, after)) = self.steps(driver).await {
-            tracing::info_span!(parent: &root, "rdm.mesh.node.reject.via-start-step-failed", node = %name, step = failed.step, reason = %failed.reason)
+            tracing::info_span!(parent: &root, "rdm.mesh.node.reject.via-start-step-failed", node_path = %path.path, node_name = %name, node_id = %node_id, step = failed.step, reason = %failed.reason)
                 .in_scope(|| tracing::warn!("a start step after pre_node_ready failed: the node is not started and stays Pending"));
             after.start_failed(&failed, false).await;
         }
@@ -428,10 +427,10 @@ impl AfterTheHook {
         // names, so the authority answers it `Unchanged`.
         let mut held: Option<(String, SourceVersion)> = None;
         if let Some((t, label)) = &through {
-            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node = %name, launcher = %label);
-            after.before_topology_read(&t.name).instrument(step.clone()).await;
+            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label);
+            after.before_topology_read(&t.node_id).instrument(step.clone()).await;
             let read = match at_commander(&name, &client, t, commander.as_mut(), |target| {
-                let (client, topology_view, mesh) = (&client, &topology_view, &t.name.mesh);
+                let (client, topology_view, mesh) = (&client, &topology_view, topology_view.mesh_name());
                 async move { crate::topology_read::get_topology(client, &target, mesh, topology_view, None, None).await }
             }).instrument(step.clone()).await {
                 Ok((read, _)) => read,
@@ -442,11 +441,11 @@ impl AfterTheHook {
             drop(step);
         }
         // The Build facts the authority's floor requires, on every start.
-        let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-build-floor", node = %name, owed = tracing::field::Empty, blockers = tracing::field::Empty, outcome = tracing::field::Empty);
+        let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-build-floor", node_path = %path.path, node_name = %name, node_id = %node_id, owed = tracing::field::Empty, blockers = tracing::field::Empty, outcome = tracing::field::Empty);
         after.floor(&step).instrument(step.clone()).await;
         drop(step);
         // rafka-time, last, from the same authority.
-        let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-rafka-time-refreshed", node = %name, served_by = tracing::field::Empty, unchanged = tracing::field::Empty, outcome = tracing::field::Empty);
+        let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-rafka-time-refreshed", node_path = %path.path, node_name = %name, node_id = %node_id, served_by = tracing::field::Empty, unchanged = tracing::field::Empty, outcome = tracing::field::Empty);
         match &through {
             Some((t, _)) => {
                 // The read names the mesh the topology step installed and its version; an authority that
@@ -456,7 +455,7 @@ impl AfterTheHook {
                     None => (None, None),
                 };
                 let (read, who) = match at_commander(&name, &client, t, commander.as_mut(), |target| {
-                    let (client, node, mesh, since) = (&client, &name, mesh.as_deref(), since.clone());
+                    let (client, node, mesh, since) = (&client, node_id.as_str(), mesh.as_deref(), since.clone());
                     async move { crate::topology_read::read_topology(client, &target, node, mesh, since).await }
                 }).instrument(step.clone()).await {
                     Ok(read) => read,
@@ -464,7 +463,7 @@ impl AfterTheHook {
                 };
                 step.record("served_by", tracing::field::display(&who));
                 step.record("unchanged", !read.unchanged.is_empty());
-                match step.in_scope(|| read.adopt_rafka_time(&rafka_time, &topology_view, &name, &path.mesh, &node_id, &who)) {
+                match step.in_scope(|| read.adopt_rafka_time(&rafka_time, &topology_view, node_id.as_str(), topology_view.mesh_name(), &node_id, &who)) {
                     Ok(_) => {
                         step.record("outcome", "adopted");
                     }
@@ -652,7 +651,7 @@ mod tests {
             MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: FabricId::mint(),
-                node: rdm_core::MeshNode { mesh: self.starting.path.mesh.clone(), kind: self.starting.path.kind,
+                node: rdm_core::MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: self.starting.node_id.clone(),
                     name: self.starting.path.clone(),
                     endpoint_id: rdm_core::EndpointId(
@@ -690,7 +689,7 @@ mod tests {
                 &g,
                 &ep,
                 &FabricId::mint(),
-                &self.starting.path.mesh,
+                "mesh1",
                 &MeshId::mint(),
                 &self.starting.name,
                 Arc::new(self.starting.rafka_time.clone()),
@@ -814,12 +813,12 @@ mod tests {
             let steps = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::new(Mutex::new(Vec::new()));
             let notify1 = Arc::new(tokio::sync::Notify::new());
-            let root1 = tracing::info_span!("rdm.mesh.node.create.via-boot", node = "mesh1.rpc.1");
+            let root1 = tracing::info_span!("rdm.mesh.node.create.via-boot", node_path = "mesh1.rpc", node_name = "1");
             let mut plug1 = TestStartPlug {
                 starting: Starting {
                     root: root1,
-                    name: "mesh1.rpc.1".into(),
-                    path: "mesh1.rpc.1".parse().unwrap(),
+                    name: "1".into(),
+                    path: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
                     node_id: NodeId::mint(),
                     client: client.clone(),
                     rafka_time: rafka_time.clone(),
@@ -836,12 +835,12 @@ mod tests {
 
             // 3. AfterStop runs with inherited=true.
             let notify2 = Arc::new(tokio::sync::Notify::new());
-            let root2 = tracing::info_span!("rdm.mesh.node.update.via-start", node = "mesh1.rpc.1");
+            let root2 = tracing::info_span!("rdm.mesh.node.update.via-start", node_path = "mesh1.rpc", node_name = "1");
             let mut plug2 = TestStartPlug {
                 starting: Starting {
                     root: root2,
-                    name: "mesh1.rpc.1".into(),
-                    path: "mesh1.rpc.1".parse().unwrap(),
+                    name: "1".into(),
+                    path: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
                     node_id: NodeId::mint(),
                     client,
                     rafka_time,

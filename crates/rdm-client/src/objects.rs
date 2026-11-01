@@ -79,7 +79,7 @@ where
     }
 }
 
-/// A create or a rename into a `path.name` another node holds, stopped or live: a name is held by
+/// A create or a rename into a `(path, name)` another node holds, stopped or live: a name is held by
 /// exactly one node until that node is renamed or deleted (ops-naming "Identity";
 /// node-rpc-envelope.md "Meta and config"). The row writer reads the row at the name's key and
 /// claims it.
@@ -93,7 +93,7 @@ pub struct NameHeld {
 
 impl std::fmt::Display for NameHeld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} is held by node {}: it is released only when that node is renamed or deleted", self.name, self.by)
+        write!(f, "path {:?}, name {:?} is held by node {}: it is released only when that node is renamed or deleted", self.name.path, self.name.name, self.by)
     }
 }
 
@@ -150,7 +150,7 @@ impl Nodes {
     }
 
     /// `node.get` (`query.md` §1): every node row the fabric-primary holds that matches every pair of
-    /// `filter`, by `path.name`; the empty filter is the fabric's topology, and nothing matching is the
+    /// `filter`, by `(path, name)`; the empty filter is the fabric's topology, and nothing matching is the
     /// empty list (`[id: x]` is one node or none).
     ///
     /// # Examples
@@ -166,7 +166,7 @@ impl Nodes {
     /// }
     /// ```
     pub async fn get(&self, filter: &Filter) -> Result<Vec<NodeView>, CallEnd> {
-        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let target = self.carrier.target().clone();
         read_rows(&self.carrier, &target, NodeOp::Get.span(), NodeOp::Get.name(), Entity::Nodes, filter, |r| match r {
             Rows::Nodes(nodes) => Some(nodes),
             _ => None,
@@ -179,12 +179,12 @@ impl Nodes {
     /// node-properties-own-commands.md §2; [`crate::NodeRpc::name_update`]). The mesh-primary decides
     /// everything from its own held record; a name outside the name grammar is refused here,
     /// `RejectedName`, as the mesh-primary would refuse it, and nothing is sent.
-    pub async fn name_update(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, name: &str) -> Result<StatusReply, CallEnd> {
-        if let Some(reason) = rdm_core::status::name_refusal(name) {
+    pub async fn name_update(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, name: &rdm_core::PathName) -> Result<StatusReply, CallEnd> {
+        if let Err(reason) = rdm_core::PathName::new(name.path.clone(), name.name.clone()) {
             let span = NodeOp::NameUpdate.span();
             span.record("outcome", "rejected-name");
             span.in_scope(|| tracing::info!(op = NodeOp::NameUpdate.name(), reason = %reason, "the name is outside the name grammar; nothing is sent"));
-            return Ok(rdm_core::reply::status::bounded_rejected_name(&reason));
+            return Ok(rdm_core::reply::status::bounded_rejected_name(&reason.to_string()));
         }
         crate::NodeRpc::new(self.carrier.client()).name_update(mesh_primary, route, birth, name, &rdm_transport::CallOptions::default()).await
     }
@@ -239,7 +239,7 @@ impl Nodes {
         self.workflow(WorkflowKind::Create, BuildChange::Reconcile { topology_storage_provider: None, based_on, nodes }).await
     }
 
-    /// `node.stop` of `node` (`lifecycles/node-stop.md`): delete its connections, leave its mesh and stop, keeping its `node.id`, `incarnation`, `path.name` and data dir.
+    /// `node.stop` of `node` (`lifecycles/node-stop.md`): delete its connections, leave its mesh and stop, keeping its `node.id`, `incarnation`, `(path, name)` and data dir.
     /// The stream is `Started`, then `node.connections.deleted` and `node.stopped`, ending `Complete` or `Failed { step, reason }`.
     pub async fn stop(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Stop(node.clone()), BuildChange::Stop { node: node.clone() }).await
@@ -259,7 +259,7 @@ impl Nodes {
         self.workflow(WorkflowKind::DeleteConnections(node.clone()), BuildChange::DeleteConnections { node: node.clone() }).await
     }
 
-    /// `node.delete` of `node` (`lifecycles/node-delete.md`): compose `node.stop` when the process is live, terminate its exact runtime through the provider, and release `node.id` and `path.name`.
+    /// `node.delete` of `node` (`lifecycles/node-delete.md`): compose `node.stop` when the process is live, terminate its exact runtime through the provider, and release `node.id` and `(path, name)`.
     /// The stream is `Started`, every `node.stop` event when live, and `node.deleted`, ending `Complete` or `Failed { step, reason }`.
     pub async fn delete(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Delete(node.clone()), BuildChange::RemoveNode { node: node.clone() }).await
@@ -276,14 +276,14 @@ impl Nodes {
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
     /// to move its mesh-primary role (and the fabric-primary role with it when it is both)
     /// to its same-mesh successor.
-    pub async fn primary_update(&self, fabric: &str, primary: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn primary_update(&self, fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         crate::NodeRpc::new(self.carrier.client()).primary_update(fabric, primary, build_id, attempt, &CallOptions::default()).await
     }
 
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"): command the
     /// fabric-primary to move the fabric-primary role (step 1 same-mesh successor
     /// first, step 2 another Ready mesh-primary when no same-mesh successor is Ready).
-    pub async fn fabric_primary_update(&self, fabric: &str, primary: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn fabric_primary_update(&self, fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, primary, build_id, attempt, &CallOptions::default()).await
     }
 }
@@ -331,7 +331,7 @@ impl Meshes {
     /// `mesh.get` (Q167): every mesh the fabric-primary holds that matches every pair of `filter`, by
     /// name; a mesh's nodes are `node.get [mesh: name]`.
     pub async fn get(&self, filter: &Filter) -> Result<Vec<MeshView>, CallEnd> {
-        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let target = self.carrier.target().clone();
         read_rows(&self.carrier, &target, MeshOp::Get.span(), MeshOp::Get.name(), Entity::Meshes, filter, |r| match r {
             Rows::Meshes(meshes) => Some(meshes),
             _ => None,
@@ -355,7 +355,7 @@ impl Fabrics {
     /// `fabric.get` (Q167): the fabric the fabric-primary holds, when it matches every pair of
     /// `filter`: its id, name, state, provider, fabric-primary and meshes; its nodes are `node.get`.
     pub async fn get(&self, filter: &Filter) -> Result<Vec<FabricView>, CallEnd> {
-        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let target = self.carrier.target().clone();
         read_rows(&self.carrier, &target, FabricOp::Get.span(), FabricOp::Get.name(), Entity::Fabrics, filter, |r| match r {
             Rows::Fabrics(fabrics) => Some(fabrics),
             _ => None,
@@ -365,7 +365,7 @@ impl Fabrics {
 
     /// The fabric the fabric-primary holds (`fabric.get` with no pair): the one row it answers.
     async fn the_fabric(&self) -> Result<FabricView, CallEnd> {
-        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let target = self.carrier.target().clone();
         self.get(&Filter::new()).await?.into_iter().next().ok_or_else(|| CallEnd::NotFound { read: FabricOp::Get.name(), detail: format!("{target:?} answered fabric.get with no fabric") })
     }
 
@@ -375,7 +375,7 @@ impl Fabrics {
     /// not completed. `fabric.get` is unchanged by it.
     pub async fn atlas_get(&self) -> Result<AtlasView, CallEnd> {
         let span = FabricOp::AtlasGet.span();
-        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let target = self.carrier.target().clone();
         let call = async {
             match read(&self.carrier, &target, &StatusRequest::GetAtlas).await? {
                 StatusReply::Atlas { atlas } => Ok(atlas),
@@ -393,7 +393,7 @@ impl Fabrics {
     /// (`rotation-in-progress`) and for a root already trusted (`root-already-trusted`).
     pub async fn update_root(&self, secret: rdm_core::status::RootSecretHex) -> Result<rdm_core::status::RootsPhase, CallEnd> {
         let span = FabricOp::RootUpdate.span();
-        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
+        let target = self.carrier.target().clone();
         let call = async {
             match read(&self.carrier, &target, &StatusRequest::UpdateRoot { secret }).await? {
                 StatusReply::RootUpdated { phase } => Ok(phase),
@@ -412,7 +412,7 @@ impl Fabrics {
     /// ended.
     pub async fn fact(&self, fact: &str, within: std::time::Duration, holds: impl Fn(&FabricView) -> bool) -> Result<FabricView, CallEnd> {
         let report = |view: &FabricView| format!("status {:?}, fabric-primary {}, {} meshes", view.status, view.fabric_primary.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "none".into()), view.meshes.len());
-        await_fact("fabric", &self.carrier.fabric_primary().to_string(), fact, within, || self.the_fabric(), holds, report).await
+        await_fact("fabric", &format!("{:?}", self.carrier.target()), fact, within, || self.the_fabric(), holds, report).await
     }
 }
 

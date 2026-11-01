@@ -7,7 +7,7 @@
 //! root), so a verifier holds only the root set's public keys: one root, or two during a rotation. Keys are ed25519
 //! (`ed25519-dalek`, the keys iroh's are made of: the same 32 secret bytes are the same key).
 //!
-//! A member cert names its exact birth: `path.name`, mesh, node id, incarnation and endpoint key,
+//! A member cert names its exact birth: `(path, name)`, mesh, node id, incarnation and endpoint key,
 //! and its expiry (fabric-certs.md "When a cert is issued": every JoinNode issues a fresh one, so a
 //! new birth never holds its predecessor's cert). Validity is judged on the clock the caller hands
 //! in (rafka-time), with one skew allowance past each expiry.
@@ -35,7 +35,7 @@ pub struct BirthIdentity {
     pub node_id: NodeId,
     /// The birth's incarnation.
     pub incarnation: IncarnationId,
-    /// The birth's `path.name`.
+    /// The birth's `(path, name)`.
     pub name: PathName,
     /// The birth's mesh name.
     pub mesh: String,
@@ -215,7 +215,7 @@ impl IssuingKey {
 /// The signed payload of a member cert: the exact birth it is issued to, and its expiry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeCert {
-    /// The birth's `path.name`.
+    /// The birth's `(path, name)`.
     pub name: PathName,
     /// The birth's mesh.
     pub mesh: String,
@@ -530,14 +530,13 @@ mod tests {
         issuer_under(root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000)
     }
 
-    fn birth(name: &str) -> BirthIdentity {
-        let name: PathName = name.parse().unwrap();
-        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: name.mesh.clone(), name, endpoint_key: EndpointId("k".into()) }
+    fn birth(name: PathName, mesh: &str) -> BirthIdentity {
+        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: mesh.into(), name, endpoint_key: EndpointId("k".into()) }
     }
 
     /// The member cert of `name`, `ttl_secs` from `now_ms`.
-    fn issue_cert(issuer: &IssuingKey, name: &str, ttl_secs: u64, now_ms: u64) -> Result<SignedCert, CertError> {
-        issue(issuer, &birth(name), now_ms, now_ms.saturating_add(ttl_secs.saturating_mul(1000)))
+    fn issue_cert(issuer: &IssuingKey, name: PathName, mesh: &str, ttl_secs: u64, now_ms: u64) -> Result<SignedCert, CertError> {
+        issue(issuer, &birth(name, mesh), now_ms, now_ms.saturating_add(ttl_secs.saturating_mul(1000)))
     }
 
     fn verify_cert_sig_expiry(signed: &SignedCert, root_pub: &VerifyingKey, now_ms: u64) -> Result<(), CertError> {
@@ -548,7 +547,7 @@ mod tests {
     fn a_member_signed_by_its_meshs_issuer_verifies_under_the_root() {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
-        let signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
+        let signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Ok(()));
     }
 
@@ -558,7 +557,7 @@ mod tests {
     fn an_issuer_cert_not_signed_by_its_ca_is_refused_issuer_bad_signature() {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
-        let mut signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
+        let mut signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
         signed.issuer.ca = CaKey::mint(&root_key, CA_CERT_TTL_SECS, 0).cert().clone(); // another CA under the same root
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::IssuerBadSignature));
     }
@@ -569,7 +568,7 @@ mod tests {
     fn a_ca_cert_not_signed_by_a_root_of_the_set_is_refused_ca_bad_signature() {
         let root_key = root();
         let wrong_root = SigningKey::from_bytes(&[11u8; 32]);
-        let signed = issue_cert(&sample_issuer(&wrong_root), "mesh1.broker.1", 3600, 1000).expect("issue");
+        let signed = issue_cert(&sample_issuer(&wrong_root), PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::CaBadSignature));
         assert_eq!(verify(&signed, &[], 2000, 0), Err(CertError::CaBadSignature), "an empty set trusts no CA");
     }
@@ -582,12 +581,12 @@ mod tests {
         let (old, new) = (root(), SigningKey::from_bytes(&[23u8; 32]));
         let both = [old.verifying_key(), new.verifying_key()];
         for under in [&old, &new] {
-            let signed = issue_cert(&sample_issuer(under), "mesh1.broker.1", 3600, 1000).expect("issue");
+            let signed = issue_cert(&sample_issuer(under), PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
             assert_eq!(verify(&signed, &both, 2000, 0), Ok(()));
         }
         let short_ca = CaKey::mint(&old, 20, 0); // expiry 20_000
         let issuer = IssuingKey::mint(&short_ca, "mesh1", 1_000, 20_000).expect("within the CA's life");
-        let signed = issue(&issuer, &birth("mesh1.broker.1"), 1_000, 20_000).expect("issue");
+        let signed = issue(&issuer, &birth(PathName::new("mesh1.broker", "1").unwrap(), "mesh1"), 1_000, 20_000).expect("issue");
         assert_eq!(verify(&signed, &both, 23_000, 3_000), Ok(()), "within the floor past the CA's expiry");
         assert_eq!(verify(&signed, &both, 23_001, 3_000), Err(CertError::CaExpired));
     }
@@ -603,8 +602,8 @@ mod tests {
         assert_eq!(IssuingKey::mint(&ca, "mesh1", 1_000, 101_001).map(|_| ()), Err(CertError::IssuerOutlivesCa));
         let issuer = IssuingKey::mint(&ca, "mesh1", 1_000, ca.expiry_ms()).expect("cut to the CA's expiry");
         assert_eq!(issuer.cert().ca, *ca.cert(), "the issuing cert carries its CA cert");
-        assert_eq!(issue(&issuer, &birth("mesh1.rpc.1"), 1_000, 101_001).map(|_| ()), Err(CertError::MemberOutlivesIssuer));
-        let member = issue(&issuer, &birth("mesh1.rpc.1"), 1_000, 101_000).expect("cut to the issuer's expiry");
+        assert_eq!(issue(&issuer, &birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), 1_000, 101_001).map(|_| ()), Err(CertError::MemberOutlivesIssuer));
+        let member = issue(&issuer, &birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), 1_000, 101_000).expect("cut to the issuer's expiry");
         assert_eq!(verify(&member, &[root_key.verifying_key()], 101_000, 0), Ok(()), "member → issuer → CA → root");
         assert_eq!(verify_issuer(&member.issuer, &[root_key.verifying_key()]), Ok(()));
         assert_eq!(verify_issuer(&member.issuer, &[SigningKey::from_bytes(&[29u8; 32]).verifying_key()]), Err(CertError::CaBadSignature));
@@ -614,7 +613,7 @@ mod tests {
     fn an_expired_issuer_cert_is_refused_issuer_expired() {
         let root_key = root();
         let issuer = issuer_under(&root_key, "mesh1", 10, 1000); // expiry = 11_000 ms
-        let signed = issue_cert(&issuer, "mesh1.broker.1", 5, 1000).expect("issue"); // member expiry = 6_000 ms
+        let signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 5, 1000).expect("issue"); // member expiry = 6_000 ms
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 12_000), Err(CertError::IssuerExpired));
     }
 
@@ -624,22 +623,22 @@ mod tests {
         let issuer = sample_issuer(&root_key);
 
         // issue refuses to mint it
-        let mint_res = issue_cert(&issuer, "mesh2.broker.1", 3600, 1000);
+        let mint_res = issue_cert(&issuer, PathName::new("mesh2.broker", "1").unwrap(), "mesh2", 3600, 1000);
         assert_eq!(mint_res.unwrap_err(), CertError::IssuerMeshMismatch);
 
         // A misleading path/name remains a signed label, independent of the declared mesh.
-        let mut independent = birth("elsewhere.gateway.north");
+        let mut independent = birth(PathName::new("elsewhere.gateway", "north").unwrap(), "mesh1");
         independent.mesh = "mesh1".into();
         let signed = issue(&issuer, &independent, 1000, 3_601_000).unwrap();
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Ok(()));
 
         // Verification refuses a mismatched explicit mesh before checking the signature.
-        let mut signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
+        let mut signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
         signed.cert.mesh = "mesh2".into();
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::IssuerMeshMismatch));
 
-        let mut signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
-        signed.cert.name = "mesh2.broker.1".parse().unwrap();
+        let mut signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
+        signed.cert.name = crate::PathName::new("mesh2.broker", "1").unwrap();
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::BadSignature), "the name remains covered by the signature");
     }
 
@@ -647,7 +646,7 @@ mod tests {
     fn a_member_signature_by_another_key_is_refused_bad_signature() {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
-        let mut signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
+        let mut signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
         signed.cert.incarnation = IncarnationId::mint(); // tamper payload
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::BadSignature));
     }
@@ -656,7 +655,7 @@ mod tests {
     fn an_expired_member_is_refused_expired() {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
-        let signed = issue_cert(&issuer, "mesh1.broker.1", 1, 1000).expect("issue"); // expiry = 2000 ms
+        let signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 1, 1000).expect("issue"); // expiry = 2000 ms
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 5000), Err(CertError::Expired));
     }
 
@@ -664,7 +663,7 @@ mod tests {
     fn a_member_outliving_its_issuer_is_never_minted() {
         let root_key = root();
         let issuer = issuer_under(&root_key, "mesh1", 100, 1000); // expiry = 101_000 ms
-        let res = issue_cert(&issuer, "mesh1.broker.1", 200, 1000); // member expiry = 201_000 ms
+        let res = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 200, 1000); // member expiry = 201_000 ms
         assert_eq!(res.unwrap_err(), CertError::MemberOutlivesIssuer);
     }
 
@@ -672,7 +671,7 @@ mod tests {
     fn a_member_of_another_mesh_verifies_under_the_one_root() {
         let root_key = root();
         let mesh2_issuer = issuer_under(&root_key, "mesh2", ISSUING_CERT_TTL_SECS, 1000);
-        let mesh2_member = issue_cert(&mesh2_issuer, "mesh2.broker.1", 3600, 1000).expect("issue");
+        let mesh2_member = issue_cert(&mesh2_issuer, PathName::new("mesh2.broker", "1").unwrap(), "mesh2", 3600, 1000).expect("issue");
         assert_eq!(verify_cert_sig_expiry(&mesh2_member, &root_key.verifying_key(), 2000), Ok(()));
     }
 
@@ -680,7 +679,7 @@ mod tests {
     fn a_restarted_node_admin_s_earlier_certs_still_verify() {
         let root_key = root();
         let boot1_issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
-        let boot1_member = issue_cert(&boot1_issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
+        let boot1_member = issue_cert(&boot1_issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
 
         // Admin restarts at t=2000 and mints a new in-memory issuing key
         let boot2_issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 2000);
@@ -698,19 +697,19 @@ mod tests {
     fn a_cert_is_judged_against_the_clock_it_is_given() {
         let root_key = root();
         let issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1_000_000);
-        let signed = issue_cert(&issuer, "mesh1.broker.1", 60, 1_000_000).expect("issue"); // expiry 1_060_000
+        let signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 60, 1_000_000).expect("issue"); // expiry 1_060_000
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 1_059_999), Ok(()));
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 1_060_001), Err(CertError::Expired));
     }
 
     /// CONTRACT (fabric-certs.md "When a cert is issued", proposal Q6): a member cert names its exact
-    /// birth, its `path.name`, mesh, node id, incarnation and endpoint key, and verifies as it was
-    /// issued; a new birth at the same `path.name` is issued its own.
+    /// birth, its `(path, name)`, mesh, node id, incarnation and endpoint key, and verifies as it was
+    /// issued; a new birth at the same `(path, name)` is issued its own.
     #[test]
     fn a_member_cert_names_its_exact_birth() {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
-        let b = birth("mesh1.broker.1");
+        let b = birth(PathName::new("mesh1.broker", "1").unwrap(), "mesh1");
         let signed = issue(&issuer, &b, 1_000, 3_601_000).expect("issue");
         assert_eq!((&signed.cert.name, &signed.cert.mesh, &signed.cert.node_id, &signed.cert.incarnation, &signed.cert.endpoint), (&b.name, &b.mesh, &b.node_id, &b.incarnation, &b.endpoint_key));
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Ok(()));
@@ -720,7 +719,7 @@ mod tests {
     fn a_cert_encoded_then_decoded_still_verifies_and_its_bytes_decode_to_itself() {
         let root_key = root();
         let issuer = sample_issuer(&root_key);
-        let signed = issue_cert(&issuer, "mesh1.compute.3", 3600, 1000).expect("issue");
+        let signed = issue_cert(&issuer, PathName::new("mesh1.compute", "3").unwrap(), "mesh1", 3600, 1000).expect("issue");
         let hexed = encode_cert(&signed);
         let back = decode_cert(&hexed).expect("decode");
         assert_eq!(verify_cert_sig_expiry(&back, &root_key.verifying_key(), 2000), Ok(()));
@@ -731,7 +730,7 @@ mod tests {
     fn a_cert_issued_under_a_trusted_root_verifies() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
         let issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
-        let signed = issue_cert(&issuer, "mesh1.gateway.1", 3600, 1000).expect("issue");
+        let signed = issue_cert(&issuer, PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
         assert_eq!(verify(&signed, &[root_key.verifying_key()], 2000, 0), Ok(()));
     }
 
@@ -740,7 +739,7 @@ mod tests {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
         let other_root = SigningKey::from_bytes(&[19u8; 32]);
         let issuer = issuer_under(&other_root, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
-        let signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
+        let signed = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 3600, 1000).expect("issue");
         assert_eq!(verify(&signed, &[root_key.verifying_key()], 2000, 0), Err(CertError::CaBadSignature));
     }
 
@@ -748,7 +747,7 @@ mod tests {
     fn a_cert_past_its_ttl_is_refused_expired() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
         let issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
-        let signed = issue_cert(&issuer, "mesh1.compute.1", 1, 1000).expect("issue");
+        let signed = issue_cert(&issuer, PathName::new("mesh1.compute", "1").unwrap(), "mesh1", 1, 1000).expect("issue");
         assert_eq!(verify(&signed, &[root_key.verifying_key()], 5000, 0), Err(CertError::Expired));
     }
 
@@ -776,7 +775,7 @@ mod tests {
     fn a_cert_within_one_floor_past_its_expiry_is_admitted_and_one_past_it_is_refused() {
         let root_key = root();
         let issuer = issuer_under(&root_key, "mesh1", 10, 1000); // issuer expiry 11_000
-        let member = issue_cert(&issuer, "mesh1.broker.1", 5, 1000).expect("issue"); // member expiry 6_000
+        let member = issue_cert(&issuer, PathName::new("mesh1.broker", "1").unwrap(), "mesh1", 5, 1000).expect("issue"); // member expiry 6_000
         let floor = 3_000;
         assert_eq!(verify(&member, &[root_key.verifying_key()], 9_000, floor), Ok(()), "3 s past the member's expiry, within the floor");
         assert_eq!(verify(&member, &[root_key.verifying_key()], 9_001, floor), Err(CertError::Expired));
@@ -810,8 +809,8 @@ mod tests {
     fn a_member_cert_never_outlives_its_issuer() {
         let root_key = root();
         let issuer = issuer_under(&root_key, "mesh1", 100, 1000); // expiry 101_000
-        assert_eq!(issue(&issuer, &birth("mesh1.rpc.1"), 1_000, 101_001), Err(CertError::MemberOutlivesIssuer));
-        let cut = issue(&issuer, &birth("mesh1.rpc.1"), 1_000, issuer.expiry_ms()).expect("cut to the issuer's expiry");
+        assert_eq!(issue(&issuer, &birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), 1_000, 101_001), Err(CertError::MemberOutlivesIssuer));
+        let cut = issue(&issuer, &birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"), 1_000, issuer.expiry_ms()).expect("cut to the issuer's expiry");
         assert_eq!(cut.cert.expiry_ms, issuer.cert().cert.expiry_ms);
         assert_eq!(verify(&cut, &[root_key.verifying_key()], 101_000, 0), Ok(()));
     }

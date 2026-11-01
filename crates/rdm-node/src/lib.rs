@@ -94,7 +94,7 @@ pub mod workflows;
 
 use anyhow::{anyhow, Result};
 
-/// The role this process is: its kind decides its path.name segment and which product families
+/// The role this process is: its kind decides its path and name segment and which product families
 /// it serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Role {
@@ -103,7 +103,7 @@ pub struct Role {
 }
 
 impl Role {
-    /// The role `launch` names: the kind of its path.name, the node_type node-admin launched it as.
+    /// The role `launch` names: the kind of its path and name, the node_type node-admin launched it as.
     pub fn of(launch: &Launch) -> Self {
         Self { kind: launch.kind }
     }
@@ -126,7 +126,7 @@ pub fn launch_for(role: Role) -> Result<Launch> {
     if launch.kind != role.kind {
         return Err(anyhow!(
             "refusing to start: launched as {} but this executable is a {}",
-            launch.name,
+            launch.node_id,
             role.name()
         ));
     }
@@ -221,7 +221,7 @@ pub async fn run_on(
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
-        node = %launch.name,
+        node_path = %launch.name.path, node_name = %launch.name.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
         kind = role.name(),
@@ -239,7 +239,7 @@ pub async fn run_on(
             () = crate::node::stop_requested() => {
                 boot.in_scope(|| tracing::info!("stopped by signal before the node booted"));
                 drop(boot);
-                tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = false).in_scope(|| tracing::info!("stopping"));
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation, booted = false).in_scope(|| tracing::info!("stopping"));
                 return Ok(());
             }
         };
@@ -257,11 +257,11 @@ pub async fn run_on(
         why = running.pre_node_ready_failed() => Some(why),
     };
     if let Some(why) = ended {
-        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
+        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node_path = %launch.name.path, node_name = %launch.name.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
         running.stop().await;
-        return Err(anyhow!("{} failed pre_node_ready: {why}", launch.name));
+        return Err(anyhow!("{} failed pre_node_ready: {why}", launch.node_id));
     }
-    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     running.stop().await;
     Ok(())
 }

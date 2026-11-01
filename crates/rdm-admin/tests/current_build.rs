@@ -16,8 +16,8 @@ use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
 
-fn node(name: &str, primary: bool) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
@@ -31,7 +31,7 @@ fn observed() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-        nodes: vec![node("mesh1.admin.1", true), node("mesh1.admin.2", false), node("mesh1.rpc.1", true)],
+        nodes: vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true), node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false), node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true)],
     }
 }
 
@@ -43,8 +43,8 @@ fn mesh(name: &str) -> MeshDesired {
 async fn fabric_primary() -> (Arc<ControlPlane>, Arc<MemoryBuildStateAdapter>, BuildId) {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = observed();
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t, crate::adopted_time()));
     let b0 = builds.list_active().await.unwrap();
     assert!(b0.is_empty(), "the seeded Build is settled: {b0:?}");
     let facts = builds.facts().await.unwrap();
@@ -52,9 +52,9 @@ async fn fabric_primary() -> (Arc<ControlPlane>, Arc<MemoryBuildStateAdapter>, B
     (cp, builds, b0)
 }
 
-async fn fail(builds: &MemoryBuildStateAdapter, id: &BuildId) {
+async fn fail(builds: &MemoryBuildStateAdapter, id: &BuildId, executor: &rdm_core::framing::Birth) {
     let attempt = builds.read_build(id).await.unwrap().attempt + 1;
-    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: executor.clone() }).await.unwrap();
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the cell fails it".into() , code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
 }
 
@@ -66,7 +66,7 @@ async fn fail(builds: &MemoryBuildStateAdapter, id: &BuildId) {
 async fn a_change_after_a_failed_build_compiles_against_the_newest_completed_build() {
     let (cp, builds, b0) = fabric_primary().await;
     let b1 = cp.submit("POST /api/meshes", crate::named_request(&cp, TopologyChange::CreateMesh { desired: mesh("mesh2") }).await).await.expect("B1 is accepted").build_id;
-    fail(&builds, &b1).await;
+    fail(&builds, &b1, &cp.topology.read().await.node(&cp.me).unwrap().birth().unwrap()).await;
     let b2 = cp.submit("POST /api/meshes", crate::named_request(&cp, TopologyChange::CreateMesh { desired: mesh("mesh3") }).await).await.expect("B2 is accepted over the completed B0, the failed B1 skipped").build_id;
     let meshes: Vec<String> = builds.read_build(&b2).await.unwrap().topology.meshes.keys().cloned().collect();
     assert_eq!(meshes, vec!["mesh1".to_string(), "mesh3".to_string()], "B2 compiled against B0 ({b0}), never the failed B1 ({b1})");

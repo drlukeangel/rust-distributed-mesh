@@ -28,10 +28,13 @@ All outstanding i150 requirements remain BUILD until their recorded proofs pass 
 - Generated config/span references were refreshed using the existing doc generator binary without
   starting a compiler build. The final implementation gate must regenerate them again.
 
-## Approved architecture changes
+## Architecture review status
 
-Luke approved the [exact unified diff](node-record-architecture.patch), and it has been applied
-to the implementation branch. The page changes and completed code must land together. Approval
+The [architecture packet](node-record-architecture.patch) with SHA-256
+`dfa84492791a24b6bbdc7c109894e36400f02a887271f7228e9827b6131b44cb` was approved and applied.
+It is retained unchanged as that approval's exact artifact. The subsequent ID-first and separate-field
+corrections below require a new exact-text packet; they are not covered by that approval.
+The page changes and completed code must land together. Approval
 of the documentation is not proof that runtime behavior matches it, and does not complete i150
 or the startup correction tracked in [issue 247](https://github.com/drlukeangel/rust-distributed-mesh/issues/247).
 
@@ -52,19 +55,32 @@ The changes cover:
 - [lifecycles/node-replace.md](../../architecture/lifecycles/node-replace.md)
 
 Path is immutable: replacement renames only the predecessor name to `<name>-old` at its unchanged
-path; rename refuses a different path. This supersedes the earlier path-to-.old proposal.
+path; rename refuses a different path. Globally unique node IDs are the first choice for references;
+the composite `(path, name)` index resolves caller-supplied locations without joining the fields.
+Replacement provenance is explicit metadata, never inferred from a name ending in `-old`.
 
 They replace atlas-held node properties, keyed tag rows and row revisions; define direct record
 reads and separate path/name; retain Build overrides and atomic application recognition; and
 require lifecycle preparation before installing a writing role. The existing election revision,
 command routes, clocks and gossip formats remain independently defined.
 
-Architect 1 reviewed the proposal, guides and rendered new architecture text. Its final findings
-were corrected: no independent row-retry clock after premature primary acknowledgement, no
+Architect 1 reviewed the approved packet, proposal and guides. That packet addresses: no independent row-retry clock after premature primary acknowledgement, no
 install-first or next-row-revision sequence, and current pair selection occurs at claim rather
 than Ready. This is a documentation review, not process or fault-injection acceptance.
 
-Packet SHA-256: `dfa84492791a24b6bbdc7c109894e36400f02a887271f7228e9827b6131b44cb`.
+Architect 1's current correction review remains open. The next exact-text packet must:
+
+- Replace joined operation examples with structured operation identities and separate location fields.
+- Replace the identity page's joined-reference headings and its prohibition on stored NodeId references;
+  code references use NodeId first, and location lookup resolves the composite pair once.
+- Keep predecessor and successor examples at the same path, with separate original and suffixed names.
+- Separate record filtering (including Deleted rows) from current-location claim resolution, and name
+  the individual path/name sort fields.
+- Distinguish explicit replacement provenance from pending old-name claim release; ordinary `-old`
+  names establish neither identity nor provenance.
+
+These corrections are specified in the proposal. The architecture pages and approved packet remain
+unchanged pending the new exact-text review.
 
 ## Validation and final integration work
 

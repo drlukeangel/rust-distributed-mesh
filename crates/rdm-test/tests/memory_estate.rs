@@ -22,7 +22,6 @@ use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
 
 const WRONG: Duration = Duration::from_secs(120);
-const NODE: &str = "mesh1.rpc.1";
 
 /// The runtimes the cell's admin launched (every process whose `RDM_STORE_DIR` is the cell's store
 /// dir) end when the cell does, a cell that panics included: the admin runs in this process, and
@@ -96,7 +95,7 @@ fn spans_in(dir: &Path) -> Vec<Value> {
 async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
     tokio::time::timeout(WRONG, async {
         loop {
-            let listed = rdm_test::typed::mesh_nodes(nodes, &node.mesh).await.unwrap_or_else(|e| panic!("node.get [mesh: {}]: {e}", node.mesh));
+            let listed = nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [{node:?}]: {e}"));
             if listed.iter().any(|n| &n.name == node && n.status == want) {
                 return;
             }
@@ -104,7 +103,7 @@ async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("{node} never listed {want:?}"));
+    .unwrap_or_else(|_| panic!("{node:?} never listed {want:?}"));
 }
 
 /// The fabric's own status, as the admin's `fabric.get` answers it, once it is ready: the
@@ -165,14 +164,14 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         })
         .await
         .expect("the admin's view never held it ready in both roles");
-        let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
+        let admin = ResolvedNode { mesh: me.node.mesh.clone(), kind: me.node.kind, node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(admin);
         let client = Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm"));
-        let carrier = BuildCarrier::new(client, me.node.name.clone());
+        let carrier = BuildCarrier::at_node(client, me.node.node_id.clone());
         let (nodes, builds, fabrics) = (Nodes::new(carrier.clone()), Builds::new(carrier.clone()), Fabrics::new(carrier.clone()));
-        let node: PathName = NODE.parse().unwrap();
+        let node = PathName::new("mesh1.rpc", "1").unwrap();
         // The admin started its Day-0 Build by starting: it is followed to its end before anything is
         // submitted, as an estate's is.
         let day_zero = rdm_test::typed::the_fabric(&fabrics).await.unwrap_or_else(|e| panic!("fabric.get: {e}")).build_id.expect("the Day-0 admin holds its Day-0 Build as the current one");
@@ -193,7 +192,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         // A stop moves the stopped node's node-type primary role to a secondary of its type: a second rpc node.
         let (based_on, request) = one_more().await;
         Estate::workflow("node.create of a second rpc node in mesh1", nodes.create_named(based_on, request).await).await;
-        until_status(&nodes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::Ready).await;
+        until_status(&nodes, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), NodeStatus::Ready).await;
         until_fabric_ready(&fabrics).await;
         // A Reconcile that changes mesh1.rpc.1's config alone: the Build's `node.config.update` reads the
         // entry in the accepted Build the admin's own log holds, and the node carries it.
@@ -208,12 +207,12 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         let mut stream = carrier.create(rdm_core::build::BuildChange::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes: request.collect() }).await.unwrap_or_else(|e| panic!("build.create of the config-only Reconcile: {e}"));
         Estate::until_complete(&mut stream).await;
         tokio::time::timeout(WRONG, async {
-            while !rdm_test::typed::mesh_nodes(&nodes, &node.mesh).await.unwrap_or_else(|e| panic!("node.get [mesh]: {e}")).iter().any(|n| n.name == node && n.config == zone) {
+            while !nodes.get(&rdm_client::Filter::new().eq("path", [&node.path]).eq("name", [&node.name])).await.unwrap_or_else(|e| panic!("node.get [mesh]: {e}")).iter().any(|n| n.name == node && n.config == zone) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("{node} never carried the config its entry names"));
+        .unwrap_or_else(|_| panic!("{node:?} never carried the config its entry names"));
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;

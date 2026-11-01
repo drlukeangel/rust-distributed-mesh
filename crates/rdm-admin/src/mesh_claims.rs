@@ -30,13 +30,9 @@ pub struct InFlight {
     pub lane: Option<String>,
     /// The attempt, numbered in its lane.
     pub attempt: u32,
-    /// The admin that claimed it (a node-admin's path.name): the holder a refusal names.
-    pub claimant: String,
-    /// The claimant's birth, by its node id, when the claimant names it: an adoption launch's claim
-    /// (Q156), where two launches at one path.name are two claimants. A claim that names none is its
-    /// path.name's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claimant_node: Option<crate::model::NodeId>,
+    /// The globally unique ID of the admin that claimed the attempt.
+    pub claimant: crate::model::NodeId,
+
 }
 
 impl InFlight {
@@ -47,18 +43,16 @@ impl InFlight {
 
     /// Whether `self` and `other` are the same attempt taken by the same claimant: a repeat take. The
     /// same attempt taken by another claimant is held, never won (build.md §5.2, Q142); two births at
-    /// one path.name are two claimants (Q156).
+    /// one path and name are two claimants (Q156).
     pub fn same_claim(&self, other: &InFlight) -> bool {
-        self.same_attempt(other) && self.claimant == other.claimant && self.claimant_node == other.claimant_node
+        self.same_attempt(other) && self.claimant == other.claimant
     }
 
-    /// The claimant as a refusal names it: its path.name, and its node id when the claim names its birth.
+    /// The claimant's globally unique ID for a human-readable refusal.
     pub fn claimant_named(&self) -> String {
-        match &self.claimant_node {
-            Some(node) => format!("{} (node {node})", self.claimant),
-            None => self.claimant.clone(),
-        }
+        self.claimant.to_string()
     }
+
 }
 
 /// What a take of a mesh's in-flight row came to.
@@ -75,18 +69,20 @@ mod tests {
     use super::*;
     use crate::storage::MeshStorage;
 
-    fn attempt(build_id: &BuildId, lane: Option<&str>, attempt: u32, claimant: &str) -> InFlight {
-        InFlight { build_id: build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: claimant.into(), claimant_node: None }
+    fn attempt(build_id: &BuildId, lane: Option<&str>, attempt: u32, claimant: &crate::model::NodeId) -> InFlight {
+        InFlight { build_id: build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: claimant.clone(), }
     }
 
     /// The same script against two claimants: whatever backs them, one attempt holds a mesh at a time.
-    async fn one_attempt_in_flight_per_mesh(a: &dyn MeshStorage, b: &dyn MeshStorage) {
+    async fn one_attempt_in_flight_per_mesh(a: &dyn MeshStorage, b: &dyn MeshStorage) -> crate::model::NodeId {
         let build = BuildId::mint();
-        let topology_op = attempt(&build, None, 2, "mesh1.admin.1");
-        let drift = attempt(&build, Some("mesh2"), 1, "mesh2.admin.1");
+        let first_id = crate::model::NodeId::mint();
+        let second_id = crate::model::NodeId::mint();
+        let topology_op = attempt(&build, None, 2, &first_id);
+        let drift = attempt(&build, Some("mesh2"), 1, &second_id);
         assert_eq!(a.take_in_flight("mesh2", &topology_op).await.unwrap(), Taken::Won, "the first claimant on mesh2 holds it");
         assert_eq!(b.take_in_flight("mesh2", &drift).await.unwrap(), Taken::Held(topology_op.clone()), "a second attempt on mesh2 is refused, naming the attempt and the claimant that hold it");
-        assert_eq!(b.take_in_flight("mesh1", &attempt(&build, Some("mesh1"), 1, "mesh1.admin.1")).await.unwrap(), Taken::Won, "mesh1 is held apart from mesh2");
+        assert_eq!(b.take_in_flight("mesh1", &attempt(&build, Some("mesh1"), 1, &first_id)).await.unwrap(), Taken::Won, "mesh1 is held apart from mesh2");
         assert_eq!(a.take_in_flight("mesh2", &topology_op).await.unwrap(), Taken::Won, "a repeat take of the attempt holding the mesh is that attempt's own row");
         b.release_in_flight("mesh2", &drift).await.unwrap();
         assert_eq!(b.in_flight("mesh2").await.unwrap(), Some(topology_op.clone()), "a release names its attempt: another attempt's row stands");
@@ -94,6 +90,7 @@ mod tests {
         assert_eq!(a.in_flight("mesh2").await.unwrap(), None, "the verdict of the attempt holding mesh2 releases it");
         assert_eq!(b.take_in_flight("mesh2", &drift).await.unwrap(), Taken::Won, "mesh2 is free: the drift attempt holds it");
         assert_eq!(a.in_flight("mesh2").await.unwrap(), Some(drift), "each claimant reads the one row");
+        second_id
     }
 
     /// CONTRACT (R-BI7 caveat 3, R14 writer ladder): two node-admins on two processes reach one
@@ -110,10 +107,10 @@ mod tests {
         let d = crate::test_support::tempdir("mesh-claims");
         let root = StoreRoot::at(&d);
         let (a, b) = (FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap(), FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap());
-        one_attempt_in_flight_per_mesh(&a, &b).await;
+        let claimant = one_attempt_in_flight_per_mesh(&a, &b).await;
         assert!(root.dir().join("locks").join("in-flight").join("mesh2").is_file(), "the row is the lock locks/in-flight/mesh2 on the store root");
         let later = FileMeshStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
-        assert_eq!(later.in_flight("mesh2").await.unwrap().map(|h| h.claimant), Some("mesh2.admin.1".to_string()), "a process that opens the root later reads the same row");
+        assert_eq!(later.in_flight("mesh2").await.unwrap().map(|h| h.claimant), Some(claimant), "a process that opens the root later reads the same row");
     }
 
     /// CONTRACT (build.md §5.2, Q142: "the mesh's in-flight row taken by another claimant for the same
@@ -123,8 +120,8 @@ mod tests {
     /// first's repeat take is Won. Must NOT happen: two claimants both holding one attempt.
     async fn a_second_claimant_of_one_attempt_is_held(a: &dyn MeshStorage, b: &dyn MeshStorage) {
         let build = BuildId::mint();
-        let first = attempt(&build, Some("mesh1"), 8, "mesh2.admin.2");
-        let second = attempt(&build, Some("mesh1"), 8, "mesh1.admin.2");
+        let first = attempt(&build, Some("mesh1"), 8, &crate::model::NodeId::mint());
+        let second = attempt(&build, Some("mesh1"), 8, &crate::model::NodeId::mint());
         assert_eq!(a.take_in_flight("mesh1", &first).await.unwrap(), Taken::Won, "the first claimant takes attempt 8");
         assert_eq!(b.take_in_flight("mesh1", &second).await.unwrap(), Taken::Held(first.clone()), "the second claimant of the same attempt is held, naming the first");
         assert_eq!(a.take_in_flight("mesh1", &first).await.unwrap(), Taken::Won, "the first claimant's repeat take is its own");

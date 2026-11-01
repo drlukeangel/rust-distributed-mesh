@@ -1,12 +1,12 @@
 //! A node's create spec ([`NodeSpec`]): the node's own properties, flat (Q166), as the accepted Build
-//! names them for a path.name. Intrinsic, explicit on every materialized path after ingress
+//! names them for a path and name. Intrinsic, explicit on every materialized path after ingress
 //! normalization; never a tag, never inferred later from a flag, a map or a provider's behaviour.
 
 use crate::path::{NodeKind, PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The create spec of one node (build.md §1, Q166): its `path.name` and the node's own properties under
+/// The create spec of one node (build.md §1, Q166): its `(path, name)` and the node's own properties under
 /// the node-properties names (node-rpc-envelope.md "Node properties"), flat. There is no nested
 /// configuration type: `config` is the application's map and nothing else. Field order is the wire's:
 /// a Build request's entry was `(PathName, { storage_persistence, placement, executable, tags })` on the
@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeSpec {
-    /// The node's `path.name`.
+    /// The node's `(path, name)`.
     pub path: PathName,
     /// The owning mesh, independent of the path/name pair.
     pub mesh: String,
@@ -208,13 +208,13 @@ mod tests {
     #[test]
     fn the_kind_defaults_are_the_migration_defaults_and_a_spec_reads_back_as_written() {
         let preserve = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
-        let at = |kind| NodeSpec::default_for("elsewhere.gateway.north".parse().unwrap(), "m", kind).storage_persistence;
+        let at = |kind| NodeSpec::default_for(crate::PathName::new("elsewhere.gateway", "north").unwrap(), "m", kind).storage_persistence;
         assert_eq!(at(NodeKind::Broker), preserve);
         assert_eq!(at(NodeKind::NodeAdmin), preserve);
         assert_eq!(at(NodeKind::Gateway), StorageMeta::Ephemeral);
         assert_eq!(at(NodeKind::Compute), StorageMeta::Ephemeral);
         assert_eq!(at(NodeKind::RpcNode), StorageMeta::Ephemeral);
-        let release = NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, config: [("zone".to_string(), "a".to_string())].into(), ..NodeSpec::default_for("m.rpc.1".parse().unwrap(), "m", NodeKind::RpcNode) };
+        let release = NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, config: [("zone".to_string(), "a".to_string())].into(), ..NodeSpec::default_for(crate::PathName::new("m.rpc", "1").unwrap(), "m", NodeKind::RpcNode) };
         let json = serde_json::to_string(&release).unwrap();
         assert_eq!(serde_json::from_str::<NodeSpec>(&json).unwrap(), release);
         assert!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"ephemeral","disposition":"preserve"}"#).unwrap_err().to_string().contains("carries no `disposition`"), "ephemeral carries no disposition");
@@ -227,7 +227,7 @@ mod tests {
     /// record written before the rename, its old names, reads back as the same value.
     #[test]
     fn a_spec_is_written_under_the_page_names_and_one_written_before_reads_back() {
-        let spec = NodeSpec::default_for("m.admin.1".parse().unwrap(), "m", NodeKind::NodeAdmin);
+        let spec = NodeSpec::default_for(crate::PathName::new("m.admin", "1").unwrap(), "m", NodeKind::NodeAdmin);
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json["storage_persistence"], serde_json::json!({"persistence": "persistent", "disposition": "preserve"}), "{json}");
         assert!(json.get("storage").is_none(), "{json}");

@@ -63,7 +63,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
     capture.run(2, async {
         let server_id = NodeId::mint();
         let server_inc = IncarnationId::mint();
-        let server_name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+        let server_name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
         let server_key = SecretKey::generate();
         let server_ep = rdm_transport::endpoint::bind(
             server_key.clone(),
@@ -110,7 +110,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
         .await
         .expect("bind caller ep");
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode {
+        resolver.insert(ResolvedNode { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
             node_id: server_id.clone(),
             name: server_name.clone(),
             endpoint_id: server_key.public(),
@@ -130,7 +130,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
             &fabric_id,
             "mesh1",
             &mesh_id,
-            &server_name.to_string(),
+            server_id.as_str(),
             Arc::new(rafka_time.clone()),
             Vec::new(),
             &[],
@@ -203,7 +203,7 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_blocked_and_opens_after_ret
             fabric_id,
             node: MeshNode { mesh: "mesh1".to_string(), kind: NodeKind::RpcNode,
                 node_id: target_node_id,
-                name: PathName::new("mesh1", NodeKind::RpcNode, 2),
+                name: PathName::numbered("mesh1", NodeKind::RpcNode, 2),
                 endpoint_id: EndpointId(SecretKey::generate().public().to_string()),
                 transport_addr: "127.0.0.1:42000".parse().unwrap(),
                 incarnation: IncarnationId::mint(),
@@ -324,7 +324,7 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-on-node-ready-functional")
         .expect("evidence capture starts");
 
-    let node_name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+    let node_name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
     let node_name_for_assert = node_name.clone();
     capture.run(2, async move {
         let node_id = NodeId::mint();
@@ -344,7 +344,7 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
 
         let peer_id = NodeId::mint();
         let peer_inc = IncarnationId::mint();
-        let peer_name = PathName::new("mesh1", NodeKind::RpcNode, 2);
+        let peer_name = PathName::numbered("mesh1", NodeKind::RpcNode, 2);
         let peer_key = SecretKey::generate();
         let peer_ep = rdm_transport::endpoint::bind(
             peer_key.clone(),
@@ -403,14 +403,14 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
             .spawn();
 
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode {
+        resolver.insert(ResolvedNode { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
             node_id: node_id.clone(),
             name: node_name.clone(),
             endpoint_id: node_key.public(),
             transport_addr: node_addr,
             incarnation: node_inc.clone(),
         });
-        resolver.insert(ResolvedNode {
+        resolver.insert(ResolvedNode { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
             node_id: peer_id,
             name: peer_name,
             endpoint_id: peer_key.public(),
@@ -431,7 +431,7 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
             &fabric_id,
             "mesh1",
             &mesh_id,
-            &node_name.to_string(),
+            node_id.as_str(),
             Arc::new(rafka_time.clone()),
             Vec::new(),
             &[],
@@ -510,7 +510,8 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
     assert!(
         spans.iter().any(|s| {
             s["name"] == "rdm.mesh.node.update.via-on-node-ready"
-                && s["attributes"]["node"] == node_name_for_assert.to_string()
+                && s["attributes"]["node_path"] == node_name_for_assert.path
+                && s["attributes"]["node_name"] == node_name_for_assert.name
         }),
         "expected rdm.mesh.node.update.via-on-node-ready span: {spans:?}"
     );

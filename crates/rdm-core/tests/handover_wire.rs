@@ -49,13 +49,13 @@ fn requests_match_the_frozen_two_variant_wire_schema() {
     let fixtures = [
         // variant 0 | primaries (len 2: "node-admin" primary successor 4, "fabric" primary successor 8) | build_id | run | operation
         (
-            NodePrimaryUpdateRequest::PrimaryUpdate { primaries: vec![("node-admin".into(), primary(), successor(), 4), fabric_entry()], build_id: "b".into(), run: 2, operation: "o".into() },
+            NodePrimaryUpdateRequest::PrimaryUpdate { primaries: vec![("node-admin".into(), primary(), successor(), 4), fabric_entry()], build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o") },
             format!("00 02 0a 6e6f64652d61646d696e {PRIMARY} {SUCCESSOR} 04 06 666162726963 {PRIMARY} {SUCCESSOR} 08 0162 02 016f"),
         ),
         // variant 1 | node_type "rpc-node" | build_id | run | operation | successor none (a node-admin's command)
-        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: "o".into(), successor: None }, "01 08 7270632d6e6f6465 0162 02 016f 00".to_string()),
+        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: None }, "01 08 7270632d6e6f6465 0162 02 016f 00".to_string()),
         // variant 1 | ... | successor some: the birth the mesh-primary's pre-check named (Q129)
-        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: "o".into(), successor: Some(successor()) }, format!("01 08 7270632d6e6f6465 0162 02 016f 01 {SUCCESSOR}")),
+        (NodePrimaryUpdateRequest::UpdatePrimary { node_type: "rpc-node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: Some(successor()) }, format!("01 08 7270632d6e6f6465 0162 02 016f 01 {SUCCESSOR}")),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
@@ -77,7 +77,7 @@ fn replies_match_the_frozen_thirteen_variant_wire_schema() {
     let fixtures = [
         // revisions (len 1) | "fabric" | primary | successor | revision 8
         (PrimaryUpdated { revisions: vec![fabric_entry()] }, format!("00 01 06 666162726963 {PRIMARY} {SUCCESSOR} 08")),
-        (RejectedConflictingPayload { operation: "o".into() }, "01 01 6f".to_string()),
+        (RejectedConflictingPayload { operation: rdm_core::OperationId::unscoped("o") }, "01 01 6f".to_string()),
         (Reserved2 { reason: "r".into() }, "02 01 72".to_string()),
         (RejectedNotPrimary { reason: "a".into() }, "03 01 61".to_string()),
         // node_type "fabric" | expected | current
@@ -113,7 +113,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
     assert!(!NodePrimaryUpdate::FORWARDABLE);
     assert_eq!(NodePrimaryUpdate::classify_reply(&PrimaryUpdated { revisions: vec![fabric_entry()] }), ReplyKind::Success);
     for (r, code) in [
-        (RejectedConflictingPayload { operation: "o".into() }, Code::Aborted),
+        (RejectedConflictingPayload { operation: rdm_core::OperationId::unscoped("o") }, Code::Aborted),
         (Reserved2 { reason: "r".into() }, Code::FailedPrecondition),
         (RejectedNotPrimary { reason: "a".into() }, Code::FailedPrecondition),
         (RejectedStaleRevision { node_type: "fabric".into(), expected: 1, current: 2 }, Code::Aborted),
@@ -129,7 +129,7 @@ fn the_largest_request_fits_the_frame_ceiling() {
     let long = "x".repeat(128);
     let b = || Birth { node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
     let primaries = vec![(long.clone(), b(), b(), u64::MAX), (long.clone(), b(), b(), u64::MAX)];
-    let q = NodePrimaryUpdateRequest::PrimaryUpdate { primaries: primaries.clone(), build_id: long.clone(), run: u32::MAX, operation: long.clone() };
+    let q = NodePrimaryUpdateRequest::PrimaryUpdate { primaries: primaries.clone(), build_id: long.clone(), run: u32::MAX, operation: rdm_core::OperationId::unscoped(long.clone()) };
     assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
     let r = NodePrimaryUpdateReply::PrimaryUpdated { revisions: primaries };
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);

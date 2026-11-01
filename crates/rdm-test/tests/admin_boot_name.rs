@@ -51,7 +51,7 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
+fn launch_by(root: &Running, name: &PathName, dir: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -60,14 +60,14 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::NodeAdmin,
-        name: name.parse().unwrap(),
+        name: name.clone(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -97,10 +97,10 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
 
         // The process boots under `mesh1.admin.2`, the name last accepted for its birth; its row stands
         // at `mesh1.admin.3`, the name the authority admits it under.
-        let (boot, row): (PathName, PathName) = ("mesh1.admin.2".parse().unwrap(), "mesh1.admin.3".parse().unwrap());
-        let launch = launch_by(&root, &boot.to_string(), &admin_dir);
+        let (boot, row): (PathName, PathName) = (rdm_core::PathName::new("mesh1.admin", "2").unwrap(), rdm_core::PathName::new("mesh1.admin", "3").unwrap());
+        let launch = launch_by(&root, &boot, &admin_dir);
         let key = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap();
-        let _ = root.runner.joins.expect(Deployed { mesh: row.mesh.clone(), kind: row.kind,
+        let _ = root.runner.joins.expect(Deployed { mesh: launch.mesh.clone(), kind: launch.kind,
             name: row.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
@@ -124,7 +124,7 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("the authority never held {} under its row's name {row}", launch.node_id));
+        .unwrap_or_else(|_| panic!("the authority never held {} under its row's name {row:?}", launch.node_id));
 
         // The router opens on the view holding the exact birth: the span says so, and a Ping from the
         // mesh's primary is then answered.
@@ -136,12 +136,12 @@ fn a_node_admin_booted_under_the_name_its_mesh_primary_last_accepted_serves_once
             RpcOutcome::Reply(r) => Ok(r.into_value()),
             other => Err(format!("{other:?}")),
         };
-        assert!(matches!(answer, Ok(PingReply::Pong { .. })), "the admin admitted as {row} (booted as {boot}) did not answer its mesh primary's Ping {OPENS:?} after the authority held its birth under that name: {answer:?}");
+        assert!(matches!(answer, Ok(PingReply::Pong { .. })), "the admin admitted as {row:?} (booted as {boot:?}) did not answer its mesh primary's Ping {OPENS:?} after the authority held its birth under that name: {answer:?}");
         assert!(opened.is_ok(), "the router opened with no via-view-holds-birth span naming {birth}");
         let opened: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.node_admin.node.serve.via-view-holds-birth" && f.get("node_id") == Some(&birth)).map(|(_, t, f)| (t.clone(), f.clone())).collect();
         assert_eq!(opened.len(), 1, "the router opens once: {opened:?}");
         let (trace, f) = &opened[0];
-        assert_eq!((f.get("held_name").map(String::as_str), f.get("boot_name").map(String::as_str)), (Some(row.to_string().as_str()), Some(boot.to_string().as_str())), "{f:?}");
+        assert_eq!((f.get("held_path"), f.get("held_name"), f.get("boot_path"), f.get("boot_name")), (Some(&row.path), Some(&row.name), Some(&boot.path), Some(&boot.name)), "{f:?}");
         eprintln!("trace {trace:?}: rdm.node_admin.node.serve.via-view-holds-birth {f:?}");
 
         admin.leave().await;

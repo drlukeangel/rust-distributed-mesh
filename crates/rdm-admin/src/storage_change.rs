@@ -14,7 +14,7 @@
 //!    the `commit` record decided (each node's storage handle replaced, node command op 0x22
 //!    `StorageStep`), replies `unblocked` and issues commands again. A node that will not move (it refuses
 //!    its move by name, a `rejected-stale-change` included, or leaves it unanswered past the staleness
-//!    floor: Q182) is re-created at its `path.name` on the provider the change decided, node.delete then
+//!    floor: Q182) is re-created at its `(path, name)` on the provider the change decided, node.delete then
 //!    node.create as node recovery's, steps of this attempt of the change's own Build (i149 R19): the
 //!    attempt holds the mesh's in-flight row, so no other attempt could. The mesh replies `unblocked`
 //!    once every node moved or was re-created.
@@ -43,23 +43,23 @@ pub const UNBLOCK_SPAN: &str = "rdm.node_admin.mesh.update.via-unblock";
 pub const SWITCH_SPAN: &str = "rdm.node_admin.build.update.via-storage-switch";
 
 /// The operation key of a storage change's verdict.
-pub fn operation(change_id: &ChangeId) -> String {
-    format!("storage.change:{change_id}")
+pub fn operation(change_id: &ChangeId) -> rdm_core::OperationId {
+    rdm_core::OperationId::new("storage.change", rdm_core::OperationSubject::Named(change_id.to_string()))
 }
 
 /// The operation key of `mesh`'s block (`mesh.block`).
-pub fn block_operation(_change_id: &ChangeId, mesh: &str) -> String {
-    format!("mesh.block:{mesh}")
+pub fn block_operation(_change_id: &ChangeId, mesh: &str) -> rdm_core::OperationId {
+    rdm_core::OperationId::new("mesh.block", rdm_core::OperationSubject::Named(mesh.to_string()))
 }
 
 /// The operation key of the copy and the switch.
-pub fn switch_operation(change_id: &ChangeId) -> String {
-    format!("storage.switch:{change_id}")
+pub fn switch_operation(change_id: &ChangeId) -> rdm_core::OperationId {
+    rdm_core::OperationId::new("storage.switch", rdm_core::OperationSubject::Named(change_id.to_string()))
 }
 
 /// The operation key of `mesh`'s unblock (`mesh.unblock`).
-pub fn unblock_operation(_change_id: &ChangeId, mesh: &str) -> String {
-    format!("mesh.unblock:{mesh}")
+pub fn unblock_operation(_change_id: &ChangeId, mesh: &str) -> rdm_core::OperationId {
+    rdm_core::OperationId::new("mesh.unblock", rdm_core::OperationSubject::Named(mesh.to_string()))
 }
 
 /// How a storage step carried to one birth ended.
@@ -85,7 +85,7 @@ pub async fn command(client: &rdm_transport::NodeRpcClient, commands: &crate::no
         _ => return Err("the storage command function accepts only storage commands".into()),
     };
     let tracked = commands.track(crate::node_commands::CommandKey {
-        build_id: build_id.clone(), attempt: 0, operation: format!("{}:{change_id}", command.op()),
+        build_id: build_id.clone(), attempt: 0, operation: rdm_core::OperationId::new(command.op(), rdm_core::OperationSubject::Named(change_id.to_string())), 
         node_id: node_id.clone(), incarnation: command.subject().1.clone(),
     });
     let result = command_reply(client, node_id, command).await;
@@ -119,13 +119,13 @@ pub const COPY_STEP: &str = "Copy";
 
 /// A step's receipt: `step` of `operation`, ending `outcome`. A storage step commits no output: the Build
 /// fact's wire carries none for it (`wire.rs` `produces`).
-async fn receipt_of(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: String, step: &str, outcome: crate::build_state::StepOutcome) -> Result<(), crate::executor::RunEnd> {
+async fn receipt_of(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: rdm_core::OperationId, step: &str, outcome: crate::build_state::StepOutcome) -> Result<(), crate::executor::RunEnd> {
     let r = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.into(), outcome, output: None, executor: None };
-    builds.append_step_receipt(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: its {step} could not be recorded: {e}")))
+    builds.append_step_receipt(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation:?}: its {step} could not be recorded: {e}")))
 }
 
 /// A step's `Complete` receipt.
-async fn receipt(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: String) -> Result<(), crate::executor::RunEnd> {
+async fn receipt(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, operation: rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
     receipt_of(builds, build_id, attempt, operation, "Complete", crate::build_state::StepOutcome::Complete).await
 }
 
@@ -393,8 +393,8 @@ impl StorageChanges {
                 },
             };
             if let Some((from, reason)) = lost {
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-storage-move-lost", build_id = %build_id.log(), change_id = %change_id, mesh = %mesh, node = %path, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), provider = %provider, reason = %reason, outcome = tracing::field::Empty, error = tracing::field::Empty);
-                span.in_scope(|| tracing::info!("the node will not move: it is re-created at its path.name on the provider this mesh-primary writes, steps of this attempt"));
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-storage-move-lost", build_id = %build_id.log(), change_id = %change_id, mesh = %mesh, node_path = %path.path, node_name = %path.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), provider = %provider, reason = %reason, outcome = tracing::field::Empty, error = tracing::field::Empty);
+                span.in_scope(|| tracing::info!("the node will not move: it is re-created at its (path, name) on the provider this mesh-primary writes, steps of this attempt"));
                 use tracing::Instrument as _;
                 match recreate(path.clone(), from.clone()).instrument(span.clone()).await {
                     Ok(()) => {
@@ -530,7 +530,7 @@ impl StorageChanges {
         // This admin writes the new provider before the Fabric row's line and its receipt.
         self.move_own(door, build_id, &change.change_id, &change.to).await?;
         if let Err(e) = fabric_row.await {
-            return Err(crate::executor::RunEnd::Incomplete(format!("{key}: the Fabric row's line naming {} could not be written: {e}", change.to)));
+            return Err(crate::executor::RunEnd::Incomplete(format!("{key:?}: the Fabric row's line naming {} could not be written: {e}", change.to)));
         }
         receipt(builds, build_id, attempt, key).await
     }

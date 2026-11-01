@@ -6,6 +6,7 @@ use rdm_node::node_records::{
     RecordBirth,
 };
 use rdm_node::store_root::StoreRoot;
+use rdm_node::storage_error::StorageError;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn birth() -> RecordBirth {
@@ -28,7 +29,8 @@ fn properties() -> NodeProperties {
     }
 }
 fn lifecycle(node_id: NodeId, writer: RecordBirth, mesh_id: MeshId) -> NodeLifecycle {
-    NodeLifecycle {
+    NodeLifecycle { replacement_from: None,
+        initial_properties: None,
         node_id,
         writer,
         path: "mesh1.rpc".into(),
@@ -256,7 +258,7 @@ async fn a_build_apply_is_recognised_after_restart_without_repeating_its_effect(
     let initial = properties();
     let apply = PropertyApplication {
         build_id: "build-a".into(),
-        operation: "node.config.update".into(),
+        location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
     };
     let written = writer
         .update(
@@ -301,7 +303,7 @@ async fn a_build_apply_is_recognised_after_restart_without_repeating_its_effect(
     assert_eq!(repeated.record, updated);
     let next = PropertyApplication {
         build_id: "build-b".into(),
-        operation: "node.config.update".into(),
+        location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
     };
     let later = writer
         .update(
@@ -401,6 +403,13 @@ struct LostAcknowledgement {
 
 #[async_trait::async_trait]
 impl NodeRecordsStorage for LostAcknowledgement {
+    async fn put_primary_records(&self, batch: &rdm_node::node_records::PrimaryRecordBatch) -> Result<(), StorageError> {
+        self.records.put_primary_records(batch).await
+    }
+    async fn primary_records(&self) -> Result<Vec<rdm_node::node_records::PrimaryRecordBatch>, StorageError> {
+        self.records.primary_records().await
+    }
+
     async fn put_properties(
         &self,
         record: &NodeProperties,
@@ -460,7 +469,7 @@ async fn a_lost_storage_acknowledgement_does_not_lose_apply_recognition() {
     let initial = properties();
     let apply = PropertyApplication {
         build_id: "build-a".into(),
-        operation: "node.config.update".into(),
+        location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
     };
     assert!(writer
         .update(
@@ -514,7 +523,7 @@ async fn a_complete_entry_survives_a_lost_reply_and_later_local_changes() {
     let writer = NodePropertyWriter::new(store.clone());
     let initial = properties();
     let entry = EntryProperties {
-        application: PropertyApplication { build_id: "build-a".into(), operation: "entry".into() },
+        application: PropertyApplication { build_id: "build-a".into(), location: rdm_core::PathName::new("test.properties", "entry").unwrap() },
         config: [("source".into(), "build".into())].into(),
         tags: ["build".into()].into(),
     };
@@ -531,7 +540,7 @@ async fn a_complete_entry_survives_a_lost_reply_and_later_local_changes() {
     assert!(repeated.already_applied);
     assert_eq!(repeated.record, local.record);
     let empty = EntryProperties {
-        application: PropertyApplication { build_id: "build-b".into(), operation: "entry".into() },
+        application: PropertyApplication { build_id: "build-b".into(), location: rdm_core::PathName::new("test.properties", "entry").unwrap() },
         config: Default::default(), tags: Default::default(),
     };
     let next = restarted.entry(initial, empty, |_| {}).await.unwrap();
@@ -560,7 +569,7 @@ async fn a_provider_copy_preserves_both_record_kinds_and_applied_operations() {
             initial.clone(),
             Some(PropertyApplication {
                 build_id: "build-a".into(),
-                operation: "node.config.update".into(),
+                location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
             }),
             |r| {
                 r.config.insert("migrated".into(), "complete".into());
@@ -636,7 +645,7 @@ async fn a_same_id_start_refreshes_bound_facts_and_preserves_applied_properties(
             initial.clone(),
             Some(PropertyApplication {
                 build_id: "build-a".into(),
-                operation: "node.config.update".into(),
+                location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
             }),
             |r| {
                 r.config.insert("own".into(), "retained".into());
@@ -689,7 +698,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
         fabric_id: FabricId::mint(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::RpcNode,
-        name: "mesh1.rpc.2".parse().unwrap(),
+        name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
         node_id: initial.birth.node_id.clone(),
         incarnation: initial.birth.incarnation_id.clone(),
         supersedes: None,

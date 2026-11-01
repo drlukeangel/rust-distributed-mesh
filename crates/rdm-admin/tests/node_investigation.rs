@@ -69,8 +69,8 @@ impl Capture {
     }
 }
 
-fn ready_node(name: &str) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn ready_node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
     n.status = NodeStatus::Ready;
@@ -106,13 +106,13 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
     std::fs::create_dir_all(&dir).unwrap();
 
     rt.block_on(async {
-        let admin = ready_node("mesh1.admin.1");
-        let mut target = ready_node("mesh1.rpc.1");
+        let admin = ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        let mut target = ready_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         target.status = NodeStatus::PendingReconnect;
         let target_id = target.node_id.clone();
         let target_inc = target.incarnation_id.clone().unwrap();
 
-        let lead_carrier = ready_node("mesh2.rpc.1");
+        let lead_carrier = ready_node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode);
         let lead_id = lead_carrier.node_id.clone();
         let lead_inc = lead_carrier.incarnation_id.clone().unwrap();
 
@@ -132,12 +132,12 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
         connections
             .put_connection(&NodeConnection {
                 id: rdm_core::ConnectionId::mint(),
-                source: ConnectionEnd {
+                source: ConnectionEnd { mesh: lead_carrier.mesh.clone(), kind: lead_carrier.kind,
                     name: lead_carrier.name.clone(),
                     node_id: lead_id.clone(),
                     incarnation: Some(lead_inc.clone()),
                 },
-                destination: ConnectionEnd {
+                destination: ConnectionEnd { mesh: target.mesh.clone(), kind: target.kind,
                     name: target.name.clone(),
                     node_id: target_id.clone(),
                     incarnation: Some(target_inc.clone()),
@@ -215,7 +215,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
 
         // Admin resolver holds `mesh2.rpc.1` (lead carrier), NOT `mesh1.rpc.1`, so step 2 direct fails NotSent immediately.
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode {
+        resolver.insert(ResolvedNode { mesh: lead_carrier.mesh.clone(), kind: lead_carrier.kind,
             node_id: lead_id.clone(),
             name: lead_carrier.name.clone(),
             endpoint_id: carrier_key.public(),
@@ -233,7 +233,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
         let tickle_client = TickleClient {
             client,
             me_id: admin.node_id.clone(),
-            me: admin.name.to_string(),
+            me: admin.node_id.to_string(),
             connections: Some(connections),
             commands: None,
         };
@@ -254,7 +254,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
                     incarnation: target_inc.clone(),
                     state: NodeState::Ready,
                 },
-                carrier: Some("mesh2.rpc.1".into()),
+                carrier: Some(lead_id.clone()),
             }
         );
         assert!(
@@ -278,7 +278,7 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
 
         let nodes_store = MemoryNodesStorage::default();
         nodes_store
-            .put_runtime(&RuntimeRow {
+            .put_runtime(&RuntimeRow { kind: target.kind, mesh: target.mesh.clone(),
                 node_id: target_id.clone(),
                 name: target.name.clone(),
                 incarnation_id: target_inc.clone(),

@@ -125,10 +125,10 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
             timeouts: timeouts(),
         };
         let created = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                 build_id: publish_build(&builds, add_node()).await,
                 attempt: 1,
-                node: "mesh1.rpc.1".parse().unwrap(),
+                node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
                 spec: &RPC_NODE,
                 data_dir: None,
                 held_runtimes: Vec::new(), entry: None
@@ -142,7 +142,7 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
         )
         .await;
         let deleted = pipeline
-            .delete_node(&DeleteRequest {
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(created.node).node_id),
                 build_id: build,
                 attempt: 1,
                 node: created.node.clone(),
@@ -184,10 +184,10 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             template: &template,
             timeouts: timeouts(),
         };
-        let create = |build_id| CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
             build_id,
             attempt: 1,
-            node: "mesh1.rpc.1".parse().unwrap(),
+            node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             spec: &RPC_NODE,
             data_dir: None,
             held_runtimes: Vec::new(), entry: None
@@ -219,7 +219,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         )
         .await;
         let deleted = pipeline
-            .delete_node(&DeleteRequest {
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(b.node).node_id),
                 build_id: build.clone(),
                 attempt: 1,
                 node: b.node.clone(),

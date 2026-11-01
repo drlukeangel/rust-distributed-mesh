@@ -13,13 +13,13 @@ use rdm_transport::topology::TopologyView;
 use serde_json::Value;
 use std::time::Duration;
 
-fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, ep: &iroh::Endpoint) -> MeshDigest {
     let port = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
     MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::parse("fab000000001").unwrap(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
             node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
+            name,
             endpoint_id: EndpointId(ep.id().to_string()),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -72,7 +72,7 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
         let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![seed], &[]).await.unwrap();
-        let (da, db) = (digest("mesh1.rpc.1", &a.ep), digest("mesh1.rpc.2", &b.ep));
+        let (da, db) = (digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &a.ep), digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &b.ep));
         let started = std::time::Instant::now();
         let pa = ma.publish_every(Duration::from_millis(500), move || da.clone());
         let pb = mb.publish_every(Duration::from_millis(500), move || db.clone());

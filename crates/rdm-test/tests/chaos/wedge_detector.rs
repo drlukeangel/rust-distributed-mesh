@@ -714,14 +714,14 @@ async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
 /// first line runs): the create Build waits on it, and it is not Ready until the release. `stops_at`
 /// is the create step the held admin stops the Build at: the Build holds a complete receipt for every
 /// step before it and none after.
-async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str, stops_at: CreateStep) {
+async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm_core::PathName, stops_at: CreateStep) {
     let mut ev = Evidence::new(family, id);
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
     let faults = run.root.join("faults");
     std::fs::create_dir_all(&faults).unwrap();
     let mut spec = boot.clone();
     spec["id"] = json!(id);
-    std::fs::write(faults.join(format!("{admin}.boot.json")), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
+    std::fs::write(rdm_test::admin_faults::boot_cuts_file(&run.root, admin), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
     let exec = run.fabric_door().await;
     let nodes_before = run.estate.node_values().await;
     let (roles_before, detail_before) = primaries(&nodes_before);
@@ -1029,10 +1029,10 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     .await;
 
     // A joining admin held at its Ready gate on the provider domain.
-    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.3", CreateStep::WaitForNodeReady).await;
+    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), &rdm_core::PathName::new("mesh1.admin", "3").unwrap(), CreateStep::WaitForNodeReady).await;
     // A joining admin held at the topology read it makes while it hydrates (node-start.md step 4, op 0x1E):
     // it has joined and has not read, so the create Build waits at its Ready gate and the admin is not routable.
-    join_case(&run, Family::RuntimeMetadataHydration, "hydrate:topology-read", json!({"kind": "topology-read"}), "mesh1.admin.4", CreateStep::WaitForNodeReady).await;
+    join_case(&run, Family::RuntimeMetadataHydration, "hydrate:topology-read", json!({"kind": "topology-read"}), &rdm_core::PathName::new("mesh1.admin", "4").unwrap(), CreateStep::WaitForNodeReady).await;
 
     finish(run, &dir).await;
 }

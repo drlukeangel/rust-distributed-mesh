@@ -37,7 +37,7 @@ use tracing::Instrument as _;
 
 /// What an admin answers a Build call from.
 pub struct BuildDoor {
-    /// This admin's `path.name`.
+    /// This admin's `(path, name)`.
     pub me: PathName,
     /// The control plane: the Build state, the Fabric identity and the cores that accept a change.
     pub control: Arc<ControlPlane>,
@@ -82,7 +82,7 @@ enum Admitted {
     AlreadyApplied(crate::control_plane::Opened),
     /// A mesh's drift its mesh-primary reported (Q118): the attempt opened in the mesh's lane, which
     /// the mesh-primary claims and this fabric-primary runs naming the mesh.
-    Reported(crate::control_plane::Opened, PathName),
+    Reported(crate::control_plane::Opened, rdm_core::NodeId),
     /// The fabric.delete in force, which a second fabric.delete answers (build.md §1): nothing accepted,
     /// its drive streamed from the attempt it covers.
     Resumed(crate::control_plane::Opened, Disposition),
@@ -92,7 +92,7 @@ impl BuildDoor {
     /// A change a caller submitted: a new Build or the next attempt of the accepted one.
     async fn admit_change(&self, change: &BuildChange) -> Result<Admitted, BuildReply> {
         let cp = &self.control;
-        let node_span = |node: &PathName| tracing::info_span!("rdm.node_admin.build.update.via-node-rpc", route = "build.create", build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %node);
+        let node_span = |node: &PathName| tracing::info_span!("rdm.node_admin.build.update.via-node-rpc", route = "build.create", build_id = tracing::field::Empty, attempt = tracing::field::Empty, node_path = %node.path, node_name = %node.name);
         let created = |change: &TopologyChange| {
             tracing::info_span!(
                 "rdm.node_admin.build.create.via-node-rpc",
@@ -108,15 +108,15 @@ impl BuildDoor {
             cp.submit_in(span, "build.create", c).await
         };
         let r = match change {
-            // The stopped predecessor a replacement left at `<path>.old`, and the last admin of a mesh
+            // The stopped predecessor a replacement left at the predecessor name `<name>-old` at the same path, and the last admin of a mesh
             // deleted at mesh.deleted (mesh-delete.md step 7: a separate node.delete after
             // mesh.deleted), are deleted by the next attempt of the accepted Build, targeted to the exact
             // birth: the topology never names that path.
             BuildChange::RemoveNode { node } => {
-                if node.old || cp.of_deleted_mesh(node).await {
-                    cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Delete, node.clone(), ActionKind::Delete).await
-                } else {
-                    topology(TopologyChange::RemoveNode { node: node.clone() }).await
+                match cp.of_deleted_mesh(node).await {
+                    Ok(true) => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Delete, node.clone(), ActionKind::Delete).await,
+                    Ok(false) => topology(TopologyChange::RemoveNode { node: node.clone() }).await,
+                    Err(e) => Err(e),
                 }
             }
             BuildChange::RemoveMesh { mesh } => topology(TopologyChange::RemoveMesh { mesh: mesh.clone() }).await,
@@ -141,12 +141,12 @@ impl BuildDoor {
                     route = "build.create",
                     build_id = tracing::field::Empty,
                     attempt = tracing::field::Empty,
-                    steps = %steps.iter().map(crate::build::step_key).collect::<Vec<_>>().join(" "),
+                    steps = ?steps.iter().map(crate::build::step_key).collect::<Vec<_>>(),
                 );
                 cp.open_steps_in(span, "build.create", steps.clone()).await
             }
             BuildChange::Terminate { node, node_id, incarnation } => {
-                let span = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "build.create", node = %node, node_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = tracing::field::Empty, attempt = tracing::field::Empty);
+                let span = tracing::info_span!("rdm.node_admin.build.update.via-terminate-returned", route = "build.create", node_path = %node.path, node_name = %node.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = tracing::field::Empty, attempt = tracing::field::Empty);
                 return match cp
                     .open_terminate(
                         span,
@@ -185,11 +185,11 @@ impl BuildDoor {
 
     /// Only the fabric-primary accepts a Build call; any other admin names the one it sees.
     async fn not_fabric_primary(&self) -> Option<BuildReply> {
-        // Decided by the node id this admin was born with (its claim door's), never by path.name.
+        // Decided by the node id this admin was born with (its claim door's), never by path and name.
         let role = self.control.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
         match role {
             Some((_, id)) if id == self.env.door.node_id => None,
-            other => Some(rdm_core::reply::build::not_fabric_primary(other.map(|(n, _)| n.to_string()))),
+            other => Some(rdm_core::reply::build::not_fabric_primary(other.map(|(_, id)| id))),
         }
     }
 
@@ -198,7 +198,7 @@ impl BuildDoor {
         self.primaries.fabric().is_some_and(|h| h.is_birth(&self.env.door.node_id, &self.incarnation))
     }
 
-    /// This admin's currently held `path.name`: what its executor door (`RunDoor::held_name`) resolves.
+    /// This admin's currently held `(path, name)`: what its executor door (`RunDoor::held_name`) resolves.
     pub async fn held_name(&self) -> PathName {
         self.run.held_name().await
     }
@@ -206,7 +206,8 @@ impl BuildDoor {
     /// Answer one Build call from the caller at `caller` (its endpoint key).
     pub async fn serve(&self, caller: Option<iroh::PublicKey>, req: BuildRequest, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let me = self.held_name().await;
-        let span = tracing::info_span!("rdm.node_admin.build.serve.via-node-rpc", node = %me, call = req.op(), outcome = tracing::field::Empty);
+        let me_id = &self.env.door.node_id;
+        let span = tracing::info_span!("rdm.node_admin.build.serve.via-node-rpc", node_path = %me.path, node_name = %me.name, call = req.op(), outcome = tracing::field::Empty);
         let call = req.op();
         let reply = async {
             match req {
@@ -225,10 +226,10 @@ impl BuildDoor {
                             _ => "build.delete",
                         };
                         let named = match &refusal {
-                            BuildReply::NotFabricPrimary { fabric_primary } => fabric_primary.clone().unwrap_or_default(),
+                            BuildReply::NotFabricPrimary { fabric_primary } => fabric_primary.as_ref().map(ToString::to_string).unwrap_or_default(),
                             _ => String::new(),
                         };
-                        tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", route, node = %me, fabric_primary = %named)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", route, node_path = %me.path, node_name = %me.name, fabric_primary = %named)
                             .in_scope(|| tracing::info!("a Build call is answered only by the fabric-primary"));
                         return Ok(refusal);
                     }
@@ -301,16 +302,17 @@ impl BuildDoor {
     async fn drift_run(
         &self,
         opened: crate::control_plane::Opened,
-        executor: PathName,
+        executor: rdm_core::NodeId,
         sink: ReplySink<Build, NotStarted>,
     ) -> Result<BuildReply, HandlerFault> {
         use crate::build_state::{
             AttemptOutcome, BuildAttemptReceipt, BuildStepReceipt, StepOutcome,
         };
         let me = self.held_name().await;
+        let me_id = &self.env.door.node_id;
         let (id, attempt) = (opened.build_id.clone(), opened.attempt);
         let Some(mesh) = opened.mesh.clone() else {
-            return Ok(rdm_core::reply::build::not_ready(format!("{me}: attempt {attempt} of {id} was reported as a drift attempt and is numbered in no mesh")));
+            return Ok(rdm_core::reply::build::not_ready(format!("{me_id}: attempt {attempt} of {id} was reported as a drift attempt and is numbered in no mesh")));
         };
         let mut sink = started(
             sink,
@@ -321,7 +323,7 @@ impl BuildDoor {
             },
         )
         .await?;
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-drift-run", build_id = %id.log(), lane = %mesh, attempt, executor = %executor, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-drift-run", build_id = %id.log(), lane = %mesh, attempt, executor = %executor, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         let lane = crate::build_run::LaneBuilds::of(&self.control.builds, Some(&mesh));
         let reply = async {
             let deadline = tokio::time::Instant::now() + DISPATCH_SEND;
@@ -330,13 +332,18 @@ impl BuildDoor {
                 tokio::pin!(claimed);
                 claimed.as_mut().enable();
                 match lane.read_build(&id).await {
-                    Ok(p) if p.attempt == attempt && p.executor.as_deref() == Some(executor.to_string().as_str()) => break p,
+                    Ok(p) if p.state == BuildState::Running && p.attempt == attempt && p.executor.as_ref().is_some_and(|birth| birth.node_id == executor) => break p,
                     Ok(_) => {}
-                    Err(e) => return rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read in mesh {mesh}'s lane: {e}")),
+                    Err(e) => return rdm_core::reply::build::not_ready(format!("{me_id}: Build {id} could not be read in mesh {mesh}'s lane: {e}")),
                 }
                 if tokio::time::timeout_at(deadline, claimed).await.is_err() {
-                    return rdm_core::reply::build::not_ready(format!("{me}: attempt {attempt} of {id} in mesh {mesh}'s lane was not claimed by {executor} within {DISPATCH_SEND:?}: it stays open, claimed by no one"));
+                    return rdm_core::reply::build::not_ready(format!("{me_id}: attempt {attempt} of {id} in mesh {mesh}'s lane was not claimed by {executor} within {DISPATCH_SEND:?}: it stays open, claimed by no one"));
                 }
+            };
+            // Freeze the committed birth and claim scope; a renamed or replaced location cannot redirect it.
+            let executor = p.executor.clone().expect("the matching claim has an executor");
+            let (Some(claimant), Some(claimed_mesh)) = (p.claimant.clone(), p.attempt_claimed_meshes.get(&attempt).cloned()) else {
+                return rdm_core::reply::build::not_ready("the drift claim has no committed claimant or mesh".into());
             };
             let observed = self.control.topology.read().await.clone();
             let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
@@ -346,36 +353,51 @@ impl BuildDoor {
             // (build.md: "or, when the executor is lost with the attempt unfinished, after exact
             // departure proof"); otherwise the attempt holds its mesh, and the reporter's next report
             // reattaches to the run.
-            let lost = |executor: &PathName| {
+            let lost = |executor: &rdm_core::framing::Birth| {
                 let executor = executor.clone();
                 let (me, id, mesh) = (me.clone(), id.clone(), mesh.clone());
                 async move {
                     match self.env.departure.proven(&executor).await {
                         Ok(()) => Ok(format!("{executor} exited with attempt {attempt} of mesh {mesh}'s lane unfinished: its departure is proven")),
-                        Err(not_proven) => Err(rdm_core::reply::build::not_ready(format!("{me}: the run of attempt {attempt} of {id} at {executor} was lost and its departure is not proven ({not_proven}): the attempt holds mesh {mesh}, and the next report reattaches to it"))),
+                        Err(not_proven) => Err(rdm_core::reply::build::not_ready(format!("{me_id}: the run of attempt {attempt} of {id} at {executor} was lost and its departure is not proven ({not_proven}): the attempt holds mesh {mesh}, and the next report reattaches to it"))),
                     }
                 }
             };
             // The verdict this fabric-primary writes, and the terminal of the reporter's stream.
-            let failed = |operation: String, step: String, reason: String, code: rdm_core::outcome::Code| (Some((operation, step)), AttemptOutcome::Failed { reason, code });
+            let failed = |operation: rdm_core::OperationId, step: String, reason: String, code: rdm_core::outcome::Code| (Some((operation, step)), AttemptOutcome::Failed { reason, code });
             let (failed_step, outcome, terminal) = match self.env.dispatcher.dispatch_in(&turn, &executor, &mesh, &id, attempt, context, plan).await {
                 Dispatched::Refused(r) => {
-                    let (s, o) = failed(String::new(), "attempt".into(), format!("{executor} refused the run: {}", r.name()), rdm_core::outcome::Code::Unavailable);
+                    let (s, o) = failed(rdm_core::OperationId::unscoped("attempt"), "attempt".into(), format!("{executor} refused the run: {}", r.name()), rdm_core::outcome::Code::Unavailable);
                     (s, o, r)
                 }
                 Dispatched::Unreached(_) => match lost(&executor).await {
                     Ok(why) => {
-                        let (s, o) = failed(String::new(), "attempt".into(), why.clone(), rdm_core::outcome::Code::Unavailable);
-                        (s, o, rdm_core::reply::build::failed(id.to_string(), attempt, String::new(), "attempt".into(), bounded_reason(why), rdm_core::outcome::Code::Unavailable))
+                        let (s, o) = failed(rdm_core::OperationId::unscoped("attempt"), "attempt".into(), why.clone(), rdm_core::outcome::Code::Unavailable);
+                        (s, o, rdm_core::reply::build::failed(id.to_string(), attempt, rdm_core::OperationId::unscoped("attempt"), "attempt".into(), bounded_reason(why), rdm_core::outcome::Code::Unavailable))
                     }
                     Err(held) => return held,
                 },
                 Dispatched::Stream(mut stream) => loop {
-                    match stream.next().await {
+                    let item = stream.next().await;
+                    if let InnerItem::Frame(frame) = &item {
+                        if !crate::build_run::reported_frame_matches(frame, &id, attempt) {
+                            return rdm_core::reply::build::not_ready("the drift executor reported another Build or attempt".into());
+                        }
+                        if !lane.read_build(&id).await.is_ok_and(|current| crate::build_run::same_running_claim(&current, &p)) {
+                            return rdm_core::reply::build::not_ready("the drift claim changed while its executor was reporting".into());
+                        }
+                    }
+                    match item {
                         InnerItem::Frame(BuildReply::Step { build_id, attempt: a, operation, step, receipt }) => {
-                            if let Some(r) = receipt.as_deref().and_then(|b| serde_json::from_slice::<BuildStepReceipt>(b).ok()) {
-                                if let Err(e) = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, mesh: Some(mesh.clone()), ..r }).await {
-                                    tracing::info!(error = %e, operation = %operation, step = %step, "a reported step receipt could not be written: a later attempt runs the step again");
+                            if let Some(bytes) = receipt.as_deref() {
+                                let Ok(r) = serde_json::from_slice::<BuildStepReceipt>(bytes) else {
+                                    return rdm_core::reply::build::not_ready("the drift executor reported an undecodable receipt".into());
+                                };
+                                if !crate::build_run::reported_receipt_matches(&r, &id, attempt, Some(&mesh), &operation, &step) {
+                                    return rdm_core::reply::build::not_ready("the reported receipt differs from its dispatched scope or frame".into());
+                                }
+                                if let Err(e) = lane.append_step_receipt(&r).await {
+                                    return rdm_core::reply::build::not_ready(format!("the reported step receipt could not be written: {e}"));
                                 } else if step == "Complete" {
                                     // Taken into the atlas as it streams up, before it is passed on (R-FA2).
                                     self.control.take_streamed_receipt(&*lane, &id, attempt, &operation).await;
@@ -399,13 +421,13 @@ impl BuildDoor {
                             break (None, AttemptOutcome::HandedOff { to: to.clone() }, t);
                         }
                         InnerItem::Frame(other) => {
-                            let (s, o) = failed(String::new(), "attempt".into(), format!("{executor}'s run ended {}", other.name()), rdm_core::outcome::Code::Unavailable);
+                            let (s, o) = failed(rdm_core::OperationId::unscoped("attempt"), "attempt".into(), format!("{executor}'s run ended {}", other.name()), rdm_core::outcome::Code::Unavailable);
                             break (s, o, other);
                         }
                         InnerItem::Ended | InnerItem::Broke(_) => match lost(&executor).await {
                             Ok(why) => {
-                                let (s, o) = failed(String::new(), "attempt".into(), why.clone(), rdm_core::outcome::Code::Unavailable);
-                                break (s, o, rdm_core::reply::build::failed(id.to_string(), attempt, String::new(), "attempt".into(), why, rdm_core::outcome::Code::Unavailable));
+                                let (s, o) = failed(rdm_core::OperationId::unscoped("attempt"), "attempt".into(), why.clone(), rdm_core::outcome::Code::Unavailable);
+                                break (s, o, rdm_core::reply::build::failed(id.to_string(), attempt, rdm_core::OperationId::unscoped("attempt"), "attempt".into(), why, rdm_core::outcome::Code::Unavailable));
                             }
                             Err(held) => return held,
                         },
@@ -413,17 +435,20 @@ impl BuildDoor {
                 },
             };
             drop(turn);
+            if !lane.read_build(&id).await.is_ok_and(|current| crate::build_run::same_running_claim(&current, &p)) {
+                return rdm_core::reply::build::not_ready("the drift claim changed before its verdict could be recorded".into());
+            }
             if let (Some((operation, step)), AttemptOutcome::Failed { reason, code }) = (&failed_step, &outcome) {
-                if !operation.is_empty() {
-                    let _ = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step: step.clone(), outcome: StepOutcome::Failed { reason: reason.clone(), code: *code }, output: None, executor: Some(executor.to_string()), mesh: Some(mesh.clone()) }).await;
+                if !crate::build_run::is_attempt_publication_failure(operation, step) {
+                    let _ = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step: step.clone(), outcome: StepOutcome::Failed { reason: reason.clone(), code: *code }, output: None, executor: None, mesh: Some(mesh.clone()) }).await;
                 }
             }
             if let Err(e) = lane.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: Some(mesh.clone()) }).await {
-                return rdm_core::reply::build::not_ready(format!("{me}: the verdict of attempt {attempt} of {id} in mesh {mesh}'s lane could not be written: {e}"));
+                return rdm_core::reply::build::not_ready(format!("{me_id}: the verdict of attempt {attempt} of {id} in mesh {mesh}'s lane could not be written: {e}"));
             }
-            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: Some(mesh.clone()), attempt, claimant: me.to_string(), claimant_node: None };
-            if let Err(e) = self.control.claims.release_in_flight(&mesh, &row).await {
-                tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), lane = %mesh, attempt, mesh = %mesh, node = %me, error = %e)
+            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: Some(mesh.clone()), attempt, claimant, };
+            if let Err(e) = self.control.claims.release_in_flight(&claimed_mesh, &row).await {
+                tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), lane = %mesh, attempt, mesh = %mesh, node_path = %me.path, node_name = %me.name, error = %e)
                     .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
             }
             // The verdict and the released row are what a drive refused for this mesh's in-flight row
@@ -446,10 +471,11 @@ impl BuildDoor {
     /// failed one, or one whose holder was lost, takes its next attempt.
     async fn resubmit(&self, id: BuildId, from_attempt: u32, caller: Option<iroh::PublicKey>, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let me = self.held_name().await;
+        let me_id = &self.env.door.node_id;
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
             Err(BuildStateError::UnknownBuild(_)) => return Ok(rdm_core::reply::build::unknown_build(id.to_string())),
-            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read: {e}"))),
+            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me_id}: Build {id} could not be read: {e}"))),
         };
         // The drive's own record answers a Build that ended: the frames it took off the calls it
         // made. A drive still running answers by streaming. A fabric-primary with no drive of the
@@ -463,8 +489,8 @@ impl BuildDoor {
         }
         match crate::build_state::drivable(&*self.control.builds, &p).await {
             Ok(true) => {}
-            Ok(false) => return Ok(rdm_core::reply::build::rejected("not-accepted".into(), format!("{me}: Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", p.state))),
-            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: the current Build could not be read to admit Build {id}: {e}"))),
+            Ok(false) => return Ok(rdm_core::reply::build::rejected("not-accepted".into(), format!("{me_id}: Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", p.state))),
+            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me_id}: the current Build could not be read to admit Build {id}: {e}"))),
         }
         let disposition = if p.state == BuildState::Failed { Disposition::NextAttempt } else { Disposition::Attached };
         // The drive is the one reader of the receipts: a drive this admin took up after a role move
@@ -476,10 +502,11 @@ impl BuildDoor {
 
     async fn get(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let me = self.held_name().await;
+        let me_id = &self.env.door.node_id;
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
             Err(BuildStateError::UnknownBuild(_)) => return Ok(rdm_core::reply::build::unknown_build(id.to_string())),
-            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read: {e}"))),
+            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me_id}: Build {id} could not be read: {e}"))),
         };
         let (steps, chunks) = receipt_chunks(&p);
         let count = chunks.len() as u32;
@@ -504,10 +531,11 @@ impl BuildDoor {
     /// Build's last attempt, read before the Build leaves history.
     async fn delete(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let me = self.held_name().await;
+        let me_id = &self.env.door.node_id;
         let attempt = match self.control.builds.read_build(&id).await {
             Ok(p) => p.attempt,
             Err(BuildStateError::UnknownBuild(_)) => return Ok(rdm_core::reply::build::unknown_build(id.to_string())),
-            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read: {e}"))),
+            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me_id}: Build {id} could not be read: {e}"))),
         };
         match self.control.forget_build(&id).await {
             Ok(()) => {
@@ -527,10 +555,10 @@ impl BuildDoor {
         &self,
         id: BuildId,
         attempt: u32,
-        executor: String,
+        executor: rdm_core::framing::Birth,
         context: CallContext,
         operations: Vec<Vec<u8>>,
-        hand_off_to: Option<String>,
+        hand_off_to: Option<rdm_core::NodeId>,
         mesh: Option<String>,
         sink: ReplySink<Build, NotStarted>,
     ) -> Result<BuildReply, HandlerFault> {
@@ -542,11 +570,12 @@ impl BuildDoor {
         // reads its frames.
         let held_at_start = self.is_fabric_primary();
         let me = self.held_name().await;
+        let me_id = &self.env.door.node_id;
         let mut plan = RunPlan { operations: Vec::with_capacity(operations.len()), hand_off_to };
         for (i, bytes) in operations.iter().enumerate() {
             match serde_json::from_slice::<BuildOperation>(bytes) {
                 Ok(op) => plan.operations.push(op),
-                Err(e) => return Ok(rdm_core::reply::build::rejected("operation-undecodable".into(), format!("{me}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}"))),
+                Err(e) => return Ok(rdm_core::reply::build::rejected("operation-undecodable".into(), format!("{me_id}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}"))),
             }
         }
         // Served to a remote fabric-primary, a run's receipts go up this stream and the fabric-primary
@@ -586,9 +615,10 @@ impl BuildDoor {
                 while let Some(f) = reader.next().await {
                     if !held_at_start && self.is_fabric_primary() {
                         let me = self.held_name().await;
-                        tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %id.log(), attempt, node = %me, to = %me, detail = "this executor took the fabric-primary role during the run: the old driver's stream ends with the new role")
+        let me_id = &self.env.door.node_id;
+                        tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %id.log(), attempt, node_path = %me.path, node_name = %me.name, to_node_id = %me_id, detail = "this executor took the fabric-primary role during the run: the old driver's stream ends with the new role")
                             .in_scope(|| tracing::info!("the inner stream ends with the new role"));
-                        return Ok(BuildReply::FabricPrimaryMoved { build_id: id.to_string(), fabric_primary: Some(me.to_string()) });
+                        return Ok(BuildReply::FabricPrimaryMoved { build_id: id.to_string(), fabric_primary: Some(me_id.clone()) });
                     }
                     match f {
                         BuildReply::Step { .. } | BuildReply::Blocked { .. } => sink.data(f).await.map_err(gone)?,
@@ -596,7 +626,8 @@ impl BuildDoor {
                     }
                 }
                 let me = self.held_name().await;
-                Err(HandlerFault::invariant_broken(format!("{me}: the run of attempt {attempt} of Build {id} ended without a terminal")))
+        let me_id = &self.env.door.node_id;
+                Err(HandlerFault::invariant_broken(format!("{me_id}: the run of attempt {attempt} of Build {id} ended without a terminal")))
             }
         }
     }
@@ -627,10 +658,7 @@ fn receipt_chunks(p: &crate::build_state::BuildProjection) -> (u32, Vec<Vec<Step
                 crate::build_state::StepOutcome::Failed { reason, code, .. } => StepResult::Failed { reason: bounded_reason(reason.clone()), code: *code },
             },
         };
-        let weight = 32 + s.operation.len() + s.step.len() + match &s.result {
-            StepResult::Complete => 0,
-            StepResult::Failed { reason, .. } => reason.len() + 1,
-        };
+        let weight = s.encoded_len().expect("step receipt encoding");
         if size + weight > CHUNK_BYTES && !chunks.last().is_some_and(Vec::is_empty) {
             chunks.push(Vec::new());
             size = 0;
@@ -641,7 +669,7 @@ fn receipt_chunks(p: &crate::build_state::BuildProjection) -> (u32, Vec<Vec<Step
     (p.steps.len() as u32, chunks)
 }
 
-/// The Build's topology as the wire carries it: every node's create spec in `path.name` order, in
+/// The Build's topology as the wire carries it: every node's create spec in `(path, name)` order, in
 /// chunks that each fit a reply frame with room to spare (a spec's JSON is longer than its postcard);
 /// always one chunk at least.
 fn topology_chunks(p: &crate::build_state::BuildProjection) -> Vec<Vec<rdm_core::meta::NodeSpec>> {
@@ -675,7 +703,7 @@ const CHUNK_BYTES: usize = 32 * 1024;
 pub async fn serve_builds(me: &PathName, builds: &dyn crate::build_state::BuildStateAdapter, filter: rdm_core::filter::Filter, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
     let span = tracing::info_span!(
         "rdm.node_admin.build.resolve.via-build-get",
-        node = %me,
+        node_path = %me.path, node_name = %me.name,
         properties = %filter.properties(),
         current = tracing::field::Empty,
         held = tracing::field::Empty,
@@ -686,7 +714,7 @@ pub async fn serve_builds(me: &PathName, builds: &dyn crate::build_state::BuildS
         if let Some(why) = filter.builds_refusal() {
             return Ok(rdm_core::reply::build::rejected_filter(bounded_reason(why)));
         }
-        let unreadable = |what: String, e: BuildStateError| rdm_core::reply::build::not_ready(format!("{me}: {what} could not be read for build.get: {e}"));
+        let unreadable = |what: String, e: BuildStateError| rdm_core::reply::build::not_ready(format!("path={:?} name={:?}: {what} could not be read for build.get: {e}", me.path, me.name));
         let current = match builds.current_build().await {
             Ok(c) => c.into_build_id(),
             Err(e) => return Ok(unreadable("the current Build".into(), e)),
@@ -763,7 +791,7 @@ async fn stream_frames(mut sink: ReplySink<Build, rdm_transport::stream::Streami
             Read::Frame(f) => sink.data(f).await.map_err(gone)?,
             Read::Terminal(t) => return Ok(t),
             Read::RoleLost(loss) => {
-                tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %reader.build_id().log(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new role"));
+                tracing::info_span!("rdm.node_admin.build.update.via-fabric-primary-changed", build_id = %reader.build_id().log(), to_node_id = ?loss.to, detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new role"));
                 return Ok(BuildReply::FabricPrimaryMoved { build_id: reader.build_id().to_string(), fabric_primary: loss.to });
             }
         }
@@ -856,10 +884,10 @@ pub(crate) async fn with_entries(builds: &dyn crate::build_state::BuildStateAdap
         return Ok(plan);
     }
     let held = builds.read_build(build_id).await.map_err(|e| format!("Build {build_id} could not be read for its entries' executables, tags and config: {e}"))?;
-    let entry_of = |node: &PathName| held.topology.mesh(&node.mesh).and_then(|m| m.spec(node)).map(crate::build::EntrySpec::of);
+    let entry_of = |node: &PathName| held.topology.node_spec(node).map(crate::build::EntrySpec::of);
     for op in &mut plan.operations {
         match op {
-            BuildOperation::CreateNode { node, entry, .. } | BuildOperation::UpdateConfig { node, entry } | BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, entry, .. } => *entry = entry_of(node),
+            BuildOperation::CreateNode { node, entry, .. } | BuildOperation::UpdateConfig { node, entry, .. } | BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, entry, .. } => *entry = entry_of(node),
             _ => {}
         }
     }
@@ -868,7 +896,7 @@ pub(crate) async fn with_entries(builds: &dyn crate::build_state::BuildStateAdap
 
 /// Calls the executor `executor` names: in process when that is this admin, over Node RPC otherwise.
 pub struct RpcDispatcher {
-    /// This admin's `path.name`.
+    /// This admin's `(path, name)`.
     pub me: PathName,
     /// This admin's own executor door.
     pub local: Arc<RunDoor>,
@@ -893,7 +921,7 @@ impl Dispatcher for RpcDispatcher {
     async fn dispatch(
         &self,
         turn: &crate::stop_gate::Turn,
-        executor: &PathName,
+        executor: &rdm_core::framing::Birth,
         build_id: &BuildId,
         attempt: u32,
         context: CallContext,
@@ -907,7 +935,7 @@ impl Dispatcher for RpcDispatcher {
     async fn dispatch_in(
         &self,
         turn: &crate::stop_gate::Turn,
-        executor: &PathName,
+        executor: &rdm_core::framing::Birth,
         lane: &str,
         build_id: &BuildId,
         attempt: u32,
@@ -933,19 +961,19 @@ impl RpcDispatcher {
     async fn dispatch_to(
         &self,
         turn: &crate::stop_gate::Turn,
-        executor: &PathName,
+        executor: &rdm_core::framing::Birth,
         lane: Option<&str>,
         build_id: &BuildId,
         attempt: u32,
         context: CallContext,
         plan: RunPlan,
     ) -> Dispatched {
-        let me = self.local.held_name().await;
+        let me_id = &self.local.exec.executor.node_id;
         let plan = match with_entries(&*self.local.builds, build_id, plan).await {
             Ok(plan) => plan,
-            Err(why) => return Dispatched::Unreached(format!("{me}: {why}")),
+            Err(why) => return Dispatched::Unreached(format!("{me_id}: {why}")),
         };
-        if *executor == self.me || *executor == me {
+        if executor == &self.local.exec.executor {
             // The fabric-primary runs the attempt itself: it plans from the log the claim was decided
             // on, and the run's turn is begun under the drive pass's.
             return match lane {
@@ -955,7 +983,7 @@ impl RpcDispatcher {
                             turn,
                             build_id,
                             attempt,
-                            &executor.to_string(),
+                            executor,
                             &context,
                             &plan,
                         )
@@ -967,7 +995,7 @@ impl RpcDispatcher {
                             Some(lane),
                             build_id,
                             attempt,
-                            &executor.to_string(),
+                            executor,
                             &context,
                             &plan,
                         )
@@ -975,21 +1003,18 @@ impl RpcDispatcher {
                 ),
             };
         }
-        let node_id = self.topology.read().await.members().find(|n| n.name == *executor).map(|n| n.node_id.clone());
-        let Some(node_id) = node_id else {
-            return Dispatched::Unreached(format!("{executor} is not a node of {me}'s view"));
-        };
+        let node_id = executor.node_id.clone();
         let mut operations = Vec::with_capacity(plan.operations.len());
         for op in &plan.operations {
             match serde_json::to_vec(op) {
                 Ok(b) => operations.push(b),
-                Err(e) => return Dispatched::Unreached(format!("the operation {} does not encode: {e}", op.key())),
+                Err(e) => return Dispatched::Unreached(format!("the operation {:?} does not encode: {e}", op.key())),
             }
         }
         let req = BuildRequest::AttemptRun {
             build_id: build_id.to_string(),
             attempt,
-            executor: executor.to_string(),
+            executor: executor.clone(),
             context: context.clone(),
             operations,
             hand_off_to: plan.hand_off_to,
@@ -1098,6 +1123,7 @@ mod tests {
     #[tokio::test]
     async fn refusal_reply_and_with_entries_translate_refusals_and_populate_plan_entry_specs() {
         // 1. `refusal_reply` maps each control-plane `Refusal` variant to its typed `BuildReply`.
+        let actor_id = rdm_core::NodeId::mint();
         let held_id = BuildId::mint();
         assert!(matches!(
             refusal_reply(Refusal::BadRequest("bad".into())),
@@ -1115,21 +1141,21 @@ mod tests {
             refusal_reply(Refusal::BuildInProgress(InProgress {
                 current_build_id: held_id.clone(),
                 mesh: Some("mesh1".into()),
-                held_by: Some("mesh1.admin.1".into()),
+                held_by: Some(actor_id.clone()),
             })),
             BuildReply::BuildInProgress { ref current_build_id, .. } if current_build_id == held_id.as_str()
         ));
         assert!(matches!(
             refusal_reply(Refusal::NotClaimant {
                 mesh: "mesh1".into(),
-                fabric_primary: Some("mesh1.admin.1".into()),
-                mesh_primary: Some("mesh1.admin.1".into()),
+                fabric_primary: Some(actor_id.clone()),
+                mesh_primary: Some(actor_id.clone()),
             }),
             BuildReply::NotClaimant { .. }
         ));
         assert!(matches!(
-            refusal_reply(Refusal::NotPrimary(Some("mesh1.admin.1".into()))),
-            BuildReply::NotFabricPrimary { fabric_primary: Some(ref fp) } if fp == "mesh1.admin.1"
+            refusal_reply(Refusal::NotPrimary(Some(actor_id.clone()))),
+            BuildReply::NotFabricPrimary { fabric_primary: Some(ref fp) } if fp == &actor_id
         ));
         assert!(matches!(
             refusal_reply(Refusal::AttemptTaken("taken".into())),
@@ -1141,7 +1167,7 @@ mod tests {
         ));
         assert!(matches!(
             refusal_reply(Refusal::State(BuildStateError::RoleYielded {
-                node: "mesh1.admin.1".into(),
+                node: actor_id.clone(),
                 by: "revision 2".into(),
                 to: None,
             })),
@@ -1152,10 +1178,10 @@ mod tests {
         //    and leaves plans without create/config ops untouched without reading the store.
         let adapter = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
-        let node_path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let node_path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
 
         let stop_only = RunPlan {
-            operations: vec![BuildOperation::StopNode {
+            operations: vec![BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
                 node: node_path.clone(),
                 node_id: NodeId::mint(),
                 from_incarnation: IncarnationId::mint(),
@@ -1185,13 +1211,13 @@ mod tests {
 
         let plan_with_create = RunPlan {
             operations: vec![
-                BuildOperation::CreateNode {
+                BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
                     node: node_path.clone(),
                     over: None,
                     executable: None,
                     entry: None,
                 },
-                BuildOperation::UpdateConfig {
+                BuildOperation::UpdateConfig { node_id: crate::model::NodeId::mint(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
                     node: node_path.clone(),
                     entry: None,
                 },

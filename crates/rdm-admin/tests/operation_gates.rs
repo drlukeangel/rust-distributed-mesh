@@ -20,8 +20,8 @@ use rdm_admin::topology::Topology;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-fn node(name: &str, status: NodeStatus, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.status = status;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
@@ -39,12 +39,17 @@ fn view(rpc1: NodeStatus) -> Topology {
             Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready },
         ],
         nodes: vec![
-            node("mesh1.admin.1", NodeStatus::Ready, true, true),
-            node("mesh1.rpc.1", rpc1, false, false),
-            node("mesh1.rpc.2", NodeStatus::Ready, false, false),
-            node("mesh2.admin.1", NodeStatus::Ready, true, false),
+            node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true, true),
+            node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, rpc1, false, false),
+            node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready, false, false),
+            node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true, false),
         ],
     }
+}
+
+fn executor(t: &Topology) -> rdm_core::framing::Birth {
+    let n = t.nodes.iter().find(|n| n.is_fabric_primary).unwrap();
+    rdm_core::framing::Birth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }
 }
 
 /// The Build store; armed, a racer's open of another action takes the attempt number a request asks
@@ -61,8 +66,8 @@ impl BuildStateAdapter for Raced {
     }
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         if self.armed.swap(false, Ordering::SeqCst) {
-            let path: PathName = "mesh1.rpc.2".parse().unwrap();
-            let racer = AttemptOpened { action: Some(AttemptAction::Stop { path, node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() }), opened_by: "the racer".into(), ..opened.clone() };
+            let path: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+            let racer = AttemptOpened { action: Some(AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path, node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() }), opened_by: rdm_core::NodeId::parse("500000000000").unwrap(), ..opened.clone() };
             self.inner.open_attempt(&racer).await?;
         }
         self.inner.open_attempt(opened).await
@@ -100,10 +105,10 @@ impl BuildStateAdapter for Raced {
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
@@ -119,9 +124,9 @@ struct Rig {
 
 async fn rig(t: Topology) -> Rig {
     let builds = Arc::new(Raced { inner: MemoryBuildStateAdapter::new(), armed: AtomicBool::new(false) });
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor(&t), "mesh1").await.unwrap();
     let contexts = Arc::new(MemoryBuildStateAdapter::new());
-    let mut cp = ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time())
+    let mut cp = ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time())
         .with_contexts(Arc::new(AttemptContexts::on(contexts.clone() as Arc<dyn LocalBuildLog>)));
     // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
     let _ = cp.node_rows.set(crate::records_of(&t).await);
@@ -146,9 +151,9 @@ fn reason(r: &Result<rdm_admin::control_plane::Opened, Refusal>) -> String {
 async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_before_the_state_gate() {
     let r = rig(view(NodeStatus::PendingReconnect)).await;
     let current = r.builds.current().await.unwrap().expect("the seeded Build is current");
-    let drift = AttemptOpened { mesh: Some("mesh1".into()), build_id: current.build_id.clone(), attempt: 1, reason: AttemptReason::ProvenDrift, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, context: None };
+    let drift = AttemptOpened { mesh: Some("mesh1".into()), build_id: current.build_id.clone(), attempt: 1, reason: AttemptReason::ProvenDrift, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None };
     r.builds.open_attempt(&drift).await.expect("mesh1's drift lane opens its attempt 1");
-    let out = r.cp.submit("gates-delete-held", TopologyChange::RemoveNode { node: "mesh1.rpc.1".parse().unwrap() }).await;
+    let out = r.cp.submit("gates-delete-held", TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }).await;
     match &out {
         Err(Refusal::BuildInProgress(held)) => assert_eq!(held.mesh.as_deref(), Some("mesh1"), "the refusal names the held mesh"),
         _ => panic!("the delete is refused build-in-progress naming mesh1 before its state is read, not {}", reason(&out)),
@@ -163,7 +168,7 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
 async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
     let r = rig(view(NodeStatus::Ready)).await;
     let _ = r.cp.peer_mesh.set(Arc::new(|m: &str| (m == "mesh2").then_some(PeerMesh { unheard_ms: Some(40_000), recovery_decided: false, unreachable_decided: false })));
-    let steps = vec![rdm_core::build::Step::Stop { node: "mesh2.rpc.9".parse().unwrap() }];
+    let steps = vec![rdm_core::build::Step::Stop { node: rdm_core::PathName::new("mesh2.rpc", "9").unwrap() }];
     let span = tracing::info_span!("gates-steps");
     let out = r.cp.open_steps_in(span, "gates-steps-unknown", steps).await;
     assert!(matches!(&out, Err(Refusal::Reject(BuildReject::UnknownNode { step: Some(1), .. }))), "the steps are refused unknown-node, naming the step, before the heard gate (Q223), not {}", reason(&out));
@@ -184,7 +189,7 @@ async fn an_attempt_taken_refusal_writes_no_attempt_context() {
     r.contexts.put_attempt_context(&current.build_id, None, n, &theirs).await.unwrap();
     r.builds.armed.store(true, Ordering::SeqCst);
     let span = tracing::info_span!("gates-attempt-taken");
-    let out = r.cp.open_attempt_in(span, "gates-attempt-taken", AttemptReason::Stop, "mesh1.rpc.1".parse().unwrap(), ActionKind::Stop).await;
+    let out = r.cp.open_attempt_in(span, "gates-attempt-taken", AttemptReason::Stop, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), ActionKind::Stop).await;
     assert!(matches!(&out, Err(Refusal::AttemptTaken(_))), "the stop is refused attempt-taken, not {}", reason(&out));
     let held = r.contexts.attempt_context(&current.build_id, None, n).await.unwrap();
     assert_eq!(held, Some(theirs), "nothing is written by the refused stop: attempt {n}'s context is the racer's");
@@ -194,6 +199,7 @@ async fn an_attempt_taken_refusal_writes_no_attempt_context() {
 /// decided before the opener's call returns: what a drive pass already running does when it claims
 /// the attempt the moment the open lands.
 struct ClaimedInTheOpen {
+    executor: rdm_core::framing::Birth,
     inner: MemoryBuildStateAdapter,
     contexts: Arc<AttemptContexts>,
     claims: rdm_admin::storage::MemoryMeshStorage,
@@ -207,8 +213,8 @@ impl BuildStateAdapter for ClaimedInTheOpen {
     }
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await?;
-        let claim = BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: "mesh1.admin.1".into(), claimant: Some("mesh1.admin.1".into()), mesh: None };
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let claim = BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), build_id: opened.build_id.clone(), attempt: opened.attempt, executor: self.executor.clone(), claimant: Some(self.executor.node_id.clone()), mesh: None };
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         if let rdm_core::build_claim::BuildClaimReply::Won { context } = rdm_admin::build_claim::decide_claim(&me, &self.inner, &self.claims, &self.contexts, &claim, "mesh1", None).await {
             *self.claimed.lock().unwrap() = Some(context);
         }
@@ -247,10 +253,10 @@ impl BuildStateAdapter for ClaimedInTheOpen {
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
@@ -268,9 +274,9 @@ impl BuildStateAdapter for ClaimedInTheOpen {
 async fn a_claim_the_moment_the_open_lands_takes_the_opening_requests_context() {
     let t = view(NodeStatus::Ready);
     let contexts = Arc::new(AttemptContexts::on(Arc::new(MemoryBuildStateAdapter::new()) as Arc<dyn LocalBuildLog>));
-    let builds = Arc::new(ClaimedInTheOpen { inner: MemoryBuildStateAdapter::new(), contexts: contexts.clone(), claims: Default::default(), claimed: Default::default() });
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    let mut cp = ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time()).with_contexts(contexts.clone());
+    let builds = Arc::new(ClaimedInTheOpen { executor: executor(&t), inner: MemoryBuildStateAdapter::new(), contexts: contexts.clone(), claims: Default::default(), claimed: Default::default() });
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor(&t), "mesh1").await.unwrap();
+    let mut cp = ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time()).with_contexts(contexts.clone());
     // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
     let _ = cp.node_rows.set(crate::records_of(&t).await);
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
@@ -279,7 +285,7 @@ async fn a_claim_the_moment_the_open_lands_takes_the_opening_requests_context() 
     let previous = rdm_core::context::CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None };
     contexts.put(&current.build_id, current.attempt, &previous).await.unwrap();
     let opened = cp
-        .open_attempt_in(tracing::info_span!("gates-claimed-in-the-open"), "gates-claimed-in-the-open", AttemptReason::Stop, "mesh1.rpc.1".parse().unwrap(), ActionKind::Stop)
+        .open_attempt_in(tracing::info_span!("gates-claimed-in-the-open"), "gates-claimed-in-the-open", AttemptReason::Stop, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), ActionKind::Stop)
         .await
         .expect("the stop is admitted");
     assert_eq!(opened.attempt, current.attempt + 1);
@@ -308,18 +314,18 @@ impl rdm_admin::path_investigation::PathProbe for Investigation {
 /// then marking that birth Dead: silence, the same birth (node id and incarnation) unheard.
 async fn dead_rig(t: Topology) -> Rig {
     let r = rig(t).await;
-    let path: PathName = "mesh1.rpc.1".parse().unwrap();
+    let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
     r.cp.topology.write().await.nodes.iter_mut().find(|n| n.name == path).unwrap().status = NodeStatus::Dead;
     r
 }
 
-fn birth_of(t: &Topology, path: &str) -> (NodeId, IncarnationId) {
-    let n = t.node(&path.parse().unwrap()).unwrap();
+fn birth_of(t: &Topology, path: &PathName) -> (NodeId, IncarnationId) {
+    let n = t.node(path).unwrap();
     (n.node_id.clone(), n.incarnation_id.clone().unwrap())
 }
 
-async fn delete_of(r: &Rig, path: &str) -> Result<rdm_admin::control_plane::Opened, Refusal> {
-    r.cp.submit("gates-delete", TopologyChange::RemoveNode { node: path.parse().unwrap() }).await
+async fn delete_of(r: &Rig, path: &PathName) -> Result<rdm_admin::control_plane::Opened, Refusal> {
+    r.cp.submit("gates-delete", TopologyChange::RemoveNode { node: path.clone() }).await
 }
 
 /// CONTRACT (build.md §4.4 gate 5: "a delete a stopped one, one whose exit is proven, or a live one";
@@ -332,10 +338,10 @@ async fn delete_of(r: &Rig, path: &str) -> Result<rdm_admin::control_plane::Open
 async fn a_dead_birth_with_no_exited_verdict_is_refused_node_not_live() {
     let r = dead_rig(view(NodeStatus::Ready)).await;
     let before = r.builds.current().await.unwrap().map(|b| b.build_id);
-    let out = delete_of(&r, "mesh1.rpc.1").await;
+    let out = delete_of(&r, &PathName::new("mesh1.rpc", "1").unwrap()).await;
     assert!(matches!(&out, Err(Refusal::Reject(BuildReject::NodeNotLive { .. }))), "no investigation is held: refused node-not-live, not {}", reason(&out));
     let _ = r.cp.investigation.set(Arc::new(Investigation { exited: None }));
-    let out = delete_of(&r, "mesh1.rpc.1").await;
+    let out = delete_of(&r, &PathName::new("mesh1.rpc", "1").unwrap()).await;
     assert!(matches!(&out, Err(Refusal::Reject(BuildReject::NodeNotLive { .. }))), "the investigation's verdict is unproven: refused node-not-live, not {}", reason(&out));
     assert_eq!(r.builds.current().await.unwrap().map(|b| b.build_id), before, "nothing is accepted");
 }
@@ -348,12 +354,12 @@ async fn a_dead_birth_with_no_exited_verdict_is_refused_node_not_live() {
 async fn the_exact_runtimes_exited_verdict_admits_a_dead_births_delete() {
     let t = view(NodeStatus::Ready);
     let r = dead_rig(t.clone()).await;
-    let _ = r.cp.investigation.set(Arc::new(Investigation { exited: Some(birth_of(&t, "mesh1.rpc.1")) }));
-    let out = delete_of(&r, "mesh1.rpc.1").await;
+    let _ = r.cp.investigation.set(Arc::new(Investigation { exited: Some(birth_of(&t, &PathName::new("mesh1.rpc", "1").unwrap())) }));
+    let out = delete_of(&r, &PathName::new("mesh1.rpc", "1").unwrap()).await;
     let opened = out.unwrap_or_else(|e| panic!("the exited birth's delete is admitted, not {}", reason(&Err(e))));
     let build = r.builds.read_build(&opened.build_id).await.unwrap();
-    let (node_id, incarnation) = birth_of(&t, "mesh1.rpc.1");
-    assert!(build.topology.pinned.iter().any(|(p, b)| p.to_string() == "mesh1.rpc.1" && b.node_id == node_id && b.incarnation == incarnation), "the delete is pinned to the exited birth: {:?}", build.topology.pinned);
+    let (node_id, incarnation) = birth_of(&t, &PathName::new("mesh1.rpc", "1").unwrap());
+    assert!(build.topology.pinned.iter().any(|(p, b)| *p == PathName::new("mesh1.rpc", "1").unwrap() && b.node_id == node_id && b.incarnation == incarnation), "the delete is pinned to the exited birth: {:?}", build.topology.pinned);
 }
 
 /// CONTRACT (Q219: "Another birth's exit evidence admits nothing"): the investigation reads exited a
@@ -364,11 +370,11 @@ async fn the_exact_runtimes_exited_verdict_admits_a_dead_births_delete() {
 #[tokio::test]
 async fn another_births_exit_evidence_admits_nothing() {
     let t = view(NodeStatus::Ready);
-    let (node_id, incarnation) = birth_of(&t, "mesh1.rpc.1");
+    let (node_id, incarnation) = birth_of(&t, &PathName::new("mesh1.rpc", "1").unwrap());
     for other in [(node_id.clone(), IncarnationId::mint()), (NodeId::mint(), incarnation.clone())] {
         let r = dead_rig(t.clone()).await;
         let _ = r.cp.investigation.set(Arc::new(Investigation { exited: Some(other) }));
-        let out = delete_of(&r, "mesh1.rpc.1").await;
+        let out = delete_of(&r, &PathName::new("mesh1.rpc", "1").unwrap()).await;
         assert!(matches!(&out, Err(Refusal::Reject(BuildReject::NodeNotLive { .. }))), "another birth's exit admits nothing: refused node-not-live, not {}", reason(&out));
     }
 }
@@ -382,11 +388,11 @@ async fn another_births_exit_evidence_admits_nothing() {
 async fn a_live_births_delete_is_admitted_and_planned_to_stop_it_first() {
     let t = view(NodeStatus::Ready);
     let r = rig(t.clone()).await;
-    let out = delete_of(&r, "mesh1.rpc.1").await;
+    let out = delete_of(&r, &PathName::new("mesh1.rpc", "1").unwrap()).await;
     let opened = out.unwrap_or_else(|e| panic!("the live birth's delete is admitted, not {}", reason(&Err(e))));
     let build = r.builds.read_build(&opened.build_id).await.unwrap();
     let ops = rdm_admin::accepted::plan_for_build(&build, &t).operations;
-    let delete = ops.iter().find(|op| op.key() == "node.delete:mesh1.rpc.1").unwrap_or_else(|| panic!("the delete is planned: {ops:?}"));
+    let delete = ops.iter().find(|op| op.key() == rdm_core::OperationId::node("node.delete", &birth_of(&t, &PathName::new("mesh1.rpc", "1").unwrap()).0)).unwrap_or_else(|| panic!("the delete is planned: {ops:?}"));
     assert!(matches!(delete, rdm_admin::build::BuildOperation::DeleteLiveNode { exited: None, birth: Some(_), .. }), "the live birth's delete composes its stop: {delete:?}");
 }
 
@@ -399,11 +405,11 @@ async fn a_live_births_delete_is_admitted_and_planned_to_stop_it_first() {
 #[tokio::test]
 async fn a_build_on_a_node_of_an_unheard_mesh_is_refused_at_acceptance() {
     let mut t = view(NodeStatus::Ready);
-    t.nodes.push(node("mesh2.rpc.1", NodeStatus::Ready, false, false));
+    t.nodes.push(node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Ready, false, false));
     let r = rig(t).await;
     let _ = r.cp.peer_mesh.set(Arc::new(|m: &str| (m == "mesh2").then_some(PeerMesh { unheard_ms: Some(40_000), recovery_decided: false, unreachable_decided: false })));
     let before = r.builds.current().await.unwrap().map(|b| b.build_id);
-    let out = delete_of(&r, "mesh2.rpc.1").await;
+    let out = delete_of(&r, &PathName::new("mesh2.rpc", "1").unwrap()).await;
     match &out {
         Err(Refusal::Reject(BuildReject::UnheardMesh { mesh, unheard_ms, .. })) => assert_eq!((mesh.as_str(), *unheard_ms), ("mesh2", 40_000)),
         _ => panic!("refused naming mesh2 and how long it is unheard, not {}", reason(&out)),

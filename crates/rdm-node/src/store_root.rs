@@ -13,7 +13,7 @@
 //!   connections.jsonl                 every connection fact of every source
 //!   builds.jsonl                      every Build fact
 //!   locks/in-flight/<mesh name>       the one attempt in flight on that mesh name, create-exclusive
-//!   locks/name/<name>                 the claim of a mesh name or a node path.name, create-exclusive
+//!   locks/name/<name>                 the claim of a mesh name or a node path and name, create-exclusive
 //! ```
 //!
 //! One append-only JSONL file per storage boundary ([`crate::store_log`]): every write is one line
@@ -205,7 +205,7 @@ impl StoreRoot {
         FileRecords::open(&self.store_dir, FABRIC_NAMES, writer).await
     }
 
-    /// `locks/name/<name>`: the claim of a mesh name or a node path.name (R-SR5).
+    /// `locks/name/<name>`: the claim of a mesh name or a node path and name (R-SR5).
     pub fn lock(&self, name: &str) -> PathBuf {
         self.dir.join(LOCKS_DIR).join("name").join(name)
     }

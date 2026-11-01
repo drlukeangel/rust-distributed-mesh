@@ -185,7 +185,7 @@ fn rss_gb(pid: u32) -> Option<f64> {
     Some(pages * 4096.0 / 1e9)
 }
 
-/// The role of a live runtime from its directory name (`mesh1.admin.1-<id>`, `mesh2.rpc.3-<id>`).
+/// The role of each live runtime comes from its node metadata.
 /// With `RDM_LOAD_PERF` naming a directory, a CPU profile of one process of each role over the idle window
 /// (`perf record -g`, `<dir>/<role>.<pid>.perf.data`): the flame an idle cost over its baseline is read
 /// from (load-testing.md: a finding is read as a flame before any number moves). The profiler's own cost
@@ -211,34 +211,28 @@ fn profile_one(label: &str, pid: u32, window: Duration) -> Option<std::process::
     )
 }
 
-fn role_of(dir: &std::path::Path) -> &'static str {
-    let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    if name.contains(".admin.") {
-        "node-admin"
-    } else {
-        "rpc-node"
-    }
-}
-
 /// M6: `concurrency` callers each sending `node.topology.get` of `node`'s own mesh to `node` directly,
 /// back to back, for `window`: every completed call's latency (ms), the calls that ended without a reply
 /// (never counted as completions), and the seconds measured. The read is the node's own topology (query.md
 /// §2), served from what it holds: a Status request declares, applies or asks a birth to reassert
 /// itself, so a Status load would measure those effects, not the RPC.
 async fn rpc_load(estate: &Estate, node: &rdm_core::PathName, concurrency: usize, window: Duration) -> (Vec<f64>, u64, f64) {
-    let carrier = estate.peers().await.carrier_at(node.clone());
+    let view = estate.node_view(node).await;
+    let mesh = view.mesh;
+    let node = view.node_id;
+    let carrier = estate.peers().await.carrier_for(node.clone());
     let start = Instant::now();
     let end = start + window;
     let callers: Vec<_> = (0..concurrency)
         .map(|_| {
-            let (carrier, node) = (carrier.clone(), node.clone());
+            let (carrier, node, mesh) = (carrier.clone(), node.clone(), mesh.clone());
             tokio::spawn(async move {
                 let rpc = rdm_client::NodeRpc::new(carrier.client());
-                let (target, opts) = (rdm_transport::NodeTarget::CurrentPath(node.clone()), rdm_transport::CallOptions::default());
+                let (target, opts) = (rdm_transport::NodeTarget::ExactNode(node.clone()), rdm_transport::CallOptions::default());
                 let (mut done, mut errors) = (Vec::new(), 0u64);
                 while Instant::now() < end {
                     let t = Instant::now();
-                    match rpc.topology_get(&target, Some(node.mesh.clone()), None, &opts).await {
+                    match rpc.topology_get(&target, Some(mesh.clone()), None, &opts).await {
                         Ok(_) => done.push(t.elapsed().as_secs_f64() * 1000.0),
                         Err(_) => errors += 1,
                     }
@@ -270,11 +264,11 @@ async fn every_admin_holds(estate: &Estate, admins: &[rdm_core::PathName], node:
     let t = Instant::now();
     let mut left: Vec<&rdm_core::PathName> = admins.iter().collect();
     while !left.is_empty() {
-        assert!(t.elapsed() < Duration::from_secs(120), "{node}: {left:?} did not hold it {status} within 120 s");
+        assert!(t.elapsed() < Duration::from_secs(120), "{node:?}: {left:?} did not hold it {status} within 120 s");
         let mut still = Vec::new();
         for a in left {
             let values = estate.held_values_at(a).await;
-            let mine: Vec<&Value> = values.iter().filter(|v| v["name"] == node.to_string() && not_id.is_none_or(|id| s(&v["node_id"]) != id)).collect();
+            let mine: Vec<&Value> = values.iter().filter(|v| v["name"] == json!(node) && not_id.is_none_or(|id| s(&v["node_id"]) != id)).collect();
             let held = if status == "leaving" { mine.iter().all(|v| s(&v["status"]) != "ready") } else { mine.iter().any(|v| s(&v["status"]) == status) };
             if !held {
                 still.push(a);
@@ -298,15 +292,15 @@ fn start_ns(sp: &&Value) -> u64 {
 /// last node-admin of
 /// `admins` applying it to its own topology (`via-member-state`, `via-projected-status`, or that write
 /// itself). `Err` names the node-admins no span shows applying it.
-fn spread_from_spans(spans: &[Value], admins: &[rdm_core::PathName], member: &str, status: &str, since: u64) -> Result<f64, Vec<String>> {
+fn spread_from_spans(spans: &[Value], admins: &[rdm_core::NodeId], member: &rdm_core::framing::Birth, status: &str, since: u64) -> Result<f64, Vec<String>> {
     let a = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let is = |sp: &Value| a(sp, "status").eq_ignore_ascii_case(status);
     let writes = |sp: &Value| match s(&sp["name"]).as_str() {
-        "rdm.mesh.topology.update.from-command-admitted" => status == "leaving" && a(sp, "member") == member && is(sp),
-        "rdm.mesh.topology.update.from-node-started" => status == "ready" && a(sp, "member") == member && is(sp),
+        "rdm.mesh.topology.update.from-command-admitted" => status == "leaving" && a(sp, "node_id") == member.node_id.as_str() && a(sp, "incarnation_id") == member.incarnation.as_str() && is(sp),
+        "rdm.mesh.topology.update.from-node-started" => status == "ready" && a(sp, "node_id") == member.node_id.as_str() && a(sp, "incarnation_id") == member.incarnation.as_str() && is(sp),
         _ => false,
     };
-    let applies = |sp: &Value| writes(sp) || (matches!(s(&sp["name"]).as_str(), "rdm.mesh.topology.update.via-member-state" | "rdm.mesh.topology.update.via-projected-status") && a(sp, "member") == member && is(sp));
+    let applies = |sp: &Value| writes(sp) || (matches!(s(&sp["name"]).as_str(), "rdm.mesh.topology.update.via-member-state" | "rdm.mesh.topology.update.via-projected-status") && a(sp, "member_id") == member.node_id.as_str() && a(sp, "incarnation_id") == member.incarnation.as_str() && is(sp));
     let after: Vec<&Value> = spans.iter().filter(|sp| start_ns(sp) >= since).collect();
     let origin = after.iter().filter(|sp| writes(sp)).map(start_ns).min().ok_or_else(|| vec![format!("the mesh-primary's write of {member} {status}")])?;
     let mut last = origin;
@@ -361,7 +355,11 @@ fn channel_kind(channel: &str) -> String {
 /// M8: idle CPU (cores) and RSS (GB) of every runtime over `window`, the largest per role.
 async fn idle_cost(estate: &Estate, window: Duration) -> Vec<(&'static str, f64, f64)> {
     let runtimes = estate.live_runtimes();
-    let before: Vec<(&'static str, u32, u64)> = runtimes.iter().filter_map(|(d, p)| cpu_ticks(*p).map(|t| (role_of(d), *p, t))).collect();
+    let nodes = estate.node_views().await;
+    let before: Vec<(&'static str, u32, u64)> = runtimes.iter().filter_map(|(dir, pid)| {
+        let node = nodes.iter().find(|n| n.data_dir.as_deref().is_some_and(|path| std::path::Path::new(path) == dir)).unwrap_or_else(|| panic!("live runtime {} has no matching node metadata", dir.display()));
+        cpu_ticks(*pid).map(|ticks| (node.kind.name(), *pid, ticks))
+    }).collect();
     let profiles = profile_one_per_role(&before, window);
     tokio::time::sleep(window).await;
     for mut p in profiles {
@@ -468,7 +466,7 @@ async fn soak(estate: &Estate, length: Duration, rows: &mut Rows) {
 /// with the connection's kind; `Err` naming why it measured nothing.
 fn measure(probe: &rdm_test::estate::ProbeHandle, entry: &rdm_core::MeshNode, from: &str, to: &str, streams: u32, bytes: u32) -> Result<(String, f64, f64, f64), String> {
     let (streams, bytes) = (streams.to_string(), bytes.to_string());
-    let (t, d) = (format!("path:{from}"), format!("path:{to}"));
+    let (t, d) = (format!("exact:{from}"), format!("exact:{to}"));
     let out = probe.run(entry, &["throughput", "--target", &t, "--destination", &d, "--streams", &streams, "--bytes", &bytes, "--key", "x"])?;
     if out["measured"] != true {
         return Err(format!("{from} -> {to}: {out}"));
@@ -502,10 +500,15 @@ async fn data_plane(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Ro
         println!("[load] M9: the data plane needs seven rpc nodes a mesh, this profile has {rpcs}: not measured");
         return;
     }
+    let nodes = estate.node_views().await;
+    let rpc_id = |mesh: &str, name: u32| {
+        let location = rdm_core::PathName::new(format!("{mesh}.rpc"), name.to_string()).unwrap();
+        nodes.iter().find(|n| n.name == location).expect("RPC fixture").node_id.to_string()
+    };
     let mut tasks = Vec::new();
     for m in meshes {
         for src in [1, 2] {
-            let (probe, entry, src, dsts) = (probe.clone(), entry.clone(), format!("{m}.rpc.{src}"), [6, 7].map(|d| format!("{m}.rpc.{d}")));
+            let (probe, entry, src, dsts) = (probe.clone(), entry.clone(), rpc_id(m, src), [6, 7].map(|d| rpc_id(m, d)));
             tasks.push(tokio::task::spawn_blocking(move || dsts.iter().map(|d| measure(&probe, &entry, &src, d, STREAMS, BYTES)).collect::<Vec<_>>()));
         }
     }
@@ -535,11 +538,11 @@ async fn data_plane(estate: &Estate, meshes: &[String], rpcs: u32, rows: &mut Ro
 
     let (mut opens, mut rates, mut failed) = (Vec::new(), Vec::new(), Vec::new());
     for m in meshes {
-        let (src, carrier, dst) = (format!("{m}.rpc.3"), format!("{m}.rpc.4"), format!("{m}.rpc.5"));
+        let (src, carrier, dst) = (rpc_id(m, 3), rpc_id(m, 4), rpc_id(m, 5));
         let (probe, entry) = (probe.clone(), entry.clone());
         let r = tokio::task::spawn_blocking(move || -> Result<(String, f64, f64, f64), String> {
             measure(&probe, &entry, &carrier, &dst, 1, 1024)?;
-            let (t, d) = (format!("path:{src}"), format!("path:{dst}"));
+            let (t, d) = (format!("exact:{src}"), format!("exact:{dst}"));
             let blocked = probe.run(&entry, &["block-direct", "--target", &t, "--destination", &d, "--key", "x"])?;
             if blocked["direct_blocked"] != true {
                 return Err(format!("{src}'s Direct toward {dst} not blocked: {blocked}"));
@@ -751,17 +754,18 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
         // saturation probe, reported with no target: past the node's ceiling the rate holds and only the
         // queue grows (E6), so its p99 is the queue's. The node's CPU over each window is reported beside it.
         if !evidence {
-            let at: rdm_core::PathName = format!("{}.admin.{}", meshes.last().unwrap(), p.admins).parse().unwrap();
-            let pid = estate.live_runtimes().into_iter().find(|(d, _)| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{at}-")))).map(|(_, pid)| pid);
+            let at = rdm_core::PathName::new(format!("{}.admin", meshes.last().unwrap()), p.admins.to_string()).unwrap();
+            let node = estate.node_view(&at).await;
+            let pid = estate.live_runtimes().into_iter().find(|(dir, _)| node.data_dir.as_deref().is_some_and(|path| std::path::Path::new(path) == dir)).map(|(_, pid)| pid);
             for (callers, target) in [(32, true), (128, false)] {
                 let (t0, c0) = (pid.and_then(cpu_ticks), cpu_ticks(std::process::id()));
                 // With `RDM_LOAD_PERF`, the node's CPU profile over the held concurrency's window.
-                let profile = pid.filter(|_| target).and_then(|pid| profile_one(&format!("m6-{at}"), pid, M6_WINDOW));
+                let profile = pid.filter(|_| target).and_then(|pid| profile_one(&format!("m6-{}", node.node_id), pid, M6_WINDOW));
                 let (latencies, errors, secs) = rpc_load(&estate, &at, callers, M6_WINDOW).await;
                 if let Some(mut p) = profile {
                     let _ = p.wait();
                 }
-                let what = format!("topology.get at {at}, {callers} callers");
+                let what = format!("topology.get at {at:?}, {callers} callers");
                 let rate = latencies.len() as f64 / secs;
                 if target {
                     rows.at_least("M6", &format!("{what}, completions"), "/s", rate, 2000.0);
@@ -800,8 +804,12 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
     // of one rpc node, from its Complete to every node-admin's own topology (node.topology.get) holding it
     // stopped, then its node.start to every node-admin holding it ready; 20 samples each (100 in a
     // samples run, the target then on p99).
-    let admins: Vec<rdm_core::PathName> = meshes.iter().flat_map(|m| (1..=p.admins).map(move |i| format!("{m}.admin.{i}").parse().unwrap())).collect();
-    let subject: rdm_core::PathName = format!("{}.rpc.1", meshes[0]).parse().unwrap();
+    let admins: Vec<rdm_core::PathName> = meshes.iter().flat_map(|m| (1..=p.admins).map(move |i| rdm_core::PathName::new(format!("{m}.admin"), i.to_string()).unwrap())).collect();
+    let subject: rdm_core::PathName = rdm_core::PathName::new(format!("{}.rpc", meshes[0]), "1").unwrap();
+    let views = estate.node_views().await;
+    let admin_ids: Vec<_> = admins.iter().map(|location| views.iter().find(|n| &n.name == location).expect("admin fixture").node_id.clone()).collect();
+    let member = views.iter().find(|n| n.name == subject).expect("RPC fixture");
+    let member = rdm_core::framing::Birth { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().expect("launched RPC") };
     // With evidence the sample is read from the spans: the mesh-primary's write of the status to the last
     // node-admin applying it to its own topology; without, from the call's Complete to every node-admin's
     // `node.topology.get` holding it, polled.
@@ -814,7 +822,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
             let since = now_ns();
             let objs = estate.nodes_obj().await;
             let call = if status == "leaving" { objs.stop(&subject).await } else { objs.start(&subject).await };
-            let _ = Estate::workflow(&format!("{status} of {subject}"), call).await;
+            let _ = Estate::workflow(&format!("{status} of {subject:?}"), call).await;
             let polled = every_admin_holds(&estate, &admins, &subject, status, None).await;
             if status == "leaving" {
                 estate.until_stopped_at_the_fabric_primary(&subject).await;
@@ -834,7 +842,7 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
                     "rdm.mesh.topology.update.via-member-state",
                     "rdm.mesh.topology.update.via-projected-status",
                 ]);
-                match spread_from_spans(&spans, &admins, &subject.to_string(), status, since) {
+                match spread_from_spans(&spans, &admin_ids, &member, status, since) {
                     Ok(ms) => break Ok(ms),
                     Err(missing) if Instant::now() >= flush_until => break Err(missing),
                     Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
@@ -867,18 +875,18 @@ async fn run_as(p: &Profile, test: &str, evidence: bool, run: Run) {
         let (mut to_ready, mut to_mark, mut mark_to_ready) = (Vec::new(), Vec::new(), Vec::new());
         for k in 0..10usize {
             let mesh = &meshes[k % meshes.len()];
-            let victim: rdm_core::PathName = format!("{mesh}.rpc.{}", (k / meshes.len()) as u32 % p.rpcs + 1).parse().unwrap();
-            let before = estate.held_values_at(&admins[0]).await.into_iter().find(|v| v["name"] == victim.to_string()).map(|v| s(&v["node_id"]));
+            let victim: rdm_core::PathName = rdm_core::PathName::new(format!("{mesh}.rpc"), ((k / meshes.len()) as u32 % p.rpcs + 1).to_string()).unwrap();
+            let before = estate.node_view(&victim).await.node_id.to_string();
             let killed_ns = now_ns();
-            estate.kill_node(&victim.to_string()).await;
-            let ms = every_admin_holds(&estate, &admins, &victim, "ready", before.as_deref()).await;
+            estate.kill_node(&victim).await;
+            let ms = every_admin_holds(&estate, &admins, &victim, "ready", Some(before.as_str())).await;
             let ready_ns = killed_ns + (ms * 1e6) as u64;
             to_ready.push(ms);
             if evidence {
                 let spans = estate.spans_named(&["rdm.mesh.topology.update.via-member-stale"]);
                 let mark = named(&spans, "rdm.mesh.topology.update.via-member-stale")
                     .into_iter()
-                    .filter(|sp| s(&sp["attributes"]["member"]) == victim.to_string())
+                    .filter(|sp| s(&sp["attributes"]["member_id"]) == before)
                     .map(|sp| start_ns(&sp))
                     .filter(|at| *at >= killed_ns)
                     .min();

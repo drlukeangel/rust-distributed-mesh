@@ -10,7 +10,7 @@
 use crate::build_state::LocalBuildLog;
 use crate::fabric_handover::FinishWrites;
 use crate::fabric_storage::FabricStorage;
-use crate::model::{FabricId, IncarnationId, PathName, ProviderKind};
+use crate::model::{FabricId, IncarnationId, NodeId, PathName, ProviderKind};
 use crate::storage::{ConnectionsStorage, MeshStorage, NodeRecord, NodesStorage};
 use crate::storage_error::StorageError;
 use async_trait::async_trait;
@@ -45,8 +45,8 @@ impl StorageScope {
     }
 }
 
-/// A node's own connections rows, opened once its `path.name` is decided.
-pub type OpenConnections = Arc<dyn Fn(PathName) -> BoxFuture<'static, Result<Arc<dyn ConnectionsStorage>, StorageError>> + Send + Sync>;
+/// A node's own connections rows, opened by its globally unique node ID.
+pub type OpenConnections = Arc<dyn Fn(NodeId) -> BoxFuture<'static, Result<Arc<dyn ConnectionsStorage>, StorageError>> + Send + Sync>;
 
 /// The storage a node-admin runs on, opened by its backend (`docs/architecture/storage.md` §2): the
 /// five boundaries and how it finishes the writes it has issued.
@@ -66,7 +66,7 @@ pub struct StorageBoundaries {
     /// reads it (deployment-provider.md §3, the externally started Day-0 adoption and the successor's
     /// management cut). `None` on a backend whose rows no other process reads.
     pub root_runtimes: Option<Arc<dyn NodesStorage>>,
-    /// `connections.storage`: the admin's own connections rows, by its `path.name`.
+    /// `connections.storage`: the admin's own connections rows, by its `(path, name)`.
     pub connections: OpenConnections,
     /// The Build journal: the Build facts, and each attempt's context.
     pub builds: Arc<dyn LocalBuildLog>,
@@ -193,9 +193,9 @@ impl StorageBackend for FileBackend {
         };
         let connections: OpenConnections = {
             let (root, writer) = (root.clone(), scope.log_writer());
-            Arc::new(move |name: PathName| {
+            Arc::new(move |node_id: NodeId| {
                 let (root, writer) = (root.clone(), writer.clone());
-                Box::pin(async move { Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &name, &writer).await?) as Arc<dyn ConnectionsStorage>) })
+                Box::pin(async move { if node_id != writer.node_id { return Err(StorageError::Refused { file: "connections.storage".into(), reason: "connection store node ID differs from its writer".into() }); } Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &writer).await?) as Arc<dyn ConnectionsStorage>) })
             })
         };
         Ok(StorageBoundaries { fabric, meshes, nodes, node_records, root_runtimes, connections, builds, finish_writes, writes_to })
@@ -270,15 +270,15 @@ impl TopologyStorageProviders {
 }
 
 /// The stores one provider opened for a node-admin: its boundaries, and its connections rows at each
-/// path.name the admin opened them at.
+/// node ID the admin opened them for.
 struct AdminStores {
     boundaries: StorageBoundaries,
-    connections: std::sync::Mutex<std::collections::HashMap<PathName, Arc<dyn ConnectionsStorage>>>,
+    connections: std::sync::Mutex<std::collections::HashMap<NodeId, Arc<dyn ConnectionsStorage>>>,
 }
 
 impl AdminStores {
-    fn connections_at(&self, name: &PathName) -> Result<Arc<dyn ConnectionsStorage>, StorageError> {
-        self.connections.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned().ok_or_else(|| StorageError::Io { file: "connections.storage".into(), reason: format!("no connections rows are open at {name}") })
+    fn connections_at(&self, node_id: &NodeId) -> Result<Arc<dyn ConnectionsStorage>, StorageError> {
+        self.connections.lock().unwrap_or_else(|e| e.into_inner()).get(node_id).cloned().ok_or_else(|| StorageError::Io { file: "connections.storage".into(), reason: format!("no connections rows are open for node {node_id}") })
     }
 }
 
@@ -293,9 +293,9 @@ pub struct TopologyStorageHandle {
     providers: TopologyStorageProviders,
     /// Where the admin's stores open.
     scope: StorageScope,
-    /// The path.names the admin's own connections rows were opened at: a replacement opens each on
+    /// The path and names the admin's own connections rows were opened at: a replacement opens each on
     /// the new provider.
-    names: std::sync::Mutex<Vec<PathName>>,
+    connection_nodes: std::sync::Mutex<Vec<NodeId>>,
     /// The derivation installed on the Build journal (`LocalBuildLog::derive_on_every_fact`): a
     /// replacement installs it on the new provider's journal, which derives over each fact as the fact
     /// enters its log (its first read of the store root takes the facts the store holds).
@@ -321,7 +321,7 @@ impl TopologyStorageHandle {
             current: crate::storage_handle::StorageHandle::new(provider, AdminStores { boundaries, connections: Default::default() }),
             providers: providers.clone(),
             scope,
-            names: Default::default(),
+            connection_nodes: Default::default(),
             derivation: Default::default(),
             records_reader: Default::default(),
             replacing: tokio::sync::Mutex::new(()),
@@ -371,15 +371,15 @@ impl TopologyStorageHandle {
         Arc::new(Through(self.clone()))
     }
 
-    /// The admin's own connections rows at `name`, opened on the provider it writes now, through this
+    /// The admin's own connections rows for `node_id`, opened on the provider it writes now, through this
     /// handle.
-    pub async fn connections(self: &Arc<Self>, name: PathName) -> Result<Arc<dyn ConnectionsStorage>, StorageError> {
+    pub async fn connections(self: &Arc<Self>, node_id: NodeId) -> Result<Arc<dyn ConnectionsStorage>, StorageError> {
         let _one = self.replacing.lock().await;
         let current = self.current.read();
-        let rows = (current.stores().boundaries.connections)(name.clone()).await?;
-        current.stores().connections.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), rows);
-        self.names.lock().unwrap_or_else(|e| e.into_inner()).push(name.clone());
-        Ok(Arc::new(ConnectionsThrough { handle: self.clone(), name }))
+        let rows = (current.stores().boundaries.connections)(node_id.clone()).await?;
+        current.stores().connections.lock().unwrap_or_else(|e| e.into_inner()).insert(node_id.clone(), rows);
+        self.connection_nodes.lock().unwrap_or_else(|e| e.into_inner()).push(node_id.clone());
+        Ok(Arc::new(ConnectionsThrough { handle: self.clone(), node_id }))
     }
 
     /// Finishes every write the provider the admin writes at the call has issued (node-primary-update.md
@@ -393,7 +393,7 @@ impl TopologyStorageHandle {
     }
 
     /// Replace the provider with the one this executable registers as `provider`, opened now, off the
-    /// admin's boot, with the admin's connections rows at each path.name it opened them at and the Build
+    /// admin's boot, with the admin's connections rows for each node ID it opened them for and the Build
     /// journal's derivation installed: from the swap every call goes to it, and this returns once every
     /// write admitted to the old provider has been answered there and the old provider has finished
     /// the writes it issued ("Finish outstanding writes"). A name the executable does not register, or
@@ -467,10 +467,10 @@ impl TopologyStorageHandle {
         let opened = async {
             let boundaries = self.providers.named(provider)?.open(&self.scope).await?;
             let mut connections = std::collections::HashMap::new();
-            let names = self.names.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            for name in names {
-                let rows = (boundaries.connections)(name.clone()).await.map_err(|e| format!("connections storage at {name}: {e}"))?;
-                connections.insert(name, rows);
+            let node_ids = self.connection_nodes.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            for node_id in node_ids {
+                let rows = (boundaries.connections)(node_id.clone()).await.map_err(|e| format!("connections storage for node {node_id}: {e}"))?;
+                connections.insert(node_id, rows);
             }
             let derivation = self.derivation.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(derivation) = derivation {
@@ -528,6 +528,14 @@ impl Through {
 
 #[async_trait]
 impl rdm_node::node_records::NodeRecordsStorage for Through {
+    async fn put_primary_records(&self, batch: &rdm_node::node_records::PrimaryRecordBatch) -> Result<(), crate::storage_error::StorageError> {
+        let w = self.0.current.write();
+        w.boundaries.node_records.put_primary_records(batch).await
+    }
+    async fn primary_records(&self) -> Result<Vec<rdm_node::node_records::PrimaryRecordBatch>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().boundaries.node_records.primary_records().await
+    }
+
     async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
         let w = self.0.current.write();
         w.boundaries.node_records.put_properties(record).await
@@ -747,13 +755,13 @@ impl crate::build_state::BuildStateAdapter for Through {
         let w = self.write();
         w.boundaries.builds.forget(build_id).await
     }
-    async fn note_blocked(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+    async fn note_blocked(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
         self.read().stores().boundaries.builds.note_blocked(build_id, lane, attempt, operation, step, reason).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &crate::model::NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, crate::build_state::BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &crate::model::NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.mesh_deleted_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
@@ -802,36 +810,36 @@ impl LocalBuildLog for Through {
     }
 }
 
-/// The admin's own connections rows at `name` through its [`TopologyStorageHandle`].
+/// The admin's own connections rows by node ID through its [`TopologyStorageHandle`].
 struct ConnectionsThrough {
     handle: Arc<TopologyStorageHandle>,
-    name: PathName,
+    node_id: NodeId,
 }
 
 #[async_trait]
 impl ConnectionsStorage for ConnectionsThrough {
     async fn put_connection(&self, fact: &rdm_core::connections::NodeConnection) -> Result<(), StorageError> {
         let w = self.handle.current.write();
-        w.connections_at(&self.name)?.put_connection(fact).await
+        w.connections_at(&self.node_id)?.put_connection(fact).await
     }
     async fn connections(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, StorageError> {
-        let rows = self.handle.current.read().stores().connections_at(&self.name)?;
+        let rows = self.handle.current.read().stores().connections_at(&self.node_id)?;
         rows.connections().await
     }
     async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), StorageError> {
         let w = self.handle.current.write();
-        w.connections_at(&self.name)?.remove_connection(index).await
+        w.connections_at(&self.node_id)?.remove_connection(index).await
     }
     async fn append_history(&self, fact: &rdm_core::connections::NodeConnection) -> Result<(), StorageError> {
         let w = self.handle.current.write();
-        w.connections_at(&self.name)?.append_history(fact).await
+        w.connections_at(&self.node_id)?.append_history(fact).await
     }
     async fn history(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, StorageError> {
-        let rows = self.handle.current.read().stores().connections_at(&self.name)?;
+        let rows = self.handle.current.read().stores().connections_at(&self.node_id)?;
         rows.history().await
     }
     async fn connections_to(&self, destination: &crate::model::NodeId) -> Result<Vec<rdm_core::connections::NodeConnection>, StorageError> {
-        let rows = self.handle.current.read().stores().connections_at(&self.name)?;
+        let rows = self.handle.current.read().stores().connections_at(&self.node_id)?;
         rows.connections_to(destination).await
     }
 }
@@ -861,7 +869,7 @@ impl StorageBackend for MemoryBackend {
     }
 
     async fn open(&self, _scope: &StorageScope) -> Result<StorageBoundaries, String> {
-        let connections: OpenConnections = Arc::new(|_name: PathName| Box::pin(async { Ok(Arc::new(crate::storage::MemoryConnectionsStorage::default()) as Arc<dyn ConnectionsStorage>) }));
+        let connections: OpenConnections = Arc::new(|_node_id: NodeId| Box::pin(async { Ok(Arc::new(crate::storage::MemoryConnectionsStorage::default()) as Arc<dyn ConnectionsStorage>) }));
         // A memory write is one step under its store's lock: every write issued has finished.
         let finish_writes: FinishWrites = Arc::new(|| Box::pin(async {}));
         Ok(StorageBoundaries {
@@ -985,8 +993,8 @@ mod tests {
         let handle = TopologyStorageHandle::open(&providers, "file", scope.clone()).await.unwrap_or_else(|e| panic!("the admin opens its provider: {e}"));
         // What the boot hands its owners: taken once, before the change.
         let (fabric, meshes, nodes, builds) = (handle.fabric(), handle.meshes(), handle.nodes(), handle.builds());
-        let name: PathName = "mesh1.admin.1".parse().unwrap();
-        let connections = handle.connections(name.clone()).await.unwrap();
+        let name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+        let connections = handle.connections(scope.node_id.clone()).await.unwrap();
         let before = MeshRecord::new(crate::model::MeshId::mint(), "meshbefore");
         meshes.put_mesh(&before).await.unwrap();
         assert!(holds(&old, before.mesh_id.as_str()), "before the change the admin writes the provider it opened");
@@ -1003,10 +1011,10 @@ mod tests {
         let mesh = MeshRecord::new(crate::model::MeshId::mint(), "meshafter");
         meshes.put_mesh(&mesh).await.unwrap();
         meshes.claim_mesh_name("meshafter", &mesh.mesh_id).await.unwrap().unwrap();
-        let row = NodeRow::new("meshafter.rpc.7".parse().unwrap(), NodeId::mint(), crate::model::NodeStatus::Ready);
+        let row = NodeRow::new(rdm_core::PathName::new("meshafter.rpc", "7").unwrap(), "meshafter", rdm_core::NodeKind::RpcNode, NodeId::mint(), crate::model::NodeStatus::Ready);
         nodes.put_node(&row).await.unwrap();
         nodes.claim_node_name(&row.name, &row.node_id).await.unwrap().unwrap();
-        let runtime = RuntimeRow { node_id: NodeId::mint(), name: "meshafter.rpc.8".parse().unwrap(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
+        let runtime = RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "meshafter".into(), node_id: NodeId::mint(), name: rdm_core::PathName::new("meshafter.rpc", "8").unwrap(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
         nodes.put_runtime(&runtime).await.unwrap();
         let build = crate::build_state::BuildAccepted {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("after")).unwrap(),
@@ -1017,8 +1025,8 @@ mod tests {
         builds.publish_accepted(&build).await.unwrap();
         let fact = rdm_core::connections::NodeConnection {
             id: rdm_core::ConnectionId::mint(),
-            source: rdm_core::connections::ConnectionEnd { name: name.clone(), node_id: scope.node_id.clone(), incarnation: Some(scope.writer.clone()) },
-            destination: rdm_core::connections::ConnectionEnd { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+            source: rdm_core::connections::ConnectionEnd { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), name: name.clone(), node_id: scope.node_id.clone(), incarnation: Some(scope.writer.clone()) },
+            destination: rdm_core::connections::ConnectionEnd { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
             kind: rdm_core::connections::ConnectionKind::Direct,
             alpn: b"storage-provider/1".to_vec(),
             state: rdm_core::connections::ConnectionState::Connected,
@@ -1141,14 +1149,14 @@ mod tests {
     }
 
     /// The same script against any backend that keeps its rows across opens: the admin re-born at the
-    /// same path.name over the inherited data dir (a new node.id and incarnation, `inherited = true`)
+    /// same path and name over the inherited data dir (a new node.id and incarnation, `inherited = true`)
     /// reads its predecessor's runtime rows and attempt contexts. The attempt contexts are the data
     /// dir's, so an admin over another data dir reads none of them; the runtime rows are the fabric's
     /// lines in its store root's `nodes.jsonl` (R-SR1), so it reads them too.
     async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(backend: &dyn StorageBackend, first: &StorageScope, re_born: &StorageScope, other: &StorageScope) {
-        let runtime = crate::storage::RuntimeRow {
+        let runtime = crate::storage::RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
             node_id: NodeId::mint(),
-            name: "mesh1.rpc.2".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(),
             incarnation_id: IncarnationId::mint(),
             runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
             data_dir: Some("/tmp/mesh1.rpc.2".into()),
@@ -1176,10 +1184,10 @@ mod tests {
     /// none: its next start is a new admin's. Must NOT happen: the own row kept anywhere but the data dir.
     #[tokio::test]
     async fn the_own_row_is_the_admins_own_seed_in_its_data_dir() {
-        let own = crate::storage::NodeRecord {
+        let own = crate::storage::NodeRecord { mesh: "mesh1".into(),
             node_id: NodeId::mint(),
             fabric_id: FabricId::mint(),
-            name: "mesh1.admin.1".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
             mesh_id: crate::model::MeshId::mint(),
             incarnation_id: IncarnationId::mint(),
             endpoint_id: crate::model::EndpointId(iroh::SecretKey::generate().public().to_string()),
@@ -1209,7 +1217,7 @@ mod tests {
     /// CONTRACT (node-recovery.md: recovery retains the inherited data dir and creates a new node.id
     /// and incarnation; R-FM2 `inherited = true`): on the file backend, the runtime rows and attempt
     /// contexts an admin wrote are its data dir's, read back by the admin re-born at the same
-    /// path.name over that data dir, so it still holds the handles of the runtimes it must inspect and
+    /// path and name over that data dir, so it still holds the handles of the runtimes it must inspect and
     /// terminate; another admin's data dir reads none. Must NOT happen: a re-birth losing them because
     /// they were keyed by the birth that wrote them. Rafka's backend runs the same script.
     #[cfg(feature = "file-backend")]

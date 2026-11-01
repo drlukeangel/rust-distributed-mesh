@@ -78,7 +78,7 @@ pub enum NodeCommandRequest {
         /// Its executing attempt.
         attempt: u32,
         /// The operation's declared identity.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Start this stopped exact birth, reporting join and readiness on this stream (Q47).
     ///
@@ -93,7 +93,7 @@ pub enum NodeCommandRequest {
         /// Its executing attempt.
         attempt: u32,
         /// The operation's declared identity.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// A storage change's move of the exact birth to the provider its change decided (storage.md §2
     /// "Changing it", step 4: "Each mesh-primary moves its nodes to the new provider"), carried by its
@@ -129,7 +129,7 @@ pub enum NodeCommandRequest {
         /// Its executing attempt.
         attempt: u32,
         /// The operation's declared identity.
-        operation: String,
+        operation: crate::OperationId,
     },
     /// Freeze this exact birth's property writer before a storage copy. Appended at wire position 5.
     StorageBlock {
@@ -575,7 +575,7 @@ mod tests {
         for f in [NodeCommandReply::Leaving { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, NodeCommandReply::StopMeshLeft { left: vec![WhichMesh::Own] }, left, NodeCommandReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }] {
             assert_eq!(NodeCommand::decode_reply(&NodeCommand::encode_reply(&f).unwrap()).unwrap(), f, "{}", f.name());
         }
-        let req = NodeCommandRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: "node.mesh.leave:mesh1.rpc.1".into() };
+        let req = NodeCommandRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: crate::OperationId::location("node.mesh.leave", &crate::PathName::new("mesh1.rpc", "1").unwrap()) };
         assert_eq!(NodeCommand::decode_request(&NodeCommand::encode_request(&req).unwrap()).unwrap(), req);
     }
 

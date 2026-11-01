@@ -33,7 +33,7 @@ pub(crate) fn day0_config(dir: &std::path::Path) -> AdminConfig {
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
-pub(crate) fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
+pub(crate) fn launch_by(root: &Running, name: rdm_core::PathName, dir: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
@@ -42,14 +42,14 @@ pub(crate) fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> La
         fabric_id: d.fabric_id.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::RpcNode,
-        name: name.parse().unwrap(),
+        name,
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -88,14 +88,14 @@ pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 
 /// The `StopNode` `root` sends the birth `launch` names, over Node RPC as its mesh's primary sends it.
 async fn stop(root: &Running, launch: &Launch) -> StatusReply {
-    let req = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "q4rbx1n7c2wd".into(), attempt: 1, operation: format!("node.stop:{}", launch.name) };
+    let req = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "q4rbx1n7c2wd".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &launch.node_id) };
     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: WRONG }, ..Default::default() };
     if let Some(reply) = crate::common::root_lifecycle_reply(root, launch, &req).await {
         return reply;
     }
     match root.node_rpc.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(launch.node_id.clone()), &req, &opts).await.0 {
         rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
-        other => panic!("{} to {} did not end in a reply: {other:?}", req.op(), launch.name),
+        other => panic!("{} to {:?} did not end in a reply: {other:?}", req.op(), launch.name),
     }
 }
 
@@ -125,7 +125,7 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        let launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), &rpc_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
         let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the rpc node comes up");
@@ -141,7 +141,7 @@ fn a_stopped_births_signal_runs_no_second_stop() {
         tokio::time::timeout(WRONG, rpc.stop()).await.expect("the stopped node's process ends on its signal");
 
         let of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> {
-            spans.0.lock().unwrap().values().filter(|(n, _, f)| n == name && f.get("node").map(String::as_str) == Some("mesh1.rpc.1")).map(|(_, _, f)| f.clone()).collect()
+            spans.0.lock().unwrap().values().filter(|(n, _, f)| n == name && f.get("node").map(String::as_str) == Some(launch.node_id.as_str())).map(|(_, _, f)| f.clone()).collect()
         };
         let alls = of("rdm.node_admin.connection.delete.via-stop");
         assert_eq!(alls.len(), 1, "its node.connection.delete {{ All }} ran once, at the command: {alls:#?}");
@@ -187,7 +187,7 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
     }
     const BOUND: Duration = Duration::from_secs(1);
     let cap = crate::common::capture("a_live_births_signal_stop_delivers_its_declarations_within_a_second");
-    let (admin_id, stopped_in, held) = cap.run(crate::common::Threads::Workers(4), async move {
+    let (admin_id, node_id, stopped_in, held) = cap.run(crate::common::Threads::Workers(4), async move {
         let base = std::env::temp_dir().join(format!("live-birth-signal-{}", NodeId::mint()));
         let (root_dir, rpc_dir) = (base.join("admin1"), base.join("rpc1"));
         std::fs::create_dir_all(&root_dir).unwrap();
@@ -195,7 +195,7 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        let launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), &rpc_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let passing = NodeHooks::new(TestPreNodeReady::new(Mode::Fixed(HookOutcome::Ok)));
         let rpc = rdm_test::node::start_pre_node_ready(&launch, passing, |b, _| b).await.expect("the rpc node comes up");
@@ -214,18 +214,18 @@ fn a_live_births_signal_stop_delivers_its_declarations_within_a_second() {
         let admin_id = root.digest.lock().unwrap().node.node_id.clone();
         root.leave().await;
         let _ = std::fs::remove_dir_all(&base);
-        (admin_id, stopped_in, held)
+        (admin_id, launch.node_id, stopped_in, held)
     });
     cap.flush().expect("the cell's spans reach its artifact");
     let spans = exported(&cap.dir);
     let named = |name: &'static str| spans.iter().filter(move |s| s["name"] == name);
     let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
     let (start, end) = (|s: &serde_json::Value| s["start_unix_nano"].as_u64().unwrap_or(0), |s: &serde_json::Value| s["end_unix_nano"].as_u64().unwrap_or(0));
-    let all = named("rdm.node_admin.connection.delete.via-stop").find(|s| attr(s, "node") == "mesh1.rpc.1").expect("the signal stop's node.connection.delete { All }");
+    let all = named("rdm.node_admin.connection.delete.via-stop").find(|s| attr(s, "node") == node_id.as_str()).expect("the signal stop's node.connection.delete { All }");
     let from = start(all);
     // Each declaration the stop owes, applied by the mesh-primary.
     for state in ["ConnectionsDeleting", "Stopped"] {
-        let applied = named("rdm.node_admin.status.update.via-declaration").find(|s| attr(s, "sender") == "mesh1.rpc.1" && attr(s, "state") == state && attr(s, "outcome") == "applied");
+        let applied = named("rdm.node_admin.status.update.via-declaration").find(|s| attr(s, "sender") == node_id.as_str() && attr(s, "state") == state && attr(s, "outcome") == "applied");
         assert!(applied.is_some_and(|s| start(s) >= from), "the mesh-primary applied the stop's {state}");
     }
     // Every call the stopping node made to its mesh-primary from the stop on: answered, none cut short

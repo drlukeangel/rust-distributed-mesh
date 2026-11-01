@@ -13,7 +13,9 @@ use std::time::Duration;
 pub const ENV_FABRIC: &str = "RDM_FABRIC";
 /// The fabric's minted id.
 pub const ENV_FABRIC_ID: &str = "RDM_FABRIC_ID";
-/// The node's `path.name`.
+/// The node's immutable path, independent of its name.
+pub const ENV_NODE_PATH: &str = "RDM_NODE_PATH";
+/// The node name within its path.
 pub const ENV_NODE_NAME: &str = "RDM_NODE_NAME";
 /// The owning mesh, independent of the path/name.
 pub const ENV_MESH: &str = "RDM_MESH";
@@ -34,7 +36,7 @@ pub const ENV_TRANSPORT_ADDR: &str = "RDM_TRANSPORT_ADDR";
 pub const ENV_LISTENERS: &str = "RDM_LISTENERS";
 /// The members to join gossip through, as `<public key>@<addr>` entries joined by commas.
 pub const ENV_SEEDS: &str = "RDM_SEEDS";
-/// The node-admin that deployed the birth, as `<path.name>,<node id>,<incarnation id>`.
+/// The node-admin that deployed the birth, as a structured Launcher JSON object.
 pub const ENV_LAUNCHER: &str = "RDM_LAUNCHER";
 /// The node's data directory.
 pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
@@ -99,9 +101,12 @@ pub const ENV_CONNECTIONS_DELETE_DEADLINE: &str = "RDM_CONNECTIONS_DELETE_DEADLI
 pub const DEFAULT_CONNECTIONS_DELETE_DEADLINE: Duration = Duration::from_millis(5000);
 
 /// The node-admin that deployed a birth: the target of its `JoinNode`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Launcher {
-    /// The launching node-admin's `path.name`.
+    /// The launching admin's mesh.
+    pub mesh: String,
+    /// The launching node-admin's separate path and name fields.
     pub name: PathName,
     /// The launching node-admin's node id.
     pub node_id: NodeId,
@@ -203,7 +208,7 @@ pub struct Launch {
     pub fabric: String,
     /// The fabric's minted id.
     pub fabric_id: FabricId,
-    /// The node's `path.name`.
+    /// The node's separate path and name fields.
     pub name: PathName,
     /// The node's minted id.
     pub node_id: NodeId,
@@ -354,17 +359,9 @@ pub fn decode_issuing(key: Option<String>, cert: Option<String>, root: Option<St
 
 pub use crate::custody::{decode_custody, encode_custody};
 
-/// `<path.name>,<node id>,<incarnation id>`
+/// Decode the structured launcher object, preserving path and name as separate fields.
 pub fn decode_launcher(s: &str) -> Result<Launcher> {
-    let mut it = s.split(',');
-    let (Some(name), Some(node_id), Some(incarnation), None) = (it.next(), it.next(), it.next(), it.next()) else {
-        return Err(format!("{ENV_LAUNCHER} `{s}` is not name,node_id,incarnation"));
-    };
-    Ok(Launcher {
-        name: name.parse().map_err(|e| format!("{ENV_LAUNCHER} name: {e}"))?,
-        node_id: NodeId::parse(node_id).map_err(|e| format!("{ENV_LAUNCHER} node id: {e}"))?,
-        incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("{ENV_LAUNCHER} incarnation: {e}"))?,
-    })
+    serde_json::from_str(s).map_err(|e| format!("{ENV_LAUNCHER}: invalid launcher: {e}"))
 }
 
 /// [`ENV_EXECUTABLE_DIRS`] as given: comma-separated directories, each absolute (a container mounts
@@ -412,7 +409,8 @@ impl Launch {
         let mut m = BTreeMap::new();
         m.insert(ENV_FABRIC.into(), self.fabric.clone());
         m.insert(ENV_FABRIC_ID.into(), self.fabric_id.to_string());
-        m.insert(ENV_NODE_NAME.into(), self.name.to_string());
+        m.insert(ENV_NODE_PATH.into(), self.name.path.clone());
+        m.insert(ENV_NODE_NAME.into(), self.name.name.clone());
         m.insert(ENV_MESH.into(), self.mesh.clone());
         m.insert(ENV_NODE_KIND.into(), self.kind.name().into());
         m.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&self.initial_properties).expect("string maps encode as JSON"));
@@ -423,7 +421,7 @@ impl Launch {
         }
         m.insert(ENV_TRANSPORT_ADDR.into(), self.bind_addr.to_string());
         if let Some(l) = &self.launcher {
-            m.insert(ENV_LAUNCHER.into(), format!("{},{},{}", l.name, l.node_id, l.incarnation));
+            m.insert(ENV_LAUNCHER.into(), serde_json::to_string(l).expect("launcher encodes as JSON"));
         }
         m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
@@ -458,7 +456,7 @@ impl Launch {
                 .map_err(|_| format!("{ENV_NODE_PROPERTIES} does not parse as initial properties"))).transpose()?.unwrap_or_default(),
             fabric: req(ENV_FABRIC)?,
             fabric_id: FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?,
-            name: req(ENV_NODE_NAME)?.parse().map_err(|e| format!("{ENV_NODE_NAME}: {e}"))?,
+            name: PathName::new(req(ENV_NODE_PATH)?, req(ENV_NODE_NAME)?).map_err(|e| format!("{ENV_NODE_PATH}/{ENV_NODE_NAME}: {e}"))?,
             mesh: req(ENV_MESH)?,
             kind: {
                 let given = req(ENV_NODE_KIND)?;
@@ -496,7 +494,7 @@ mod tests {
         let initial = InitialProperties {
             config: [("listener.data".into(), "a,b=c\nwith spaces".into()), ("empty".into(), "".into())].into(),
             tags: ["zone-a".into(), "v1.2~rc".into()].into(),
-            applied: [crate::properties::PropertyApplication { build_id: "build-a".into(), operation: "entry".into() }].into(),
+            applied: [crate::properties::PropertyApplication { build_id: "build-a".into(), location: crate::PathName::new("test.properties", "entry").unwrap() }].into(),
         };
         env.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&initial).unwrap());
         let launch = Launch::from_env(|k| env.get(k).cloned()).unwrap();
@@ -526,7 +524,8 @@ mod tests {
         BTreeMap::from([
             (ENV_FABRIC.to_string(), "fabric1".to_string()),
             (ENV_FABRIC_ID.to_string(), FabricId::mint().to_string()),
-            (ENV_NODE_NAME.to_string(), "mesh2.admin.1".to_string()),
+            (ENV_NODE_PATH.to_string(), "mesh2.admin".to_string()),
+            (ENV_NODE_NAME.to_string(), "1".to_string()),
             (ENV_MESH.to_string(), "mesh2".to_string()),
             (ENV_NODE_KIND.to_string(), "node_admin".to_string()),
             (ENV_NODE_ID.to_string(), NodeId::mint().to_string()),
@@ -578,13 +577,13 @@ mod tests {
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
             kind: crate::NodeKind::RpcNode,
-            name: "elsewhere.gateway.north".parse().unwrap(),
+            name: crate::PathName::new("elsewhere.gateway", "north").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: Some(IncarnationId::mint()),
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
-            launcher: Some(Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
+            launcher: Some(Launcher { mesh: "mesh1".into(), name: crate::PathName::new("mesh1.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
             store_dir: "/tmp/store".into(),
@@ -675,7 +674,7 @@ mod tests {
             fabric_id: FabricId::mint(),
             mesh: "mesh1".into(),
             kind: crate::NodeKind::RpcNode,
-            name: "mesh1.rpc.2".parse().unwrap(),
+            name: crate::PathName::new("mesh1.rpc", "2").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -734,7 +733,8 @@ mod tests {
         let base_env = BTreeMap::from([
             (ENV_FABRIC.to_string(), "fabric1".to_string()),
             (ENV_FABRIC_ID.to_string(), FabricId::mint().to_string()),
-            (ENV_NODE_NAME.to_string(), "mesh1.gateway.1".to_string()),
+            (ENV_NODE_PATH.to_string(), "mesh1.gateway".to_string()),
+            (ENV_NODE_NAME.to_string(), "1".to_string()),
             (ENV_MESH.to_string(), "mesh1".to_string()),
             (ENV_NODE_KIND.to_string(), "gateway".to_string()),
             (ENV_NODE_ID.to_string(), NodeId::mint().to_string()),

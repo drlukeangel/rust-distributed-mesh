@@ -147,7 +147,7 @@ pub(crate) fn recovery_due(
     match held
         .own_latest_directs()
         .into_iter()
-        .find(|d| d.destination.name == destination.name && d.alpn.as_slice() == alpn)
+        .find(|d| d.destination.node_id == destination.node_id && d.alpn.as_slice() == alpn)
     {
         Some(row)
             if (&row.destination.node_id, &row.destination.incarnation)
@@ -180,7 +180,7 @@ pub fn registry_recovery_dial(
                 let Some(inc) = destination.incarnation.clone() else {
                     return "NotSent".to_string();
                 };
-                let birth = Birth {
+                let birth = Birth { mesh: destination.mesh.clone(), kind: destination.kind,
                     name: destination.name,
                     node_id: destination.node_id,
                     incarnation: inc,
@@ -204,7 +204,7 @@ pub fn registry_recovery_dial(
 }
 
 /// Read the pending reconnect obligations currently held by `writer`, sorted deterministically by
-/// `(destination.name, alpn)`.
+/// `(destination.node_id, alpn)`.
 pub fn obligations(writer: &ConnectionsWriter) -> Vec<ReconnectObligation> {
     let pending: Vec<(ConnectionEnd, Vec<u8>)> = writer
         .reconnect_state()
@@ -224,7 +224,7 @@ pub fn obligations(writer: &ConnectionsWriter) -> Vec<ReconnectObligation> {
         let latest = held
             .own_latest_directs()
             .into_iter()
-            .find(|d| d.destination.name == destination.name && d.alpn == alpn);
+            .find(|d| d.destination.node_id == destination.node_id && d.alpn == alpn);
         let (due_ms, recovery, row_id) = match latest {
             Some(row)
                 if (&row.destination.node_id, &row.destination.incarnation)
@@ -265,7 +265,7 @@ pub fn obligations(writer: &ConnectionsWriter) -> Vec<ReconnectObligation> {
             row_id,
         });
     }
-    out.sort_by_key(|o| (o.destination.name.to_string(), o.alpn.clone()));
+    out.sort_by_key(|o| (o.destination.node_id.to_string(), o.alpn.clone()));
     out
 }
 
@@ -298,14 +298,14 @@ pub(crate) fn recovery_pending(writer: &ConnectionsWriter) -> Vec<RecoveryAttemp
 /// destination never arms again an attempt another destination's dial spent on its Reply while
 /// that destination's own Direct Connected row is still owed (§9.4: a reconnect on one pair never
 /// touches another's; Q169: the dial's own result decides, in memory).
-pub(crate) fn sync_recovery(writer: &ConnectionsWriter, destination: &PathName, alpn: &[u8]) {
-    let (directs, own_source): (Vec<NodeConnection>, Option<PathName>) = {
+pub(crate) fn sync_recovery(writer: &ConnectionsWriter, destination: &NodeId, alpn: &[u8]) {
+    let (directs, own_source): (Vec<NodeConnection>, Option<NodeId>) = {
         let held_arc = writer.held();
         let held = held_arc.lock().unwrap();
         (
             held.own_latest_directs()
                 .into_iter()
-                .filter(|r| &r.destination.name == destination && r.alpn.as_slice() == alpn)
+                .filter(|r| &r.destination.node_id == destination && r.alpn.as_slice() == alpn)
                 .filter(|r| held.end_superseded(&r.destination) != Some(true))
                 .cloned()
                 .collect(),
@@ -327,7 +327,7 @@ pub(crate) fn sync_recovery(writer: &ConnectionsWriter, destination: &PathName, 
                 let held_arc = writer.held();
                 let held = held_arc.lock().unwrap();
                 matches!(
-                    held.active_direct_for(src, &row.destination.name, &row.alpn),
+                    held.active_direct_for(src, &row.destination.node_id, &row.alpn),
                     Some(Some(connection)) if connection.destination.incarnation == row.destination.incarnation
                 )
             });
@@ -335,7 +335,7 @@ pub(crate) fn sync_recovery(writer: &ConnectionsWriter, destination: &PathName, 
                 if let Some(inc) = row.destination.incarnation.clone() {
                     let superseded: Vec<(NodeId, IncarnationId, Vec<u8>)> = recovery
                         .iter()
-                        .filter(|((id, i, a), p)| p.destination.name == row.destination.name && a == &row.alpn && !(id == &row.destination.node_id && i == &inc))
+                        .filter(|((id, i, a), p)| p.destination.node_id == row.destination.node_id && a == &row.alpn && !(id == &row.destination.node_id && i == &inc))
                         .map(|(k, _)| k.clone())
                         .collect();
                     for key in superseded {
@@ -360,7 +360,7 @@ pub(crate) fn sync_recovery(writer: &ConnectionsWriter, destination: &PathName, 
 fn spend(
     writer: &ConnectionsWriter,
     key: &(NodeId, IncarnationId, Vec<u8>),
-    source: &PathName,
+    source: &NodeId,
     destination: &ConnectionEnd,
     reason: &'static str,
 ) {
@@ -374,11 +374,11 @@ fn spend(
 /// A pending attempt ended without a dial of its own, or after it (`connections.md` §12: the
 /// reconnect attempt span records whether it was superseded before dial or already satisfied by
 /// Direct Connected).
-fn spent_span(source: &PathName, destination: &ConnectionEnd, reason: &'static str) {
+fn spent_span(source: &NodeId, destination: &ConnectionEnd, reason: &'static str) {
     tracing::info_span!(
         "rdm.node_admin.connection.remove.via-recovery-attempt",
-        source = %source,
-        destination = %destination.name,
+        source_node_id = %source,
+        destination_id = %destination.node_id, destination_path = %destination.name.path, destination_name = %destination.name.name,
         destination_node_id = %destination.node_id,
         destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
         reason,
@@ -449,7 +449,7 @@ pub async fn run_due_at(
         else {
             continue;
         };
-        let source = writer.own().name;
+        let source = writer.own().node_id;
         let (step, series) = {
             let held_arc = writer.held();
             let held = held_arc.lock().unwrap();
@@ -458,12 +458,12 @@ pub async fn run_due_at(
             let series = held
                 .own_latest_directs()
                 .into_iter()
-                .find(|d| d.destination.name == destination.name && d.alpn == alpn && d.state == ConnectionState::Failed && (&d.destination.node_id, &d.destination.incarnation) == (&destination.node_id, &destination.incarnation))
+                .find(|d| d.destination.node_id == destination.node_id && d.alpn == alpn && d.state == ConnectionState::Failed && (&d.destination.node_id, &d.destination.incarnation) == (&destination.node_id, &destination.incarnation))
                 .and_then(|d| d.recovery);
             let step = if held.end_superseded(&destination) == Some(true) {
                 Step::Spent("destination-superseded")
             } else if matches!(
-                held.active_direct_for(&source, &destination.name, &alpn),
+                held.active_direct_for(&source, &destination.node_id, &alpn),
                 Some(Some(connection)) if connection.destination.incarnation == destination.incarnation
             ) {
                 Step::Spent("direct-connected")
@@ -492,8 +492,8 @@ pub async fn run_due_at(
 
                 let span = tracing::info_span!(
                     "rdm.node_admin.connection.create.via-recovery-dial",
-                    source = %source,
-                    destination = %destination.name,
+                    source_node_id = %source,
+                    destination_id = %destination.node_id, destination_path = %destination.name.path, destination_name = %destination.name.name,
                     destination_node_id = %destination.node_id,
                     destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
                     due_ms,
@@ -594,16 +594,16 @@ pub(crate) fn accepted_on_alpn(
         let Some(proxy) = held
             .own_active_proxies()
             .into_iter()
-            .find(|p| p.destination.name == destination.name && p.alpn.as_slice() == alpn)
+            .find(|p| p.destination.node_id == destination.node_id && p.alpn.as_slice() == alpn)
         else {
             return;
         };
         let direct = matches!(
-            held.active_direct_for(&proxy.source.name, &destination.name, &proxy.alpn),
+            held.active_direct_for(&proxy.source.node_id, &destination.node_id, &proxy.alpn),
             Some(Some(_))
         );
         (
-            proxy.source.name.clone(),
+            proxy.source.node_id.clone(),
             (proxy.destination.clone(), proxy.alpn.clone(), direct),
         )
     };
@@ -615,8 +615,8 @@ pub(crate) fn accepted_on_alpn(
     );
     let span = tracing::info_span!(
         "rdm.node_admin.connection.update.via-accept-trigger",
-        source = %source,
-        destination = %destination.name,
+        source_node_id = %source,
+        destination_id = %destination.node_id, destination_path = %destination.name.path, destination_name = %destination.name.name,
         destination_node_id = %destination.node_id,
         destination_incarnation = %peer.incarnation,
         proxy_destination_node_id = %named.node_id,
@@ -660,18 +660,18 @@ pub(crate) fn accepted_on_alpn(
     }
 }
 
-/// Handle an inbound connection accepted from `node` across any active Proxy to `node.name`.
+/// Handle an inbound connection accepted from `node` across any active Proxy to `node.node_id`.
 pub(crate) fn accepted_resolved(writer: &ConnectionsWriter, node: &ResolvedNode) {
     let alpns: Vec<Vec<u8>> = {
         let held_arc = writer.held();
         let held = held_arc.lock().unwrap();
         held.own_active_proxies()
             .into_iter()
-            .filter(|p| p.destination.name == node.name)
+            .filter(|p| p.destination.node_id == node.node_id)
             .map(|p| p.alpn.clone())
             .collect()
     };
-    let birth = Birth {
+    let birth = Birth { mesh: node.mesh.clone(), kind: node.kind,
         name: node.name.clone(),
         node_id: node.node_id.clone(),
         incarnation: node.incarnation.clone(),
@@ -754,19 +754,19 @@ mod tests {
             .expect("build current-thread runtime");
 
         rt.block_on(async {
-            let src = ConnectionEnd {
-                name: PathName::new("mesh1", NodeKind::Gateway, 1),
+            let src = ConnectionEnd { mesh: "mesh1".into(), kind: NodeKind::Gateway,
+                name: PathName::numbered("mesh1", NodeKind::Gateway, 1),
                 node_id: NodeId::mint(),
                 incarnation: Some(IncarnationId::mint()),
             };
-            let carrier = ConnectionEnd {
-                name: PathName::new("mesh1", NodeKind::Gateway, 2),
+            let carrier = ConnectionEnd { mesh: "mesh1".into(), kind: NodeKind::Gateway,
+                name: PathName::numbered("mesh1", NodeKind::Gateway, 2),
                 node_id: NodeId::mint(),
                 incarnation: Some(IncarnationId::mint()),
             };
             let dst_inc = IncarnationId::mint();
-            let dst = ConnectionEnd {
-                name: PathName::new("mesh1", NodeKind::Broker, 1),
+            let dst = ConnectionEnd { mesh: "mesh1".into(), kind: NodeKind::Broker,
+                name: PathName::numbered("mesh1", NodeKind::Broker, 1),
                 node_id: NodeId::mint(),
                 incarnation: Some(dst_inc.clone()),
             };
@@ -823,7 +823,7 @@ mod tests {
             // accept from another birth is ignored with outcome="another-birth".
             accepted_on_alpn(
                 &writer,
-                &Birth {
+                &Birth { mesh: dst.mesh.clone(), kind: dst.kind,
                     name: dst.name.clone(),
                     node_id: dst.node_id.clone(),
                     incarnation: dst_inc.clone(),
@@ -833,7 +833,7 @@ mod tests {
             );
             accepted_on_alpn(
                 &writer,
-                &Birth {
+                &Birth { mesh: dst.mesh.clone(), kind: dst.kind,
                     name: dst.name.clone(),
                     node_id: dst.node_id.clone(),
                     incarnation: IncarnationId::mint(),

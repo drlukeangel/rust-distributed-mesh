@@ -27,8 +27,8 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     }
 }
 
-fn end(name: &str) -> ConnectionEnd {
-    ConnectionEnd { name: name.parse().unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
+fn end(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> ConnectionEnd {
+    ConnectionEnd { mesh: mesh.into(), kind, name, node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) }
 }
 
 fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
@@ -51,14 +51,14 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
 
         // The source, its carrier's connection and its own Proxy to the destination (the previous birth's
         // facts), then the destination made unreachable: a key nobody serves, a port nobody listens on.
-        let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&data_dir), &"mesh1.rpc.1".parse().unwrap(), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
+        let (me, carrier, dest) = (end(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), end(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&data_dir), &rdm_admin::store_log::LogWriter::new(&me.node_id, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
         writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
         writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 11)).await.unwrap();
         let seeded = storage.history().await.unwrap().len();
-        let destination = ResolvedNode {
+        let destination = ResolvedNode { mesh: dest.mesh.clone(), kind: dest.kind,
             node_id: dest.node_id.clone(),
             name: dest.name.clone(),
             endpoint_id: iroh::SecretKey::generate().public(),
@@ -112,7 +112,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
             (
                 h.own_latest_directs().into_iter().cloned().collect::<Vec<_>>(),
                 h.own_active_proxies().into_iter().cloned().collect::<Vec<_>>(),
-                resolve(&h, &me.name, &dest.name, POLICY).route,
+                resolve(&h, &me.node_id, &dest.node_id, POLICY).route,
                 reconnect_plan(&h, |_| None),
             )
         };

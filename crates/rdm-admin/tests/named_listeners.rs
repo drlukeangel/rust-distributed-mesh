@@ -94,7 +94,7 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
             .collect();
 
         let dep = Deployed { mesh: "mesh1".into(), kind: NodeKind::Gateway,
-            name: PathName::new("mesh1", NodeKind::Gateway, 1),
+            name: PathName::numbered("mesh1", NodeKind::Gateway, 1),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -139,14 +139,16 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
         let nodes_storage: Arc<dyn NodesStorage> = Arc::new(MemoryNodesStorage::default());
         let written_rows = Arc::new(WrittenRows::default());
 
+        let admin_id = NodeId::mint();
         let door = JoinDoor {
             nodes: Some((nodes_storage.clone(), written_rows)),
-            me: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
+            me: PathName::numbered("mesh1", NodeKind::NodeAdmin, 1),
             joins: joins.clone(),
-            answer: Arc::new(|| {
-                Box::pin(async {
+            answer: { let admin_id = admin_id.clone(); Arc::new(move || {
+                let admin_id = admin_id.clone();
+                Box::pin(async move {
                     Ok(JoinAnswer {
-                        served_by: "mesh1.admin.1".into(),
+                        served_by: admin_id,
                         control: JoinControl {
                             cert_policy: None,
                             provider: ProviderKind::Process,
@@ -160,7 +162,7 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
                         statuses: Vec::new(),
                     })
                 })
-            }),
+            }) },
             types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| {
                 installed_for_door
@@ -170,7 +172,7 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
             }),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
-            primary: Arc::new(|| Some("mesh1.admin.1".into())),
+            primary: Arc::new(move || Some(admin_id.clone())),
             atlas: None,
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs(crate::adopted_time())),
         };

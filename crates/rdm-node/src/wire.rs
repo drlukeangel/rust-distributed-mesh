@@ -17,8 +17,8 @@ struct WireFabricIdentity {
 /// with `GetTopology` (op `0x1E`, [`crate::topology_read`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinAnswer {
-    /// The answering admin's path name.
-    pub served_by: String,
+    /// The answering admin's globally unique node ID.
+    pub served_by: rdm_core::NodeId,
     /// The control facts the answer carries.
     pub control: JoinControl,
     /// The statuses the admin holds (original publisher and instant kept).
@@ -66,7 +66,7 @@ pub struct BuildFloor {
 
 #[derive(Serialize, Deserialize)]
 struct WireJoinAnswer {
-    served_by: String,
+    served_by: rdm_core::NodeId,
     control: WireControl,
     #[serde(with = "rdm_transport::envelope::frames")]
     statuses: Vec<rdm_transport::topology::Frame>,

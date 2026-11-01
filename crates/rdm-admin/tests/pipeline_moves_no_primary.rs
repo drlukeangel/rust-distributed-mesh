@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 const DOMAIN: &str = "primary-update-step";
-const PRIMARY: &str = "mesh1.admin.1";
 
 /// The primary's runtime: running, never stopped here; nothing is launched.
 struct Running;
@@ -30,7 +29,7 @@ impl DeploymentProvider for Running {
     }
     async fn spawn(&self, launch: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         // A node.connection.delete or a stop launches nothing: refused here so the cell's assertion names it.
-        Err(DeployError::Spawn { node: format!("{launch:?}").chars().take(80).collect(), reason: "this cell launches nothing".into() })
+        Err(DeployError::Spawn { node: launch.node.clone(), reason: "this cell launches nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Err(DeployError::Terminate { deployment: h.deployment_id.to_string(), reason: "this cell terminates nothing".into() })
@@ -61,7 +60,7 @@ impl NodeObserver for Executor {
     }
     async fn send_command(&self, node: &Node, cmd: NodeCommand, _: &CommandContext) -> CommandAdmission {
         self.sent.lock().unwrap().push(cmd);
-        CommandAdmission::NotSent { reason: format!("this cell sends {} nothing", node.name) , code: rdm_core::outcome::Code::FailedPrecondition }
+        CommandAdmission::NotSent { reason: format!("this cell sends {} nothing", node.node_id) , code: rdm_core::outcome::Code::FailedPrecondition }
     }
 }
 
@@ -75,7 +74,7 @@ impl TopologySink for NoView {
 }
 
 fn primary() -> Node {
-    let mut n = Node::allocated(PRIMARY.parse().unwrap());
+    let mut n = Node::allocated(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
     n.status = NodeStatus::Ready;
     n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = true;
@@ -86,13 +85,15 @@ fn primary() -> Node {
 /// The standalone workflow `workflow` (a node.connection.delete or a stop) of the role-holding admin:
 /// the pipeline's result, the commands the observer was asked to send, the Build's step receipts and
 /// the trace id.
-fn run_with(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
+fn run_with(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String, NodeId) {
     run_workflow(workflow)
 }
 
 /// Run `workflow` on the primary (a node.connection.delete or a stop): the result, the
 /// commands sent, the step receipts and the trace id.
-fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
+fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String, NodeId) {
+    let target = primary();
+    let target_id = target.node_id.clone();
     let cap = crate::mesh_delete_resume::capture();
     let observer = Executor { sent: Mutex::new(Vec::new()) };
     let view = NoView;
@@ -108,7 +109,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-node-admin".into(),
             seeds: vec![("executorkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { name: "mesh2.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh2".into(), name: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: std::env::temp_dir().join(format!("role-transfer-step-{}", NodeId::mint())),
             store_dir: std::env::temp_dir().join(format!("role-transfer-step-{}", NodeId::mint())),
@@ -119,12 +120,12 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60(&format!("dep-{PRIMARY}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
-        let root = tracing::info_span!("cell.primary-update-step", build_id = %build_id.log(), node = PRIMARY);
+        let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
+        let root = tracing::info_span!("cell.primary-update-step", build_id = %build_id.log(), node_id = %target_id);
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
-            let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node: primary(), handle, unreached: false };
+            let req = DeleteRequest { operation: rdm_core::OperationId::node(if workflow == NodeCommand::Stop { "node.stop" } else { "node.connection.delete" }, &target_id), build_id: build_id.clone(), attempt: 1, node: target, handle, unreached: false };
             match workflow {
                 NodeCommand::Stop => pipeline.stop(&req).instrument(root).await,
                 _ => pipeline.delete_connections(&req).instrument(root).await,
@@ -145,7 +146,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
     let names: Vec<String> = cap.spans().iter().filter(|s| s["trace_id"] == trace_id.as_str()).map(|s| s["name"].as_str().unwrap_or("").to_string()).collect();
     crate::assert_own_story(names.iter().map(String::as_str).filter(|n| *n != "cell.primary-update-step"));
     println!("trace_id={trace_id} spans={names:?}");
-    (r, observer.sent.into_inner().unwrap(), steps, trace_id)
+    (r, observer.sent.into_inner().unwrap(), steps, trace_id, target_id)
 }
 
 /// CONTRACT (lifecycles/node-connections-delete.md "Admission is not connections delete completion"; node-stop.md, the complete stop): a
@@ -154,11 +155,11 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
 #[test]
 fn a_standalone_connections_delete_or_stop_whose_command_was_never_admitted_fails_by_name_and_completes_nothing() {
     for (workflow, command, wait) in [(NodeCommand::DeleteConnections, "node.connection.delete", DeleteStep::DeleteConnections.name()), (NodeCommand::Stop, "stop-node", DeleteStep::AwaitNodeLeft.name())] {
-        let (r, sent, steps, _) = run_with(workflow);
+        let (r, sent, steps, _, target_id) = run_with(workflow);
         assert_eq!(sent, vec![workflow], "the {command} was asked for");
         let e = r.expect_err("a command that never reached the birth established nothing");
         assert_eq!(e.step, wait, "{e}");
-        assert!(e.reason.contains(PRIMARY) && e.reason.contains(command) && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
+        assert!(e.reason.contains(target_id.as_str()) && e.reason.contains(command) && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
         assert!(!steps.iter().any(|(s, _)| s == "Complete"), "no Complete receipt: {steps:?}");
         assert_eq!(steps.first().map(|(s, _)| s.as_str()), Some(if workflow == NodeCommand::DeleteConnections { DeleteStep::DeleteConnections.name() } else { DeleteStep::StopNode.name() }), "the pipeline moves no role: its first step is the command's (R-MT1): {steps:?}");
     }

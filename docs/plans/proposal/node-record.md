@@ -57,6 +57,8 @@ lose to the Build:
 
 ## Requirements
 
+Storage is append-only. A lifecycle transition appends a new record; it does not remove or overwrite historical records. `Deleted` is a lifecycle status in the latest appended lifecycle record in the election-selected writer’s stream for that node, not a physical deletion of stored records. An append by a former writer does not supersede the selected writer’s stream. Replacement appends the predecessor's name change at its unchanged path and records the successor under its new node ID. An explicit predecessor reference carries node ID and incarnation; it is not an authorization mechanism.
+
 **R-NR1. Path and name are separate properties with separate meanings.** `path` says where
 the node is in the tree; `name` is the node's name. They are stored, passed and read separately.
 There is no combined `path.name` identifier, display format or string to split. A name holds no
@@ -64,16 +66,20 @@ dot; a path may hold dots. Neither field encodes the node's mesh, type, ordinal 
 `mesh` and `node_type` remain explicit metadata.
 
 The existing `PathName` Rust type may carry the two fields as a structured argument. That does
-not turn them into one value: references and commands retain separate `path` and `name` fields,
-and no caller concatenates or parses them. The ordinary claim enforces uniqueness of a name at
-its path using both fields, not a concatenated index string.
+not turn them into one property. `node.id` is globally unique and is the first choice for code
+references, commands and lookups. A caller-supplied location is resolved using the composite
+`(path, name)` index; subsequent references carry the ID. Wherever location is carried, storage,
+wire objects, launch inputs, references, queries and diagnostics keep the two fields separate.
+No caller concatenates them or splits a string to recover them. Names are unique within their
+path; the ordinary claim enforces that uniqueness using both fields.
 
 A node is tied to its immutable `path`. Replacement renames the predecessor's `name` to
 `<name>-old` at that same path. The successor claims the same path with the original name.
-The Build identifies the predecessor by node ID, never by parsing a name or path.
+The Build identifies the predecessor by node ID and explicit replacement metadata, never by
+parsing a name or path. An ordinary name ending in `-old` does not establish replacement provenance.
 `node.name.update` carries separate `path` and `name` fields and refuses a different path.
 Launches carry `RDM_NODE_PATH` and `RDM_NODE_NAME` separately. Reads filter on `path`, `name`, or
-both as separate properties. This supersedes the earlier proposed `.old` path move.
+both as separate properties.
 Durable format moved: node and connection records, digest names, JoinNode and
 launch inputs retain the two fields separately.
 
@@ -95,9 +101,9 @@ write's outcome remains unresolved. An expired client wait does not prove that t
 no longer commit that write. Election timing supplies no storage-ordering guarantee. The node
 record carries no revision. The existing election result retains `Primary.revision`, independently
 of the lifecycle flags; readers restore that election result rather than reconstructing its order
-from a lifecycle record. Path to
+from a lifecycle record. Composite `(path, name)` to
 node.id resolves through the claim (`name_claim`, storage.rs:625) and nowhere else; node.id to record
-is a point read (`node`, storage.rs:605). The `path.name` index entry (`index_path`, storage.rs:617)
+is a point read (`node`, storage.rs:605). The composite `(path, name)` index entry (`index_path`, storage.rs:617)
 and its reader `node_at` (storage.rs:606-609, "the node whose record was last written at it, a
 Deleted one included") are deleted with every caller (about twenty: `atlas.rs:732`, `:877`,
 `accepted.rs:1119`, `runner.rs:301`, `:1661`, `node_config_update.rs:44`, `boot.rs:2070`,
@@ -136,7 +142,7 @@ what happens to it at a start (same node.id) and at a re-birth (new node.id):
 | `status`, `declared`, `operations`, `silence`, `data_dir_lost`, `data_dir_unreadable` | lifecycle | the node's mesh-primary (states.md:21-36) | `starting` at the launch | `starting` again on the start command | `starting` on the new record |
 | `cert`, `signing_cert` | lifecycle | the mesh-primary as issuer (fabric-certs.md) | at the join | renewed, not reissued | issued anew |
 | `is_primary`, `is_fabric_primary` | lifecycle | the lifecycle writer, using the primary-change operation's result | the election; a flag, 0 or 1 (R-NR2) | unchanged | none until elected |
-| `kind`, `node_type`, `executable`, `storage_persistence`, `placement`, `topology_storage_provider`, `allocated`, `predecessor`, `renamed_from`, `inherited_by`, `initial_properties` | lifecycle | the lifecycle writer, at the claim or the appropriate operation | explicit entry metadata and the exact claim's immutable launch snapshot; no ownership inferred from path/name | retained unless the operation changes the field | entry-owned fields from the entry at replacement; recovery retains predecessor evidence and mints the new birth's allocation |
+| `kind`, `node_type`, `executable`, `storage_persistence`, `placement`, `topology_storage_provider`, `allocated`, `predecessor`, `replacement_from`, `renamed_from`, `inherited_by`, `initial_properties` | lifecycle | the lifecycle writer, at the claim or the appropriate operation | explicit entry metadata and the exact claim's immutable launch snapshot; no ownership inferred from path/name | retained unless the operation changes the field | entry-owned fields from the entry at replacement; recovery retains predecessor evidence and mints the new birth's allocation |
 | `endpoint_id`, `transport_addr`, `listeners` | node | the node, at its bind | the operating system picks them | rewritten at every start | new |
 | `app_types` (`types`, `held`) | node | the node, at its join | its declaration | re-declared at the join | declared anew |
 | `config`, `tags`, `applied` | node | the node, through one serialized property writer | entry properties and application recognition at first write; config/tags plus recognition in one durable put for an existing node's Build apply | preserve the durable properties and applied identities; startup does not replay an older environment over them | entry at replacement; predecessor's acknowledged properties and applied identities at recovery |
@@ -267,6 +273,12 @@ node's own `node.config.update` up through its mesh-primary and the row answered
 `properties_owed` (the function stays, reading atomic application evidence and workflow receipts,
 R-NR5), `row-seeded`, the atlas's held node rows, the `old` flag and
 `ordinal`/`label`/`kind` parsing. The hooks stay as Q175 and Q256 left them.
+
+Replacement provenance and claim release are separate facts. `replacement_from` records the original
+structured location established by an admitted replacement; allocation carries the exact predecessor
+node ID and incarnation. `renamed_from` records a pending old-name claim release. Ordinary renames
+preserve replacement provenance, and an admitted rollback clears it. Neither a `-old` suffix nor a
+pending claim release establishes replacement identity.
 
 ## The record it moves
 

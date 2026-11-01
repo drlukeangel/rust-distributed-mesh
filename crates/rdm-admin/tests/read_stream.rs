@@ -95,7 +95,7 @@ async fn serve(held: Vec<NodeView>, ending: Ending) -> Served {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { node_id: node_id.clone(), name: "mesh1.admin.1".parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation });
     let client = Arc::new(NodeRpcClient::new(caller.clone(), resolver));
     Served { client, target: NodeTarget::ExactNode(node_id), _router: router, _caller: caller }
 }
@@ -145,9 +145,10 @@ async fn a_cut_stream_a_row_past_the_frame_and_an_unknown_pair_are_failed_reads(
     }
     let mut held = rows(1, 3, 10);
     held[1].config.insert("note".into(), "n".repeat(70 * 1024));
+    let oversized_id = held[1].node_id.clone();
     let over = serve(held, Ending::Whole).await;
     match read(&over, Filter::new()).await {
-        Err(rdm_client::CallEnd::Rejected { reason, detail }) => assert!(reason == "read-over-bound" && detail.contains("mesh1.rpc.2"), "named: {reason}: {detail}"),
+        Err(rdm_client::CallEnd::Rejected { reason, detail }) => assert!(reason == "read-over-bound" && detail.contains(oversized_id.as_str()), "named: {reason}: {detail}"),
         other => panic!("a row past the frame is refused naming it, not {other:?}"),
     }
     let s = serve(rows(1, 3, 10), Ending::Whole).await;
@@ -159,15 +160,15 @@ async fn a_cut_stream_a_row_past_the_frame_and_an_unknown_pair_are_failed_reads(
 
 /// `total` connection rows of `mesh1.rpc.1`, alternating `direct` and `proxy`, each carrying `reason`
 /// bytes so the whole list spans several 64 KiB frames.
-fn connection_rows(total: usize, reason: usize) -> Vec<ConnectionView> {
+fn connection_rows(source: &NodeId, destinations: &[NodeId], carrier: &NodeId, total: usize, reason: usize) -> Vec<ConnectionView> {
     (1..=total)
         .map(|i| ConnectionView {
             id: ConnectionId::mint().to_string(),
-            source: "mesh1.rpc.1".into(),
-            destination: format!("mesh1.rpc.{}", (i % 5) + 2),
+            source: source.to_string(),
+            destination: destinations[i % destinations.len()].to_string(),
             kind: if i % 2 == 0 { "proxy".into() } else { "direct".into() },
             state: "connected".into(),
-            carrier: (i % 2 == 0).then(|| "mesh1.admin.1".into()),
+            carrier: (i % 2 == 0).then(|| carrier.to_string()),
             reason: (reason > 0).then(|| "r".repeat(reason)),
             logged_at_ms: i as u64,
         })
@@ -176,11 +177,11 @@ fn connection_rows(total: usize, reason: usize) -> Vec<ConnectionView> {
 
 /// Serve `held` as `node.connection.get { node }` answers it on op `0x23`: the exact birth's own
 /// connections matching `filter`, packed by `rdm_client::read_frames` and streamed.
-async fn serve_connections(node_name: &str, complete: bool, held: Vec<ConnectionView>, ending: Ending) -> (Served, rdm_client::ExactBirth) {
+async fn serve_connections(node_id: &NodeId, complete: bool, held: Vec<ConnectionView>, ending: Ending) -> (Served, rdm_client::ExactBirth) {
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
-    let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
+    let (node_id, incarnation) = (node_id.clone(), IncarnationId::mint());
     let held_birth = incarnation.clone();
-    let held_name = node_name.to_string();
+    let held_name = node_id.to_string();
     let server = ServerBuilder::new()
         .serve_stream::<Read, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req: ReadRequest, sink: ReplySink<Read, NotStarted>| {
             let held = held.clone();
@@ -226,7 +227,7 @@ async fn serve_connections(node_name: &str, complete: bool, held: Vec<Connection
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { node_id: node_id.clone(), name: node_name.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() });
     let client = Arc::new(NodeRpcClient::new(caller.clone(), resolver));
     let target = NodeTarget::ExactNode(node_id.clone());
     let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
@@ -240,22 +241,24 @@ async fn serve_connections(node_name: &str, complete: bool, held: Vec<Connection
 /// and a cut stream is a failed read.
 #[tokio::test]
 async fn connections_get_streams_every_row_across_frames_in_order_and_refuses_wrong_birth_or_cut() {
-    let held = connection_rows(300, 350);
+    let source = NodeId::mint();
+    let destinations: Vec<NodeId> = (0..5).map(|_| NodeId::mint()).collect();
+    let held = connection_rows(&source, &destinations, &NodeId::mint(), 300, 350);
     let whole: usize = held.iter().map(|c| serde_json::to_vec(c).unwrap().len()).sum();
     assert!(whole > 64 * 1024, "the held connections exceed one 64 KiB frame ({whole} bytes of JSON)");
 
-    let (s, birth) = serve_connections("mesh1.rpc.1", false, held.clone(), Ending::Whole).await;
+    let (s, birth) = serve_connections(&source, false, held.clone(), Ending::Whole).await;
     let got = rdm_client::NodeRpc::new(&s.client).connections_get(&birth, &Filter::new(), &CallOptions::default()).await.expect("the whole connections read");
-    assert_eq!((got.node.as_str(), got.complete, got.connections.len()), ("mesh1.rpc.1", false, held.len()));
+    assert_eq!((got.node.as_str(), got.complete, got.connections.len()), (source.as_str(), false, held.len()));
     assert_eq!(got.connections, held, "every connection row in order across frames");
 
-    let proxies = rdm_client::NodeRpc::new(&s.client).connections_get(&birth, &Filter::new().eq("kind", ["proxy"]).eq("destination", ["mesh1.rpc.3"]), &CallOptions::default()).await.expect("a filtered connections read");
-    let expected: Vec<ConnectionView> = held.iter().filter(|c| c.kind == "proxy" && c.destination == "mesh1.rpc.3").cloned().collect();
+    let proxies = rdm_client::NodeRpc::new(&s.client).connections_get(&birth, &Filter::new().eq("kind", ["proxy"]).eq("destination", [destinations[1].as_str()]), &CallOptions::default()).await.expect("a filtered connections read");
+    let expected: Vec<ConnectionView> = held.iter().filter(|c| c.kind == "proxy" && c.destination == destinations[1].as_str()).cloned().collect();
     assert!(!expected.is_empty());
-    assert_eq!((proxies.node.as_str(), proxies.complete, proxies.connections), ("mesh1.rpc.1", false, expected), "the filter's rows across frames, in order");
+    assert_eq!((proxies.node.as_str(), proxies.complete, proxies.connections), (source.as_str(), false, expected), "the filter's rows across frames, in order");
 
-    let empty = rdm_client::NodeRpc::new(&s.client).connections_get(&birth, &Filter::new().eq("destination", ["mesh9.rpc.9"]), &CallOptions::default()).await.expect("an empty filtered connections read");
-    assert_eq!((empty.node.as_str(), empty.complete, empty.connections.is_empty()), ("mesh1.rpc.1", false, true), "zero matching rows still carry the answering node and complete");
+    let empty = rdm_client::NodeRpc::new(&s.client).connections_get(&birth, &Filter::new().eq("destination", [NodeId::mint().to_string()]), &CallOptions::default()).await.expect("an empty filtered connections read");
+    assert_eq!((empty.node.as_str(), empty.complete, empty.connections.is_empty()), (source.as_str(), false, true), "zero matching rows still carry the answering node and complete");
 
     let wrong_birth = rdm_client::ExactBirth { incarnation: IncarnationId::mint(), ..birth.clone() };
     match rdm_client::NodeRpc::new(&s.client).connections_get(&wrong_birth, &Filter::new(), &CallOptions::default()).await {
@@ -263,7 +266,7 @@ async fn connections_get_streams_every_row_across_frames_in_order_and_refuses_wr
         other => panic!("a wrong birth must be refused, not {other:?}"),
     }
 
-    let (cut, cut_birth) = serve_connections("mesh1.rpc.1", true, held, Ending::Cut).await;
+    let (cut, cut_birth) = serve_connections(&source, true, held, Ending::Cut).await;
     match rdm_client::NodeRpc::new(&cut.client).connections_get(&cut_birth, &Filter::new(), &CallOptions::default()).await {
         Err(rdm_client::CallEnd::Indeterminate { .. }) => {}
         other => panic!("a connections stream cut before its End is a failed read, not {other:?}"),

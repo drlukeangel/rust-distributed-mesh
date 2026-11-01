@@ -73,8 +73,8 @@ impl Capture {
     }
 }
 
-fn ready_node(name: &str, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn ready_node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
@@ -96,9 +96,9 @@ fn fixture_topology() -> Topology {
             status: ScopeStatus::Ready,
         }],
         nodes: vec![
-            ready_node("mesh1.admin.1", false, true),
-            ready_node("mesh1.admin.2", true, false),
-            ready_node("mesh1.rpc.1", false, false),
+            ready_node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false, true),
+            ready_node(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, false),
+            ready_node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false),
         ],
     }
 }
@@ -129,7 +129,7 @@ impl Gate for ReadyGate {
 }
 
 struct RecordedRuns {
-    ran: Mutex<Vec<String>>,
+    ran: Mutex<Vec<rdm_core::OperationId>>,
     builds: Arc<MemoryBuildStateAdapter>,
     recorded: Arc<Mutex<Recorded>>,
 }
@@ -152,7 +152,7 @@ impl OperationRunner for RecordedRuns {
                     rdm_admin::accepted::target_executable(&topology, node).map(|b| b.sha256.clone());
                 self.recorded.lock().unwrap().insert(
                     node.clone(),
-                    RecordedRow {
+                    RecordedRow { mesh: op.mesh().unwrap().to_owned(), kind: op.kind().unwrap(),
                         applied: Default::default(),
                         config: None,
                         tags: None,
@@ -211,44 +211,37 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
 
     rt.block_on(async {
         let t = fixture_topology();
+        let admin = t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap();
+        let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
         let mut held = FabricTopology::of_observed(&t);
-        for (p, sha) in [("mesh1.admin.2", "sha-admin-2"), ("mesh1.rpc.1", "sha-rpc-old")] {
-            let path: PathName = p.parse().unwrap();
+        for (p, sha) in [(PathName::new("mesh1.admin", "2").unwrap(), "sha-admin-2"), (PathName::new("mesh1.rpc", "1").unwrap(), "sha-rpc-old")] {
+            let path = p;
             let mesh = held.meshes.get_mut("mesh1").unwrap();
             let mut spec = mesh.spec(&path).cloned().unwrap();
-            spec.executable = Some(recorded_binding(path.kind, sha));
+            spec.executable = Some(recorded_binding(spec.kind, sha));
             mesh.set_spec(spec).unwrap();
         }
 
         let builds = Arc::new(MemoryBuildStateAdapter::new());
-        let accepted = AcceptedStore::seeded(
-            &*builds,
-            t.fabric.id.clone(),
-            held.clone(),
-            "mesh1.admin.1",
-        )
+        let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), held.clone(), &executor, "mesh1")
         .await
         .unwrap();
         let topology = Arc::new(RwLock::new(t.clone()));
         let store = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
         let mut recorded = Recorded::new();
         for (p, sha) in [
-            ("mesh1.admin.1", "sha-admin-1"),
-            ("mesh1.admin.2", "sha-admin-2"),
-            ("mesh1.rpc.1", "sha-rpc-old"),
+            (PathName::new("mesh1.admin", "1").unwrap(), "sha-admin-1"),
+            (PathName::new("mesh1.admin", "2").unwrap(), "sha-admin-2"),
+            (PathName::new("mesh1.rpc", "1").unwrap(), "sha-rpc-old"),
         ] {
-            let path: PathName = p.parse().unwrap();
+            let path = p;
             let n = t.node(&path).unwrap();
-            let mut row = rdm_admin::storage::NodeRow::new(
-                n.name.clone(),
-                n.node_id.clone(),
-                NodeStatus::Ready,
-            );
-            row.executable = Some(recorded_binding(n.name.kind, sha));
+            let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
+            row.executable = Some(recorded_binding(n.kind, sha));
             store.write_record(&row).await.unwrap();
             recorded.insert(
                 n.name.clone(),
-                RecordedRow {
+                RecordedRow { mesh: n.mesh.clone(), kind: n.kind,
                         applied: Default::default(),
                     config: None,
                     tags: None,
@@ -263,7 +256,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         let mut cp = ControlPlane::new(
             builds.clone(),
             accepted.clone(),
-            "mesh1.admin.1".parse().unwrap(),
+            rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
             t.clone(),
             crate::adopted_time(),
         );
@@ -276,7 +269,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
 
         // 1. A created path whose spec names no executable is refused by name at acceptance.
         let mut missing_specs = base_specs.clone();
-        missing_specs.push(NodeSpec::default_for("mesh1.gateway.1".parse().unwrap(), "mesh1", rdm_core::NodeKind::Gateway));
+        missing_specs.push(NodeSpec::default_for(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway));
         let missing_res = cp
             .submit(
                 "test-missing-exe",
@@ -289,7 +282,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             .await;
         match missing_res {
             Err(Refusal::Reject(BuildReject::ExecutableMissing { node })) => {
-                assert_eq!(node, "mesh1.gateway.1");
+                assert_eq!(node, rdm_core::PathName::new("mesh1.gateway", "1").unwrap());
             }
             other => panic!("expected ExecutableMissing for mesh1.gateway.1, got {other:?}"),
         }
@@ -302,7 +295,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         let mut wrong_sha_specs = base_specs.clone();
         let rpc_idx = wrong_sha_specs
             .iter()
-            .position(|s| s.path.to_string() == "mesh1.rpc.1")
+            .position(|s| s.path == PathName::new("mesh1.rpc", "1").unwrap())
             .unwrap();
         let mut bad_binding = crate::test_executable(NodeKind::RpcNode);
         bad_binding.sha256 =
@@ -320,7 +313,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             .await;
         match wrong_sha_res {
             Err(Refusal::Reject(BuildReject::ExecutableRefused { node, detail })) => {
-                assert_eq!(node, "mesh1.rpc.1");
+                assert_eq!(node, rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
                 assert!(
                     detail.contains("hashes to") && detail.contains("the binding expects"),
                     "refusal detail must report hash mismatch: {detail}"
@@ -337,7 +330,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         //    and replaces only mesh1.rpc.1 while creating mesh1.gateway.1 and leaving mesh1.admin.2 untouched.
         let mut valid_specs = base_specs.clone();
         valid_specs[rpc_idx].executable = Some(crate::test_executable(NodeKind::RpcNode));
-        let mut gw_spec = NodeSpec::default_for("mesh1.gateway.1".parse().unwrap(), "mesh1", rdm_core::NodeKind::Gateway);
+        let mut gw_spec = NodeSpec::default_for(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway);
         gw_spec.executable = Some(crate::test_executable(NodeKind::Gateway));
         valid_specs.push(gw_spec);
 
@@ -366,13 +359,14 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             topology.clone(),
             runs.clone(),
         );
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let fp_id = t.node(&me).unwrap().node_id.clone();
-        let env = Arc::new(DriveEnv {
+        let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
             me: me.clone(),
             topology: topology.clone(),
             builds: builds.clone(),
             door: Arc::new(ClaimDoor {
+                incarnation: executor.incarnation.clone(),
                 node_id: fp_id,
                 me,
                 topology,
@@ -409,9 +403,9 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
         assert_eq!(
             executed,
             vec![
-                "node.create:mesh1.gateway.1",
-                "node.create:mesh1.rpc.1",
-                "node.delete:mesh1.rpc.1",
+                rdm_core::OperationId::location("node.create", &PathName::new("mesh1.gateway", "1").unwrap()),
+                rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap()),
+                rdm_core::OperationId::node("node.delete", &t.node(&PathName::new("mesh1.rpc", "1").unwrap()).unwrap().node_id),
             ],
             "only the replaced path (mesh1.rpc.1) and created path (mesh1.gateway.1) run operations; untouched mesh1.admin.2 is neither deleted nor created"
         );

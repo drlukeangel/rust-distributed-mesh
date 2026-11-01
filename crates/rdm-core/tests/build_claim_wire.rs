@@ -41,17 +41,17 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
     use BuildClaimReply::*;
     let fixtures = [
         (Won { context: CallContext::default() }, "0000000000"),
-        (Lost { holder: "a".into() }, "010161"),
+        (Lost { holder: rdm_core::NodeId::parse("0123456789ab").unwrap() }, "010c303132333435363738396162"),
         (NotOpen { next: Some(7) }, "020107"),
         (NotOpen { next: None }, "0200"),
-        (NotClaimant { mesh: Some("x".into()), fabric_primary: Some("m".into()), mesh_primary: None }, "0301017801016d00"),
+        (NotClaimant { mesh: Some("x".into()), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh_primary: None }, "03010178010c30313233343536373839616200"),
         (PeerUnresolved { reason: "p".into() }, "040170"),
         (NotReady { reason: "n".into() }, "05016e"),
         (Busy { reason: "b".into() }, "060162"),
         (ConnectionsDeleting { reason: "d".into() }, "070164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0802"),
         (Unauthorized { reason: "u".into() }, "090175"),
-        (BuildInProgress { current_build_id: "c".into(), mesh: "x".into(), held_by: Some("h".into()) }, "0a01630178010168"),
+        (BuildInProgress { current_build_id: "c".into(), mesh: "x".into(), held_by: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) }, "0a01630178010c303132333435363738396162"),
         (BuildInProgress { current_build_id: "c".into(), mesh: "x".into(), held_by: None }, "0a0163017800"),
     ];
     for (reply, hex) in fixtures {

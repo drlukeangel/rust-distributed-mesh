@@ -9,14 +9,14 @@ use rdm_transport::{NodeResolver, NodeTarget, ResolvedNode};
 
 /// Block Direct dials from `source` toward `(destination, alpn)`, answering
 /// `ConnectError::NotSent` and recording `Direct Failed` as an unreachable direct dial does.
-pub fn block_direct(source: &RunningNode, destination: &PathName, alpn: &[u8]) {
+pub fn block_direct(source: &RunningNode, destination: &rdm_core::NodeId, alpn: &[u8]) {
     source
         .data_connections_for_testkit()
         .block_direct_dial(destination, alpn);
 }
 
 /// Release a Direct dial block on `source` toward `(destination, alpn)`.
-pub fn unblock_direct(source: &RunningNode, destination: &PathName, alpn: &[u8]) {
+pub fn unblock_direct(source: &RunningNode, destination: &rdm_core::NodeId, alpn: &[u8]) {
     source
         .data_connections_for_testkit()
         .unblock_direct_dial(destination, alpn);
@@ -35,7 +35,7 @@ fn held_birth(source: &RunningNode, destination: &PathName) -> ResolvedNode {
         .node_rpc
         .resolver
         .resolve(&NodeTarget::CurrentPath(destination.clone()))
-        .unwrap_or_else(|f| panic!("{destination} does not resolve in the source's view: {f:?}"))
+        .unwrap_or_else(|f| panic!("{destination:?} does not resolve in the source's view: {f:?}"))
 }
 
 /// Block `source`'s direct Node RPC dials to `destination`, the process its view names there: a

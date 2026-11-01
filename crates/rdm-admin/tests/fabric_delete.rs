@@ -51,9 +51,9 @@ const DOMAIN: &str = "fabric-delete-cell";
 
 #[derive(Default)]
 struct Fleet {
-    pids: BTreeMap<u32, String>,
+    pids: BTreeMap<u32, NodeId>,
     running_pids: Mutex<BTreeSet<u32>>,
-    terminated: Mutex<Vec<String>>,
+    terminated: Mutex<Vec<NodeId>>,
 }
 
 #[async_trait::async_trait]
@@ -101,18 +101,18 @@ impl NodeObserver for NoRpc {
 }
 
 #[derive(Default)]
-struct View(Mutex<BTreeMap<String, Node>>, Mutex<BTreeSet<String>>, Mutex<Option<Arc<NodeRows>>>);
+struct View(Mutex<BTreeMap<NodeId, Node>>, Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>, Mutex<Option<Arc<NodeRows>>>);
 impl TopologySink for View {
     fn publish(&self, n: Node) {
-        self.0.lock().unwrap().insert(n.name.to_string(), n);
+        self.0.lock().unwrap().insert(n.node_id.clone(), n);
     }
     fn remove(&self, _: &PathName) {}
     fn remove_birth(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
         let mut view = self.0.lock().unwrap();
-        if view.get(&name.to_string()).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)) {
-            view.remove(&name.to_string());
+        if view.get(node_id).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)) {
+            view.remove(node_id);
         }
-        self.1.lock().unwrap().insert(name.to_string());
+        self.1.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
     }
     fn node_rows(&self) -> Option<Arc<NodeRows>> {
         self.2.lock().unwrap().clone()
@@ -127,8 +127,8 @@ impl View {
     }
 }
 
-fn node_record(name: &str, primary: bool, fabric_primary: bool) -> Node {
-    let mut n = Node::allocated(name.parse().unwrap());
+fn node_record(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name, mesh, kind);
     n.status = NodeStatus::Ready;
     n.is_primary = primary;
     n.is_fabric_primary = fabric_primary;
@@ -136,9 +136,9 @@ fn node_record(name: &str, primary: bool, fabric_primary: bool) -> Node {
     n
 }
 
-fn handle(name: &str, pid: u32) -> DeploymentHandle {
+fn handle(pid: u32) -> DeploymentHandle {
     DeploymentHandle {
-        deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60(&format!("dep-{name}"))).unwrap(),
+        deployment_id: DeploymentId::mint(),
         provider: ProviderKind::Process,
         pid: Some(pid),
         start: Some(1),
@@ -154,11 +154,11 @@ fn live_roster(records: &[Node]) -> Result<Vec<RosterBirth>, String> {
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
         // The record a create wrote: the node's row and its birth.
-        let mut row = NodeRow { initial_properties: None, topology_storage_provider: None, writer: None,
+        let mut row = NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
                 name: n.name.clone(),
                 node_id: n.node_id.clone(),
                 status: NodeStatus::Ready,
-                config: BTreeMap::from([("role".to_string(), n.name.to_string())]),
+                config: BTreeMap::from([("role".to_string(), n.kind.node_type().to_owned())]),
                 tags: Default::default(),
                 allocated: None,
                 renamed_from: None,
@@ -174,10 +174,10 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
             row.birth_mut(incarnation, &n.name);
         }
         storage.write_record(&row).await.unwrap();
-        assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
-        let h = handle(&n.name.to_string(), 50_000);
+        assert!(matches!(rows.claim(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        let h = handle(50_000);
         storage
-            .put_runtime(&RuntimeRow {
+            .put_runtime(&RuntimeRow { kind: n.kind, mesh: n.mesh.clone(),
                 node_id: n.node_id.clone(),
                 name: n.name.clone(),
                 incarnation_id: n.incarnation_id.clone().unwrap(),
@@ -200,12 +200,12 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let data_root = std::env::temp_dir().join(format!("fabric-delete-{}", NodeId::mint()));
     let fabric_id = FabricId::mint();
     let (id1, id2) = (MeshId::mint(), MeshId::mint());
-    let m1_a1 = node_record("mesh1.admin.1", true, true);
-    let m1_r1 = node_record("mesh1.rpc.1", true, false);
-    let m2_a1 = node_record("mesh2.admin.1", true, false);
-    let m2_r1 = node_record("mesh2.rpc.1", true, false);
+    let m1_a1 = node_record(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true);
+    let m1_r1 = node_record(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true, false);
+    let m2_a1 = node_record(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false);
+    let m2_r1 = node_record(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, true, false);
     let all_nodes = vec![m1_a1.clone(), m1_r1.clone(), m2_a1.clone(), m2_r1.clone()];
-    let handles: BTreeMap<String, DeploymentHandle> = all_nodes.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 51_000 + i as u32))).collect();
+    let handles: BTreeMap<NodeId, DeploymentHandle> = all_nodes.iter().enumerate().map(|(i, n)| (n.node_id.clone(), handle(51_000 + i as u32))).collect();
     let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(), ..Default::default() };
 
     let observed = Arc::new(RwLock::new(Topology {
@@ -238,7 +238,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert!(deleted_topology.meshes.is_empty(), "a deleted fabric topology names no meshes: {deleted_topology:?}");
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial.clone(), "mesh1.admin.1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial.clone(), &m1_a1.birth().unwrap(), "mesh1").await.unwrap();
     let mut cp = ControlPlane::new(builds.clone(), accepted, m1_a1.name.clone(), observed.read().await.clone(), crate::adopted_time());
     cp.topology = observed.clone();
     // The fabric-primary's door reads the node records its writers wrote (boot.rs: one nodes store),
@@ -246,7 +246,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let _ = cp.node_rows.set(nodes_storage.clone());
     let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as a Build");
     let build_id = opened.build_id;
-    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: m1_a1.birth().unwrap() }).await.unwrap();
 
     // Step 1a: initial plan orders leaf-inward: non-FP mesh (mesh2) first, FP's own mesh (mesh1)
     // after, and DeleteFabric at the end.
@@ -268,7 +268,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         fabric_id: fabric_id.clone(),
         executable: "/nonexistent/rdm-rpc-node".into(),
         seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-        launcher: rdm_core::launch::Launcher { name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
+        launcher: rdm_core::launch::Launcher { mesh: m1_a1.mesh.clone(), name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
         env: BTreeMap::new(),
         data_root: data_root.clone(),
         store_dir: data_root.clone(),
@@ -284,17 +284,17 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let op_m2 = operation(&id2);
     let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
     let me_m2 = RosterBirth::of(&m2_a1).unwrap();
-    let rt_m2 = RuntimeProof::of(&handles["mesh2.admin.1"].fact().unwrap());
+    let rt_m2 = RuntimeProof::of(&handles[&m2_a1.node_id].fact().unwrap());
     let m2_records = vec![m2_a1.clone(), m2_r1.clone()];
-    let roster_m2 = accepted_roster(&*builds, &key_m2, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
-    let leaving_m2 = accepted_roster(&*builds, &key_m2, STEP_LEAVING_ROSTER, "mesh2.admin.1", &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
+    let roster_m2 = accepted_roster(&*builds, &key_m2, STEP_ACCEPTED_ROSTER, m1_a1.node_id.as_str(), &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
+    let leaving_m2 = accepted_roster(&*builds, &key_m2, STEP_LEAVING_ROSTER, m2_a1.node_id.as_str(), &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
     // mesh2.admin.1 executes its members' node.deletes: their rows Deleted are node.delete's own.
     view_sink.writes_through(rows_m2.clone());
-    members_exited(&*builds, &key_m2, "mesh2.admin.1", &leaving_m2, &me_m2, rt_m2.clone(), &m2_records, &[], |n: Node| {
+    members_exited(&*builds, &key_m2, m2_a1.node_id.as_str(), &leaving_m2, &me_m2, rt_m2.clone(), &m2_records, &[], |n: Node| {
         let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
         async move {
-            let name = n.name.to_string();
-            pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+            let name = n.node_id.clone();
+            pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
         }
     })
     .await
@@ -302,7 +302,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let facts = builds.facts().await.unwrap();
     let admitted_m2 = rdm_admin::mesh_delete::Admitted { roster: roster_m2, final_primary: me_m2.clone(), final_runtime: rt_m2, amendments: Vec::new() };
     let HandoffVerdict::Accept(manifest_m2) = handoff_verdict(&facts, &key_m2, &admitted_m2, &manifest_reference(build_id.as_str(), 1, &op_m2, false)) else { panic!("mesh2 handoff accepted") };
-    record_completion(&*builds, &key_m2, "mesh1.admin.1", &manifest_m2).await.unwrap();
+    record_completion(&*builds, &key_m2, m1_a1.node_id.as_str(), &manifest_m2).await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m2_r1.name);
     observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh2").unwrap().status = ScopeStatus::Dead;
 
@@ -313,25 +313,25 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(
         after_m2_deleted,
         vec![
-            BuildOperation::DeleteLiveNode { node: m2_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m2_a1) },
+            BuildOperation::DeleteLiveNode { kind: m2_a1.kind, mesh: m2_a1.mesh.clone(), node: m2_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m2_a1) },
             BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: id1.clone() },
             BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() },
         ],
         "after mesh2's MeshDeleted, fabric.delete plans DeleteLiveNode(mesh2.admin.1) on the same Build"
     );
-    assert_eq!(executor_for(&after_m2_deleted[0], &*observed.read().await), Some(m1_a1.name.clone()), "fabric-primary executes DeleteLiveNode(mesh2.admin.1)");
+    assert_eq!(executor_for(&after_m2_deleted[0], &*observed.read().await), Some(m1_a1.node_id.clone()), "fabric-primary executes DeleteLiveNode(mesh2.admin.1)");
 
     // Execute DeleteLiveNode(mesh2.admin.1) as fabric-primary: mesh2.admin.1 stops, its row is written
     // Deleted by FP as acting primary, and MeshLeft + mesh_left_rows write mesh2 Dead.
-    let term_m2_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles["mesh2.admin.1"].clone(), unreached: false }).await.unwrap();
+    let term_m2_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a1).node_id), build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles[&m2_a1.node_id].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m2_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.stopped = true;
     });
-    rows_m1.deleted(&m2_a1, "node.delete:mesh2.admin.1").await.unwrap();
+    rows_m1.deleted(&m2_a1, &rdm_core::OperationId::node("node.delete", &m2_a1.node_id)).await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
     let left_m2 = mesh_left_proof(&manifest_m2, &term_m2_a1).unwrap();
-    mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, "mesh1.admin.1", &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
+    mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, m1_a1.node_id.as_str(), &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
     builds
         .append_step_receipt(&BuildStepReceipt {
             mesh: None,
@@ -341,7 +341,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
             step: STEP_MESH_LEFT.into(),
             outcome: StepOutcome::Complete,
             output: serde_json::to_value(&left_m2).ok(),
-            executor: Some("mesh1.admin.1".into()),
+            executor: m1_a1.birth(),
         })
         .await
         .unwrap();
@@ -359,23 +359,23 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         "once mesh2 is MeshLeft, ShutdownMesh(mesh1) and DeleteFabric remain"
     );
     assert_eq!(role_move(&after_m2_left[0], &*observed.read().await), None, "the fabric-primary role stays on mesh1.admin.1 during its own mesh's mesh.delete");
-    assert_eq!(executor_for(&after_m2_left[0], &*observed.read().await), Some(m1_a1.name.clone()));
+    assert_eq!(executor_for(&after_m2_left[0], &*observed.read().await), Some(m1_a1.node_id.clone()));
 
     // Execute ShutdownMesh(mesh1): mesh1.admin.1 deletes mesh1.rpc.1, commits mesh1 Dead in
     // status.storage and mesh.storage, and records MeshDeleted while staying alive itself.
     let op_m1 = operation(&id1);
     let key_m1 = MeshDeleteKey { mesh_id: id1.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m1.clone() };
     let me_m1 = RosterBirth::of(&m1_a1).unwrap();
-    let rt_m1 = RuntimeProof::of(&handles["mesh1.admin.1"].fact().unwrap());
+    let rt_m1 = RuntimeProof::of(&handles[&m1_a1.node_id].fact().unwrap());
     let m1_records = vec![m1_a1.clone(), m1_r1.clone()];
-    let roster_m1 = accepted_roster(&*builds, &key_m1, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
-    let leaving_m1 = accepted_roster(&*builds, &key_m1, STEP_LEAVING_ROSTER, "mesh1.admin.1", &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
+    let roster_m1 = accepted_roster(&*builds, &key_m1, STEP_ACCEPTED_ROSTER, m1_a1.node_id.as_str(), &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
+    let leaving_m1 = accepted_roster(&*builds, &key_m1, STEP_LEAVING_ROSTER, m1_a1.node_id.as_str(), &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
     view_sink.writes_through(rows_m1.clone());
-    members_exited(&*builds, &key_m1, "mesh1.admin.1", &leaving_m1, &me_m1, rt_m1.clone(), &m1_records, &[], |n: Node| {
+    members_exited(&*builds, &key_m1, m1_a1.node_id.as_str(), &leaving_m1, &me_m1, rt_m1.clone(), &m1_records, &[], |n: Node| {
         let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
         async move {
-            let name = n.name.to_string();
-            pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+            let name = n.node_id.clone();
+            pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
         }
     })
     .await
@@ -385,7 +385,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let HandoffVerdict::Accept(manifest_m1) = handoff_verdict(&facts, &key_m1, &admitted_m1, &manifest_reference(build_id.as_str(), 1, &op_m1, false)) else { panic!("mesh1 handoff accepted") };
     { let mut r = mesh_storage.mesh(&id1.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(id1.clone(), "mesh1")); r.states.insert(MeshState::Dead); mesh_storage.put_mesh(&r).await.unwrap(); }
     rdm_admin::storage::claim_mesh(&mesh_storage, None, &rdm_admin::storage::MeshRecord { mesh_id: id1.clone(), name: "mesh1".into(), dead: true, states: Default::default() }).await.unwrap().unwrap();
-    record_completion(&*builds, &key_m1, "mesh1.admin.1", &manifest_m1).await.unwrap();
+    record_completion(&*builds, &key_m1, m1_a1.node_id.as_str(), &manifest_m1).await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m1_r1.name);
     observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh1").unwrap().status = ScopeStatus::Dead;
 
@@ -398,7 +398,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         vec![BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() }],
         "the fabric-primary is NOT deleted inside fabric.delete; only DeleteFabric remains"
     );
-    complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 1, &fabric_id, "mesh1.admin.1").await.expect("complete_fabric_delete releases the fabric name and records fabric.deleted");
+    complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 1, &fabric_id, m1_a1.node_id.as_str()).await.expect("complete_fabric_delete releases the fabric name and records fabric.deleted");
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
 
     // At fabric.deleted:
@@ -409,11 +409,11 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let proj = builds.read_build(&build_id).await.unwrap();
     assert!(plan_for_build(&proj, &*observed.read().await).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
     assert_eq!(fabric_storage.fabric().await.unwrap(), None, "fabric identity row is released at fabric.deleted");
-    assert!(!fleet.terminated.lock().unwrap().contains(&"mesh1.admin.1".to_string()), "fabric-primary is still alive at fabric.deleted");
+    assert!(!fleet.terminated.lock().unwrap().contains(&m1_a1.node_id), "fabric-primary is still alive at fabric.deleted");
     assert_eq!(nodes_storage.record_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
 
     // Step 4: a separate call from outside the fabric runs `node.delete` of the fabric-primary.
-    assert!(cp.of_deleted_mesh(&m1_a1.name).await, "the fabric-primary's mesh is Dead after fabric.deleted");
+    assert!(cp.of_deleted_mesh(&m1_a1.name).await.unwrap(), "the fabric-primary's mesh is Dead after fabric.deleted");
     let fp_delete = cp
         .open_attempt_in(tracing::info_span!("cell.fp-delete"), "build.create", AttemptReason::Delete, m1_a1.name.clone(), rdm_admin::control_plane::ActionKind::Delete)
         .await
@@ -421,24 +421,24 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(fp_delete.attempt, 2);
     let proj2 = builds.read_build(&build_id).await.unwrap();
     let fp_ops = plan_for_build(&proj2, &*observed.read().await).operations;
-    assert_eq!(fp_ops, vec![BuildOperation::DeleteLiveNode { node: m1_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m1_a1) }], "attempt 2 plans only the fabric-primary's own node.delete");
+    assert_eq!(fp_ops, vec![BuildOperation::DeleteLiveNode { kind: m1_a1.kind, mesh: m1_a1.mesh.clone(), node: m1_a1.name.clone(), exited: None, birth: rdm_admin::build::PinnedBirth::of(&m1_a1) }], "attempt 2 plans only the fabric-primary's own node.delete");
     assert_eq!(role_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no role on its separate node.delete");
-    assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.name.clone()), "the fabric-primary executes its own final node.delete");
+    assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.node_id.clone()), "the fabric-primary executes its own final node.delete");
 
-    let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles["mesh1.admin.1"].clone(), unreached: false }).await.unwrap();
+    let term_m1_a1 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m1_a1).node_id), build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles[&m1_a1.node_id].clone(), unreached: false }).await.unwrap();
     observed.write().await.nodes.iter_mut().filter(|n| n.name == m1_a1.name).for_each(|n| {
         n.status = NodeStatus::Leaving;
         n.stopped = true;
     });
-    rows_m1.deleted(&m1_a1, "node.delete:mesh1.admin.1").await.unwrap();
+    rows_m1.deleted(&m1_a1, &rdm_core::OperationId::node("node.delete", &m1_a1.node_id)).await.unwrap();
     let left_m1 = mesh_left_proof(&manifest_m1, &term_m1_a1).unwrap();
-    mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, "mesh1.admin.1", &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
+    mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, m1_a1.node_id.as_str(), &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
 
     // Every node row is Deleted, both mesh rows are Dead in status.storage and mesh.storage, and
     // the fabric name is released.
     for n in &all_nodes {
         let row = nodes_storage.record_at(&n.name).await.unwrap().expect("node row exists");
-        assert_eq!(row.status, NodeStatus::Deleted, "{}'s node row is Deleted", n.name);
+        assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s node row is Deleted", n.name);
     }
     for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
         assert!(mesh_storage.mesh(&id.clone()).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead)), "{name} status row is Dead");
@@ -475,14 +475,14 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
     let data_root = std::env::temp_dir().join(format!("fabric-delete-unanswered-{}", NodeId::mint()));
     let fabric_id = FabricId::mint();
     let (id1, id2) = (MeshId::mint(), MeshId::mint());
-    let fp = node_record("mesh1.admin.1", true, true);
+    let fp = node_record(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true);
 
     // ---- Arm 1 (Held / unproven) & Arm 2 (Fully crashed) on mesh2 ----
     {
-        let m2_a1 = node_record("mesh2.admin.1", false, false);
-        let m2_r1 = node_record("mesh2.rpc.1", false, false);
+        let m2_a1 = node_record(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false);
+        let m2_r1 = node_record(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, false, false);
         let m2_nodes = vec![m2_a1.clone(), m2_r1.clone()];
-        let handles: BTreeMap<String, DeploymentHandle> = [(&m2_a1, 52_001u32), (&m2_r1, 52_002u32)].into_iter().map(|(n, pid)| (n.name.to_string(), handle(&n.name.to_string(), pid))).collect();
+        let handles: BTreeMap<NodeId, DeploymentHandle> = [(&m2_a1, 52_001u32), (&m2_r1, 52_002u32)].into_iter().map(|(n, pid)| (n.node_id.clone(), handle(pid))).collect();
         let fleet = Fleet {
             pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(),
             // Initially mesh2.admin.1's runtime is still running (unproven exited verdict).
@@ -500,8 +500,8 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
         let rows_fp = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_fp, &m2_nodes).await;
-        for (n, h) in [(&m2_a1, &handles["mesh2.admin.1"]), (&m2_r1, &handles["mesh2.rpc.1"])] {
-            nodes_storage.put_runtime(&RuntimeRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+        for (n, h) in [(&m2_a1, &handles[&m2_a1.node_id]), (&m2_r1, &handles[&m2_r1.node_id])] {
+            nodes_storage.put_runtime(&RuntimeRow { kind: n.kind, mesh: n.mesh.clone(), node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         }
         let mesh_storage = MemoryMeshStorage::default();
         rdm_admin::storage::claim_mesh(&mesh_storage, None, &rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false, states: Default::default() }).await.unwrap().unwrap();
@@ -526,7 +526,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: fp.mesh.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -540,8 +540,8 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let delete = |b: RosterBirth| {
             let (pipeline, handles, build_id, m2_nodes) = (&pipeline, &handles, &build_id, &m2_nodes);
             async move {
-                let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
+                let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node_id))?;
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id), build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
 
@@ -549,14 +549,14 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         // node-admin is created; rows are written Deleted by each node.delete and mesh2 is written Dead
         // as acting primary.
         fleet.running_pids.lock().unwrap().clear();
-        let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
+        let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, fp.node_id.as_str(), "mesh2", &m2_nodes, &held_paths, &delete)
             .await
             .expect("a mesh none of whose members runs resolves on its members' deletes");
         let UnansweredMeshOutcome::FullyCrashed(manifest) = crashed else { panic!("expected FullyCrashed, got {crashed:?}") };
         assert_eq!(manifest.receipts.len(), 2, "every birth of mesh2 has an exit receipt");
         for n in &m2_nodes {
             let row = nodes_storage.record_at(&n.name).await.unwrap().unwrap();
-            assert_eq!(row.status, NodeStatus::Deleted, "{}'s row is written Deleted by its node.delete", n.name);
+            assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s row is written Deleted by its node.delete", n.name);
         }
         assert!(mesh_storage.mesh(&id2.clone()).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead)), "mesh2 status row is written Dead by acting primary");
         assert!(mesh_storage.meshes().await.unwrap().iter().all(|m| m.dead), "mesh2 row in mesh.storage is Dead");
@@ -566,20 +566,20 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         // its own `node.delete:<path.name>`"): its TerminateRuntime, NodeDeleted and Complete receipts
         // under its own key, never a receipt copied by hand.
         for n in &m2_nodes {
-            let op = format!("node.delete:{}", n.name);
+            let op = rdm_core::OperationId::node("node.delete", &n.node_id);
             for step in ["TerminateRuntime", "NodeDeleted", "Complete"] {
-                assert!(steps.iter().any(|r| r.operation == op && r.step == step && r.outcome == StepOutcome::Complete), "{}'s {step} receipt under {op}: {:?}", n.name, steps.iter().map(|r| format!("{}/{}", r.operation, r.step)).collect::<Vec<_>>());
+                assert!(steps.iter().any(|r| r.operation == op && r.step == step && r.outcome == StepOutcome::Complete), "{:?}'s {step} receipt under {op:?}: {:?}", n.name, steps.iter().map(|r| format!("{:?}/{}", r.operation, r.step)).collect::<Vec<_>>());
             }
         }
-        assert!(steps.iter().all(|r| !r.operation.starts_with(&format!("{op_m2}/"))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
+        assert!(steps.iter().all(|r| r.operation == op_m2 || (r.operation.action == "node.delete" && matches!(&r.operation.subject, Some(rdm_core::OperationSubject::Node(id)) if m2_nodes.iter().any(|n| &n.node_id == id)))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
     }
 
     // ---- Arm 3 (Members live / connection-lost: create one node-admin into mesh2) ----
     {
-        let m2_a1 = node_record("mesh2.admin.1", false, false);
-        let m2_r1 = node_record("mesh2.rpc.1", true, false);
+        let m2_a1 = node_record(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false);
+        let m2_r1 = node_record(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, true, false);
         let m2_nodes = vec![m2_a1.clone(), m2_r1.clone()];
-        let handles: BTreeMap<String, DeploymentHandle> = [(&m2_a1, 53_001u32), (&m2_r1, 53_002u32)].into_iter().map(|(n, pid)| (n.name.to_string(), handle(&n.name.to_string(), pid))).collect();
+        let handles: BTreeMap<NodeId, DeploymentHandle> = [(&m2_a1, 53_001u32), (&m2_r1, 53_002u32)].into_iter().map(|(n, pid)| (n.node_id.clone(), handle(pid))).collect();
         let fleet = Fleet {
             pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(),
             // mesh2.admin.1 exited, while mesh2.rpc.1 is still running!
@@ -597,8 +597,8 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
         let rows_fp = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_fp, &m2_nodes).await;
-        for (n, h) in [(&m2_a1, &handles["mesh2.admin.1"]), (&m2_r1, &handles["mesh2.rpc.1"])] {
-            nodes_storage.put_runtime(&RuntimeRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+        for (n, h) in [(&m2_a1, &handles[&m2_a1.node_id]), (&m2_r1, &handles[&m2_r1.node_id])] {
+            nodes_storage.put_runtime(&RuntimeRow { kind: n.kind, mesh: n.mesh.clone(), node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
         }
         let mesh_storage = MemoryMeshStorage::default();
         rdm_admin::storage::claim_mesh(&mesh_storage, None, &rdm_admin::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false, states: Default::default() }).await.unwrap().unwrap();
@@ -621,7 +621,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: fp.mesh.clone(), name: fp.name.clone(), node_id: fp.node_id.clone(), incarnation: fp.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -636,29 +636,29 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let delete = |b: RosterBirth| {
             let (pipeline, handles, build_id, m2_nodes) = (&fp_pipeline, &handles, &build_id, &m2_nodes);
             async move {
-                let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&b.node].clone(), unreached: true }).await.map_err(|e| e.to_string())
+                let record = m2_nodes.iter().find(|n| n.node_id.to_string() == b.node_id).cloned().ok_or_else(|| format!("{} is not a mesh2 record", b.node_id))?;
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id), build_id: build_id.clone(), attempt: 1, node: record, handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(), unreached: true }).await.map_err(|e| e.to_string())
             }
         };
-        let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths, &delete)
+        let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, fp.node_id.as_str(), "mesh2", &m2_nodes, &held_paths, &delete)
             .await
             .expect("members live with the admin unreached resolves to CreateAdmin");
         let UnansweredMeshOutcome::CreateAdmin { path, predecessor } = outcome else { panic!("expected CreateAdmin, got {outcome:?}") };
-        assert_eq!(path, "mesh2.admin.2".parse::<PathName>().unwrap(), "creates one node-admin at the next free ordinal above mesh2.admin.1");
+        assert_eq!(path, rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "creates one node-admin at the next free ordinal above mesh2.admin.1");
         assert_eq!(predecessor, RosterBirth::of(&m2_a1).unwrap());
         // The exited admin's roster receipt is its own node.delete's TerminateRuntime (mesh-delete.md
         // "Resume after the primary's loss" step 1), and nothing is written under any other key.
         let steps = builds.read_build(&build_id).await.unwrap().steps;
-        assert!(steps.iter().any(|r| r.operation == format!("node.delete:{}", m2_a1.name) && r.step == "TerminateRuntime" && r.outcome == StepOutcome::Complete), "mesh2.admin.1's exit is its node.delete's receipt: {:?}", steps.iter().map(|r| format!("{}/{}", r.operation, r.step)).collect::<Vec<_>>());
-        assert!(steps.iter().all(|r| !r.operation.starts_with(&format!("{op_m2}/"))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
+        assert!(steps.iter().any(|r| r.operation == rdm_core::OperationId::node("node.delete", &m2_a1.node_id) && r.step == "TerminateRuntime" && r.outcome == StepOutcome::Complete), "mesh2.admin.1's exit is its node.delete's receipt: {:?}", steps.iter().map(|r| format!("{:?}/{}", r.operation, r.step)).collect::<Vec<_>>());
+        assert!(steps.iter().all(|r| r.operation == op_m2 || (r.operation.action == "node.delete" && matches!(&r.operation.subject, Some(rdm_core::OperationSubject::Node(id)) if m2_nodes.iter().any(|n| &n.node_id == id)))), "no receipt is written under a key outside node.delete's: {:?}", steps.iter().map(|r| r.operation.clone()).collect::<BTreeSet<_>>());
 
         // The one node-admin `mesh2.admin.2` is created into `mesh2` under `id2` on the same Build,
         // becomes mesh-primary, amends the roster, adopts held state (`roster_rows_read`), and runs
         // `mesh.delete` (`members_exited`), then is removed last by the fabric-primary's `node.delete`.
-        let m2_a2 = node_record("mesh2.admin.2", true, false);
-        let h_a2 = handle("mesh2.admin.2", 53_003);
+        let m2_a2 = node_record(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false);
+        let h_a2 = handle(53_003);
         let mut fleet = fleet;
-        fleet.pids.insert(53_003, "mesh2.admin.2".into());
+        fleet.pids.insert(53_003, m2_a2.node_id.clone());
         let rt_a2 = RuntimeProof::of(&h_a2.fact().unwrap());
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
         view.write().await.nodes.retain(|n| n.name != m2_a1.name);
@@ -666,17 +666,17 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let rows_a2 = Arc::new(NodeRows::new(m2_a2.name.clone(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
 
-        amend_roster(&builds, &key_m2, "mesh1.admin.1", &RosterAmended { predecessor: predecessor.clone(), final_primary: me_a2.clone(), final_runtime: rt_a2.clone() })
+        amend_roster(&builds, &key_m2, fp.node_id.as_str(), &RosterAmended { predecessor: predecessor.clone(), final_primary: me_a2.clone(), final_runtime: rt_a2.clone() })
             .await
             .expect("RosterAmended admits the created mesh2.admin.2");
 
         let owner_facts = builds.facts().await.unwrap();
-        let (leaving, known) = leaving_roster(&builds, &builds, &key_m2, "mesh2.admin.2", &me_a2, &rt_a2, || async { Ok(owner_facts) })
+        let (leaving, known) = leaving_roster(&builds, &builds, &key_m2, m2_a2.node_id.as_str(), &me_a2, &rt_a2, || async { Ok(owner_facts) })
             .await
             .unwrap();
         let current_nodes = view.read().await.nodes.clone();
         let records_for_leave = roster_records(&current_nodes, &leaving, |_| None);
-        roster_rows_read(Some(&rows_a2), "mesh2.admin.2", &op_m2, &leaving, &records_for_leave).await;
+        roster_rows_read(Some(&rows_a2), m2_a2.node_id.as_str(), &op_m2, &leaving, &records_for_leave).await;
 
         // mesh2.admin.2 executes its members' node.deletes: their rows Deleted are node.delete's own.
         view_sink.writes_through(rows_a2.clone());
@@ -684,7 +684,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { mesh: m2_a2.mesh.clone(), name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -695,29 +695,29 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             binding: None,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let manifest = members_exited(&builds, &key_m2, "mesh2.admin.2", &leaving, &me_a2, rt_a2.clone(), &records_for_leave, &known, |n: Node| {
+        let manifest = members_exited(&builds, &key_m2, m2_a2.node_id.as_str(), &leaving, &me_a2, rt_a2.clone(), &records_for_leave, &known, |n: Node| {
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
-                let name = n.name.to_string();
-                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
+                let name = n.node_id.clone();
+                pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id), build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), unreached: false }).await.map_err(|e| e.to_string())
             }
         })
         .await
         .expect("created admin mesh2.admin.2 completes mesh.delete of mesh2");
 
-        record_completion(&builds, &key_m2, "mesh1.admin.1", &manifest).await.unwrap();
-        let term_a2 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
+        record_completion(&builds, &key_m2, fp.node_id.as_str(), &manifest).await.unwrap();
+        let term_a2 = pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a2).node_id), build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, unreached: false }).await.unwrap();
         view.write().await.nodes.iter_mut().filter(|n| n.name == m2_a2.name).for_each(|n| {
             n.status = NodeStatus::Leaving;
             n.stopped = true;
         });
-        rows_fp.deleted(&m2_a2, "node.delete:mesh2.admin.2").await.unwrap();
+        rows_fp.deleted(&m2_a2, &rdm_core::OperationId::node("node.delete", &m2_a2.node_id)).await.unwrap();
         let left = mesh_left_proof(&manifest, &term_a2).unwrap();
-        mesh_left_rows(Some(&rows_fp), &mesh_storage, &Default::default(), &declared, "mesh1.admin.1", &key_m2, "mesh2", &left.receipts).await.unwrap();
+        mesh_left_rows(Some(&rows_fp), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key_m2, "mesh2", &left.receipts).await.unwrap();
 
         for name in [&m2_a1.name, &m2_r1.name, &m2_a2.name] {
             let row = nodes_storage.record_at(name).await.unwrap().unwrap();
-            assert_eq!(row.status, NodeStatus::Deleted, "{name}'s node row is Deleted");
+            assert_eq!(row.status, NodeStatus::Deleted, "{name:?}'s node row is Deleted");
         }
         assert!(mesh_storage.mesh(&id2.clone()).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead)));
     }
@@ -742,12 +742,12 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
     let data_root = std::env::temp_dir().join(format!("fabric-delete-step-faults-{}", NodeId::mint()));
     let fabric_id = FabricId::mint();
     let (id1, id2, id3) = (MeshId::mint(), MeshId::mint(), MeshId::mint());
-    let fp = node_record("mesh1.admin.1", true, true);
-    let m1_r1 = node_record("mesh1.rpc.1", false, false);
-    let m2_a1 = node_record("mesh2.admin.1", false, false);
-    let m2_r1 = node_record("mesh2.rpc.1", true, false);
-    let m3_a1 = node_record("mesh3.admin.1", false, false);
-    let m3_r1 = node_record("mesh3.rpc.1", false, false);
+    let fp = node_record(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true);
+    let m1_r1 = node_record(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false);
+    let m2_a1 = node_record(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false);
+    let m2_r1 = node_record(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, true, false);
+    let m3_a1 = node_record(rdm_core::PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, false, false);
+    let m3_r1 = node_record(rdm_core::PathName::new("mesh3.rpc", "1").unwrap(), "mesh3", rdm_core::NodeKind::RpcNode, false, false);
 
     let all_nodes = vec![
         fp.clone(),
@@ -757,16 +757,16 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         m3_a1.clone(),
         m3_r1.clone(),
     ];
-    let handles: BTreeMap<String, DeploymentHandle> = all_nodes
+    let handles: BTreeMap<NodeId, DeploymentHandle> = all_nodes
         .iter()
         .enumerate()
-        .map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 54_000 + i as u32)))
+        .map(|(i, n)| (n.node_id.clone(), handle(54_000 + i as u32)))
         .collect();
     let fleet = Fleet {
         pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(),
         // mesh2.rpc.1 (pid 54_003) is still running while mesh2.admin.1 exited;
         // mesh3.admin.1 and mesh3.rpc.1 have both exited.
-        running_pids: Mutex::new(BTreeSet::from([handles["mesh2.rpc.1"].pid.unwrap()])),
+        running_pids: Mutex::new(BTreeSet::from([handles[&m2_r1.node_id].pid.unwrap()])),
         ..Default::default()
     };
 
@@ -813,9 +813,9 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let nodes_storage = Arc::new(MemoryNodesStorage::default());
         let rows_fp = Arc::new(NodeRows::new(fp.name.clone(), fp.node_id.clone(), observed.clone(), nodes_storage.clone()));
         rows_written(&nodes_storage, &rows_fp, &all_nodes).await;
-        for (n, h) in handles.iter().map(|(k, h)| (all_nodes.iter().find(|n| n.name.to_string() == *k).unwrap(), h)) {
+        for (n, h) in handles.iter().map(|(k, h)| (all_nodes.iter().find(|n| n.node_id == *k).unwrap(), h)) {
             nodes_storage
-                .put_runtime(&RuntimeRow {
+                .put_runtime(&RuntimeRow { kind: n.kind, mesh: n.mesh.clone(),
                     node_id: n.node_id.clone(),
                     name: n.name.clone(),
                     incarnation_id: n.incarnation_id.clone().unwrap(),
@@ -837,7 +837,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
 
         let builds = Arc::new(MemoryBuildStateAdapter::new());
         let initial = FabricTopology::of_observed(&*observed.read().await);
-        let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial, "mesh1.admin.1").await.unwrap();
+        let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial, &fp.birth().unwrap(), "mesh1").await.unwrap();
         let mut cp = ControlPlane::new(builds.clone(), accepted, fp.name.clone(), observed.read().await.clone(), crate::adopted_time());
         cp.topology = observed.clone();
         let _ = cp.node_rows.set(nodes_storage.clone());
@@ -862,12 +862,12 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as one Build");
         let build_id = opened.build_id;
         builds
-            .claim_attempt(&BuildAttemptClaim {
-                claimant: Some("mesh1.admin.1".into()),
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
+                claimant: Some(fp.node_id.clone()),
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 1,
-                executor: "mesh1.admin.1".into(),
+                executor: fp.birth().unwrap(),
             })
             .await
             .unwrap();
@@ -889,7 +889,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
             launcher: rdm_core::launch::Launcher {
-                name: fp.name.clone(),
+                mesh: fp.mesh.clone(), name: fp.name.clone(),
                 node_id: fp.node_id.clone(),
                 incarnation: fp.incarnation_id.clone().unwrap(),
             },
@@ -933,7 +933,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             &mesh_storage,
             &empty_runtime_store,
             &key_m3,
-            "mesh1.admin.1",
+            fp.node_id.as_str(),
             "mesh3",
             &m3_nodes,
             &held_paths,
@@ -942,7 +942,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         .await
         .expect_err("unproven runtime must fail unanswered_mesh_delete by name");
         assert!(
-            unproven_err.contains(&op_m3) && unproven_err.contains("mesh3.admin.1"),
+            unproven_err.contains(&op_m3.action) && unproven_err.contains(m3_a1.node_id.as_str()),
             "failure names step and node: {unproven_err}"
         );
         assert_eq!(nodes_storage.record_at(&m3_a1.name).await.unwrap().unwrap().status, NodeStatus::Ready);
@@ -957,13 +957,13 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                     .iter()
                     .find(|n| n.node_id.to_string() == b.node_id)
                     .cloned()
-                    .ok_or_else(|| format!("{} is not a mesh3 record", b.node))?;
+                    .ok_or_else(|| format!("{} is not a mesh3 record", b.node_id))?;
                 pipeline
-                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest {
+                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id),
                         build_id: build_id.clone(),
                         attempt: 1,
                         node: record,
-                        handle: handles[&b.node].clone(),
+                        handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(),
                         unreached: true,
                     })
                     .await
@@ -978,7 +978,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             &mesh_storage,
             &*nodes_storage,
             &key_m3,
-            "mesh1.admin.1",
+            fp.node_id.as_str(),
             "mesh3",
             &m3_nodes,
             &held_paths,
@@ -1010,13 +1010,13 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
                     .iter()
                     .find(|n| n.node_id.to_string() == b.node_id)
                     .cloned()
-                    .ok_or_else(|| format!("{} is not a mesh2 record", b.node))?;
+                    .ok_or_else(|| format!("{} is not a mesh2 record", b.node_id))?;
                 pipeline
-                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest {
+                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(record).node_id),
                         build_id: build_id.clone(),
                         attempt: 1,
                         node: record,
-                        handle: handles[&b.node].clone(),
+                        handle: handles[&NodeId::parse(&b.node_id).unwrap()].clone(),
                         unreached: true,
                     })
                     .await
@@ -1031,7 +1031,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             &mesh_storage,
             &*nodes_storage,
             &key_m2,
-            "mesh1.admin.1",
+            fp.node_id.as_str(),
             "mesh2",
             &m2_nodes,
             &held_paths,
@@ -1042,11 +1042,11 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let UnansweredMeshOutcome::CreateAdmin { path, predecessor } = outcome_m2 else {
             panic!("expected CreateAdmin for mesh2, got {outcome_m2:?}");
         };
-        assert_eq!(path, "mesh2.admin.2".parse::<PathName>().unwrap());
-        let m2_a2 = node_record("mesh2.admin.2", true, false);
-        let h_a2 = handle("mesh2.admin.2", 54_099);
+        assert_eq!(path, rdm_core::PathName::new("mesh2.admin", "2").unwrap());
+        let m2_a2 = node_record(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false);
+        let h_a2 = handle(54_099);
         let mut fleet = fleet;
-        fleet.pids.insert(54_099, "mesh2.admin.2".into());
+        fleet.pids.insert(54_099, m2_a2.node_id.clone());
         let rt_a2 = RuntimeProof::of(&h_a2.fact().unwrap());
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
         observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
@@ -1057,7 +1057,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         amend_roster(
             &*builds,
             &key_m2,
-            "mesh1.admin.1",
+            fp.node_id.as_str(),
             &RosterAmended {
                 predecessor,
                 final_primary: me_a2.clone(),
@@ -1067,12 +1067,12 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         .await
         .unwrap();
         let owner_facts = builds.facts().await.unwrap();
-        let (leaving_m2, known_m2) = leaving_roster(&*builds, &*builds, &key_m2, "mesh2.admin.2", &me_a2, &rt_a2, || async { Ok(owner_facts) })
+        let (leaving_m2, known_m2) = leaving_roster(&*builds, &*builds, &key_m2, m2_a2.node_id.as_str(), &me_a2, &rt_a2, || async { Ok(owner_facts) })
             .await
             .unwrap();
         let current_nodes = observed.read().await.nodes.clone();
         let records_for_leave = roster_records(&current_nodes, &leaving_m2, |_| None);
-        roster_rows_read(Some(&rows_a2), "mesh2.admin.2", &op_m2, &leaving_m2, &records_for_leave).await;
+        roster_rows_read(Some(&rows_a2), m2_a2.node_id.as_str(), &op_m2, &leaving_m2, &records_for_leave).await;
 
         view_sink.writes_through(rows_a2.clone());
         let pipeline = DeploymentPipeline {
@@ -1085,12 +1085,12 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             template: &template,
             timeouts: Timeouts::default(),
         };
-        let manifest_m2 = members_exited(&*builds, &key_m2, "mesh2.admin.2", &leaving_m2, &me_a2, rt_a2, &records_for_leave, &known_m2, |n: Node| {
+        let manifest_m2 = members_exited(&*builds, &key_m2, m2_a2.node_id.as_str(), &leaving_m2, &me_a2, rt_a2, &records_for_leave, &known_m2, |n: Node| {
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
-                let name = n.name.to_string();
+                let name = n.node_id.clone();
                 pipeline
-                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest {
+                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id),
                         build_id: build_id.clone(),
                         attempt: 1,
                         node: n,
@@ -1103,9 +1103,9 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         })
         .await
         .unwrap();
-        record_completion(&*builds, &key_m2, "mesh1.admin.1", &manifest_m2).await.unwrap();
+        record_completion(&*builds, &key_m2, fp.node_id.as_str(), &manifest_m2).await.unwrap();
         let term_a2 = pipeline
-            .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest {
+            .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(m2_a2).node_id),
                 build_id: build_id.clone(),
                 attempt: 1,
                 node: m2_a2.clone(),
@@ -1118,9 +1118,9 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             n.status = NodeStatus::Leaving;
             n.stopped = true;
         });
-        rows_fp.deleted(&m2_a2, "node.delete:mesh2.admin.2").await.unwrap();
+        rows_fp.deleted(&m2_a2, &rdm_core::OperationId::node("node.delete", &m2_a2.node_id)).await.unwrap();
         let left_m2 = mesh_left_proof(&manifest_m2, &term_a2).unwrap();
-        mesh_left_rows(Some(&rows_fp), &mesh_storage, &Default::default(), &declared, "mesh1.admin.1", &key_m2, "mesh2", &left_m2.receipts)
+        mesh_left_rows(Some(&rows_fp), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key_m2, "mesh2", &left_m2.receipts)
             .await
             .unwrap();
         observed.write().await.nodes.retain(|n| n.name != m2_r1.name && n.name != m2_a2.name);
@@ -1141,21 +1141,21 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             operation: op_m1.clone(),
         };
         let me_m1 = RosterBirth::of(&fp).unwrap();
-        let rt_m1 = RuntimeProof::of(&handles["mesh1.admin.1"].fact().unwrap());
+        let rt_m1 = RuntimeProof::of(&handles[&fp.node_id].fact().unwrap());
         let m1_records = vec![fp.clone(), m1_r1.clone()];
-        let roster_m1 = accepted_roster(&*builds, &key_m1, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me_m1, &rt_m1, || live_roster(&m1_records))
+        let roster_m1 = accepted_roster(&*builds, &key_m1, STEP_ACCEPTED_ROSTER, fp.node_id.as_str(), &me_m1, &rt_m1, || live_roster(&m1_records))
             .await
             .unwrap();
-        let leaving_m1 = accepted_roster(&*builds, &key_m1, STEP_LEAVING_ROSTER, "mesh1.admin.1", &me_m1, &rt_m1, || live_roster(&m1_records))
+        let leaving_m1 = accepted_roster(&*builds, &key_m1, STEP_LEAVING_ROSTER, fp.node_id.as_str(), &me_m1, &rt_m1, || live_roster(&m1_records))
             .await
             .unwrap();
         view_sink.writes_through(rows_fp.clone());
-        members_exited(&*builds, &key_m1, "mesh1.admin.1", &leaving_m1, &me_m1, rt_m1.clone(), &m1_records, &[], |n: Node| {
+        members_exited(&*builds, &key_m1, fp.node_id.as_str(), &leaving_m1, &me_m1, rt_m1.clone(), &m1_records, &[], |n: Node| {
             let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
-                let name = n.name.to_string();
+                let name = n.node_id.clone();
                 pipeline
-                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest {
+                    .delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(n).node_id),
                         build_id: build_id.clone(),
                         attempt: 1,
                         node: n,
@@ -1178,7 +1178,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let HandoffVerdict::Accept(manifest_m1) = handoff_verdict(&facts, &key_m1, &admitted_m1, &manifest_reference(build_id.as_str(), 1, &op_m1, false)) else {
             panic!("mesh1 handoff accepted");
         };
-        record_completion(&*builds, &key_m1, "mesh1.admin.1", &manifest_m1).await.unwrap();
+        record_completion(&*builds, &key_m1, fp.node_id.as_str(), &manifest_m1).await.unwrap();
         assert_eq!(owner_resume(&builds.read_build(&build_id).await.unwrap().steps, &op_m1), Ok(OwnerResume::Deleted(manifest_m1.clone())));
 
         // Once a runtime's deletion receipt is durable, nothing recovers it for being absent (`fabric-delete.md:73`).
@@ -1188,10 +1188,10 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .expect("durable deletion receipt answers AlreadyApplied");
         assert!(matches!(already_deleted, rdm_admin::control_plane::Recovery::AlreadyApplied(_)));
 
-        complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 1, &fabric_id, "mesh1.admin.1")
+        complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 1, &fabric_id, fp.node_id.as_str())
             .await
             .expect("complete_fabric_delete releases the fabric name and records fabric.deleted");
-        complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 2, &fabric_id, "mesh1.admin.1")
+        complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 2, &fabric_id, fp.node_id.as_str())
             .await
             .expect("replayed complete_fabric_delete on resume is idempotent");
         assert_eq!(fabric_storage.fabric().await.unwrap(), None, "fabric name is released");

@@ -250,7 +250,7 @@ pub async fn renew_members(r: &Arc<Renewals>, view: &Topology) {
             Ok(Some(d)) => d,
             Ok(None) => continue,
             Err(why) => {
-                tracing::info_span!("rdm.node_admin.cert.reject.via-renewal", node = %n.name, reason = %why)
+                tracing::info_span!("rdm.node_admin.cert.reject.via-renewal", node_path = %n.name.path, node_name = %n.name.name, reason = %why)
                     .in_scope(|| tracing::warn!("the cert dates cannot be read: no renewal this tick"));
                 continue;
             }
@@ -277,7 +277,7 @@ pub async fn renew_members(r: &Arc<Renewals>, view: &Topology) {
 async fn renew_one(r: &Renewals, n: &Node, birth: &BirthIdentity, held: &CertDates, issue: Result<MemberIssue, IssueFailure>, writes: bool) {
     let span = tracing::info_span!(
         "rdm.node_admin.cert.update.via-renewal",
-        node = %n.name,
+        node_path = %n.name.path, node_name = %n.name.name,
         node_id = %n.node_id,
         incarnation_id = %birth.incarnation.as_str(),
         issued_at = tracing::field::Empty,
@@ -350,7 +350,7 @@ async fn written(r: &Renewals, n: &Node, birth: &BirthIdentity, dates: &CertDate
         }
         return Outcome::Installed;
     }
-    let base = crate::storage::NodeRow::new(n.name.clone(), n.node_id.clone(), n.status);
+    let base = crate::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);
     match r.caches.nodes.update(&*r.nodes_storage, &n.node_id, Some(base), |rec| rec.birth_mut(&birth.incarnation, &birth.name).cert = Some(dates.clone())).await {
         Ok(_) => Outcome::Installed,
         Err(e) => {
@@ -516,7 +516,7 @@ async fn rotate_roots(r: &Arc<Renewals>, view: &Topology) {
     let (Some(old), Some(new)) = (row.roots.first().cloned(), row.roots.get(1).cloned()) else { return };
     let both = vec![old.clone(), new.clone()];
     let move_to = |phase: RootsPhase| async move {
-        let span = tracing::info_span!("rdm.node_admin.root.update.via-caller", node = %r.me, phase = ?phase, root_expires_at = tracing::field::Empty, previous_root_expires_at = row.expires_at, nodes = view.births().count() as u64, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.root.update.via-caller", node_path = %r.me.path, node_name = %r.me.name, phase = ?phase, root_expires_at = tracing::field::Empty, previous_root_expires_at = row.expires_at, nodes = view.births().count() as u64, outcome = tracing::field::Empty);
         write_roots_row(r, |held| held.phase = phase).await;
         span.record("outcome", "moved");
         span.in_scope(|| tracing::info!("the root rotation moved to its next phase"));
@@ -683,10 +683,10 @@ async fn update_admins(r: &Arc<Renewals>, mesh: &str, admins: Vec<(Node, Option<
 async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&NodeId>, incarnation: &IncarnationId, current: &IssuerMint, key: &rdm_core::certs::IssuingKey, own_mesh: bool, previous: u64) {
     let span = tracing::info_span!(
         "rdm.node_admin.issuer.update.via-renewal",
-        node = %admin.name,
+        node_path = %admin.name.path, node_name = %admin.name.name,
         node_id = %admin.node_id,
         incarnation_id = %incarnation.as_str(),
-        sender = %r.me,
+        sender_node_id = %r.node_id,
         carrier = %carrier.map(|c| c.to_string()).unwrap_or_default(),
         mesh,
         issuer_expires_at = current.expires_at,
@@ -696,7 +696,7 @@ async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&Nod
     );
     let outcome = if admin.node_id == r.node_id {
         // This admin holds it already: installed in process, with no call.
-        tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node = %r.me, node_id = %r.node_id, mesh, sender = %r.me, issuer_expires_at = current.expires_at, previous_issuer_expires_at = previous)
+        tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node_path = %r.me.path, node_name = %r.me.name, node_id = %r.node_id, mesh, sender_node_id = %r.node_id, issuer_expires_at = current.expires_at, previous_issuer_expires_at = previous)
             .in_scope(|| tracing::info!("the mesh's new issuer is installed in process"));
         Outcome::Installed
     } else {
@@ -747,7 +747,7 @@ async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&Nod
     let outcome = match outcome {
         Outcome::Installed if own_mesh => {
             let dates = signing_dates(current);
-            let base = crate::storage::NodeRow::new(admin.name.clone(), admin.node_id.clone(), admin.status);
+            let base = crate::storage::NodeRow::new(admin.name.clone(), admin.mesh.clone(), admin.kind, admin.node_id.clone(), admin.status);
             match r.caches.nodes.update(&*r.nodes_storage, &admin.node_id, Some(base), |rec| rec.birth_mut(incarnation, &admin.name).signing_cert = Some(dates)).await {
                 Ok(_) => Outcome::Installed,
                 Err(e) => {
@@ -795,8 +795,8 @@ mod tests {
         let ca = |root: &rdm_core::certs::SigningKey| rdm_core::certs::CaKey::mint(root, rdm_core::certs::CA_CERT_TTL_SECS, 1_793_169_000_000);
         let fabric_primary = CertIssuer::with_root(root.clone(), ca(&root), None, time_at(1_793_169_598_407));
         let mesh_primary = CertIssuer::with_root(root.clone(), ca(&root), None, time_at(1_793_169_597_407));
-        let name: PathName = "mesh2.admin.1".parse().unwrap();
-        let birth = BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: name.mesh.clone(), name, endpoint_key: rdm_core::EndpointId("k".into()) };
+        let name: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+        let birth = BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: "mesh2".to_owned(), name, endpoint_key: rdm_core::EndpointId("k".into()) };
         let issue = fabric_primary.renewal(&birth).expect("the fabric-primary issues mesh2's primary a renewed cert");
         let req = StatusRequest::RenewCert { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), cert: issue.bytes.clone() };
         assert_eq!(installed_dates(&req, &mesh_primary), Some(dates_of(&issue)), "the row mesh2's primary writes is the issue's dates, whole");
@@ -814,9 +814,9 @@ mod tests {
         CertIssuer::with_root(root.clone(), rdm_core::certs::CaKey::mint(root, rdm_core::certs::CA_CERT_TTL_SECS, at - 1_000), None, time_at(at))
     }
 
-    fn birth_of(name: &str) -> BirthIdentity {
-        let name: PathName = name.parse().unwrap();
-        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: name.mesh.clone(), name, endpoint_key: rdm_core::EndpointId("k".into()) }
+    fn birth_of(name: rdm_core::PathName, mesh: &str) -> BirthIdentity {
+        
+        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: mesh.to_owned(), name, endpoint_key: rdm_core::EndpointId("k".into()) }
     }
 
     // @feature: node-lifecycle
@@ -853,7 +853,7 @@ mod tests {
         let (fabric_primary, root) = fabric_primary_at(1_793_169_598_407);
         let installer = admin_at(&root, 1_793_169_597_407);
         let successor = admin_at(&root, 1_793_169_658_407);
-        let birth = birth_of("mesh2.admin.1");
+        let birth = birth_of(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2");
         let issue = fabric_primary.renewal(&birth).expect("the fabric-primary issues the renewal");
         let req = StatusRequest::RenewCert { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), cert: issue.bytes.clone() };
         let (installed, reconstructed) = (installed_dates(&req, &installer).expect("the cert decodes"), installed_dates(&req, &successor).expect("the cert decodes"));
@@ -871,7 +871,7 @@ mod tests {
     fn the_same_issue_delivered_twice_keeps_its_dates() {
         let (fabric_primary, root) = fabric_primary_at(1_793_169_598_407);
         let mesh_primary = admin_at(&root, 1_793_169_598_407);
-        let birth = birth_of("mesh2.admin.1");
+        let birth = birth_of(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2");
         let issue = fabric_primary.renewal(&birth).expect("the fabric-primary issues the renewal");
         let req = StatusRequest::RenewCert { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), cert: issue.bytes.clone() };
         let first = installed_dates(&req, &mesh_primary);
@@ -923,7 +923,7 @@ mod tests {
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(crate::storage_error::StorageError::Io { file: format!("nodes/{}/records/{}", row.name.mesh, row.node_id), reason: "the write was lost".into() });
+                return Err(crate::storage_error::StorageError::Io { file: format!("nodes/{}/records/{}", row.mesh, row.node_id), reason: "the write was lost".into() });
             }
             self.inner.put_node(row).await
         }
@@ -973,7 +973,7 @@ mod tests {
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(1_000_000);
         let issuer = Arc::new(CertIssuer::with_root(root, ca, None, time.clone()));
-        let mut me = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let mut me = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         me.incarnation_id = Some(IncarnationId::mint());
         me.is_primary = true;
         me.is_fabric_primary = true;
@@ -986,7 +986,7 @@ mod tests {
         // The join's cert: past its renew point, not yet expired.
         let joined = CertDates { issued_at: 1, expires_at: 9_000_000, issuer_expires_at: 9_000_000, renew_at: 500_000 };
         let store = Arc::new(CertWriteLost { inner: Default::default(), refusing: std::sync::atomic::AtomicBool::new(true) });
-        let mut held = crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status);
+        let mut held = crate::storage::NodeRow::new(me.name.clone(), "mesh1".to_owned(), rdm_core::NodeKind::NodeAdmin, me.node_id.clone(), me.status);
         held.birth_mut(&incarnation, &me.name).cert = Some(joined.clone());
         store.inner.put_node(&held).await.unwrap();
         let cert_of = |store: Arc<CertWriteLost>, node_id: NodeId, inc: IncarnationId| async move { store.inner.node(&node_id).await.unwrap().and_then(|r| r.birth(&inc).and_then(|b| b.cert.clone())) };
@@ -1054,7 +1054,7 @@ mod tests {
         let (_, first_expiry, renew_at) = issuer.ca_dates().unwrap();
 
         let fabric_id = FabricId::mint();
-        let mut me = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let mut me = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         let incarnation = IncarnationId::mint();
         me.incarnation_id = Some(incarnation.clone());
         me.is_primary = true;
@@ -1100,7 +1100,7 @@ mod tests {
             row.issuer_receipts.insert("mesh1".into(), 50_000);
         })
         .await;
-        let mut node_row = crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status);
+        let mut node_row = crate::storage::NodeRow::new(me.name.clone(), "mesh1".to_owned(), rdm_core::NodeKind::NodeAdmin, me.node_id.clone(), me.status);
         node_row.birth_mut(&incarnation, &me.name).cert = Some(CertDates { issued_at: 1_000, expires_at: 13_000, issuer_expires_at: 40_000, renew_at: 9_000 });
         r.caches.nodes.update(&*nodes_store, &me.node_id, Some(node_row), |_| {}).await.unwrap();
         assert!(!every_cert_under_new_ca(&r, &view).await, "birth's cert still chains to an issuer older than the receipt");
@@ -1142,7 +1142,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:33
     /// "4. Each admin's record holds the dates it answered, written by its mesh-primary. The old issuer expires on its own."
     /// CONTRACT: docs/architecture/lifecycles/mesh-issuer-renew.md:54
-    /// "An admin that refuses the material by name (another mesh, a CA no root in its set verifies, an issuing cert the CA does not verify) ends the workflow `Failed { step: node.issuer.update:<path.name>, reason }`; the next tick runs it again from the rows. A successor fabric-primary reads the node-admin rows and continues the schedule from them."
+    /// "An admin that refuses the material by name (another mesh, a CA no root in its set verifies, an issuing cert the CA does not verify) ends the workflow `Failed { step: node.issuer.update:<path and name>, reason }`; the next tick runs it again from the rows. A successor fabric-primary reads the node-admin rows and continues the schedule from them."
     #[tokio::test]
     async fn renew_issuers_mints_at_renew_point_and_installs_in_process_for_own_mesh_primary_and_writes_signing_cert_row() {
         use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
@@ -1156,7 +1156,7 @@ mod tests {
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(10_000);
         let issuer = Arc::new(CertIssuer::with_root(root, ca, None, time.clone()));
-        let mut me = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let mut me = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         let incarnation = IncarnationId::mint();
         me.incarnation_id = Some(incarnation.clone());
         me.is_primary = true;
@@ -1168,7 +1168,7 @@ mod tests {
             nodes: vec![me.clone()],
         };
         let nodes_store = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let mut held = crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status);
+        let mut held = crate::storage::NodeRow::new(me.name.clone(), "mesh1".to_owned(), rdm_core::NodeKind::NodeAdmin, me.node_id.clone(), me.status);
         let old_signing = SigningCertDates { issued_at: 1_000, expires_at: 30_000, renew_at: 8_000 };
         held.birth_mut(&incarnation, &me.name).signing_cert = Some(old_signing.clone());
         nodes_store.put_node(&held).await.unwrap();
@@ -1213,7 +1213,7 @@ mod tests {
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(10_000);
         let issuer = Arc::new(CertIssuer::with_root(root, ca, None, time));
-        let mut me = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let mut me = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         let incarnation = IncarnationId::mint();
         me.incarnation_id = Some(incarnation.clone());
         me.is_primary = true;
@@ -1225,7 +1225,7 @@ mod tests {
             nodes: vec![me.clone()],
         };
         let nodes_store = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let mut held = crate::storage::NodeRow::new(me.name.clone(), me.node_id.clone(), me.status);
+        let mut held = crate::storage::NodeRow::new(me.name.clone(), "mesh1".to_owned(), rdm_core::NodeKind::NodeAdmin, me.node_id.clone(), me.status);
         held.birth_mut(&incarnation, &me.name).signing_cert = Some(SigningCertDates { issued_at: 1_000, expires_at: 30_000, renew_at: 8_000 });
         nodes_store.put_node(&held).await.unwrap();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

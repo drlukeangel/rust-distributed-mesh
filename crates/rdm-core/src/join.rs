@@ -87,7 +87,7 @@ pub enum JoinReply {
     /// Position 2 on the wire.
     NotPrimary {
         /// The mesh primary the receiver sees, when it sees one.
-        primary: Option<String>,
+        primary: Option<crate::NodeId>,
     },
     /// The peer the call needed could not be resolved.
     ///
@@ -253,7 +253,7 @@ mod tests {
         let all = [
             (JoinReply::Joined { answer: vec![1, 2, 3] }, ReplyKind::Success),
             (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (JoinReply::NotPrimary { primary: Some("mesh1.admin.1".into()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (JoinReply::NotPrimary { primary: Some(crate::NodeId::parse("0123456789ab").unwrap()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&crate::fixture_crockford60("i")).unwrap() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),

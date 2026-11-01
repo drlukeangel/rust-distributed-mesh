@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const CELL: &str = "mesh_composition_uses_supplied_clock_keeps_silence_monotonic";
-const NODE: &str = "mesh1.rpc.1";
+
 
 fn owner() -> Owner {
     Owner {
@@ -115,19 +115,20 @@ impl Observer {
     }
 
     /// The digests of `node` heard on the mesh channel, in arrival order.
-    fn heartbeats_of(&self, node: &str) -> Vec<(Seen, MeshDigest)> {
+    fn heartbeats_of(&self, node: &rdm_core::NodeId) -> Vec<(Seen, MeshDigest)> {
         self.all()
             .into_iter()
             .filter(|x| x.channel == "mesh1")
             .filter_map(|x| match x.frame.data() {
-                Frame::Digest { digest } if digest.node.name.to_string() == node => Some((x.clone(), digest.clone())),
+                Frame::Digest { digest } if &digest.node.node_id == node => Some((x.clone(), digest.clone())),
                 _ => None,
             })
             .collect()
     }
 
     async fn broadcast(&self, f: &Frame) {
-        self.mesh_sender.broadcast(Bytes::from(f.clone().authored(&self.author, 0, 1).encode())).await.unwrap();
+        let author = match f.data() { Frame::Digest { digest } => rdm_transport::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => self.author.clone() };
+        self.mesh_sender.broadcast(Bytes::from(f.clone().authored(&author, 0, 1).encode())).await.unwrap();
     }
 }
 
@@ -154,6 +155,8 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
 
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
     let nodes = estate.settled_views(&[("mesh1", 1, 1)]).await;
+    let target = nodes.iter().find(|n| n.kind == rdm_core::NodeKind::RpcNode).expect("rpc node");
+    let node_id = &target.node_id;
     let fabric_view = estate.fabric_view().await;
     let fabric = fabric_view.id.clone();
     let mesh1_id = fabric_view.meshes.iter().find(|m| m.name == "mesh1").and_then(|m| m.id.clone()).expect("the fabric view names mesh1's id");
@@ -162,10 +165,10 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     let observer = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
     until_arrival("the observer decodes six heartbeats of the rpc node and a MeshTopology publication", Duration::from_secs(60), &observer.arrivals, || {
         let members = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshTopology { .. }));
-        (observer.heartbeats_of(NODE).len() >= 6 && members).then_some(())
+        (observer.heartbeats_of(node_id).len() >= 6 && members).then_some(())
     })
     .await;
-    let before = observer.heartbeats_of(NODE);
+    let before = observer.heartbeats_of(node_id);
     let birth = before[0].1.node.incarnation.clone();
     assert!(before.iter().all(|h| h.1.node.incarnation == birth), "one birth in the window");
     let seqs: Vec<u64> = before.iter().map(|h| h.1.digest_seq).collect();
@@ -188,7 +191,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     assert!(!mesh_topology_published.is_empty() && mesh_topology_published.iter().all(|skew| *skew < 5_000), "published_at_rafka_ms is Rafka-time from the composed clock: skews {mesh_topology_published:?}");
 
     // The adversary: the very birth, an OLDER sequence, a stamp a year ahead, saying Leaving.
-    let held_before = estate.node_view(NODE).await;
+    let held_before = estate.node_view(&target.name).await;
     assert_eq!(held_before.status, NodeStatus::Ready);
     let last = before.last().unwrap().1.clone();
     let mut forged = last.clone();
@@ -202,10 +205,10 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     observer.broadcast(&Frame::Digest { digest: forged.clone() }).await;
     // Well past the silence window (3 s) and many heartbeats (500 ms): the live heartbeats are the control.
     tokio::time::sleep(Duration::from_secs(9)).await;
-    let held_after = estate.node_view(NODE).await;
+    let held_after = estate.node_view(&target.name).await;
     assert_eq!(held_after.status, NodeStatus::Ready, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
-    assert_eq!(held_after.incarnation_id, held_before.incarnation_id, "the same birth");
-    let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(NODE).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.node_state == NodeState::Alive).collect();
+    assert_eq!((&held_after.node_id, &held_after.incarnation_id), (&held_before.node_id, &held_before.incarnation_id), "the same birth");
+    let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(node_id).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.node_state == NodeState::Alive).collect();
     assert!(live_after.len() >= 8, "the node kept publishing live heartbeats for the whole window ({} heard)", live_after.len());
     assert!(live_after.iter().all(|h| h.1.digest_seq > last.digest_seq), "every live heartbeat after the forged one carries a higher sequence than the last one before it");
     let silent_ms = live_after.windows(2).map(|w| w[1].0.heard_at_ms - w[0].0.heard_at_ms).max().unwrap_or(0);
@@ -213,7 +216,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
 
     estate.stop().await;
     let spans = estate.spans();
-    let subscribed: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-subscribe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == NODE).collect();
+    let subscribed: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-subscribe").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node_id.as_str()).collect();
     assert!(!subscribed.is_empty(), "the rpc node's real topology view subscribed ({} spans read)", spans.len());
     let result = json!({
         "cell": CELL,

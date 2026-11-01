@@ -37,7 +37,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             fabric_id: FabricId::mint(),
             executable: env!("CARGO_BIN_EXE_rdm-rpc-node").into(),
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
@@ -81,7 +81,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             timeouts: Timeouts { bind: Duration::from_secs(10), ..Timeouts::default() },
         };
         let err = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_err();
         assert_eq!(err.step, "WaitForBind");

@@ -46,7 +46,7 @@ fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_string(), kind: rdm_core::NodeKind::RpcNode,
             node_id: node_id.clone(),
-            name: format!("{mesh}.rpc.{ordinal}").parse().unwrap(),
+            name: rdm_core::PathName::new(format!("{mesh}.rpc"), ordinal.to_string()).unwrap(),
             endpoint_id: EndpointId(format!("key{ordinal}")),
             transport_addr: format!("127.0.0.1:{}", 41_000 + ordinal).parse().unwrap(),
             incarnation: birth.clone(),
@@ -81,10 +81,10 @@ impl Mesh {
 }
 
 fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { mesh: d.node.mesh.clone(),
+    LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(),
         build_id: "b1".into(),
         attempt: 1,
-        operation: operation.into(),
+        operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         node_id: d.node.node_id.clone(),
         incarnation: d.node.incarnation.clone(),
         name: d.node.name.clone(),
@@ -504,7 +504,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // One remote change: one version bump, one delta, applied by the ordinary member.
         let mut changed = remote.digests(500);
         changed[7].status = MemberStatus::ConnectionsDeleting;
-        let (changed_name, changed_id) = (changed[7].node.name.to_string(), changed[7].node.node_id.to_string());
+        let (changed_name, changed_id) = (changed[7].node.name.clone(), changed[7].node.node_id.to_string());
         src_bb.publish(&src_m, changed.clone()).await;
         let v2 = wait("the ordinary member to apply the delta", || {
             let mm = mem_m.clone();

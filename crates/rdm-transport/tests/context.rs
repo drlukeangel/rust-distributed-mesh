@@ -150,7 +150,7 @@ struct Process {
     seen: Arc<Mutex<Vec<PeerContext>>>,
 }
 
-async fn process(name: &str) -> Process {
+async fn process(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Process {
     let key = SecretKey::generate();
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
         let endpoint = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -179,7 +179,7 @@ async fn process(name: &str) -> Process {
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(endpoint).accept(rdm_transport::ALPN, server.clone()).spawn();
-    let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
+    let resolved = ResolvedNode { mesh: mesh.to_owned(), kind, node_id, name, endpoint_id: key.public(), transport_addr: addr, incarnation };
     Process { _router: router, server, resolved, seen }
 }
 
@@ -212,7 +212,7 @@ fn full(t: &Trace) -> CallContext {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_direct_call_continues_the_callers_trace_and_records_only_allowlisted_baggage() {
     spans();
-    let p = process("mesh1.rpc.1").await;
+    let p = process(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
     let (c, _) = client(None, &[&p.resolved]).await;
     let t = trace();
     let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"direct"), &with(full(&t))).await;
@@ -241,7 +241,7 @@ async fn a_direct_call_continues_the_callers_trace_and_records_only_allowlisted_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_without_explicit_context_sends_its_current_span_and_its_caller_system() {
     spans();
-    let p = process("mesh1.rpc.1").await;
+    let p = process(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
     let (c, _) = client(Some("rdm"), &[&p.resolved]).await;
     let caller = tracing::info_span!("test.caller");
     let trace = caller.context().span().span_context().trace_id().to_string();
@@ -309,7 +309,7 @@ fn steps(s: &SpanData) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_dialed_calls_dial_span_ends_with_the_dial_linked_to_its_call_span_while_the_connection_stays_pooled() {
     spans();
-    let p = process("mesh1.rpc.1").await;
+    let p = process(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
     let (c, _) = client(Some("rdm"), &[&p.resolved]).await;
     let (caller, trace, parent, fut) = caller_call(&c, &p, b"dialed");
     let out = fut.await;
@@ -346,7 +346,7 @@ async fn a_dialed_calls_dial_span_ends_with_the_dial_linked_to_its_call_span_whi
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn missing_context_is_valid_and_starts_a_new_trace() {
     spans();
-    let p = process("mesh1.rpc.1").await;
+    let p = process(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
     let (c, _) = client(None, &[&p.resolved]).await;
     let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"none"), &with(CallContext::default())).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
@@ -365,7 +365,7 @@ async fn missing_context_is_valid_and_starts_a_new_trace() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_the_outcome() {
     spans();
-    let p = process("mesh1.rpc.1").await;
+    let p = process(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
     let (c, _) = client(None, &[&p.resolved]).await;
     // Hand the raw context past the client's own sanitizing: the target must drop it too.
     let bad = CallContext {
@@ -406,7 +406,7 @@ async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_th
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn context_never_reaches_the_target_decision() {
     spans();
-    let p = process("mesh1.rpc.1").await;
+    let p = process(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
     let mut other = p.resolved.clone();
     other.node_id = NodeId::mint();
     let (c, _) = client(None, &[&p.resolved, &other]).await;
@@ -432,7 +432,7 @@ async fn context_never_reaches_the_target_decision() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_hop() {
     spans();
-    let target = process("mesh1.rpc.3").await;
+    let target = process(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
     // The carrier calls out as itself (`caller_system = "carrier"`), serving Forward for Ping.
     let carrier_key = SecretKey::generate();
     let carrier_ep = rdm_transport::endpoint::bind(carrier_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -448,7 +448,7 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
         .build(ServedBirth { node_id: cid.to_string(), incarnation: cinc.to_string() })
         .unwrap();
     let _carrier_router = Router::builder(carrier_ep).accept(rdm_transport::ALPN, carrier_server).spawn();
-    let carrier = ResolvedNode { node_id: cid, name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc };
+    let carrier = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: cid, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), endpoint_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc };
 
     let (origin, _) = client(Some("rdm"), &[&carrier, &target.resolved]).await;
     let t = trace();
@@ -487,7 +487,7 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_handler_fault_is_named_under_its_serve_span_in_the_callers_trace() {
     spans();
-    let p = process("mesh1.rpc.1").await;
+    let p = process(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
     let (c, _) = client(None, &[&p.resolved]).await;
     let t = trace();
     let _left = crate::common::TraceArtifact::new(&t.id);

@@ -101,8 +101,14 @@ fn escaped(s: impl ToString) -> String {
 }
 fn path(parts: &[String]) -> String { parts.iter().map(escaped).collect::<Vec<_>>().join("/") }
 fn birth_parts(b: &Birth) -> Vec<String> { vec![b.fabric.to_string(), b.node.to_string(), b.incarnation.to_string()] }
+fn operation_parts(operation: &rdm_core::OperationId) -> Vec<String> {
+    vec![operation.action.clone(), operation.recipe_step.map(|step| step.to_string()).unwrap_or_default(), operation.occurrence.as_ref().map(ToString::to_string).unwrap_or_default()]
+}
 fn operation(op: &rdm_core::LifecycleOp) -> Vec<String> {
-    vec![op.build_id.clone(), op.attempt.to_string(), op.operation.clone(), op.node_id.to_string(), op.incarnation.to_string()]
+    let mut parts = vec![op.build_id.clone(), op.attempt.to_string()];
+    parts.extend(operation_parts(&op.operation));
+    parts.extend([op.mesh.clone(), op.node_id.to_string(), op.incarnation.to_string()]);
+    parts
 }
 pub(crate) fn date(ms: u64) -> Result<String, WireError> {
     let t = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms.try_into().map_err(|_| invalid("time range"))?).ok_or_else(|| invalid("time range"))?;
@@ -162,14 +168,16 @@ impl Context {
                 format!("fabric/{fabric}/status")
             }
             Frame::Reserved15 { hook, .. } | Frame::Reserved16 { hook, .. } | Frame::Reserved17 { hook, .. } | Frame::Reserved18 { hook, .. } => {
-                identity = vec![hook.fabric_id.to_string(), hook.build_id.clone(), hook.attempt.to_string(), hook.operation.clone(), hook.node_id.to_string(), hook.incarnation.to_string()];
+                identity = vec![hook.fabric_id.to_string(), hook.build_id.clone(), hook.attempt.to_string()];
+                identity.extend(operation_parts(&hook.operation));
+                identity.extend([hook.node_id.to_string(), hook.incarnation.to_string()]);
                 time_ms = hook.event_at_rafka_ms;
-                format!("state/{}/{}/{}/{}/birth/{}/{}", hook.fabric_id, escaped(&hook.build_id), hook.attempt, escaped(&hook.operation), hook.node_id, hook.incarnation)
+                format!("birth/{}/{}/{}", hook.fabric_id, hook.node_id, hook.incarnation)
             }
             Frame::NodeDeleting { op, .. } | Frame::NodeDeleted { op, .. } | Frame::NodeRestarting { op, .. } | Frame::NodeStopped { op, .. }
             | Frame::NodeConnectionsDeleting { op, .. } | Frame::NodeConnectionsDeleted { op, .. } | Frame::NodeLeaving { op, .. } | Frame::NodeLeft { op, .. } => {
                 identity = operation(op); time_ms = op.event_at_rafka_ms;
-                format!("operation/{}/{}/{}/birth/{}/{}", escaped(&op.build_id), op.attempt, escaped(&op.operation), op.node_id, op.incarnation)
+                format!("birth/{}/{}/{}", author.fabric, op.node_id, op.incarnation)
             }
             Frame::Concern { node_id, incarnation, observer, .. } => { identity = vec![node_id.to_string(), incarnation.to_string(), observer.clone()]; format!("birth/{}/{node_id}/{incarnation}", author.fabric) }
             Frame::NewFabricPrimary { primary, .. } => { identity = vec![primary.node_id.to_string(), primary.incarnation.to_string()]; format!("fabric/{}/primary", author.fabric) }
@@ -478,7 +486,7 @@ mod tests {
     }
     #[test]
     fn operation_sequence_is_absent_and_source_survives_forwarding() {
-        let op = rdm_core::LifecycleOp { mesh: "m".into(), build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: author().node, incarnation: author().incarnation, name: "m.rpc.1".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "m".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o"), node_id: author().node, incarnation: author().incarnation, name: rdm_core::PathName::new("m.rpc", "1").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let event = Frame::NodeDeleted { op, forwarded_by: None }.authored(&author(), 0, 1);
         let forwarded = crate::topology::forward_of(event.clone(), "other.admin.1", "other").unwrap();
         assert_eq!(event.context(), forwarded.context());
@@ -486,4 +494,19 @@ mod tests {
         let (mut attrs, data): (Vec<(String, String)>, Vec<u8>) = wire::decode(&forwarded.encode()).unwrap();
         attrs.push(("sequence".into(), p(1))); malformed(attrs, data);
     }
+    /// CONTRACT: repeated standalone cycles have distinct event IDs; a resend retains its ID.
+    #[test]
+    fn operation_occurrence_distinguishes_lifecycle_events_and_preserves_resends() {
+        let node = author();
+        let base = rdm_core::OperationId::node("node.mesh.join", &node.node);
+        let first = base.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint());
+        let second = base.in_occurrence(rdm_core::OperationOccurrenceId::mint());
+        let event = |operation| Frame::NodeDeleted { op: rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "m".into(), build_id: "b".into(), attempt: 1, operation, node_id: node.node.clone(), incarnation: node.incarnation.clone(), name: rdm_core::PathName::new("arbitrary", "worker").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }, forwarded_by: None };
+        let first_event = event(first.clone());
+        let first_context = Context::authored(&first_event, &node, 1, 1);
+        assert_eq!(Context::authored(&event(first.clone()), &node, 1, 1).id, first_context.id);
+        assert_ne!(Context::authored(&event(second.clone()), &node, 1, 1).id, first_context.id);
+        assert_ne!(operation_parts(&first), operation_parts(&second), "hook and lifecycle events share these operation identity fields");
+    }
+
 }

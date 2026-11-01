@@ -71,17 +71,17 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
     estate.reconcile_shape("fabric1", &shape).await;
     let views = estate.settled_views(&shape).await;
     let nodes: Vec<Value> = views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
-    let ordinary: BTreeSet<String> = views.iter().filter(|n| n.kind == NodeKind::RpcNode).map(|n| n.name.to_string()).collect();
-    let admins: BTreeSet<String> = views.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| n.name.to_string()).collect();
+    let ordinary: BTreeSet<String> = views.iter().filter(|n| n.kind == NodeKind::RpcNode).map(|n| n.node_id.to_string()).collect();
+    let admins: BTreeSet<String> = views.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| n.node_id.to_string()).collect();
     assert_eq!((ordinary.len(), admins.len()), (4, 4), "{nodes:#?}");
-    let side = |m: &str| -> Vec<String> { views.iter().filter(|n| n.mesh == m).map(|n| n.name.to_string()).collect() };
+    let side = |m: &str| -> Vec<rdm_core::PathName> { views.iter().filter(|n| n.mesh == m).map(|n| n.name.clone()).collect() };
     let (mesh1, mesh2) = (side("mesh1"), side("mesh2"));
 
     // Quiet: every node holds both meshes, then 60 s pass with nothing changing.
     let peers = estate.peers().await;
     for n in &views {
         for m in ["mesh1", "mesh2"] {
-            peers.fact(n, m, &format!("{} has learned {m}", n.name), |held| !held.members.is_empty()).await;
+            peers.fact(n, m, &format!("node {} has learned {m}", n.node_id), |held| !held.members.is_empty()).await;
         }
     }
     let quiet_from = now_ns();

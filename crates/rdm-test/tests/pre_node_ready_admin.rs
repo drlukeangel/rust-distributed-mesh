@@ -137,14 +137,14 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             fabric_id,
             mesh: "mesh1".into(),
             kind: rdm_core::NodeKind::NodeAdmin,
-            name: "mesh1.admin.2".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.admin", "2").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
             seeds: vec![(key_of(&root_digest), root_digest.node.transport_addr)],
-            launcher: Some(Launcher { name: root_digest.node.name.clone(), node_id: root_digest.node.node_id.clone(), incarnation: root_digest.node.incarnation.clone() }),
+            launcher: Some(Launcher { mesh: root_digest.node.mesh.clone(), name: root_digest.node.name.clone(), node_id: root_digest.node.node_id.clone(), incarnation: root_digest.node.incarnation.clone() }),
             data_dir: joiner_dir.clone(),
             store_dir: root_dir.clone(),
             mesh_id: Some(root_mesh_id),
@@ -189,7 +189,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         // Blocked { node_id, incarnation, reason, retry_on }, and the executor's `ready_blocker` names it.
         let PreNodeReadyState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
         let joiner_digest = joiner.digest.lock().unwrap().clone();
-        let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.name.clone());
+        let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.name.clone(), joiner_digest.node.mesh.clone(), joiner_digest.node.kind);
         subject.node_id = joiner_digest.node.node_id.clone();
         subject.incarnation_id = Some(joiner_digest.node.incarnation.clone());
         let observer = rdm_admin::admin::TopologyObserver {
@@ -242,7 +242,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         assert_eq!(root_pre_node_ready.contexts.lock().unwrap().len(), 1);
         assert!(root_pre_node_ready.contexts.lock().unwrap()[0].2.is_some(), "the Day-0 root's hook was handed authority None");
         let joiner_ctx = joiner_pre_node_ready.contexts.lock().unwrap().clone();
-        assert_eq!(joiner_ctx.iter().map(|c| c.1.clone()).collect::<Vec<_>>(), vec![Some(root_digest.node.name.to_string()); 2], "both attempts pulled from the accepting admin");
+        assert_eq!(joiner_ctx.iter().map(|c| c.1.clone()).collect::<Vec<_>>(), vec![Some(root_digest.node.node_id.to_string()); 2], "both attempts pulled from the accepting admin");
 
         joiner.leave().await;
         root.leave().await;

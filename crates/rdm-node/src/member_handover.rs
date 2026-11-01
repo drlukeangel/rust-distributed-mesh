@@ -67,27 +67,70 @@ pub fn entries_named(entries: &[Entry]) -> String {
     entries.iter().map(|(t, p, s, r)| format!("{t} {p} -> {s} @{r}")).collect::<Vec<_>>().join(", ")
 }
 
+/// The complete request content compared when an operation is retried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnswerPayload {
+    /// Install the supplied election results.
+    Install(Vec<Entry>),
+    /// Transfer this primary role to the explicitly selected birth.
+    Update {
+        /// The explicitly requested primary role's node type.
+        node_type: String,
+        /// The exact successor birth supplied by the command.
+        successor: Option<Birth>,
+    },
+}
+
 /// What a door answered, by operation: an identical repeat is answered as the first was, a different
 /// payload for the same operation is `RejectedConflictingPayload` (node-rpc-envelope.md: "An identical
 /// retry answers the same PrimaryUpdated before any revision check").
 #[derive(Default)]
-pub struct Answered(std::sync::Mutex<std::collections::BTreeMap<String, ((Vec<Entry>, String), Reply)>>);
+pub struct Answered(std::sync::Mutex<std::collections::BTreeMap<(String, u32, rdm_core::OperationId), (AnswerPayload, Reply)>>);
+
+#[cfg(test)]
+mod answered_tests {
+    use super::*;
+
+    /// CONTRACT: retries compare the exact successor within one Build attempt; other
+    /// Builds and attempts never inherit that attempt's cached answer.
+    // @feature: node-primary-update
+    #[test]
+    fn handover_retry_checks_successor_and_build_attempt() {
+        let answered = Answered::default();
+        let id = NodeId::mint();
+        let operation = rdm_core::OperationId::node("node.primary.update", &id);
+        let successor = Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let payload = AnswerPayload::Update { node_type: "rpc".into(), successor: Some(successor.clone()) };
+        let reply = Reply::PrimaryUpdated { revisions: Vec::new() };
+        answered.keep("build-a", 1, &operation, payload.clone(), reply.clone());
+        assert_eq!(answered.before("build-a", 1, &operation, &payload), Some(reply));
+        assert_eq!(answered.before("build-b", 1, &operation, &payload), None);
+        assert_eq!(answered.before("build-a", 2, &operation, &payload), None);
+        let changed = AnswerPayload::Update {
+            node_type: "rpc".into(),
+            successor: Some(Birth { incarnation: IncarnationId::mint(), ..successor }),
+        };
+        assert!(matches!(answered.before("build-a", 1, &operation, &changed), Some(Reply::RejectedConflictingPayload { .. })));
+        let absent = AnswerPayload::Update { node_type: "rpc".into(), successor: None };
+        assert!(matches!(answered.before("build-a", 1, &operation, &absent), Some(Reply::RejectedConflictingPayload { .. })));
+    }
+}
 
 impl Answered {
     /// The answer to a repeat of `operation` carrying `payload`: the first answer, or a conflict.
-    pub fn before(&self, operation: &str, payload: &(Vec<Entry>, String)) -> Option<Reply> {
-        let held = self.0.lock().unwrap().get(operation).cloned()?;
+    pub fn before(&self, build_id: &str, run: u32, operation: &rdm_core::OperationId, payload: &AnswerPayload) -> Option<Reply> {
+        let held = self.0.lock().unwrap().get(&(build_id.to_owned(), run, operation.clone())).cloned()?;
         if &held.0 == payload {
             return Some(held.1);
         }
-        tracing::info_span!("rdm.node_admin.primary.reject.via-conflicting-payload", operation, held = %entries_named(&held.0 .0), offered = %entries_named(&payload.0))
+        tracing::info_span!("rdm.node_admin.primary.reject.via-conflicting-payload", operation = ?operation, held = ?held.0, offered = ?payload)
             .in_scope(|| tracing::info!("the operation was answered for another payload"));
-        Some(rdm_core::reply::handover::rejected_conflicting_payload(operation.to_string()))
+        Some(rdm_core::reply::handover::rejected_conflicting_payload(operation.clone()))
     }
 
     /// Keep `reply` as the answer to `operation` carrying `payload`.
-    pub fn keep(&self, operation: &str, payload: (Vec<Entry>, String), reply: Reply) {
-        self.0.lock().unwrap().insert(operation.to_string(), (payload, reply));
+    pub fn keep(&self, build_id: &str, run: u32, operation: &rdm_core::OperationId, payload: AnswerPayload, reply: Reply) {
+        self.0.lock().unwrap().insert((build_id.to_owned(), run, operation.clone()), (payload, reply));
     }
 }
 
@@ -102,8 +145,8 @@ pub fn ended(out: &RpcOutcome<Reply>) -> String {
 /// The primary's call on its successor (step 4): `PrimaryUpdate` carrying `entries`, made once and,
 /// when it answers nothing, once more, identical, at the one backoff rule's first delay (the primary
 /// never takes NotSent or Indeterminate for an answer). `Err` names how the last call ended.
-pub async fn call_successor(client: &NodeRpcClient, successor: &NodeId, entries: &[Entry], build_id: &str, run: u32, operation: &str) -> Result<Vec<Entry>, String> {
-    let req = Request::PrimaryUpdate { primaries: entries.to_vec(), build_id: build_id.to_string(), run, operation: operation.to_string() };
+pub async fn call_successor(client: &NodeRpcClient, successor: &NodeId, entries: &[Entry], build_id: &str, run: u32, operation: &rdm_core::OperationId) -> Result<Vec<Entry>, String> {
+    let req = Request::PrimaryUpdate { primaries: entries.to_vec(), build_id: build_id.to_string(), run, operation: operation.clone() };
     let mut last = String::new();
     for attempt in 0..2u32 {
         if attempt > 0 {
@@ -131,6 +174,7 @@ pub async fn call_successor(client: &NodeRpcClient, successor: &NodeId, entries:
 /// mesh-primary records the change from the successor's digest (step 5).
 pub struct MemberDoor {
     me: PathName,
+    kind: rdm_core::NodeKind,
     node_id: NodeId,
     incarnation: IncarnationId,
     topology_view: TopologyView,
@@ -146,8 +190,8 @@ pub struct MemberDoor {
 impl MemberDoor {
     /// The door of the birth `node_id`/`incarnation` at `me`, on its mesh channel `topology_view`, calling
     /// through `client`.
-    pub fn new(me: PathName, node_id: NodeId, incarnation: IncarnationId, topology_view: TopologyView, client: Arc<NodeRpcClient>) -> Self {
-        Self { me, node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
+    pub fn new(me: PathName, kind: rdm_core::NodeKind, node_id: NodeId, incarnation: IncarnationId, topology_view: TopologyView, client: Arc<NodeRpcClient>) -> Self {
+        Self { me, kind, node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
     }
 
     fn held_name(&self) -> PathName {
@@ -165,7 +209,7 @@ impl MemberDoor {
 
     /// The mesh of the birth `b`: every entry this node installs or calls is of its own mesh.
     fn mesh_of(&self) -> impl Fn(&Birth) -> String + '_ {
-        move |_| self.held_name().mesh.clone()
+        move |_| self.topology_view.mesh_name().to_string()
     }
 
     /// Serve one node.primary.update call.
@@ -179,18 +223,18 @@ impl MemberDoor {
 
     /// The successor installs the election's result the call carries and answers node.primary.updated
     /// (step 4). It never refuses the call for the birth it names (R-UC1a, R-RX5).
-    fn install(&self, primaries: Vec<Entry>, build_id: String, run: u32, operation: String) -> Reply {
-        let payload = (primaries.clone(), build_id.clone());
-        if let Some(r) = self.answered.before(&operation, &payload) {
+    fn install(&self, primaries: Vec<Entry>, build_id: String, run: u32, operation: rdm_core::OperationId) -> Reply {
+        let payload = AnswerPayload::Install(primaries.clone());
+        if let Some(r) = self.answered.before(&build_id, run, &operation, &payload) {
             return r;
         }
         // The span covers the install: its start is the moment the successor begins to install.
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-primary-updated", node = %self.held_name(), operation = %operation, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-primary-updated", node_location = ?self.held_name(), operation = %operation.action, operation_subject = ?operation.subject, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
         let outcome = span.in_scope(|| install(self.topology_view.primaries(), &primaries, self.mesh_of()));
         span.record("outcome", outcome);
         span.in_scope(|| tracing::info!("the successor installed the election's result the call carries and answers node.primary.updated"));
         let reply = Reply::PrimaryUpdated { revisions: primaries };
-        self.answered.keep(&operation, payload, reply.clone());
+        self.answered.keep(&build_id, run, &operation, payload, reply.clone());
         reply
     }
 
@@ -199,13 +243,13 @@ impl MemberDoor {
     /// answers with the successor's node.primary.updated, installed in its own view first. A command that
     /// names none is `Failed` by name; a successor that does not answer is `Failed`: the successor is
     /// unheard after the update.
-    async fn update(&self, node_type: String, build_id: String, run: u32, operation: String, successor: Option<Birth>) -> Reply {
-        let payload = (Vec::new(), format!("{node_type} {build_id}"));
-        if let Some(r) = self.commanded.before(&operation, &payload) {
+    async fn update(&self, node_type: String, build_id: String, run: u32, operation: rdm_core::OperationId, successor: Option<Birth>) -> Reply {
+        let payload = AnswerPayload::Update { node_type: node_type.clone(), successor: successor.clone() };
+        if let Some(r) = self.commanded.before(&build_id, run, &operation, &payload) {
             return r;
         }
         let me = self.held_name();
-        let span = tracing::info_span!("rdm.node_admin.primary.update.via-update-primary", node = %me, node_type = %node_type, build_id = %build_id, run, operation = %operation, successor = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.primary.update.via-update-primary", node_path = %me.path, node_name = %me.name, node_type = %node_type, build_id = %build_id, run, operation = %operation.action, operation_subject = ?operation.subject, successor = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty);
         let reply = self.update_in(&me, &node_type, &build_id, run, &operation, successor).instrument(span.clone()).await;
         span.record("outcome", reply.name());
         if let Reply::Failed { reason, .. } = &reply {
@@ -213,15 +257,15 @@ impl MemberDoor {
         }
         span.in_scope(|| tracing::info!("node.primary.update ran at the primary"));
         if matches!(reply, Reply::PrimaryUpdated { .. } | Reply::Failed { .. }) {
-            self.commanded.keep(&operation, payload, reply.clone());
+            self.commanded.keep(&build_id, run, &operation, payload, reply.clone());
         }
         reply
     }
 
-    async fn update_in(&self, me: &PathName, node_type: &str, build_id: &str, run: u32, operation: &str, successor: Option<Birth>) -> Reply {
-        let (mesh, kind) = (me.mesh.clone(), me.kind);
+    async fn update_in(&self, me: &PathName, node_type: &str, build_id: &str, run: u32, operation: &rdm_core::OperationId, successor: Option<Birth>) -> Reply {
+        let (mesh, kind) = (self.topology_view.mesh_name().to_string(), self.kind);
         if node_type != kind.node_type() {
-            return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me} is a {}, not of the type {node_type} the command names", kind.node_type()), rdm_core::outcome::Code::FailedPrecondition);
+            return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me:?} is a {}, not of the type {node_type} the command names", kind.node_type()), rdm_core::outcome::Code::FailedPrecondition);
         }
         // Commanded by its mesh-primary, it runs the update (a receiver never refuses a call for the birth it
         // names, R-RX5). The revision the successor's entry takes is the next after the record of its type
@@ -233,7 +277,7 @@ impl MemberDoor {
         let revision = primary_view.node_type_primary(&mesh, kind).map_or(0, |r| r.revision) + 1;
         // Step 4 on the successor the mesh-primary's pre-check named (step 2): no election here (Q129).
         let Some(successor) = successor else {
-            return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me} is a {node_type} primary: its mesh-primary's command names no successor"), rdm_core::outcome::Code::FailedPrecondition);
+            return rdm_core::reply::handover::bounded_failed(STEP, &format!("{me:?} is a {node_type} primary: its mesh-primary's command names no successor"), rdm_core::outcome::Code::FailedPrecondition);
         };
         tracing::Span::current().record("successor", successor.node_id.as_str());
         let entries = vec![(node_type.to_string(), self.me_birth(), successor.clone(), revision)];
@@ -254,7 +298,7 @@ impl MemberDoor {
     async fn read_own_mesh(&self, me: &PathName, mesh: &str) {
         let Some(mp) = self.topology_view.primaries().mesh(mesh) else { return };
         let read = crate::topology_read::get_topology(&self.client, &NodeTarget::ExactNode(mp.node_id.clone()), mesh, &self.topology_view, Some(mesh), None).await;
-        tracing::info_span!("rdm.node_admin.primary.resolve.via-topology-read", node = %me, mesh, mesh_primary = %mp, outcome = %read.as_ref().map(|_| "installed".to_string()).unwrap_or_else(|e| e.to_string()))
+        tracing::info_span!("rdm.node_admin.primary.resolve.via-topology-read", node_path = %me.path, node_name = %me.name, mesh, mesh_primary = %mp, outcome = %read.as_ref().map(|_| "installed".to_string()).unwrap_or_else(|e| e.to_string()))
             .in_scope(|| tracing::info!("the commanded primary read its mesh-primary's topology: its own record was not held yet"));
     }
 }

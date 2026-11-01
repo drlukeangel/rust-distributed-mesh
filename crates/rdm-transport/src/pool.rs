@@ -625,14 +625,14 @@ mod tests {
             let node1 = NodeId::mint();
             let inc1_a = IncarnationId::mint();
             let inc1_b = IncarnationId::mint();
-            let path1: PathName = "mesh1.rpc.1".parse().unwrap();
+            let path1: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
 
             let node2 = NodeId::mint();
             let inc2 = IncarnationId::mint();
-            let path2: PathName = "mesh1.admin.1".parse().unwrap();
+            let path2: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
 
             let resolver = Arc::new(StaticResolver::new());
-            let resolved1_a = ResolvedNode {
+            let resolved1_a = ResolvedNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
                 node_id: node1.clone(),
                 name: path1.clone(),
                 incarnation: inc1_a.clone(),
@@ -643,7 +643,7 @@ mod tests {
                 incarnation: inc1_b.clone(),
                 ..resolved1_a.clone()
             };
-            let resolved2 = ResolvedNode {
+            let resolved2 = ResolvedNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(),
                 node_id: node2.clone(),
                 name: path2.clone(),
                 incarnation: inc2.clone(),

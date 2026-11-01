@@ -61,7 +61,7 @@ pub struct AdminConfig {
     /// `RDM_FABRIC_ID` was given: the Fabric is named, not new.
     pub fabric_id_named: bool,
     /// The adoption launch (Q156; fabric-recovery.md "Nothing alive"): `RDM_NODE_NAME` with no launcher
-    /// (no `RDM_NODE_ID`, no `RDM_LAUNCHER`), the lost fabric-primary's path.name. It adopts the fabric
+    /// (no `RDM_NODE_ID`, no `RDM_LAUNCHER`), the lost fabric-primary's path and name. It adopts the fabric
     /// `RDM_FABRIC_ID` names on the store root, its mesh `RDM_MESH`, and mints no fabric or mesh id; it is
     /// a new birth with its own node.id. `None` for every other start.
     pub adopt: Option<PathName>,
@@ -234,33 +234,33 @@ impl AdminConfig {
 }
 
 /// The adoption launch `get` describes (Q156): `RDM_NODE_NAME` with no launch, which is told from
-/// Day 0 by that intent alone, never by what the store holds. It names a node-admin's path.name, the
+/// Day 0 by that intent alone, never by what the store holds. It names a node-admin's path and name, the
 /// fabric it adopts (`RDM_FABRIC_ID`) and that path's mesh (`RDM_MESH`); a launcher, a recovery flag or
 /// a missing input is refused by name. `None` when `RDM_NODE_NAME` is not given: Day 0, or a restart on
 /// its own data dir.
 fn adoption_from_env(get: &impl Fn(&str) -> Option<String>) -> Result<Option<PathName>, String> {
-    use rdm_core::launch::{ENV_FABRIC_ID, ENV_FABRIC_PRIMARY, ENV_LAUNCHER, ENV_MESH_PRIMARY, ENV_NODE_NAME};
+    use rdm_core::launch::{ENV_FABRIC_ID, ENV_FABRIC_PRIMARY, ENV_LAUNCHER, ENV_MESH_PRIMARY, ENV_NODE_NAME, ENV_NODE_PATH, ENV_NODE_KIND};
     let given = |k: &str| get(k).filter(|v| !v.trim().is_empty());
     let Some(name) = given(ENV_NODE_NAME) else { return Ok(None) };
     let adoption = "an adoption launch (RDM_NODE_NAME with no launcher, fabric-recovery.md \"Nothing alive\")";
     if let Some(launcher) = given(ENV_LAUNCHER) {
         return Err(format!("{ENV_LAUNCHER}={launcher} is set without RDM_NODE_ID: a launched node is handed its node id by its launcher, and {adoption} has no launcher"));
     }
-    let name: PathName = name.trim().parse().map_err(|e| format!("{ENV_NODE_NAME}: {e}"))?;
-    if name.kind != NodeKind::NodeAdmin {
-        return Err(format!("{ENV_NODE_NAME}={name} names a {}: {adoption} is a node-admin's, at the lost fabric-primary's path.name", name.node_type()));
+    let path = given(ENV_NODE_PATH).ok_or_else(|| format!("{ENV_NODE_PATH} is required for {adoption}"))?;
+    let name = PathName::new(path, name).map_err(|e| format!("{ENV_NODE_PATH}/{ENV_NODE_NAME}: {e}"))?;
+    if given(ENV_NODE_KIND).is_some_and(|kind| kind != NodeKind::NodeAdmin.name()) {
+        return Err(format!("{ENV_NODE_KIND}: {adoption} requires node_admin"));
     }
     if given(ENV_FABRIC_ID).is_none() {
-        return Err(format!("{ENV_FABRIC_ID} is required: {adoption} at {name} names the fabric it adopts, whose store root holds it; it mints none"));
+        return Err(format!("{ENV_FABRIC_ID} is required: {adoption} at {name:?} names the fabric it adopts, whose store root holds it; it mints none"));
     }
-    match given("RDM_MESH") {
-        None => return Err(format!("RDM_MESH is required: {adoption} at {name} names its mesh, {}", name.mesh)),
-        Some(mesh) if mesh.trim() != name.mesh => return Err(format!("RDM_MESH={} and {ENV_NODE_NAME}={name}: {adoption} is of its path.name's mesh, {}", mesh.trim(), name.mesh)),
-        Some(_) => {}
+    if given("RDM_MESH").is_none() {
+        return Err(format!("RDM_MESH is required: {adoption} at {name:?} names its mesh"));
     }
+    let (actual_name, actual_path) = (&name.name, &name.path);
     for flag in [ENV_MESH_PRIMARY, ENV_FABRIC_PRIMARY] {
         if rdm_core::launch::decode_flag(flag, get(flag))? {
-            return Err(format!("{flag} is set with {ENV_NODE_NAME}={name}: {adoption} is no recovery start on a data dir; it takes its role from the recorded primaries and the restore, never from a flag"));
+            return Err(format!("{flag} is set with {ENV_NODE_NAME}={actual_name:?}, RDM_NODE_PATH={actual_path:?}: {adoption} is no recovery start on a data dir; it takes its role from the recorded primaries and the restore, never from a flag"));
         }
     }
     Ok(Some(name))
@@ -455,7 +455,7 @@ impl ServingDoor {
         }
         if let Some(own) = view.births().find(|n| n.node_id == self.birth.0 && n.incarnation_id.as_ref() == Some(&self.birth.1)) {
             self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
-            tracing::info_span!("rdm.node_admin.node.serve.via-view-holds-birth", node = %own.name, node_id = %self.birth.0, incarnation_id = %self.birth.1.as_str(), held_name = %own.name, boot_name = %self.boot_name)
+            tracing::info_span!("rdm.node_admin.node.serve.via-view-holds-birth", node_path = %own.name.path, node_name = %own.name.name, node_id = %self.birth.0, incarnation_id = %self.birth.1.as_str(), held_path = %own.name.path, held_name = %own.name.name, boot_path = %self.boot_name.path, boot_name = %self.boot_name.name)
                 .in_scope(|| tracing::info!("the Status authority is filled and this admin's view holds its exact birth: the Node RPC router serves"));
         }
     }
@@ -473,7 +473,7 @@ pub struct PeerRecovery {
     /// When this admin took the decision: a report counts as the mesh's proof only if it arrived after.
     pub opened_at: std::time::Instant,
     /// The node-admin births of the mesh the decision found.
-    pub lost: Vec<IncarnationId>,
+    pub lost: Vec<rdm_core::framing::Birth>,
 }
 
 impl Records {
@@ -507,7 +507,7 @@ impl Records {
         if rows.writes_now(&d.node.mesh, &d.node.name).await {
             rows.declare_app_types(d, types).await.map(|_| true)
         } else {
-            tracing::info_span!("rdm.node_admin.node.update.via-declaration-held", node = %rows.me(), subject = %d.node.name, node_id = %d.node.node_id, types = types.len())
+            tracing::info_span!("rdm.node_admin.node.update.via-declaration-held", node_path = %rows.me().path, node_name = %rows.me().name, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, types = types.len())
                 .in_scope(|| tracing::info!("no writer of the mesh's rows yet: the declaration is held until this admin takes the role"));
             self.held_declarations.lock().unwrap().push((d.clone(), types));
             Ok(false)
@@ -519,10 +519,10 @@ impl Records {
         let held: Vec<_> = std::mem::take(&mut *self.held_declarations.lock().unwrap());
         for (d, types) in held {
             match self.declare_app_types(&d, types.clone()).await {
-                Ok(()) => tracing::info_span!("rdm.node_admin.node.update.via-declaration-written", subject = %d.node.name, node_id = %d.node.node_id, types = types.len())
+                Ok(()) => tracing::info_span!("rdm.node_admin.node.update.via-declaration-written", subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, types = types.len())
                     .in_scope(|| tracing::info!("a declaration held before the role is written beside the row")),
                 Err(why) => {
-                    tracing::info_span!("rdm.node_admin.node.reject.via-declaration-held", subject = %d.node.name, node_id = %d.node.node_id, detail = %why)
+                    tracing::info_span!("rdm.node_admin.node.reject.via-declaration-held", subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, detail = %why)
                         .in_scope(|| tracing::info!("the held declaration is still refused: kept"));
                     self.held_declarations.lock().unwrap().push((d, types));
                 }
@@ -731,7 +731,7 @@ impl Records {
         }
         self.inputs_moved();
         let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        tracing::info_span!("rdm.node_admin.mesh.create.via-recovery", node = %me, mesh = %mesh, at, fabric_status = "degraded", verdict_rafka_ms = ?verdict_rafka_ms, verdict)
+        tracing::info_span!("rdm.node_admin.mesh.create.via-recovery", node_path = %me.path, node_name = %me.name, mesh = %mesh, at, fabric_status = "degraded", verdict_rafka_ms = ?verdict_rafka_ms, verdict)
             .in_scope(|| tracing::info!("the fabric primary gives the mesh a new node-admin and authors degraded"));
         true
     }
@@ -786,7 +786,7 @@ impl Records {
             let before = nodes.len();
             nodes.retain(|_, n| !(n.node_id == op.node_id && n.incarnation_id.as_ref() == Some(&op.incarnation)));
             if nodes.len() < before {
-                tracing::info_span!("rdm.node_admin.topology.remove.via-node-deleted", node = %holder, subject = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation)
+                tracing::info_span!("rdm.node_admin.topology.remove.via-node-deleted", observer_node_id = %holder, subject_path = %op.name.path, subject_name = %op.name.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject)
                     .in_scope(|| tracing::info!("the deleted birth's record leaves this admin's records"));
             }
         }
@@ -858,7 +858,7 @@ impl Records {
         for (node_id, incarnation, published, name) in reads.rows.moved() {
             let listed = |v: &Topology| v.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation) && &n.name == name);
             if listed(&t) && !listed(&held) {
-                tracing::info_span!("rdm.node_admin.topology.update.via-row-name", node = %me, subject = %name, published = %published, node_id = %node_id, incarnation_id = %incarnation.as_str())
+                tracing::info_span!("rdm.node_admin.topology.update.via-row-name", node_path = %me.path, node_name = %me.name, subject_path = %name.path, subject_name = %name.name, published_path = %published.path, published_name = %published.name, node_id = %node_id, incarnation_id = %incarnation.as_str())
                     .in_scope(|| tracing::info!("the view lists a birth that does not publish at the name its row holds"));
             }
         }
@@ -877,11 +877,11 @@ impl Records {
             if let Some(fold) = self.status.get() {
                 fold.on_install(&t, &self.declared, self.digest_view.get()).await;
             }
-            // A renamed predecessor this view now names `<path>.old` (its row's name; its digest still
+            // A renamed predecessor this view now names the predecessor name `<name>-old` at the same path (its row's name; its digest still
             // says `<path>`): one span as it enters.
             for old in t.predecessors().filter(|o| !held.predecessors().any(|h| h.node_id == o.node_id && h.incarnation_id == o.incarnation_id)) {
-                tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node = %old.name, node_id = %old.node_id, status = ?old.status)
-                    .in_scope(|| tracing::info!("the view names a renamed predecessor under its .old path"));
+                tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node_path = %old.name.path, node_name = %old.name.name, node_id = %old.node_id, status = ?old.status)
+                    .in_scope(|| tracing::info!("the view holds the renamed predecessor at its unchanged path"));
             }
             // The births the fabric-primary's view holds for the first time: their rows are written
             // from this held record once the view is installed (`crate::node_rows`).
@@ -938,7 +938,7 @@ impl TopologySink for Records {
 mod tests {
     use super::*;
 
-    /// CONTRACT: docs/architecture/lifecycles/fabric-recovery.md:172 "No node-admin is alive, the fabric's other nodes alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a node-admin at the lost fabric-primary's path.name, with no launcher, given the fabric id, its mesh and the store root, which must hold that fabric or the start is refused by name. It adopts what the store holds and mints no fabric or mesh id; it is a new birth with its own node.id."
+    /// CONTRACT: docs/architecture/lifecycles/fabric-recovery.md:172 "No node-admin is alive, the fabric's other nodes alive or not. Nothing inside the fabric brings an admin back: a person or a script launches a node-admin at the lost fabric-primary's path and name, with no launcher, given the fabric id, its mesh and the store root, which must hold that fabric or the start is refused by name. It adopts what the store holds and mints no fabric or mesh id; it is a new birth with its own node.id."
     #[test]
     fn adoption_launch_from_env_parses_lost_admin_path_and_refuses_invalid_inputs() {
         let env_of = |pairs: &[(&str, &str)]| {
@@ -963,7 +963,7 @@ mod tests {
             ("RDM_STORE_DIR", "/tmp/rdm-store"),
         ]))
         .expect("valid adoption launch config succeeds");
-        assert_eq!(adopted.adopt, Some("mesh1.admin.1".parse().unwrap()));
+        assert_eq!(adopted.adopt, Some(rdm_core::PathName::new("mesh1.admin", "1").unwrap()));
         assert_eq!(adopted.fabric_id, FabricId::parse("fab000000001").unwrap());
         assert!(adopted.fabric_id_named);
         assert_eq!(adopted.mesh, "mesh1");

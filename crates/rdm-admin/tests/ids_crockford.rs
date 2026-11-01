@@ -66,17 +66,18 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-rbi5a").expect("the cell's evidence file can be created");
     let (id, facts_json) = capture.run(2, async move {
         let builds = MemoryBuildStateAdapter::new();
-        let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin.status = NodeStatus::Ready;
         admin.incarnation_id = Some(IncarnationId::mint());
         admin.is_primary = true;
         admin.is_fabric_primary = true;
+        let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
         let observed = Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![admin],
         };
-        AcceptedStore::seeded(&builds, observed.fabric.id.clone(), FabricTopology::of_observed(&observed), "mesh1.admin.1").await.unwrap();
+        AcceptedStore::seeded(&builds, observed.fabric.id.clone(), FabricTopology::of_observed(&observed), &executor, "mesh1").await.unwrap();
         let id = builds.current_build().await.unwrap().into_build_id().unwrap();
         let facts_json = serde_json::to_string(&builds.facts().await.unwrap()).unwrap();
         (id, facts_json)
@@ -108,9 +109,10 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     }
 
     // Row key, stored BuildFact row and 0x20 Build carrier all carry the bare 12 characters, never `bid_...`.
-    let row_key = update_operation(PrimaryRole::MeshPrimary, &bare, 1, "node.stop:mesh1.admin.1");
-    assert_eq!(row_key, format!("node.primary.update:{bare}:1:node.stop:mesh1.admin.1"));
-    assert!(!row_key.contains("bid_"), "{row_key}");
+    let preceding = rdm_core::OperationId::node("node.stop", &rdm_core::NodeId::mint());
+    let row_key = update_operation(PrimaryRole::MeshPrimary, &preceding);
+    assert_eq!(row_key, rdm_core::OperationId::primary_update(PrimaryRole::MeshPrimary, &preceding));
+    assert!(!serde_json::to_string(&row_key).unwrap().contains("bid_"), "{row_key:?}");
     assert!(facts_json.contains(&format!("\"build_id\":\"{bare}\"")) && !facts_json.contains("bid_"), "{facts_json}");
     let started = BuildReply::Started { build_id: id.to_string(), attempt: 1, disposition: Disposition::Created };
     let wire = Build::encode_reply(&started).unwrap();

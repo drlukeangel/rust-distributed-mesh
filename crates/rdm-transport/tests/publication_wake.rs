@@ -27,7 +27,7 @@ fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId) -> 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_string(), kind: rdm_core::NodeKind::RpcNode,
             node_id: node_id.clone(),
-            name: format!("{mesh}.rpc.{ordinal}").parse().unwrap(),
+            name: rdm_core::PathName::new(format!("{mesh}.rpc"), ordinal.to_string()).unwrap(),
             endpoint_id: EndpointId(format!("key{ordinal}")),
             transport_addr: format!("127.0.0.1:{}", 42_000 + ordinal).parse().unwrap(),
             incarnation: birth.clone(),
@@ -122,10 +122,10 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
 
         // Between two publications: the member's stop, as the mesh primary takes its own NodeStopped.
         let stopped = &digests[0];
-        let op = LifecycleOp { mesh: stopped.node.mesh.clone(),
+        let op = LifecycleOp { kind: stopped.node.kind, mesh: stopped.node.mesh.clone(),
             build_id: "b-s40".into(),
             attempt: 1,
-            operation: format!("node.stop:{}", stopped.node.name),
+            operation: rdm_core::OperationId::new("node.stop", rdm_core::OperationSubject::Birth { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation.clone() }),
             node_id: stopped.node.node_id.clone(),
             incarnation: stopped.node.incarnation.clone(),
             name: stopped.node.name.clone(),
@@ -143,7 +143,7 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
             }
             assert!(
                 stopped_at.elapsed() < AT_ONCE,
-                "the peer mesh did not hold {} stopped within {AT_ONCE:?} of its NodeStopped: the source primary's publication was not woken by its own projection's move (held source version {:?}, first {v1})",
+                "the peer mesh did not hold {:?} stopped within {AT_ONCE:?} of its NodeStopped: the source primary's publication was not woken by its own projection's move (held source version {:?}, first {v1})",
                 op.name,
                 peer_bb.held_source("mesh2").map(|(_, v)| v)
             );
@@ -162,7 +162,7 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         let names = |n: &str| spans.iter().filter(|s| s["name"] == n).count();
         let stopped_at_peer = spans
             .iter()
-            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-member-state" && s["attributes"]["member"].as_str() == Some(op.name.to_string().as_str()) && (s["attributes"]["stopped"] == Value::Bool(true) || s["attributes"]["stopped"] == "true"))
+            .filter(|s| s["name"] == "rdm.mesh.topology.update.via-member-state" && s["attributes"]["member_id"].as_str() == Some(op.node_id.as_str()) && (s["attributes"]["stopped"] == Value::Bool(true) || s["attributes"]["stopped"] == "true"))
             .count();
         println!("{CELL}: overlay held at the peer {took:?} after NodeStopped; via-topology-version spans {}; via-member-state stopped {}", names("rdm.mesh.backbone.update.via-topology-version"), stopped_at_peer);
         std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();

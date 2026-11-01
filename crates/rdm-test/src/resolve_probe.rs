@@ -29,10 +29,10 @@ pub enum ProbeTarget {
     ///
     /// Position 0 on the wire.
     Exact(String),
-    /// Whoever holds this `path.name`.
+    /// Whoever holds this separate path and name.
     ///
     /// Position 1 on the wire.
-    Path(String),
+    Path(PathName),
 }
 
 /// A resolve probe call.
@@ -52,8 +52,8 @@ pub enum ResolveRequest {
 pub struct AnsweredBy {
     /// The answering node's id.
     pub node_id: String,
-    /// The answering node's `path.name`.
-    pub node: String,
+    /// The answering node's separate path and name.
+    pub node: PathName,
     /// The answering node's incarnation id.
     pub incarnation_id: String,
 }
@@ -69,8 +69,8 @@ pub enum ResolveReply {
         by: AnsweredBy,
         /// The resolved node's id.
         node_id: String,
-        /// The resolved node's `path.name`.
-        name: String,
+        /// The resolved node's separate path and name.
+        name: PathName,
         /// The resolved node's incarnation.
         incarnation_id: String,
     },
@@ -232,18 +232,18 @@ impl NodeProtocol for ResolveProbe {
 pub fn serve(b: ServerBuilder, resolver: Arc<LiveNodeResolver>, launch: &Launch, name: &HeldName) -> ServerBuilder {
     let (node_id, incarnation_id, name) = (launch.node_id.to_string(), launch.incarnation.to_string(), name.clone());
     b.serve::<ResolveProbe, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ResolveRequest| {
-        let by = AnsweredBy { node_id: node_id.clone(), node: name.now().to_string(), incarnation_id: incarnation_id.clone() };
+        let by = AnsweredBy { node_id: node_id.clone(), node: name.now(), incarnation_id: incarnation_id.clone() };
         let resolver = resolver.clone();
         async move {
             let ResolveRequest::Resolve { target, .. } = req;
             let target = match &target {
                 ProbeTarget::Exact(id) => NodeId::parse(id).map(NodeTarget::ExactNode).map_err(|e| format!("exact {id:?}: {e}")),
-                ProbeTarget::Path(p) => p.parse::<PathName>().map(NodeTarget::CurrentPath).map_err(|e| format!("path {p:?}: {e}")),
+                ProbeTarget::Path(p) => Ok(NodeTarget::CurrentPath(p.clone())),
             };
             let reply = match target {
                 Err(reason) => ResolveReply::BadTarget { by, reason },
                 Ok(t) => match resolver.resolve(&t) {
-                    Ok(n) => ResolveReply::Found { by, node_id: n.node_id.to_string(), name: n.name.to_string(), incarnation_id: n.incarnation.to_string() },
+                    Ok(n) => ResolveReply::Found { by, node_id: n.node_id.to_string(), name: n.name.clone(), incarnation_id: n.incarnation.to_string() },
                     Err(ResolveFailure::Gone) => ResolveReply::Gone { by },
                     Err(ResolveFailure::Unknown) => ResolveReply::Unknown { by },
                     Err(ResolveFailure::Unavailable) => ResolveReply::Unavailable { by },
@@ -262,7 +262,7 @@ fn reply_by(r: &ResolveReply) -> String {
         | ResolveReply::Gone { by }
         | ResolveReply::Unknown { by }
         | ResolveReply::Unavailable { by }
-        | ResolveReply::BadTarget { by, .. } => by.node.clone(),
+        | ResolveReply::BadTarget { by, .. } => by.node_id.clone(),
         _ => String::new(),
     }
 }
@@ -273,9 +273,9 @@ mod tests {
 
     #[test]
     fn every_reply_variant_encodes_and_round_trips() {
-        let by = AnsweredBy { node_id: "n".into(), node: "mesh1.rpc.1".into(), incarnation_id: "i".into() };
+        let by = AnsweredBy { node_id: "n".into(), node: PathName::new("mesh1.rpc", "1").unwrap(), incarnation_id: "i".into() };
         let all = [
-            ResolveReply::Found { by: by.clone(), node_id: "x".into(), name: "mesh1.rpc.2".into(), incarnation_id: "j".into() },
+            ResolveReply::Found { by: by.clone(), node_id: "x".into(), name: PathName::new("mesh1.rpc", "2").unwrap(), incarnation_id: "j".into() },
             ResolveReply::Gone { by: by.clone() },
             ResolveReply::Unknown { by: by.clone() },
             ResolveReply::Unavailable { by: by.clone() },
@@ -291,7 +291,7 @@ mod tests {
         for r in all {
             assert_eq!(ResolveProbe::decode_reply(&ResolveProbe::encode_reply(&r).unwrap()).unwrap(), r);
         }
-        let req = ResolveRequest::Resolve { target: ProbeTarget::Path("mesh1.rpc.1".into()) };
+        let req = ResolveRequest::Resolve { target: ProbeTarget::Path(PathName::new("mesh1.rpc", "1").unwrap()) };
         assert_eq!(ResolveProbe::decode_request(&ResolveProbe::encode_request(&req).unwrap()).unwrap(), req);
     }
 }

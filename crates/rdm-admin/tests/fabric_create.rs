@@ -166,7 +166,7 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
         let mesh_id = view.meshes[0].id.clone().expect("mesh1 has a minted MeshId");
 
         let admin_node = view
-            .node(&"mesh1.admin.1".parse().unwrap())
+            .node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap())
             .expect("mesh1.admin.1 is in the topology view");
         assert_eq!(admin_node.node_id, expected_node_id);
         assert_eq!(admin_node.status, NodeStatus::Ready);

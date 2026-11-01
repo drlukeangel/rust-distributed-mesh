@@ -92,6 +92,10 @@ use std::path::PathBuf;
 /// Everything already decided by node-admin: identity, endpoints, storage, env.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedNodeLaunch {
+    /// The explicitly declared owning mesh of this runtime.
+    pub mesh: String,
+    /// The explicitly declared node kind, independent of its pair spelling.
+    pub kind: rdm_core::NodeKind,
     /// The node to run.
     pub node: PathName,
     /// The deployment the runtime belongs to.
@@ -396,8 +400,8 @@ pub enum DeploymentStatus {
 pub enum DeployError {
     /// The runtime could not be started.
     Spawn {
-        /// The node.
-        node: String,
+        /// The separate path and name of the launch whose spawn failed.
+        node: PathName,
         /// Why it failed.
         reason: String,
     },
@@ -413,7 +417,7 @@ pub enum DeployError {
     /// an exit or a done terminate; the workflow resolves the exact launch before it acts again.
     Deadline {
         /// The command (`container.run`, `container.inspect`, `process.spawn`, …).
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The deployment the command was for, when it names one.
         deployment: String,
         /// The time the command ran before it was ended.
@@ -435,11 +439,11 @@ pub enum DeployError {
 impl std::fmt::Display for DeployError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Spawn { node, reason } => write!(f, "deploying {node} failed: {reason}"),
+            Self::Spawn { node, reason } => write!(f, "deploying path {:?}, name {:?} failed: {reason}", node.path, node.name),
             Self::Terminate { deployment, reason } => write!(f, "terminating deployment {deployment} failed: {reason}"),
             Self::Deadline { operation, deployment, elapsed, bound, mutation } => write!(
                 f,
-                "{operation} for deployment {deployment} answered nothing within its deadline ({} ms bound, ended after {} ms){}",
+                "{operation:?} for deployment {deployment} answered nothing within its deadline ({} ms bound, ended after {} ms){}",
                 bound.as_millis(),
                 elapsed.as_millis(),
                 if *mutation { "; its external outcome is unknown" } else { "" }
@@ -588,7 +592,7 @@ mod tests {
             format!("remote:{}", self.0)
         }
         async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: crate::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-            Err(DeployError::Spawn { node: spec.node.to_string(), reason: "not in this test".into() })
+            Err(DeployError::Spawn { node: spec.node.clone(), reason: "not in this test".into() })
         }
         async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: crate::deployment::deadline::Deadline) -> Result<(), DeployError> {
             Ok(())
@@ -623,7 +627,7 @@ mod tests {
     async fn the_held_runtimes_hand_off_is_held_runtimes_1_and_another_format_is_refused_by_name() {
         let dir = crate::test_support::tempdir("held-runtimes");
         assert_eq!(held_runtimes_in(&dir).await.unwrap(), Vec::new(), "a data dir with no hand-off holds no rows");
-        let rows = vec![crate::storage::RuntimeRow { node_id: crate::model::NodeId::mint(), name: "mesh1.rpc.1".parse().unwrap(), incarnation_id: crate::model::IncarnationId::mint(), runtime: fact("process:host-a"), data_dir: Some("/data/mesh1.rpc.1".into()) }];
+        let rows = vec![crate::storage::RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node_id: crate::model::NodeId::mint(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), incarnation_id: crate::model::IncarnationId::mint(), runtime: fact("process:host-a"), data_dir: Some("/data/mesh1.rpc.1".into()) }];
         write_held_runtimes(&dir, &rows).await.unwrap();
         let written: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(HELD_RUNTIMES_FILE)).unwrap()).unwrap();
         assert_eq!(written, serde_json::json!({ "format": "held-runtimes/1", "rows": serde_json::to_value(&rows).unwrap() }), "the hand-off's shape");

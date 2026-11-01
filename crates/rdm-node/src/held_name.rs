@@ -28,7 +28,7 @@ impl HeldName {
     /// Read the name from `held` (the topology view's held name) from now on. Bound once, when the node
     /// joins; a second binding is refused by name.
     pub fn follow(&self, held: impl Fn() -> PathName + Send + Sync + 'static) -> Result<(), String> {
-        self.held.set(Arc::new(held)).map_err(|_| format!("{}: this birth already reads its name from its topology view", self.birth))
+        self.held.set(Arc::new(held)).map_err(|_| format!("path {:?}, name {:?}: this birth already reads its name from its topology view", self.birth.path, self.birth.name))
     }
 
     /// The name this birth holds now.
@@ -49,14 +49,14 @@ mod tests {
 
     #[test]
     fn a_birth_holds_its_launch_name_until_its_topology_view_is_followed_then_the_topology_view_s() {
-        let name = HeldName::of_birth("mesh1.rpc.7".parse().unwrap());
-        assert_eq!(name.now().to_string(), "mesh1.rpc.7");
-        let held = Arc::new(std::sync::Mutex::new("mesh1.rpc.1".parse::<PathName>().unwrap()));
+        let name = HeldName::of_birth(rdm_core::PathName::new("mesh1.rpc", "7").unwrap());
+        assert_eq!(name.now(), rdm_core::PathName::new("mesh1.rpc", "7").unwrap());
+        let held = Arc::new(std::sync::Mutex::new(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()));
         let h = held.clone();
         name.follow(move || h.lock().unwrap().clone()).unwrap();
-        assert_eq!(name.clone().now().to_string(), "mesh1.rpc.1", "a clone reads the same binding");
-        *held.lock().unwrap() = "mesh1.rpc.1.old".parse().unwrap();
-        assert_eq!(name.now().to_string(), "mesh1.rpc.1.old", "read per call, never cached");
-        assert!(name.follow(|| "mesh1.rpc.9".parse().unwrap()).is_err(), "a second binding is refused by name");
+        assert_eq!(name.clone().now(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "a clone reads the same binding");
+        *held.lock().unwrap() = rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap();
+        assert_eq!(name.now(), rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap(), "read per call, never cached");
+        assert!(name.follow(|| rdm_core::PathName::new("mesh1.rpc", "9").unwrap()).is_err(), "a second binding is refused by name");
     }
 }

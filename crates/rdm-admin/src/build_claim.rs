@@ -138,10 +138,12 @@ impl AttemptContexts {
 /// ([`ClaimDoor`]'s role check, the recovery door's recoverer), decided before this. `executor_birth`
 /// is the claim's executor's exact node id with the node rows it is read on, when the caller knows it.
 pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims: &dyn MeshStorage, contexts: &AttemptContexts, claim: &BuildAttemptClaim, mesh: &str, executor_birth: Option<(&dyn crate::storage::NodesStorage, &NodeId)>) -> BuildClaimReply {
+    let admitted = BuildAttemptClaim { claimed_mesh: Some(mesh.to_owned()), ..claim.clone() };
+    let claim = &admitted;
     let lane = claim.mesh.as_deref();
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-claim-decision",
-        node = %me,
+        node_path = %me.path, node_name = %me.name,
         build_id = %claim.build_id.log(),
         attempt = claim.attempt,
         executor = %claim.executor,
@@ -156,19 +158,27 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
         // birth, read on the store's node rows before the in-flight row is taken; nothing is taken or
         // written.
         if let Some((rows, node_id)) = executor_birth {
-            let executor = claim.executor.parse::<PathName>();
-            let deleted = match &executor {
-                Ok(name) => crate::node_rows::deleted_birth(rows, name, node_id).await,
-                Err(e) => return rdm_core::reply::build_claim::not_ready(format!("{me}: the executor {:?} of attempt {} of {} is not a path.name: {e}", claim.executor, claim.attempt, claim.build_id)),
+            if node_id != &claim.executor.node_id {
+                return rdm_core::reply::build_claim::not_ready("the executor inspection ID differs from the admitted birth".into());
+            }
+            let deleted = match rows.node(node_id).await {
+                Ok(Some(row)) => {
+                    if row.newest_birth().is_some_and(|birth| birth.incarnation_id != claim.executor.incarnation) {
+                        return rdm_core::reply::build_claim::not_ready(format!("executor node {}, incarnation {} is superseded by the birth recorded on its node row", node_id, claim.executor.incarnation));
+                    }
+                    crate::node_rows::deleted_birth(rows, &row.name, node_id).await
+                }
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
             };
             match deleted {
                 Ok(None) => {}
                 Ok(Some(why)) => {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-deleted-birth", node = %me, executor = %claim.executor, node_id = %node_id, build_id = %claim.build_id.log(), attempt = claim.attempt, reason = %why)
+                    tracing::info_span!("rdm.node_admin.build.reject.via-deleted-birth", node_path = %me.path, node_name = %me.name, executor = %claim.executor, node_id = %node_id, build_id = %claim.build_id.log(), attempt = claim.attempt, reason = %why)
                         .in_scope(|| tracing::info!("the claim's executor is a deleted birth on the node rows: it claims nothing"));
                     return rdm_core::reply::build_claim::not_ready(why);
                 }
-                Err(e) => return rdm_core::reply::build_claim::not_ready(format!("{me}: the node row of the executor {} ({node_id}) could not be read: {e}", claim.executor)),
+                Err(e) => return rdm_core::reply::build_claim::not_ready(format!("path {me_path:?}, name {me_name:?}: the node row of the executor {} ({node_id}) could not be read: {e}", claim.executor, me_path = &me.path, me_name = &me.name)),
             }
         }
         // A Build a fabric.delete interrupts opens no further attempt (build.md §1): its claim is refused
@@ -178,7 +188,10 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
                 return rdm_core::reply::build_claim::build_in_progress(delete.build_id.to_string(), mesh.to_string(), None);
             }
         }
-        let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()), claimant_node: None };
+        let Some(claimant) = claim.claimant.clone() else {
+            return rdm_core::reply::build_claim::not_ready("the claim names no deciding admin ID".into());
+        };
+        let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant };
         let decided = match builds.claim_in_flight(claim, claims, mesh, &row).await {
             // The same attempt another claimant took on the store: this claim lost (build.md §5.2, Q142).
             Ok(InFlightClaim::Held(held)) if held.same_attempt(&row) => return rdm_core::reply::build_claim::lost(held.claimant),
@@ -195,25 +208,29 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
             .await
             {
                 Ok(context) => BuildClaimReply::Won { context },
-                Err(e) => rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is claimed, its context record is unreadable: {e}", claim.attempt, claim.build_id)),
+                Err(e) => rdm_core::reply::build_claim::not_ready(format!("path {me_path:?}, name {me_name:?}: attempt {} of {} is claimed, its context record is unreadable: {e}", claim.attempt, claim.build_id, me_path = &me.path, me_name = &me.name)),
             },
             // The held attempt acts in its executor's mesh, and its verdict releases that mesh's row
             // alone: a row this claim took in another mesh holds that mesh for nothing.
             Ok(ClaimOutcome::Lost { holder }) => {
-                if holder.parse::<PathName>().is_ok_and(|h| h.mesh != mesh) {
+                let held = match builds.read_build(&claim.build_id).await {
+                    Ok(p) => p.in_lane(claim.mesh.as_deref()),
+                    Err(e) => return rdm_core::reply::build_claim::not_ready(format!("path {me_path:?}, name {me_name:?}: winning claim ownership unreadable: {e}", me_path = &me.path, me_name = &me.name)),
+                };
+                if held.attempt_claimed_meshes.get(&claim.attempt).map(String::as_str) != Some(mesh) {
                     if let Err(e) = claims.release_in_flight(mesh, &row).await {
-                        return rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is held by {holder} and the in-flight row of mesh {mesh} taken for this claim could not be released: {e}", claim.attempt, claim.build_id));
+                        return rdm_core::reply::build_claim::not_ready(format!("path {me_path:?}, name {me_name:?}: attempt {} of {} is held by {holder} and the in-flight row of mesh {mesh} taken for this claim could not be released: {e}", claim.attempt, claim.build_id, me_path = &me.path, me_name = &me.name));
                     }
                 }
                 rdm_core::reply::build_claim::lost(holder)
             }
             Ok(ClaimOutcome::NotOpen { next }) => {
                 if let Err(e) = claims.release_in_flight(mesh, &row).await {
-                    return rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is not open (next {next:?}) and the in-flight row of mesh {mesh} taken for it could not be released: {e}", claim.attempt, claim.build_id));
+                    return rdm_core::reply::build_claim::not_ready(format!("path {me_path:?}, name {me_name:?}: attempt {} of {} is not open (next {next:?}) and the in-flight row of mesh {mesh} taken for it could not be released: {e}", claim.attempt, claim.build_id, me_path = &me.path, me_name = &me.name));
                 }
                 rdm_core::reply::build_claim::not_open(next)
             }
-            Err(e) => rdm_core::reply::build_claim::not_ready(format!("{me}: claiming attempt {} of {}: {e}", claim.attempt, claim.build_id)),
+            Err(e) => rdm_core::reply::build_claim::not_ready(format!("path {me_path:?}, name {me_name:?}: claiming attempt {} of {}: {e}", claim.attempt, claim.build_id, me_path = &me.path, me_name = &me.name)),
         }
     }
     .instrument(span.clone())
@@ -232,10 +249,12 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
 
 /// The claim door: the one place a Build attempt's claim is decided by its claimant.
 pub struct ClaimDoor {
-    /// This admin's path.name.
+    /// This admin's path and name.
     pub me: PathName,
     /// The node id this admin was born with: whether it holds the fabric-primary role is decided by it.
     pub node_id: NodeId,
+    /// This process's established incarnation, fixed at boot.
+    pub incarnation: rdm_core::IncarnationId,
     /// The admin's observed topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// This admin's Build log: the fabric-primary's own, when it holds the role.
@@ -250,7 +269,12 @@ pub struct ClaimDoor {
 }
 
 impl ClaimDoor {
-    /// The `path.name` this admin holds now: its Build adapter's held name when set, else its birth's
+    /// This process's established identity, independent of its current name.
+    pub fn birth(&self) -> rdm_core::framing::Birth {
+        rdm_core::framing::Birth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }
+    }
+
+    /// The `(path, name)` this admin holds now: its Build adapter's held name when set, else its birth's
     /// name in the view, falling back to `self.me` only before its birth is in the view.
     pub async fn held_name(&self) -> PathName {
         if let Some(held) = self.builds.held_name() {
@@ -273,39 +297,47 @@ impl ClaimDoor {
                 t.is_fabric_primary(&self.node_id) || t.is_mesh_primary(lane, &self.node_id)
             }
         };
-        (!claims).then(|| rdm_core::reply::build_claim::not_claimant(mesh.map(str::to_string), t.fabric_primary().map(|n| n.name.to_string()), mesh.and_then(|m| t.node_type_primary(m, crate::model::NodeKind::NodeAdmin)).map(|n| n.name.to_string())))
+        (!claims).then(|| rdm_core::reply::build_claim::not_claimant(mesh.map(str::to_string), t.fabric_primary().map(|n| n.node_id.clone()), mesh.and_then(|m| t.node_type_primary(m, crate::model::NodeKind::NodeAdmin)).map(|n| n.node_id.clone())))
     }
 
     /// Decide the claim of the fabric lane's `attempt` of `build_id` for `executor` (a node-admin's
-    /// path.name): only the fabric-primary decides it, on the executor's mesh's row. `Won` carries
+    /// globally unique ID): only the fabric-primary decides it, on the executor's mesh's row. `Won` carries
     /// the attempt's context.
-    pub async fn claim(&self, executor: &str, build_id: &BuildId, attempt: u32) -> BuildClaimReply {
+    pub async fn claim(&self, executor: &NodeId, build_id: &BuildId, attempt: u32) -> BuildClaimReply {
         self.claim_in(executor, build_id, None, attempt).await
     }
 
     /// Decide the claim of `attempt` of `build_id` in `lane` for `executor`: the claimant rule, then
     /// [`decide_claim`] on the mesh the attempt acts in (the lane's own mesh for a drift attempt,
     /// the executor's for a topology attempt).
-    pub async fn claim_in(&self, executor: &str, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> BuildClaimReply {
+    pub async fn claim_in(&self, executor: &NodeId, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> BuildClaimReply {
+        let executor = self.topology.read().await.births().find(|node| &node.node_id == executor).cloned();
+        match executor {
+            Some(executor) => self.claim_for(&executor, build_id, lane, attempt).await,
+            None => rdm_core::reply::build_claim::not_ready("the selected executor ID is absent from this view".into()),
+        }
+    }
+
+    /// Preserve the exact birth selected or validated by the caller through admission.
+    async fn claim_for(&self, node: &crate::model::Node, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> BuildClaimReply {
         let me = self.held_name().await;
-        let mesh = match lane {
-            Some(mesh) => mesh.to_string(),
-            None => match executor.parse::<PathName>() {
-                Ok(e) => e.mesh,
-                Err(e) => return rdm_core::reply::build_claim::not_ready(format!("{me}: the executor {executor:?} of attempt {attempt} of {build_id} is not a path.name: {e}")),
-            },
+        let Some(incarnation) = node.incarnation_id.clone() else {
+            return rdm_core::reply::build_claim::not_ready(format!("executor {} has no admitted incarnation", node.node_id));
         };
+        let executor = rdm_core::framing::Birth { node_id: node.node_id.clone(), incarnation };
+        let executor_mesh = node.mesh.clone();
+        let mesh = lane.unwrap_or(&executor_mesh).to_owned();
         if let Some(refusal) = self.not_claimant(lane, Some(&mesh)).await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-not-claimant", node = %me, build_id = %build_id.log(), attempt, executor, mesh = %mesh, lane = lane.unwrap_or("fabric"), detail = ?refusal)
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-claimant", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), attempt, executor = %executor, mesh = %mesh, lane = lane.unwrap_or("fabric"), detail = ?refusal)
                 .in_scope(|| tracing::info!("this admin may not claim in that lane in its view"));
             return refusal;
         }
-        let claim = BuildAttemptClaim {
-            claimant: Some(me.to_string()),
+        let claim = BuildAttemptClaim { claimed_mesh: None, executor_mesh,
+            claimant: Some(self.node_id.clone()),
             mesh: lane.map(str::to_string),
             build_id: build_id.clone(),
             attempt,
-            executor: executor.to_string(),
+            executor,
         };
         let reply = decide_claim(
             &me,
@@ -336,20 +368,20 @@ impl ClaimDoor {
         let me = self.held_name().await;
         let executor = self.topology.read().await.births().find(|n| n.node_id == executor_node_id).cloned();
         let Some(executor) = executor else {
-            return rdm_core::reply::build_claim::peer_unresolved(format!("{me}: the request (from endpoint {}) names executor node {executor_node_id}, which is not in this fabric-primary's view", peer.0));
+            return rdm_core::reply::build_claim::peer_unresolved(format!("path {me_path:?}, name {me_name:?}: the request (from endpoint {}) names executor node {executor_node_id}, which is not in this fabric-primary's view", peer.0, me_path = &me.path, me_name = &me.name));
         };
         if executor.incarnation_id.as_ref() != Some(&executor_incarnation) {
-            return rdm_core::reply::build_claim::peer_unresolved(format!("{me}: the request names birth {} of {} and this view holds {:?}", executor_incarnation.as_str(), executor.name, executor.incarnation_id.as_ref().map(|i| i.as_str())));
+            return rdm_core::reply::build_claim::peer_unresolved(format!("path {me_path:?}, name {me_name:?}: the request names birth {} of {} and this view holds {:?}", executor_incarnation.as_str(), executor.node_id, executor.incarnation_id.as_ref().map(|i| i.as_str()), me_path = &me.path, me_name = &me.name));
         }
         let build_id = match BuildId::parse(&build_id) {
             Ok(build_id) => build_id,
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, executor = %executor.name, build_id = %build_id, reason = %e, "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node_path = %me.path, node_name = %me.name, executor_node_id = %executor.node_id, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the claim is refused: its Build id is not a Crockford id"));
                 return rdm_core::reply::build_claim::malformed(rdm_core::outcome::MalformedKind::Corrupt);
             }
         };
-        self.claim_in(&executor.name.to_string(), &build_id, mesh.as_deref(), attempt).await
+        self.claim_for(&executor, &build_id, mesh.as_deref(), attempt).await
     }
 }
 

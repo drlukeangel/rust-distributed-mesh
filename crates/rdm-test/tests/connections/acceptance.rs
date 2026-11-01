@@ -518,9 +518,9 @@ async fn foreign_dialer(name: &str, target: &Value, cert: Vec<u8>) -> (rdm_trans
     let key = iroh::SecretKey::generate();
     let short = key.public().fmt_short().to_string();
     let ep = rdm_transport::endpoint::bind_with_alpns(key, "127.0.0.1:0".parse().unwrap(), &[rdm_test::node::APP_PROTOCOL.to_vec()]).await.expect("the dialer binds");
-    let me = rdm_transport::connections::Birth { name: name.parse().unwrap(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+    let me = rdm_transport::connections::Birth { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, name: name.parse().unwrap(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
     let resolver = std::sync::Arc::new(rdm_transport::StaticResolver::new());
-    resolver.insert(rdm_transport::ResolvedNode {
+    resolver.insert(rdm_transport::ResolvedNode { mesh: s(&target["mesh"]), kind: serde_json::from_value(target["kind"].clone()).unwrap(),
         node_id: rdm_core::NodeId::parse(&s(&target["node_id"])).unwrap(),
         name: s(&target["name"]).parse().unwrap(),
         endpoint_id: s(&target["endpoint_id"]).parse().expect("the target's endpoint key"),
@@ -542,7 +542,7 @@ async fn foreign_dialer(name: &str, target: &Value, cert: Vec<u8>) -> (rdm_trans
 async fn refused_dial(estate: &Estate, name: &str, target_name: &str, cert: Vec<u8>) -> (String, Value) {
     let target = estate.node_value(target_name).await;
     let (registry, router, short) = foreign_dialer(name, &target, cert).await;
-    let birth = rdm_transport::connections::Birth { name: target_name.parse().unwrap(), node_id: rdm_core::NodeId::parse(&s(&target["node_id"])).unwrap(), incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation_id"])).unwrap() };
+    let birth = rdm_transport::connections::Birth { mesh: s(&target["mesh"]), kind: serde_json::from_value(target["kind"].clone()).unwrap(), name: target_name.parse().unwrap(), node_id: rdm_core::NodeId::parse(&s(&target["node_id"])).unwrap(), incarnation: rdm_core::IncarnationId::parse(&s(&target["incarnation_id"])).unwrap() };
     let reason = match registry.probe_direct(&birth, rdm_test::node::APP_PROTOCOL).await {
         Err(rdm_transport::connections::ConnectError::Refused { reason }) => reason,
         other => panic!("the acceptor refuses the dial by name: {other:?}"),
@@ -596,7 +596,7 @@ async fn a_dial_presenting_another_fabrics_cert_is_refused_ca_bad_signature_on_t
     let root = rdm_core::certs::mint_key();
     let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, now);
     let issuer = rdm_core::certs::IssuingKey::mint(&ca, "mesh1", now, now + 3_600_000).expect("within the CA's life");
-    let birth = rdm_core::certs::BirthIdentity { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: "mesh1.rpc.9".parse().unwrap(), mesh: "mesh1".into(), endpoint_key: rdm_core::EndpointId(iroh::SecretKey::generate().public().to_string()) };
+    let birth = rdm_core::certs::BirthIdentity { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: rdm_core::PathName::new("mesh1.rpc", "9").unwrap(), mesh: "mesh1".into(), endpoint_key: rdm_core::EndpointId(iroh::SecretKey::generate().public().to_string()) };
     let cert = rdm_core::certs::cert_to_bytes(&rdm_core::certs::issue(&issuer, &birth, now, now + 600_000).expect("the foreign chain issues"));
     let (reason, refused) = refused_dial(&estate, "mesh1.rpc.9", DEST, cert).await;
     assert_eq!(reason, "ca-bad-signature", "{refused}");
@@ -751,7 +751,7 @@ async fn a_mesh_primarys_connections_delete_hands_its_primary_over_before_its_al
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&rdm_client::Frame::Complete), "{frames:?}");
     for admin in views.iter().filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.name != p.name) {
-        let view = estate.node_views_at(&admin.name).await.unwrap_or_else(|| panic!("{} answers node.get", admin.name));
+        let view = estate.node_views_at(&admin.name).await.unwrap_or_else(|| panic!("{:?} answers node.get", admin.name));
         let primary: Vec<String> = view.iter().filter(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
         assert_eq!(primary, vec![na2_name.clone()], "{} names {na2_name} mesh2's primary", admin.name);
     }

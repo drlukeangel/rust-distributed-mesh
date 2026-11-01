@@ -119,8 +119,15 @@ pub mod process_faults;
 /// Rafka's replace steps and its rollback as a test caller submits them (lifecycles/node-replace.md).
 pub mod steps;
 
+/// A planned node's test control file, using the existing bounded composite location index.
+/// Path and name remain separate properties; the physical index is never parsed as identity.
+/// These controls can be installed before the node has an allocated ID.
+pub fn location_knob_file(dir: &std::path::Path, location: &rdm_core::PathName) -> std::path::PathBuf {
+    dir.join(location.physical_index_key())
+}
+
 /// The directory under an estate's data root where a scenario records the OS-clock skew of one
-/// node: the file `<root>/os-clock-skew/<path.name>` holds signed milliseconds.
+/// node: the file `<root>/os-clock-skew/<location-index>` holds signed milliseconds.
 pub fn os_clock_skew_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("os-clock-skew")
 }
@@ -130,14 +137,14 @@ pub fn os_clock_skew_dir(root: &std::path::Path) -> std::path::PathBuf {
 /// stamp of a node reads the OS clock (rafka-time is adopted, and the OS clock takes part in no
 /// fleet decision). A product executable never calls it. Returns the skew applied.
 #[cfg(feature = "testkit-skew")]
-pub fn skew_os_clock_from_root(root: &std::path::Path, name: &str) -> Option<i64> {
-    let ms: i64 = std::fs::read_to_string(os_clock_skew_dir(root).join(name)).ok()?.trim().parse().ok()?;
+pub fn skew_os_clock_from_root(root: &std::path::Path, name: &rdm_core::PathName) -> Option<i64> {
+    let ms: i64 = std::fs::read_to_string(location_knob_file(&os_clock_skew_dir(root), name)).ok()?.trim().parse().ok()?;
     rdm_transport::clock::skew_os_clock_for_testkit(ms);
     Some(ms)
 }
 
 /// The directory under an estate's data root where a scenario records a `pre_node_ready` knob
-/// for one node: while the file `<root>/pre-node-ready-knob/<path.name>` exists when the node starts, the
+/// for one node: while the file `<root>/pre-node-ready-knob/<location-index>` exists when the node starts, the
 /// node registers [`pre_node_ready_probe::KnobPreNodeReady`], whose hook is Blocked with the file's text as its
 /// reason until the text is `pass`.
 pub fn pre_node_ready_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
@@ -146,18 +153,18 @@ pub fn pre_node_ready_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
 
 /// Record `text` as node `name`'s `pre_node_ready` knob under `root` ([`pre_node_ready_knob_dir`]).
 /// The node's hook reads the knob on every attempt, while the scenario rewrites it, so the text is
-/// written to `<path.name>.staged` beside the knob and renamed over it: a read opens the old file or
+/// written to `<location-index>.staged` beside the knob and renamed over it: a read opens the old file or
 /// the new one, each whole, and never a knob truncated before its new text is written.
-pub fn write_pre_node_ready_knob(root: &std::path::Path, name: &str, text: &str) -> std::io::Result<()> {
-    let dir = pre_node_ready_knob_dir(root);
-    std::fs::create_dir_all(&dir)?;
-    let staged = dir.join(format!("{name}.staged"));
+pub fn write_pre_node_ready_knob(root: &std::path::Path, name: &rdm_core::PathName, text: &str) -> std::io::Result<()> {
+    let file = location_knob_file(&pre_node_ready_knob_dir(root), name);
+    std::fs::create_dir_all(file.parent().expect("knob parent"))?;
+    let staged = file.with_extension("staged");
     std::fs::write(&staged, text)?;
-    std::fs::rename(&staged, dir.join(name))
+    std::fs::rename(&staged, file)
 }
 
 /// The directory under an estate's data root where a scenario records a rafka-time knob for one
-/// node: the file `<root>/rafka-time-knob/<path.name>` holds `ahead_ms=<signed ms>` and/or
+/// node: the file `<root>/rafka-time-knob/<location-index>` holds `ahead_ms=<signed ms>` and/or
 /// `drift_ppm=<signed ppm>` lines.
 pub fn rafka_time_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("rafka-time-knob")
@@ -169,8 +176,8 @@ pub fn rafka_time_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
 /// only by testkit executables, once the node has adopted its authority's time, to prove the
 /// discipline brings a node back to it. Returns `(ahead_ms, drift_ppm)` applied.
 #[cfg(feature = "testkit-skew")]
-pub fn apply_rafka_time_knob(root: &std::path::Path, name: &str, time: &rdm_transport::clock::RafkaTime, parent: &tracing::Span) -> Option<(i64, i64)> {
-    let text = std::fs::read_to_string(rafka_time_knob_dir(root).join(name)).ok()?;
+pub fn apply_rafka_time_knob(root: &std::path::Path, name: &rdm_core::PathName, time: &rdm_transport::clock::RafkaTime, parent: &tracing::Span) -> Option<(i64, i64)> {
+    let text = std::fs::read_to_string(location_knob_file(&rafka_time_knob_dir(root), name)).ok()?;
     let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('=')?.trim().parse::<i64>().ok()).unwrap_or(0);
     let (ahead_ms, drift_ppm) = (get("ahead_ms"), get("drift_ppm"));
     if ahead_ms != 0 {
@@ -179,7 +186,7 @@ pub fn apply_rafka_time_knob(root: &std::path::Path, name: &str, time: &rdm_tran
     if drift_ppm != 0 {
         time.drift_for_testkit(drift_ppm);
     }
-    tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-rafka-time-knob", node = name, ahead_ms, drift_ppm)
+    tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-rafka-time-knob", node_path = %name.path, node_name = %name.name, ahead_ms, drift_ppm)
         .in_scope(|| tracing::info!("a scenario put this node's rafka-time off its authority's"));
     Some((ahead_ms, drift_ppm))
 }
@@ -188,6 +195,20 @@ pub fn apply_rafka_time_knob(root: &std::path::Path, name: &str, time: &rdm_tran
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn planned_controls_support_long_paths_and_distinct_names() {
+        let root = std::env::temp_dir().join(format!("planned-controls-{}", rdm_core::NodeId::mint()));
+        let path = vec!["a".repeat(64); 3].join(".");
+        let first = rdm_core::PathName::new(&path, "first").unwrap();
+        let second = rdm_core::PathName::new(&path, "second").unwrap();
+        write_pre_node_ready_knob(&root, &first, "hold").unwrap();
+        write_pre_node_ready_knob(&root, &second, "pass").unwrap();
+        let dir = pre_node_ready_knob_dir(&root);
+        assert_eq!(std::fs::read_to_string(location_knob_file(&dir, &first)).unwrap(), "hold");
+        assert_eq!(std::fs::read_to_string(location_knob_file(&dir, &second)).unwrap(), "pass");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// CONTRACT: a rewrite of a node's `pre_node_ready` knob never touches the file a reader
     /// already opened: the reader holding the knob reads the text it opened, whole, and the next
@@ -199,13 +220,13 @@ mod tests {
     fn a_knob_rewrite_never_touches_the_file_a_reader_holds_open() {
         let root = std::env::temp_dir().join(format!("pre-node-ready-knob-rewrite-{}", rdm_core::NodeId::mint()));
         let (a, b) = ("the rows of orders are not yet published", "the authority of orders is connections-deleting");
-        write_pre_node_ready_knob(&root, "mesh1.rpc.2", a).unwrap();
-        let mut held = std::fs::File::open(pre_node_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap();
-        write_pre_node_ready_knob(&root, "mesh1.rpc.2", b).unwrap();
+        write_pre_node_ready_knob(&root, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), a).unwrap();
+        let mut held = std::fs::File::open(location_knob_file(&pre_node_ready_knob_dir(&root), &rdm_core::PathName::new("mesh1.rpc", "2").unwrap())).unwrap();
+        write_pre_node_ready_knob(&root, &rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), b).unwrap();
         let mut read = String::new();
         held.read_to_string(&mut read).unwrap();
         assert_eq!(read, a, "the reader that opened the knob before the rewrite reads the text it opened, whole");
-        assert_eq!(std::fs::read_to_string(pre_node_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap(), b, "the next open reads the new text");
+        assert_eq!(std::fs::read_to_string(location_knob_file(&pre_node_ready_knob_dir(&root), &rdm_core::PathName::new("mesh1.rpc", "2").unwrap())).unwrap(), b, "the next open reads the new text");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -318,7 +339,7 @@ pub async fn run_proof_with(
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
-        node = %launch.name,
+        node_path = %launch.name.path, node_name = %launch.name.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
         kind = role.name(),
@@ -344,7 +365,7 @@ pub async fn run_proof_with(
             () = crate::node::stop_requested() => {
                 boot.in_scope(|| tracing::info!("stopped by signal before the node booted"));
                 drop(boot);
-                tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = false).in_scope(|| tracing::info!("stopping"));
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation, booted = false).in_scope(|| tracing::info!("stopping"));
                 return Ok(());
             }
         };
@@ -363,11 +384,11 @@ pub async fn run_proof_with(
         why = running.pre_node_ready_failed() => Some(why),
     };
     if let Some(why) = ended {
-        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
+        tracing::info_span!("rdm.mesh.node.delete.via-pre-node-ready-failed", node_path = %launch.name.path, node_name = %launch.name.name, reason = %why).in_scope(|| tracing::error!("pre_node_ready failed; this node ends"));
         running.stop().await;
-        return Err(anyhow::anyhow!("{} failed pre_node_ready: {why}", launch.name));
+        return Err(anyhow::anyhow!("{:?} failed pre_node_ready: {why}", launch.name));
     }
-    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     running.stop().await;
     Ok(())
 }
@@ -380,3 +401,5 @@ pub mod gossip_faults;
 #[cfg(feature = "testkit-gossip")]
 pub mod connection_faults;
 
+
+mod structured_map;

@@ -1,6 +1,6 @@
 //! `nodes.storage`'s rows (storage-whole-records.md, "The objects"): each node's record at its node id,
 //! written whole by its mesh-primary, every birth's runtime row and the tags index's changes, and the
-//! point reads of a node's record by its id or by its `path.name` (query.md §1, Q237). The node-admin
+//! point reads of a node's record by its id or by its `(path, name)` (query.md §1, Q237). The node-admin
 //! writes them (`rdm_admin::storage::NodesStorage`); any node reads another node's row here, the store
 //! opened on its first read and never at its start, join or create (Q227).
 
@@ -82,7 +82,7 @@ pub struct SigningCertDates {
 pub struct BirthFacts {
     /// The birth.
     pub incarnation_id: IncarnationId,
-    /// The `path.name` the birth held when its first fact was written.
+    /// The `(path, name)` the birth held when its first fact was written.
     pub name: PathName,
     /// The states the birth declared and its authority applied in its current cycle.
     #[serde(default)]
@@ -169,9 +169,13 @@ pub const BIRTHS_KEPT: usize = 2;
 /// (NodeId + IncarnationId), written once by a blind put, never rewritten.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRow {
+    /// Explicit birth ownership and runtime kind.
+    pub mesh: String,
+    /// The explicit runtime kind of this birth.
+    pub kind: rdm_core::NodeKind,
     /// The node's minted id.
     pub node_id: NodeId,
-    /// The node's `path.name`.
+    /// The node's `(path, name)`.
     pub name: PathName,
     /// The incarnation of the birth.
     pub incarnation_id: IncarnationId,
@@ -190,15 +194,19 @@ impl RuntimeRow {
 
 /// The record of one node (storage-whole-records.md, "The objects"): kept at its minted node id and
 /// written whole by its writer, the node's mesh-primary (the fabric-primary only as the acting primary
-/// of a mesh with none, `rdm_admin::node_rows`), from the copy it caches: its `path.name`, status, config,
+/// of a mesh with none, `rdm_admin::node_rows`), from the copy it caches: its `(path, name)`, status, config,
 /// tags and executable, and the facts of its current birth and of the one a restart replaced. A
-/// `Deleted` record stands and keeps the config for the next node created at the same `path.name`.
-/// Beside it: the node's name claim (`NodesStorage::claim_node_name`), the `path.name` index
+/// `Deleted` record stands and keeps the config for the next node created at the same `(path, name)`.
+/// Beside it: the node's name claim (`NodesStorage::claim_node_name`), the `(path, name)` index
 /// ([`NodeRowsStorage::node_at`]) and the tags index (`NodesStorage::tagged`), whose entries RDM writes
 /// from the moves it computes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRow {
-    /// The node's `path.name`.
+    /// The explicitly declared owning mesh.
+    pub mesh: String,
+    /// The explicitly declared runtime kind.
+    pub kind: rdm_core::NodeKind,
+    /// The node's `(path, name)`.
     pub name: PathName,
     /// The node that held the name when the row was written.
     pub node_id: NodeId,
@@ -225,13 +233,17 @@ pub struct NodeRow {
     /// It includes application knowledge from the same read as recovered config and tags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_properties: Option<rdm_core::launch::InitialProperties>,
-    /// The `path.name` a rename moved this row from (proposal node-properties-own-commands.md §2.1
+    /// The `(path, name)` a rename moved this row from (proposal node-properties-own-commands.md §2.1
     /// "Claim and move"), written by the put at the new key. While the key it names still holds this
     /// row's node, the release of that key is pending and the writer that meets the row releases it
     /// (`rdm_admin::node_rows::finish_release`); once that key no longer holds the node it says nothing,
     /// so it is never cleared. A row no rename wrote carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renamed_from: Option<PathName>,
+    /// The original pair of this exact subject retained by a replacement. Independent of the
+    /// most recent claim release; cleared only when the replacement rolls back to this pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_from: Option<PathName>,
     /// The successor that took this row's config and tags at a replace (node-replace.md step 3 and
     /// Inherited: the successor's row "inherits config and tags from the predecessor row ... whose
     /// labels leave the active tags index"), written on the retained predecessor's row once the
@@ -312,10 +324,12 @@ pub struct AppTypes {
 /// operation)`, never by attempt, because every attempt of the operation continues the same birth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Allocation {
+    /// The exact predecessor admitted for this create, independent of successor ownership.
+    pub predecessor: Option<BirthRef>,
     /// The Build whose operation claimed the name.
     pub build_id: rdm_core::BuildId,
     /// The operation that claimed it (`node.create:<path>`).
-    pub operation: String,
+    pub operation: rdm_core::OperationId,
     /// The incarnation minted for the birth.
     pub incarnation: IncarnationId,
     /// The exact deployment minted for the birth: what the provider finds its runtime by, if one
@@ -326,8 +340,8 @@ pub struct Allocation {
 
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
-    pub fn new(name: PathName, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, initial_properties: None, renamed_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, revision: 0, writer: None }
+    pub fn new(name: PathName, mesh: impl Into<String>, kind: rdm_core::NodeKind, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
+        Self { name, mesh: mesh.into(), kind, node_id, status, config: BTreeMap::new(), tags: BTreeSet::new(), allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, app_types: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, revision: 0, writer: None }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets
@@ -386,14 +400,14 @@ impl NodeRow {
         self.name.path()
     }
 
-    /// The node's name within its path (`<base>[.old]`).
+    /// The node's name within its path (an ordinary name, or `<name>-old` for an explicitly replaced predecessor).
     pub fn node_name(&self) -> String {
         self.name.name()
     }
 
     /// The node's `node_type`.
     pub fn node_type(&self) -> &'static str {
-        self.name.node_type()
+        self.kind.node_type()
     }
 
     /// The facts of the birth `incarnation_id`, if the record keeps them.
@@ -431,14 +445,14 @@ impl NodeRow {
     }
 }
 
-/// The point reads of the nodes storage: a node's record by its id or by its `path.name`, the same
+/// The point reads of the nodes storage: a node's record by its id or by its `(path, name)`, the same
 /// answers the node-admin's `NodesStorage` gives.
 #[async_trait]
 pub trait NodeRowsStorage: Send + Sync {
     /// The record of `node_id`: a point read of its key, a `Withdrawn` one included; `None` when none
     /// was ever written.
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
-    /// The record the `path.name` index names at `name`: the node whose record was last written at it,
+    /// The record the `(path, name)` index names at `name`: the node whose record was last written at it,
     /// a `Deleted` one included; `None` when no record was ever written there, or when that record is
     /// `Withdrawn`.
     async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
@@ -476,14 +490,14 @@ pub fn formats() -> crate::store_log::Formats {
 }
 
 #[cfg(feature = "file-backend")]
-/// The `path.name` index, folded from `nodes.jsonl`: each name's node is the node whose record line
+/// The `(path, name)` index, folded from `nodes.jsonl`: each name's node is the node whose record line
 /// was last appended at it, a `Deleted` or `Withdrawn` one included.
-type PathIndex = std::sync::Arc<std::sync::Mutex<BTreeMap<String, NodeId>>>;
+type PathIndex = std::sync::Arc<std::sync::Mutex<BTreeMap<PathName, NodeId>>>;
 
 #[cfg(feature = "file-backend")]
 /// The nodes' records of the fabric's store root's `nodes.jsonl` (R-SR1), folded from byte 0 at the
 /// first read or append, never at the open (rdm#89, Q227), and from the consumed offset at each read
-/// after it; the `path.name` index is the fold of the record lines.
+/// after it; the `(path, name)` index is the fold of the record lines.
 #[derive(Debug, Clone)]
 pub struct FileNodeRows {
     records: crate::store_log::StoreLog,
@@ -499,7 +513,7 @@ impl FileNodeRows {
         let observe: crate::store_log::Observer = std::sync::Arc::new(move |l: &crate::store_log::Line| {
             if l.kind() == RECORD_KIND {
                 if let Ok(row) = NodeRow::deserialize(&l.record) {
-                    index.lock().unwrap_or_else(|e| e.into_inner()).insert(row.name.to_string(), row.node_id);
+                    index.lock().unwrap_or_else(|e| e.into_inner()).insert(row.name, row.node_id);
                 }
             }
         });
@@ -521,7 +535,7 @@ impl NodeRowsStorage for FileNodeRows {
     }
     async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         self.records.advance().await?;
-        let Some(node_id) = self.paths.lock().unwrap_or_else(|e| e.into_inner()).get(&name.to_string()).cloned() else { return Ok(None) };
+        let Some(node_id) = self.paths.lock().unwrap_or_else(|e| e.into_inner()).get(name).cloned() else { return Ok(None) };
         Ok(self.node(&node_id).await?.filter(|r| r.status != crate::model::NodeStatus::Withdrawn))
     }
 }
@@ -558,13 +572,13 @@ impl NodeRowsStorage for FileNodeRowsOnFirstRead {
     }
 }
 
-/// A node's `id` or its `path.name`: what a point read of its row names (`node_row(id | name)`,
+/// A node's `id` or its `(path, name)`: what a point read of its row names (`node_row(id | name)`,
 /// query.md §1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdOrName {
     /// The node's id.
     Id(NodeId),
-    /// The node's `path.name`.
+    /// The node's `(path, name)`.
     Name(PathName),
 }
 
@@ -600,7 +614,7 @@ mod tests {
     #[test]
     fn declared_state_and_tag_moves_compute_cycle_state_and_tag_diffs() {
         let inc = IncarnationId::mint();
-        let name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let mut birth = BirthFacts::new(inc, name.clone());
         assert_eq!(birth.declared_state(), None);
 
@@ -610,7 +624,7 @@ mod tests {
         assert_eq!(birth.declared_state(), Some(NodeState::Stopped));
 
         let node_id = NodeId::mint();
-        let mut prev = NodeRow::new(name.clone(), node_id.clone(), crate::model::NodeStatus::Ready);
+        let mut prev = NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, node_id.clone(), crate::model::NodeStatus::Ready);
         prev.tags = BTreeSet::from(["role-rpc".to_string(), "zone-a".to_string()]);
 
         let mut next = prev.clone();

@@ -118,7 +118,7 @@ impl TopologyDoor {
         let me = (self.own)();
         let span = tracing::info_span!(
             "rdm.mesh.topology.serve.via-read",
-            node = %me.node.name,
+            node_path = %me.node.name.path, node_name = %me.node.name.name,
             requested = mesh.as_deref().unwrap_or("*"),
             meshes = tracing::field::Empty,
             snapshots = tracing::field::Empty,
@@ -138,7 +138,7 @@ impl TopologyDoor {
             // A node that holds no rafka-time has none to serve: it starts no stream and says why.
             let Some(time_ms) = self.time.try_now_ms() else {
                 span.record("outcome", "not-ready");
-                return rdm_core::reply::topology::not_ready(format!("{}: this node holds no rafka-time yet", me.node.name));
+                return rdm_core::reply::topology::not_ready(format!("{}: this node holds no rafka-time yet", me.node.node_id));
             };
             // Only the mesh asked for is copied out of the view (Q266).
             let held = self.topology_view.held_topology_of(&me, mesh.as_deref());
@@ -153,12 +153,12 @@ impl TopologyDoor {
                     Ok(map) => map,
                     Err(reason) => {
                         span.record("outcome", "not-ready");
-                        return rdm_core::reply::topology::not_ready(format!("{}: the stored map could not be read: {reason}", me.node.name));
+                        return rdm_core::reply::topology::not_ready(format!("{}: the stored map could not be read: {reason}", me.node.node_id));
                     }
                 };
                 stored_ids = map.mesh_ids;
                 for n in map.nodes {
-                    let m = n.name.split('.').next().unwrap_or_default().to_string();
+                    let m = n.mesh.clone();
                     if m != me.node.mesh && held.iter().all(|s| s.mesh != m) && mesh.as_ref().is_none_or(|want| *want == m) {
                         stored.entry(m).or_default().push(n);
                     }
@@ -177,8 +177,8 @@ impl TopologyDoor {
                     return TopologyReply::End { meshes: 0 };
                 }
             };
-            // What the read answers, per held source: `<mesh>@<topology_version>:<path.name>,...`.
-            span.record("members", held.iter().map(|s| format!("{}@{}:{}", s.mesh, s.topology_version, s.digests.iter().map(|d| d.node.name.to_string()).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join(";").as_str());
+            // What the read answers, per held source: `<mesh>@<topology_version>:<node.id>,...`.
+            span.record("members", held.iter().map(|s| format!("{}@{}:{}", s.mesh, s.topology_version, s.digests.iter().map(|d| d.node.node_id.to_string()).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join(";").as_str());
             let (mut answered, mut snapshots, mut unchanged, mut bytes) = (0u32, 0u64, 0u64, 0u64);
             for s in &held {
                 let same = mesh.is_some() && since.as_ref().is_some_and(|v| v.publisher == s.publisher && v.topology_version == s.topology_version);
@@ -239,7 +239,7 @@ impl TopologyDoor {
             // The caller's own whole row, when this node is its mesh-primary (Q234).
             if let Some(source) = &self.own_row {
                 let row = source(caller).await;
-                span.record("own_row", row.as_ref().map_or(String::new(), |(r, revision)| format!("{}@{revision}", r.name)).as_str());
+                span.record("own_row", row.as_ref().map_or(String::new(), |(r, revision)| format!("{}@{revision}", r.node_id)).as_str());
                 if let Some((node, revision)) = row {
                     let r = TopologyReply::OwnRow { node, revision };
                     let len = rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
@@ -321,7 +321,7 @@ pub struct ServedTime {
 impl TopologyRead {
     /// Adopt the rafka-time this read was served with into `time`, by the rule of the puller
     /// `node_id` of `mesh` as its own primary records stand (the same [`crate::rafka_time::adopt_pulled`]
-    /// every pull goes through). `served_by` is the target's `path.name`.
+    /// every pull goes through). `served_by` is the target's `(path, name)`.
     pub fn adopt_rafka_time(&self, time: &rdm_transport::clock::RafkaTime, topology_view: &TopologyView, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rdm_transport::clock::Adopted, TimeNotAdopted> {
         let served = self.rafka_time.ok_or_else(|| TimeNotAdopted::Absent(format!("{served_by}: the topology answer carries no rafka-time")))?;
         let puller = crate::rafka_time::Puller::of(topology_view.primaries(), mesh, node_id);
@@ -602,7 +602,7 @@ mod tests {
             fabric_id,
             node: MeshNode { mesh: "mesh1".to_string(), kind: NodeKind::NodeAdmin,
                 node_id: NodeId::mint(),
-                name: PathName::new("mesh1", NodeKind::NodeAdmin, 1),
+                name: PathName::numbered("mesh1", NodeKind::NodeAdmin, 1),
                 endpoint_id: EndpointId(ep.id().to_string()),
                 transport_addr: "127.0.0.1:9000".parse().unwrap(),
                 incarnation: IncarnationId::mint(),

@@ -108,7 +108,7 @@ fn launch_by(by: &Running, store: &Path, dir: &Path, name: &str, kind: rdm_core:
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![],
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
-        launcher: Some(Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+        launcher: Some(Launcher { mesh: d.node.mesh.clone(), name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         data_dir: dir.to_path_buf(),
         store_dir: store.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
@@ -166,7 +166,7 @@ async fn launched_admin(root: &Running, store: &Path) -> (Running, BTreeMap<Stri
 }
 
 fn birth_of(n: &RunningNode) -> Birth {
-    Birth { name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
+    Birth { mesh: n.digest.node.mesh.clone(), kind: n.digest.node.kind, name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
 }
 
 fn signed(bytes: &[u8]) -> SignedCert {
@@ -627,7 +627,7 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
     let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"].into_iter().map(str::to_string).collect();
     estate.settles_to_named(&names, Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let member = estate.node_view("mesh1.rpc.1").await;
+    let member = estate.node_view(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
     let incarnation = member.incarnation_id.clone().expect("the member's birth");
 
     estate.enter(&Estate::path("mesh1.admin.2")).await;
@@ -636,7 +636,7 @@ async fn a_successor_mesh_primary_continues_the_schedule_from_the_rows() {
     if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::FabricPrimaryMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
-    estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds both roles", Duration::from_secs(90), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
+    estate.until_node(&rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1.admin.2 holds both roles", Duration::from_secs(90), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     let moved_at_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
     // The issue the member held at the move: its join's, or the newest renewal it received.
@@ -858,7 +858,7 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         .await;
         let floor = rdm_core::cadence::staleness_floor().as_millis() as u64;
         assert!(root.rafka_time.now_ms() > row.renew_at + floor, "stalled only past the renew point by more than a floor");
-        assert_eq!(mesh1(&stalled), Some(Some(Renewals::Stalled { nodes: vec!["mesh1.rpc.1".parse().unwrap()] })), "the member alone stalls: {stalled:?}");
+        assert_eq!(mesh1(&stalled), Some(Some(Renewals::Stalled { nodes: vec![rdm_core::PathName::new("mesh1.rpc", "1").unwrap()] })), "the member alone stalls: {stalled:?}");
 
         root.node_rpc.client.admit_new_connections();
         let renewed = until("the renewal reaches the member", BOUND, async || renewals_of(&spans, "mesh1.rpc.1").into_iter().find(|f| f["outcome"] == "installed")).await;
@@ -909,7 +909,7 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
     let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh2.admin.1"].into_iter().map(str::to_string).collect();
     estate.settles_to_named(&names, Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let primary = estate.node_view("mesh2.admin.1").await;
+    let primary = estate.node_view(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).await;
     assert!(primary.is_primary && !primary.is_fabric_primary, "mesh2.admin.1 is mesh2's primary and not the fabric's: {primary:?}");
 
     let renewed = estate_span(&estate, "rdm.node_admin.cert.update.via-renewal", "the fabric-primary renews mesh2.admin.1", Duration::from_secs(60), |sp| attr(sp, "node") == "mesh2.admin.1" && attr(sp, "outcome") == "installed").await;

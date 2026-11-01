@@ -39,7 +39,7 @@ struct TestPeer {
 }
 
 impl TestPeer {
-    async fn bind(name: &str, alpns: &[Alpn]) -> Self {
+    async fn bind(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, alpns: &[Alpn]) -> Self {
         let key = SecretKey::generate();
         let raw_alpns: Vec<Vec<u8>> = alpns.iter().map(|a| a.name.clone()).collect();
         let ep = rdm_transport::endpoint::bind_with_alpns(
@@ -50,12 +50,12 @@ impl TestPeer {
         .await
         .unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let birth = Birth {
-            name: name.parse().unwrap(),
+        let birth = Birth { mesh: mesh.to_owned(), kind,
+            name,
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
-        let resolved = ResolvedNode {
+        let resolved = ResolvedNode { mesh: birth.mesh.clone(), kind: birth.kind,
             node_id: birth.node_id.clone(),
             name: birth.name.clone(),
             endpoint_id: key.public(),
@@ -98,7 +98,7 @@ impl TestPeer {
 
 #[tokio::test]
 async fn an_unregistered_alpn_is_refused_by_name_on_connections() {
-    let peer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+    let peer = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
 
     let err = peer
         .registry
@@ -124,7 +124,7 @@ async fn an_unregistered_alpn_is_refused_by_name_on_connections() {
 
 #[tokio::test]
 async fn a_second_connections_call_for_one_alpn_is_already_taken_by_name() {
-    let peer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+    let peer = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
 
     let _first = peer
         .registry
@@ -151,8 +151,8 @@ async fn a_second_connections_call_for_one_alpn_is_already_taken_by_name() {
 
 #[tokio::test]
 async fn a_direct_open_writes_connected_with_its_alpn_and_the_acceptor_sees_the_same_row_id() {
-    let peer_a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let peer_b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let peer_a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let peer_b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     peer_a.know(&peer_b);
     peer_b.know(&peer_a);
 
@@ -200,15 +200,15 @@ async fn a_direct_open_writes_connected_with_its_alpn_and_the_acceptor_sees_the_
 
 #[tokio::test]
 async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_disconnects_bs_proxy() {
-    let peer_a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A), alpn(ALPN_B)]).await;
+    let peer_a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A), alpn(ALPN_B)]).await;
     // peer_b registers only ALPN_A, not ALPN_B:
-    let peer_b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let peer_b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     peer_a.know(&peer_b);
     peer_b.know(&peer_a);
 
     // Seed an active Proxy on ALPN_B and a Failed Direct on ALPN_A in peer_a's held projection:
-    let carrier_birth = Birth {
-        name: "mesh1.rpc.3".parse().unwrap(),
+    let carrier_birth = Birth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        name: rdm_core::PathName::new("mesh1.rpc", "3").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
@@ -238,19 +238,19 @@ async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_d
         let held_guard = peer_a.sink.held();
         let held = held_guard.lock().unwrap();
         assert!(
-            held.active_direct_for(&peer_a.birth.name, &peer_b.birth.name, ALPN_A)
+            held.active_direct_for(&peer_a.birth.node_id, &peer_b.birth.node_id, ALPN_A)
                 .unwrap()
                 .is_some(),
             "ALPN_A has an active Direct"
         );
         assert!(
-            held.active_direct_for(&peer_a.birth.name, &peer_b.birth.name, ALPN_B)
+            held.active_direct_for(&peer_a.birth.node_id, &peer_b.birth.node_id, ALPN_B)
                 .unwrap()
                 .is_none(),
             "working ALPN_A proves nothing for ALPN_B"
         );
         assert!(
-            held.own_proxy_for(&peer_b.birth.name, ALPN_B)
+            held.own_proxy_for(&peer_b.birth.node_id, ALPN_B)
                 .unwrap()
                 .is_some(),
             "ALPN_B's Proxy must remain active when ALPN_A reconnects Direct"
@@ -267,8 +267,8 @@ async fn a_working_alpn_a_proves_nothing_for_alpn_b_and_a_reconnect_on_a_never_d
 
 #[tokio::test]
 async fn an_open_against_another_incarnation_is_wrong_incarnation_and_never_served() {
-    let peer_a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let peer_b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let peer_a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let peer_b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     peer_a.know(&peer_b);
     peer_b.know(&peer_a);
 
@@ -277,7 +277,7 @@ async fn an_open_against_another_incarnation_is_wrong_incarnation_and_never_serv
 
     let stale_incarnation = IncarnationId::mint();
     assert_ne!(stale_incarnation, peer_b.birth.incarnation);
-    let stale_target = Birth {
+    let stale_target = Birth { mesh: peer_b.birth.mesh.clone(), kind: peer_b.birth.kind,
         name: peer_b.birth.name.clone(),
         node_id: peer_b.birth.node_id.clone(),
         incarnation: stale_incarnation.clone(),
@@ -308,8 +308,8 @@ async fn an_open_against_another_incarnation_is_wrong_incarnation_and_never_serv
 
 #[tokio::test]
 async fn finish_reset_and_stop_codes_arrive_typed_on_the_far_end() {
-    let peer_a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let peer_b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let peer_a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let peer_b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     peer_a.know(&peer_b);
     peer_b.know(&peer_a);
 
@@ -379,8 +379,8 @@ impl Admitter for PolicyAdmitter {
 
 #[tokio::test]
 async fn an_inbound_connection_on_a_registered_alpn_passes_admit_before_accept() {
-    let peer_a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let peer_b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let peer_a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let peer_b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     peer_a.know(&peer_b);
     peer_b.know(&peer_a);
 
@@ -443,8 +443,8 @@ async fn an_inbound_connection_on_a_registered_alpn_passes_admit_before_accept()
 /// and the attempt that is admitted is Direct `Connected`.
 #[tokio::test]
 async fn a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dialer() {
-    let dialer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let dialer = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     dialer.know(&acceptor);
     acceptor.know(&dialer);
     let admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(false), calls: AtomicUsize::new(0) });
@@ -493,13 +493,13 @@ struct Process {
     _server: rdm_transport::NodeRpcServer,
 }
 
-async fn process(name: &str) -> Process {
+async fn process(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Process {
     use rdm_core::ping::{Ping, PingReply, PingRequest};
     let key = SecretKey::generate();
     let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let birth = Birth { name: name.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let resolved = ResolvedNode { node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
+    let birth = Birth { mesh: mesh.to_owned(), kind, name, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let resolved = ResolvedNode { mesh: birth.mesh.clone(), kind: birth.kind, node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
     let resolver = Arc::new(StaticResolver::new());
     let sink = Arc::new(MemoryConnectionsSink::new(birth.clone()));
     let (registry, handlers) = ConnectionsRegistry::new(ep.clone(), resolver.clone(), sink.clone(), &[alpn(ALPN_A)], b"cert-v1".to_vec()).unwrap();
@@ -527,8 +527,8 @@ async fn process(name: &str) -> Process {
 fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-control").expect("the cell's evidence file can be created");
     let (acceptor_birth, rpc_served, heard) = capture.run(4, async {
-        let acceptor = process("mesh1.rpc.2").await;
-        let dialer = process("mesh1.rpc.1").await;
+        let acceptor = process(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
+        let dialer = process(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode).await;
         dialer.peer.know(&acceptor.peer);
         acceptor.peer.know(&dialer.peer);
 
@@ -552,7 +552,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
         let own = rdm_core::MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric.clone(),
-            node: rdm_core::MeshNode { mesh: dialer.peer.birth.name.mesh.clone(), kind: dialer.peer.birth.name.kind,
+            node: rdm_core::MeshNode { mesh: dialer.peer.birth.mesh.clone(), kind: dialer.peer.birth.kind,
                 node_id: dialer.peer.birth.node_id.clone(),
                 name: dialer.peer.birth.name.clone(),
                 endpoint_id: rdm_core::EndpointId(dialer.ep.id().to_string()),
@@ -589,7 +589,7 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
         let accepted = tokio::spawn(async move { accepts.accept().await.unwrap() });
         let conn = opener.open(&acceptor.peer.birth).await.unwrap();
         assert_eq!(accepted.await.unwrap().id(), conn.id());
-        let name = acceptor.peer.birth.name.to_string();
+        let name = acceptor.peer.birth.node_id.to_string();
         drop((on_acceptor, on_dialer));
         dialer.peer.shutdown().await;
         acceptor.peer.shutdown().await;
@@ -620,13 +620,13 @@ struct RawDialer {
 
 impl RawDialer {
     /// A raw endpoint; `known` registers its key with `acceptor` under a birth of its own.
-    async fn bind(name: &str, acceptor: &TestPeer, known: bool) -> Self {
+    async fn bind(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, acceptor: &TestPeer, known: bool) -> Self {
         let key = SecretKey::generate();
         let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let birth = Birth { name: name.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let birth = Birth { mesh: mesh.to_owned(), kind, name, node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         if known {
-            acceptor.resolver.insert(ResolvedNode {
+            acceptor.resolver.insert(ResolvedNode { mesh: birth.mesh.clone(), kind: birth.kind,
                 node_id: birth.node_id.clone(),
                 name: birth.name.clone(),
                 endpoint_id: key.public(),
@@ -661,14 +661,14 @@ async fn closed_by_acceptor(conn: &iroh::endpoint::Connection, from: tokio::time
 /// gone) is neither verdict: nothing is written.
 #[tokio::test]
 async fn a_dial_that_presents_nothing_within_the_floor_is_no_credential() {
-    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     let floor = rdm_core::cadence::staleness_floor();
-    let silent = RawDialer::bind("mesh1.rpc.11", &acceptor, true).await;
-    let stalled = RawDialer::bind("mesh1.rpc.12", &acceptor, true).await;
-    let empty = RawDialer::bind("mesh1.rpc.13", &acceptor, true).await;
-    let garbage = RawDialer::bind("mesh1.rpc.14", &acceptor, true).await;
-    let stranger = RawDialer::bind("mesh1.rpc.15", &acceptor, false).await;
-    let gone = RawDialer::bind("mesh1.rpc.16", &acceptor, true).await;
+    let silent = RawDialer::bind(rdm_core::PathName::new("mesh1.rpc", "11").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &acceptor, true).await;
+    let stalled = RawDialer::bind(rdm_core::PathName::new("mesh1.rpc", "12").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &acceptor, true).await;
+    let empty = RawDialer::bind(rdm_core::PathName::new("mesh1.rpc", "13").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &acceptor, true).await;
+    let garbage = RawDialer::bind(rdm_core::PathName::new("mesh1.rpc", "14").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &acceptor, true).await;
+    let stranger = RawDialer::bind(rdm_core::PathName::new("mesh1.rpc", "15").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &acceptor, false).await;
+    let gone = RawDialer::bind(rdm_core::PathName::new("mesh1.rpc", "16").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &acceptor, true).await;
 
     let silent_case = async {
         let at = tokio::time::Instant::now();
@@ -723,16 +723,16 @@ async fn a_dial_that_presents_nothing_within_the_floor_is_no_credential() {
 
     tokio::time::sleep(floor + floor / 3).await;
     let refused: Vec<_> = acceptor.sink.history().into_iter().filter(|r| r.state == ConnectionState::Refused).collect();
-    let mut named: Vec<(String, Option<String>)> = refused.iter().map(|r| (r.source.name.to_string(), r.reason.clone())).collect();
+    let mut named: Vec<(rdm_core::PathName, Option<String>)> = refused.iter().map(|r| (r.source.name.clone(), r.reason.clone())).collect();
     named.sort();
     let no_credential = Some("no-credential".to_string());
     assert_eq!(
         named,
         vec![
-            ("mesh1.rpc.11".to_string(), no_credential.clone()),
-            ("mesh1.rpc.12".to_string(), no_credential.clone()),
-            ("mesh1.rpc.13".to_string(), no_credential.clone()),
-            ("mesh1.rpc.14".to_string(), no_credential.clone()),
+            (rdm_core::PathName::new("mesh1.rpc", "11").unwrap(), no_credential.clone()),
+            (rdm_core::PathName::new("mesh1.rpc", "12").unwrap(), no_credential.clone()),
+            (rdm_core::PathName::new("mesh1.rpc", "13").unwrap(), no_credential.clone()),
+            (rdm_core::PathName::new("mesh1.rpc", "14").unwrap(), no_credential.clone()),
         ],
         "one Refused fact per named dialer, none for the stranger and none for the dialer that left"
     );
@@ -756,7 +756,7 @@ async fn a_second_accept_owner_is_refused_by_the_type_system_and_split_is_once()
     assert_send::<Connections>();
     assert_send::<Acceptor>();
 
-    let peer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+    let peer = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     let conns = peer.registry.connections(ALPN_A).unwrap();
     let (dialer, _acceptor) = conns.split();
     let _dialer_clone = dialer.clone();
@@ -774,8 +774,8 @@ async fn a_second_accept_owner_is_refused_by_the_type_system_and_split_is_once()
 
 #[tokio::test]
 async fn node_connections_delete_by_id_closes_the_stream_and_closed_names_it() {
-    let peer_a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let peer_b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let peer_a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let peer_b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     peer_a.know(&peer_b);
     peer_b.know(&peer_a);
 
@@ -879,8 +879,8 @@ async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned
     rdm_transport::enable_callsites();
 
     let (peer_a, peer_b) = async {
-        let a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-        let b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+        let a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+        let b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
         a.know(&b);
         b.know(&a);
         (a, b)
@@ -976,9 +976,9 @@ async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned
 
     let alpns = [gateway_alpn(ALPN_A)];
     let (src, gw, dst) = async {
-        let s = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-        let g = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-        let d = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+        let s = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+        let g = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+        let d = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
         s.know(&g);
         g.know(&d);
         seed_carrier_direct_connection(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_A).await;
@@ -1111,8 +1111,8 @@ async fn a_callers_span_closes_while_its_direct_and_proxy_connections_live() {
 
     // Direct.
     let (a, b) = async {
-        let a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-        let b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+        let a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+        let b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
         a.know(&b);
         b.know(&a);
         (a, b)
@@ -1157,9 +1157,9 @@ async fn a_callers_span_closes_while_its_direct_and_proxy_connections_live() {
     // Proxy, through the carrier.
     let alpns = [gateway_alpn(ALPN_B)];
     let (src, gw, dst) = async {
-        let s = TestPeer::bind("mesh1.rpc.3", &alpns).await;
-        let g = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-        let d = TestPeer::bind("mesh1.rpc.4", &alpns).await;
+        let s = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+        let g = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+        let d = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
         s.know(&g);
         g.know(&d);
         seed_carrier_direct_connection(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_B).await;
@@ -1291,9 +1291,9 @@ impl Admitter for CountingAdmitter {
 #[tokio::test]
 async fn a_held_proxy_is_taken_without_a_direct_dial() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     // Source knows both carrier and dest, carrier knows dest:
     source.know(&carrier);
@@ -1374,10 +1374,10 @@ async fn a_held_proxy_is_taken_without_a_direct_dial() {
 #[tokio::test]
 async fn a_not_sent_direct_on_a_proxy_alpn_goes_once_through_the_hashed_carrier() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let gw1 = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let gw2 = TestPeer::bind("mesh1.gateway.2", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let gw1 = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let gw2 = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     // Source knows gw1 and gw2, but NOT dest (so Direct to dest is provably NotSent):
     source.know(&gw1);
@@ -1412,8 +1412,8 @@ async fn a_not_sent_direct_on_a_proxy_alpn_goes_once_through_the_hashed_carrier(
     gw2.registry.set_admitter(gw2_admitter.clone());
 
     let expected_idx = rdm_core::connections::spread(
-        &source.birth.name.to_string(),
-        &dest.birth.name.to_string(),
+        &source.birth.node_id.to_string(),
+        &dest.birth.node_id.to_string(),
         dest.birth.incarnation.as_str(),
     ) % 2;
     let expected_carrier = if expected_idx == 0 {
@@ -1474,10 +1474,10 @@ async fn a_not_sent_direct_on_a_proxy_alpn_goes_once_through_the_hashed_carrier(
 /// the peers and that index.
 async fn carriers_from_topology(connection: impl Fn(usize) -> [bool; 2]) -> (TestPeer, [TestPeer; 2], TestPeer, usize) {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let gw = [TestPeer::bind("mesh1.gateway.1", &alpns).await, TestPeer::bind("mesh1.gateway.2", &alpns).await];
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
-    let first = (rdm_core::connections::spread(&source.birth.name.to_string(), &dest.birth.name.to_string(), dest.birth.incarnation.as_str()) % 2) as usize;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let gw = [TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await, TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await];
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let first = (rdm_core::connections::spread(&source.birth.node_id.to_string(), &dest.birth.node_id.to_string(), dest.birth.incarnation.as_str()) % 2) as usize;
     for (g, holds) in gw.iter().zip(connection(first)) {
         source.know(g);
         g.know(&dest);
@@ -1596,9 +1596,9 @@ fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and
         let proxy_row_id = tracing::Instrument::instrument(
             async {
                 let alpns = [gateway_alpn(ALPN_A)];
-                let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-                let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-                let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+                let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+                let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+                let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
                 source.know(&carrier);
                 carrier.know(&dest);
@@ -1742,9 +1742,9 @@ fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and
 #[tokio::test]
 async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by_name() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     source.know(&carrier);
     carrier.know(&dest);
@@ -1782,13 +1782,13 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
     // Case 2: Wrong incarnation at destination -> WrongIncarnation by name, no Proxy Connected written:
     dest_admitter.allow.store(true, Ordering::SeqCst);
     let wrong_inc = IncarnationId::mint();
-    let stale_dest = Birth {
+    let stale_dest = Birth { mesh: dest.birth.mesh.clone(), kind: dest.birth.kind,
         name: dest.birth.name.clone(),
         node_id: dest.birth.node_id.clone(),
         incarnation: wrong_inc.clone(),
     };
     // Reset source's held state so open attempts against stale_dest:
-    let fresh_source = TestPeer::bind("mesh1.rpc.3", &alpns).await;
+    let fresh_source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
     fresh_source.know(&carrier);
     seed_carrier_direct_connection(
         &[&fresh_source.sink, &carrier.sink],
@@ -1827,12 +1827,12 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
 
     // Case 3: Carrier cannot reach destination (connection-lost): the one carrier refused by name, so
     // the open ends with no active route (Q227), no Proxy Connected:
-    let dead_dest = Birth {
-        name: "mesh1.rpc.4".parse().unwrap(),
+    let dead_dest = Birth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
+        name: rdm_core::PathName::new("mesh1.rpc", "4").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
-    let fresh_source2 = TestPeer::bind("mesh1.rpc.5", &alpns).await;
+    let fresh_source2 = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "5").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
     fresh_source2.know(&carrier);
     seed_carrier_direct_connection(
         &[&fresh_source2.sink, &carrier.sink],
@@ -1866,9 +1866,9 @@ async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by
 #[tokio::test]
 async fn the_carrier_pairs_concurrent_streams_one_to_one_in_both_directions_and_reads_no_app_byte() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     source.know(&carrier);
     carrier.know(&dest);
@@ -1936,9 +1936,9 @@ async fn the_carrier_pairs_concurrent_streams_one_to_one_in_both_directions_and_
 #[tokio::test]
 async fn a_destination_opened_stream_reaches_the_source_through_the_tunnel() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     source.know(&carrier);
     carrier.know(&dest);
@@ -1973,9 +1973,9 @@ async fn a_destination_opened_stream_reaches_the_source_through_the_tunnel() {
 #[tokio::test]
 async fn a_reset_code_on_one_leg_is_the_same_code_on_the_other() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     source.know(&carrier);
     carrier.know(&dest);
@@ -2023,9 +2023,9 @@ async fn a_reset_code_on_one_leg_is_the_same_code_on_the_other() {
 #[tokio::test]
 async fn a_carrier_leg_closing_closes_every_paired_stream_carrier_gone() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     source.know(&carrier);
     carrier.know(&dest);
@@ -2074,9 +2074,9 @@ async fn a_carrier_leg_closing_closes_every_paired_stream_carrier_gone() {
 #[tokio::test]
 async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_open_goes_direct() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     // Initially source knows only carrier, not dest:
     source.know(&carrier);
@@ -2193,9 +2193,9 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-tunnel-ended").expect("the cell's evidence file can be created");
     let (tunnel_id, names, proxy_disconnects) = capture.run(4, async {
         let alpns = [gateway_alpn(ALPN_A)];
-        let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-        let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-        let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+        let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+        let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+        let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
         source.know(&carrier);
         carrier.know(&dest);
         seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
@@ -2223,7 +2223,7 @@ fn a_tunnel_outliving_its_proxy_route_closed_by_id_ends_on_one_tunnel_ended_span
         assert_eq!(deleted, vec![tunnel.id().clone()]);
         assert_eq!(tokio::time::timeout(Duration::from_secs(5), tunnel.closed()).await.unwrap(), Closed::ConnectionsDeleted);
         let proxy_disconnects: Vec<Option<String>> = source.sink.history().into_iter().filter(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Disconnected).map(|r| r.reason).collect();
-        let names = (source.birth.name.to_string(), carrier.birth.name.to_string(), dest.birth.name.to_string());
+        let names = (source.birth.node_id.to_string(), carrier.birth.node_id.to_string(), dest.birth.node_id.to_string());
         let id = tunnel.id().to_string();
         source.shutdown().await;
         carrier.shutdown().await;
@@ -2259,9 +2259,9 @@ fn a_carriers_tunnel_span_is_exported_once_the_tunnel_opens_while_the_tunnel_sti
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-carrier-tunnel-span").expect("the cell's evidence file can be created");
     let (entry, names, carrier_span) = capture.run(4, async {
         let alpns = [gateway_alpn(ALPN_A)];
-        let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-        let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-        let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+        let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+        let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+        let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
         source.know(&carrier);
         carrier.know(&dest);
         seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
@@ -2289,7 +2289,7 @@ fn a_carriers_tunnel_span_is_exported_once_the_tunnel_opens_while_the_tunnel_sti
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let carrier_span = carriers_tunnel_span(&spans, &entry).cloned();
         carry("after-the-read").await;
-        let names = (source.birth.name.to_string(), carrier.birth.name.to_string(), dest.birth.name.to_string());
+        let names = (source.birth.node_id.to_string(), carrier.birth.node_id.to_string(), dest.birth.node_id.to_string());
         source.shutdown().await;
         carrier.shutdown().await;
         dest.shutdown().await;
@@ -2313,9 +2313,9 @@ fn a_proxy_deleted_by_id_closes_the_carriers_legs_and_ends_its_tunnel_on_the_car
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-carrier-tunnel-ended").expect("the cell's evidence file can be created");
     let (entry, names, far_closed) = capture.run(4, async {
         let alpns = [gateway_alpn(ALPN_A)];
-        let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-        let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-        let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+        let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+        let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+        let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
         source.know(&carrier);
         carrier.know(&dest);
         seed_carrier_direct_connection(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
@@ -2330,7 +2330,7 @@ fn a_proxy_deleted_by_id_closes_the_carriers_legs_and_ends_its_tunnel_on_the_car
         assert_eq!(tokio::time::timeout(Duration::from_secs(5), tunnel.closed()).await.unwrap(), Closed::ConnectionsDeleted);
         // Read before any shutdown: a router's shutdown closes every leg it carries.
         let far_closed = tokio::time::timeout(Duration::from_secs(5), far.closed()).await.ok();
-        let names = (source.birth.name.to_string(), carrier.birth.name.to_string(), dest.birth.name.to_string());
+        let names = (source.birth.node_id.to_string(), carrier.birth.node_id.to_string(), dest.birth.node_id.to_string());
         let entry = tunnel.id().to_string();
         source.shutdown().await;
         carrier.shutdown().await;
@@ -2354,10 +2354,10 @@ fn a_proxy_deleted_by_id_closes_the_carriers_legs_and_ends_its_tunnel_on_the_car
 #[tokio::test]
 async fn a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_held() {
     let alpns = [no_proxy_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
-    let fresh = TestPeer::bind("mesh1.rpc.3", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let fresh = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     source.know(&carrier);
     fresh.know(&carrier);
@@ -2424,11 +2424,11 @@ async fn a_protocol_with_proxy_false_never_consumes_a_proxy_even_when_one_is_hel
 #[tokio::test]
 async fn a_carrier_outside_the_protocols_list_is_never_picked() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let outside = TestPeer::bind("mesh1.rpc.3", &alpns).await;
-    let gw = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
-    let lone = TestPeer::bind("mesh1.rpc.4", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let outside = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let gw = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let lone = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     // Neither source knows the destination, so its Direct is provably NotSent:
     source.know(&outside);
@@ -2466,10 +2466,10 @@ async fn a_carrier_outside_the_protocols_list_is_never_picked() {
 #[tokio::test]
 async fn the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let gw1 = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let gw2 = TestPeer::bind("mesh1.gateway.2", &alpns).await;
-    let gw3 = TestPeer::bind("mesh1.gateway.3", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.99", &alpns).await;
+    let gw1 = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let gw2 = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "2").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let gw3 = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "3").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "99").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
     gw1.know(&dest);
     gw2.know(&dest);
     gw3.know(&dest);
@@ -2477,10 +2477,10 @@ async fn the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source() {
     // 1. Verify spread by source across eligible carriers:
     let mut chosen_carriers = std::collections::BTreeSet::new();
     for ord in 1..=12 {
-        let s_name: rdm_core::PathName = format!("mesh1.rpc.{ord}").parse().unwrap();
+        let source_id = NodeId::parse(&format!("{ord:012}")).unwrap();
         let idx = rdm_core::connections::spread(
-            &s_name.to_string(),
-            &dest.birth.name.to_string(),
+            source_id.as_str(),
+            &dest.birth.node_id.to_string(),
             dest.birth.incarnation.as_str(),
         ) % 2;
         chosen_carriers.insert(idx);
@@ -2492,7 +2492,7 @@ async fn the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source() {
     );
 
     // 2. Establish a Proxy from source to dest when gw1 and gw2 are eligible:
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
     source.know(&gw1);
     source.know(&gw2);
     source.know(&gw3);
@@ -2558,9 +2558,9 @@ async fn the_carrier_choice_is_kept_until_a_named_event_and_spread_by_source() {
 #[tokio::test]
 async fn a_direct_connected_disconnects_the_proxy() {
     let alpns = [gateway_alpn(ALPN_A)];
-    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
-    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+    let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+    let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+    let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
 
     source.know(&carrier);
     carrier.know(&dest);
@@ -2588,7 +2588,7 @@ async fn a_direct_connected_disconnects_the_proxy() {
             .held()
             .lock()
             .unwrap()
-            .own_proxy_for(&dest.birth.name, ALPN_A)
+            .own_proxy_for(&dest.birth.node_id, ALPN_A)
             .unwrap()
             .is_some(),
         "Proxy Connected is active before Direct Connected"
@@ -2613,13 +2613,13 @@ async fn a_direct_connected_disconnects_the_proxy() {
         let held_guard = source.sink.held();
         let held = held_guard.lock().unwrap();
         assert!(
-            held.own_proxy_for(&dest.birth.name, ALPN_A)
+            held.own_proxy_for(&dest.birth.node_id, ALPN_A)
                 .unwrap()
                 .is_none(),
             "Direct Connected must delete the Proxy on the same ALPN"
         );
         assert!(
-            held.active_direct_for(&source.birth.name, &dest.birth.name, ALPN_A)
+            held.active_direct_for(&source.birth.node_id, &dest.birth.node_id, ALPN_A)
                 .unwrap()
                 .is_some(),
             "Direct Connected is now active"
@@ -2667,7 +2667,7 @@ impl Chain {
         let birth = rdm_core::certs::BirthIdentity {
             node_id: peer.birth.node_id.clone(),
             incarnation: peer.birth.incarnation.clone(),
-            mesh: peer.birth.name.mesh.clone(),
+            mesh: peer.birth.mesh.clone(),
             name: peer.birth.name.clone(),
             endpoint_key: rdm_core::EndpointId(peer.resolved.endpoint_id.to_string()),
         };
@@ -2690,8 +2690,8 @@ fn floor_ms() -> u64 {
 /// A dialer and an acceptor on [`ALPN_A`], the acceptor admitting on `roots` at [`CHAIN_NOW_MS`], the
 /// dialer presenting `cert`. Returns the dialer's open: the admitted connection or the refusal.
 async fn dial_presenting(roots: Vec<rdm_core::certs::VerifyingKey>, cert: impl FnOnce(&TestPeer) -> Vec<u8>) -> Result<(), ConnectError> {
-    let dialer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let dialer = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     dialer.know(&acceptor);
     acceptor.know(&dialer);
     acceptor.registry.admit_on(roots, chain_time());
@@ -2956,9 +2956,9 @@ fn a_refused_dial_is_spanned_with_the_presented_certs_expiry_and_the_clock_it_wa
         // end the caller's via-dial span with outcome="refused" and reason, and record
         // cert_expires_at on the carrier's via-tunnel span.
         let alpns = [gateway_alpn(ALPN_A)];
-        let source = TestPeer::bind("mesh1.rpc.3", &alpns).await;
-        let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-        let dest = TestPeer::bind("mesh1.rpc.4", &alpns).await;
+        let source = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+        let carrier = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+        let dest = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
         source.know(&carrier);
         carrier.know(&dest);
         carrier.know(&source);
@@ -3054,8 +3054,8 @@ async fn an_inbound_connection_is_refused_by_name_on_issuer_expired() {
 #[tokio::test]
 async fn a_root_set_replaced_at_runtime_is_read_by_the_next_admission() {
     let (first, second) = (Chain::minted("mesh1", 3_600, CHAIN_NOW_MS), Chain::minted("mesh1", 3_600, CHAIN_NOW_MS));
-    let dialer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let dialer = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     dialer.know(&acceptor);
     acceptor.know(&dialer);
     acceptor.registry.admit_on(vec![first.root.verifying_key()], chain_time());
@@ -3099,9 +3099,9 @@ fn a_no_certs_acceptor_admits_by_name() {
     let (dialer_name, acceptor_name) = capture.run(4, async {
         let mut names = (String::new(), String::new());
         for some_cert in [true, false] {
-            let dialer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+            let dialer = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
             let presented = if some_cert { rdm_core::certs::cert_to_bytes(&Chain::minted("mesh1", 3_600, CHAIN_NOW_MS).member(&dialer, CHAIN_NOW_MS + 60_000)) } else { Vec::new() };
-            let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+            let acceptor = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
             dialer.know(&acceptor);
             acceptor.know(&dialer);
             acceptor.registry.admit_on(vec![], chain_time());
@@ -3112,7 +3112,7 @@ fn a_no_certs_acceptor_admits_by_name() {
             let conn = opener.open(&acceptor.birth).await.unwrap_or_else(|e| panic!("a no-certs acceptor admits {} presented bytes: {e:?}", presented.len()));
             let served = tokio::time::timeout(Duration::from_secs(10), accepted).await.expect("the admitted connection reaches accept").unwrap().unwrap();
             assert_eq!(&served, conn.id());
-            names = (dialer.birth.name.to_string(), acceptor.birth.name.to_string());
+            names = (dialer.birth.node_id.to_string(), acceptor.birth.node_id.to_string());
             dialer.shutdown().await;
             acceptor.shutdown().await;
         }
@@ -3135,7 +3135,7 @@ fn a_no_certs_acceptor_admits_by_name() {
 async fn registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind() {
     let ep = rdm_transport::endpoint::bind_with_alpns(SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
-    let sink = Arc::new(MemoryConnectionsSink::new(Birth { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }));
+    let sink = Arc::new(MemoryConnectionsSink::new(Birth { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }));
     for (own, says) in [(rdm_transport::ALPN, "RDM's own Node RPC ALPN"), (iroh_gossip::ALPN, "RDM's own gossip ALPN")] {
         let refused = ConnectionsRegistry::new(ep.clone(), resolver.clone(), sink.clone(), &[alpn(ALPN_A), alpn(own)], Vec::new()).err().unwrap_or_else(|| panic!("binding {} must be refused", String::from_utf8_lossy(own)));
         assert!(refused.contains(says) && refused.contains(&*String::from_utf8_lossy(own)), "the refusal names the ALPN and whose it is: {refused}");
@@ -3146,8 +3146,8 @@ async fn registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind() {
 /// Bind a live dialer admitted to an acceptor, then refuse every later dial (the policy admitter
 /// turned off): returns the acceptor, the admitter, and the live dialer kept so its connection stays up.
 async fn an_acceptor_with_one_live_connection() -> (TestPeer, Arc<PolicyAdmitter>, TestPeer, impl Sized) {
-    let live = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let live = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
     live.know(&acceptor);
     acceptor.know(&live);
     let admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(true), calls: AtomicUsize::new(0) });
@@ -3163,8 +3163,8 @@ async fn an_acceptor_with_one_live_connection() -> (TestPeer, Arc<PolicyAdmitter
 
 /// A dial from a key the acceptor's topology view does not name, presenting `name`: refused, and
 /// the acceptor's `Refused` spans' sources and its connection rows after it.
-async fn an_unknown_key_dials(acceptor: &TestPeer, name: &str) -> Vec<NodeConnection> {
-    let stranger = TestPeer::bind(name, &[alpn(ALPN_A)]).await;
+async fn an_unknown_key_dials(acceptor: &TestPeer, name: rdm_core::PathName) -> Vec<NodeConnection> {
+    let stranger = TestPeer::bind(name, &acceptor.birth.mesh, acceptor.birth.kind, &[alpn(ALPN_A)]).await;
     stranger.know(acceptor);
     let (opener, _) = stranger.registry.connections(ALPN_A).unwrap().split();
     assert!(matches!(opener.open(&acceptor.birth).await, Err(ConnectError::Refused { .. })), "a dial from a key no view names is refused");
@@ -3190,7 +3190,7 @@ fn an_unknown_key_presenting_a_live_births_name_writes_no_row_and_leaves_that_bi
         // dialer's row; the acceptor writes no row for an admission.
         let (before, connection_before) = (acceptor.sink.history(), live.sink.history());
         assert!(connection_before.iter().any(|r| r.destination.name == acceptor.birth.name && r.state == ConnectionState::Connected), "the live birth's connection is held: {connection_before:#?}");
-        let after = an_unknown_key_dials(&acceptor, "mesh1.rpc.1").await;
+        let after = an_unknown_key_dials(&acceptor, rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await;
         assert_eq!(after, before, "no row is written for a key no view names");
         assert_eq!(live.sink.history(), connection_before, "the live birth's connection is unchanged");
         acceptor.shutdown().await;
@@ -3210,7 +3210,7 @@ fn an_unknown_key_presenting_an_unknown_birth_writes_no_row_only_the_span() {
     capture.run(4, async {
         let (acceptor, _admitter, live, _conn) = an_acceptor_with_one_live_connection().await;
         let before = acceptor.sink.history();
-        let after = an_unknown_key_dials(&acceptor, "mesh1.rpc.9").await;
+        let after = an_unknown_key_dials(&acceptor, rdm_core::PathName::new("mesh1.rpc", "9").unwrap()).await;
         assert_eq!(after, before, "no row for a key no view names");
         acceptor.shutdown().await;
         live.shutdown().await;
@@ -3253,8 +3253,8 @@ fn an_application_span_made_from_an_accepted_connection_shares_the_openers_trace
         let mut lines = String::new();
 
         // Direct.
-        let a = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
-        let b = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+        let a = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
+        let b = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &[alpn(ALPN_A)]).await;
         a.know(&b);
         b.know(&a);
         let (dialer_a, _) = a.registry.connections(ALPN_A).unwrap().split();
@@ -3273,9 +3273,9 @@ fn an_application_span_made_from_an_accepted_connection_shares_the_openers_trace
 
         // Proxy, through the carrier.
         let alpns = [gateway_alpn(ALPN_B)];
-        let s = TestPeer::bind("mesh1.rpc.3", &alpns).await;
-        let g = TestPeer::bind("mesh1.gateway.1", &alpns).await;
-        let d = TestPeer::bind("mesh1.rpc.4", &alpns).await;
+        let s = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
+        let g = TestPeer::bind(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, &alpns).await;
+        let d = TestPeer::bind(rdm_core::PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &alpns).await;
         s.know(&g);
         g.know(&d);
         seed_carrier_direct_connection(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_B).await;

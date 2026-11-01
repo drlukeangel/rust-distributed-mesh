@@ -191,7 +191,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
         fabric_id: FabricId::mint(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::RpcNode,
-        name: "mesh1.rpc.1".parse().unwrap(),
+        name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -217,7 +217,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(ResolvedNode { node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
+    resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), kind: launch.kind, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
     let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
     Rig { _router: router, store, cuts, stats, client, target: NodeTarget::ExactNode(launch.node_id.clone()), launch }
 }
@@ -232,8 +232,8 @@ impl Rig {
     fn at(&self, op: ProofOp) -> Provenance {
         Provenance {
             node_id: self.launch.node_id.to_string(),
-            node: self.launch.name.to_string(),
-            mesh: self.launch.name.mesh.clone(),
+            node: self.launch.name.clone(),
+            mesh: self.launch.mesh.clone(),
             incarnation_id: self.launch.incarnation.to_string(),
             op,
         }

@@ -132,7 +132,7 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
         .await
         .expect("Day-0 Build settles to Complete");
 
-        let admin_path: rdm_admin::model::PathName = "mesh1.admin.1".parse().unwrap();
+        let admin_path: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let mut admin_spec = root_build
             .topology
             .mesh("mesh1")
@@ -186,7 +186,7 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
         // Quiesce background execution so the resize Build is observed at acceptance before any process spawns.
         running.gate().quiesce().await;
 
-        let mut rpc_spec = NodeSpec::default_for("mesh1.rpc.1".parse().unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+        let mut rpc_spec = NodeSpec::default_for(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         rpc_spec.executable = Some(crate::test_executable(NodeKind::RpcNode));
 
         let resize_opened = running

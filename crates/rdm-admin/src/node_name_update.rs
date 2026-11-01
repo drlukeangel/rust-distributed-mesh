@@ -1,13 +1,13 @@
 //! `node.name.update` at the node's mesh-primary, the one writer of its mesh's rows (proposal
 //! node-properties-own-commands.md §2; R13, R-CR1, R-MN1, R-OW1). The request carries the exact birth
-//! and the name only: the path never travels, so it cannot move. From what the mesh-primary holds, in
+//! and separate path/name fields: the path must match the held node and cannot change. From what the mesh-primary holds, in
 //! order (§2.1 Validation): the exact birth matches its record (`RejectedStaleIncarnation`); it is the
 //! node's writer, the mesh-primary or, before the mesh has one, the fabric-primary
 //! (`ReceiverNotPrimary`); the node is live and admits no connection: this mesh-primary holds the
 //! birth's `node.connections.deleted` of an `All` that left nothing held, then its `node.mesh.left`
 //! (`RejectedAdmittingConnections { status, held_connections }`; a stopped node is never renamed and is
-//! refused the same way); the name is within the name grammar and its join with the held record's path
-//! is a `path.name` this build keys (`RejectedName`). Then, one change at a time with every other change
+//! refused the same way); the name is within the name grammar and the path is unchanged
+//! (`RejectedName`). Then, one change at a time with every other change
 //! to a node record: the row writer reads the new name's row and claims it (`NameHeld { by }`,
 //! nothing written) and the row moved through the one writer of a row's move
 //! (`crate::node_rows::move_row`): put at the new key carrying `renamed_from`, then the old key
@@ -62,7 +62,7 @@ pub enum Routed {
 /// its atlas (`crate::node_rows::WrittenRows`). A node.update step of a Build is served at its
 /// executor and never routed: its receipt is the atlas's.
 #[allow(clippy::too_many_arguments)]
-pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::atlas::Atlas>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> Routed {
+pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, storage: &dyn NodesStorage, view: &RwLock<Topology>, configs: Option<&crate::node_config::NodeConfigs>, atlas: Option<&crate::atlas::Atlas>, sent_by: crate::node_config::SentBy, req: &StatusRequest) -> Routed {
     let StatusRequest::UpdateName { node_id, name, .. } = req else { unreachable!("routed is called for UpdateName only") };
     let Some(door) = configs else { return Routed::Here };
     let mut first = view.read().await.clone();
@@ -78,7 +78,7 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
     }
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-fabric-primary",
-        node = %me, subject = %subject.name, node_id = %node_id, op = req.op(), name = %name,
+        node_path = %me.path, node_name = %me.name, subject_path = %subject.name.path, subject_name = %subject.name.name, node_id = %node_id, op = req.op(), requested_path = %name.path, requested_name = %name.name,
         mesh_primary = tracing::field::Empty, atlas = tracing::field::Empty, route = tracing::field::Empty, sends = tracing::field::Empty,
         outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
@@ -90,18 +90,12 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
         return Routed::Here;
     };
     if matches!(reply, StatusReply::NameUpdated { .. } | StatusReply::NameNotApplied { .. }) {
-        // The op's result is the atlas's (Q204): the record at the new name, carrying the name it came from.
-        let written = atlas.is_some_and(|a| {
-            a.update_record(node_id, |r| {
-                if let Ok(to) = r.name.with_name(name) {
-                    if r.name != to {
-                        r.renamed_from = Some(r.name.clone());
-                        r.name = to;
-                    }
-                }
-            })
-        });
-        span.record("atlas", if written { "renamed" } else { "no-record" });
+        if let Some(atlas) = atlas {
+            match atlas.refresh_record(storage, node_id).await {
+                Ok(written) => { span.record("atlas", if written { "current-row" } else { "no-record" }); },
+                Err(error) => { span.record("detail", error.as_str()); },
+            }
+        }
     }
     span.record("outcome", reply.name());
     span.in_scope(|| tracing::info!("node.name.update at the fabric-primary decided"));
@@ -112,10 +106,16 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
 /// outcome the reply's name.
 #[allow(clippy::too_many_arguments)]
 pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool, req: &StatusRequest) -> StatusReply {
+    update_in_build_context(me, me_id, view, storage, doors, deleted, left, req, &crate::accepted::RenameIntent::Ordinary).await
+}
+
+/// The same immutable-path validator, with replacement intent only from the pinned Build runner.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn update_in_build_context(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool, req: &StatusRequest, intent: &crate::accepted::RenameIntent) -> StatusReply {
     let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.name.update.via-writer",
-        node = %me, node_id = %node_id, incarnation_id = %incarnation.as_str(), name = %name, from = tracing::field::Empty, to = tracing::field::Empty,
+        node_path = %me.path, node_name = %me.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), requested_path = %name.path, requested_name = %name.name, from_path = tracing::field::Empty, from_name = tracing::field::Empty, to_path = tracing::field::Empty, to_name = tracing::field::Empty,
         keys = tracing::field::Empty, tags = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, mesh = tracing::field::Empty, apply = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
@@ -123,7 +123,7 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
         async {
             // A snapshot of the view: no read lock is held across the row write's I/O.
             let now = view.read().await.clone();
-            rename(me, me_id, &now, storage, doors, deleted, left, node_id, incarnation, name, &span).await
+            rename(me, me_id, &now, storage, doors, deleted, left, node_id, incarnation, name, intent, &span).await
         },
         span.clone(),
     )
@@ -186,29 +186,30 @@ async fn rename(
     left: bool,
     node_id: &rdm_core::NodeId,
     incarnation: &rdm_core::IncarnationId,
-    name: &str,
+    name: &PathName,
+    intent: &crate::accepted::RenameIntent,
     span: &tracing::Span,
 ) -> StatusReply {
     // A subject this receiver does not hold is the receiver's own fact (`SubjectUnknown`), never a
     // peer that did not resolve.
     let Some(held) = now.nodes.iter().find(|n| n.node_id == *node_id).cloned() else {
-        span.record("detail", format!("{me}: node {node_id} is not in the mesh-primary's view; it cannot be renamed").as_str());
+        span.record("detail", format!("{me_id}: node {node_id} is not in the mesh-primary's view; it cannot be renamed").as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
     };
-    span.record("from", held.name.to_string().as_str());
+    span.record("from_path", held.name.path.as_str()).record("from_name", held.name.name.as_str());
     // 1. The exact birth.
     match held.incarnation_id.as_ref() {
         Some(h) if h != incarnation => return rdm_core::reply::stale(h.clone()),
         None => {
-            span.record("detail", format!("{me}: {} has no known birth; it cannot be renamed", held.name).as_str());
+            span.record("detail", format!("{me_id}: {} has no known birth; it cannot be renamed", held.node_id).as_str());
             return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
         }
         Some(_) => {}
     }
     // 2. The writer: the mesh-primary of the node's mesh, or the fabric-primary for a mesh with none (R-OW1).
     if !crate::node_rows::writes_for(now, me_id, &held.mesh) {
-        let held_by = now.node_type_primary(&held.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
-        let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", held.mesh, held.name);
+        let held_by = now.node_type_primary(&held.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.node_id));
+        let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me_id} does not hold it)", held.mesh, held.node_id);
         span.record("detail", needed.as_str());
         return rdm_core::reply::status::rejected_not_primary(NotPrimary::ReceiverNotPrimary { needed });
     }
@@ -216,63 +217,59 @@ async fn rename(
     let admission = admission_of(&held, deleted, left);
     span.record("traffic", admission.labels.0.as_str()).record("connections", admission.labels.1).record("mesh", admission.labels.2);
     if let Err((status, held_connections, why)) = admission.quiet {
-        span.record("detail", format!("{me}: {} {why}; a name moves only on a live node off its mesh, its node.connection.delete {{ All }} completed with nothing held and then its node.mesh.leave: nothing is claimed or written", held.name).as_str());
+        span.record("detail", format!("{me_id}: {} {why}; a name moves only on a live node off its mesh, its node.connection.delete {{ All }} completed with nothing held and then its node.mesh.leave: nothing is claimed or written", held.node_id).as_str());
         return rdm_core::reply::status::bounded_rejected_admitting_connections(crate::views::node_status(status), &held_connections);
     }
-    // 4. The name: within the grammar, and joined at the held record's path into a key this build keys.
-    if let Some(reason) = rdm_core::status::name_refusal(name) {
-        let why = format!("{me}: {reason}; nothing is claimed or written");
-        span.record("detail", why.as_str());
-        return rdm_core::reply::status::bounded_rejected_name(&why);
-    }
-    let to = match held.name.with_name(name) {
+    // Validate both fields before claiming the destination pair.
+    let to = match PathName::new(name.path.clone(), name.name.clone()) {
         Ok(to) => to,
-        Err(e) => {
-            let why = format!("{me}: the name {name:?} at the path {} makes no path.name this build keys: {e}; nothing is claimed or written", held.name.path());
-            span.record("detail", why.as_str());
-            return rdm_core::reply::status::bounded_rejected_name(&why);
-        }
+        Err(e) => return rdm_core::reply::status::bounded_rejected_name(&format!("{me_id}: {e}; nothing is claimed or written")),
     };
-    span.record("to", to.to_string().as_str());
+    span.record("to_path", to.path.as_str()).record("to_name", to.name.as_str());
+    let (to_path, to_name) = (&to.path, &to.name);
     let Some(door) = doors.configs else {
-        return rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet, and so no door its record changes take turns at: the rename of {} is refused and nothing is written", held.name));
+        return rdm_core::reply::status::not_ready(format!("{me_id} has no node-RPC client yet, and so no door its record changes take turns at: the rename of {} is refused and nothing is written", held.node_id));
     };
     // One change to a node record at a time, through the writer's held record: the row carries every
     // field the writer knows of it, the config and the tags included.
     let _one = door.one_at_a_time().await;
     let known = match door.written().known_row(storage, node_id).await {
         Ok(row) => row,
-        Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&held.name.to_string(), &format!("{me}: {why}: the rename of {} is refused and nothing is written", held.name)),
+        Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &format!("{me_id}: {why}: the rename of {} is refused and nothing is written", held.node_id)),
     };
     // The key the node's row stands at now: the row's own, else the name the view holds.
     let from = known.as_ref().map_or_else(|| held.name.clone(), |r| r.name.clone());
+    if from.path != to.path {
+        return rdm_core::reply::status::bounded_rejected_name("a node's path is immutable; only its name may change, and nothing is claimed or written");
+    }
     if from == to {
         // A repeat naming the name the row already holds: any release still pending is finished first.
         if let Some(row) = &known {
             if let Err(why) = crate::node_rows::finish_release(storage, door.written(), me, row, "retry").await {
-                return release_pending(me, node_id, &to, row.renamed_from.as_ref().unwrap_or(&from), &why, span);
+                return release_pending(me_id, node_id, &to, row.renamed_from.as_ref().unwrap_or(&from), &why, span);
             }
         }
     } else {
         let Some(moved) = doors.moved.get() else {
-            return rdm_core::reply::status::not_ready(format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name));
+            return rdm_core::reply::status::not_ready(format!("{me_id}: its view does not take a moved row yet; the rename of {} to path={to_path:?} name={to_name:?} is refused and nothing is written", held.node_id));
         };
         let (keys, tags) = known.map(|r| (r.config.len(), r.tags)).unwrap_or_default();
         span.record("keys", keys as u64).record("tags", crate::node_rows::labels(&tags).as_str());
-        let pending = match crate::node_rows::move_row(storage, door.written(), me, &held, &from, &to).await {
+        let moved_row = crate::node_rows::move_row_with_intent(storage, door.written(), me, &held, &from, &to, intent).await;
+        let pending = match moved_row {
             Ok((m, _)) => {
                 match m {
                     Moved::ReleasePending { why } => Some(why),
                     Moved::Renamed | Moved::AlreadyMoved => None,
                 }
             }
-            Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.name.to_string(), h.by),
-            Err(RenameRefused::Unwritten(why)) => return rdm_core::reply::status::bounded_node_row_refused(&to.to_string(), &why),
+            Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.name, h.by),
+            Err(RenameRefused::Unwritten(why)) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &why),
         };
         // The view reads the moved row: the birth is listed at the row's name from now on.
         moved(held.name.clone(), node_id.clone(), incarnation.clone(), to.clone()).await;
         if let Some(why) = pending {
-            return release_pending(me, node_id, &to, &from, &why, span);
+            return release_pending(me_id, node_id, &to, &from, &why, span);
         }
     }
     let done = StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
@@ -285,7 +282,7 @@ async fn rename(
                 let (_, decision) = rename(to.clone()).await;
                 Ok(crate::node_name::reply(&decision))
             }
-            None => Ok(rdm_core::reply::status::not_ready(format!("{me}: its digest does not exist yet; the name {to} is not taken"))),
+            None => Ok(rdm_core::reply::status::not_ready(format!("{me_id}: its digest does not exist yet; the name path={to_path:?} name={to_name:?} is not taken"))),
         }
     } else {
         span.record("apply", "direct");
@@ -297,19 +294,20 @@ async fn rename(
             span.record("answered", r.name());
             return done;
         }
-        Ok(refused) => (refused.name(), format!("{me} moved the row to {to}; the birth answered {refused:?}; a resubmit resends the apply")),
-        Err(end) => (end.outcome(), format!("{me} moved the row to {to}; apply-node-name ended {end:?}; a resubmit resends the apply")),
+        Ok(refused) => (refused.name(), format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; the birth answered {refused:?}; a resubmit resends the apply")),
+        Err(end) => (end.outcome(), format!("{me_id} moved the row to path={to_path:?} name={to_name:?}; apply-node-name ended {end:?}; a resubmit resends the apply")),
     };
     span.record("answered", answered).record("detail", detail.as_str());
-    rdm_core::reply::status::bounded_name_not_applied(&to.to_string(), answered, &detail)
+    rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), answered, &detail)
 }
 
 /// The command ends incomplete after its put at `to`: the release of `from` is pending, both keys held
 /// (proposal §2.4); the next writer that meets the row finishes it.
-fn release_pending(me: &PathName, node_id: &rdm_core::NodeId, to: &PathName, from: &PathName, why: &str, span: &tracing::Span) -> StatusReply {
-    let detail = format!("{me}: {node_id} holds {to} (its row carries renamed_from {from}) and the release of {from} is pending: {why}; a resubmit releases it and continues to the apply");
+fn release_pending(me_id: &rdm_core::NodeId, node_id: &rdm_core::NodeId, to: &PathName, from: &PathName, why: &str, span: &tracing::Span) -> StatusReply {
+    let (to_path, to_name, from_path, from_name) = (&to.path, &to.name, &from.path, &from.name);
+    let detail = format!("{me_id}: {node_id} holds path={to_path:?} name={to_name:?} (its row carries renamed_from path={from_path:?} name={from_name:?}) and the release of path={from_path:?} name={from_name:?} is pending: {why}; a resubmit releases it and continues to the apply");
     span.record("answered", "release-pending").record("detail", detail.as_str());
-    rdm_core::reply::status::bounded_name_not_applied(&to.to_string(), "release-pending", &detail)
+    rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), "release-pending", &detail)
 }
 
 #[cfg(test)]
@@ -334,7 +332,7 @@ mod tests {
     // @feature: node-name-update
     #[tokio::test]
     async fn admission_and_validation_enforce_exact_birth_writer_quiet_left_state_and_name_grammar() {
-        let mut subject = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        let mut subject = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
         subject.status = NodeStatus::ConnectionsDeleting;
         let inc = IncarnationId::mint();
         subject.incarnation_id = Some(inc.clone());
@@ -377,12 +375,12 @@ mod tests {
         assert_eq!(ok_adm.labels, ("ConnectionsDeleting".into(), "deleted", "left"));
         assert!(ok_adm.quiet.is_ok());
 
-        let mut admin1 = Node::allocated("mesh1.admin.1".parse().unwrap());
+        let mut admin1 = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin1.status = NodeStatus::Ready;
         admin1.is_primary = true;
         admin1.is_fabric_primary = true;
         admin1.incarnation_id = Some(IncarnationId::mint());
-        let admin2 = Node::allocated("mesh1.admin.2".parse().unwrap());
+        let admin2 = Node::allocated(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
 
         let view = RwLock::new(Topology {
             fabric: Fabric {
@@ -407,7 +405,7 @@ mod tests {
         let stale_req = StatusRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: IncarnationId::mint(),
-            name: "1.old".into(),
+            name: subject.name.renamed().unwrap(),
         };
         assert_eq!(
             update(&admin1.name, &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &stale_req).await,
@@ -418,7 +416,7 @@ mod tests {
         let valid_req = StatusRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: inc.clone(),
-            name: "1.old".into(),
+            name: subject.name.renamed().unwrap(),
         };
         assert!(matches!(
             update(&admin2.name, &admin2.node_id, &view, &storage, doors(), Some(&clean_rec), true, &valid_req).await,
@@ -429,7 +427,7 @@ mod tests {
         let bad_name_req = StatusRequest::UpdateName {
             node_id: subject.node_id.clone(),
             incarnation: inc,
-            name: "Bad_Name".into(),
+            name: PathName { path: subject.name.path.clone(), name: "Bad_Name".into() },
         };
         assert!(matches!(
             update(&admin1.name, &admin1.node_id, &view, &storage, doors(), Some(&clean_rec), true, &bad_name_req).await,

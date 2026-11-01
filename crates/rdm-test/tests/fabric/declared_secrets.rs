@@ -32,7 +32,7 @@ use std::time::Duration;
 const SETTLE: Duration = Duration::from_secs(180);
 
 /// The estate's bootstrap admin: the declared value's source, started with it in its environment.
-const BOOTSTRAP: &str = "mesh1.admin.1";
+fn bootstrap() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.admin", "1").unwrap() }
 
 /// The file beside an admin's data dir that keeps the declared values (the custody document).
 const KEPT: &str = "declared-secrets";
@@ -97,16 +97,12 @@ fn environ(node: &str, pid: u64) -> BTreeMap<String, String> {
 /// Every node the estate's view holds but the bootstrap admin (the value's source), with its kind, its
 /// data dir and its process's environment.
 async fn environs(estate: &Estate) -> Vec<(String, NodeKind, PathBuf, BTreeMap<String, String>)> {
-    let bootstrap = BOOTSTRAP.to_string();
+    let bootstrap_id = estate.node_view(&bootstrap()).await.node_id;
     let mut out = Vec::new();
-    for n in estate.node_values().await {
-        let name = s(&n["name"]);
-        if name == bootstrap {
-            continue;
-        }
-        let kind = NodeKind::ALL.into_iter().find(|k| k.name() == n["kind"]).unwrap_or_else(|| panic!("{name}: kind {}", n["kind"]));
-        let pid = estate.pid_of(&name).await;
-        out.push((name.clone(), kind, PathBuf::from(estate.data_dir(&name).await), environ(&name, pid)));
+    for n in estate.node_views().await {
+        if n.node_id == bootstrap_id { continue; }
+        let pid = estate.pid_of(&n.name).await;
+        out.push((n.node_id.to_string(), n.kind, PathBuf::from(estate.data_dir(&n.name).await), environ(n.node_id.as_str(), pid)));
     }
     out
 }
@@ -180,7 +176,7 @@ async fn a_declared_secret_reaches_only_the_named_kinds(test: &str, provider: &s
     let mut estate = estate_holding(test, provider, &value).await;
     let mesh1 = mesh_of_every_kind("mesh1");
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] }).await;
-    let want: BTreeSet<String> = ["admin.1", "admin.2", "rpc.1", "broker.1", "gateway.1", "compute.1"].iter().map(|n| format!("mesh1.{n}")).collect();
+    let want: BTreeSet<rdm_core::PathName> = [("admin", "1"), ("admin", "2"), ("rpc", "1"), ("broker", "1"), ("gateway", "1"), ("compute", "1")].into_iter().map(|(group, name)| rdm_core::PathName::new(format!("mesh1.{group}"), name).unwrap()).collect();
     estate.settles_to_named(&want, SETTLE).await;
     let seen = environs(&estate).await;
     estate.artifact("kinds.json", &json!(seen.iter().map(|(n, k, _, env)| (n.clone(), json!({ "kind": k.name(), "holds": env.get(DECLARED_SECRET) == Some(&value), "custody": custody_of(env).is_some() }))).collect::<BTreeMap<_, _>>()));
@@ -221,23 +217,26 @@ async fn a_launched_admins_create_sets_the_value_and_no_file_carries_it(test: &s
     let mut estate = estate_holding(test, provider, &value).await;
     let mesh = |m: &str| MeshDesired { name: m.into(), node_admin: 2, rpc_node: 0, broker: 1, gateway: 0, compute: 1 };
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
-    let want: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| ["admin.1", "admin.2", "broker.1", "compute.1"].map(|n| format!("{m}.{n}"))).collect();
+    let want: BTreeSet<rdm_core::PathName> = ["mesh1", "mesh2"].iter().flat_map(|m| [("admin", "1"), ("admin", "2"), ("broker", "1"), ("compute", "1")].map(|(group, name)| rdm_core::PathName::new(format!("{m}.{group}"), name).unwrap())).collect();
     estate.settles_to_named(&want, SETTLE).await;
     estate.until_fabric_ready(SETTLE).await;
-    let bootstrap = BOOTSTRAP.to_string();
-    let broker = environ("mesh2.broker.1", estate.pid_of("mesh2.broker.1").await);
+    let bootstrap_id = estate.node_view(&bootstrap()).await.node_id;
+    let broker = environ(estate.node_view(&rdm_core::PathName::new("mesh2.broker", "1").unwrap()).await.node_id.as_str(), estate.pid_of(&rdm_core::PathName::new("mesh2.broker", "1").unwrap()).await);
     let launcher = broker.get("RDM_LAUNCHER").cloned().unwrap_or_default();
-    let by = launcher.split(',').next().unwrap_or_default().to_string();
-    assert!(by.starts_with("mesh2.admin.") && by != bootstrap, "mesh2.broker.1 was launched by a launched node-admin of mesh2, not the bootstrap admin ({bootstrap}): RDM_LAUNCHER={launcher}");
-    let admin = environ(&by, estate.pid_of(&by).await);
+    let launcher = rdm_core::launch::decode_launcher(&launcher).expect("structured launcher");
+    let by = launcher.node_id.clone();
+    let views = estate.node_views().await;
+    let launching = views.iter().find(|n| n.node_id == by).expect("launcher ID in view");
+    assert!(launching.mesh == "mesh2" && launching.kind == NodeKind::NodeAdmin && by != bootstrap_id, "the broker was launched by mesh2's launched admin: {launcher:?}");
+    let admin = environ(by.as_str(), estate.pid_of(&launching.name).await);
     assert_eq!(custody_of(&admin).as_deref(), Some(value.as_str()), "{by}, which ran the create, holds the custody document (permitted)");
     assert!(!admin.contains_key(DECLARED_SECRET), "{by} is not a named kind: its process holds no {DECLARED_SECRET}");
     assert_eq!(broker.get(DECLARED_SECRET), Some(&value), "mesh2.broker.1 holds the declared value {by} launched it with");
-    let compute = environ("mesh2.compute.1", estate.pid_of("mesh2.compute.1").await);
+    let compute = environ(estate.node_view(&rdm_core::PathName::new("mesh2.compute", "1").unwrap()).await.node_id.as_str(), estate.pid_of(&rdm_core::PathName::new("mesh2.compute", "1").unwrap()).await);
     assert!(!compute.contains_key(DECLARED_SECRET) && !compute.contains_key(ENV_DECLARED_SECRETS), "mesh2.compute.1 is not a named kind");
     let mut admin_dirs = vec![estate.bootstrap_data_dir("mesh1")];
-    for n in want.iter().filter(|n| n.contains(".admin.") && **n != bootstrap) {
-        admin_dirs.push(PathBuf::from(estate.data_dir(n).await));
+    for n in views.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.node_id != bootstrap_id) {
+        admin_dirs.push(PathBuf::from(estate.data_dir(&n.name).await));
     }
     estate.stop().await;
     // Cell 5: the custody document kept beside each admin's data dir is the one permitted file; no
@@ -271,7 +270,7 @@ async fn an_admin_started_again_from_its_data_dir_launches_the_named_kinds_with_
     estate.until_fabric_ready(SETTLE).await;
     let launched = MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 1, broker: 0, gateway: 0, compute: 0 };
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![launched] }).await;
-    let before: BTreeSet<String> = [BOOTSTRAP.to_string(), "mesh1.rpc.1".to_string()].into();
+    let before: BTreeSet<rdm_core::PathName> = [bootstrap(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap()].into();
     estate.settles_to_named(&before, SETTLE).await;
     let data_dir = estate.bootstrap_data_dir("mesh1");
     assert_eq!(kept_in(&data_dir).as_deref(), Some(value.as_str()), "the bootstrap admin keeps the value it read beside its data dir");
@@ -282,13 +281,14 @@ async fn an_admin_started_again_from_its_data_dir_launches_the_named_kinds_with_
     estate.until_fabric_ready_at(&restarted, SETTLE).await;
     let mesh1 = MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 0, broker: 1, gateway: 0, compute: 1 };
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] }).await;
-    let want: BTreeSet<String> = ["admin.1", "broker.1", "compute.1"].iter().map(|n| format!("mesh1.{n}")).collect();
+    let want: BTreeSet<rdm_core::PathName> = ["admin", "broker", "compute"].iter().map(|group| rdm_core::PathName::new(format!("mesh1.{group}"), "1").unwrap()).collect();
     estate.settles_to_named(&want, SETTLE).await;
-    let broker = environ("mesh1.broker.1", estate.pid_of("mesh1.broker.1").await);
+    let broker = environ(estate.node_view(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await.node_id.as_str(), estate.pid_of(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await);
     let launcher = broker.get("RDM_LAUNCHER").cloned().unwrap_or_default();
-    assert!(launcher.starts_with(&format!("{BOOTSTRAP},")), "mesh1.broker.1 was launched by the admin started again on {}: RDM_LAUNCHER={launcher}", data_dir.display());
+    let launcher = rdm_core::launch::decode_launcher(&launcher).expect("structured launcher");
+    assert_eq!(launcher.node_id, estate.node_view(&restarted).await.node_id, "the broker was launched by the admin started again on {}", data_dir.display());
     assert_eq!(broker.get(DECLARED_SECRET), Some(&value), "the broker the restarted admin launched holds the value kept beside its data dir, unchanged");
-    let compute = environ("mesh1.compute.1", estate.pid_of("mesh1.compute.1").await);
+    let compute = environ(estate.node_view(&rdm_core::PathName::new("mesh1.compute", "1").unwrap()).await.node_id.as_str(), estate.pid_of(&rdm_core::PathName::new("mesh1.compute", "1").unwrap()).await);
     assert!(!compute.contains_key(DECLARED_SECRET), "mesh1.compute.1 is not a named kind");
     assert_eq!(kept_in(&data_dir).as_deref(), Some(value.as_str()), "the kept value is unchanged");
     estate.stop().await;
@@ -414,7 +414,7 @@ fn a_failing_child_leaves_no_trace_of_a_secret(test: &str, spawn_type: &'static 
             fabric_id,
             executable: script,
             seeds: vec![],
-            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: held_root.clone(),
             store_dir: store,
@@ -438,7 +438,7 @@ fn a_failing_child_leaves_no_trace_of_a_secret(test: &str, spawn_type: &'static 
             timeouts: Timeouts { bind: Duration::from_secs(20), ..Timeouts::default() },
         };
         let err = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, build_id: build_id.clone(), attempt: 1, node: "mesh1.admin.2".parse().unwrap(), spec: &rdm_admin::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.admin", "2").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, build_id: build_id.clone(), attempt: 1, node: rdm_core::PathName::new("mesh1.admin", "2").unwrap(), spec: &rdm_admin::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_err();
         let receipts: Vec<String> = builds

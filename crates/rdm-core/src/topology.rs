@@ -55,10 +55,14 @@ pub struct Topology;
 /// One node of a stored map: how to reach a birth the target stored, with no claim that it lives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredNode {
+    /// The explicitly declared owning mesh.
+    pub mesh: String,
+    /// The explicitly declared runtime kind.
+    pub kind: crate::NodeKind,
     /// The node's minted id.
     pub node_id: NodeId,
-    /// The node's `path.name`.
-    pub name: String,
+    /// The node's `(path, name)`.
+    pub name: crate::PathName,
     /// The node's fabric endpoint id.
     pub endpoint_id: EndpointId,
     /// The incarnation the target stored.

@@ -31,18 +31,15 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     estate.settles_to(&shape, Duration::from_secs(60)).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
 
-    let mesh2_primary = estate
-        .mesh_view("mesh2")
-        .await
-        .primary_admin
-        .expect("mesh2 has a primary admin")
-        .to_string();
+    let primary = estate.node_views().await.into_iter().find(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).expect("mesh primary");
+    let mesh2_primary = primary.node_id.to_string();
+    let executor = rdm_core::framing::Birth { node_id: primary.node_id.clone(), incarnation: primary.incarnation_id.clone().expect("launched primary") };
     let victim = estate
         .node_views()
         .await
         .into_iter()
-        .filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && !n.is_primary)
-        .map(|n| (n.name.to_string(), n.node_id))
+        .filter(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::RpcNode && !n.is_primary)
+        .map(|n| (n.name, n.node_id, n.incarnation_id.expect("launched victim")))
         .min_by(|a, b| a.0.cmp(&b.0))
         .expect("an rpc node of mesh2");
 
@@ -51,7 +48,7 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     let born = estate
         .until_node(
             &victim.0,
-            &format!("{} is recovered by its mesh-primary", victim.0),
+            &format!("{:?} is recovered by its mesh-primary", victim.0),
             crate::node_recovery_due(),
             |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != victim.1).cloned(),
         )
@@ -68,7 +65,7 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     let spans = estate.spans();
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
         .into_iter()
-        .filter(|sp| s(&sp["attributes"]["node"]) == victim.0)
+        .filter(|sp| s(&sp["attributes"]["node_id"]) == victim.1.as_str())
         .collect();
     assert!(
         recoveries.iter().any(|sp| s(&sp["attributes"]["submitter"]) == mesh2_primary
@@ -79,17 +76,14 @@ async fn mesh_primary_self_heals_killed_member_on_current_build_while_build_stay
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .filter(|sp| {
-            s(&sp["attributes"]["executor"]) == mesh2_primary
+            s(&sp["attributes"]["executor"]) == executor.to_string()
                 && s(&sp["attributes"]["lane"]) == "mesh2"
         })
         .collect();
     assert!(
         !reconciles.is_empty()
             && reconciles.iter().any(|sp| {
-                s(&sp["attributes"]["operations"])
-                    .contains(&format!("node.delete:{}", victim.0))
-                    && s(&sp["attributes"]["operations"])
-                        .contains(&format!("node.create:{}", victim.0))
+                ["rdm.node_admin.node.delete.via-build", "rdm.node_admin.node.create.via-build"].iter().all(|name| named(&spans, name).into_iter().any(|child| child["attributes"]["node_id"] == victim.1.as_str() && child["attributes"]["incarnation_id"] == victim.2.as_str() && child["trace_id"] == sp["trace_id"] && child["parent_span_id"] == sp["span_id"]))
             }),
         "mesh2's primary reconciled the mesh2 recovery attempt with node.delete and node.create: {reconciles:#?}"
     );

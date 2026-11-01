@@ -56,7 +56,7 @@ pub struct JoinCall<'a> {
     /// The primary the report goes to, as the report's span names it (node-mesh-join.md, Observability).
     pub primary: &'a str,
     /// The operation the join runs for.
-    pub operation: &'a str,
+    pub operation: &'a rdm_core::OperationId,
     /// The span the report's span is a child of (`None`: the current one).
     pub report_parent: Option<tracing::Span>,
     /// The caller's span for the report (a start's join step): who answered and the name installed are
@@ -85,29 +85,29 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
     let mut digest = node.join_digest();
     digest.status = MemberStatus::Pending;
     let joining = match &report_parent {
-        Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation),
-        None => tracing::info_span!("rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation),
+        Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node_path = %digest.node.name.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step),
+        None => tracing::info_span!("rdm.node.mesh.update.via-joining", node_path = %digest.node.name.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step),
     };
     let (answer, through) = join(&name, client, to, &digest, &node.join_types(), &node.join_listeners()).instrument(joining).await?;
     drop(report_parent);
-    reported.record("served_by", through.name.to_string().as_str());
+    reported.record("served_by", through.node_id.to_string().as_str());
     reported.record("endpoint", through.anchor.as_str());
     // The name the answer hands (a join that hands none is refused, `crate::join::call_join_to_types`): the
     // birth holds it from the answer on, and every step from here is named by it.
     if let Some(handed) = &answer.control.name {
-        name = handed.to_string();
+        name = handed.name.clone();
     }
     if reported.is_none() {
-        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), rafka_time, &name, &answer);
+        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), rafka_time, node_id.as_str(), &answer);
     } else {
-        crate::rafka_time::adopt_join_answer(&reported, rafka_time, &name, &answer);
+        crate::rafka_time::adopt_join_answer(&reported, rafka_time, node_id.as_str(), &answer);
     }
     reported.record("installed", name.as_str());
     drop(reported);
     // The channel step opens only once the report's step has ended (node.start's steps never overlap).
     let channel = match &channel_parent {
-        Some(parent) => tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-topology-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
-        None => tracing::info_span!("rdm.mesh.node.update.via-topology-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
+        Some(parent) => tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-topology-joined", node_path = %digest.node.name.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
+        None => tracing::info_span!("rdm.mesh.node.update.via-topology-joined", node_path = %digest.node.name.path, node_name = %name, node_id = %node_id, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
     };
     let topology_view = node.enter_channel(channel, Some(&answer)).await?;
     topology_view.learn_statuses(&answer.statuses);
@@ -135,21 +135,19 @@ async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDige
         Err(crate::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} was refused its join by {}: {why}", whom(to)) }),
         Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} could not join through {}: unreached: {why}", whom(to)) }),
     };
-    let (endpoint, name) = match (to, &target) {
-        (JoinTo::Launcher { endpoint, name, .. }, _) => (*endpoint, name.clone()),
-        (JoinTo::Commander(_), NodeTarget::Endpoint { endpoint_id, .. }) => match answer.served_by.parse::<PathName>() {
-            Ok(n) => (*endpoint_id, n),
-            Err(e) => return Err(StartFailed { step: "node.join", reason: format!("{node}: the join answer from endpoint {endpoint_id} names who answered as {:?}, which is no path.name: {e}", answer.served_by) }),
-        },
+    let endpoint = match (to, &target) {
+        (JoinTo::Launcher { endpoint, .. }, _) => *endpoint,
+        (JoinTo::Commander(_), NodeTarget::Endpoint { endpoint_id, .. }) => *endpoint_id,
         (JoinTo::Commander(_), other) => unreachable!("a commander is reached back over its call's endpoint, never {other:?}"),
     };
-    Ok((answer, JoinThrough { target, endpoint, name, anchor: endpoint.fmt_short().to_string() }))
+    let node_id = answer.served_by.clone();
+    Ok((answer, JoinThrough { target, endpoint, node_id, anchor: endpoint.fmt_short().to_string() }))
 }
 
 /// Whom a join goes to, in words.
 fn whom(to: &JoinTo) -> String {
     match to {
-        JoinTo::Launcher { name, .. } => name.to_string(),
+        JoinTo::Launcher { target, .. } => format!("{target:?}"),
         JoinTo::Commander(commander) => format!("the admin whose call commanded it (endpoint {})", *commander.borrow()),
     }
 }
@@ -191,8 +189,8 @@ mod tests {
             self.entered.lock().unwrap().push(handed_name.clone());
             let node_name = handed_name
                 .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| self.digest.node.name.to_string());
+                .map(|location| location.name.clone())
+                .unwrap_or_else(|| self.digest.node.name.name.clone());
             tracing::info_span!(
                 parent: &step,
                 "rdm.node.mesh.update.via-joined",
@@ -248,7 +246,7 @@ mod tests {
             let mesh_id = MeshId::mint();
             let admin_id = NodeId::mint();
             let admin_incarnation = IncarnationId::mint();
-            let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
+            let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
 
             // Verify `whom(&JoinTo)` formatting for both launcher and commander targets.
             let sample_key = iroh::SecretKey::generate().public();
@@ -324,6 +322,7 @@ mod tests {
             let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
             resolver.apply(
                 rdm_transport::ResolvedNode {
+                    mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin,
                     node_id: admin_id.clone(),
                     name: admin_name.clone(),
                     endpoint_id: admin_key.public(),
@@ -336,14 +335,14 @@ mod tests {
 
             let node_id = NodeId::mint();
             let node_incarnation = IncarnationId::mint();
-            let initial_name: PathName = "mesh1.rpc.1".parse().unwrap();
-            let handed_name: PathName = "mesh1.rpc.2".parse().unwrap();
+            let initial_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+            let handed_name: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
 
             // Start with status = Ready in the raw digest to prove `node_mesh_join` forces Pending on the wire.
             let digest = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode { mesh: initial_name.mesh.clone(), kind: initial_name.kind,
+                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: node_id.clone(),
                     name: initial_name.clone(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
@@ -391,7 +390,7 @@ mod tests {
             let err = match node_mesh_join(
                 &mut joiner,
                 JoinCall {
-                    name: initial_name.to_string(),
+                    name: initial_name.name.clone(),
                     node_id: &node_id,
                     mesh: "mesh1",
                     mesh_id: mesh_id.as_str(),
@@ -399,7 +398,7 @@ mod tests {
                     rafka_time: &rafka_time,
                     to: &to,
                     primary: "mesh1.admin.1",
-                    operation: "node.create:mesh1.rpc.1",
+                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                     report_parent: None,
                     reported: tracing::Span::none(),
                     channel_parent: None,
@@ -423,7 +422,7 @@ mod tests {
 
             // 2. Accepted report (`Joined`): installs the handed name, adopts rafka-time, and enters the channel.
             let answer = JoinAnswer {
-                served_by: admin_name.to_string(),
+                served_by: NodeId::parse("0123456789ab").unwrap(),
                 control: JoinControl {
                     provider: ProviderKind::Process,
                     fabric: Some(FabricIdentity {
@@ -448,7 +447,7 @@ mod tests {
 
             let reported_span = tracing::info_span!(
                 "rdm.mesh.node.update.via-join",
-                node = %initial_name,
+                node_path = %initial_name.path, node_name = %initial_name.name,
                 served_by = tracing::field::Empty,
                 endpoint = tracing::field::Empty,
                 installed = tracing::field::Empty
@@ -456,7 +455,7 @@ mod tests {
             let joined = node_mesh_join(
                 &mut joiner,
                 JoinCall {
-                    name: initial_name.to_string(),
+                    name: initial_name.name.clone(),
                     node_id: &node_id,
                     mesh: "mesh1",
                     mesh_id: mesh_id.as_str(),
@@ -464,7 +463,7 @@ mod tests {
                     rafka_time: &rafka_time,
                     to: &to,
                     primary: "mesh1.admin.1",
-                    operation: "node.create:mesh1.rpc.1",
+                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                     report_parent: None,
                     reported: reported_span,
                     channel_parent: None,
@@ -478,8 +477,8 @@ mod tests {
                 *observed_statuses.lock().unwrap(),
                 vec![MemberStatus::Pending, MemberStatus::Pending]
             );
-            assert_eq!(joined.name, handed_name.to_string());
-            assert_eq!(joined.through.name, admin_name);
+            assert_eq!(joined.name, handed_name.name);
+            assert_eq!(joined.through.node_id, NodeId::parse("0123456789ab").unwrap());
             assert!(
                 rafka_time.now_ms() >= 4_200_000,
                 "rafka_time must adopt the answer's rafka_time_ms"
@@ -544,7 +543,7 @@ mod tests {
             let mesh_id = MeshId::mint();
             let admin_id = NodeId::mint();
             let admin_incarnation = IncarnationId::mint();
-            let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
+            let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
 
             let admin_key = iroh::SecretKey::generate();
             let admin_ep = rdm_transport::endpoint::bind(
@@ -560,7 +559,7 @@ mod tests {
                 .unwrap();
 
             let answer = JoinAnswer {
-                served_by: admin_name.to_string(),
+                served_by: NodeId::parse("0123456789ab").unwrap(),
                 control: JoinControl {
                     provider: ProviderKind::Process,
                     fabric: Some(FabricIdentity {
@@ -570,7 +569,7 @@ mod tests {
                     build: None,
                     rafka_time_ms: 4_200_000,
                     member_cert: Vec::new(),
-                    name: Some("mesh1.rpc.1".parse().unwrap()),
+                    name: Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                     config: None,
                     cert_policy: None,
                 },
@@ -613,6 +612,7 @@ mod tests {
             let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
             resolver.apply(
                 rdm_transport::ResolvedNode {
+                    mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin,
                     node_id: admin_id.clone(),
                     name: admin_name.clone(),
                     endpoint_id: admin_key.public(),
@@ -628,7 +628,7 @@ mod tests {
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
                     node_id: node_id.clone(),
-                    name: "mesh1.rpc.1".parse().unwrap(),
+                    name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
                     incarnation: IncarnationId::mint(),
                     supersedes: None,
@@ -664,7 +664,7 @@ mod tests {
             let _ = node_mesh_join(
                 &mut joiner,
                 JoinCall {
-                    name: "mesh1.rpc.1".into(),
+                    name: "1".into(),
                     node_id: &node_id,
                     mesh: "mesh1",
                     mesh_id: mesh_id.as_str(),
@@ -672,7 +672,7 @@ mod tests {
                     rafka_time: &rafka_time,
                     to: &to,
                     primary: "mesh1.admin.1",
-                    operation: "node.create:mesh1.rpc.1",
+                    operation: &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                     report_parent: None,
                     reported: tracing::Span::none(),
                     channel_parent: None,
@@ -689,7 +689,7 @@ mod tests {
             .find(|s| s["name"] == "rdm.node.mesh.update.via-joining")
             .expect("via-joining span");
         assert_eq!(joining["attributes"]["mesh"], "mesh1");
-        assert_eq!(joining["attributes"]["operation"], "node.create:mesh1.rpc.1");
+        assert_eq!(joining["attributes"]["operation"], "node.create");
         assert_eq!(
             joining["attributes"]["primary"].as_str(),
             Some("mesh1.admin.1"),

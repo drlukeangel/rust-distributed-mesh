@@ -11,13 +11,14 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(name: &str, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: u16) -> MeshDigest {
+    let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
-            node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
-            endpoint_id: EndpointId(format!("key-{name}")),
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+            node_id: node_id.clone(),
+            name,
+            endpoint_id: EndpointId(format!("key-{node_id}")),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -38,11 +39,11 @@ fn digest(name: &str, port: u16) -> MeshDigest {
 
 #[test]
 fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_delete() {
-    let m3_a1 = digest("mesh3.admin.1", 29301);
-    let final_del = LifecycleOp { mesh: m3_a1.node.mesh.clone(),
+    let m3_a1 = digest(rdm_core::PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, 29301);
+    let final_del = LifecycleOp { kind: m3_a1.node.kind, mesh: m3_a1.node.mesh.clone(),
         build_id: "b-s72".into(),
         attempt: 1,
-        operation: "node.delete:mesh3.admin.1".into(),
+        operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh3.admin", "1").unwrap()),
         node_id: m3_a1.node.node_id.clone(),
         incarnation: m3_a1.node.incarnation.clone(),
         name: m3_a1.node.name.clone(),
@@ -51,7 +52,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
         tracestate: None,
     };
     let pub_id = PublisherId {
-        node: m3_a1.node.name.to_string(),
+        node: m3_a1.node.node_id.to_string(),
         incarnation: m3_a1.node.incarnation.clone(),
      node_id: m3_a1.node.node_id.clone(), };
     let mut rx = SnapshotReceiver::default();

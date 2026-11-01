@@ -12,6 +12,7 @@ use rdm_admin::executor::{BuildExecutor, OperationRunner};
 use rdm_admin::model::PathName;
 use rdm_admin::topology::Topology;
 use rdm_core::context::CallContext;
+use rdm_core::{NodeId, framing::Birth};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
@@ -21,23 +22,23 @@ pub struct Loopback {
     local: Arc<dyn LocalBuildLog>,
     topology: Arc<RwLock<Topology>>,
     runner: Arc<dyn OperationRunner>,
-    doors: Mutex<BTreeMap<String, Arc<RunDoor>>>,
+    doors: Mutex<std::collections::HashMap<Birth, Arc<RunDoor>>>,
     /// The view an executor runs from, when it is not the fixture's one.
-    views: Mutex<BTreeMap<String, Arc<RwLock<Topology>>>>,
-    lost: Mutex<BTreeSet<String>>,
+    views: Mutex<BTreeMap<NodeId, Arc<RwLock<Topology>>>>,
+    lost: Mutex<BTreeSet<NodeId>>,
     /// The executors that keep their own Build log, as an admin on another host does: the fabric-primary's
     /// log holds what they write only once the Build topic carries it.
-    own: Mutex<BTreeMap<String, Arc<MemoryBuildStateAdapter>>>,
+    own: Mutex<BTreeMap<NodeId, Arc<MemoryBuildStateAdapter>>>,
     /// The executors that serve the fabric-primary's dispatch as an admin on another host does (Q118):
     /// their runs report every receipt up the stream and the fabric-primary writes it.
-    reporting: Mutex<BTreeSet<String>>,
+    reporting: Mutex<BTreeSet<NodeId>>,
     /// The executors on the fixture's log whose Build state frames their run's progress on the call's
     /// stream, as an admin's does (`FramedBuilds` over its builds, `admin/boot.rs`).
-    framed: Mutex<BTreeSet<String>>,
+    framed: Mutex<BTreeSet<NodeId>>,
     /// Every executor a dispatch reached, in order: `(executor, attempt)`.
-    pub dispatched: Mutex<Vec<(String, u32)>>,
+    pub dispatched: Mutex<Vec<(Birth, u32)>>,
     /// Every section a dispatch reached (Q250), in order: `(executor, lane, attempt)`.
-    pub sections: Mutex<Vec<(String, String, u32)>>,
+    pub sections: Mutex<Vec<(Birth, String, u32)>>,
 }
 
 /// An executor's runner on its own log: each operation's `Complete` receipt is written through the
@@ -69,61 +70,62 @@ impl OperationRunner for OwnReceipts {
 
 impl Loopback {
     pub fn new(builds: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>, topology: Arc<RwLock<Topology>>, runner: Arc<dyn OperationRunner>) -> Arc<Self> {
-        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), reporting: Mutex::new(BTreeSet::new()), framed: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()), sections: Mutex::new(Vec::new()) })
+        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(std::collections::HashMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), own: Mutex::new(BTreeMap::new()), reporting: Mutex::new(BTreeSet::new()), framed: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()), sections: Mutex::new(Vec::new()) })
     }
 
     /// `executor` keeps its own Build log (returned): the Build's committed records its run reads (Q292) are absorbed there, its
     /// run writes its receipts there and frames them on the call's stream, and nothing of it reaches
     /// the fixture's log but the frames and the terminal.
-    pub fn own_log(&self, executor: &str) -> Arc<MemoryBuildStateAdapter> {
+    pub fn own_log(&self, executor: &NodeId) -> Arc<MemoryBuildStateAdapter> {
         // Its own log beside the fabric's shared Build storage, the fixture's log (Q292): a run reads
         // the Build's committed records there.
-        self.own.lock().unwrap().entry(executor.to_string()).or_insert_with(|| Arc::new(MemoryBuildStateAdapter::new().persisted_in(self.builds.clone()))).clone()
+        self.own.lock().unwrap().entry(executor.clone()).or_insert_with(|| Arc::new(MemoryBuildStateAdapter::new().persisted_in(self.builds.clone()))).clone()
     }
 
     /// `executor` keeps its own Build log ([`Self::own_log`]) and serves the fabric-primary's dispatch
     /// reporting (`RunDoor::attempt_run_reporting`), as a remote admin does: its receipts, a failed step's
     /// among them, go up the stream and the fabric-primary writes them.
-    pub fn reports(&self, executor: &str) {
+    pub fn reports(&self, executor: &NodeId) {
         self.own_log(executor);
-        self.reporting.lock().unwrap().insert(executor.to_string());
+        self.reporting.lock().unwrap().insert(executor.clone());
     }
 
     /// `executor`, on the fixture's log, frames its run's progress on the call's stream through
     /// `FramedBuilds`, as an admin's Build state does: a blocker its run notes reaches the caller.
-    pub fn frames(&self, executor: &str) {
-        self.framed.lock().unwrap().insert(executor.to_string());
+    pub fn frames(&self, executor: &NodeId) {
+        self.framed.lock().unwrap().insert(executor.clone());
     }
 
     /// `executor` plans and hands off from `view`, which may disagree with the fabric-primary's.
-    pub fn sees(&self, executor: &str, view: Arc<RwLock<Topology>>) {
-        self.views.lock().unwrap().insert(executor.to_string(), view);
+    pub fn sees(&self, executor: &NodeId, view: Arc<RwLock<Topology>>) {
+        self.views.lock().unwrap().insert(executor.clone(), view);
     }
 
     /// `executor` is gone: nothing reaches it.
-    pub fn lose(&self, executor: &str) {
-        self.lost.lock().unwrap().insert(executor.to_string());
+    pub fn lose(&self, executor: &NodeId) {
+        self.lost.lock().unwrap().insert(executor.clone());
     }
 
     /// `executor`'s own door for `build.attempt.run`: its view, its runner, the fixture's log or its own.
-    pub fn door(&self, executor: &PathName) -> Arc<RunDoor> {
+    pub fn door(&self, executor: &Birth) -> Arc<RunDoor> {
         self.doors
             .lock()
             .unwrap()
-            .entry(executor.to_string())
+            .entry(executor.clone())
             .or_insert_with(|| {
-                if let Some(own) = self.own.lock().unwrap().get(&executor.to_string()).cloned() {
+                let me = self.topology.try_read().expect("fixture topology is unlocked while opening a door").own(&executor.node_id).expect("fixture executor is listed").name.clone();
+                if let Some(own) = self.own.lock().unwrap().get(&executor.node_id).cloned() {
                     let runs = Arc::new(AttemptRuns::default());
                     let framed: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(own.clone(), runs.clone()));
-                    let topology = self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone());
+                    let topology = self.views.lock().unwrap().get(&executor.node_id).cloned().unwrap_or_else(|| self.topology.clone());
                     let runner = Arc::new(OwnReceipts { inner: self.runner.clone(), builds: framed.clone() });
-                    let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: framed.clone(), topology, runner });
-                    return Arc::new(RunDoor { me: executor.clone(), builds: framed, exec, runs, local: own, gate: rdm_admin::stop_gate::StopGate::new() });
+                    let exec = Arc::new(BuildExecutor { executor: executor.clone(), builds: framed.clone(), topology, runner });
+                    return Arc::new(RunDoor { me: me.clone(), builds: framed, exec, runs, local: own, gate: rdm_admin::stop_gate::StopGate::new() });
                 }
                 let runs = Arc::new(AttemptRuns::default());
-                let builds: Arc<dyn BuildStateAdapter> = if self.framed.lock().unwrap().contains(&executor.to_string()) { Arc::new(FramedBuilds::new(self.builds.clone(), runs.clone())) } else { self.builds.clone() };
-                let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: builds.clone(), topology: self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
-                Arc::new(RunDoor { me: executor.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() })
+                let builds: Arc<dyn BuildStateAdapter> = if self.framed.lock().unwrap().contains(&executor.node_id) { Arc::new(FramedBuilds::new(self.builds.clone(), runs.clone())) } else { self.builds.clone() };
+                let exec = Arc::new(BuildExecutor { executor: executor.clone(), builds: builds.clone(), topology: self.views.lock().unwrap().get(&executor.node_id).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
+                Arc::new(RunDoor { me: me.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() })
             })
             .clone()
     }
@@ -132,36 +134,37 @@ impl Loopback {
 #[async_trait::async_trait]
 impl Dispatcher for Loopback {
     fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<rdm_admin::build_run::HeldRun> {
-        self.door(me).hold(build_id, attempt)
+        let birth = self.topology.try_read().ok()?.node(me)?.birth()?;
+        self.door(&birth).hold(build_id, attempt)
     }
-    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
-        if self.lost.lock().unwrap().contains(&executor.to_string()) {
+    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &Birth, build_id: &BuildId, attempt: u32, context: CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
+        if self.lost.lock().unwrap().contains(&executor.node_id) {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }
-        self.dispatched.lock().unwrap().push((executor.to_string(), attempt));
-        if self.reporting.lock().unwrap().contains(&executor.to_string()) {
-            return local_dispatched(self.door(executor).attempt_run_reporting(None, build_id, attempt, &executor.to_string(), &context, &plan, Arc::new(|| true)).await);
+        self.dispatched.lock().unwrap().push((executor.clone(), attempt));
+        if self.reporting.lock().unwrap().contains(&executor.node_id) {
+            return local_dispatched(self.door(executor).attempt_run_reporting(None, build_id, attempt, executor, &context, &plan, Arc::new(|| true)).await);
         }
-        local_dispatched(self.door(executor).attempt_run(build_id, attempt, &executor.to_string(), &context, &plan).await)
+        local_dispatched(self.door(executor).attempt_run(build_id, attempt, executor, &context, &plan).await)
     }
-    async fn dispatch_in(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &PathName, lane: &str, build_id: &BuildId, attempt: u32, context: CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
-        if self.lost.lock().unwrap().contains(&executor.to_string()) {
+    async fn dispatch_in(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &Birth, lane: &str, build_id: &BuildId, attempt: u32, context: CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
+        if self.lost.lock().unwrap().contains(&executor.node_id) {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }
-        self.sections.lock().unwrap().push((executor.to_string(), lane.to_string(), attempt));
-        if self.reporting.lock().unwrap().contains(&executor.to_string()) {
-            return local_dispatched(self.door(executor).attempt_run_reporting(Some(lane), build_id, attempt, &executor.to_string(), &context, &plan, Arc::new(|| true)).await);
+        self.sections.lock().unwrap().push((executor.clone(), lane.to_string(), attempt));
+        if self.reporting.lock().unwrap().contains(&executor.node_id) {
+            return local_dispatched(self.door(executor).attempt_run_reporting(Some(lane), build_id, attempt, executor, &context, &plan, Arc::new(|| true)).await);
         }
-        local_dispatched(self.door(executor).attempt_run_in(Some(lane), build_id, attempt, &executor.to_string(), &context, &plan).await)
+        local_dispatched(self.door(executor).attempt_run_in(Some(lane), build_id, attempt, executor, &context, &plan).await)
     }
 }
 
 /// Departure proof the fixture holds: the executors it has proven exited.
 #[derive(Default)]
 pub struct Proofs {
-    pub exited: Mutex<BTreeSet<String>>,
+    pub exited: Mutex<std::collections::HashSet<Birth>>,
     /// The executors a call of `proven` proved, as the product records an exit it proved.
-    pub recorded: Mutex<BTreeSet<String>>,
+    pub recorded: Mutex<std::collections::HashSet<Birth>>,
     /// How many times `proven` was called.
     pub calls: std::sync::atomic::AtomicUsize,
     /// The meshes the drive told it had been given a node-admin on the proof of a fully crashed mesh,
@@ -171,10 +174,10 @@ pub struct Proofs {
 
 #[async_trait::async_trait]
 impl DepartureProof for Proofs {
-    async fn proven(&self, executor: &PathName) -> Result<(), String> {
+    async fn proven(&self, executor: &Birth) -> Result<(), String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if self.exited.lock().unwrap().contains(&executor.to_string()) {
-            self.recorded.lock().unwrap().insert(executor.to_string());
+        if self.exited.lock().unwrap().contains(&executor.clone()) {
+            self.recorded.lock().unwrap().insert(executor.clone());
             Ok(())
         } else {
             Err(format!("{executor}'s runtime is not proven exited"))

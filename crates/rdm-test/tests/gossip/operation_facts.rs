@@ -25,21 +25,22 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let sender = TopologyView::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let (sender_id, receiver_id, target_id) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
+        let sender = TopologyView::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         crate::declare_gossip_probe(&sender);
-        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
-        let op = LifecycleOp { mesh: "mesh1".into(), build_id: "deletion-build".into(), attempt: 1, operation: "node.delete:mesh1.rpc.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
+        let op = LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), build_id: "deletion-build".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &target_id), node_id: target_id, incarnation: IncarnationId::mint(), name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(receiver.digest_view.record(MeshDigest { held_hash: Default::default(),
-            fabric_id: fabric.clone(), node: MeshNode { mesh: op.mesh.clone(), kind: op.name.kind, node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None },
+            fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode, node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None },
             status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1,
             data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }), "the exact birth is initially held");
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["node"] == "mesh1.rpc.1") {
+            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["node"] == receiver_id.as_str()) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready".into(), publisher: sender_id.to_string(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-mesh-status" && s["attributes"]["taken"] == "true") {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -59,7 +60,7 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
             let before = *changes.borrow();
             // Different forwarding metadata reaches RDM past the transport's byte dedup;
             // the operation and exact birth remain identical.
-            crate::forward_gossip_probe(&sender, &Frame::NodeDeleted { op: op.clone(), forwarded_by: Some("mesh2.admin.1".into()) }).await.unwrap();
+            crate::forward_gossip_probe(&sender, &Frame::NodeDeleted { op: op.clone(), forwarded_by: Some(NodeId::mint().to_string()) }).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-node-deleted").count() < 2 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -98,9 +99,11 @@ fn node_deleted_stands_after_unrelated_newer_traffic() {
 fn node_deleted_repeat_is_ignored_by_its_operation_and_exact_birth() {
     let (spans, op) = node_deleted_story(true);
     assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.remove.via-node-deleted").count(), 1);
-    let identity = format!("node-deleted {} {} {} {}/{}", op.build_id, op.attempt, op.operation, op.node_id, op.incarnation);
     assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate"
-        && s["attributes"]["frame"] == "node-deleted" && s["attributes"]["identity"] == identity
+        && s["attributes"]["frame"] == "node-deleted" && s["attributes"]["build_id"] == op.build_id && s["attributes"]["attempt"] == op.attempt.to_string()
+        && s["attributes"]["operation"] == op.operation.action && s["attributes"]["operation_subject"] == format!("{:?}", op.operation.subject)
+        && s["attributes"]["recipe_step"] == format!("{:?}", op.operation.recipe_step)
+        && s["attributes"]["node_id"] == op.node_id.as_str() && s["attributes"]["incarnation_id"] == op.incarnation.as_str()
         && s["attributes"]["outcome"] == "ignored").count(), 1, "the framework must name the ignored exact operation fact");
 }
 

@@ -1,8 +1,8 @@
 //! The fault door: a testkit-only Node RPC protocol on op `0x75` that arms, releases and reads the
 //! cuts of a faulted node-admin ([`crate::admin_faults`]). A scenario reaches the admin by its
-//! `path.name` like every other Node RPC call; the admin's readiness gate answers NotReady until its
+//! ID or an explicit path/name pair; the admin's readiness gate answers NotReady until its
 //! Node RPC door is ready, so a cut that must be in force before then is armed from
-//! `<root>/faults/<name>.boot.json` (`admin_faults::arm_boot_cuts`). Testkit range only
+//! `<root>/faults/<location-index>.boot.json` (`admin_faults::arm_boot_cuts`). Testkit range only
 //! ([`TESTKIT_OPS`]); the testkit's own `faulted-node-admin` serves it, never a product binary.
 //!
 //! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
@@ -30,8 +30,8 @@ pub const OP: u8 = <FaultDoor as NodeProtocol>::OP;
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "CutSpec")]
 enum CutWire {
-    Receipt { step: String, operation: Option<String>, node: Option<String>, failed: bool },
-    Event { event: String, node: Option<String> },
+    Receipt { step: String, operation: Option<String>, node: Option<rdm_core::OperationSubject>, failed: bool },
+    Event { event: String, node: Option<rdm_core::NodeId> },
     AcceptedBuild,
     ClaimedAttempt { attempt: Option<u32> },
     ProviderDomain,
@@ -39,10 +39,10 @@ enum CutWire {
     TopologyRead,
     Announcement { announcement: String, channel: String },
     ProviderTerminate { pid: Option<u32> },
-    Declaration { node: Option<String>, state: Option<String> },
+    Declaration { node_id: Option<rdm_core::NodeId>, node: Option<PathName>, state: Option<String> },
     ProviderUnproven { pids: Vec<u32> },
     DriftPass { node: Option<String> },
-    StorageStep { node: Option<String> },
+    StorageStep { node: Option<PathName> },
     StorageSwitch,
 }
 
@@ -97,7 +97,7 @@ pub enum Hit {
         /// The step name.
         step: String,
         /// The receipt's operation key.
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The Build.
         build_id: String,
         /// The attempt.
@@ -110,13 +110,13 @@ pub enum Hit {
         /// The event name.
         event: String,
         /// The lifecycle operation's key.
-        operation: String,
+        operation: rdm_core::OperationId,
         /// The Build.
         build_id: String,
         /// The attempt.
         attempt: u32,
-        /// The node the event concerns.
-        node: String,
+        /// The ID of the node the event concerns.
+        node: rdm_core::NodeId,
         /// Its incarnation.
         incarnation_id: String,
     },
@@ -136,7 +136,7 @@ pub enum Hit {
         /// The attempt.
         attempt: u32,
         /// The executor the claim names.
-        executor: String,
+        executor: rdm_core::framing::Birth,
     },
     /// The provider reported a control domain no held birth is in.
     ///
@@ -186,8 +186,10 @@ pub enum Hit {
     ///
     /// Position 9 on the wire.
     Declaration {
-        /// The declaring node.
-        node: String,
+        /// The declaring node's globally unique identity.
+        node_id: rdm_core::NodeId,
+        /// Its separately observed location.
+        node: Option<PathName>,
         /// The state it declares.
         state: String,
     },
@@ -209,8 +211,8 @@ pub enum Hit {
     ///
     /// Position 12 on the wire.
     StorageStep {
-        /// The commanded node.
-        node: String,
+        /// The commanded node's separate path and name.
+        node: PathName,
         /// The change.
         change_id: String,
     },
@@ -237,7 +239,7 @@ impl Hit {
             Hit::TopologyRead { node, reads_from } => json!({"node": node, "reads_from": reads_from}),
             Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
-            Hit::Declaration { node, state } => json!({"node": node, "state": state}),
+            Hit::Declaration { node_id, node, state } => json!({"node_id": node_id, "node": node, "state": state}),
             Hit::ProviderInspect { pid } => json!({"pid": pid}),
             Hit::DriftPass { node } => json!({"node": node}),
             Hit::StorageStep { node, change_id } => json!({"node": node, "change_id": change_id}),
@@ -427,7 +429,7 @@ pub fn serve(b: ServerBuilder, faults: Arc<AdminFaults>) -> ServerBuilder {
     b.serve::<FaultDoor, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: FaultRequest| {
         let faults = faults.clone();
         async move {
-            let node = faults.name.clone();
+            let node = faults.node_id.to_string();
             Ok(match req {
                 FaultRequest::Arm { id, spec } => match faults.arm(&id, spec.clone()) {
                     Ok(()) => FaultReply::Armed { node, id, spec },
@@ -443,13 +445,13 @@ pub fn serve(b: ServerBuilder, faults: Arc<AdminFaults>) -> ServerBuilder {
     })
 }
 
-/// One call of the door at the admin `admin`, by its `path.name`: the door's answer, or how the call
+/// One call of the door at the admin `admin`, by its explicit target: the door's answer, or how the call
 /// ended, named. A NotReady answer is the admin's Node RPC door not ready yet.
-pub async fn ask(client: &NodeRpcClient, admin: &PathName, req: &FaultRequest) -> Result<FaultReply, String> {
-    let (out, _) = client.call::<FaultDoor>(&NodeTarget::CurrentPath(admin.clone()), req, &CallOptions::default()).await;
+pub async fn ask(client: &NodeRpcClient, admin: &NodeTarget, req: &FaultRequest) -> Result<FaultReply, String> {
+    let (out, _) = client.call::<FaultDoor>(admin, req, &CallOptions::default()).await;
     match out {
         RpcOutcome::Reply(r) => Ok(r.into_value()),
-        other => Err(format!("the fault door call at {admin} ended {}: {other:?}", other.name())),
+        other => Err(format!("the fault door call at {admin:?} ended {}: {other:?}", other.name())),
     }
 }
 
@@ -460,9 +462,9 @@ mod tests {
     /// One cut of every kind the door arms.
     fn every_cut() -> Vec<CutSpec> {
         vec![
-            CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete:mesh2.rpc.2".into()), node: None, failed: false },
-            CutSpec::Receipt { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some("mesh2.rpc.2".into()), failed: true },
-            CutSpec::Event { event: "deleting".into(), node: Some("mesh1.rpc.1".into()) },
+            CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete".into()), node: None, failed: false },
+            CutSpec::Receipt { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("200000000000").unwrap())), failed: true },
+            CutSpec::Event { event: "deleting".into(), node: Some(rdm_core::NodeId::parse("100000000000").unwrap()) },
             CutSpec::AcceptedBuild,
             CutSpec::ClaimedAttempt { attempt: Some(2) },
             CutSpec::ProviderDomain,
@@ -470,7 +472,7 @@ mod tests {
             CutSpec::TopologyRead,
             CutSpec::Announcement { announcement: "aggregate-in-flight".into(), channel: "any".into() },
             CutSpec::ProviderTerminate { pid: Some(4242) },
-            CutSpec::StorageStep { node: Some("mesh2.rpc.1".into()) },
+            CutSpec::StorageStep { node: Some(PathName::new("mesh2.rpc", "1").unwrap()) },
             CutSpec::StorageSwitch,
         ]
     }
@@ -496,12 +498,12 @@ mod tests {
         let row = |spec: CutSpec, hit: Option<Hit>| CutRow { spec, armed: false, held: true, released: true, hit, held_for_ms: Some(7), seen_while_held: 1 };
         let cuts: BTreeMap<String, CutRow> = [
             ("a".to_string(), row(CutSpec::TopologyRead, Some(Hit::TopologyRead { node: "mesh1.admin.4".into(), reads_from: "mesh1.admin.1".into() }))),
-            ("b".to_string(), row(CutSpec::ClaimedAttempt { attempt: None }, Some(Hit::Claimed { build_id: "b".into(), attempt: 1, executor: "mesh1.admin.1".into() }))),
+            ("b".to_string(), row(CutSpec::ClaimedAttempt { attempt: None }, Some(Hit::Claimed { build_id: "b".into(), attempt: 1, executor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() } }))),
             ("c".to_string(), row(CutSpec::ProviderDomain, None)),
         ]
         .into();
         let all = [
-            FaultReply::Armed { node: "mesh1.admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some("mesh1.rpc.1".into()), failed: false } },
+            FaultReply::Armed { node: "mesh1.admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("100000000000").unwrap())), failed: false } },
             FaultReply::Released { node: "mesh1.admin.1".into(), id: "c".into(), was_held: true, held_ms: Some(3) },
             FaultReply::State(FaultState { node: "mesh1.admin.1".into(), cuts, receipts_seen: 4 }),
             FaultReply::Refused { reason: "r".into() },

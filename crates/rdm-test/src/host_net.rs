@@ -35,7 +35,7 @@ fn on_path(program: &str) -> bool {
 /// Keep the host's view of `estate`'s bridge under `<artifacts>/host-net/<label>.txt`, with the
 /// neighbour entry and network namespace of `node`'s running container when one is named. A
 /// process estate has no bridge: nothing is kept.
-pub async fn keep(estate: &Estate, label: &str, node: Option<&str>) {
+pub async fn keep(estate: &Estate, label: &str, node: Option<&rdm_core::PathName>) {
     if estate.owner.provider != "container" || estate.fabric_id.is_empty() {
         return;
     }
@@ -65,7 +65,7 @@ fn append(file: &Path, text: &str) -> std::io::Result<()> {
     std::fs::OpenOptions::new().create(true).append(true).open(file)?.write_all(text.as_bytes())
 }
 
-fn capture(fabric_id: &str, node: Option<&str>, container: Option<&str>, pid: Option<&str>, ip: Option<&str>) -> String {
+fn capture(fabric_id: &str, node: Option<&rdm_core::PathName>, container: Option<&str>, pid: Option<&str>, ip: Option<&str>) -> String {
     let network = format!("rafka-{fabric_id}");
     let id = run("docker", &["network", "inspect", "--format", "{{.Id}}", &network]);
     // Docker names a bridge network's host interface `br-<the first 12 characters of its id>`.
@@ -73,10 +73,10 @@ fn capture(fabric_id: &str, node: Option<&str>, container: Option<&str>, pid: Op
     let mut t = String::new();
     let _ = writeln!(
         t,
-        "# host-net at={} fabric={fabric_id} network={network} bridge={} node={} container={} pid={} ip={}",
+        "# host-net at={} fabric={fabric_id} network={network} bridge={} node={:?} container={} pid={} ip={}",
         run("date", &["-u", "+%Y-%m-%dT%H:%M:%S.%6NZ"]).trim(),
         bridge.as_deref().unwrap_or("-"),
-        node.unwrap_or("-"),
+        node,
         container.unwrap_or("-"),
         pid.unwrap_or("-"),
         ip.unwrap_or("-"),

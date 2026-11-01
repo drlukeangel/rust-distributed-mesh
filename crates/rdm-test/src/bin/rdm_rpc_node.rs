@@ -19,12 +19,12 @@ async fn main() {
         }
     };
     #[cfg(feature = "testkit-skew")]
-    let skew = launch.data_dir.parent().and_then(|root| rdm_test::skew_os_clock_from_root(root, &launch.name.to_string()));
+    let skew = launch.data_dir.parent().and_then(|root| rdm_test::skew_os_clock_from_root(root, &launch.name));
     #[cfg(not(feature = "testkit-skew"))]
     let skew: Option<i64> = None;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
-        node = %launch.name,
+        node = %launch.node_id, node_path = %launch.name.path, node_name = %launch.name.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
         kind = "rpc_node",
@@ -49,7 +49,7 @@ async fn main() {
     let running = {
         use tracing::Instrument;
         // A scenario's `pre_node_ready` knob for this node (passing immediately when no knob file exists).
-        let pre_node_ready = match launch.data_dir.parent().map(|root| rdm_test::pre_node_ready_probe::KnobPreNodeReady::always(root, &launch.name.to_string())) {
+        let pre_node_ready = match launch.data_dir.parent().map(|root| rdm_test::pre_node_ready_probe::KnobPreNodeReady::always(root, &launch.name)) {
             Some(hook) => rdm_test::node_hooks::NodeHooks::new(hook),
             None => rdm_test::node_hooks::NodeHooks::none(),
         };
@@ -62,7 +62,7 @@ async fn main() {
         let started = async {
             if let Some(alpn) = node::app_protocol_for(&launch) {
                 let (running, acceptor) = node::start_pre_node_ready_with_alpn(&launch, pre_node_ready, alpn, register).await?;
-                node::echo_streams(acceptor, launch.name.to_string());
+                node::echo_streams(acceptor, launch.node_id.to_string());
                 Ok(running)
             } else {
                 node::start_pre_node_ready(&launch, pre_node_ready, register).await
@@ -76,7 +76,7 @@ async fn main() {
                 // its telemetry flush (the guard drops as main returns).
                 boot.in_scope(|| tracing::info!("stopped by signal before the node booted"));
                 drop(boot);
-                tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = false)
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.node_id, node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation, booted = false)
                     .in_scope(|| tracing::info!("stopping"));
                 return;
             }
@@ -97,7 +97,7 @@ async fn main() {
     // The member cert the admin that accepted this join issued, as the testkit's own span records it (hex).
     tracing::info_span!(
         "rdm.testkit.cert.resolve.via-running-node",
-        node = %launch.name,
+        node = %launch.node_id, node_path = %launch.name.path, node_name = %launch.name.name,
         incarnation_id = %launch.incarnation,
         member_cert_len = running.member_cert.len() as u64,
         member_cert = %hex::encode(&running.member_cert),
@@ -106,7 +106,7 @@ async fn main() {
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal("rdm-rpc-node").await;
-    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true)
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.node_id, node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation, booted = true)
         .in_scope(|| tracing::info!("stopping"));
     running.stop().await;
 }

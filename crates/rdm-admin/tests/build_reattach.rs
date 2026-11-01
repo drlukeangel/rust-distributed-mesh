@@ -80,6 +80,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
     let _guard = tracing::dispatcher::set_default(&dispatch);
 
     rt.block_on(async move {
+        let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let log = Arc::new(MemoryBuildStateAdapter::default());
         let build_id = BuildId::parse("cq2tyb03krac").unwrap();
         let topology = FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap());
@@ -91,12 +92,12 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         })
         .await
         .unwrap();
-        log.claim_attempt(&BuildAttemptClaim {
+        log.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
             claimant: None,
             mesh: None,
             build_id: build_id.clone(),
             attempt: 1,
-            executor: "mesh1.admin.1".into(),
+            executor: executor_birth.clone(),
         })
         .await
         .unwrap();
@@ -104,11 +105,11 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
             log.append_step_receipt(&BuildStepReceipt {
                 build_id: build_id.clone(),
                 attempt: 1,
-                operation: "node.create:mesh1.rpc.1".into(),
+                operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                 step: step.into(),
                 outcome: StepOutcome::Complete,
                 output: None,
-                executor: Some("mesh1.admin.1".into()),
+                executor: Some(executor_birth.clone()),
                 mesh: None,
             })
             .await
@@ -121,9 +122,10 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         )
         .await
         .unwrap();
-        let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let (node_id, incarnation) = (executor_birth.node_id.clone(), executor_birth.incarnation.clone());
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let served_me = me.clone();
+        let served_node_id = node_id.clone();
         let served_log = log.clone();
         let served_id = build_id.to_string();
 
@@ -131,7 +133,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
             .serve_stream::<Build, _, _>(
                 rdm_core::catalog::OpOwner::Product("rdm".into()),
                 move |_peer, req, sink| {
-                    let (log, me, bid) = (served_log.clone(), served_me.clone(), served_id.clone());
+                    let (log, me, bid, primary_id) = (served_log.clone(), served_me.clone(), served_id.clone(), served_node_id.clone());
                     async move {
                         let gone = |e| HandlerFault::invariant_broken(format!("{e:?}"));
                         match req {
@@ -149,7 +151,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
                                     attempt: 1,
-                                    operation: "node.create:mesh1.rpc.1".into(),
+                                    operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                                     step: "AllocateIdentity".into(),
                                     receipt: None,
                                 })
@@ -157,7 +159,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 .map_err(gone)?;
                                 Ok(BuildReply::FabricPrimaryMoved {
                                     build_id: bid,
-                                    fabric_primary: Some(me.to_string()),
+                                    fabric_primary: Some(primary_id.clone()),
                                 })
                             }
                             BuildRequest::GetBuilds { filter } => {
@@ -180,7 +182,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
                                     attempt: 1,
-                                    operation: "node.create:mesh1.rpc.1".into(),
+                                    operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                                     step: "WaitForMeshJoin".into(),
                                     receipt: None,
                                 })
@@ -189,7 +191,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
                                     attempt: 1,
-                                    operation: "node.create:mesh1.rpc.1".into(),
+                                    operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
                                     step: "Complete".into(),
                                     receipt: None,
                                 })
@@ -226,19 +228,19 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         .await
         .unwrap();
         let resolver = Arc::new(StaticResolver::new());
-        resolver.insert(ResolvedNode {
-            node_id,
+        resolver.insert(ResolvedNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(),
+            node_id: node_id.clone(),
             name: me.clone(),
             endpoint_id: ep.id(),
             transport_addr: addr,
             incarnation,
         });
         let client = Arc::new(NodeRpcClient::new(cep.clone(), resolver).with_caller_system("rdm"));
-        let carrier = BuildCarrier::new(client, me.clone());
+        let carrier = BuildCarrier::at_node(client, node_id);
 
         let initial_stream = carrier
             .create(BuildChange::Stop {
-                node: "mesh1.rpc.1".parse().unwrap(),
+                node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             })
             .await
             .expect("initial create call is accepted");
@@ -249,7 +251,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
             .expect("follow reattaches through build.get and resubmit to completion");
 
         assert_eq!(followed.reattached, 1);
-        let op = "node.create:mesh1.rpc.1".to_string();
+        let op = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
         assert_eq!(
             followed.frames,
             vec![
@@ -259,7 +261,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                     step: "AllocateIdentity".into(),
                 },
                 BuildFrame::FabricPrimaryMoved {
-                    fabric_primary: Some(me.to_string()),
+                    fabric_primary: Some(executor_birth.node_id.clone()),
                 },
                 BuildFrame::Step {
                     attempt: 1,

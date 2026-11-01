@@ -22,16 +22,16 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::Instrument as _;
 
-const FP: &str = "mesh3.admin.1";
-const LAST: &str = "mesh1.admin.1";
 
-fn digest(fabric: &FabricId, name: &str, mesh_id: &MeshId) -> MeshDigest {
+
+fn digest(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, mesh_id: &MeshId) -> MeshDigest {
+    let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
-            node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
-            endpoint_id: EndpointId(format!("key-{name}-{}", "x".repeat(40))),
+        node: MeshNode { mesh: mesh.into(), kind,
+            node_id: node_id.clone(),
+            name,
+            endpoint_id: EndpointId(format!("key-{node_id}-{}", "x".repeat(40))),
             transport_addr: "127.0.0.1:20001".parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -82,16 +82,16 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh3", &mesh3, FP, Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
-        let own = digest(&fabric, FP, &mesh3);
-        let last = digest(&fabric, LAST, &mesh1);
-        let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh3", rdm_core::PublisherId { node: FP.to_string(), incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();
+        let own = digest(&fabric, PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, &mesh3);
+        let last = digest(&fabric, PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &mesh1);
+        let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh3", &mesh3, own.node.node_id.as_str(), Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
+        let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh3", rdm_core::PublisherId { node: own.node.node_id.to_string(), incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         assert!(topology_view.digest_view.record(own.clone()) && topology_view.digest_view.record(last.clone()), "the view holds both admins");
         let digest_view = topology_view.digest_view.clone();
         let records = Records::default();
-        let me: PathName = FP.parse().unwrap();
+        let me = own.node.name.clone();
         let rebuild = |reads: &ViewReads| project_with("fabric1", &fabric, ProviderKind::Process, &digest_view, &records, reads);
         let status_of = |t: &rdm_admin::topology::Topology| t.meshes.iter().find(|m| m.name == "mesh1").map(|m| m.status);
 
@@ -110,7 +110,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
             records.install_read(&me, &view, &digest_view, &fabric, rebuild).await;
             let after_receipt = status_of(&*view.read().await);
             // At once: the node.delete's stop of the last admin, from its matching stopped reply.
-            let stop = LifecycleOp { mesh: last.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: format!("node.stop:{LAST}"), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100, traceparent: None, tracestate: None };
+            let stop = LifecycleOp { kind: last.node.kind, mesh: last.node.mesh.clone(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &last.node.node_id), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100, traceparent: None, tracestate: None };
             lifecycle.stopped(&stop).await;
             after_receipt
         }
@@ -129,8 +129,8 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
 
     assert_eq!(live_before, Some(ScopeStatus::Ready), "before the receipt the view names mesh1 live");
     assert_eq!(after_receipt, Some(ScopeStatus::Dead), "the view installed at the receipt holds mesh1 deleted");
-    let event = mine("rdm.mesh.topology.update.via-status-event").into_iter().find(|s| attr(s, "subject") == LAST && attr(s, "frame") == "node-stopped");
-    let event = event.unwrap_or_else(|| panic!("the stop of {LAST} was published as a status event in the cell's trace {trace_id}"));
+    let event = mine("rdm.mesh.topology.update.via-status-event").into_iter().find(|s| attr(s, "subject_path") == "mesh1.admin" && attr(s, "subject_name") == "1" && attr(s, "frame") == "node-stopped");
+    let event = event.unwrap_or_else(|| panic!("the stop of the last admin was published as a status event in the cell's trace {trace_id}"));
     assert_eq!(attr(&event, "role"), "executor", "the fabric-primary stops the deleted mesh's last admin as executor and never stamps a deleted mesh's topology: {event}");
     let published: Vec<Value> = mine("rdm.mesh.backbone.update.via-deleted-mesh");
     assert!(published.is_empty(), "the fabric-primary never publishes a deleted mesh's topology: {published:?}");

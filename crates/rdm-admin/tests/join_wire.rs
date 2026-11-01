@@ -9,14 +9,14 @@ use rdm_admin::wire::{answer_from_wire, answer_to_wire, BuildFloor, JoinAnswer, 
 
 fn answer() -> JoinAnswer {
     JoinAnswer {
-        served_by: "mesh1.admin.1".into(),
+        served_by: rdm_core::NodeId::mint(),
         control: JoinControl { cert_policy: None,
             provider: ProviderKind::Process,
             fabric: Some(FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }),
             build: Some(BuildFloor { build_id: rdm_admin::build::BuildId::mint(), attempt: 2 }),
             rafka_time_ms: 1_700_000_000_123,
             member_cert: vec![0xca, 0xfe],
-            name: Some("mesh1.rpc.1.old".parse().unwrap()),
+            name: Some(rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap()),
             config: Some([("tier".to_string(), "gold".to_string())].into()),
         },
         statuses: vec![],

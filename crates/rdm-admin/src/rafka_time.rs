@@ -70,10 +70,10 @@ pub async fn run_role_move_pull(
         if primary.node_id == me_id || from_node == primary.node_id {
             continue;
         }
-        if Puller::of(&primaries, &me.mesh, &me_id) != Puller::MeshPrimary {
+        if Puller::of(&primaries, topology_view.mesh_name(), &me_id) != Puller::MeshPrimary {
             continue;
         }
-        let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-primary-changed", node = %me, from = %from_node, to = %primary.node_id, to_mesh = %primary.mesh, revision = primary.revision, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_revision = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-primary-changed", node_path = %me.path, node_name = %me.name, from = %from_node, to = %primary.node_id, to_mesh = %primary.mesh, revision = primary.revision, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_revision = tracing::field::Empty);
         let (outcome, attempts, adopted_from) = pull_from_fabric_primary(&time, &me, &me_id, &client, &topology_view, primary).instrument(span.clone()).await;
         span.record("outcome", outcome.as_str());
         span.record("attempts", attempts);
@@ -104,11 +104,11 @@ async fn pull_from_fabric_primary(
             }
             primary = current;
         }
-        let read = crate::topology_read::read_topology(client, &rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &me.to_string(), Some(&primary.mesh), None).await;
+        let read = crate::topology_read::read_topology(client, &rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &me_id.to_string(), Some(&primary.mesh), None).await;
         match read {
             Ok(read) => {
-                let served_by = topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
-                match read.adopt_rafka_time(time, topology_view, &me.to_string(), &me.mesh, me_id, &served_by) {
+                let served_by = primary.node_id.to_string();
+                match read.adopt_rafka_time(time, topology_view, &me_id.to_string(), topology_view.mesh_name(), me_id, &served_by) {
                     Ok(_) => return ("adopted".into(), attempt, Some(primary)),
                     Err(e) => last = e.to_string(),
                 }
@@ -117,7 +117,7 @@ async fn pull_from_fabric_primary(
         }
         tokio::time::sleep(ROLE_MOVE_PAUSE * attempt).await;
     }
-    tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-pull-unanswered", node = %me, to = %primary.node_id, attempts = ROLE_MOVE_ATTEMPTS, reason = %last)
+    tracing::info_span!("rdm.mesh.entry.reject.via-rafka-time-pull-unanswered", node_path = %me.path, node_name = %me.name, to = %primary.node_id, attempts = ROLE_MOVE_ATTEMPTS, reason = %last)
         .in_scope(|| tracing::warn!("the fabric-primary did not serve rafka-time: this mesh primary keeps the rafka-time it holds"));
     (format!("kept: {last}"), ROLE_MOVE_ATTEMPTS, None)
 }
@@ -131,26 +131,27 @@ async fn pull_from_fabric_primary(
 /// whoever it hears. A member adopts from whoever answers; the lineage descends from the
 /// fabric-primary whichever node that is.
 ///
-/// Returns the `path.name` of the node it adopted from, or a named refusal listing each node
+/// Returns the globally unique ID of the node it adopted from, or a named refusal listing each node
 /// tried with the outcome of its read.
 pub(crate) async fn adopt_from_reachable(
     time: &RafkaTime,
     me: &crate::model::PathName,
+    me_id: &NodeId,
     client: &rdm_transport::NodeRpcClient,
     resolver: &rdm_transport::LiveNodeResolver,
     topology_view: &rdm_transport::topology::TopologyView,
     contacts: Vec<crate::reenter::MapNode>,
     parent: &tracing::Span,
-) -> Result<String, String> {
+) -> Result<NodeId, String> {
     use rdm_transport::NodeTarget;
-    let span = tracing::info_span!(parent: parent, "rdm.mesh.entry.resolve.via-recovery-pull", node = %me, contacts = contacts.len(), served_by = tracing::field::Empty, attempts = tracing::field::Empty, outcome = tracing::field::Empty);
+    let span = tracing::info_span!(parent: parent, "rdm.mesh.entry.resolve.via-recovery-pull", node_path = %me.path, node_name = %me.name, contacts = contacts.len(), served_by = tracing::field::Empty, attempts = tracing::field::Empty, outcome = tracing::field::Empty);
     let outcome = async {
         let mut tried: std::collections::BTreeMap<String, String> = Default::default();
         let mut attempts = 0u32;
         let mut candidates = contacts;
         for d in topology_view.digest_view.current(topology_view.digest_view.staleness_floor()) {
-            if d.node.name != *me && !candidates.iter().any(|c| c.node_id == d.node.node_id) {
-                candidates.push(crate::reenter::MapNode {
+            if d.node.node_id != *me_id && !candidates.iter().any(|c| c.node_id == d.node.node_id) {
+                candidates.push(crate::reenter::MapNode { mesh: d.node.mesh.clone(), kind: d.node.kind,
                     node_id: d.node.node_id.clone(),
                     name: d.node.name.clone(),
                     endpoint_id: d.node.endpoint_id.clone(),
@@ -163,19 +164,19 @@ pub(crate) async fn adopt_from_reachable(
                 });
             }
         }
-        candidates.retain(|c| c.name != *me);
-        candidates.sort_by_key(|c| (c.name.mesh != me.mesh, c.name.to_string()));
+        candidates.retain(|c| c.node_id != *me_id);
+        candidates.sort_by_key(|c| (c.mesh != topology_view.mesh_name(), c.name.clone()));
         for c in &candidates {
             if let Some(r) = c.resolved() {
                 resolver.apply(r, None);
             }
         }
-        let me_s = me.to_string();
+        let me_s = me_id.to_string();
         let mut reads: futures_util::stream::FuturesUnordered<_> = candidates
             .iter()
             .map(|c| {
                 let me_s = me_s.clone();
-                async move { (c, crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), &me_s, Some(&c.name.mesh), None).await) }
+                async move { (c, crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), &me_s, Some(&c.mesh), None).await) }
             })
             .collect();
         while let Some((c, read)) = futures_util::StreamExt::next(&mut reads).await {
@@ -183,21 +184,21 @@ pub(crate) async fn adopt_from_reachable(
             match read {
                 Ok(read) => match read.rafka_time {
                     Some(t) => {
-                        adopt_pulled(time, Puller::Member, &me_s, Served { via: "get-topology", served_by: &c.name.to_string(), ms: t.ms, kind: t.kind }).expect("a member adopts from whoever answers");
+                        adopt_pulled(time, Puller::Member, &me_s, Served { via: "get-topology", served_by: c.node_id.as_str(), ms: t.ms, kind: t.kind }).expect("a member adopts from whoever answers");
                         span.record("attempts", attempts);
-                        return Ok(c.name.to_string());
+                        return Ok(c.node_id.clone());
                     }
                     None => {
-                        tried.insert(c.name.to_string(), "its answer carries no rafka-time".into());
+                        tried.insert(c.node_id.to_string(), "its answer carries no rafka-time".into());
                     }
                 },
                 Err(e) => {
-                    tried.insert(c.name.to_string(), e.to_string());
+                    tried.insert(c.node_id.to_string(), e.to_string());
                 }
             }
         }
         span.record("attempts", attempts);
-        Err(format!("{me}: no node it could reach holds rafka-time (tried {} reads of {tried:?})", attempts))
+        Err(format!("{me_id}: no node it could reach holds rafka-time (tried {} reads of {tried:?})", attempts))
     }
     .instrument(span.clone())
     .await;

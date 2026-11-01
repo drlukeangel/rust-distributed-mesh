@@ -45,7 +45,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
         fabric_id: fabric.clone(),
         mesh: "mesh1".into(),
         kind: rdm_core::NodeKind::RpcNode,
-        name: "mesh1.rpc.7".parse().unwrap(),
+        name: rdm_core::PathName::new("mesh1.rpc", "7").unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -77,7 +77,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
         digests.changed().await.unwrap();
     }
     let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
-    admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+    admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
     (launch, running, seams)
 }
 
@@ -174,8 +174,8 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, scope: Some("after-all".into()), ..CallOptions::default() };
         let read = rdm_client::NodeRpc::new(&admin.observer.client).connections_get(&birth, &rdm_core::filter::Filter::new(), &opts).await;
         assert!(read.is_ok(), "the further call is answered: {read:?}");
-        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
-        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: taken.to_string() };
+        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: taken.clone() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a Node RPC connection is no connection the rename counts");
         let _ = std::fs::remove_dir_all(&dir);
     })
@@ -201,7 +201,7 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let reserved = StatusRequest::Reserved6 { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.7".into() };
+        let reserved = StatusRequest::Reserved6 { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: rdm_core::OperationId::node("reserved-6", &node_id) };
         let reply = call_on(&admin, &target, &reserved, None).await;
         assert!(matches!(&reply, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name: {reply:?}");
         let all = NodeCommandRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };
@@ -251,7 +251,7 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         assert!(!matches!(reply, StatusReply::ConnectionsDeleted { .. }), "no handler on the node's Status door performs a closure: {reply:?}");
         assert_eq!(reply, StatusReply::RequestNotHandled { request: "delete-connections".into() }, "the node answers a request it has no handler for not handled here (R24)");
         let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
-        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("delete-connections".to_string()), Some(launch.name.to_string()))], "the node's reject span names the request and itself: {rejected:?}");
+        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("delete-connections".to_string()), Some(launch.node_id.to_string()))], "the node's reject span names the request and itself: {rejected:?}");
         assert_eq!(seams.connections.held_routes().await.into_iter().map(|r| r.id).collect::<Vec<_>>(), held, "the node's connection is still held");
         let again = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(again, RpcOutcome::Reply(_)), "no block on new application work is set: {again:?}");
@@ -304,7 +304,7 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
         };
         assert_eq!(reply, StatusReply::RequestNotHandled { request: "fabric.get".into() }, "the rig's admin side answers a request it has no handler for not handled here");
         let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
-        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("fabric.get".to_string()), Some(admin.launcher.name.to_string()))], "the admin side's reject span names the request and itself: {rejected:?}");
+        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("fabric.get".to_string()), Some(admin.launcher.node_id.to_string()))], "the admin side's reject span names the request and itself: {rejected:?}");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -346,10 +346,10 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         assert!(seams.connections.held_routes().await.is_empty(), "the log holds no connection after All");
         let refusals = fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block");
         assert_eq!(refusals.len(), 1, "one refusal, on its own span: {refusals:#?}");
-        assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination").map(String::as_str)), (Some("dial"), Some("mesh1.admin.1")), "{refusals:#?}");
+        assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination_node_id").map(String::as_str)), (Some("dial"), Some(admin.launcher.node_id.as_str())), "{refusals:#?}");
 
-        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
-        let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.to_string() };
+        let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.clone() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a node that opened nothing takes its name");
         assert_eq!(running.topology_view.held_name(&launch.name), taken, "the node holds the applied name");
 
@@ -361,13 +361,13 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         // under that name.
         let key = node::load_or_mint_key(&dir).unwrap();
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
-        let join = StatusRequest::JoinMesh { node_id, incarnation, build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "node.mesh.join:mesh1.rpc.1".into() };
+        let join = StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation, build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: rdm_core::OperationId::node("node.mesh.join", &node_id) };
         assert!(matches!(call_on(&admin, &target, &join, None).await, StatusReply::MeshJoined { .. }), "the node joins its mesh again");
         let after = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(after, RpcOutcome::Reply(_)), "once it joined its mesh again the node opens connections: {after:?}");
         seams.connections.observations_landed().await;
         let routes = seams.connections.held_routes().await;
-        assert_eq!(routes.iter().map(|r| (r.source.name.clone(), r.destination.name.to_string())).collect::<Vec<_>>(), vec![(taken.clone(), "mesh1.admin.1".to_string())], "the next connection names the name the node took: {routes:?}");
+        assert_eq!(routes.iter().map(|r| (r.source.name.clone(), r.destination.name.clone())).collect::<Vec<_>>(), vec![(taken.clone(), admin.launcher.name.clone())], "the next connection names the name the node took: {routes:?}");
         assert_eq!(fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block").len(), 2, "one refusal before the apply and one after it, none after the join");
         assert!(fields_of(&spans, "rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "the block cuts no Node RPC pool");
         let _ = std::fs::remove_dir_all(&dir);
@@ -414,8 +414,8 @@ fn a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied() {
         assert!(seams.connections.held_routes().await.is_empty(), "the late connection writes no entry");
         let refusals = fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block");
         assert_eq!(refusals.len(), 1, "one refusal, on its own span: {refusals:#?}");
-        assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination").map(String::as_str)), (Some("pool"), Some("mesh1.admin.1")), "{refusals:#?}");
-        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: "mesh1.rpc.1".into() };
+        assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination_node_id").map(String::as_str)), (Some("pool"), Some(admin.launcher.node_id.as_str())), "{refusals:#?}");
+        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "no late connection makes the node Busy");
         let _ = std::fs::remove_dir_all(&dir);
     })
@@ -519,13 +519,13 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
             incarnation: incarnation.clone(),
             build_id: "4wd8hn3tqe6c".into(),
             attempt: 1,
-            operation: "leave-mesh:busy".into(),
+            operation: rdm_core::OperationId::node("node.mesh.leave", &node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint()),
         };
         let busy = call_on(&admin, &target, &leave_req, None).await;
         assert!(matches!(&busy, StatusReply::BusyHoldingConnections { connections } if connections.len() == 1), "LeaveMesh refuses while holding a connection: {busy:?}");
         let rejects = fields_of(&spans, "rdm.node.mesh.reject.via-busy-holding-connections");
         assert_eq!(rejects.len(), 1, "one busy-holding-connections span: {rejects:#?}");
-        assert_eq!(rejects[0].get("operation").map(String::as_str), Some("leave-mesh:busy"));
+        assert_eq!(rejects[0].get("operation").map(String::as_str), Some("node.mesh.leave"));
 
         // Close all connections, then standalone `LeaveMesh` succeeds.
         let all = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
@@ -535,13 +535,13 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
             incarnation: incarnation.clone(),
             build_id: "4wd8hn3tqe6c".into(),
             attempt: 1,
-            operation: "leave-mesh:clean".into(),
+            operation: rdm_core::OperationId::node("node.mesh.leave", &node_id).in_occurrence(rdm_core::OperationOccurrenceId::mint()),
         };
         let left_reply = call_on(&admin, &target, &leave_ok, None).await;
         assert_eq!(left_reply, StatusReply::MeshLeft { node_id: node_id.clone(), incarnation: incarnation.clone(), left: vec![WhichMesh::Own] });
         let leaving = fields_of(&spans, "rdm.node.mesh.update.via-leaving");
         assert_eq!(leaving.len(), 1, "one via-leaving span: {leaving:#?}");
-        assert_eq!(leaving[0].get("operation").map(String::as_str), Some("leave-mesh:clean"));
+        assert_eq!(leaving[0].get("operation").map(String::as_str), Some("node.mesh.leave"));
         let left_spans = fields_of(&spans, "rdm.node.mesh.update.via-left");
         assert_eq!(left_spans.len(), 1, "one via-left span: {left_spans:#?}");
         assert_eq!(left_spans[0].get("which").map(String::as_str), Some("own"));
@@ -552,12 +552,12 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
             incarnation: incarnation.clone(),
             build_id: "4wd8hn3tqe6c".into(),
             attempt: 1,
-            operation: "join-mesh:rejoin".into(),
+            operation: rdm_core::OperationId::node("node.mesh.join", &node_id),
         };
         let joined_reply = call_on(&admin, &target, &join_req, None).await;
         assert_eq!(joined_reply, StatusReply::MeshJoined { node_id: node_id.clone(), incarnation: incarnation.clone(), joined: vec![WhichMesh::Own] });
         let joining = fields_of(&spans, "rdm.node.mesh.update.via-joining");
-        assert!(joining.iter().any(|f| f.get("operation").map(String::as_str) == Some("join-mesh:rejoin")), "standalone JoinMesh emitted via-joining: {joining:#?}");
+        assert!(joining.iter().any(|f| f.get("operation").map(String::as_str) == Some("node.mesh.join")), "standalone JoinMesh emitted via-joining: {joining:#?}");
         let joined_after = fields_of(&spans, "rdm.node.mesh.update.via-joined");
         assert!(joined_after.iter().filter(|f| f.get("node_id").map(String::as_str) == Some(node_id.as_str()) && f.get("which").map(String::as_str) == Some("own")).count() >= 2, "standalone JoinMesh emitted via-joined(own): {joined_after:#?}");
 

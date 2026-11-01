@@ -49,7 +49,7 @@ fn a_rig_dropped_with_its_launched_node_running_leaves_no_node_running() {
             timeouts: Timeouts::default(),
         };
         let created = pipeline
-            .create(&CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: publish_build(&builds, add_node()).await, attempt: 1, node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let pid = created.handle.pid.expect("a process handle names its pid");

@@ -32,7 +32,7 @@ use std::collections::HashMap;
 pub enum Birth {
     /// The node's current process birth.
     Current(IncarnationId),
-    /// The node left, or another node holds its path now: no birth of it is current.
+    /// The node explicitly deleted: no birth of it is current.
     Deleted,
     /// The topology view does not hold the node: nothing is judged.
     Unknown,
@@ -40,8 +40,8 @@ pub enum Birth {
 
 /// The births the topology view holds now, as the holder's topology view knows them. Facts, never policy.
 pub trait CurrentIncarnations: Send + Sync + std::fmt::Debug {
-    /// The process birth the topology view holds for `node_id` at `path`.
-    fn birth(&self, node_id: &NodeId, path: &PathName) -> Birth;
+    /// The process birth the topology view holds for the globally unique `node_id`.
+    fn birth(&self, node_id: &NodeId) -> Birth;
 }
 
 /// A fixed table of current births per node: the topology view for a holder fed by hand.
@@ -61,7 +61,7 @@ impl StaticIncarnations {
 }
 
 impl CurrentIncarnations for StaticIncarnations {
-    fn birth(&self, node_id: &NodeId, _path: &PathName) -> Birth {
+    fn birth(&self, node_id: &NodeId) -> Birth {
         match self.0.read().unwrap().get(node_id) {
             Some((_, Some(i))) => Birth::Current(i.clone()),
             Some((_, None)) => Birth::Deleted,
@@ -110,7 +110,11 @@ pub enum ConnectionKind {
 /// One end of an entry, or a Proxy's carrier: its path, logical node and process birth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionEnd {
-    /// The end's `path.name`.
+    /// The explicitly declared owning mesh.
+    pub mesh: String,
+    /// The explicitly declared runtime kind.
+    pub kind: crate::NodeKind,
+    /// The end's `(path, name)`.
     pub name: PathName,
     /// The end's logical node id.
     pub node_id: NodeId,
@@ -132,10 +136,10 @@ pub struct DirectRecovery {
 /// What the projection keys an entry by: one `(source, destination, alpn)` has at most its Direct and its Proxy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ConnectionIndex {
-    /// The source node's `path.name`.
-    pub source: PathName,
-    /// The destination node's `path.name`.
-    pub destination: PathName,
+    /// The source node's globally unique ID.
+    pub source: NodeId,
+    /// The destination node's globally unique ID.
+    pub destination: NodeId,
     /// The registered ALPN this connection carries (connections.md §3).
     pub alpn: Vec<u8>,
     /// Whether the entry is the pair's Direct or its Proxy.
@@ -177,8 +181,8 @@ impl NodeConnection {
     /// The index the entry is keyed by.
     pub fn index(&self) -> ConnectionIndex {
         ConnectionIndex {
-            source: self.source.name.clone(),
-            destination: self.destination.name.clone(),
+            source: self.source.node_id.clone(),
+            destination: self.destination.node_id.clone(),
             alpn: self.alpn.clone(),
             kind: self.kind,
         }
@@ -198,7 +202,7 @@ impl NodeConnection {
 
     /// Why this entry's shape is not one the model admits, or `None` when it is.
     pub(crate) fn shape_refusal(&self) -> Option<String> {
-        let at = || format!("connection {}->{} ({:?}, {:?})", self.source.name, self.destination.name, self.kind, self.state);
+        let at = || format!("connection {}->{} ({:?}, {:?})", self.source.node_id, self.destination.node_id, self.kind, self.state);
         if self.alpn.is_empty() {
             return Some(format!("{}: an entry must name a non-empty alpn", at()));
         }
@@ -237,11 +241,11 @@ pub struct ConnectionsHeld {
     cells: HashMap<ConnectionIndex, Cell>,
     /// Set once the holder has every route (born full); until then it cannot answer absence.
     complete: bool,
-    own_source: Option<PathName>,
-    own_proxies: HashMap<(PathName, Vec<u8>), NodeConnection>,
+    own_source: Option<NodeId>,
+    own_proxies: HashMap<(NodeId, Vec<u8>), NodeConnection>,
     /// This node's latest Direct entry per `(destination, alpn)`, whatever its state: what its reconnect
     /// series is reconstructed from.
-    own_directs: HashMap<(PathName, Vec<u8>), NodeConnection>,
+    own_directs: HashMap<(NodeId, Vec<u8>), NodeConnection>,
     /// The topology view's current process birth per path; absent until the holder is given one.
     topology_view: Option<std::sync::Arc<dyn CurrentIncarnations>>,
 }
@@ -279,14 +283,14 @@ impl ConnectionsHeld {
                 return Err(ApplyRefusal::Stale { held: held.stamp, offered: stamp });
             }
         }
-        if entry.kind == ConnectionKind::Direct && entry.state != ConnectionState::Refused && self.own_source.as_ref() == Some(&entry.source.name) {
-            self.own_directs.insert((entry.destination.name.clone(), entry.alpn.clone()), entry.clone());
+        if entry.kind == ConnectionKind::Direct && entry.state != ConnectionState::Refused && self.own_source.as_ref() == Some(&entry.source.node_id) {
+            self.own_directs.insert((entry.destination.node_id.clone(), entry.alpn.clone()), entry.clone());
         }
-        if entry.kind == ConnectionKind::Proxy && self.own_source.as_ref() == Some(&entry.source.name) {
+        if entry.kind == ConnectionKind::Proxy && self.own_source.as_ref() == Some(&entry.source.node_id) {
             if entry.state == ConnectionState::Connected {
-                self.own_proxies.insert((entry.destination.name.clone(), entry.alpn.clone()), entry.clone());
+                self.own_proxies.insert((entry.destination.node_id.clone(), entry.alpn.clone()), entry.clone());
             } else {
-                self.own_proxies.remove(&(entry.destination.name.clone(), entry.alpn.clone()));
+                self.own_proxies.remove(&(entry.destination.node_id.clone(), entry.alpn.clone()));
             }
         }
         // A `Refused` fact is the acceptor's fact about one dial, never proof about the dialer
@@ -303,8 +307,8 @@ impl ConnectionsHeld {
         Ok(())
     }
 
-    /// Name this node's own path: from here on its active Proxy entries are held.
-    pub fn set_own_source(&mut self, name: PathName) {
+    /// Set this node's ID: from here on its active Proxy entries are held.
+    pub fn set_own_source(&mut self, name: NodeId) {
         if self.own_source.as_ref() != Some(&name) {
             self.own_source = Some(name);
             self.own_proxies.clear();
@@ -312,8 +316,8 @@ impl ConnectionsHeld {
         }
     }
 
-    /// This node's own path, as last named ([`Self::set_own_source`]): `None` until it is named.
-    pub fn own_source(&self) -> Option<&PathName> {
+    /// This node's ID, as last supplied ([`Self::set_own_source`]): `None` until it is named.
+    pub fn own_source(&self) -> Option<&NodeId> {
         self.own_source.as_ref()
     }
 
@@ -322,12 +326,12 @@ impl ConnectionsHeld {
         self.topology_view = Some(topology_view);
     }
 
-    /// Whether `end` names a process the topology view does not hold now: its node deleted, another
-    /// node holds its path, or the node is here under another birth. An end naming no process is
+    /// Whether `end` names a process the topology view does not hold now: its node deleted or another
+    /// incarnation supersedes the recorded birth. Name reuse does not delete an ID. An end naming no process is
     /// judged only on departure; a node the topology view does not hold is not judged.
     pub fn end_superseded(&self, end: &ConnectionEnd) -> Option<bool> {
         let m = self.topology_view.as_ref()?;
-        match m.birth(&end.node_id, &end.name) {
+        match m.birth(&end.node_id) {
             Birth::Current(now) => Some(end.incarnation.as_ref().is_some_and(|named| *named != now)),
             Birth::Deleted => Some(true),
             Birth::Unknown => None,
@@ -352,13 +356,13 @@ impl ConnectionsHeld {
 
     /// This node's active Proxy to `destination` on the default ALPN: `Some(None)` when it holds
     /// none, `None` when it cannot answer (not complete, or no own source named).
-    pub(crate) fn own_proxy(&self, destination: &PathName) -> Option<Option<&NodeConnection>> {
+    pub(crate) fn own_proxy(&self, destination: &NodeId) -> Option<Option<&NodeConnection>> {
         self.own_proxy_for(destination, ALPN)
     }
 
     /// This node's active Proxy to `destination` on `alpn`: `Some(None)` when it holds none,
     /// `None` when it cannot answer (not complete, or no own source named).
-    pub fn own_proxy_for(&self, destination: &PathName, alpn: &[u8]) -> Option<Option<&NodeConnection>> {
+    pub fn own_proxy_for(&self, destination: &NodeId, alpn: &[u8]) -> Option<Option<&NodeConnection>> {
         if !self.complete || self.own_source.is_none() {
             return None;
         }
@@ -396,13 +400,13 @@ impl ConnectionsHeld {
 
     /// The active Direct fact `source -> destination` on the default ALPN: `Some(None)` when none
     /// is held, `None` when the holder is not complete.
-    pub fn active_direct(&self, source: &PathName, destination: &PathName) -> Option<Option<&NodeConnection>> {
+    pub fn active_direct(&self, source: &NodeId, destination: &NodeId) -> Option<Option<&NodeConnection>> {
         self.active_direct_for(source, destination, ALPN)
     }
 
     /// The active Direct fact `source -> destination` on `alpn`: `Some(None)` when none is held,
     /// `None` when the holder is not complete.
-    pub fn active_direct_for(&self, source: &PathName, destination: &PathName, alpn: &[u8]) -> Option<Option<&NodeConnection>> {
+    pub fn active_direct_for(&self, source: &NodeId, destination: &NodeId, alpn: &[u8]) -> Option<Option<&NodeConnection>> {
         if !self.complete {
             return None;
         }
@@ -412,13 +416,13 @@ impl ConnectionsHeld {
 
     /// Whether any Direct fact (active or not) `source -> destination` on the default ALPN is held
     /// at all: the key stands at a stamp. `false` when none was ever observed.
-    pub fn holds_direct_fact(&self, source: &PathName, destination: &PathName) -> bool {
+    pub fn holds_direct_fact(&self, source: &NodeId, destination: &NodeId) -> bool {
         self.holds_direct_fact_for(source, destination, ALPN)
     }
 
     /// Whether any Direct fact (active or not) `source -> destination` on `alpn` is held at all:
     /// the key stands at a stamp. `false` when none was ever observed.
-    pub fn holds_direct_fact_for(&self, source: &PathName, destination: &PathName, alpn: &[u8]) -> bool {
+    pub fn holds_direct_fact_for(&self, source: &NodeId, destination: &NodeId, alpn: &[u8]) -> bool {
         let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), alpn: alpn.to_vec(), kind: ConnectionKind::Direct };
         self.cells.contains_key(&key)
     }
@@ -429,7 +433,7 @@ impl ConnectionsHeld {
     /// the latest is Connected, a drop (Disconnected) or an acceptor's Refused, and when the Failed
     /// fact names a destination process that is gone (§13 I: stale evidence is never used for a new
     /// process birth).
-    pub fn latest_direct_failed_for(&self, source: &PathName, destination: &PathName, alpn: &[u8]) -> bool {
+    pub fn latest_direct_failed_for(&self, source: &NodeId, destination: &NodeId, alpn: &[u8]) -> bool {
         let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), alpn: alpn.to_vec(), kind: ConnectionKind::Direct };
         self.cells.get(&key).and_then(|c| c.failed.as_ref()).is_some_and(|end| self.end_superseded(end) != Some(true))
     }
@@ -437,14 +441,14 @@ impl ConnectionsHeld {
     /// Every active Direct fact on the default ALPN whose destination is `destination`, sorted by
     /// source, leaving out a fact that names a superseded destination process; `None` when the
     /// holder is not complete.
-    pub fn active_directs_to(&self, destination: &PathName) -> Option<Vec<&NodeConnection>> {
+    pub fn active_directs_to(&self, destination: &NodeId) -> Option<Vec<&NodeConnection>> {
         self.active_directs_to_for(destination, ALPN)
     }
 
     /// Every active Direct fact on `alpn` whose destination is `destination`, sorted by source,
     /// leaving out a fact that names a superseded destination process; `None` when the holder is
     /// not complete.
-    pub fn active_directs_to_for(&self, destination: &PathName, alpn: &[u8]) -> Option<Vec<&NodeConnection>> {
+    pub fn active_directs_to_for(&self, destination: &NodeId, alpn: &[u8]) -> Option<Vec<&NodeConnection>> {
         if !self.complete {
             return None;
         }
@@ -452,7 +456,7 @@ impl ConnectionsHeld {
             .cells
             .values()
             .filter_map(|c| c.active.as_ref())
-            .filter(|e| &e.destination.name == destination && e.alpn.as_slice() == alpn && !self.names_superseded_destination(e))
+            .filter(|e| &e.destination.node_id == destination && e.alpn.as_slice() == alpn && !self.names_superseded_destination(e))
             .collect();
         out.sort_by(|a, b| a.source.name.cmp(&b.source.name));
         Some(out)
@@ -501,8 +505,8 @@ pub enum EffectiveRoute {
     },
     /// Through `carrier`: the valid own Proxy `proxy` names it.
     ViaPeer {
-        /// The carrier's `path.name`.
-        carrier: PathName,
+        /// The carrier's globally unique ID.
+        carrier: NodeId,
         /// The own Proxy that names the carrier.
         proxy: NodeConnection,
     },
@@ -551,12 +555,12 @@ pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&
 /// The route from `own` to `destination` under `policy` on the default ALPN, over `held`: a valid
 /// own Proxy, else an active Direct, else a direct dial when no Direct fact was ever observed,
 /// else no route. Pure: the caller deletes [`RouteResolution::delete`].
-pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, policy: CarrierPolicy) -> RouteResolution {
+pub fn resolve(held: &ConnectionsHeld, own: &NodeId, destination: &NodeId, policy: CarrierPolicy) -> RouteResolution {
     resolve_for(held, own, destination, ALPN, policy)
 }
 
 /// [`resolve`] on `alpn`.
-pub fn resolve_for(held: &ConnectionsHeld, own: &PathName, destination: &PathName, alpn: &[u8], policy: CarrierPolicy) -> RouteResolution {
+pub fn resolve_for(held: &ConnectionsHeld, own: &NodeId, destination: &NodeId, alpn: &[u8], policy: CarrierPolicy) -> RouteResolution {
     match policy {
         CarrierPolicy::NoProxy => resolve_for_carriers(held, own, destination, alpn, false, &[]),
         CarrierPolicy::Proxy { carrier_kind } => {
@@ -568,8 +572,8 @@ pub fn resolve_for(held: &ConnectionsHeld, own: &PathName, destination: &PathNam
 /// [`resolve_for`] with the protocol's `proxy` flag and eligible `carriers` kinds.
 pub fn resolve_for_carriers(
     held: &ConnectionsHeld,
-    own: &PathName,
-    destination: &PathName,
+    own: &NodeId,
+    destination: &NodeId,
     alpn: &[u8],
     proxy: bool,
     carriers: &[NodeKind],
@@ -582,10 +586,10 @@ pub fn resolve_for_carriers(
             let kind_allowed = proxy
                 .carrier
                 .as_ref()
-                .is_some_and(|c| carriers.contains(&c.name.kind));
+                .is_some_and(|c| carriers.contains(&c.kind));
             match proxy_invalid(held, proxy) {
                 None if kind_allowed => {
-                    let carrier = proxy.carrier.as_ref().map(|c| c.name.clone()).expect("a valid Proxy names its carrier");
+                    let carrier = proxy.carrier.as_ref().map(|c| c.node_id.clone()).expect("a valid Proxy names its carrier");
                     return RouteResolution { route: EffectiveRoute::ViaPeer { carrier, proxy: proxy.clone() }, delete: None };
                 }
                 None => {}
@@ -620,19 +624,21 @@ pub fn resolve_for_carriers(
 /// own Direct decides, and a carrier without one refuses by name (`connection-lost`), the source
 /// then asking the next. Empty when the protocol does not proxy or no candidate stands.
 pub fn carrier_order(
-    own: &PathName,
-    destination: &PathName,
+    own: &NodeId,
+    own_mesh: &str,
+    destination: &NodeId,
     destination_incarnation: &IncarnationId,
     proxy: bool,
     carriers: &[NodeKind],
-    candidates: impl IntoIterator<Item = PathName>,
-) -> Vec<PathName> {
+    candidates: impl IntoIterator<Item = (NodeId, String, NodeKind)>,
+) -> Vec<NodeId> {
     if !proxy || carriers.is_empty() {
         return Vec::new();
     }
-    let mut eligible: Vec<PathName> = candidates
+    let mut eligible: Vec<NodeId> = candidates
         .into_iter()
-        .filter(|c| c != own && c != destination && c.mesh == own.mesh && carriers.contains(&c.kind))
+        .filter(|(c, mesh, kind)| c != own && c != destination && mesh == own_mesh && carriers.contains(kind))
+        .map(|(name, _, _)| name)
         .collect();
     eligible.sort();
     eligible.dedup();
@@ -663,9 +669,10 @@ mod tests {
     use crate::ConnectionId;
     use std::sync::Arc;
 
-    fn end(name: &str, node_id: NodeId, incarnation: Option<IncarnationId>) -> ConnectionEnd {
+    fn end(name: PathName, node_id: NodeId, incarnation: Option<IncarnationId>) -> ConnectionEnd {
         ConnectionEnd {
-            name: name.parse().unwrap(),
+            mesh: "mesh1".into(), kind: NodeKind::RpcNode,
+            name,
             node_id,
             incarnation,
         }
@@ -678,9 +685,9 @@ mod tests {
     /// "// Proxy only: carrier, carrier_node_id, carrier_incarnation_id; // Direct Failed only: recovery_round, attempt_ordinal"
     #[test]
     fn shape_refusal_and_is_active_direct_enforce_connection_row_invariants() {
-        let src = end("mesh1.rpc.1", NodeId::mint(), Some(IncarnationId::mint()));
-        let dst = end("mesh1.rpc.2", NodeId::mint(), Some(IncarnationId::mint()));
-        let car = end("mesh1.rpc.3", NodeId::mint(), Some(IncarnationId::mint()));
+        let src = end(PathName::new("mesh1.rpc", "1").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
+        let dst = end(PathName::new("mesh1.rpc", "2").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
+        let car = end(PathName::new("mesh1.rpc", "3").unwrap(), NodeId::mint(), Some(IncarnationId::mint()));
 
         let valid_direct = NodeConnection {
             id: ConnectionId::mint(),
@@ -781,16 +788,16 @@ mod tests {
     fn held_projection_and_resolve_for_respect_incarnations_and_precedence() {
         let src_id = NodeId::mint();
         let src_inc = IncarnationId::mint();
-        let src = end("mesh1.rpc.1", src_id.clone(), Some(src_inc.clone()));
+        let src = end(PathName::new("mesh1.rpc", "1").unwrap(), src_id.clone(), Some(src_inc.clone()));
 
         let dst_id = NodeId::mint();
         let dst_inc1 = IncarnationId::mint();
         let dst_inc2 = IncarnationId::mint();
-        let dst = end("mesh1.rpc.2", dst_id.clone(), Some(dst_inc1.clone()));
+        let dst = end(PathName::new("mesh1.rpc", "2").unwrap(), dst_id.clone(), Some(dst_inc1.clone()));
 
         let car_id = NodeId::mint();
         let car_inc = IncarnationId::mint();
-        let car = end("mesh1.rpc.3", car_id.clone(), Some(car_inc.clone()));
+        let car = end(PathName::new("mesh1.rpc", "3").unwrap(), car_id.clone(), Some(car_inc.clone()));
 
         let topo = Arc::new(StaticIncarnations::default());
         topo.set(src_id, src.name.clone(), src_inc);
@@ -799,14 +806,14 @@ mod tests {
 
         let mut held = ConnectionsHeld::new();
         assert_eq!(held.own_source(), None);
-        assert_eq!(held.own_proxy(&dst.name), None);
-        assert_eq!(held.active_directs_to_for(&dst.name, ALPN), None);
+        assert_eq!(held.own_proxy(&dst.node_id), None);
+        assert_eq!(held.active_directs_to_for(&dst.node_id, ALPN), None);
 
-        held.set_own_source(src.name.clone());
+        held.set_own_source(src.node_id.clone());
         held.set_topology_view(topo.clone());
         held.mark_complete();
-        assert_eq!(held.own_source(), Some(&src.name));
-        assert_eq!(held.own_proxy(&dst.name), Some(None));
+        assert_eq!(held.own_source(), Some(&src.node_id));
+        assert_eq!(held.own_proxy(&dst.node_id), Some(None));
         assert_eq!(held.end_superseded(&dst), Some(false));
 
         let direct_id = ConnectionId::mint();
@@ -822,11 +829,11 @@ mod tests {
             reason: None,
             logged_at_ms: 100,
         };
-        assert!(!held.holds_direct_fact_for(&src.name, &dst.name, ALPN));
+        assert!(!held.holds_direct_fact_for(&src.node_id, &dst.node_id, ALPN));
         held.apply(direct_conn.clone()).unwrap();
-        assert!(held.holds_direct_fact_for(&src.name, &dst.name, ALPN));
+        assert!(held.holds_direct_fact_for(&src.node_id, &dst.node_id, ALPN));
         assert_eq!(held.active_direct_by_id(&direct_id), Some(&direct_conn));
-        assert_eq!(held.active_directs_to_for(&dst.name, ALPN).unwrap(), vec![&direct_conn]);
+        assert_eq!(held.active_directs_to_for(&dst.node_id, ALPN).unwrap(), vec![&direct_conn]);
         assert!(!held.names_superseded_destination(&direct_conn));
 
         // Active Proxy overrides active Direct when allowed by CarrierPolicy.
@@ -843,12 +850,12 @@ mod tests {
             logged_at_ms: 110,
         };
         held.apply(proxy_conn.clone()).unwrap();
-        assert_eq!(held.own_proxy(&dst.name), Some(Some(&proxy_conn)));
+        assert_eq!(held.own_proxy(&dst.node_id), Some(Some(&proxy_conn)));
 
         let via_proxy = resolve_for(
             &held,
-            &src.name,
-            &dst.name,
+            &src.node_id,
+            &dst.node_id,
             ALPN,
             CarrierPolicy::Proxy {
                 carrier_kind: NodeKind::RpcNode,
@@ -858,14 +865,14 @@ mod tests {
             via_proxy,
             RouteResolution {
                 route: EffectiveRoute::ViaPeer {
-                    carrier: car.name.clone(),
+                    carrier: car.node_id.clone(),
                     proxy: proxy_conn.clone(),
                 },
                 delete: None,
             }
         );
 
-        let no_proxy_policy = resolve_for(&held, &src.name, &dst.name, ALPN, CarrierPolicy::NoProxy);
+        let no_proxy_policy = resolve_for(&held, &src.node_id, &dst.node_id, ALPN, CarrierPolicy::NoProxy);
         assert_eq!(
             no_proxy_policy,
             RouteResolution {
@@ -884,7 +891,7 @@ mod tests {
             ..proxy_conn
         };
         held.apply(proxy_drop).unwrap();
-        assert_eq!(held.own_proxy(&dst.name), Some(None));
+        assert_eq!(held.own_proxy(&dst.node_id), Some(None));
 
         let direct_failed = NodeConnection {
             id: ConnectionId::mint(),
@@ -898,9 +905,9 @@ mod tests {
             ..direct_conn.clone()
         };
         held.apply(direct_failed).unwrap();
-        assert!(held.latest_direct_failed_for(&src.name, &dst.name, ALPN));
+        assert!(held.latest_direct_failed_for(&src.node_id, &dst.node_id, ALPN));
         assert_eq!(
-            resolve_for(&held, &src.name, &dst.name, ALPN, CarrierPolicy::NoProxy).route,
+            resolve_for(&held, &src.node_id, &dst.node_id, ALPN, CarrierPolicy::NoProxy).route,
             EffectiveRoute::NoActiveRoute
         );
 
@@ -909,9 +916,9 @@ mod tests {
         topo.set(dst_id.clone(), dst.name.clone(), dst_inc2);
         assert_eq!(held.end_superseded(&dst), Some(true));
         assert!(held.names_superseded_destination(&direct_conn));
-        assert!(!held.latest_direct_failed_for(&src.name, &dst.name, ALPN));
+        assert!(!held.latest_direct_failed_for(&src.node_id, &dst.node_id, ALPN));
         assert_eq!(
-            resolve_for(&held, &src.name, &dst.name, ALPN, CarrierPolicy::NoProxy).route,
+            resolve_for(&held, &src.node_id, &dst.node_id, ALPN, CarrierPolicy::NoProxy).route,
             EffectiveRoute::Direct { known: false }
         );
 

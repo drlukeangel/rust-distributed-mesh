@@ -113,10 +113,10 @@ impl RunningNode {
         self.own_config().update(config).await
     }
 
-    /// Another node's whole row, read from the nodes storage by its `id` or its `path.name` (query.md §1,
+    /// Another node's whole row, read from the nodes storage by its `id` or its `(path, name)` (query.md §1,
     /// Q237): a point read of the record its mesh-primary last wrote, with no call to any primary. The
     /// store is opened on this birth's first read, never at its start, join or create (Q227); a row by
-    /// `path.name` is the one the `path.name` index names, a `Withdrawn` one answered as none. `None` when
+    /// `(path, name)` is the one the `(path, name)` index names, a `Withdrawn` one answered as none. `None` when
     /// no row was ever written there; a store that does not read is refused by name.
     pub async fn node_row(&self, node: impl Into<crate::nodes_storage::IdOrName>) -> std::result::Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
         self.node_row_read().read(node).await
@@ -235,7 +235,7 @@ impl RunningNode {
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
         self.reconciler.abort();
-        let me = self.own.held_name().to_string();
+        let me = self.own.node_id.to_string();
         let started = std::time::Instant::now();
         let span = tracing::info_span!("rdm.mesh.node.update.via-leave-shutdown", node = %me, routers = self.routers.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
         let mut refused = false;
@@ -267,7 +267,7 @@ fn install_handed(topology_view: &TopologyView, control: &crate::wire::JoinContr
     if let Some(config) = &control.config {
         topology_view.set_config(config.clone());
     }
-    tracing::info!(name = ?control.name.as_ref().map(|n| n.to_string()), config_keys = control.config.as_ref().map_or(0, |c| c.len()), "the row's name and config the join handed are held");
+    tracing::info!(path = ?control.name.as_ref().map(|n| &n.path), name = ?control.name.as_ref().map(|n| &n.name), config_keys = control.config.as_ref().map_or(0, |c| c.len()), "the row's name and config the join handed are held");
 }
 
 #[cfg(feature = "file-backend")]
@@ -437,7 +437,7 @@ pub async fn start_on(
     let app_types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
-    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.kind.name());
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node_path = %launch.name.path, node_name = %launch.name.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.kind.name());
     // Boxed: the boot is one large state machine, and its caller holds only the box.
     let started = crate::taskdump::watched("start", Box::pin(start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot))).await;
     if let Err(e) = &started {
@@ -461,12 +461,12 @@ async fn start_booted(
 ) -> Result<RunningNode> {
     // An ordinary node is admitted by the admin that launched it (`node-mesh-join.md`
     // steps 2-3): a launch naming no launcher has nothing to be admitted by.
-    let launcher = launch.launcher.as_ref().ok_or_else(|| anyhow!("{} was launched with no launcher: a node joins through the admin that deployed it and is refused without one", launch.name))?;
+    let launcher = launch.launcher.as_ref().ok_or_else(|| anyhow!("{} was launched with no launcher: a node joins through the admin that deployed it and is refused without one", launch.node_id))?;
     let identity_exists = launch.data_dir.join("node-key").exists();
     let step = if identity_exists {
-        tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-identity-loaded", node = %launch.name)
+        tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-identity-loaded", node_path = %launch.name.path, node_name = %launch.name.name)
     } else {
-        tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-identity-minted", node = %launch.name)
+        tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-identity-minted", node_path = %launch.name.path, node_name = %launch.name.name)
     };
     let key = load_or_mint_key(&launch.data_dir)?;
     drop(step);
@@ -476,7 +476,7 @@ async fn start_booted(
     // This birth's exact runtime, as its provider recorded it: published with
     // the birth so any admin can manage it, whoever launched it.
     let dir = launch.data_dir.clone();
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-runtime-record", node = %launch.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-runtime-record", node_path = %launch.name.path, node_name = %launch.name.name);
     let runtime = crate::node_self::wait_for_own_record(&dir, Duration::from_secs(10)).await.map_err(|e| anyhow!("{e}"))?;
     drop(step);
     // The identity this process records its intentional exit under (a transport that stopped).
@@ -486,7 +486,7 @@ async fn start_booted(
         incarnation: launch.incarnation.to_string(),
     });
     // One endpoint, one socket for the process: Node RPC, gossip and every registered app Alpn share it by ALPN.
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node = %launch.name, requested = %launch.bind_addr, bound = tracing::field::Empty, listeners = tracing::field::Empty);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node_path = %launch.name.path, node_name = %launch.name.name, requested = %launch.bind_addr, bound = tracing::field::Empty, listeners = tracing::field::Empty);
     let alpn_names: Vec<Vec<u8>> = alpns.iter().map(|a| a.name.clone()).collect();
     let ep0 = rdm_transport::endpoint::bind_with_alpns(key.clone(), launch.bind_addr, &alpn_names)
         .await
@@ -508,7 +508,7 @@ async fn start_booted(
     // client observes of its pooled connections (connections.md sections 4.2, 9 and 10), each fact
     // appended to its connections storage (the file backend's lines of the fabric's store root, R14).
     // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-connections-opened", node = %launch.name, writes_to = tracing::field::Empty);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-connections-opened", node_path = %launch.name.path, node_name = %launch.name.name, writes_to = tracing::field::Empty);
     // The topology storage provider this birth writes, the one its launch names (storage.md §2): one its
     // executable registers, else the start is refused by name. The node reaches it through its one
     // handle, never a store held from here, so a provider change moves every caller ("Each node moves
@@ -520,7 +520,7 @@ async fn start_booted(
     let node_rows = topology_storage.node_rows();
     let property_writer = crate::node_records::NodePropertyWriter::new(topology_storage.node_records());
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
-        rdm_core::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
+        rdm_core::connections::ConnectionEnd { mesh: launch.mesh.clone(), kind: launch.kind, name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         decorate_storage(base_storage),
         Arc::new(std::sync::Mutex::new(rdm_core::connections::ConnectionsHeld::new())),
     ));
@@ -582,7 +582,7 @@ async fn start_booted(
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-built", node = %launch.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-built", node_path = %launch.name.path, node_name = %launch.name.name);
     // Every connection this node accepts from a live peer is a recovery trigger for its own dial
     // toward that birth, never a Direct entry (R-CN1).
     let server = serve_read(serve_node_command(serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone()), subject.clone())
@@ -592,10 +592,10 @@ async fn start_booted(
         .build(rdm_transport::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
         .map_err(|e| anyhow!("protocol catalog refused to build: {e:?}"))?;
     drop(step);
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node = %launch.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node_path = %launch.name.path, node_name = %launch.name.name);
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
     drop(step);
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.add.via-alpn-registered", node = %launch.name, alpns = "node-rpc,gossip");
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.add.via-alpn-registered", node_path = %launch.name.path, node_name = %launch.name.name, alpns = "node-rpc,gossip");
     let mut router_builder = Router::builder(ep0.clone())
         .accept(rdm_transport::ALPN, server.clone())
         .accept(iroh_gossip::ALPN, g.clone());
@@ -604,13 +604,13 @@ async fn start_booted(
     }
     let routers = vec![router_builder.spawn()];
     drop(step);
-    tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-accept-loop-started", node = %launch.name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
+    tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-accept-loop-started", node_path = %launch.name.path, node_name = %launch.name.name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
     let seeds: Vec<EndpointAddr> = launch
         .seeds
         .iter()
         .filter_map(|(k, a)| k.parse::<iroh::PublicKey>().ok().map(|pk| EndpointAddr::new(pk).with_ip_addr(*a)))
         .collect();
-    let name = launch.name.to_string();
+    let name = launch.node_id.to_string();
     // This birth's digest as it reports it: the address is the one the bound endpoint holds.
     let digest = MeshDigest { held_hash: rdm_core::app_types::hash(&app_types.iter().cloned().collect()),
         fabric_id: launch.fabric_id.clone(),
@@ -641,11 +641,11 @@ async fn start_booted(
     // or could not take the join within the attempts: it is never ready.
     let launcher = launcher.clone();
     let resolve: Box<dyn FnOnce() -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> + Send> = {
-        let (resolver, launch_name, launcher, seed) = (resolver.clone(), launch.name.clone(), launcher.clone(), seeds.first().cloned());
+        let (resolver, launch_name, launcher, seed) = (resolver.clone(), launch.node_id.clone(), launcher.clone(), seeds.first().cloned());
         Box::new(move || {
             use crate::node_self::StartFailed;
-            let seed = seed.ok_or_else(|| StartFailed { step: "node.join", reason: format!("{} names launcher {} but no seed to reach it at", launch_name, launcher.name) })?;
-            let launcher_ref = rdm_transport::ResolvedNode {
+            let seed = seed.ok_or_else(|| StartFailed { step: "node.join", reason: format!("{} names launcher {} but no seed to reach it at", launch_name, launcher.node_id) })?;
+            let launcher_ref = rdm_transport::ResolvedNode { mesh: launcher.mesh.clone(), kind: rdm_core::NodeKind::NodeAdmin,
                 node_id: launcher.node_id.clone(),
                 name: launcher.name.clone(),
                 endpoint_id: seed.id,
@@ -659,7 +659,7 @@ async fn start_booted(
     // What the start brought up, once it did: handed to the caller, or ended if the hook fails.
     let out: Arc<Mutex<Option<RunningNode>>> = Arc::default();
     let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), path: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
-    let joining = crate::workflows::node_start::Joining::AcceptingPrimary { label: launcher.name.to_string() };
+    let joining = crate::workflows::node_start::Joining::AcceptingPrimary { label: launcher.node_id.to_string() };
     let join_digest = digest.clone();
     let join_types = app_types.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
@@ -668,14 +668,14 @@ async fn start_booted(
             Box::pin(async move {
                 let joined = joined.expect("a first start through its launcher enters its channel with the join answer");
                 let member_cert = joined.control.member_cert.clone();
-                install_join_cert(&data_connections, &member_cert, &launch.name.to_string(), &launch.node_id, &launch.incarnation);
+                install_join_cert(&data_connections, &member_cert, &launch.node_id.to_string(), &launch.node_id, &launch.incarnation);
                 // The mesh's id names its channel; the launching admin writes it.
                 let mesh_id = launch.mesh_id.clone().ok_or_else(|| anyhow!("a node needs its mesh's id from its launch"))?;
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seeds.len());
 
             let topology_view = TopologyView::join(&g, &ep0, &launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds, &app_types.iter().map(String::as_str).collect::<Vec<_>>()).await?;
-            topology_view.set_author(&rdm_core::PublisherId { node: name.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() });
+            topology_view.set_author(&rdm_core::PublisherId { node: name.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() }, launch.supersedes.clone());
             // The name this birth holds is its topology view's (R12): its connections rows name it as their
             // source from here on, and every door names the node by it, whatever name the join hands it
             // or an `ApplyNodeName` gives it.
@@ -746,7 +746,7 @@ async fn start_booted(
                                     })
                                 };
                                 Arc::new(
-                                    crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
+                                    crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), launch.kind, server.clone(), client.clone(), node_rpc.resolver.clone(), topology_view.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
                                         .with_cancel(cancel.clone())
                                         .with_owed(owed_state.clone()),
                                 )
@@ -794,14 +794,14 @@ async fn start_booted(
                                 pre_node_ready_task: pre_node_ready_task_cell.clone(),
                                 listeners: listener_addrs.clone(),
                             }));
-                            let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
+                            let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.kind, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
                             let mut initial = property_snapshot(&topology_view, &digest, launch.initial_properties.config.clone());
                             initial.tags = launch.initial_properties.tags.clone();
                             initial.applied = launch.initial_properties.applied.clone();
                             initial.listeners = listener_addrs.clone();
                             let properties_view = topology_view.clone();
                             property_writer.bound(initial, move |record| { properties_view.set_config(record.config.clone()); properties_view.set_tags(record.tags.clone()); }).await
-                                .map_err(|error| anyhow!("{}: bound properties could not be persisted: {error}", launch.name))?;
+                                .map_err(|error| anyhow!("{}: bound properties could not be persisted: {error}", launch.node_id))?;
                             let _ = subject.set(Arc::new(Kicked { topology_view: topology_view.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), pre_node_ready: pre_node_ready_cell.clone(), stats: server.stats(), data_connections: data_connections.clone(), property_writer: property_writer.clone() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&topology_view, &digest, &status, &server));
@@ -826,7 +826,7 @@ async fn start_booted(
                                         let mut primary = topology_view.primaries().mesh(&node.mesh);
                                         if mesh_primary_moved(told.as_ref(), primary.as_ref()) && owed.is_empty() {
                                             let state = node_state_of(*status.lock().unwrap());
-                                            tracing::info_span!("rdm.node_rpc.status.update.via-mesh-primary-moved", node = %topology_view.held_name(&node.name), state = ?state, to = %primary.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
+                                            tracing::info_span!("rdm.node_rpc.status.update.via-mesh-primary-moved", node = %node.node_id, state = ?state, to = %primary.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
                                                 .in_scope(|| tracing::info!("the mesh's primary moved to another birth: this birth's state is owed to it"));
                                             drop(owed.owe_again(state));
                                         }
@@ -1010,7 +1010,7 @@ impl crate::node_self::Session for NodeSession {
         // this birth declares from here (its Ready names the start).
         self.owed.clear();
         let held = self.topology_view.reported(&self.digest);
-        let name = held.node.name.to_string();
+        let name = held.node.node_id.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AfterStop { session: self, root, name, held, commander, birth_cancel: Some(birth_cancel), rows, operation, progress, held_again };
         crate::workflows::node_start::node_start(&mut start, crate::node_hooks::StartKind::AfterStop).await
@@ -1106,7 +1106,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 
-    fn operation(&self) -> Option<String> {
+    fn operation(&self) -> Option<rdm_core::OperationId> {
         Some(self.operation.operation.clone())
     }
 
@@ -1131,7 +1131,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         *s.publisher.lock().unwrap() = Some(spawn_publisher(topology_view, &s.digest, &s.status, &s.server));
         let becoming = Becoming {
             boot: self.root.clone(),
-            name: me.to_string(),
+            name: s.node_id.to_string(),
             kind: s.kind.name(),
             incarnation_id: s.incarnation.to_string(),
             node_id: s.node_id.clone(),
@@ -1159,7 +1159,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
                 becoming,
                 ends: None,
                 knob: None,
-                leave: self.operation.operation.starts_with("node.mesh.join:").then(|| Leave { topology_view: topology_view.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), publisher: s.publisher.clone(), node_id: s.node_id.clone(), name: me.to_string() }),
+                leave: (self.operation.operation.action == "node.mesh.join").then(|| Leave { topology_view: topology_view.clone(), node_hooks: s.node_hooks.clone(), pre_node_ready_task: s.pre_node_ready_task.clone(), publisher: s.publisher.clone(), node_id: s.node_id.clone(), name: s.node_id.to_string() }),
             }),
         })
     }
@@ -1207,7 +1207,7 @@ impl Leave {
         }
         self.node_hooks.gate().close();
         crate::node_self::leave_channels(&self.topology_view, None, &self.node_id).await;
-        tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %self.name, step, reason)
+        tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node_id = %self.node_id, step, reason)
             .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the birth leaves its channels for its authority's next command"));
     }
 }
@@ -1277,11 +1277,10 @@ impl Becoming {
         tracing::info_span!(
             parent: &self.boot,
             "rdm.mesh.node.update.via-ready",
-            node = %self.name,
+            node_id = %self.node_id,
             kind = self.kind,
             incarnation_id = %self.incarnation_id,
             meshes = self.topology_view.meshes_held(),
-            node_id = %self.node_id,
             mesh_id = %self.mesh_id,
             fabric_id = %self.fabric_id,
             id_format = rdm_core::ID_FORMAT,
@@ -1332,11 +1331,11 @@ impl NodeRowRead {
     pub async fn read(&self, node: impl Into<crate::nodes_storage::IdOrName>) -> std::result::Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
         use tracing::Instrument as _;
         let node = node.into();
-        let (by, at) = match &node {
-            crate::nodes_storage::IdOrName::Id(id) => ("id", id.to_string()),
-            crate::nodes_storage::IdOrName::Name(name) => ("name", name.to_string()),
+        let (by, id, path, name) = match &node {
+            crate::nodes_storage::IdOrName::Id(id) => ("id", Some(id), None, None),
+            crate::nodes_storage::IdOrName::Name(location) => ("location", None, Some(location.path.as_str()), Some(location.name.as_str())),
         };
-        let span = tracing::info_span!("rdm.node.row.resolve.via-store", node = %self.topology_view.node_name(), by, at = %at, outcome = tracing::field::Empty, cause = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node.row.resolve.via-store", node = %self.topology_view.node_name(), by, subject_id = ?id, path, name, outcome = tracing::field::Empty, cause = tracing::field::Empty);
         let read = node.read(self.rows.as_ref()).instrument(span.clone()).await;
         match &read {
             Ok(Some(_)) => span.record("outcome", "found"),
@@ -1529,7 +1528,7 @@ async fn declare_until_mesh_primary_moves(me: &MeshNode, topology_view: &Topolog
             if declare_once(me, topology_view, client, owed, held, at, declaration).await { Declared::Answered } else { Declared::Unanswered }
         } => declared,
         () = moved => {
-            tracing::info_span!("rdm.node_rpc.status.remove.via-primary-changed", node = %topology_view.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
+            tracing::info_span!("rdm.node_rpc.status.remove.via-primary-changed", node = %me.node_id, from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("the mesh's primary role moved while the declaration was in flight: its call to the old primary is cancelled"));
             Declared::MeshPrimaryMoved
         }
@@ -1546,10 +1545,10 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
     if connected.iter().any(|c| c.destination.node_id == *primary) {
         return rdm_transport::route::RouteChoice::Direct;
     }
-    let mut peers: Vec<(rdm_core::PathName, NodeId)> = connected
+    let mut peers: Vec<NodeId> = connected
         .into_iter()
-        .filter(|c| c.destination.name.mesh == mesh && c.destination.node_id != *primary && c.destination.node_id != *me)
-        .map(|c| (c.destination.name.clone(), c.destination.node_id.clone()))
+        .filter(|c| c.destination.mesh == mesh && c.destination.node_id != *primary && c.destination.node_id != *me)
+        .map(|c| c.destination.node_id.clone())
         .collect();
     if peers.is_empty() {
         peers = topology_view
@@ -1557,13 +1556,13 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
             .current(topology_view.digest_view.staleness_floor())
             .into_iter()
             .filter(|d| d.node.mesh == mesh && d.node.node_id != *primary && d.node.node_id != *me)
-            .map(|d| (d.node.name.clone(), d.node.node_id.clone()))
+            .map(|d| d.node.node_id.clone())
             .collect();
     }
     peers.sort();
     peers.dedup();
     match peers.get(attempt as usize % peers.len().max(1)) {
-        Some((path, node_id)) => rdm_transport::route::RouteChoice::ViaPeer { carrier: node_id.clone(), path: path.clone() },
+        Some(node_id) => rdm_transport::route::RouteChoice::ViaPeer { carrier: node_id.clone() },
         None => rdm_transport::route::RouteChoice::Direct,
     }
 }
@@ -1581,15 +1580,15 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::status::{Status, StatusReply, StatusRequest};
     let (state, operation) = declaration.clone();
-    let node = topology_view.held_name(&me.name);
+    let node = &me.node_id;
     let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
-    let op_name = operation.as_ref().map(|o| o.operation.clone()).unwrap_or_default();
+    let op_name = operation.as_ref().map(|o| o.operation.action.clone()).unwrap_or_default();
     let Some(primary) = topology_view.primaries().mesh(&me.mesh) else {
         tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = "", route = "none", outcome = "no-primary: this birth holds no primary role for its mesh", definitive = false)
             .in_scope(|| tracing::info!("no primary role is held for this birth's mesh: the declaration stays owed"));
         return false;
     };
-    let to = topology_view.digest_view.current(topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
+    let to = primary.node_id.to_string();
     let policy = {
         let (held, topology_view, me_id, primary_id, mesh) = (held.clone(), topology_view.clone(), me.node_id.clone(), primary.node_id.clone(), me.mesh.clone());
         rdm_transport::RoutePolicy(Arc::new(move |attempt| declaration_route(&held, &topology_view, &me_id, &primary_id, &mesh, attempt)))
@@ -1643,7 +1642,7 @@ type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
 async fn forward_read(me: &Kicked, read: &rdm_core::status::Read, req: &rdm_core::status::StatusRequest) -> rdm_core::status::StatusReply {
     use rdm_core::filter::Entity;
     use rdm_core::status::{Status, StatusReply};
-    let node = me.topology_view.held_name(&me.digest.node.name);
+    let node = &me.digest.node.node_id;
     let op = read.entity.read();
     let pairs = read.filter.pairs.iter().map(|(p, v)| format!("({p}, [{}])", v.join(", "))).collect::<Vec<_>>().join(" ");
     let empty = tracing::field::Empty;
@@ -1654,14 +1653,14 @@ async fn forward_read(me: &Kicked, read: &rdm_core::status::Read, req: &rdm_core
     };
     let forwarded = async {
         let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.mesh) else {
-            return rdm_core::reply::status::not_ready(format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.mesh));
+            return rdm_core::reply::status::not_ready(format!("{node:?} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.mesh));
         };
-        let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
+        let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.node_id.to_string()).unwrap_or_else(|| primary.node_id.to_string());
         tracing::Span::current().record("mesh_primary", to.as_str());
         let (out, _) = me.own.client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), req, &rdm_transport::CallOptions::default()).await;
         match out {
             rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
-            other => rdm_core::reply::status::not_ready(format!("{node} forwarded {op} to its mesh-primary {to}: the call ended {} with no reply", other.name())),
+            other => rdm_core::reply::status::not_ready(format!("{node:?} forwarded {op} to its mesh-primary {to}: the call ended {} with no reply", other.name())),
         }
     };
     let reply = tracing::Instrument::instrument(forwarded, span.clone()).await;
@@ -1690,18 +1689,18 @@ fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(ReadReply::NotReady { reason: "this node has not joined its mesh yet".into() });
             };
             let op = req.op();
-            let node = me.topology_view.held_name(&me.digest.node.name);
+            let node = &me.digest.node.node_id;
             let (entity, filter) = match req {
                 ReadRequest::GetConnections { incarnation, filter, .. } => {
                     if incarnation != me.digest.node.incarnation {
                         let stale = rdm_core::reply::stale(me.digest.node.incarnation.clone());
-                        return Ok(ReadReply::NotReady { reason: format!("{node} answered {op} with {}", stale.name()) });
+                        return Ok(ReadReply::NotReady { reason: format!("{node:?} answered {op} with {}", stale.name()) });
                     }
                     let rows = match me.own.connections_get(&filter).await {
                         StatusReply::Connections { connections } => Rows::Connections(connections),
                         StatusReply::RejectedFilter { reason } => return Ok(ReadReply::RejectedFilter { reason }),
                         StatusReply::NotReady { reason } => return Ok(ReadReply::NotReady { reason }),
-                        other => return Ok(ReadReply::NotReady { reason: format!("{node} answered {op} with {}", other.name()) }),
+                        other => return Ok(ReadReply::NotReady { reason: format!("{node:?} answered {op} with {}", other.name()) }),
                     };
                     let frames = match rdm_client::read_frames(rows.into_rows(), op) {
                         Ok(f) => f,
@@ -1733,14 +1732,14 @@ fn serve_read(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             };
             let forwarded = async {
                 let Some(primary) = me.topology_view.primaries().mesh(&me.digest.node.mesh) else {
-                    return Err(ReadReply::NotReady { reason: format!("{node} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.mesh) });
+                    return Err(ReadReply::NotReady { reason: format!("{node:?} keeps no atlas to answer {op}, and holds no mesh-primary of {} to forward it to", me.digest.node.mesh) });
                 };
-                let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| primary.node_id.to_string());
+                let to = me.topology_view.digest_view.current(me.topology_view.digest_view.staleness_floor()).iter().find(|d| d.node.node_id == primary.node_id).map(|d| d.node.node_id.to_string()).unwrap_or_else(|| primary.node_id.to_string());
                 tracing::Span::current().record("mesh_primary", to.as_str());
                 match rdm_client::NodeRpc::new(&me.own.client).read(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), entity, &filter, &rdm_transport::CallOptions::default()).await {
                     Ok(rows) => rdm_client::read_frames(rows.into_rows(), op).map(|frames| (rows_len(&frames), frames)),
                     Err(rdm_client::CallEnd::Rejected { reason, detail }) if reason == "rejected-filter" => Err(ReadReply::RejectedFilter { reason: detail }),
-                    Err(e) => Err(ReadReply::NotReady { reason: format!("{node} forwarded {op} to its mesh-primary: the read ended {} ({e})", e.outcome()) }),
+                    Err(e) => Err(ReadReply::NotReady { reason: format!("{node:?} forwarded {op} to its mesh-primary: the read ended {} ({e})", e.outcome()) }),
                 }
             };
             let answer = tracing::Instrument::instrument(forwarded, span.clone()).await;
@@ -1801,11 +1800,11 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(rdm_core::reply::node_command::not_ready("this node has not joined its mesh yet".into()));
             };
             let sender = me.topology_view.projected_member_at(&peer.endpoint_id.to_string());
-            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
+            let sender_name = sender.as_ref().map(|d| d.node.node_id.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             me.addressed.note(&peer.endpoint_id);
             let commander = sender.as_ref().map(|d| d.node.node_id.clone());
             let reply = me.own.serve_node_command_on(commander.as_ref(), Some(peer.endpoint_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
-            tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.topology_view.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.digest.node.node_id, op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a node command naming this node was decided"));
             Ok(reply)
         }
@@ -1845,21 +1844,21 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // view, which holds a member only once its own digest reached this node.
             let sender = me.topology_view.projected_member_at(&peer.endpoint_id.to_string());
             // A sender no projection this node holds names is named by the one fact it holds of it: its endpoint.
-            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
+            let sender_name = sender.as_ref().map(|d| d.node.node_id.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             // Every call addressed this birth from its endpoint: a hook blocked on its authority's word
             // counts it, whether or not a record names the caller.
             me.addressed.note(&peer.endpoint_id);
             if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. }) {
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone());
                 let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
-                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.topology_view.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.digest.node.node_id, op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a node command naming this node was decided"));
                 return Ok(reply);
             }
             // node-left is never sent: refused by name as a node-admin refuses it, never sent on to one.
             if let StatusRequest::NodeLeft { node_id, .. } = &req {
-                let name = me.topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
-                return Ok(crate::node_self::refuse_node_left(&me.topology_view.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
+                let name = me.topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.node_id.to_string()).unwrap_or_default();
+                return Ok(crate::node_self::refuse_node_left(&me.digest.node.node_id.to_string(), &name, &sender_name, &req));
             }
             // A read (Q167, Q285): the reads are op 0x23's stream; on Status they are refused by name,
             // and the retained `GetFabric` (its one fabric) is forwarded to its own mesh-primary.
@@ -1872,7 +1871,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let incarnation = match &req {
                 StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeProperties { incarnation, .. } | StatusRequest::CreateTags { incarnation, .. } | StatusRequest::DeleteTags { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } | StatusRequest::UpdateRoots { incarnation, .. } => incarnation,
                 // No handler on this door for the request: not handled here (R24), decided by dispatch alone.
-                _ => return Ok(crate::node_self::request_not_handled(&me.topology_view.held_name(&me.digest.node.name).to_string(), &req)),
+                _ => return Ok(crate::node_self::request_not_handled(&me.digest.node.node_id.to_string(), &req)),
             };
             // The birth the call reached answers it, whatever node id it names (R-RX5); the exact
             // birth it names is checked, so a call that reached another birth is refused naming the
@@ -1885,7 +1884,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::RenewCert { cert, .. } => Ok(me.own.renew_cert(&cert)),
                 // node.roots.update: an rpc node keeps no root secret; only the public set is installed.
                 StatusRequest::UpdateRoots { node_id, incarnation, roots, phase, .. } => {
-                    let node = me.topology_view.held_name(&me.digest.node.name).to_string();
+                    let node = me.digest.node.node_id.to_string();
                     Ok(crate::roots_update::install_roots(&me.data_connections, &node, &node_id, &incarnation, &roots, phase, false))
                 }
                 StatusRequest::ProbeNodeState { .. } => {
@@ -1900,7 +1899,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     if let Some((reason, retry_on)) = blocker {
                         let on = retry_on.name();
                         let reply = rdm_core::reply::status::bounded_blocked(me.digest.node.node_id.clone(), me.digest.node.incarnation.clone(), &reason, retry_on);
-                        tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on)
+                        tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.digest.node.node_id, sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on)
                             .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                         return Ok(reply);
                     }
@@ -1915,7 +1914,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let _ = me.topology_view.publish(&d).await;
                     tracing::info_span!(
                         "rdm.node_admin.status.update.via-probe",
-                        node = %me.topology_view.held_name(&me.digest.node.name),
+                        node = %me.digest.node.node_id,
                         sender = %sender_name,
                         state = ?node_state_of(status),
                     )
@@ -1925,7 +1924,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 StatusRequest::ApplyNodeState { state, .. } => {
                     // Not a node command: a node's connections are deleted only by `node.connection.delete` on op 0x22.
                     let current = node_state_of(*me.status.lock().unwrap());
-                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "node.connection.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state")
+                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.digest.node.node_id, sender = %sender_name, requested = ?state, current = ?current, reason = "node.connection.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(rdm_core::reply::status::rejected_invalid_node_transition(current))
                 }
@@ -1959,7 +1958,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             &me.topology_view.node_name().to_string(), &error.to_string()));
                     }
                     let installed = true;
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.topology_view.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), revision, held_revision = me.topology_view.config_revision(), installed, outcome = "applied", "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.digest.node.node_id, sender = %sender_name, keys = config.len(), revision, held_revision = me.topology_view.config_revision(), installed, outcome = "applied", "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the config its mesh-primary wrote is held over an older revision"));
                     Ok(rdm_core::reply::applied())
                 }
@@ -1982,10 +1981,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // carries it; off its mesh it publishes nothing (node-mesh-leave.md), and its stop
                     // or its next join carries the name.
                     let held = me.topology_view.reported(&me.digest).node.name;
-                    let asked = match name.parse::<rdm_core::PathName>() {
+                    let asked = match rdm_core::PathName::new(name.path.clone(), name.name.clone()) {
                         Ok(n) => n,
                         Err(e) => {
-                            tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node = %held, sender = %sender_name, to = %name, reason = %format!("the name {name:?} is not a path.name: {e}"), "otel.kind" = "internal")
+                            tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node_id = %me.digest.node.node_id, from_path = %held.path, from_name = %held.name, sender = %sender_name, to_path = %name.path, to_name = %name.name, reason = %format!("invalid path or name in {name:?}: {e}"), "otel.kind" = "internal")
                                 .in_scope(|| tracing::info!("apply-node-name refused: the name does not parse"));
                             return Ok(rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt));
                         }
@@ -2014,11 +2013,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         _ => "unchanged",
                     };
                     let held_routes = routes.iter().map(crate::node_name::route_name).collect::<Vec<_>>().join(", ");
-                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node_id = %me.digest.node.node_id, sender = %sender_name, from_path = %held.path, from_name = %held.name, to_path = %asked.path, to_name = %asked.name, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
                     Ok(crate::node_name::reply(&decision))
                 }
-                _ => Ok(crate::node_self::request_not_handled(&me.topology_view.held_name(&me.digest.node.name).to_string(), &req)),
+                _ => Ok(crate::node_self::request_not_handled(&me.digest.node.node_id.to_string(), &req)),
             }
         }
     })

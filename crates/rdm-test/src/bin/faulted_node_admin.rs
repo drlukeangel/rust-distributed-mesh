@@ -11,17 +11,17 @@ use rdm_test::test_app;
 #[tokio::main]
 async fn main() {
     rdm_admin::entry::run_on("faulted-node-admin", test_app::topology_storage_providers, |cfg| {
-        // The path.name this admin is: the launch's, an adoption launch's given name, or the Day-0 admin's first.
-        let name = cfg.launch.as_ref().map(|l| l.name.to_string()).or_else(|| cfg.adopt.as_ref().map(PathName::to_string)).unwrap_or_else(|| PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1).to_string());
+        // The separate path and name of this admin: the launch's, an adoption launch's given name, or the Day-0 admin's first.
+        let name = cfg.launch.as_ref().map(|l| l.name.clone()).or_else(|| cfg.adopt.clone()).unwrap_or_else(|| PathName::numbered(&cfg.mesh, NodeKind::NodeAdmin, 1));
         // The directory that holds every node's data dir of this fabric: where its boot cuts are listed.
         let root = cfg.data_dir.parent().map(std::path::Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
-        let faults = AdminFaults::new(name.clone());
+        let faults = AdminFaults::new(cfg.node_id.clone());
         let fail = |what: &str, e: String| -> ! {
-            eprintln!("faulted-node-admin {name}: {what}: {e}");
+            eprintln!("faulted-node-admin {name:?}: {what}: {e}");
             std::process::exit(2)
         };
-        let armed = admin_faults::arm_boot_cuts(&faults, &root).unwrap_or_else(|e| fail("boot cuts", e));
-        tracing::info_span!("rdm.testkit.fault.create.via-boot", node = %name, door_op = rdm_test::fault_door::OP, boot_cuts = armed).in_scope(|| tracing::info!("boot cuts armed; the fault door is served on the Node RPC server"));
+        let armed = admin_faults::arm_boot_cuts(&faults, &root, &name).unwrap_or_else(|e| fail("boot cuts", e));
+        tracing::info_span!("rdm.testkit.fault.create.via-boot", node = %cfg.node_id, node_path = %name.path, node_name = %name.name, door_op = rdm_test::fault_door::OP, boot_cuts = armed).in_scope(|| tracing::info!("boot cuts armed; the fault door is served on the Node RPC server"));
         // This executable holds the cert material every RDM node-admin does (fabric-certs.md): the root its
         // environment or data dir gives it, or its launch's issuing material. A launch's issuing cert (never
         // its key), and whether the root rode beside it (never the root), are recorded in a span, so a
@@ -31,7 +31,7 @@ async fn main() {
             tracing::info_span!(
                 target: "rafka_node_rpc_testkit",
                 "rdm.testkit.cert.resolve.via-launch",
-                node = %name,
+                node = %cfg.node_id, node_path = %name.path, node_name = %name.name,
                 issuing = l.issuing.is_some(),
                 root = l.issuing.is_some(),
                 ca_key = l.issuing.is_some(),

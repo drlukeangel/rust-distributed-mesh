@@ -37,7 +37,7 @@ pub struct Deployed {
     pub mesh: String,
     /// The runtime kind supplied at deployment.
     pub kind: crate::model::NodeKind,
-    /// The deployed node's `path.name`.
+    /// The deployed node's `(path, name)`.
     pub name: PathName,
     /// The deployed node's id.
     pub node_id: NodeId,
@@ -58,7 +58,7 @@ pub struct Deployed {
     /// The accepting primary holds this birth: the deployment is a later start of a node it admitted
     /// before (a stopped or restarted birth), whose join is reconciled to its row and handed its
     /// row's config; `false` at a first start, admitted under its create spec's name whatever row
-    /// stands at that path.name (R-JN1 item 6), and handed its row's config when that row is its own
+    /// stands at that path and name (R-JN1 item 6), and handed its row's config when that row is its own
     /// create's claim. Set by the one that registers the deployment, never
     /// inferred from the last accepted name, which an admin that joined after the stop lacks
     /// (`TopologyView::stopped_unheard`).
@@ -106,12 +106,13 @@ impl Deployed {
         // The name is reconciled apart from identity (node-create.md step 4): a held birth is
         // admitted under its row's name or the name this authority last accepted for it; a first
         // start under its create spec's name only.
-        if d.node.name != self.name && self.last_accepted_name.as_ref() != Some(&d.node.name) {
+        same("path", &self.name.path, &d.node.name.path)?;
+        if d.node.name.name != self.name.name && !self.last_accepted_name.as_ref().is_some_and(|last| last.path == self.name.path && last.name == d.node.name.name) {
             let deployed = match &self.last_accepted_name {
-                Some(last) => format!("row's {:?}, last accepted {:?}", self.name.to_string(), last.to_string()),
-                None => format!("{:?}", self.name.to_string()),
+                Some(last) if last.path == self.name.path => format!("row's {:?}, last accepted {:?}", self.name.name, last.name),
+                _ => format!("{:?}", self.name.name),
             };
-            return Err(Mismatch { field: "name", deployed, reported: format!("{:?}", d.node.name.to_string()) });
+            return Err(Mismatch { field: "name", deployed, reported: format!("{:?}", d.node.name.name) });
         }
         same("incarnation", &self.incarnation, &d.node.incarnation)?;
         same("supersedes", &self.supersedes, &d.node.supersedes)?;
@@ -226,9 +227,9 @@ impl Joins {
     /// carried). Nothing is kept by a door over no storage.
     pub async fn keep_admitted(&self, d: &MeshDigest) -> Result<(), String> {
         let Some(runtimes) = &self.runtimes else { return Ok(()) };
-        let runtime = d.node.runtime.clone().ok_or_else(|| format!("{}: the admitted report names no runtime", d.node.name))?;
-        let row = RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
-        runtimes.put_runtime(&row).await.map_err(|e| format!("{}: the admitted report's runtime row could not be kept: {e}", d.node.name))
+        let runtime = d.node.runtime.clone().ok_or_else(|| format!("{}: the admitted report names no runtime", d.node.node_id))?;
+        let row = RuntimeRow { kind: d.node.kind, mesh: d.node.mesh.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
+        runtimes.put_runtime(&row).await.map_err(|e| format!("{}: the admitted report's runtime row could not be kept: {e}", d.node.node_id))
     }
 
     /// The admitted birth's durable report: the runtime row of the exact birth, `None` where this admin
@@ -326,7 +327,7 @@ impl Joins {
 
 /// Fills the admin's side of a join once the admin holds a view.
 pub struct JoinDoor {
-    /// This admin's `path.name`.
+    /// This admin's `(path, name)`.
     pub me: PathName,
     /// The births this admin deployed.
     pub joins: Arc<Joins>,
@@ -348,8 +349,8 @@ pub struct JoinDoor {
     /// join and `false` for a retry, a report its registration already heard ([`Joins::heard`]), which
     /// applies as already applied (Q99: per join, not per birth).
     pub pending: Arc<dyn Fn(MeshDigest, bool) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
-    /// The mesh primary this admin sees, by path.name.
-    pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    /// The mesh primary this admin sees, by globally unique node ID.
+    pub primary: Arc<dyn Fn() -> Option<NodeId> + Send + Sync>,
     /// The signer this admin issues each accepted birth's member cert with, on its rafka-time.
     pub issuer: Arc<crate::certs::CertIssuer>,
     /// Where each admitted birth's cert dates are written on its node record before it is admitted
@@ -358,7 +359,7 @@ pub struct JoinDoor {
     /// (a testkit admin side).
     pub nodes: Option<(Arc<dyn crate::storage::NodesStorage>, Arc<crate::node_rows::WrittenRows>)>,
     /// The atlas this admin holds its rows in (Q234; every row its writer claims or writes is held
-    /// there): the row at a joiner's `path.name` is read from it, never from the store (Q227). The join
+    /// there): the row at a joiner's `(path, name)` is read from it, never from the store (Q227). The join
     /// answer hands the row's config beside its name. `None` for a door that keeps no records (a
     /// testkit admin side): no row is held at any name.
     pub atlas: Option<Arc<crate::atlas::Atlas>>,
@@ -376,14 +377,14 @@ impl JoinDoor {
         let d = MeshDigest::from(digest);
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-join",
-            node = %d.node.name,
+            node_path = %d.node.name.path, node_name = %d.node.name.name,
             node_id = %d.node.node_id,
             incarnation_id = %d.node.incarnation.as_str(),
             reported_addr = %d.node.transport_addr,
             listeners = tracing::field::Empty,
-            served_by = %self.me,
+            served_by_path = %self.me.path, served_by_name = %self.me.name,
             caller = tracing::field::Empty,
-            admitted_as = tracing::field::Empty,
+            admitted_path = tracing::field::Empty, admitted_name = tracing::field::Empty,
             config_keys = tracing::field::Empty,
             outcome = tracing::field::Empty,
             build_id = tracing::field::Empty,
@@ -402,7 +403,7 @@ impl JoinDoor {
         match self.joins.standing(&d, &listeners) {
             Standing::Mismatch(m) => {
                 span.record("outcome", "mismatch");
-                tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
+                tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node_path = %d.node.name.path, node_name = %d.node.name.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
                     .in_scope(|| tracing::warn!("the reported digest disagrees with the deployment"));
                 rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported)
             }
@@ -410,12 +411,12 @@ impl JoinDoor {
                 // Canonicalized to the row's name before anything is issued or installed: the
                 // reported name, when it is the last accepted one, is never admitted (R-JN1).
                 d.node.name = name;
-                span.record("admitted_as", tracing::field::display(&d.node.name));
+                span.record("admitted_path", d.node.name.path.as_str()).record("admitted_name", d.node.name.name.as_str());
                 // The row's config, handed beside its name and installed on the digest: the row as this
                 // admin's atlas holds it (Q234), never read from the store (Q227). A first start
                 // is admitted under its create spec's name (R-JN1 item 6), and its row there is its own
                 // create's claim, written before it was launched (node-create.md step 1) and seeded
-                // from the previous row at that path.name (node-recovery.md step 4): it is handed that
+                // from the previous row at that path and name (node-recovery.md step 4): it is handed that
                 // config at its join, before it publishes anything or declares readiness (node-start.md
                 // step 2). Another node's row at a first start's name (a create that wrote no claim, a
                 // predecessor's row) is handed nothing and refuses nothing; a held birth's join is
@@ -427,8 +428,8 @@ impl JoinDoor {
                     // and decided as every refused caller is (Q207), never issued a cert or admitted.
                     Some(row) if row.node_id == d.node.node_id && row.status == crate::model::NodeStatus::Deleted => {
                         span.record("outcome", "mismatch");
-                        let m = Mismatch { field: "status", deployed: format!("the row of node {} at {} is deleted", row.node_id, row.name), reported: format!("node {} incarnation {} joining as {}", d.node.node_id, d.node.incarnation.as_str(), d.node.name) };
-                        tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
+                        let m = Mismatch { field: "status", deployed: format!("node {} is deleted", row.node_id), reported: format!("node {} incarnation {} requests join", d.node.node_id, d.node.incarnation.as_str()) };
+                        tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node_path = %d.node.name.path, node_name = %d.node.name.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
                             .in_scope(|| tracing::warn!("a birth whose record is deleted asked to join: deleted, never re-admitted"));
                         if let Some(atlas) = &self.atlas {
                             atlas.refused("join", &d.node.node_id, &d.node.incarnation);
@@ -446,12 +447,12 @@ impl JoinDoor {
                     Some(_) if !held => None,
                     Some(row) => {
                         span.record("outcome", "mismatch");
-                        let m = Mismatch { field: "name", deployed: format!("the row at {} holds node {}", row.name, row.node_id), reported: format!("node {} as {}", d.node.node_id, d.node.name) };
-                        tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
+                        let m = Mismatch { field: "node_id", deployed: row.node_id.to_string(), reported: d.node.node_id.to_string() };
+                        tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node_path = %d.node.name.path, node_name = %d.node.name.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
                             .in_scope(|| tracing::warn!("the row at the admitted name belongs to another node"));
                         // A caller birth this admin does not hold (Q207; node-investigation.md: "A node
                         // that comes back after it was re-created is such a caller"): refused by name,
-                        // then decided by its path.name and this admin's atlas, on its own task.
+                        // then decided by its path and name and this admin's atlas, on its own task.
                         if let Some(atlas) = &self.atlas {
                             atlas.refused("join", &d.node.node_id, &d.node.incarnation);
                         }
@@ -466,7 +467,7 @@ impl JoinDoor {
                     Ok(c) => c,
                     Err(crate::certs::IssueFailure::NoRafkaTime(why)) => {
                         span.record("outcome", "not-ready");
-                        return rdm_core::reply::join::not_ready(format!("{}: {why}", self.me));
+                        return rdm_core::reply::join::not_ready(format!("join of node {}: {why}", d.node.node_id));
                     }
                     Err(crate::certs::IssueFailure::Refused { error, detail }) => {
                         span.record("outcome", "cert-refused");
@@ -481,7 +482,7 @@ impl JoinDoor {
                 if let (Some((storage, written)), true) = (&self.nodes, !issue.bytes.is_empty() || !listeners.is_empty()) {
                     let dates = (!issue.bytes.is_empty()).then(|| crate::cert_renewal::dates_of(&issue));
                     let signing = (!issue.bytes.is_empty() && d.node.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
-                    let base = crate::storage::NodeRow::new(birth.name.clone(), birth.node_id.clone(), crate::model::NodeStatus::Pending);
+                    let base = crate::storage::NodeRow::new(birth.name.clone(), birth.mesh.clone(), d.node.kind, birth.node_id.clone(), crate::model::NodeStatus::Pending);
                     let put = written.update(&**storage, &birth.node_id, Some(base), |r| {
                         let b = r.birth_mut(&birth.incarnation, &birth.name);
                         if let Some(dates) = dates {
@@ -494,20 +495,20 @@ impl JoinDoor {
                     });
                     if let Err(why) = put.await {
                         span.record("outcome", "not-ready");
-                        return rdm_core::reply::join::not_ready(format!("{}: {} ({}): {why}", self.me, birth.name, birth.node_id));
+                        return rdm_core::reply::join::not_ready(format!("node {}: {why}", birth.node_id));
                     }
                 }
                 let cert = issue.bytes;
                 span.record("cert_len", cert.len() as u64);
                 if let Err(why) = (self.types)(d.clone(), types).await {
-                    return rdm_core::reply::join::not_ready(format!("{}: the app declaration could not be joined and recorded: {why}", self.me));
+                    return rdm_core::reply::join::not_ready(format!("node {}: the app declaration could not be joined and recorded: {why}", d.node.node_id));
                 }
                 // The validated report is kept durable before it is released (node-create.md step 5):
                 // a re-run of the create after this process restarted completes WaitForMeshJoin from
                 // it. A put refused installs nothing, and the join is retried.
                 if let Err(why) = self.joins.keep_admitted(&d).await {
                     span.record("outcome", "not-ready");
-                    return rdm_core::reply::join::not_ready(format!("{}: {why}", self.me));
+                    return rdm_core::reply::join::not_ready(format!("join of node {}: {why}", d.node.node_id));
                 }
                 (self.install)(&d);
                 (self.known)().await;
@@ -530,7 +531,7 @@ impl JoinDoor {
             Standing::Unknown => {
                 span.record("outcome", "not-authority");
                 let primary = (self.primary)();
-                tracing::info_span!("rdm.node_admin.node.reject.via-join-unknown", node = %d.node.name, node_id = %d.node.node_id, primary = ?primary)
+                tracing::info_span!("rdm.node_admin.node.reject.via-join-unknown", node_path = %d.node.name.path, node_name = %d.node.name.name, node_id = %d.node.node_id, primary = ?primary)
                     .in_scope(|| tracing::warn!("this admin deployed no such birth and holds no member of it"));
                 rdm_core::reply::join::not_primary(primary)
             }
@@ -545,13 +546,13 @@ impl JoinDoor {
                 a.control.config = config;
                 a
             }
-            Err(why) => return rdm_core::reply::join::not_ready(format!("{}: not ready to answer a join: {why}", self.me)),
+            Err(why) => return rdm_core::reply::join::not_ready(format!("admin at path {:?}, name {:?}: not ready to answer a join: {why}", self.me.path, self.me.name)),
         };
-        tracing::info_span!("rdm.mesh.entry.serve.via-pull", node = %node, served_by = %answer.served_by, statuses = answer.statuses.len())
+        tracing::info_span!("rdm.mesh.entry.serve.via-pull", node_path = %node.path, node_name = %node.name, served_by = %answer.served_by, statuses = answer.statuses.len())
             .in_scope(|| tracing::info!("entry answered"));
         match crate::wire::answer_to_wire(&answer) {
             Ok(bytes) => JoinReply::Joined { answer: bytes },
-            Err(e) => rdm_core::reply::join::not_ready(format!("{}: its answer does not encode: {e}", self.me)),
+            Err(e) => rdm_core::reply::join::not_ready(format!("admin at path {:?}, name {:?}: its answer does not encode: {e}", self.me.path, self.me.name)),
         }
     }
 }
@@ -582,7 +583,7 @@ mod tests {
 
     fn deployed() -> Deployed {
         Deployed { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode,
-            name: "mesh1.rpc.1".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -625,7 +626,7 @@ mod tests {
     fn a_join_digest_that_matches_the_deployment_is_deployed_and_is_reported() {
         let joins = Joins::default();
         let dep = Deployed {
-            name: "elsewhere.gateway.north".parse().unwrap(),
+            name: rdm_core::PathName::new("elsewhere.gateway", "north").unwrap(),
             mesh: "mesh2".into(),
             kind: rdm_core::NodeKind::Compute,
             ..deployed()
@@ -674,9 +675,9 @@ mod tests {
     }
 
     /// The deployment of a birth this authority holds, stopped as `mesh1.rpc.1` and renamed in its
-    /// row to `mesh1.rpc.1.old` while stopped (R-JN1).
+    /// row to `mesh1.rpc.old.1` while stopped (R-JN1).
     fn renamed_while_stopped() -> Deployed {
-        Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), held: true, ..deployed() }
+        Deployed { name: rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap(), last_accepted_name: Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), held: true, ..deployed() }
     }
 
     // @feature: node-lifecycle
@@ -687,18 +688,21 @@ mod tests {
     fn a_held_births_join_accepts_the_rows_or_the_last_accepted_name_and_refuses_any_other_naming_all_three() {
         let dep = renamed_while_stopped();
         let mut held = digest_of(&dep);
-        held.node.name = "mesh1.rpc.1".parse().unwrap();
+        held.node.name = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         assert_eq!(dep.verify(&held, &[]), Ok(()), "the name last accepted for this exact birth is admitted");
         assert_eq!(dep.verify(&digest_of(&dep), &[]), Ok(()), "the row's name is admitted");
         let mut other = digest_of(&dep);
-        other.node.name = "mesh1.rpc.7".parse().unwrap();
+        other.node.name = rdm_core::PathName::new("mesh1.rpc", "7").unwrap();
         let m = dep.verify(&other, &[]).unwrap_err();
         assert_eq!(m.field, "name");
-        assert!(m.reported.contains("mesh1.rpc.7") && m.deployed.contains("mesh1.rpc.1.old") && m.deployed.contains("last accepted") && m.deployed.contains("\"mesh1.rpc.1\""), "the refusal names all three: {m:?}");
+        assert!(m.reported.contains("\"7\"") && m.deployed.contains("\"1-old\"") && m.deployed.contains("last accepted") && m.deployed.contains("\"1\""), "the refusal names all three: {m:?}");
         let first = deployed();
         let mut off_spec = digest_of(&first);
-        off_spec.node.name = "mesh1.rpc.1.old".parse().unwrap();
+        off_spec.node.name = rdm_core::PathName::new("mesh1.rpc", "1-old").unwrap();
         assert_eq!(first.verify(&off_spec, &[]).unwrap_err().field, "name", "a first start off its create spec is still refused");
+        let mut moved_path = digest_of(&dep);
+        moved_path.node.name = PathName::new("another.path", dep.name.name.clone()).unwrap();
+        assert_eq!(dep.verify(&moved_path, &[]).unwrap_err().field, "path", "a held birth cannot change path even when its name matches");
     }
 
     // @feature: node-lifecycle
@@ -710,10 +714,10 @@ mod tests {
         let joins = Joins::default();
         let stopped = renamed_while_stopped();
         joins.expect(stopped.clone());
-        let replacement = Deployed { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), endpoint_id: EndpointId("k2".into()), ..deployed() };
+        let replacement = Deployed { name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), endpoint_id: EndpointId("k2".into()), ..deployed() };
         let replacement_rx = joins.expect(replacement.clone());
         let mut d = digest_of(&stopped);
-        d.node.name = "mesh1.rpc.1".parse().unwrap();
+        d.node.name = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         assert!(matches!(joins.standing(&d, &[]), Standing::Deployed { .. }), "the stopped birth is admitted by its node id, whatever name it presents");
         joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
         assert!(replacement_rx.borrow().is_none(), "the replacement's deployment heard nothing of the stopped node's join");
@@ -810,12 +814,12 @@ mod tests {
             let installed_clone = installed_addrs.clone();
 
             let door = JoinDoor {
-                me: "mesh1.admin.1".parse().unwrap(),
+                me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
                 joins: joins.clone(),
                 answer: Arc::new(|| {
                     Box::pin(async {
                         Ok(JoinAnswer {
-                            served_by: "mesh1.admin.1".into(),
+                            served_by: NodeId::parse("0123456789ac").unwrap(),
                             control: crate::wire::JoinControl {
                                 provider: crate::model::ProviderKind::Process,
                                 fabric: Some(crate::model::FabricIdentity {
@@ -839,7 +843,7 @@ mod tests {
                 types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
                 known: Arc::new(|| Box::pin(async {})),
                 pending: Arc::new(|_, _| Box::pin(async {})),
-                primary: Arc::new(|| Some("mesh1.admin.2".into())),
+                primary: Arc::new(|| Some(NodeId::parse("0123456789ab").unwrap())),
                 issuer,
                 nodes: Some((storage.clone(), written)),
                 atlas: None,
@@ -847,7 +851,7 @@ mod tests {
 
             let dep_key = iroh::SecretKey::generate().public();
             let mut dep = deployed();
-            dep.name = "elsewhere.rpc.administrator".parse().unwrap();
+            dep.name = rdm_core::PathName::new("elsewhere.rpc", "administrator").unwrap();
             dep.kind = rdm_core::NodeKind::NodeAdmin;
             dep.endpoint_id = EndpointId(dep_key.to_string());
 
@@ -860,7 +864,7 @@ mod tests {
             assert_eq!(
                 door.serve(dep.endpoint_id.clone(), unknown_req).await,
                 JoinReply::NotPrimary {
-                    primary: Some("mesh1.admin.2".into())
+                    primary: Some(NodeId::parse("0123456789ab").unwrap())
                 }
             );
 
@@ -917,7 +921,7 @@ mod tests {
             match door.serve(dep.endpoint_id.clone(), good_req).await {
                 JoinReply::Joined { answer } => {
                     let decoded = crate::wire::answer_from_wire(&answer).expect("decode JoinAnswer");
-                    assert_eq!(decoded.served_by, "mesh1.admin.1");
+                    assert_eq!(decoded.served_by, NodeId::parse("0123456789ac").unwrap());
                     assert_eq!(decoded.control.name, Some(dep.name.clone()));
                     assert!(!decoded.control.member_cert.is_empty(), "member cert issued on join");
                 }

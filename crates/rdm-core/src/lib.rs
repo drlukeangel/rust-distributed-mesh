@@ -18,8 +18,8 @@
 //! use rdm_core::filter::{Entity, Filter};
 //! use rdm_core::{NodeKind, PathName};
 //!
-//! // A node's path.name: its mesh, its kind's segment and its ordinal.
-//! let name: PathName = "mesh1.rpc.2".parse().expect("a path.name");
+//! // A node's path and name: its mesh, its kind's segment and its ordinal.
+//! let name: PathName = crate::PathName::new("mesh1.rpc", "2").expect("a path and name");
 //! assert_eq!((name.mesh.as_str(), name.kind), ("mesh1", NodeKind::RpcNode));
 //!
 //! // `node.get` of mesh1's ready rpc nodes: AND across pairs, any-of within a pair.
@@ -94,7 +94,7 @@ pub use digest::{GossipStats, MemberStatus, MeshDigest, MeshNode, NodeLoad, Node
 pub use dto::{Accepted, BuildState, BuildView, ClientError, FabricDesired, MeshDesired, StepView};
 #[doc(hidden)]
 pub use ids::fixture_crockford60;
-pub use ids::{BuildId, BuildIdLog, ChangeId, ConnectionId, DeploymentId, EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, CROCKFORD60_LEN, ID_FORMAT};
+pub use ids::{BuildId, BuildIdLog, ChangeId, ConnectionId, DeploymentId, EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, OperationOccurrenceId, CROCKFORD60_LEN, ID_FORMAT};
 pub use lifecycle::{LifecycleOp, StateHook, DELETED_RETENTION};
 pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use outcome::{Committed, IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RequestFinished, RpcOutcome};
@@ -107,3 +107,7 @@ pub use runtime::{RuntimeFact, RuntimeFactError, RuntimeLocator, RuntimeProvider
 
 /// App type declaration bounds and held-set identity.
 pub mod app_types;
+
+/// Structured, stable operation identities.
+pub mod operation_id;
+pub use operation_id::{OperationId, OperationSubject};

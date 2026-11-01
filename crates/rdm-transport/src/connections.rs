@@ -87,7 +87,11 @@ pub fn validate_alpns(alpns: &[Alpn]) -> Result<(), String> {
 /// One exact process birth: its path, logical node id and incarnation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Birth {
-    /// The birth's `path.name`.
+    /// The explicitly declared owning mesh.
+    pub mesh: String,
+    /// The explicitly declared runtime kind.
+    pub kind: rdm_core::NodeKind,
+    /// The birth's `(path, name)`.
     pub name: PathName,
     /// The birth's logical node id.
     pub node_id: NodeId,
@@ -98,7 +102,7 @@ pub struct Birth {
 impl Birth {
     /// Convert this birth to a [`ConnectionEnd`].
     pub fn to_end(&self) -> ConnectionEnd {
-        ConnectionEnd {
+        ConnectionEnd { mesh: self.mesh.clone(), kind: self.kind,
             name: self.name.clone(),
             node_id: self.node_id.clone(),
             incarnation: Some(self.incarnation.clone()),
@@ -259,15 +263,13 @@ pub trait ConnectionsSink: Send + Sync {
 
 /// The source of the pair `route` opened while that pair is still open in `held`, found by the
 /// entry's id and never by the name the node holds now, since a rename may land before the drop
-/// does (Q169): a Direct's active entry as it landed, or this node's own active Proxy. A Proxy no
-/// longer among the node's own because the node has taken another name since is named by `route`'s
-/// own source: nothing the node writes under its new name is a newer entry of that pair.
+/// does (Q169): a Direct's active entry as it landed, or this node's own active Proxy.
+/// Rename preserves the source ID and therefore never creates a new connection pair.
 pub fn open_pair_source(held: &ConnectionsHeld, route: &NodeConnection) -> Option<ConnectionEnd> {
     match route.kind {
         CoreKind::Direct => held.active_direct_by_id(&route.id).map(|e| e.source.clone()),
         CoreKind::Proxy => match held.own_active_proxies().into_iter().find(|r| r.id == route.id) {
             Some(e) => Some(e.source.clone()),
-            None if held.own_source() != Some(&route.source.name) => Some(route.source.clone()),
             None => None,
         },
     }
@@ -312,7 +314,7 @@ impl MemoryConnectionsSink {
     /// Create a new in-memory sink for `own`.
     pub fn new(own: Birth) -> Self {
         let mut h = ConnectionsHeld::new();
-        h.set_own_source(own.name.clone());
+        h.set_own_source(own.node_id.clone());
         h.mark_complete();
         Self {
             own: Mutex::new(own),
@@ -324,7 +326,7 @@ impl MemoryConnectionsSink {
 
     /// Update this node's birth (for example when simulating a restart at a new incarnation).
     pub fn set_own_birth(&self, birth: Birth) {
-        self.held.lock().unwrap().set_own_source(birth.name.clone());
+        self.held.lock().unwrap().set_own_source(birth.node_id.clone());
         *self.own.lock().unwrap() = birth;
     }
 
@@ -367,9 +369,9 @@ impl MemoryConnectionsSink {
         tracing::info_span!(
             "rdm.node_admin.connection.update.via-observed",
             entry = %row.id,
-            source = %row.source.name,
-            destination = %row.destination.name,
-            carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
+            source_path = %row.source.name.path, source_name = %row.source.name.name,
+            destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
+            carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
             kind = match row.kind {
                 CoreKind::Direct => "direct",
                 CoreKind::Proxy => "proxy",
@@ -493,7 +495,7 @@ struct RegistryInner {
     carrier_legs: Mutex<Vec<(iroh::endpoint::Connection, iroh::endpoint::Connection)>>,
     deleted: AtomicBool,
     #[cfg(feature = "testkit-gossip")]
-    blocked_direct_dials: Mutex<std::collections::HashSet<(PathName, Vec<u8>)>>,
+    blocked_direct_dials: Mutex<std::collections::HashSet<(NodeId, Vec<u8>)>>,
     #[cfg(feature = "testkit-gossip")]
     pre_opened_faults: Mutex<HashMap<Vec<u8>, PreOpenedFault>>,
 }
@@ -559,7 +561,7 @@ impl ConnectionsRegistry {
     /// Block Direct dials from this source node toward `(destination, alpn)`, answering
     /// [`ConnectError::NotSent`] and recording `Direct Failed` as an unreachable direct dial does.
     #[cfg(feature = "testkit-gossip")]
-    pub fn block_direct_dial(&self, destination: &PathName, alpn: &[u8]) {
+    pub fn block_direct_dial(&self, destination: &NodeId, alpn: &[u8]) {
         self.inner
             .blocked_direct_dials
             .lock()
@@ -569,7 +571,7 @@ impl ConnectionsRegistry {
 
     /// Release a Direct dial block toward `(destination, alpn)`.
     #[cfg(feature = "testkit-gossip")]
-    pub fn unblock_direct_dial(&self, destination: &PathName, alpn: &[u8]) {
+    pub fn unblock_direct_dial(&self, destination: &NodeId, alpn: &[u8]) {
         self.inner
             .blocked_direct_dials
             .lock()
@@ -728,9 +730,9 @@ impl ConnectionsRegistry {
         if !still_active_route {
             tracing::info_span!(
                 "rdm.node.connection.delete.via-tunnel-ended",
-                source = %row.source.name,
-                carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
-                destination = %row.destination.name,
+                source_path = %row.source.name.path, source_name = %row.source.name.name,
+                carrier = %row.carrier.as_ref().map(|c| c.node_id.to_string()).unwrap_or_default(),
+                destination_path = %row.destination.name.path, destination_name = %row.destination.name.name,
                 alpn = %String::from_utf8_lossy(&row.alpn),
                 entry = %row.id,
             )
@@ -1054,9 +1056,9 @@ impl AlpnProtocolHandler {
         let presented_at = admit::presented_expiry(&cert);
         let tunnel_span = tracing::info_span!(
             "rdm.node.connection.create.via-tunnel",
-            source = %origin.name,
-            carrier = %own_now.name,
-            destination = %destination.name,
+            source_path = %origin.name.path, source_name = %origin.name.name,
+            carrier_path = %own_now.name.path, carrier_name = %own_now.name.name,
+            destination_path = %destination.name.path, destination_name = %destination.name.name,
             alpn = %alpn_str,
             entry = %id,
             cert_expires_at = presented_at,
@@ -1067,7 +1069,7 @@ impl AlpnProtocolHandler {
         }
         tunnel_span.in_scope(|| tracing::info!("carrier splicing data-plane proxy tunnel to destination"));
         let carrier_tp = Trace::of(&tunnel_span, opener);
-        let ended_names = (origin.name.to_string(), own_now.name.to_string(), destination.name.to_string(), id.to_string());
+        let ended_names = (origin.node_id.to_string(), own_now.node_id.to_string(), destination.node_id.to_string(), id.to_string());
         let opened = self
             .open_carrier_legs(&mut ctrl_send, carrier_tp.clone(), id, origin, destination, alpn, own_now, cert, presented_at, &tunnel_span)
             .await;
@@ -1140,7 +1142,7 @@ impl AlpnProtocolHandler {
             let held = self.registry.inner.sink.held();
             let g = held.lock().unwrap();
             matches!(
-                g.active_direct_for(&own_now.name, &destination.name, &self.alpn.name),
+                g.active_direct_for(&own_now.node_id, &destination.node_id, &self.alpn.name),
                 Some(Some(_))
             )
         };
@@ -1154,7 +1156,7 @@ impl AlpnProtocolHandler {
             .blocked_direct_dials
             .lock()
             .unwrap()
-            .contains(&(destination.name.clone(), self.alpn.name.clone()))
+            .contains(&(destination.node_id.clone(), self.alpn.name.clone()))
         {
             let _ = ctrl_send.finish();
             return CarrierOpen::Ended { outcome: "not-opened: the direct dial is blocked".to_string() };
@@ -1164,13 +1166,7 @@ impl AlpnProtocolHandler {
             .registry
             .inner
             .resolver
-            .resolve(&NodeTarget::ExactNode(destination.node_id.clone()))
-            .or_else(|_| {
-                self.registry
-                    .inner
-                    .resolver
-                    .resolve(&NodeTarget::CurrentPath(destination.name.clone()))
-            });
+            .resolve(&NodeTarget::ExactNode(destination.node_id.clone()));
         let Ok(resolved_dest) = resolved_dest else {
             return refuse(ctrl_send, INVALID_CONNECTION_LOST).await;
         };
@@ -1482,8 +1478,8 @@ impl Dialer {
             let g = held.lock().unwrap();
             resolve_for_carriers(
                 &g,
-                &own.name,
-                &destination.name,
+                &own.node_id,
+                &destination.node_id,
                 &self.alpn.name,
                 self.alpn.proxy,
                 &self.alpn.carriers,
@@ -1512,7 +1508,7 @@ impl Dialer {
                         .record_drops(std::slice::from_ref(&proxy), INVALID_CONNECTION_LOST);
                     return Err(ConnectError::NoActiveRoute { direct: None });
                 };
-                let carrier_birth = Birth {
+                let carrier_birth = Birth { mesh: carrier_end.mesh.clone(), kind: carrier_end.kind,
                     name: carrier_end.name.clone(),
                     node_id: carrier_end.node_id.clone(),
                     incarnation: carrier_inc,
@@ -1536,19 +1532,20 @@ impl Dialer {
                 // destination by a refused or undialled carrier, so asking the next is safe.
                 let live = self.registry.inner.resolver.live_nodes();
                 let order = carrier_order(
-                    &own.name,
-                    &destination.name,
+                    &own.node_id,
+                    &own.mesh,
+                    &destination.node_id,
                     &destination.incarnation,
                     self.alpn.proxy,
                     &self.alpn.carriers,
-                    live.iter().map(|n| n.name.clone()),
+                    live.iter().map(|n| (n.node_id.clone(), n.mesh.clone(), n.kind)),
                 );
                 if order.is_empty() {
                     return Err(ConnectError::NotSent { reason });
                 }
-                for name in order {
-                    let Some(node) = live.iter().find(|n| n.name == name) else { continue };
-                    let carrier_birth = Birth { name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
+                for node_id in order {
+                    let Some(node) = live.iter().find(|n| n.node_id == node_id) else { continue };
+                    let carrier_birth = Birth { mesh: node.mesh.clone(), kind: node.kind, name: node.name.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation.clone() };
                     match self
                         .open_tunnel(&own, &carrier_birth, destination, None, Some(begun), &caller_span, trace.clone())
                         .await
@@ -1580,11 +1577,11 @@ impl Dialer {
             .blocked_direct_dials
             .lock()
             .unwrap()
-            .contains(&(destination.name.clone(), self.alpn.name.clone()))
+            .contains(&(destination.node_id.clone(), self.alpn.name.clone()))
         {
             let reason = format!(
                 "direct dial to {} on {:?} blocked by testkit fault",
-                destination.name,
+                destination.node_id,
                 String::from_utf8_lossy(&self.alpn.name)
             );
             self.record_direct_failure(own, destination, &reason, caller_span);
@@ -1594,13 +1591,7 @@ impl Dialer {
             .registry
             .inner
             .resolver
-            .resolve(&NodeTarget::ExactNode(destination.node_id.clone()))
-            .or_else(|_| {
-                self.registry
-                    .inner
-                    .resolver
-                    .resolve(&NodeTarget::CurrentPath(destination.name.clone()))
-            }) {
+            .resolve(&NodeTarget::ExactNode(destination.node_id.clone())) {
             Ok(r) => r,
             Err(e) => {
                 let reason = format!("{e:?}");
@@ -1774,9 +1765,9 @@ impl Dialer {
         let tunnel_span = caller_span.in_scope(|| {
             tracing::info_span!(
                 "rdm.node.connection.create.via-tunnel",
-                source = %own.name,
-                carrier = %carrier.name,
-                destination = %destination.name,
+                source_path = %own.name.path, source_name = %own.name.name,
+                carrier_path = %carrier.name.path, carrier_name = %carrier.name.name,
+                destination_path = %destination.name.path, destination_name = %destination.name.name,
                 alpn = %alpn_str,
                 entry = tracing::field::Empty,
                 kind = tracing::field::Empty,
@@ -1793,12 +1784,6 @@ impl Dialer {
             .inner
             .resolver
             .resolve(&NodeTarget::ExactNode(carrier.node_id.clone()))
-            .or_else(|_| {
-                self.registry
-                    .inner
-                    .resolver
-                    .resolve(&NodeTarget::CurrentPath(carrier.name.clone()))
-            })
             .map_err(|e| ConnectError::NotSent {
                 reason: format!("{e:?}"),
             })?;
@@ -2014,7 +1999,7 @@ impl Dialer {
             let previous = held
                 .own_latest_directs()
                 .into_iter()
-                .find(|d| d.destination.name == dest_end.name && d.alpn == alpn)
+                .find(|d| d.destination.node_id == dest_end.node_id && d.alpn == alpn)
                 .cloned();
             Some(match previous.as_ref() {
                 Some(p)
@@ -2098,7 +2083,7 @@ async fn dial_root(
     let span = tracing::info_span!(
         parent: None,
         "rdm.node.connection.create.via-dial",
-        destination = %to.name,
+        destination_path = %to.name.path, destination_name = %to.name.name,
         alpn = %String::from_utf8_lossy(alpn),
         cert_expires_at = cert_expires_at,
         outcome = tracing::field::Empty,
@@ -2661,18 +2646,18 @@ mod tests {
 
         // 3. MemoryConnectionsSink records Proxy Connected, settles it with a Disconnected row when Direct Connected lands,
         // and owed_drop disconnects only open routes.
-        let src_birth = Birth {
-            name: PathName::new("mesh1", NodeKind::Gateway, 1),
+        let src_birth = Birth { mesh: "mesh1".into(), kind: NodeKind::Gateway,
+            name: PathName::numbered("mesh1", NodeKind::Gateway, 1),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
-        let carrier_birth = Birth {
-            name: PathName::new("mesh1", NodeKind::Gateway, 2),
+        let carrier_birth = Birth { mesh: "mesh1".into(), kind: NodeKind::Gateway,
+            name: PathName::numbered("mesh1", NodeKind::Gateway, 2),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
-        let dst_birth = Birth {
-            name: PathName::new("mesh1", NodeKind::Broker, 1),
+        let dst_birth = Birth { mesh: "mesh1".into(), kind: NodeKind::Broker,
+            name: PathName::numbered("mesh1", NodeKind::Broker, 1),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
         };
@@ -2723,8 +2708,8 @@ mod tests {
         assert_eq!(sink.history().len(), 3);
 
         // Even if the node renames its birth, owed_drop on the still-open direct_row uses the source the pair landed with.
-        let renamed_birth = Birth {
-            name: PathName::new("mesh1", NodeKind::Gateway, 9),
+        let renamed_birth = Birth { mesh: "mesh1".into(), kind: NodeKind::Gateway,
+            name: PathName::numbered("mesh1", NodeKind::Gateway, 9),
             node_id: src_birth.node_id.clone(),
             incarnation: src_birth.incarnation.clone(),
         };

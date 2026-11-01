@@ -73,7 +73,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
         let target = NodeId::mint();
         // The entry admin the probe reads its view from: a third endpoint of this process, whose view
         // names the target at the maker's address under another endpoint's key.
-        let served = admin_view::serve(vec![node("mesh1.admin.1", &target, Some(expected.to_string()), Some(maker_addr), Some(IncarnationId::mint()))]).await;
+        let served = admin_view::serve(vec![node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &target, Some(expected.to_string()), Some(maker_addr), Some(IncarnationId::mint()))]).await;
         let admin = served.birth_arg();
         let (run, dialler_dir) = (run.clone(), dialler_dir.clone());
         let mut dialler = tokio::task::spawn_blocking(move || {

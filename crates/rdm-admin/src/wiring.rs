@@ -57,8 +57,9 @@ pub trait ReadSeam: Send + Sync {
 /// none, so a declaration is decided at once.
 #[async_trait::async_trait]
 pub trait DeclarationSeam: Send + Sync {
-    /// Returns when the declaration of `state` by `node` (its `path.name`) may be decided.
-    async fn before_declaration(&self, node: &str, state: rdm_core::status::NodeState);
+    /// Returns when the exact node's declaration may be decided. The optional separate
+    /// location supports cuts armed before that node was allocated; identity is always explicit.
+    async fn before_declaration(&self, node_id: &rdm_core::NodeId, location: Option<&rdm_core::PathName>, state: rdm_core::status::NodeState);
 }
 
 /// Asked by the reconcile loop before each of its passes (the drift check, `reconcile_drift`, and the
@@ -68,7 +69,7 @@ pub trait DeclarationSeam: Send + Sync {
 /// `rdm.node_admin.build.update.via-drift-held` span, which names what held it and lasts as long as the
 /// hold. The product passes none, so every pass runs at once.
 pub trait DriftSeam: Send + Sync {
-    /// `Some` when something holds the reconcile pass of `node` (its `path.name`), `None` when nothing does.
+    /// `Some` when something holds the reconcile pass of `node` (its globally unique NodeId), `None` when nothing does.
     fn before_drift_pass(&self, node: &str) -> Option<DriftHold>;
 }
 

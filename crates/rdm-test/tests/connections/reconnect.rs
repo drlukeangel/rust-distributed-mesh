@@ -16,10 +16,10 @@ use rdm_test::originate::Seams;
 use rdm_transport::{CallOptions, NodeResolver, NodeTarget};
 use std::sync::{Arc, OnceLock};
 
-fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<NodeConnection> {
+fn kept_log(store: &std::path::Path, fabric: &FabricId, node_id: &NodeId) -> Vec<NodeConnection> {
     let root = rdm_admin::store_root::StoreRoot::open(store, fabric).expect("the store root opens");
-    rdm_node::storage::connection_history(root.dir(), &name.to_string())
-        .unwrap_or_else(|e| panic!("{name}'s kept log: {e}"))
+    rdm_node::storage::connection_history(root.dir(), node_id)
+        .unwrap_or_else(|e| panic!("{node_id}'s kept log: {e}"))
 }
 
 // @feature: connections-reconnect
@@ -47,11 +47,12 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
         let root = std::env::temp_dir().join(format!("connections-reconnect-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
-        let src_name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let peer_name: PathName = "mesh1.rpc.2".parse().unwrap();
+        let src_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let peer_name: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
 
         let launch_of = |name: &PathName| {
-            let dir = root.join(name.to_string());
+            let node_id = NodeId::mint();
+            let dir = root.join(node_id.as_str());
             std::fs::create_dir_all(&dir).unwrap();
             RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell"))
                 .unwrap()
@@ -66,7 +67,7 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
                 mesh: "mesh1".into(),
                 kind: rdm_core::NodeKind::RpcNode,
                 name: name.clone(),
-                node_id: NodeId::mint(),
+                node_id,
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
                 bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -93,7 +94,7 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
                 b
             })
             .await
-            .unwrap_or_else(|e| panic!("{} comes up: {e}", launch.name));
+            .unwrap_or_else(|e| panic!("{:?} comes up: {e}", launch.name));
             (running, seams.get().cloned().expect("the node handed its seams"))
         };
         let (src_node, src_seams) = start(src_launch.clone()).await;
@@ -118,17 +119,17 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
             .resolve(&NodeTarget::ExactNode(peer_launch.node_id.clone()))
             .expect("source resolver holds peer");
 
-        let src_end = ConnectionEnd {
+        let src_end = ConnectionEnd { mesh: src_launch.mesh.clone(), kind: src_launch.kind,
             name: src_launch.name.clone(),
             node_id: src_launch.node_id.clone(),
             incarnation: Some(src_launch.incarnation.clone()),
         };
-        let carrier_end = ConnectionEnd {
+        let carrier_end = ConnectionEnd { mesh: admin.launcher.mesh.clone(), kind: rdm_core::NodeKind::NodeAdmin,
             name: admin.launcher.name.clone(),
             node_id: admin.launcher.node_id.clone(),
             incarnation: Some(admin.launcher.incarnation.clone()),
         };
-        let peer_end = ConnectionEnd {
+        let peer_end = ConnectionEnd { mesh: resolved_peer.mesh.clone(), kind: resolved_peer.kind,
             name: resolved_peer.name.clone(),
             node_id: resolved_peer.node_id.clone(),
             incarnation: Some(resolved_peer.incarnation.clone()),
@@ -208,7 +209,7 @@ fn source_node_reconciler_redials_failed_destination_at_due_time_and_deletes_act
         src_seams.connections.observations_landed().await;
 
         assert!(obligations(&src_seams.connections).is_empty());
-        let log = kept_log(&store, &fabric, &src_name);
+        let log = kept_log(&store, &fabric, &src_launch.node_id);
         assert!(
             log.iter().any(|r| {
                 r.kind == ConnectionKind::Direct

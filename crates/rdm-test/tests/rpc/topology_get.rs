@@ -12,7 +12,7 @@ use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-const MEMBER: &str = "mesh1.rpc.1";
+fn member() -> rdm_core::PathName { rdm_core::PathName::new("mesh1.rpc", "1").unwrap() }
 
 fn owner(cell: &str) -> Owner {
     Owner {
@@ -52,8 +52,8 @@ async fn estate(cell: &str) -> (Estate, Vec<NodeView>) {
     (estate, nodes)
 }
 
-fn node_id(nodes: &[NodeView], name: &str) -> String {
-    nodes.iter().find(|n| n.name.to_string() == name).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{name} is not in the view"))
+fn node_id(nodes: &[NodeView], name: &rdm_core::PathName) -> String {
+    nodes.iter().find(|n| &n.name == name).map(|n| n.node_id.to_string()).unwrap_or_else(|| panic!("{name:?} is not in the view"))
 }
 
 /// The members of `mesh` across every chunk of its one snapshot, with the snapshot's identity.
@@ -93,7 +93,9 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let (mut estate, nodes) = estate(cell).await;
-    let target = format!("exact:{}", node_id(&nodes, MEMBER));
+    let member_location = member();
+    let member_id = node_id(&nodes, &member_location);
+    let target = format!("exact:{member_id}");
     let t0 = rdm_test_scenario_now();
 
     let all = estate.probe(&["topology", "--target", &target]);
@@ -107,10 +109,16 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     assert!(k[1..k.len() - 1].iter().all(|f| f == "snapshot" || f == "primaries" || f == "rafka-time"), "{k:?}");
     let (mesh1, mesh1_pub, mesh1_v, _) = snapshot_of(&frames, "mesh1");
     let (mesh2, mesh2_pub, mesh2_v, _) = snapshot_of(&frames, "mesh2");
-    assert_eq!(mesh1, vec!["mesh1.admin.1", "mesh1.rpc.1"], "its own mesh: the members its view holds, itself among them");
-    assert_eq!(mesh2, vec!["mesh2.admin.1", "mesh2.rpc.1", "mesh2.rpc.2"]);
-    assert_eq!(mesh1_pub, "mesh1.admin.1", "an own mesh's version belongs to its primary");
-    assert_eq!(mesh2_pub, "mesh2.admin.1", "a source mesh's version belongs to its primary");
+    let members = |mesh: &str| {
+        let mut ids: Vec<_> = nodes.iter().filter(|n| n.mesh == mesh).map(|n| n.node_id.to_string()).collect();
+        ids.sort();
+        ids
+    };
+    let primary = |mesh: &str| nodes.iter().find(|n| n.mesh == mesh && n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).expect("mesh primary").node_id.to_string();
+    assert_eq!(mesh1, members("mesh1"), "its own mesh includes this member");
+    assert_eq!(mesh2, members("mesh2"));
+    assert_eq!(mesh1_pub, primary("mesh1"));
+    assert_eq!(mesh2_pub, primary("mesh2"));
     assert!(mesh1_v >= 1 && mesh2_v >= 1);
     let incarnation = s(&frames.iter().find(|f| f["frame"] == "snapshot" && f["mesh"] == "mesh2").unwrap()["publisher_incarnation"]);
 
@@ -137,7 +145,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
 
     estate.stop().await;
     let spans = estate.spans();
-    let served: Vec<&Value> = named(&spans, "rdm.mesh.topology.serve.via-read").into_iter().filter(|sp| attr(sp, "node") == MEMBER && at(sp) >= t0).collect();
+    let served: Vec<&Value> = named(&spans, "rdm.mesh.topology.serve.via-read").into_iter().filter(|sp| attr(sp, "node_path") == member_location.path && attr(sp, "node_name") == member_location.name && at(sp) >= t0).collect();
     let full = served.iter().find(|sp| attr(sp, "requested") == "*" && attr(sp, "snapshots") == "2").unwrap_or_else(|| panic!("{served:?}"));
     assert_eq!((attr(full, "meshes"), attr(full, "unchanged")), ("2".to_string(), "0".to_string()));
     assert!(attr(full, "bytes").parse::<u64>().unwrap() > 0);
@@ -179,23 +187,25 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
     let cell = "born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let (mut estate, _nodes) = estate(cell).await;
+    let (mut estate, nodes) = estate(cell).await;
     estate.stop().await;
     let spans = estate.spans();
     let mut births = Vec::new();
-    for node in ["mesh1.rpc.1", "mesh2.rpc.1", "mesh2.rpc.2", "mesh2.admin.1"] {
+    for row in nodes.iter().filter(|n| n.name != rdm_core::PathName::new("mesh1.admin", "1").unwrap()) {
+        let node = row.node_id.to_string();
         let joined = named(&spans, "rdm.mesh.entry.update.via-topology-pulled").into_iter().find(|sp| attr(sp, "node") == node).unwrap_or_else(|| panic!("{node} never completed a JoinNode"));
         let maker = attr(joined, "served_by");
-        let join_served: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "served_by") == maker).collect();
+        let maker_row = nodes.iter().find(|n| n.node_id.as_str() == maker).expect("maker ID is in the settled view");
+        let join_served: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| attr(sp, "node_id") == node && attr(sp, "served_by_path") == maker_row.name.path && attr(sp, "served_by_name") == maker_row.name.name).collect();
         let join_span = join_served.iter().find(|sp| attr(sp, "outcome") == "installed").unwrap_or_else(|| panic!("{maker} installed no join of {node}: {join_served:?}"));
         // The birth's own read: its installs are in the birth's trace. A later read of the node
         // (the delta-gap top-up when a peer mesh's delta arrives past what it holds,
         // `topology_read::top_up_fetch`) is a read of its own, in its own trace, with its own serve:
-        // at `5a220a6a` mesh1.rpc.1 took mesh2 that way 1 s after its birth, before the cell's stop.
+        // at `5a220a6a` the member at path mesh1.rpc, name 1 took mesh2 that way 1 s after its birth, before the cell's stop.
         let installs: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().filter(|sp| attr(sp, "node") == node && sp["trace_id"] == joined["trace_id"]).collect();
         let serve = named(&spans, "rdm.mesh.topology.serve.via-read")
             .into_iter()
-            .filter(|sp| attr(sp, "node") == maker && at(sp) >= at(join_span))
+            .filter(|sp| attr(sp, "node_path") == maker_row.name.path && attr(sp, "node_name") == maker_row.name.name && sp["trace_id"] == joined["trace_id"] && at(sp) >= at(join_span))
             .min_by_key(|sp| at(sp))
             .unwrap_or_else(|| panic!("{maker} served no topology read after the join of {node}"));
         assert_eq!(attr(serve, "outcome"), "served", "{maker}'s read of {node} is answered, not refused");

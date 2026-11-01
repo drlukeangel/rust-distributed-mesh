@@ -27,7 +27,7 @@ use std::time::Duration;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Call {
     op: &'static str,
-    subject: String,
+    subject: serde_json::Value,
     /// Where in the admin the call was made: its first frames in rdm-admin past the store's own,
     /// innermost first (`file:line`).
     sites: Vec<String>,
@@ -38,13 +38,13 @@ struct Call {
 struct Calls(Arc<Mutex<Vec<Call>>>);
 
 impl Calls {
-    fn push(&self, op: &'static str, subject: impl Into<String>) {
+    fn push(&self, op: &'static str, subject: impl serde::Serialize) {
         let trace = std::backtrace::Backtrace::force_capture().to_string();
         let sites = trace.lines().map(str::trim).filter(|l| l.starts_with("at ") && l.contains("crates/rdm-admin/src") && !l.contains("storage_backend.rs")).take(3).map(|l| l.rsplit("crates/rdm-admin/src/").next().unwrap_or(l).to_string()).collect();
-        self.0.lock().unwrap().push(Call { op, subject: subject.into(), sites });
+        self.0.lock().unwrap().push(Call { op, subject: serde_json::to_value(subject).expect("structured store subject"), sites });
     }
     fn of(&self, op: &str) -> Vec<String> {
-        self.0.lock().unwrap().iter().filter(|c| c.op == op).map(|c| c.subject.clone()).collect()
+        self.0.lock().unwrap().iter().filter(|c| c.op == op).map(|c| c.subject.as_str().expect("this operation selects a scalar ID").to_owned()).collect()
     }
     /// The calls `op` whose sites pass through any of `files`.
     fn through(&self, op: Option<&str>, files: &[&str]) -> Vec<Call> {
@@ -81,7 +81,7 @@ impl NodesStorage for Recorded {
         self.inner.node(node_id).await
     }
     async fn node_at(&self, name: &rdm_core::PathName) -> Result<Option<NodeRow>, StorageError> {
-        self.calls.push("node_at", name.to_string());
+        self.calls.push("node_at", name);
         self.inner.node_at(name).await
     }
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
@@ -105,7 +105,7 @@ impl NodesStorage for Recorded {
         self.inner.tagged(label).await
     }
     async fn name_claim(&self, name: &rdm_core::PathName) -> Result<Option<NodeId>, StorageError> {
-        self.calls.push("name_claim", name.to_string());
+        self.calls.push("name_claim", name);
         self.inner.name_claim(name).await
     }
     async fn claim_node_name(&self, name: &rdm_core::PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> {
@@ -178,7 +178,7 @@ fn a_mesh_primary_lists_its_meshs_records_once_and_an_admin_that_is_no_primary_w
         root.stop_reconciling().await;
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
-        let launch = launch_by(&root, "mesh1.admin.2", &admin_dir, &root_dir);
+        let launch = launch_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");

@@ -28,7 +28,7 @@ impl DeploymentProvider for Running {
         "i143-3051-refusal".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this cell births nothing".into() })
+        Err(DeployError::Spawn { node: spec.node.clone(), reason: "this cell births nothing".into() })
     }
     async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
         Ok(())
@@ -146,10 +146,10 @@ impl BuildStateAdapter for Refuses {
     async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
         self.inner.committed_facts(build).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
@@ -168,6 +168,8 @@ impl BuildStateAdapter for Refuses {
 /// `Complete` as if the step were committed.
 #[tokio::test]
 async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
+    let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let target_id = NodeId::mint();
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let (spans_pipeline, layer) = rdm_transport::span_capture("i143-3051-receipt-refusal", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
@@ -178,15 +180,16 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
+    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+    node.node_id = target_id.clone();
     node.incarnation_id = Some(IncarnationId::mint());
     node.status = NodeStatus::Ready;
     let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
@@ -199,7 +202,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let joins = rdm_admin::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Answers, sink: &Discard, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.connection.delete", &node.node_id), build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
 
     let err = match pipeline.delete_connections(&req).await {
         Err(e) => e,
@@ -215,7 +218,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     assert_eq!(spans.len(), 1, "one refusal span");
     let attrs: std::collections::BTreeMap<String, String> = spans[0].attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect();
     assert_eq!(attrs.get("step").map(String::as_str), Some("DeleteConnections"), "{attrs:?}");
-    assert_eq!(attrs.get("operation").map(String::as_str), Some("node.connection.delete:mesh1.rpc.1"), "{attrs:?}");
+    assert_eq!(attrs.get("operation").map(String::as_str), Some("node.connection.delete"), "{attrs:?}");
     assert_eq!(attrs.get("build_id"), Some(&build_id.log().to_string()), "{attrs:?}");
     assert!(attrs.get("detail").is_some_and(|d| d.contains("has no wire shape")), "{attrs:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
@@ -232,17 +235,19 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
 /// step and decides afresh what an earlier attempt had already decided.
 #[tokio::test]
 async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
+    let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let target_id = NodeId::mint();
     let (capture, _guard) = Capture::new("i143-s42-build-unreadable");
     let builds = Refuses { inner: MemoryBuildStateAdapter::new(), step: "", local: false, unreadable: Some("this cell's disk refuses it") };
     let build_id = BuildId::mint();
-    accepted_and_claimed(&builds.inner, &build_id).await;
+    accepted_and_claimed(&builds.inner, &build_id, &executor).await;
 
-    let err = match standalone_through(&builds, &build_id, &Answers, false).await {
+    let err = match standalone_through(&builds, &build_id, &Answers, false, &executor, &target_id).await {
         Err(e) => e,
         Ok(()) => panic!("the Build could not be read and the node.connection.delete still reported complete: the read failure was taken for no earlier receipts"),
     };
     assert_eq!(err.step, "ReadBuild", "the run stops at its start: {err:?}");
-    for named in ["mesh1.rpc.1", &build_id.to_string(), "node.connection.delete:mesh1.rpc.1", "this cell's disk refuses it"] {
+    for named in [target_id.as_str(), &build_id.to_string(), "node.connection.delete", "this cell's disk refuses it"] {
         assert!(err.reason.contains(named), "the error names {named}: {err:?}");
     }
     let steps: Vec<String> = builds.inner.read_build(&build_id).await.unwrap().steps.iter().map(|s| s.step.clone()).collect();
@@ -250,18 +255,18 @@ async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
     let spans = capture.spans("rdm.node_admin.deployment.reject.via-build-unreadable");
     assert_eq!(spans.len(), 1, "one rejection span: {spans:?}");
     assert_eq!(spans[0].1.get("build_id"), Some(&build_id.log().to_string()), "{spans:?}");
-    assert_eq!(spans[0].1.get("operation").map(String::as_str), Some("node.connection.delete:mesh1.rpc.1"), "{spans:?}");
+    assert_eq!(spans[0].1.get("operation").map(String::as_str), Some("node.connection.delete"), "{spans:?}");
     assert!(spans[0].1.get("detail").is_some_and(|d| d.contains("this cell's disk refuses it")), "{spans:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-build-unreadable trace_id={} {:?}", spans[0].0, spans[0].1);
 
     let never_written = MemoryBuildStateAdapter::new();
     let unwritten = BuildId::mint();
-    let err = match standalone_through(&never_written, &unwritten, &Answers, false).await {
+    let err = match standalone_through(&never_written, &unwritten, &Answers, false, &executor, &target_id).await {
         Err(e) => e,
         Ok(()) => panic!("the Build was never written on this node and the node.connection.delete still reported complete"),
     };
     assert_eq!(err.step, "ReadBuild", "{err:?}");
-    assert!(err.reason.contains(&format!("no Build {unwritten}")), "a Build never written is named as such, not as an unreadable journal: {err:?}");
+    assert!(err.reason.contains(&format!("no fact of Build {unwritten}")), "a Build never written is named as such, not as an unreadable journal: {err:?}");
     assert!(!err.reason.contains("journal"), "{err:?}");
 }
 
@@ -291,11 +296,13 @@ impl NodeObserver for NeverReached {
 /// same way. Must NOT happen: the node.connection.delete or stop recorded complete for a birth never told of it.
 #[tokio::test]
 async fn a_standalone_connections_delete_or_stop_whose_command_is_never_sent_fails_by_name() {
+    let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let target_id = NodeId::mint();
     for (stop, step) in [(false, "DeleteConnections"), (true, "AwaitNodeLeft")] {
         let local = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
-        accepted_and_claimed(&local, &build_id).await;
-        let err = match standalone_through(&local, &build_id, &NeverReached, stop).await {
+        accepted_and_claimed(&local, &build_id, &executor).await;
+        let err = match standalone_through(&local, &build_id, &NeverReached, stop, &executor, &target_id).await {
             Err(e) => e,
             Ok(()) => panic!("the {} command never reached the birth, yet the operation reported complete", if stop { "stop-node" } else { "node.connection.delete" }),
         };
@@ -333,7 +340,7 @@ impl Capture {
 }
 
 /// A node-admin's real Build state over `local`, and its endpoint.
-async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rdm_admin::build_state::LocalBuildLog>) -> (iroh::Endpoint, rdm_admin::fabric_builds::FabricBuildStateAdapter) {
+async fn fabric_builds(executor: &rdm_core::framing::Birth, local: std::sync::Arc<dyn rdm_admin::build_state::LocalBuildLog>) -> (iroh::Endpoint, rdm_admin::fabric_builds::FabricBuildStateAdapter) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::generate())
         .relay_mode(iroh::RelayMode::Disabled)
@@ -342,26 +349,27 @@ async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rdm_admin::build_st
         .bind()
         .await
         .unwrap();
-    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(local, &rdm_transport::topology::LocationView::new(&endpoint, name).unwrap(), name.into(), rdm_admin::fabric_builds::PrimarySource::unrecorded());
+    let builds = rdm_admin::fabric_builds::FabricBuildStateAdapter::new(local, &rdm_transport::topology::LocationView::new(&endpoint, executor.node_id.as_str()).unwrap(), executor.node_id.clone(), rdm_admin::fabric_builds::PrimarySource::unrecorded());
     (endpoint, builds)
 }
 
 /// A standalone node.connection.delete of a ready `mesh1.rpc.1` as attempt 1 of `build_id`, through `builds`.
-async fn connections_delete_through(builds: &dyn BuildStateAdapter, build_id: &BuildId) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
-    standalone_through(builds, build_id, &Answers, false).await
+async fn connections_delete_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: &rdm_core::framing::Birth, target_id: &NodeId) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
+    standalone_through(builds, build_id, &Answers, false, executor, target_id).await
 }
 
 /// A standalone node.connection.delete (or, with `stop`, a standalone stop) of a ready `mesh1.rpc.1` as attempt 1 of
 /// `build_id`, through `builds`, its commands answered by `observer`.
-async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, observer: &dyn NodeObserver, stop: bool) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
-    let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, observer: &dyn NodeObserver, stop: bool, executor: &rdm_core::framing::Birth, target_id: &NodeId) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
+    let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
+    node.node_id = target_id.clone();
     node.incarnation_id = Some(IncarnationId::mint());
     node.status = NodeStatus::Ready;
     let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
@@ -374,7 +382,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     let joins = rdm_admin::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = DeleteRequest { build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { operation: rdm_core::OperationId::node(if stop { "node.stop" } else { "node.connection.delete" }, &node.node_id), build_id: build_id.clone(), attempt: 1, node, handle, unreached: false };
     if stop {
         pipeline.stop(&req).await
     } else {
@@ -383,12 +391,12 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
 }
 
 /// Build `build_id` accepted and its attempt 1 claimed by `mesh1.admin.1`, in `builds`.
-async fn accepted_and_claimed(builds: &dyn BuildStateAdapter, build_id: &BuildId) {
+async fn accepted_and_claimed(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: &rdm_core::framing::Birth) {
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
 }
 
 /// CONTRACT (node-recovery.md "Failure and receipts"): a standalone node.connection.delete run through the fabric's
@@ -398,13 +406,15 @@ async fn accepted_and_claimed(builds: &dyn BuildStateAdapter, build_id: &BuildId
 /// the step were committed, or the receipt broadcast with nothing written locally.
 #[tokio::test]
 async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
+    let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let target_id = NodeId::mint();
     let (capture, _guard) = Capture::new("i143-3051-local-write-refused");
     let local = std::sync::Arc::new(Refuses { inner: MemoryBuildStateAdapter::new(), step: "DeleteConnections", local: true, unreadable: None });
-    let (_endpoint, builds) = fabric_builds("mesh1.admin.1", local.clone()).await;
+    let (_endpoint, builds) = fabric_builds(&executor, local.clone()).await;
     let build_id = BuildId::mint();
-    accepted_and_claimed(&builds, &build_id).await;
+    accepted_and_claimed(&builds, &build_id, &executor).await;
 
-    let err = match connections_delete_through(&builds, &build_id).await {
+    let err = match connections_delete_through(&builds, &build_id, &executor, &target_id).await {
         Err(e) => e,
         Ok(()) => panic!("the DeleteConnections receipt's local write failed and the node.connection.delete still reported complete"),
     };

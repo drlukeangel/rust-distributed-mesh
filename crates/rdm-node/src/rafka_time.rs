@@ -87,7 +87,7 @@ impl std::fmt::Display for Refusal {
 pub struct Served<'a> {
     /// The pull that carried it: `join` (a birth's `JoinNode`) or `get-topology`.
     pub via: &'static str,
-    /// The answering node's `path.name`.
+    /// The answering node's `(path, name)`.
     pub served_by: &'a str,
     /// The authority's rafka-time in milliseconds.
     pub ms: u64,
@@ -154,7 +154,7 @@ pub fn adopt_pulled_in(parent: &tracing::Span, time: &RafkaTime, puller: Puller,
 
 /// A birth adopts the time its `JoinNode` answer carries: the one entry point of a join.
 pub fn adopt_join_answer(parent: &tracing::Span, time: &RafkaTime, node: &str, answer: &crate::wire::JoinAnswer) -> Adopted {
-    adopt_pulled_in(parent, time, Puller::Member, node, Served { via: "join", served_by: &answer.served_by, ms: answer.control.rafka_time_ms, kind: None })
+    adopt_pulled_in(parent, time, Puller::Member, node, Served { via: "join", served_by: answer.served_by.as_str(), ms: answer.control.rafka_time_ms, kind: None })
         .expect("a member adopts from whoever answers")
 }
 

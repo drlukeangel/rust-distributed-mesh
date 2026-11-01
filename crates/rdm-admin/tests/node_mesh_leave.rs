@@ -85,7 +85,7 @@ impl DeploymentProvider for LeaveTestProvider {
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
         Err(DeployError::Spawn {
-            node: spec.node.to_string(),
+            node: spec.node.clone(),
             reason: "this cell tests node.mesh.leave, not spawn".into(),
         })
     }
@@ -184,11 +184,11 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
 
         let fabric_id = FabricId::mint();
         let mesh_id = MeshId::mint();
-        let node_name: PathName = "mesh1.rpc.1".parse().unwrap();
+        let node_name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let node_id = NodeId::mint();
         let incarnation = IncarnationId::mint();
 
-        let peer_name: PathName = "mesh1.rpc.2".parse().unwrap();
+        let peer_name: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
         let peer_id = NodeId::mint();
         let peer_incarnation = IncarnationId::mint();
 
@@ -234,7 +234,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
 
         let resolver = Arc::new(LiveNodeResolver::default());
         resolver.apply(
-            ResolvedNode {
+            ResolvedNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
                 node_id: peer_id.clone(),
                 name: peer_name.clone(),
                 endpoint_id: peer_key.public(),
@@ -247,7 +247,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         let connections_store = Arc::new(MemoryConnectionsStorage::default());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(
-            ConnectionEnd {
+            ConnectionEnd { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
                 name: node_name.clone(),
                 node_id: node_id.clone(),
                 incarnation: Some(incarnation.clone()),
@@ -281,7 +281,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             &fabric_id,
             "mesh1",
             &mesh_id,
-            &node_name.to_string(),
+            node_id.as_str(),
             clock,
             Vec::new(),
             &[],
@@ -293,7 +293,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         let digest_base = MeshDigest {
             held_hash: Default::default(),
             fabric_id: fabric_id.clone(),
-            node: MeshNode { mesh: node_name.mesh.clone(), kind: node_name.kind,
+            node: MeshNode { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
                 node_id: node_id.clone(),
                 name: node_name.clone(),
                 endpoint_id: EndpointId(node_key.public().to_string()),
@@ -327,19 +327,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         let status_for_get = status_cell.clone();
         let get_status = Arc::new(move || *status_for_get.lock().unwrap());
 
-        let own = Arc::new(NodeSelf::new(
-            node_id.clone(),
-            incarnation.clone(),
-            node_name.clone(),
-            node_server,
-            control_client,
-            resolver,
-            topology_view,
-            set_status,
-            get_status,
-            None,
-            Duration::from_secs(2),
-        ));
+        let own = Arc::new(NodeSelf::new(node_id.clone(), incarnation.clone(), node_name.clone(), rdm_core::NodeKind::RpcNode, node_server, control_client, resolver, topology_view, set_status, get_status, None, Duration::from_secs(2)));
         own.set_connections(writer.clone());
         own.set_data_plane(data_plane.clone());
 
@@ -362,6 +350,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         );
 
         // Set up DeploymentPipeline::leave_mesh.
+        let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
@@ -378,12 +367,12 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             .await
             .unwrap();
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 1,
-                executor: "mesh1.admin.1".into(),
+                executor: executor.clone(),
             })
             .await
             .unwrap();
@@ -394,9 +383,9 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             executable: std::env::current_exe().unwrap(),
             seeds: vec![],
             launcher: rdm_core::launch::Launcher {
-                name: "mesh1.admin.1".parse().unwrap(),
-                node_id: NodeId::mint(),
-                incarnation: IncarnationId::mint(),
+                mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
+                node_id: executor.node_id.clone(),
+                incarnation: executor.incarnation.clone(),
             },
             env: BTreeMap::new(),
             data_root: root_dir.clone(),
@@ -422,18 +411,19 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             timeouts: Timeouts::default(),
         };
 
+        let leave_operation = rdm_core::OperationId::node("node.mesh.leave", &node_id);
         let leave_req = NodeCommandRequest::LeaveMesh {
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),
             build_id: build_id.to_string(),
             attempt: 1,
-            operation: "node.mesh.leave:mesh1.rpc.1".into(),
+            operation: rdm_core::OperationId::node("node.mesh.leave", &node_id),
         };
 
         // 1. Attempting `node.mesh.leave` while holding an open connection is refused with
         //    `BusyHoldingConnections` before acceptance, and the pipeline step fails.
         let busy_err = pipeline
-            .leave_mesh(&build_id, 1, &node_name, async {
+            .leave_mesh(&build_id, 1, &node_name, &leave_operation, async {
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                 let reply = own
                     .serve_node_command(None, &leave_req, Box::new(ChannelFrames(tx)))
@@ -480,18 +470,19 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         );
 
         builds
-            .claim_attempt(&BuildAttemptClaim {
+            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
                 claimant: None,
                 mesh: None,
                 build_id: build_id.clone(),
                 attempt: 2,
-                executor: "mesh1.admin.1".into(),
+                executor: executor.clone(),
             })
             .await
             .unwrap();
 
+        let leave_req = NodeCommandRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), attempt: 2, operation: leave_operation.clone() };
         pipeline
-            .leave_mesh(&build_id, 2, &node_name, async {
+            .leave_mesh(&build_id, 2, &node_name, &leave_operation, async {
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                 let reply = own
                     .serve_node_command(None, &leave_req, Box::new(ChannelFrames(tx)))
@@ -553,7 +544,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             .spawn();
         let peer_to_left_resolver = Arc::new(LiveNodeResolver::default());
         peer_to_left_resolver.apply(
-            ResolvedNode {
+            ResolvedNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
                 node_id: node_id.clone(),
                 name: node_name.clone(),
                 endpoint_id: node_key.public(),
@@ -599,14 +590,14 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         // 4. Status 0x1B reserved positions `LeaveMesh` and `MeshLeft` are refused by name
         //    (node-mesh-leave.md:24).
         let reserved_leave = rdm_node::node_self::refuse_reserved(
-            "mesh1.rpc.1",
-            "mesh1.admin.1",
+            node_id.as_str(),
+            executor.node_id.as_str(),
             &rdm_core::status::StatusRequest::LeaveMesh {
                 node_id: node_id.clone(),
                 incarnation: incarnation.clone(),
                 build_id: build_id.to_string(),
                 attempt: 2,
-                operation: "node.mesh.leave:mesh1.rpc.1".into(),
+                operation: rdm_core::OperationId::node("node.mesh.leave", &node_id),
             },
         );
         assert!(
@@ -630,7 +621,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         // 5. A node-admin on both its own mesh and the backbone leaves both (`left: [Own, Backbone]`),
         //    and inside `node.stop` (`StopNode`) streams `Leaving` (Data) then `StopMeshLeft { left }`
         //    (Data) before `Stopped { receipt }` (node-mesh-leave.md:5-6, 19, 21-25, 34-43, 84, 91-95).
-        let admin_name: PathName = "mesh1.admin.1".parse().unwrap();
+        let admin_name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let admin_id = NodeId::mint();
         let admin_inc = IncarnationId::mint();
         let admin_ep = rdm_transport::endpoint::bind(
@@ -648,7 +639,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             &fabric_id,
             "mesh1",
             &mesh_id,
-            &admin_name.to_string(),
+            admin_id.as_str(),
             admin_clock,
             Vec::new(),
             &[],
@@ -661,7 +652,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
             &admin_top,
             "mesh1",
             rdm_core::PublisherId {
-                node: admin_name.to_string(),
+                node: admin_id.to_string(),
                 node_id: admin_id.clone(),
                 incarnation: admin_inc.clone(),
             },
@@ -683,19 +674,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
         admin_digest.node.name = admin_name.clone();
         admin_digest.node.incarnation = admin_inc.clone();
         let admin_self = Arc::new(
-            NodeSelf::new(
-                admin_id.clone(),
-                admin_inc.clone(),
-                admin_name.clone(),
-                admin_server,
-                admin_client,
-                admin_resolver,
-                admin_top,
-                Arc::new(move |_| admin_digest.clone()),
-                Arc::new(|| MemberStatus::Ready),
-                None,
-                Duration::from_secs(1),
-            )
+            NodeSelf::new(admin_id.clone(), admin_inc.clone(), admin_name.clone(), rdm_core::NodeKind::NodeAdmin, admin_server, admin_client, admin_resolver, admin_top, Arc::new(move |_| admin_digest.clone()), Arc::new(|| MemberStatus::Ready), None, Duration::from_secs(1))
             .with_backbone(admin_backbone),
         );
         let (tx_admin_leave, mut rx_admin_leave) = tokio::sync::mpsc::unbounded_channel();
@@ -707,7 +686,7 @@ fn node_mesh_leave_refuses_busy_holding_connections_until_deleted_then_leaves_me
                     incarnation: admin_inc.clone(),
                     build_id: build_id.to_string(),
                     attempt: 2,
-                    operation: "node.mesh.leave:mesh1.admin.1".into(),
+                    operation: rdm_core::OperationId::location("node.mesh.leave", &rdm_core::PathName::new("mesh1.admin", "1").unwrap()),
                 },
                 Box::new(ChannelFrames(tx_admin_leave)),
             )

@@ -9,7 +9,7 @@
 
 use crate::build::{BuildId, BuildOperation};
 use crate::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildProjection, BuildStateAdapter};
-use crate::model::{NodeKind, PathName};
+use crate::model::{NodeId, NodeKind, PathName};
 use crate::topology::Topology;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -74,8 +74,8 @@ pub trait OperationRunner: Send + Sync {
 }
 
 /// The admin that executes `op` in view `t`; `None` while no admin can.
-pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
-    let fabric = || t.fabric_primary().map(|n| n.name.clone());
+pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<NodeId> {
+    let fabric = || t.fabric_primary().map(|n| n.node_id.clone());
     match op {
         // Every operation of a node recovery (its node.delete, then its node.create) is
         // executed by the exited birth's recoverer (node-recovery.md "Reconciler", R-ON8): a member's
@@ -86,22 +86,22 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // (below), the fabric-primary's once the mesh holds no admin that is not proven gone
         // (mesh-investigation.md "A node-admin joins the live mesh").
         BuildOperation::DeleteLiveNode { node, exited: Some(_), .. } | BuildOperation::CreateNode { node, over: Some(_), .. } => {
-            if node.kind == NodeKind::NodeAdmin {
-                node_admin_recoverer(node, t)
+            if op.kind()? == NodeKind::NodeAdmin {
+                node_admin_recoverer(node, op.mesh()?, t)
             } else {
-                mesh_executor(&node.mesh, None, t)
+                mesh_executor(op.mesh()?, None, t)
             }
         }
         // A step is executed as the op it calls: a create as node.create, every other step as
         // the node op on its node (the mesh-primary of the node's mesh writes its row, R13).
-        BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::Step { step: rdm_core::build::Step::Create { node, .. }, .. } => mesh_executor(op.mesh()?, None, t),
         BuildOperation::Step { step, .. } => node_op_executor(step.node(), op, t),
         // A member node of any kind is born by its own mesh's primary admin (the fabric primary when
         // the mesh has none): the rule names no role, so a product's kinds get the same executor as
         // the proof product's rpc node. A mesh's missing node-admin is created by that mesh's primary
         // node-admin, its claim targeted at the fabric primary (node-admin-lifecycle.md §4.3); the
         // fabric primary creates only the first admin of a mesh that has none.
-        BuildOperation::CreateNode { node, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::CreateNode { node, .. } => mesh_executor(op.mesh()?, None, t),
         BuildOperation::DeleteLiveNode { node, .. }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
@@ -119,25 +119,26 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         BuildOperation::SwitchStorage { .. } | BuildOperation::FinishStorage { .. } => fabric(),
         // A property applied in place is written by the node's mesh-primary, the one writer of its
         // mesh's rows (node-rpc-envelope.md "Node properties"; build.md §1), its own row included.
-        BuildOperation::UpdateConfig { node, .. } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::UpdateConfig { node, .. } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => mesh_executor(op.mesh()?, None, t),
     }
 }
 
 /// Whether `op`, executed by `to` in view `t`, is a section's (Q250): a plain node create (no node
 /// recovery's, no replacement's) of a mesh whose own mesh-primary is `to`.
-pub fn section_create(op: &BuildOperation, t: &Topology, to: &PathName) -> bool {
-    matches!(op, BuildOperation::CreateNode { node, over: None, .. } if node.mesh == to.mesh && t.node_type_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == *to))
+pub fn section_create(op: &BuildOperation, t: &Topology, to: &NodeId) -> bool {
+    matches!(op, BuildOperation::CreateNode { mesh, over: None, .. } if t.node_type_primary(mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == *to))
 }
 
 /// The executor of a node op (delete, connections delete, stop, start, delete, and a
 /// Build's step) on `node` in view `t`.
-fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Option<PathName> {
-    let fabric = || t.fabric_primary().map(|n| n.name.clone());
+fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Option<NodeId> {
+    let mesh = op.mesh()?;
+    let fabric = || t.fabric_primary().map(|n| n.node_id.clone());
     // The node-type primary moves its role first, by node.primary.update its mesh-primary
     // commands and writes (proposal Part C1, Q3; [`role_move`]): until it has, no admin executes the
     // operation.
-    if node.kind != NodeKind::NodeAdmin {
-        return if role_move(op, t).is_some() { None } else { mesh_executor(&node.mesh, None, t) };
+    if op.kind()? != NodeKind::NodeAdmin {
+        return if role_move(op, t).is_some() { None } else { mesh_executor(mesh, None, t) };
     }
     // A node-admin that holds a role is never the executor of its own stop, delete or
     // connections delete, and no admin of its mesh commands it (R-MT1, Luke 2026-10-12: "a
@@ -150,10 +151,10 @@ fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Optio
     if role_move(op, t).is_some() {
         None
     } else if is_primary(node, t) {
-        let last_mesh_gone = !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) && t.node(node).is_some_and(|n| t.only_node(&node.mesh, &n.node_id));
-        held_admins(&node.mesh, Some(node), t).is_empty().then(fabric).flatten().filter(|fp| fp != node || last_mesh_gone)
+        let last_mesh_gone = !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) && t.node(node).is_some_and(|n| t.only_node(mesh, &n.node_id));
+        held_admins(mesh, Some(node), t).is_empty().then(fabric).flatten().filter(|fp| !t.node(node).is_some_and(|target| &target.node_id == fp) || last_mesh_gone)
     } else {
-        mesh_executor(&node.mesh, Some(node), t)
+        mesh_executor(mesh, Some(node), t)
     }
 }
 
@@ -163,12 +164,12 @@ fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Optio
 /// or ready and waiting on its role) gives `None`: the drive waits for that admin, named by
 /// [`held_admins`], and never acts on the mesh from outside it. A `Pending` admin is a birth, not
 /// a held role: the fabric primary carries the mesh until it stands.
-fn mesh_executor(mesh: &str, target: Option<&PathName>, t: &Topology) -> Option<PathName> {
+fn mesh_executor(mesh: &str, target: Option<&PathName>, t: &Topology) -> Option<NodeId> {
     if let Some(p) = t.node_type_primary(mesh, NodeKind::NodeAdmin) {
-        return Some(p.name.clone());
+        return Some(p.node_id.clone());
     }
     if held_admins(mesh, target, t).is_empty() {
-        t.fabric_primary().map(|n| n.name.clone())
+        t.fabric_primary().map(|n| n.node_id.clone())
     } else {
         None
     }
@@ -197,13 +198,14 @@ pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
         | BuildOperation::CreateTags { node, .. }
         | BuildOperation::DeleteTags { node, .. } => node,
         BuildOperation::Step { step, .. } => step.node(),
-        _ => return format!("{}: no admin holds the primary role that executes it in this view", op.key()),
+        _ => return format!("{:?}: no admin holds the primary role that executes it in this view", op.key()),
     };
-    let held: Vec<String> = held_admins(&node.mesh, Some(node), t).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();
+    let Some(mesh) = op.mesh() else { return format!("{:?} has no subject mesh", op.key()) };
+    let held: Vec<String> = held_admins(mesh, Some(node), t).into_iter().map(|n| format!("node {} ({:?})", n.node_id, n.status)).collect();
     if held.is_empty() {
-        format!("{}: mesh {} has no primary node-admin and no fabric primary is named in this view", op.key(), node.mesh)
+        format!("{:?}: mesh {} has no primary node-admin and no fabric primary is named in this view", op.key(), mesh)
     } else {
-        format!("{}: mesh {} has no primary node-admin, and its node-admin(s) {} are not proven gone: the fabric primary does not act on the mesh; the attempt waits for the mesh's own role", op.key(), node.mesh, held.join(", "))
+        format!("{:?}: mesh {} has no primary node-admin, and its node-admin(s) {} are not proven gone: the fabric primary does not act on the mesh; the attempt waits for the mesh's own role", op.key(), mesh, held.join(", "))
     }
 }
 
@@ -215,10 +217,10 @@ pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
 ///
 /// The role is read from the view's election, not from liveness: a silent primary keeps its role until
 /// it is proven gone (`crate::election`), and its own recovery is still its mesh's to run.
-pub fn node_admin_recoverer(node: &PathName, t: &Topology) -> Option<PathName> {
-    match t.nodes_of_type(&node.mesh, NodeKind::NodeAdmin).find(|n| n.is_primary) {
+pub fn node_admin_recoverer(node: &PathName, mesh: &str, t: &Topology) -> Option<NodeId> {
+    match t.nodes_of_type(mesh, NodeKind::NodeAdmin).find(|n| n.is_primary) {
         Some(p) if p.name == *node => elected_after_loss(node, t),
-        Some(p) if p.status.is_live() => Some(p.name.clone()),
+        Some(p) if p.status.is_live() => Some(p.node_id.clone()),
         _ => None,
     }
 }
@@ -233,10 +235,10 @@ pub fn node_admin_recoverer(node: &PathName, t: &Topology) -> Option<PathName> {
 /// the acting primary, while the mesh holds no other node-admin that is not proven gone
 /// ([`held_admins`]); `None` while the view names no mesh-primary in its place and the mesh holds one:
 /// the election has not named it here yet.
-pub fn unheard_mesh_primary_executor(node: &PathName, node_id: &crate::model::NodeId, t: &Topology) -> Option<PathName> {
-    match t.node_type_primary(&node.mesh, NodeKind::NodeAdmin) {
-        Some(p) if p.node_id != *node_id => Some(p.name.clone()),
-        _ if held_admins(&node.mesh, Some(node), t).is_empty() => t.fabric_primary().map(|n| n.name.clone()),
+pub fn unheard_mesh_primary_executor(node: &PathName, mesh: &str, node_id: &crate::model::NodeId, t: &Topology) -> Option<NodeId> {
+    match t.node_type_primary(mesh, NodeKind::NodeAdmin) {
+        Some(p) if p.node_id != *node_id => Some(p.node_id.clone()),
+        _ if held_admins(mesh, Some(node), t).is_empty() => t.fabric_primary().map(|n| n.node_id.clone()),
         _ => None,
     }
 }
@@ -244,17 +246,17 @@ pub fn unheard_mesh_primary_executor(node: &PathName, node_id: &crate::model::No
 /// The admin the election names as `target`'s mesh primary once `target`'s exited birth is proven
 /// gone (elections §5: "a primary ... whose exact birth is proven gone hands the role to the lowest
 /// Ready NodeId of its own mesh"). A proven loss only: a planned move is node.primary.update.
-fn elected_after_loss(target: &PathName, t: &Topology) -> Option<PathName> {
+fn elected_after_loss(target: &PathName, t: &Topology) -> Option<NodeId> {
     let primary = t.node(target)?;
     let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
     let mut inc = crate::election::Incumbency::default();
     inc.lost.extend(primary.incarnation_id.clone());
-    crate::election::node_type_successor(&nodes, &inc, primary).map(|n| n.name)
+    crate::election::node_type_successor(&nodes, &inc, primary).map(|n| n.node_id)
 }
 
 /// Whether `node` holds a role in view `t`: its mesh's node-admin primary or the fabric primary.
 fn is_primary(node: &PathName, t: &Topology) -> bool {
-    node.kind == NodeKind::NodeAdmin && (t.node_type_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == *node) || t.fabric_primary().is_some_and(|fp| fp.name == *node))
+    t.node(node).is_some_and(|n| n.kind == NodeKind::NodeAdmin && (n.is_primary || n.is_fabric_primary))
 }
 
 /// The roles `op` moves before it runs (R-MT1: node.primary.update "should be called on MP stop or
@@ -289,20 +291,22 @@ pub fn role_move(op: &BuildOperation, t: &Topology) -> Option<RoleMove> {
         | BuildOperation::Step { step: Step::Stop { node } | Step::DeleteConnections { node }, .. } => (node, false),
         _ => return None,
     };
-    if node.kind != NodeKind::NodeAdmin {
+    let admitted = op.subject()?;
+    let subject = t.node_subject(&admitted)?;
+    if subject.kind != NodeKind::NodeAdmin {
         // Any other node type's role: its primary's role moves first, by node.primary.update its mesh-primary
         // commands and writes (proposal Part C1, Q3), except when deleting the node type's only live node. A primary with
         // no other node of its type is still named for non-delete actions: the update refuses it by Q7's
         // name (the Build door refuses it first, `control_plane::last_admin`).
-        let primary = t.node(node)?.clone();
-        let only_of_node_type = t.nodes_of_type(&node.mesh, node.kind).all(|n| n.node_id == primary.node_id);
-        if !t.node_type_primary(&node.mesh, node.kind).is_some_and(|p| p.node_id == primary.node_id) || (delete && only_of_node_type) {
+        let primary = subject.clone();
+        let only_of_node_type = t.nodes_of_type(&subject.mesh, subject.kind).all(|n| n.node_id == primary.node_id);
+        if !t.node_type_primary(&subject.mesh, subject.kind).is_some_and(|p| p.node_id == primary.node_id) || (delete && only_of_node_type) {
             return None;
         }
         return Some(RoleMove { primary, mesh_role: false, fabric_role: false, node_type_role: true, successor: None });
     }
-    let primary = t.node(node)?.clone();
-    let mesh_role = t.node_type_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == primary.node_id);
+    let primary = subject.clone();
+    let mesh_role = t.node_type_primary(&subject.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == primary.node_id);
     let fabric_role = t.fabric_primary().is_some_and(|fp| fp.node_id == primary.node_id);
     if !mesh_role && !fabric_role {
         return None;
@@ -313,8 +317,8 @@ pub fn role_move(op: &BuildOperation, t: &Topology) -> Option<RoleMove> {
     // The final primary of a mesh whose delete was accepted (its mesh leaving or dead) is deleted by the
     // separate node.delete after its mesh.deleted (mesh-delete.md step 7): no other member is left to
     // take its mesh-primary role, which goes with the mesh.
-    let mesh_deleted = t.meshes.iter().any(|m| m.name == node.mesh && matches!(m.status, crate::model::ScopeStatus::Leaving | crate::model::ScopeStatus::Dead));
-    if delete && (t.only_node(&node.mesh, &primary.node_id) || mesh_deleted) {
+    let mesh_deleted = t.meshes.iter().any(|m| m.name == subject.mesh && matches!(m.status, crate::model::ScopeStatus::Leaving | crate::model::ScopeStatus::Dead));
+    if delete && (t.only_node(&subject.mesh, &primary.node_id) || mesh_deleted) {
         if !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) {
             return None;
         }
@@ -343,10 +347,10 @@ pub struct RoleMove {
 
 /// The admin that executes what is left of a plan: the first operation's
 /// executor, or the fabric primary when nothing is left (it closes the Build).
-pub fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<PathName> {
+pub fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<NodeId> {
     match ops.first() {
         Some(op) => executor_for(op, t),
-        None => t.fabric_primary().map(|n| n.name.clone()),
+        None => t.fabric_primary().map(|n| n.node_id.clone()),
     }
 }
 
@@ -361,19 +365,19 @@ pub struct RunPlan {
     /// in the planner's view); `None` when the run is the rest of the plan. It only marks that more
     /// follows: the executor hands back to the fabric primary of the view its run ends with, since
     /// the run's own operations can move a role or stop the planner ([`BuildExecutor`]).
-    pub hand_off_to: Option<String>,
+    pub hand_off_to: Option<NodeId>,
 }
 
 /// The run of `executor` within `ops` in view `t`: the leading operations it executes, and the
 /// executor of the first one it does not. An operation no admin can execute stays in the run here;
 /// the fabric-primary's drive cuts the run before it when it is not the first (`build_drive`), so it
 /// waits for its mesh's own role.
-pub fn run_of(ops: &[BuildOperation], t: &Topology, executor: &PathName) -> RunPlan {
+pub fn run_of(ops: &[BuildOperation], t: &Topology, executor: &NodeId) -> RunPlan {
     let mut run = RunPlan::default();
     for op in ops {
         match executor_for(op, t) {
             Some(other) if other != *executor => {
-                run.hand_off_to = Some(other.to_string());
+                run.hand_off_to = Some(other);
                 return run;
             }
             _ => run.operations.push(op.clone()),
@@ -397,7 +401,7 @@ pub enum Reconciled {
         /// The attempt that stopped.
         attempt: u32,
         /// The operation key the attempt stopped at (empty when it stopped before any operation).
-        operation: String,
+        operation: rdm_core::OperationId,
         /// Why it stopped.
         reason: String,
         /// The captured standard code.
@@ -410,7 +414,7 @@ pub enum Reconciled {
         /// The operations it ran.
         operations: Vec<BuildOperation>,
         /// The admin that executes the operation it stopped at.
-        to: String,
+        to: NodeId,
     },
 }
 
@@ -431,8 +435,8 @@ pub enum Reconciled {
 /// more of the plan to follow hands back to the fabric primary of the view it ends with, which
 /// claims the next attempt for the admin its view names for what is left.
 pub struct BuildExecutor {
-    /// This node-admin's path.name: the executor on every attempt it runs.
-    pub executor: String,
+    /// This process's established birth; an older incarnation's claim cannot run here.
+    pub executor: rdm_core::framing::Birth,
     /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The observed topology.
@@ -442,27 +446,6 @@ pub struct BuildExecutor {
 }
 
 impl BuildExecutor {
-    /// The path name this admin holds now (`builds.held_name()` when joined to the fabric Build
-    /// topic, else the name its topology view holds for this admin, or its birth `executor`).
-    pub async fn held_name(&self) -> String {
-        if let Some(held) = self.builds.held_name() {
-            return held.to_string();
-        }
-        if let Ok(birth) = self.executor.parse::<PathName>() {
-            let t = self.topology.read().await;
-            if t.node(&birth).is_none() {
-                if let Some(p) = t.node_type_primary(&birth.mesh, NodeKind::NodeAdmin) {
-                    return p.name.to_string();
-                }
-                let mut admins = t.nodes.iter().filter(|n| n.name.mesh == birth.mesh && n.name.kind == NodeKind::NodeAdmin);
-                if let (Some(only), None) = (admins.next(), admins.next()) {
-                    return only.name.to_string();
-                }
-            }
-        }
-        self.executor.clone()
-    }
-
     /// Run attempt `attempt` of `build_id`, which the fabric-primary won for this admin. The span is
     /// parented to the attempt's context the claim returned, so a stop reads under its request
     /// and a drift repair under the span that proved it.
@@ -474,7 +457,7 @@ impl BuildExecutor {
         use tracing::Instrument;
         let builds = crate::build_run::LaneBuilds::of(&self.builds, lane);
         let previous = builds.read_build(build_id).await.ok();
-        let me = self.held_name().await;
+        let me = self.executor.clone();
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-reconcile",
             build_id = %build_id.log(),
@@ -483,10 +466,12 @@ impl BuildExecutor {
             lane = lane.unwrap_or(""),
             attempt,
             executor = %me,
+            executor_node_id = %me.node_id,
+            executor_incarnation = %me.incarnation,
             // The admin that held the attempt before this one. The fabric-primary's claim of this
             // attempt is already folded (the executor absorbs its intent first), so `executor` here
             // names this admin.
-            previous_executor = previous.as_ref().and_then(|b| b.attempt_executors.get(&attempt.saturating_sub(1))).map(String::as_str).unwrap_or(""),
+            previous_executor = ?previous.as_ref().and_then(|b| b.attempt_executors.get(&attempt.saturating_sub(1))),
             reason = previous.as_ref().map(|b| b.reason.as_str()).unwrap_or(""),
             action = %previous.as_ref().and_then(|b| b.action.as_ref()).map(|a| serde_json::to_string(a).unwrap_or_default()).unwrap_or_default(),
             operations = tracing::field::Empty,
@@ -509,19 +494,31 @@ impl BuildExecutor {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn run_claimed(&self, builds: &dyn BuildStateAdapter, build_id: &BuildId, lane: Option<&str>, attempt: u32, me: &str, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
+    async fn run_claimed(&self, builds: &dyn BuildStateAdapter, build_id: &BuildId, lane: Option<&str>, attempt: u32, me: &rdm_core::framing::Birth, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
         // The claim was decided (by the fabric-primary for the fabric lane, by this mesh-primary for
         // its mesh's drift lane); this admin's own log takes the fact with it.
-        let claim = BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: me.to_string() };
+        let facts = match builds.committed_facts(Some(build_id)).await {
+            Ok(facts) => facts,
+            Err(e) => return Reconciled::Failed { attempt, operation: rdm_core::OperationId::unscoped("build.attempt.run"), reason: format!("reading the committed claim of Build {build_id} attempt {attempt}: {e}"), code: rdm_core::outcome::Code::Unavailable },
+        };
+        let Some(claim) = facts.into_iter().find_map(|fact| match fact {
+            crate::build_state::BuildFact::Claim(c) if c.build_id == *build_id && c.mesh.as_deref() == lane && c.attempt == attempt => Some(c),
+            _ => None,
+        }) else {
+            return Reconciled::Failed { attempt, operation: rdm_core::OperationId::unscoped("build.attempt.run"), reason: format!("Build {build_id} has no committed claim for attempt {attempt} in {lane:?}"), code: rdm_core::outcome::Code::Unavailable };
+        };
+        if &claim.executor != me {
+            return Reconciled::Failed { attempt, operation: rdm_core::OperationId::unscoped("build.attempt.run"), reason: format!("Build {build_id} attempt {attempt} is claimed by {}, not {me}", claim.executor), code: rdm_core::outcome::Code::FailedPrecondition };
+        }
         if let Err(e) = builds.adopt_claim(&claim).await {
-            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording the claim of attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
+            return Reconciled::Failed { attempt, operation: rdm_core::OperationId::unscoped("build.attempt.run"), reason: format!("recording the claim of attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
         }
         let build = match builds.read_build(build_id).await {
             Ok(b) => b,
-            Err(e) => return Reconciled::Failed { attempt, operation: String::new(), reason: format!("reading Build {build_id} after the claim of attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition },
+            Err(e) => return Reconciled::Failed { attempt, operation: rdm_core::OperationId::unscoped("build.attempt.run"), reason: format!("reading Build {build_id} after the claim of attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition },
         };
         let operations = &plan.operations;
-        span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
+        span.record("operations", tracing::field::debug(operations.iter().map(BuildOperation::key).collect::<Vec<_>>()));
         // The plain creates of a mesh whose own mesh-primary executes them are that mesh's section
         // (Q250): this fabric-lane run passes them over, and the fabric-primary sends each mesh-primary
         // its section, all at once.
@@ -531,7 +528,7 @@ impl BuildExecutor {
         let mut i = 0;
         while i < operations.len() {
             let op = &operations[i];
-            if lane.is_none() && op.created_node().is_some_and(|n| skipped_meshes.contains(&n.mesh)) {
+            if lane.is_none() && op.created_node().is_some() && op.mesh().is_some_and(|mesh| skipped_meshes.contains(mesh)) {
                 skipped.insert(i);
                 i += 1;
                 continue;
@@ -548,23 +545,23 @@ impl BuildExecutor {
             // an operation a view does not place stays with this admin. The operations themselves are
             // always the fabric-primary's plan.
             if i > 0 && lane.is_none() {
-                let now = self.held_name().await;
+                let now = &self.executor.node_id;
                 let t = self.topology.read().await.clone();
-                if let Some(to) = executor_for(op, &t).filter(|to| to.to_string() != now) {
+                if let Some(to) = executor_for(op, &t).filter(|to| to != now) {
                     if section_create(op, &t, &to) {
-                        skipped_meshes.insert(to.mesh.clone());
+                        skipped_meshes.insert(op.mesh().expect("a create has an explicit mesh").to_string());
                         skipped.insert(i);
                         i += 1;
                         continue;
                     }
-                    return self.hand_off(builds, &build, attempt, ran(i, &skipped), to.to_string()).await;
+                    return self.hand_off(builds, &build, attempt, ran(i, &skipped), to).await;
                 }
             }
             // A run of member creates this admin executes runs concurrently (Q245): the nodes of a
             // mesh are born together, never one after another, a further node-admin with them. A mesh's
             // first node-admin is created on its own: it is the birth the view hands the mesh's members to. A create that ends
             // short of complete stops none of the others; the attempt ends once every one has ended.
-            let group = self.create_group(&operations[i..], lane).await;
+            let group = self.create_group(&operations[i..], lane, &build.topology).await;
             if group > 1 {
                 let ended = self.run_group(&build.build_id, lane, attempt, &operations[i..i + group]).await;
                 let ran: Vec<BuildOperation> = ran(i, &skipped).into_iter().chain(ended.iter().filter(|(_, r)| r.is_ok()).map(|(op, _)| (*op).clone())).collect();
@@ -587,7 +584,7 @@ impl BuildExecutor {
                 continue;
             }
             // Read before the run: once it ran, a first node-admin's create is no longer the mesh's first.
-            let first_admin = matches!(op, BuildOperation::CreateNode { node, .. } if self.topology.read().await.first_admin_of(node, &node.mesh, node.kind));
+            let first_admin = matches!(op, BuildOperation::CreateNode { node, mesh, .. } if build.topology.node_spec(node).is_some_and(|spec| spec.kind == NodeKind::NodeAdmin) && self.topology.read().await.first_admin_of(node, mesh, NodeKind::NodeAdmin));
             match self.runner.run(&build.build_id, lane, attempt, op).await {
                 Ok(()) => {}
                 Err(RunEnd::Failed { reason, code }) => {
@@ -613,14 +610,14 @@ impl BuildExecutor {
         // one driver of the Build, whose next claim names the executor of what is left in its own
         // view (`build_drive` claim_next).
         if plan.hand_off_to.is_some() || !skipped.is_empty() {
-            let driver = self.topology.read().await.fabric_primary().map(|n| n.name.to_string());
+            let driver = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone());
             return match driver {
                 Some(to) => self.hand_off(builds, &build, attempt, ran(operations.len(), &skipped), to).await,
                 // No operation failed: the receipt names none, so no step is blamed for it.
                 None => {
-                    let last = operations.last().map(BuildOperation::key).unwrap_or_else(|| "no operation".into());
-                    let reason = format!("{me}: the run of attempt {attempt} ended after {last} with more of the plan to follow, and this admin's view names no fabric primary to hand it back to");
-                    self.finish(builds, &build, attempt, Err((String::new(), reason, rdm_core::outcome::Code::FailedPrecondition))).await
+                    let last = operations.last().map(BuildOperation::key).unwrap_or_else(|| rdm_core::OperationId::unscoped("build.attempt.run"));
+                    let reason = format!("{me}: the run of attempt {attempt} ended after {last:?} with more of the plan to follow, and this admin's view names no fabric primary to hand it back to");
+                    self.finish(builds, &build, attempt, Err((rdm_core::OperationId::unscoped("build.attempt.run"), reason, rdm_core::outcome::Code::FailedPrecondition))).await
                 }
             };
         }
@@ -630,11 +627,11 @@ impl BuildExecutor {
     /// How many of `ops`, from the first, are member creates this admin executes in its view now
     /// (Q245): node creates, each of whose executor is this admin, but a mesh's first node-admin, the
     /// birth the view hands the mesh's members to.
-    async fn create_group(&self, ops: &[BuildOperation], lane: Option<&str>) -> usize {
-        let now = self.held_name().await;
+    async fn create_group(&self, ops: &[BuildOperation], lane: Option<&str>, accepted: &crate::accepted::FabricTopology) -> usize {
+        let now = &self.executor.node_id;
         let t = self.topology.read().await;
         ops.iter()
-            .take_while(|op| matches!(op, BuildOperation::CreateNode { node, .. } if !t.first_admin_of(node, &node.mesh, node.kind)) && (lane.is_some() || executor_for(op, &t).is_none_or(|to| to.to_string() == now)))
+            .take_while(|op| matches!(op, BuildOperation::CreateNode { node, mesh, .. } if accepted.meshes.get(mesh).and_then(|m| m.spec(node)).is_some_and(|spec| !t.first_admin_of(node, mesh, spec.kind))) && (lane.is_some() || executor_for(op, &t).is_none_or(|to| &to == now)))
             .count()
     }
 
@@ -658,9 +655,9 @@ impl BuildExecutor {
     #[allow(clippy::too_many_arguments)]
     async fn hand_back(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
         span.record("incomplete", reason.as_str());
-        let me = self.held_name().await;
-        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
-        tracing::info!(operation = %op.key(), reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
+        let me = self.executor.clone();
+        let to = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).unwrap_or(me.node_id);
+        tracing::info!(operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().recipe_step, reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
         self.hand_off(builds, build, attempt, ran, to).await
     }
 
@@ -674,9 +671,9 @@ impl BuildExecutor {
     #[allow(clippy::too_many_arguments)]
     async fn create_failed(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
         span.record("incomplete", reason.as_str());
-        let me = self.held_name().await;
-        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
-        tracing::info_span!("rdm.node_admin.build.update.via-create-failed", build_id = %build.build_id.log(), attempt, operation = %op.key(), reason = %reason, to = %to)
+        let me = self.executor.clone();
+        let to = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).unwrap_or(me.node_id);
+        tracing::info_span!("rdm.node_admin.build.update.via-create-failed", build_id = %build.build_id.log(), attempt, operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().recipe_step, reason = %reason, to = %to)
             .in_scope(|| tracing::info!("a create of the fabric lane ended failed: the attempt is handed back and the next attempt creates it again; the Build stays in progress"));
         self.hand_off(builds, build, attempt, ran, to).await
     }
@@ -691,9 +688,9 @@ impl BuildExecutor {
     async fn interrupted(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, next: &BuildOperation, failed: Option<&str>, delete: &BuildId, span: &tracing::Span) -> Reconciled {
         let reason = crate::build_state::interrupted_reason(&build.build_id, delete);
         span.record("incomplete", reason.as_str());
-        let me = self.held_name().await;
-        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
-        tracing::info_span!("rdm.node_admin.build.update.via-interrupted", build_id = %build.build_id.log(), attempt, delete_build_id = %delete.log(), operation = %next.key(), failed = failed.unwrap_or(""), to = %to)
+        let me = self.executor.clone();
+        let to = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).unwrap_or(me.node_id);
+        tracing::info_span!("rdm.node_admin.build.update.via-interrupted", build_id = %build.build_id.log(), attempt, delete_build_id = %delete.log(), operation = %next.key().action, operation_subject = ?next.key().subject, operation_step = ?next.key().recipe_step, failed = failed.unwrap_or(""), to = %to)
             .in_scope(|| match failed {
                 None => tracing::info!("a fabric.delete accepted after this Build interrupts it: the next operation is not opened and the attempt is handed to the fabric-primary"),
                 Some(_) => tracing::info!("a fabric.delete accepted after this Build interrupts it: the operation admitted before it failed within its bound, and the attempt is handed to the fabric-primary"),
@@ -701,29 +698,29 @@ impl BuildExecutor {
         self.hand_off(builds, build, attempt, ran, to).await
     }
 
-    async fn hand_off(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {
+    async fn hand_off(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: NodeId) -> Reconciled {
         let receipt = BuildAttemptReceipt { mesh: None, build_id: build.build_id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } };
         if let Err(e) = builds.append_attempt_receipt(&receipt).await {
-            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
+            return Reconciled::Failed { attempt, operation: rdm_core::OperationId::unscoped("attempt"), reason: format!("recording attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
         }
         tracing::info!(to = %to, "the next operation belongs to another admin; handed off");
         Reconciled::HandedOff { attempt, operations, to }
     }
 
-    async fn finish(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, (String, String, rdm_core::outcome::Code)>) -> Reconciled {
+    async fn finish(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, (rdm_core::OperationId, String, rdm_core::outcome::Code)>) -> Reconciled {
         let outcome = match &r {
             Ok(_) => AttemptOutcome::Converged,
-            Err((op, reason, code)) if op.is_empty() => AttemptOutcome::Failed { reason: reason.clone(), code: *code },
-            Err((op, reason, code)) => AttemptOutcome::Failed { reason: format!("{op}: {reason}"), code: *code },
+            Err((op, reason, code)) if op.subject.is_none() => AttemptOutcome::Failed { reason: reason.clone(), code: *code },
+            Err((op, reason, code)) => AttemptOutcome::Failed { reason: format!("{op:?}: {reason}"), code: *code },
         };
         let receipt = BuildAttemptReceipt { mesh: None, build_id: build.build_id.clone(), attempt, outcome };
         if let Err(e) = builds.append_attempt_receipt(&receipt).await {
-            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
+            return Reconciled::Failed { attempt, operation: rdm_core::OperationId::unscoped("attempt"), reason: format!("recording attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
         }
         match r {
             Ok(operations) => Reconciled::Converged { attempt, operations },
-            Err((operation, reason, code)) if operation.is_empty() => Reconciled::Failed { attempt, reason, operation, code },
-            Err((operation, reason, code)) => Reconciled::Failed { attempt, reason: format!("{operation}: {reason}"), operation, code },
+            Err((operation, reason, code)) if operation.subject.is_none() => Reconciled::Failed { attempt, reason, operation, code },
+            Err((operation, reason, code)) => Reconciled::Failed { attempt, reason: format!("{operation:?}: {reason}"), operation, code },
         }
     }
 }
@@ -752,8 +749,8 @@ mod tests {
     use crate::build_state::BuildState;
     use crate::model::{Fabric, FabricId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
 
-    fn node(name: &str, primary: bool, fabric: bool) -> Node {
-        let mut n = Node::allocated(name.parse().unwrap());
+    fn node(name: PathName, mesh: &str, kind: rdm_core::NodeKind, primary: bool, fabric: bool) -> Node {
+        let mut n = Node::allocated(name.clone(), mesh, kind);
         n.status = NodeStatus::Ready;
         n.incarnation_id = Some(crate::model::IncarnationId::mint());
         n.is_primary = primary;
@@ -762,9 +759,9 @@ mod tests {
     }
 
     fn mm(mesh2_admin: bool) -> Topology {
-        let mut nodes = vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", true, false)];
+        let mut nodes = vec![node(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, true), node(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, true, false)];
         if mesh2_admin {
-            nodes.push(node("mesh2.admin.1", true, false));
+            nodes.push(node(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false));
         }
         Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
@@ -776,8 +773,12 @@ mod tests {
         }
     }
 
-    fn create(n: &str) -> BuildOperation {
-        BuildOperation::CreateNode { node: n.parse().unwrap(), over: None, executable: None, entry: None }
+    fn create(n: PathName, mesh: &str, kind: NodeKind) -> BuildOperation {
+        BuildOperation::CreateNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), over: None, executable: None, entry: None }
+    }
+
+    fn expected(t: &Topology, location: &PathName) -> String {
+        t.node(location).expect("fixture target exists").node_id.to_string()
     }
 
     fn who(op: &BuildOperation, t: &Topology) -> String {
@@ -797,88 +798,88 @@ mod tests {
     /// its create routed to the exited mesh primary the view still names.
     #[test]
     fn a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included() {
-        let recovery = |n: &str| {
-            let (node, from) = (n.parse::<PathName>().unwrap(), crate::build::ExitedBirth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() });
-            [BuildOperation::DeleteLiveNode { node: node.clone(), exited: Some(from.clone()), birth: None }, BuildOperation::CreateNode { node, over: Some(from), executable: None, entry: None }]
+        let recovery = |n: PathName, mesh: &str, kind: NodeKind| {
+            let (node, from) = (n.clone(), crate::build::ExitedBirth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() });
+            [BuildOperation::DeleteLiveNode { mesh: mesh.to_owned(), kind: kind, node: node.clone(), exited: Some(from.clone()), birth: None }, BuildOperation::CreateNode { mesh: mesh.to_owned(), kind: kind, node, over: Some(from), executable: None, entry: None }]
         };
-        let recovered_by = |n: &str, t: &Topology| {
-            let who: Vec<String> = recovery(n).iter().map(|op| who(op, t)).collect();
-            assert!(who.windows(2).all(|w| w[0] == w[1]), "{n}: one executor runs both operations: {who:?}");
+        let recovered_by = |n: PathName, mesh: &str, kind: NodeKind, t: &Topology| {
+            let who: Vec<String> = recovery(n.clone(), mesh, kind).iter().map(|op| who(op, t)).collect();
+            assert!(who.windows(2).all(|w| w[0] == w[1]), "{n:?}: one executor runs both operations: {who:?}");
             who[0].clone()
         };
         let t = mm(true);
-        assert_eq!(recovered_by("mesh2.rpc.1", &t), "mesh2.admin.1", "a member of mesh2 is recovered by mesh2's primary");
-        assert_eq!(recovered_by("mesh1.rpc.1", &t), "mesh1.admin.1", "a member of the fabric-primary's own mesh is recovered by that mesh's primary");
-        assert_eq!(recovered_by("mesh2.admin.1", &t), "", "mesh2's only node-admin: its loss is mesh recovery, never node recovery");
+        assert_eq!(recovered_by(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a member of mesh2 is recovered by mesh2's primary");
+        assert_eq!(recovered_by(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "a member of the fabric-primary's own mesh is recovered by that mesh's primary");
+        assert_eq!(recovered_by(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &t), "", "mesh2's only node-admin: its loss is mesh recovery, never node recovery");
         let mut t3 = mm(true);
-        t3.nodes.push(node("mesh2.admin.2", false, false));
-        t3.nodes.push(node("mesh1.admin.2", false, false));
-        assert_eq!(recovered_by("mesh2.admin.2", &t3), "mesh2.admin.1", "a secondary node-admin is recovered by its mesh's primary");
-        assert_eq!(recovered_by("mesh1.admin.2", &t3), "mesh1.admin.1", "the fabric-primary's own secondary admin, by its mesh-primary role");
-        assert_eq!(recovered_by("mesh2.admin.1", &t3), "mesh2.admin.2", "a mesh primary's own recovery is executed by the admin its mesh elects in its place");
+        t3.nodes.push(node(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false));
+        t3.nodes.push(node(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false, false));
+        assert_eq!(recovered_by(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &t3), expected(&t3, &PathName::new("mesh2.admin", "1").unwrap()), "a secondary node-admin is recovered by its mesh's primary");
+        assert_eq!(recovered_by(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &t3), expected(&t3, &PathName::new("mesh1.admin", "1").unwrap()), "the fabric-primary's own secondary admin, by its mesh-primary role");
+        assert_eq!(recovered_by(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &t3), expected(&t3, &PathName::new("mesh2.admin", "2").unwrap()), "a mesh primary's own recovery is executed by the admin its mesh elects in its place");
         let mut silent = t3.clone();
-        silent.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1").for_each(|n| n.status = NodeStatus::PendingReconnect);
-        assert_eq!(recovered_by("mesh2.admin.2", &silent), "", "no live node-admin of mesh2 is left to recover it: mesh recovery");
+        silent.nodes.iter_mut().filter(|n| n.name.clone() == PathName::new("mesh2.admin", "1").unwrap()).for_each(|n| n.status = NodeStatus::PendingReconnect);
+        assert_eq!(recovered_by(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &silent), "", "no live node-admin of mesh2 is left to recover it: mesh recovery");
     }
 
     #[test]
     fn a_meshs_members_are_its_own_primarys_and_everything_else_the_fabric_primarys() {
         let t = mm(true);
-        assert_eq!(who(&create("mesh2.rpc.1"), &t), "mesh2.admin.1");
-        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh2.admin.1");
-        assert_eq!(who(&create("mesh1.rpc.2"), &t), "mesh1.admin.1");
+        assert_eq!(who(&create(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()));
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), node: rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), exited: None, birth: None }, &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()));
+        assert_eq!(who(&create(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()));
         // The rule names no role: a product's kinds get the mesh's own primary admin too.
-        assert_eq!(who(&create("mesh2.broker.1"), &t), "mesh2.admin.1");
-        assert_eq!(who(&BuildOperation::StopNode { node: "mesh2.gateway.1".parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t), "mesh2.admin.1");
-        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: "mesh2.compute.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh2.admin.1");
-        assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh2.admin.1", "a mesh's missing admin is created by that mesh's primary");
-        assert_eq!(who(&create("mesh1.admin.2"), &t), "mesh1.admin.1", "its own mesh's primary, which is the fabric primary here");
-        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: "mesh2.admin.1".parse().unwrap(), exited: None, birth: None }, &t), "mesh1.admin.1", "mesh2.admin.1 is mesh2's only admin: no successor, the fabric primary");
+        assert_eq!(who(&create(PathName::new("mesh2.broker", "1").unwrap(), "mesh2", rdm_core::NodeKind::Broker), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()));
+        assert_eq!(who(&BuildOperation::StopNode { kind: rdm_core::NodeKind::Gateway, mesh: "mesh2".into(), node: rdm_core::PathName::new("mesh2.gateway", "1").unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()));
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::Compute, mesh: "mesh2".into(), node: rdm_core::PathName::new("mesh2.compute", "1").unwrap(), exited: None, birth: None }, &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()));
+        assert_eq!(who(&create(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a mesh's missing admin is created by that mesh's primary");
+        assert_eq!(who(&create(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "its own mesh's primary, which is the fabric primary here");
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(), node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), exited: None, birth: None }, &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "mesh2.admin.1 is mesh2's only admin: no successor, the fabric primary");
         let mut t3 = mm(true);
-        t3.nodes.push(node("mesh2.admin.2", false, false));
-        let (p2, m2) = ("mesh2.admin.1", "mesh2.admin.2");
-        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: m2.parse().unwrap(), exited: None, birth: None }, &t3), p2, "a non-primary admin's delete is its mesh primary's");
-        assert_eq!(who(&BuildOperation::StopNode { node: m2.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t3), p2, "a non-primary admin's stop is its mesh primary's");
+        t3.nodes.push(node(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false));
+        let (p2, m2) = (PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2").unwrap());
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: m2.clone(), exited: None, birth: None }, &t3), expected(&t3, &p2), "a non-primary admin's delete is its mesh primary's");
+        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: m2.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t3), expected(&t3, &p2), "a non-primary admin's stop is its mesh primary's");
         // R-MT1: a mesh primary's own operation waits for node.primary.update; no admin executes it
         // while it holds the role, and once the role moved its mesh's new primary does.
-        assert_eq!(who(&BuildOperation::StopNode { node: p2.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t3), "", "a mesh primary's own stop waits for its role to move");
-        assert_eq!(who(&BuildOperation::DeleteLiveNode { node: p2.parse().unwrap(), exited: None, birth: None }, &t3), "", "a mesh primary's own delete waits for its role to move");
+        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: p2.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &t3), "", "a mesh primary's own stop waits for its role to move");
+        assert_eq!(who(&BuildOperation::DeleteLiveNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: p2.clone(), exited: None, birth: None }, &t3), "", "a mesh primary's own delete waits for its role to move");
         let mut moved = t3.clone();
         for n in moved.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin) {
-            n.is_primary = n.name.to_string() == m2;
+            n.is_primary = n.name.clone() == m2;
         }
-        assert_eq!(who(&BuildOperation::StopNode { node: p2.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &moved), m2, "once the role moved, the new mesh primary executes the former primary's stop");
-        let rename = |n: &str| {
-            let node: PathName = n.parse().unwrap();
-            BuildOperation::Step { step: rdm_core::build::Step::Update { name: node.renamed(), node }, birth: None, entry: None }
+        assert_eq!(who(&BuildOperation::StopNode { mesh: "mesh2".to_owned(), kind: NodeKind::NodeAdmin, node: p2.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the former primary's stop");
+        let rename = |n: PathName, mesh: &str, kind: NodeKind| {
+            let node: PathName = n.clone();
+            BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, mesh: mesh.to_owned(), kind: kind, step: rdm_core::build::Step::Update { name: node.renamed().unwrap(), node }, birth: None, entry: None }
         };
-        let make = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: n.parse().unwrap(), executable: None }, birth: None, entry: None };
-        assert_eq!(who(&rename("mesh2.rpc.1"), &t), "mesh2.admin.1", "a Build's update of a member is its mesh primary's, the writer of its row");
-        assert_eq!(who(&rename(m2), &t3), p2, "a Build's update of a non-primary admin is its mesh primary's");
-        assert_eq!(who(&rename(p2), &moved), m2, "a Build's update of a former mesh primary after its node.connection.delete moved the role is the new mesh primary's");
-        assert_eq!(who(&make("mesh2.rpc.1"), &t), "mesh2.admin.1", "a Build's create, a replace successor's at the name its predecessor released, is node.create's executor");
-        let steps_connections = |n: &str| BuildOperation::Step { step: rdm_core::build::Step::DeleteConnections { node: n.parse().unwrap() }, birth: None, entry: None };
-        assert_eq!(who(&steps_connections(p2), &t3), "", "a Build's node.connection.delete of a mesh primary waits for its role to move");
-        assert!(role_move(&steps_connections(p2), &t3).is_some_and(|m| m.mesh_role && !m.fabric_role), "a Build's node.connection.delete of mesh2's primary moves its mesh-primary role first");
-        assert_eq!(who(&steps_connections(p2), &moved), m2, "once the role moved, the new mesh primary executes the Build's node.connection.delete");
-        let connections = |n: &str| BuildOperation::DeleteConnections { node: n.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
-        let stop = |n: &str| BuildOperation::StopNode { node: n.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
-        assert_eq!(who(&connections("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's node.connection.delete is its mesh primary's");
-        assert_eq!(who(&stop("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's stop is its mesh primary's");
-        assert_eq!(who(&connections(m2), &t3), p2, "a non-primary admin's node.connection.delete is its mesh primary's");
-        assert_eq!(who(&stop(p2), &t3), "", "a mesh primary's own stop waits for its role to move");
-        assert_eq!(who(&stop(p2), &moved), m2, "once the role moved, the new mesh primary executes the stop");
-        assert!(role_move(&stop(p2), &t3).is_some_and(|m| m.mesh_role && !m.fabric_role), "the stop of mesh2's primary moves its mesh-primary role first");
-        assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }, &t), "mesh1.admin.1");
-        assert_eq!(who(&shutdown("mesh2"), &t), "mesh1.admin.1");
+        let make = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, mesh: mesh.to_owned(), kind: kind, step: rdm_core::build::Step::Create { mesh: mesh.into(), kind, node: n.clone(), executable: None }, birth: None, entry: None };
+        assert_eq!(who(&rename(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a Build's update of a member is its mesh primary's, the writer of its row");
+        assert_eq!(who(&rename(m2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), expected(&t3, &p2), "a Build's update of a non-primary admin is its mesh primary's");
+        assert_eq!(who(&rename(p2.clone(), "mesh2", NodeKind::NodeAdmin), &moved), expected(&moved, &m2), "a Build's update of a former mesh primary after its node.connection.delete moved the role is the new mesh primary's");
+        assert_eq!(who(&make(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a Build's create, a replace successor's at the name its predecessor released, is node.create's executor");
+        let steps_connections = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::Step { rename_intent: crate::accepted::RenameIntent::Ordinary, recipe_step: None, mesh: mesh.to_owned(), kind: kind, step: rdm_core::build::Step::DeleteConnections { node: n.clone() }, birth: None, entry: None };
+        assert_eq!(who(&steps_connections(p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), "", "a Build's node.connection.delete of a mesh primary waits for its role to move");
+        assert!(role_move(&steps_connections(p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3).is_some_and(|m| m.mesh_role && !m.fabric_role), "a Build's node.connection.delete of mesh2's primary moves its mesh-primary role first");
+        assert_eq!(who(&steps_connections(p2.clone(), "mesh2", NodeKind::NodeAdmin), &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the Build's node.connection.delete");
+        let connections = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::DeleteConnections { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
+        let stop = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::StopNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
+        assert_eq!(who(&connections(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a member's node.connection.delete is its mesh primary's");
+        assert_eq!(who(&stop(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a member's stop is its mesh primary's");
+        assert_eq!(who(&connections(m2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), expected(&t3, &p2), "a non-primary admin's node.connection.delete is its mesh primary's");
+        assert_eq!(who(&stop(p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3), "", "a mesh primary's own stop waits for its role to move");
+        assert_eq!(who(&stop(p2.clone(), "mesh2", NodeKind::NodeAdmin), &moved), expected(&moved, &m2), "once the role moved, the new mesh primary executes the stop");
+        assert!(role_move(&stop(p2.clone(), "mesh2", NodeKind::NodeAdmin), &t3).is_some_and(|m| m.mesh_role && !m.fabric_role), "the stop of mesh2's primary moves its mesh-primary role first");
+        assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }, &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()));
+        assert_eq!(who(&shutdown("mesh2"), &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()));
     }
 
     /// `mm(true)` with pinned NodeIds: `fp`, the lower, is the node-admin the election names as the
     /// fabric primary; the other admin and `mesh1.rpc.1` are higher.
-    fn elected(fp: &str) -> Topology {
+    fn elected(fp: PathName) -> Topology {
         let mut t = mm(true);
         for n in t.nodes.iter_mut() {
-            let id = if n.name.to_string() == fp {
+            let id = if n.name.clone() == fp {
                 "1000000000aa"
             } else if n.kind == NodeKind::NodeAdmin {
                 "5000000000aa"
@@ -888,7 +889,7 @@ mod tests {
             n.node_id = rdm_core::ids::NodeId::parse(id).unwrap();
         }
         crate::election::resolve(&mut t.nodes);
-        assert_eq!(t.fabric_primary().map(|n| n.name.to_string()), Some(fp.to_string()), "the pinned ids role {fp}");
+        assert_eq!(t.fabric_primary().map(|n| n.node_id.clone()), Some(t.node(&fp).unwrap().node_id.clone()), "the pinned ids role {fp:?}");
         t
     }
 
@@ -908,36 +909,36 @@ mod tests {
     /// mesh's only node left waiting with no role to move and no admin to execute it.
     #[test]
     fn the_fabric_primary_never_executes_its_own_delete_or_stop() {
-        let delete = |n: &str| BuildOperation::DeleteLiveNode { node: n.parse().unwrap(), exited: None, birth: None };
-        let stop = |n: &str| BuildOperation::StopNode { node: n.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
+        let delete = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::DeleteLiveNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), exited: None, birth: None };
+        let stop = |n: PathName, mesh: &str, kind: NodeKind| BuildOperation::StopNode { mesh: mesh.to_owned(), kind: kind, node: n.clone(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() };
         // mesh1.admin.1 holds the fabric-primary role, mesh1.rpc.1 beside it.
-        let t = elected("mesh1.admin.1");
-        for op in [delete("mesh1.admin.1"), stop("mesh1.admin.1")] {
+        let t = elected(PathName::new("mesh1.admin", "1").unwrap());
+        for op in [delete(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), stop(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin)] {
             assert_eq!(executor_for(&op, &t), None, "{op:?}: never the fabric primary; no admin until its roles moved");
             assert!(role_move(&op, &t).is_some_and(|m| m.mesh_role && m.fabric_role), "{op:?}: both roles move first: {:?}", role_move(&op, &t));
         }
-        assert_eq!(who(&delete("mesh2.admin.1"), &t), "mesh1.admin.1", "mesh2's only admin has no mesh primary beside it: the fabric primary deletes it");
+        assert_eq!(who(&delete(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "mesh2's only admin has no mesh primary beside it: the fabric primary deletes it");
         // mesh2.admin.1 holds the fabric-primary role and is its mesh's only node.
-        let t = elected("mesh2.admin.1");
-        assert_eq!(executor_for(&delete("mesh2.admin.1"), &t), None, "never the fabric primary; no admin until its fabric-primary role moved");
+        let t = elected(PathName::new("mesh2.admin", "1").unwrap());
+        assert_eq!(executor_for(&delete(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t), None, "never the fabric primary; no admin until its fabric-primary role moved");
         assert!(
-            role_move(&delete("mesh2.admin.1"), &t).is_some_and(|m| !m.mesh_role && m.fabric_role),
+            role_move(&delete(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t).is_some_and(|m| !m.mesh_role && m.fabric_role),
             "the delete of its mesh's only node moves the fabric-primary role alone: {:?}",
-            role_move(&delete("mesh2.admin.1"), &t)
+            role_move(&delete(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t)
         );
-        assert!(role_move(&stop("mesh2.admin.1"), &t).is_some_and(|m| m.mesh_role && m.fabric_role), "its stop moves both roles");
-        assert_eq!(who(&delete("mesh1.admin.1"), &t), "", "mesh1's primary, beside mesh1.rpc.1, waits for its own role to move");
+        assert!(role_move(&stop(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t).is_some_and(|m| m.mesh_role && m.fabric_role), "its stop moves both roles");
+        assert_eq!(who(&delete(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), &t), "", "mesh1's primary, beside mesh1.rpc.1, waits for its own role to move");
         let mut moved = t.clone();
         for n in moved.nodes.iter_mut() {
-            n.is_fabric_primary = n.name.to_string() == "mesh1.admin.1";
+            n.is_fabric_primary = n.name.clone() == PathName::new("mesh1.admin", "1").unwrap();
         }
-        assert_eq!(role_move(&delete("mesh2.admin.1"), &moved), None, "once the fabric-primary role moved, nothing is owed");
-        assert_eq!(who(&delete("mesh2.admin.1"), &moved), "mesh1.admin.1", "the new fabric primary executes it");
+        assert_eq!(role_move(&delete(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &moved), None, "once the fabric-primary role moved, nothing is owed");
+        assert_eq!(who(&delete(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &moved), expected(&moved, &PathName::new("mesh1.admin", "1").unwrap()), "the new fabric primary executes it");
         // Alone, the fabric primary has no successor: nobody executes its delete.
         let mut alone = mm(false);
         crate::election::resolve(&mut alone.nodes);
         let fp = alone.fabric_primary().unwrap().name.clone();
-        assert_eq!(executor_for(&BuildOperation::DeleteLiveNode { node: fp, exited: None, birth: None }, &alone), None);
+        assert_eq!(executor_for(&BuildOperation::DeleteLiveNode { mesh: "mesh1".to_owned(), kind: NodeKind::NodeAdmin, node: fp, exited: None, birth: None }, &alone), None);
     }
 
     /// CONTRACT (#3016; elections §5: a primary proven gone "hands the role to the lowest
@@ -950,36 +951,36 @@ mod tests {
     #[test]
     fn a_mesh_whose_admin_is_held_but_not_elected_is_never_executed_by_the_fabric_primary() {
         let mut t = mm(true);
-        let mut second = node("mesh2.admin.2", false, false);
+        let mut second = node(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false);
         second.status = NodeStatus::PendingReconnect;
         t.nodes.push(second);
         // mesh2.rpc.1 holds mesh2's rpc role; the stop is of mesh2.rpc.3, which holds none, so no role
         // moves before it and its executor alone is the question.
-        t.nodes.push(node("mesh2.rpc.1", true, false));
-        t.nodes.push(node("mesh2.rpc.3", false, false));
-        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
+        t.nodes.push(node(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, true, false));
+        t.nodes.push(node(PathName::new("mesh2.rpc", "3").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, false, false));
+        for n in t.nodes.iter_mut().filter(|n| n.name.clone() == PathName::new("mesh2.admin", "1").unwrap()) {
             n.status = NodeStatus::Dead;
             n.is_primary = false;
         }
-        let ops = [BuildOperation::StopNode { node: "mesh2.rpc.3".parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, create("mesh2.rpc.2"), create("mesh2.admin.3"), BuildOperation::DeleteLiveNode { node: "mesh2.admin.1".parse().unwrap(), exited: None, birth: None }];
+        let ops = [BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), node: rdm_core::PathName::new("mesh2.rpc", "3").unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }, create(PathName::new("mesh2.rpc", "2").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), create(PathName::new("mesh2.admin", "3").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(), node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), exited: None, birth: None }];
         for op in &ops {
             assert_eq!(executor_for(op, &t), None, "{op:?}: mesh2.admin.2 is held, not proven gone: never the fabric primary");
             let why = why_no_executor(op, &t);
-            assert!(why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "{why}");
+            assert!(why.contains(&t.node(&PathName::new("mesh2.admin", "2").unwrap()).unwrap().node_id.to_string()) && why.contains("PendingReconnect"), "{why}");
         }
-        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
+        for n in t.nodes.iter_mut().filter(|n| n.name.clone() == PathName::new("mesh2.admin", "2").unwrap()) {
             n.status = NodeStatus::Dead;
         }
-        assert_eq!(who(&ops[0], &t), "mesh1.admin.1", "every mesh2 admin proven gone: the fabric primary");
-        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
+        assert_eq!(who(&ops[0], &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "every mesh2 admin proven gone: the fabric primary");
+        for n in t.nodes.iter_mut().filter(|n| n.name.clone() == PathName::new("mesh2.admin", "2").unwrap()) {
             n.status = NodeStatus::Pending;
         }
-        assert_eq!(who(&ops[0], &t), "mesh1.admin.1", "a Pending admin is a birth the fabric primary carries");
-        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.2") {
+        assert_eq!(who(&ops[0], &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "a Pending admin is a birth the fabric primary carries");
+        for n in t.nodes.iter_mut().filter(|n| n.name.clone() == PathName::new("mesh2.admin", "2").unwrap()) {
             n.status = NodeStatus::Ready;
             n.is_primary = true;
         }
-        assert_eq!(who(&ops[0], &t), "mesh2.admin.2", "once primary, the same-mesh successor executes");
+        assert_eq!(who(&ops[0], &t), expected(&t, &PathName::new("mesh2.admin", "2").unwrap()), "once primary, the same-mesh successor executes");
     }
 
     fn shutdown(mesh: &str) -> BuildOperation {
@@ -996,20 +997,20 @@ mod tests {
     #[test]
     fn a_mesh_delete_is_the_fabric_primarys() {
         let t = mm(true);
-        assert_eq!(who(&shutdown("mesh2"), &t), "mesh1.admin.1", "the fabric primary, outside mesh2");
+        assert_eq!(who(&shutdown("mesh2"), &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "the fabric primary, outside mesh2");
         assert_eq!(role_move(&shutdown("mesh2"), &t), None, "a delete of a mesh the fabric-primary role is not in moves no role");
         assert_eq!(who(&shutdown("mesh1"), &t), "", "the fabric primary, inside mesh1: no admin executes the delete until its role moved");
         assert!(
-            role_move(&shutdown("mesh1"), &t).is_some_and(|m| m.primary.name.to_string() == "mesh1.admin.1" && !m.mesh_role && m.fabric_role),
+            role_move(&shutdown("mesh1"), &t).is_some_and(|m| m.primary.name.clone() == PathName::new("mesh1.admin", "1").unwrap() && !m.mesh_role && m.fabric_role),
             "the fabric-primary role alone moves first: {:?}",
             role_move(&shutdown("mesh1"), &t)
         );
         let mut moved = mm(true);
         for n in moved.nodes.iter_mut() {
-            n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
+            n.is_fabric_primary = n.name.clone() == PathName::new("mesh2.admin", "1").unwrap();
         }
         assert_eq!(role_move(&shutdown("mesh1"), &moved), None, "once the role moved, nothing is owed");
-        assert_eq!(who(&shutdown("mesh1"), &moved), "mesh2.admin.1", "once the role moved, the new fabric primary is the executor");
+        assert_eq!(who(&shutdown("mesh1"), &moved), expected(&moved, &PathName::new("mesh2.admin", "1").unwrap()), "once the role moved, the new fabric primary is the executor");
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2
@@ -1025,30 +1026,30 @@ mod tests {
     #[test]
     fn the_fabric_primary_hands_both_primaries_to_its_own_meshs_successor_whatever_the_node_ids() {
         use crate::election::{commanded_successor, Moving};
-        let with = |path: &str, id: &str, primary: bool, fabric: bool| {
-            let mut n = node(path, primary, fabric);
+        let with = |path: PathName, mesh: &str, kind: NodeKind, id: &str, primary: bool, fabric: bool| {
+            let mut n = node(path.clone(), mesh, kind, primary, fabric);
             n.node_id = rdm_core::ids::NodeId::parse(id).unwrap();
             n
         };
         let mut nodes = vec![
-            with("mesh1.admin.1", "5000000000aa", true, true),
-            with("mesh1.admin.2", "9000000000aa", false, false),
-            with("mesh1.rpc.1", "6000000000aa", true, false),
-            with("mesh2.admin.1", "1000000000aa", true, false),
+            with(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "5000000000aa", true, true),
+            with(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "9000000000aa", false, false),
+            with(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, "6000000000aa", true, false),
+            with(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "1000000000aa", true, false),
         ];
         let inc = crate::election::Incumbency::default();
         let p = nodes[0].clone();
-        let name = |n: Result<crate::model::Node, String>| n.map(|n| n.name.to_string()).unwrap_or_else(|e| e);
-        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothRoles)), "mesh1.admin.2", "both roles: mesh1's other admin; mesh2.admin.1's lower NodeId is no input");
-        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::MeshRole)), "mesh1.admin.2");
-        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricRoleOutside)), "mesh2.admin.1", "mesh.delete: the fabric-primary role leaves the departing mesh");
+        let name = |n: Result<crate::model::Node, String>| n.map(|n| n.name.clone());
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothRoles)), Ok(PathName::new("mesh1.admin", "2").unwrap()), "both roles: mesh1's other admin; mesh2.admin.1's lower NodeId is no input");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::MeshRole)), Ok(PathName::new("mesh1.admin", "2").unwrap()));
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricRoleOutside)), Ok(PathName::new("mesh2.admin", "1").unwrap()), "mesh.delete: the fabric-primary role leaves the departing mesh");
         // mesh1's only admin: the mesh-primary role has no secondary though mesh2's primary is Ready.
-        nodes.retain(|n| n.name.to_string() != "mesh1.admin.2");
-        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothRoles)), "cannot transfer: no secondary of type node-admin in mesh mesh1");
+        nodes.retain(|n| n.name.clone() != PathName::new("mesh1.admin", "2").unwrap());
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothRoles)), Err("cannot transfer: no secondary of type node-admin in mesh mesh1".to_string()));
         // And no other mesh-primary either: both searches named.
         nodes.retain(|n| n.mesh != "mesh2");
-        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothRoles)), "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready");
-        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricRoleOutside)), "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready");
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::BothRoles)), Err("cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready".to_string()));
+        assert_eq!(name(commanded_successor(&nodes, &inc, &p, Moving::FabricRoleOutside)), Err("cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready".to_string()));
     }
 
     /// CONTRACT (node-primary-update.md:159-160, "Successor search for the commanded transfer": "2. only
@@ -1062,8 +1063,8 @@ mod tests {
     #[test]
     fn the_fabric_primary_is_never_handed_to_the_admin_of_a_dead_or_deleting_mesh() {
         use crate::election::{commanded_successor_in, Moving};
-        let with = |path: &str, id: &str, fabric: bool| {
-            let mut n = node(path, true, fabric);
+        let with = |path: PathName, mesh: &str, kind: NodeKind, id: &str, fabric: bool| {
+            let mut n = node(path.clone(), mesh, kind, true, fabric);
             n.node_id = rdm_core::ids::NodeId::parse(id).unwrap();
             n
         };
@@ -1071,24 +1072,24 @@ mod tests {
         let mut t = Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: vec![mesh("mesh1", ScopeStatus::Leaving), mesh("mesh2", ScopeStatus::Ready), mesh("mesh3", ScopeStatus::Dead), mesh("mesh4", ScopeStatus::Leaving)],
-            nodes: vec![with("mesh1.admin.1", "5000000000aa", true), with("mesh2.admin.1", "9000000000aa", false), with("mesh3.admin.1", "1000000000aa", false), with("mesh4.admin.1", "2000000000aa", false)],
+            nodes: vec![with(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, "5000000000aa", true), with(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "9000000000aa", false), with(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, "1000000000aa", false), with(PathName::new("mesh4.admin", "1").unwrap(), "mesh4", rdm_core::NodeKind::NodeAdmin, "2000000000aa", false)],
         };
         let p = t.nodes[0].clone();
         let inc = crate::election::Incumbency::default();
-        let name = |n: Result<crate::model::Node, String>| n.map(|n| n.name.to_string()).unwrap_or_else(|e| e);
-        assert_eq!(name(commanded_successor_in(&t, &inc, &p, Moving::FabricRoleOutside)), "mesh2.admin.1", "the other Ready mesh's primary, never the Dead mesh3's or the deleting mesh4's");
+        let name = |n: Result<crate::model::Node, String>| n.map(|n| n.name.clone());
+        assert_eq!(name(commanded_successor_in(&t, &inc, &p, Moving::FabricRoleOutside)), Ok(PathName::new("mesh2.admin", "1").unwrap()), "the other Ready mesh's primary, never the Dead mesh3's or the deleting mesh4's");
         t.nodes.retain(|n| n.mesh != "mesh2");
         t.meshes.retain(|m| m.name != "mesh2");
-        assert_eq!(name(commanded_successor_in(&t, &inc, &p, Moving::FabricRoleOutside)), "cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready");
+        assert_eq!(name(commanded_successor_in(&t, &inc, &p, Moving::FabricRoleOutside)), Err("cannot transfer fabric-primary: no other node-admin Ready in mesh mesh1, no other mesh-primary Ready".to_string()));
     }
 
     #[test]
     fn a_mesh_without_an_admin_primary_has_its_members_run_by_the_fabric_primary() {
         let t = mm(false);
-        assert_eq!(who(&create("mesh2.rpc.1"), &t), "mesh1.admin.1");
-        assert_eq!(who(&create("mesh2.admin.1"), &t), "mesh1.admin.1", "the first admin of a mesh that has none is the fabric primary's");
-        assert_eq!(lead_for(&[], &t).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "an empty plan is closed by the fabric primary");
-        assert_eq!(lead_for(&[create("mesh2.rpc.1")], &mm(true)).map(|p| p.to_string()).as_deref(), Some("mesh2.admin.1"));
+        assert_eq!(who(&create(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode), &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()));
+        assert_eq!(who(&create(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin), &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "the first admin of a mesh that has none is the fabric primary's");
+        assert_eq!(lead_for(&[], &t), t.fabric_primary().map(|n| n.node_id.clone()), "an empty plan is closed by the fabric primary");
+        assert_eq!(lead_for(&[create(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode)], &t), t.fabric_primary().map(|n| n.node_id.clone()));
     }
 
     #[test]
@@ -1102,8 +1103,8 @@ mod tests {
                 submitted_change: None,
                 submitted_at_ms: 0,
             }),
-            BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }),
-            BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }),
+            BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: rdm_core::framing::Birth { node_id: NodeId::parse("100000000000").unwrap(), incarnation: crate::model::IncarnationId::mint() } }),
+            BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: NodeId::parse("200000000000").unwrap() } }),
         ];
         let p = fold(&facts).remove(&id).unwrap();
         assert_eq!((p.state, p.attempt, p.last_failure), (BuildState::Pending, 1, None));

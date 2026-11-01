@@ -45,11 +45,11 @@ mod tests {
         rt.block_on(async {
             let fabric_id = FabricId::mint();
             let mesh_id = MeshId::mint();
-            let node_name = PathName::new("mesh1", NodeKind::RpcNode, 1);
+            let node_name = PathName::numbered("mesh1", NodeKind::RpcNode, 1);
             let node_id = NodeId::mint();
             let incarnation = IncarnationId::mint();
 
-            let peer_name = PathName::new("mesh1", NodeKind::RpcNode, 2);
+            let peer_name = PathName::numbered("mesh1", NodeKind::RpcNode, 2);
             let peer_id = NodeId::mint();
             let peer_incarnation = IncarnationId::mint();
 
@@ -93,7 +93,7 @@ mod tests {
 
             let resolver = Arc::new(LiveNodeResolver::default());
             resolver.apply(
-                ResolvedNode {
+                ResolvedNode { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
                     node_id: peer_id.clone(),
                     name: peer_name.clone(),
                     endpoint_id: peer_key.public(),
@@ -106,7 +106,7 @@ mod tests {
             let connections_store = Arc::new(MemoryConnectionsStorage::default());
             let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
             let writer = Arc::new(ConnectionsWriter::new(
-                ConnectionEnd {
+                ConnectionEnd { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
                     name: node_name.clone(),
                     node_id: node_id.clone(),
                     incarnation: Some(incarnation.clone()),
@@ -140,7 +140,7 @@ mod tests {
                 &fabric_id,
                 "mesh1",
                 &mesh_id,
-                &node_name.to_string(),
+                &node_id.to_string(),
                 clock,
                 Vec::new(),
                 &[],
@@ -152,7 +152,7 @@ mod tests {
             let digest_base = MeshDigest {
                 held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
-                node: MeshNode { mesh: node_name.mesh.clone(), kind: node_name.kind,
+                node: MeshNode { mesh: "mesh1".to_owned(), kind: NodeKind::RpcNode,
                     node_id: node_id.clone(),
                     name: node_name.clone(),
                     endpoint_id: EndpointId(node_key.public().to_string()),
@@ -185,19 +185,7 @@ mod tests {
             let status_for_get = status_cell.clone();
             let get_status = Arc::new(move || *status_for_get.lock().unwrap());
 
-            let own = Arc::new(NodeSelf::new(
-                node_id.clone(),
-                incarnation.clone(),
-                node_name.clone(),
-                node_server,
-                control_client,
-                resolver,
-                topology_view,
-                set_status,
-                get_status,
-                None,
-                Duration::from_secs(2),
-            ));
+            let own = Arc::new(NodeSelf::new(node_id.clone(), incarnation.clone(), node_name.clone(), NodeKind::RpcNode, node_server, control_client, resolver, topology_view, set_status, get_status, None, Duration::from_secs(2)));
             own.set_connections(writer.clone());
             own.set_data_plane(data_plane.clone());
 

@@ -2,7 +2,7 @@
 //!
 //! The current Build (the Build entities read last in, first out, R-BI3:
 //! [`crate::build_state::BuildStateAdapter::current_build`]) holds the complete Fabric topology as
-//! exact node `path.name`s per Mesh ([`FabricTopology`]). A submitted change ([`TopologyChange`]) is
+//! exact node `(path, name)`s per Mesh ([`FabricTopology`]). A submitted change ([`TopologyChange`]) is
 //! input only: [`compile`] applies it once to the current accepted topology and yields the next
 //! complete map; the change itself is kept on the Build as history, never read to plan. Planning
 //! is always `topology − observed` ([`plan`]). A stop, a start, a recovery or a Build's steps change no topology:
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-/// One Mesh of the accepted topology: every node it should have, by `path.name`.
+/// One Mesh of the accepted topology: every node it should have, by `(path, name)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshTopology {
     /// The mesh's name.
@@ -33,71 +33,31 @@ pub struct MeshTopology {
     /// the mesh's `create-mesh` operation, by any executor and any attempt, claims the mesh's name with
     /// it; a mesh removed and created again enters the topology anew with a new id (R-MN1).
     pub mesh_id: MeshId,
-    /// Every node the mesh should have, by `path.name`.
+    /// Every node the mesh should have, by `(path, name)`.
     pub nodes: BTreeSet<PathName>,
     /// The create spec of every materialized path (Q166: the node's properties, flat), explicit after
     /// ingress normalization: one entry per node, no entry without a node (`validate`). The journal
     /// wrote this map as `path_config_by_path` before Q166, each entry without its `path` and its
     /// `config`: such a record decodes, each spec's path its key and its config empty (durable format
     /// moved).
-    #[serde(default, alias = "path_config_by_path", deserialize_with = "specs_by_path")]
+    #[serde(deserialize_with = "specs_by_path", serialize_with = "write_specs")]
     pub spec_by_path: BTreeMap<PathName, NodeSpec>,
 }
 
-/// A create spec as the journal holds it: one written before Q166 carries no `path` (its key, or the
-/// first element of the pair it was written in, names it) and no `config`.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredSpec {
-    #[serde(default)]
-    path: Option<PathName>,
-    mesh: String,
-    kind: NodeKind,
-    /// Read as `storage` too: a spec written before storage.md §1's rename (durable format moved).
-    #[serde(alias = "storage")]
-    storage_persistence: rdm_core::meta::StorageMeta,
-    placement: rdm_core::meta::PlacementMeta,
-    #[serde(default)]
-    executable: Option<rdm_core::binding::Binding>,
-    #[serde(default)]
-    tags: BTreeSet<String>,
-    #[serde(default)]
-    config: BTreeMap<String, String>,
-}
-
-impl StoredSpec {
-    /// The spec at `path`, the path the record names it by.
-    fn at(self, path: PathName) -> NodeSpec {
-        NodeSpec { path: self.path.unwrap_or(path), mesh: self.mesh, kind: self.kind, storage_persistence: self.storage_persistence, placement: self.placement, executable: self.executable, tags: self.tags, config: self.config }
-    }
-}
-
-/// [`MeshTopology::spec_by_path`] from the journal, a spec written before Q166 named by its key.
+/// Journal entries retain the pair as fields rather than object-map keys.
 fn specs_by_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<PathName, NodeSpec>, D::Error> {
-    let stored = BTreeMap::<PathName, StoredSpec>::deserialize(d)?;
-    Ok(stored.into_iter().map(|(path, spec)| (path.clone(), spec.at(path))).collect())
+    let mut specs = BTreeMap::new();
+    for spec in Vec::<NodeSpec>::deserialize(d)? {
+        let path = spec.path.clone();
+        if specs.insert(path.clone(), spec).is_some() {
+            return Err(serde::de::Error::custom(format!("the accepted entries repeat path {:?}, name {:?}", path.path, path.name)));
+        }
+    }
+    Ok(specs)
 }
 
-/// One node of a stored [`TopologyChange::Reconcile`]: a create spec, or the `[path.name, entry]` pair
-/// the journal wrote before Q166.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum StoredNode {
-    Spec(StoredSpec),
-    Pair(PathName, StoredSpec),
-}
-
-/// [`TopologyChange::Reconcile`]'s nodes from the journal, a pair written before Q166 read as the spec
-/// it names (durable format moved).
-fn stored_nodes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<NodeSpec>, D::Error> {
-    Vec::<StoredNode>::deserialize(d)?
-        .into_iter()
-        .map(|n| match n {
-            StoredNode::Pair(path, spec) => Ok(spec.at(path)),
-            StoredNode::Spec(StoredSpec { path: Some(path), mesh, kind, storage_persistence, placement, executable, tags, config }) => Ok(NodeSpec { path, mesh, kind, storage_persistence, placement, executable, tags, config }),
-            StoredNode::Spec(_) => Err(serde::de::Error::custom("a stored create spec names no path")),
-        })
-        .collect()
+fn write_specs<S: serde::Serializer>(specs: &BTreeMap<PathName, NodeSpec>, s: S) -> Result<S::Ok, S::Error> {
+    specs.values().collect::<Vec<_>>().serialize(s)
 }
 
 /// The explicit node-admin storage default and placement written at the Day-0 claim.
@@ -119,7 +79,7 @@ impl MeshTopology {
         let mut spec_by_path = BTreeMap::new();
         for (kind, want) in desired.counts() {
             for ord in 1..=want {
-                let path = PathName::new(&desired.name, kind, ord);
+                let path = PathName::numbered(&desired.name, kind, ord);
                 spec_by_path.insert(path.clone(), NodeSpec::default_for(path.clone(), &desired.name, kind));
                 nodes.insert(path);
             }
@@ -134,10 +94,10 @@ impl MeshTopology {
     /// name for a path the mesh does not hold.
     pub fn set_spec(&mut self, spec: NodeSpec) -> Result<(), BuildReject> {
         if !self.nodes.contains(&spec.path) {
-            return Err(BuildReject::UnknownNode { node: spec.path.to_string(), step: None });
+            return Err(BuildReject::UnknownNode { node: spec.path.clone(), step: None });
         }
         if spec.mesh != self.name {
-            return Err(BuildReject::NodeSpecMismatch { mesh: self.name.clone(), missing: vec![], extra: vec![format!("{} in mesh {}", spec.path, spec.mesh)] });
+            return Err(BuildReject::NodeSpecMismatch { mesh: self.name.clone(), missing: vec![], extra: vec![crate::build::NodeSpecConflict { location: spec.path.clone(), declared_location: spec.path.clone(), declared_mesh: spec.mesh.clone() }] });
         }
         self.spec_by_path.insert(spec.path.clone(), spec);
         Ok(())
@@ -162,7 +122,7 @@ impl MeshTopology {
 /// The complete accepted Fabric topology. Each path's executable is its entry's
 /// ([`NodeSpec::executable`]); the fabric holds no executable of its own (build-deployment.md §2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "StoredTopology")]
+#[serde(deny_unknown_fields)]
 pub struct FabricTopology {
     /// The fabric's name.
     pub fabric: String,
@@ -188,47 +148,6 @@ pub struct FabricTopology {
     /// fabric-primary records it. Never journaled: only the fabric-primary writes the record, whole.
     #[serde(skip)]
     pub section_of: Option<BTreeMap<String, MeshId>>,
-}
-
-/// A [`FabricTopology`] as the journal holds it: a record written before the executable was each
-/// path's carried the fabric's per-kind set beside the meshes (`bindings`), the removed operation's.
-#[derive(Deserialize)]
-struct StoredTopology {
-    fabric: String,
-    meshes: BTreeMap<String, MeshTopology>,
-    #[serde(default)]
-    bindings: Option<StoredSet>,
-    #[serde(default = "crate::fabric_storage::file_provider")]
-    topology_storage_provider: Option<String>,
-    #[serde(default)]
-    storage_change: Option<rdm_core::build::StorageChange>,
-    #[serde(default)]
-    pinned: Vec<(PathName, crate::build::PinnedBirth)>,
-}
-
-/// The per-kind set an old record carries: only its bindings are read.
-#[derive(Deserialize)]
-struct StoredSet {
-    #[serde(default)]
-    bindings: Vec<rdm_core::binding::Binding>,
-}
-
-/// The durable-format move's fill (proposal executable-bindings-at-create.md §1 "Corrected"): an entry
-/// of a record written with the old per-kind set that names no executable takes the set's binding of
-/// its kind, once, here; the record writes back with no set. The fill is the desired topology only,
-/// never a birth's record: what a birth runs is its row's.
-impl From<StoredTopology> for FabricTopology {
-    fn from(t: StoredTopology) -> Self {
-        let mut meshes = t.meshes;
-        if let Some(set) = t.bindings {
-            for m in meshes.values_mut() {
-                for spec in m.spec_by_path.values_mut().filter(|s| s.executable.is_none()) {
-                    spec.executable = set.bindings.iter().find(|b| b.launch_id == spec.kind.name()).cloned();
-                }
-            }
-        }
-        Self { fabric: t.fabric, meshes, topology_storage_provider: t.topology_storage_provider, storage_change: t.storage_change, pinned: t.pinned, section_of: None }
-    }
 }
 
 impl FabricTopology {
@@ -278,7 +197,7 @@ impl FabricTopology {
         }
         let named: BTreeMap<String, MeshId> = self.meshes.iter().map(|(n, m)| (n.clone(), m.mesh_id.clone())).collect();
         let of = |held: BTreeMap<String, MeshTopology>| FabricTopology {
-            pinned: self.pinned.iter().filter(|(p, _)| held.contains_key(&p.mesh)).cloned().collect(),
+            pinned: self.pinned.iter().filter(|(_, birth)| held.contains_key(&birth.mesh)).cloned().collect(),
             fabric: self.fabric.clone(),
             meshes: held,
             topology_storage_provider: self.topology_storage_provider.clone(),
@@ -299,7 +218,7 @@ impl FabricTopology {
                 for (n, m) in &other.meshes {
                     if !self.meshes.contains_key(n) {
                         self.meshes.insert(n.clone(), m.clone());
-                        self.pinned.extend(other.pinned.iter().filter(|(p, _)| &p.mesh == n).cloned());
+                        self.pinned.extend(other.pinned.iter().filter(|(_, birth)| &birth.mesh == n).cloned());
                     }
                 }
             }
@@ -324,7 +243,7 @@ impl FabricTopology {
         let mut named = BTreeSet::new();
         for (name, m) in &self.meshes {
             if let Some(path) = m.nodes.iter().find(|path| !named.insert((*path).clone())) {
-                return Err(BuildReject::NodeNamedTwice { node: path.to_string() });
+                return Err(BuildReject::NodeNamedTwice { node: path.clone() });
             }
             if name != &m.name {
                 return Err(BuildReject::InvalidMeshName { mesh: m.name.clone() });
@@ -335,8 +254,8 @@ impl FabricTopology {
             if m.count(NodeKind::NodeAdmin) == 0 {
                 return Err(BuildReject::MeshWithoutAdmin { mesh: name.clone() });
             }
-            let missing: Vec<String> = m.nodes.iter().filter(|p| !m.spec_by_path.contains_key(p)).map(ToString::to_string).collect();
-            let extra: Vec<String> = m.spec_by_path.iter().filter(|(path, spec)| !m.nodes.contains(*path) || spec.mesh != *name || spec.path != **path).map(|(path, spec)| if spec.mesh == *name && spec.path == *path { path.to_string() } else { format!("{path} (entry {} in mesh {})", spec.path, spec.mesh) }).collect();
+            let missing = m.nodes.iter().filter(|p| !m.spec_by_path.contains_key(p)).cloned().collect::<Vec<_>>();
+            let extra = m.spec_by_path.iter().filter(|(path, spec)| !m.nodes.contains(*path) || spec.mesh != *name || spec.path != **path).map(|(path, spec)| crate::build::NodeSpecConflict { location: path.clone(), declared_location: spec.path.clone(), declared_mesh: spec.mesh.clone() }).collect::<Vec<_>>();
             if !missing.is_empty() || !extra.is_empty() {
                 return Err(BuildReject::NodeSpecMismatch { mesh: name.clone(), missing, extra });
             }
@@ -420,7 +339,6 @@ pub enum TopologyChange {
         /// The build_id of the current Build the caller read.
         based_on: BuildId,
         /// Every node of the fabric, each by its create spec.
-        #[serde(deserialize_with = "stored_nodes")]
         nodes: Vec<NodeSpec>,
         /// The `topology_storage_provider` the request names (storage.md §2); `None` leaves the
         /// fabric's unchanged (Q166). A change stored before the field names none.
@@ -446,8 +364,44 @@ pub fn target_executable<'a>(topology: &'a FabricTopology, path: &PathName) -> O
 
 /// Whether the node at a path is replaced: its target names an executable and its live row records
 /// another (or none). A path no live row is written at is created, never replaced.
-fn replaced_by_target(target: Option<&rdm_core::binding::Binding>, row: Option<&RecordedRow>) -> bool {
-    target.is_some_and(|b| row.is_some_and(|r| r.sha256.as_deref() != Some(b.sha256.as_str())))
+fn replaced_by_target(entry: &NodeSpec, row: Option<&RecordedRow>) -> bool {
+    row.is_some_and(|r| r.mesh != entry.mesh || r.kind != entry.kind || entry.executable.as_ref().is_some_and(|b| r.sha256.as_deref() != Some(b.sha256.as_str())))
+}
+
+/// Rename intent fixed at admission, independently of the spelling of a node's name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RenameIntent {
+    /// An ordinary name change preserves any existing replacement provenance.
+    #[default]
+    Ordinary,
+    /// Retain the pinned predecessor while a subsequent step creates its successor.
+    Replacement {
+        /// The predecessor's original separate path and name.
+        original: PathName,
+    },
+    /// Restore the original name of the pinned retained predecessor.
+    Rollback {
+        /// The separate path and name restored by the admitted rollback.
+        original: PathName,
+    },
+}
+
+impl RenameIntent {
+    /// Validate before claiming a name, then calculate the provenance written with that name.
+    pub(crate) fn provenance(&self, held: &Option<PathName>, from: &PathName, to: &PathName) -> Result<Option<PathName>, String> {
+        if from.path != to.path {
+            return Err("a node's path is immutable".into());
+        }
+        match self {
+            Self::Ordinary if held.as_ref() == Some(to) && from != to => Err("restoring a predecessor's original name requires its admitted rollback".into()),
+            Self::Ordinary => Ok(held.clone()),
+            Self::Replacement { original } if from == original && *to == original.renamed().map_err(|e| format!("invalid replacement name: {e:?}"))? && held.as_ref().is_none_or(|p| p == original) => Ok(Some(original.clone())),
+            Self::Rollback { original } if to == original && held.as_ref() == Some(original) => Ok(None),
+            // A completed rollback may be replayed after its provenance was cleared.
+            Self::Rollback { original } if from == to && to == original && held.is_none() => Ok(None),
+            _ => Err("the rename does not match its admitted replacement intent".into()),
+        }
+    }
 }
 
 /// What one attempt of a Build does beyond realizing its topology: a standalone node op, a recovery
@@ -460,6 +414,10 @@ pub enum AttemptAction {
     DeleteConnections {
         /// The node.
         path: PathName,
+        /// The explicit mesh owning the target birth.
+        mesh: String,
+        /// The immutable admitted kind of the target birth.
+        kind: NodeKind,
         /// The node id of the birth the gates pinned (build.md §4.4).
         node_id: NodeId,
         /// The birth whose connections are deleted.
@@ -470,6 +428,10 @@ pub enum AttemptAction {
     Stop {
         /// The node.
         path: PathName,
+        /// The explicit mesh owning the target birth.
+        mesh: String,
+        /// The immutable admitted kind of the target birth.
+        kind: NodeKind,
         /// The node id of the birth the gates pinned (build.md §4.4).
         node_id: NodeId,
         /// The birth stopped.
@@ -479,6 +441,10 @@ pub enum AttemptAction {
     Start {
         /// The node.
         path: PathName,
+        /// The explicit mesh owning the target birth.
+        mesh: String,
+        /// The immutable admitted kind of the target birth.
+        kind: NodeKind,
         /// The node id of the birth the gates pinned (build.md §4.4).
         node_id: NodeId,
         /// The birth started.
@@ -489,23 +455,31 @@ pub enum AttemptAction {
     Recover {
         /// The node.
         path: PathName,
+        /// The explicit mesh owning the target birth.
+        mesh: String,
+        /// The immutable admitted kind of the target birth.
+        kind: NodeKind,
         /// The exited instance's node.id.
         node_id: NodeId,
         /// The exited birth.
         from_incarnation: IncarnationId,
         /// Fabric recovery's backbone arm (fabric-recovery.md step 3, Q142, Q148): it terminates nothing
         /// in the mesh. Its node.delete of the exact lost birth writes that birth's row deleted with no
-        /// `TerminateRuntime` and releases the name, then node.create at the path.name; a delete that
+        /// `TerminateRuntime` and releases the name, then node.create at the path and name; a delete that
         /// finds another birth at the path writes nothing.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         backbone: bool,
     },
-    /// Delete the stopped exact birth a rename left at `<path>.old` (node-delete.md): its stop steps
+    /// Delete the stopped exact birth a rename left at the predecessor name `<name>-old` at the same path (node-delete.md): its stop steps
     /// are done; the provider's exact Exited is the proof, then `NodeDeleted` and its Deleted row. The
-    /// topology never names a `.old` path: this action is its only door outside a Build's steps.
+    /// topology never names a retained predecessor location: this action is its only door outside a Build's steps.
     Delete {
-        /// The node's `.old` path.
+        /// The node's retained predecessor location.
         path: PathName,
+        /// The explicit mesh owning the target birth.
+        mesh: String,
+        /// The immutable admitted kind of the target birth.
+        kind: NodeKind,
         /// The node id of the birth the gates pinned (build.md §4.4).
         node_id: NodeId,
         /// The birth deleted.
@@ -523,12 +497,18 @@ pub enum AttemptAction {
         steps: Vec<Step>,
         /// The birth each path a step acts on held at acceptance.
         pinned: Vec<(PathName, PinnedBirth)>,
+        /// Rename intent keyed by the original one-based step position.
+        rename_intents: BTreeMap<u32, RenameIntent>,
     },
     /// Terminate the runtime of a deleted birth heard again (node-investigation.md, Q110, Q128): the
     /// existing `TerminateRuntime` on its exact runtime; its row and departure stand.
     Terminate {
-        /// The path.name the birth held.
+        /// The path and name the birth held.
         path: PathName,
+        /// The explicit mesh owning the target birth.
+        mesh: String,
+        /// The immutable admitted kind of the target birth.
+        kind: NodeKind,
         /// The birth's node.id.
         node_id: NodeId,
         /// The birth.
@@ -557,8 +537,8 @@ pub(crate) fn steps_action(steps: Vec<Step>, observed: &Topology) -> Result<Atte
     for step in &steps {
         let path = step.node();
         if !made.contains(path) && !pinned.iter().any(|(p, _)| p == path) {
-            if let Some((node_id, incarnation)) = observed.node(path).and_then(|n| n.incarnation_id.clone().map(|i| (n.node_id.clone(), i))) {
-                pinned.push((path.clone(), PinnedBirth { node_id, incarnation }));
+            if let Some(birth) = observed.node(path).and_then(PinnedBirth::of) {
+                pinned.push((path.clone(), birth));
             }
         }
         match step {
@@ -571,35 +551,88 @@ pub(crate) fn steps_action(steps: Vec<Step>, observed: &Topology) -> Result<Atte
             _ => {}
         }
     }
-    step_births(&steps, &pinned)?;
-    Ok(AttemptAction::Steps { steps, pinned })
+    let births = step_births(&steps, &pinned)?;
+    let mut rename_intents = BTreeMap::new();
+    let mut origins: BTreeMap<_, _> = observed.births().map(|n| (n.node_id.clone(), n.renamed_from.clone())).collect();
+    for (i, (step, (birth, _, _))) in steps.iter().zip(&births).enumerate() {
+        let Step::Update { node, name } = step else { continue };
+        let prior = birth.as_ref().and_then(|b| origins.get(&b.node_id)).cloned().flatten();
+        let creates_successor = steps[i + 1..].iter().any(|s| matches!(s, Step::Create { node: at, .. } if at == node));
+        if birth.is_none() && creates_successor {
+            return Err(BuildReject::InvalidNodeRename { step: i as u32 + 1, detail: "replacement requires an existing pinned predecessor; a node created in these steps cannot be replaced in the same Build".into() });
+        }
+        if let Some(predecessor) = birth.as_ref().filter(|_| creates_successor) {
+            if steps[i + 1..].iter().any(|step| matches!(step, Step::Create { node: at, mesh, .. } if at == node && mesh != &predecessor.mesh)) {
+                return Err(BuildReject::InvalidNodeRename { step: i as u32 + 1, detail: "replacement across meshes is unsupported: the predecessor's existing mesh writer must own its retained-record update".into() });
+            }
+        }
+        let intent = if prior.as_ref() == Some(name) {
+            RenameIntent::Rollback { original: name.clone() }
+        } else if creates_successor {
+            RenameIntent::Replacement { original: node.clone() }
+        } else {
+            RenameIntent::Ordinary
+        };
+        let next = intent.provenance(&prior, node, name).map_err(|detail| BuildReject::InvalidNodeRename { step: i as u32 + 1, detail })?;
+        if let Some(birth) = birth { origins.insert(birth.node_id.clone(), next); }
+        rename_intents.insert(i as u32 + 1, intent);
+    }
+    Ok(AttemptAction::Steps { steps, pinned, rename_intents })
 }
 
 /// The exact birth each step of a Build is targeted to: the pinned birth of the node its path names
 /// when the step runs, followed through the Build's own creates and renames; `None` for a node an
 /// earlier step creates (its executor resolves it at its path). `Err` names the first step acting on
 /// a path that holds no node when it runs.
-pub(crate) fn step_births(steps: &[Step], pinned: &[(PathName, PinnedBirth)]) -> Result<Vec<Option<PinnedBirth>>, BuildReject> {
-    let mut at: BTreeMap<PathName, Option<PinnedBirth>> = pinned.iter().map(|(p, b)| (p.clone(), Some(b.clone()))).collect();
-    let mut out = Vec::with_capacity(steps.len());
-    for (i, step) in steps.iter().enumerate() {
-        let unknown = || BuildReject::UnknownNode { node: step.node().to_string(), step: Some(i as u32 + 1) };
-        let birth = match step {
-            Step::Create { node, .. } => {
-                at.insert(node.clone(), None);
-                None
-            }
-            Step::Update { node, name } => {
-                let birth = at.remove(node).ok_or_else(unknown)?;
-                at.insert(name.clone(), birth.clone());
-                birth
-            }
-            Step::Delete { node } => at.remove(node).ok_or_else(unknown)?,
-            Step::Stop { node } | Step::Start { node } | Step::DeleteConnections { node } | Step::LeaveMesh { node } => at.get(node).cloned().ok_or_else(unknown)?,
-        };
-        out.push(birth);
+pub(crate) fn step_births(steps: &[Step], pinned: &[(PathName, PinnedBirth)]) -> Result<Vec<(Option<PinnedBirth>, String, NodeKind)>, BuildReject> {
+    let at = pinned.iter().map(|(p, b)| (p.clone(), (Some(b.clone()), b.mesh.clone(), b.kind))).collect();
+    rdm_core::build::step_targets(steps, at, |_, mesh, kind| (None, mesh.to_string(), kind)).map_err(|error| match error {
+        rdm_core::build::StepTargetError::Unknown { node, step } => BuildReject::UnknownNode { node, step: Some(step) },
+        rdm_core::build::StepTargetError::InvalidRename { step, detail } => BuildReject::InvalidNodeRename { step, detail },
+    })
+}
+
+#[cfg(test)]
+mod rename_admission_tests {
+    use super::*;
+
+    /// CONTRACT: spelling does not create replacement provenance; explicit replacement
+    /// preserves path, ordinary edits retain provenance, and only rollback clears it.
+    // @feature: node-records
+    #[test]
+    fn rename_intent_controls_provenance_without_changing_path() {
+        let original = PathName::new("free.path", "member").unwrap();
+        let retained = original.renamed().unwrap();
+        let other_name = original.with_name("archive").unwrap();
+        assert_eq!(RenameIntent::Ordinary.provenance(&None, &original, &retained).unwrap(), None);
+        let replacement = RenameIntent::Replacement { original: original.clone() };
+        let provenance = replacement.provenance(&None, &original, &retained).unwrap();
+        assert_eq!(provenance, Some(original.clone()));
+        assert_eq!(retained.path, original.path);
+        assert_eq!(retained.name, "member-old");
+        assert_eq!(RenameIntent::Ordinary.provenance(&provenance, &retained, &other_name).unwrap(), provenance);
+        assert!(RenameIntent::Ordinary.provenance(&provenance, &other_name, &original).is_err());
+        assert!(replacement.provenance(&None, &original, &other_name).is_err());
+        let rollback = RenameIntent::Rollback { original: original.clone() };
+        assert_eq!(rollback.provenance(&provenance, &other_name, &original).unwrap(), None);
+        assert!(rollback.provenance(&None, &other_name, &original).is_err());
+        let moved = PathName::new("other.path", "member-old").unwrap();
+        assert!(replacement.provenance(&None, &original, &moved).is_err());
     }
-    Ok(out)
+
+    #[test]
+    fn rename_admission_refuses_path_changes_and_oversized_replacement_names() {
+        let original = PathName::new("apps.east", "worker").unwrap();
+        let other = PathName::new("apps.west", "worker-old").unwrap();
+        let long = PathName::new("apps.east", "a".repeat(61)).unwrap();
+        for (node, name) in [(original, other), (long.clone(), PathName { path: long.path.clone(), name: format!("{}-old", long.name) })] {
+            let steps = vec![
+                Step::Create { node: node.clone(), mesh: "explicit-mesh".into(), kind: NodeKind::RpcNode, executable: None },
+                Step::Update { node, name },
+            ];
+            assert!(matches!(step_births(&steps, &[]), Err(BuildReject::InvalidNodeRename { step: 2, .. })));
+        }
+    }
 }
 
 fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
@@ -617,15 +650,15 @@ fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
 fn resize(mesh: &mut MeshTopology, counts: &MeshDesired, observed: &Topology) {
     for (kind, want) in counts.counts() {
         let mut have: Vec<PathName> = mesh.nodes_of_type(kind).cloned().collect();
-        have.sort_by_key(|p| (p.ordinal, p.clone()));
+        have.sort();
         let primary = observed.node_type_primary(&mesh.name, kind).map(|n| &n.name);
         while (have.len() as u32) < want {
-            let path = (1..).map(|ord| PathName::new(&mesh.name, kind, ord))
+            let path = (1..).map(|ord| PathName::numbered(&mesh.name, kind, ord))
                 .find(|path| !mesh.nodes.contains(path)).expect("a free name");
             mesh.spec_by_path.insert(path.clone(), NodeSpec::default_for(path.clone(), &mesh.name, kind));
             mesh.nodes.insert(path.clone());
             have.push(path);
-            have.sort_by_key(|p| (p.ordinal, p.clone()));
+            have.sort();
         }
         while (have.len() as u32) > want {
             let index = have.iter().rposition(|path| Some(path) != primary).unwrap_or(have.len() - 1);
@@ -681,7 +714,7 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
             resize(m, &grown, observed);
         }
         TopologyChange::RemoveNode { node } => {
-            let spec = next.node_spec(node).ok_or_else(|| BuildReject::UnknownNode { node: node.to_string(), step: None })?;
+            let spec = next.node_spec(node).ok_or_else(|| BuildReject::UnknownNode { node: node.clone(), step: None })?;
             let (mesh, kind) = (spec.mesh.clone(), spec.kind);
             let m = next.meshes.get_mut(&mesh).expect("the entry belongs to this accepted mesh");
             // The authority removes a birth it sees: a view that has not heard the node yet refuses
@@ -689,7 +722,7 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
             // sees may be deleted (live, stopped, or recorded os-stopped) is its door's, which reads the
             // status rows (`ControlPlane::submit_checked`).
             if observed.node(node).is_none() {
-                return Err(BuildReject::UnknownNode { node: node.to_string(), step: None });
+                return Err(BuildReject::UnknownNode { node: node.clone(), step: None });
             }
             if kind == NodeKind::NodeAdmin && m.count(NodeKind::NodeAdmin) <= 1 {
                 return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh });
@@ -734,12 +767,12 @@ pub fn compile_against(current: &FabricTopology, change: &TopologyChange, observ
 /// mesh named for the first time enters under an id minted now. A path the request creates names its
 /// executable, else it is refused by name; a path the topology holds that the request lists with none
 /// keeps its entry's. A mesh whose only node-admin the request replaces (its entry names another
-/// executable than its row records) gains a second node-admin at the next free `path.name` of that
+/// executable than its row records) gains a second node-admin at the next free `(path, name)` of that
 /// type, on the new executable (R4): it is in the topology from acceptance, created first, and stays.
 /// Every listed path's entry carries the tag labels and the config the request names: a created node
 /// carries them from its claim, a held one has them applied as the Build applies every property that
 /// differs from its row (build.md §1). Refused by name: no node listed (that is
-/// fabric.delete), a path named twice, a `.old` path, a mesh name outside the grammar, tags outside the
+/// fabric.delete), a path named twice, a retained predecessor location, a mesh name outside the grammar, tags outside the
 /// label grammar or over the cap, a config over the cap `node.config.update` holds a map to.
 fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded) -> Result<BTreeMap<String, MeshTopology>, BuildReject> {
     if nodes.is_empty() {
@@ -749,20 +782,17 @@ fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded)
     let mut named = BTreeSet::new();
     for spec in nodes {
         let path = &spec.path;
-        if path.old {
-            return Err(BuildReject::UnknownNode { node: path.to_string(), step: None });
-        }
         if !is_valid_mesh_name(&spec.mesh) {
             return Err(BuildReject::InvalidMeshName { mesh: spec.mesh.clone() });
         }
         if !named.insert(path.clone()) {
-            return Err(BuildReject::NodeNamedTwice { node: path.to_string() });
+            return Err(BuildReject::NodeNamedTwice { node: path.clone() });
         }
         if let Some(detail) = rdm_core::status::tags_refusal(&spec.tags) {
-            return Err(BuildReject::TagsRefused { node: path.to_string(), detail });
+            return Err(BuildReject::TagsRefused { node: path.clone(), detail });
         }
         if by_mesh.entry(spec.mesh.clone()).or_default().insert(path.clone(), spec.clone()).is_some() {
-            return Err(BuildReject::NodeNamedTwice { node: path.to_string() });
+            return Err(BuildReject::NodeNamedTwice { node: path.clone() });
         }
     }
     let mut meshes = BTreeMap::new();
@@ -780,7 +810,7 @@ fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded)
                         spec.executable = entry.executable.clone();
                     }
                 }
-                None if spec.executable.is_none() => return Err(BuildReject::ExecutableMissing { node: path.to_string() }),
+                None if spec.executable.is_none() => return Err(BuildReject::ExecutableMissing { node: path.clone() }),
                 None => {}
             }
             mesh.nodes.insert(path.clone());
@@ -789,9 +819,9 @@ fn reconciled(current: &FabricTopology, nodes: &[NodeSpec], recorded: &Recorded)
         let admins: Vec<PathName> = mesh.nodes_of_type(NodeKind::NodeAdmin).cloned().collect();
         if let [admin] = admins.as_slice() {
             let entry = mesh.spec(admin).cloned().expect("a listed path carries its create spec");
-            if held.is_some_and(|m| m.nodes.contains(admin)) && replaced_by_target(entry.executable.as_ref(), recorded.get(admin)) {
-                let ordinal = (1..).find(|o| !mesh.nodes.contains(&PathName::new(&name, NodeKind::NodeAdmin, *o))).expect("a free ordinal");
-                let added = PathName::new(&name, NodeKind::NodeAdmin, ordinal);
+            if held.is_some_and(|m| m.nodes.contains(admin)) && replaced_by_target(&entry, recorded.get(admin)) {
+                let ordinal = (1..).find(|o| !mesh.nodes.contains(&PathName::numbered(&name, NodeKind::NodeAdmin, *o))).expect("a free ordinal");
+                let added = PathName::numbered(&name, NodeKind::NodeAdmin, ordinal);
                 mesh.nodes.insert(added.clone());
                 mesh.spec_by_path.insert(added.clone(), NodeSpec { path: added, ..entry });
             }
@@ -841,7 +871,7 @@ pub(crate) enum RecoveryProgress {
     /// Nothing of the recovery is done: node.delete of the exited instance is owed.
     #[default]
     Owed,
-    /// The node.delete completed for the exited birth: node.create at its path.name is owed.
+    /// The node.delete completed for the exited birth: node.create at its path and name is owed.
     Deleted,
     /// The node.create completed after it: the exited birth is recovered. Nothing follows the create:
     /// its claim seeded config and tags from the Deleted row (proposal node-properties-own-commands.md
@@ -858,36 +888,39 @@ impl ActionProgress {
         // of the same action (a stop, a start, then a second stop of one birth, Q183) is not this
         // run's progress. Its first step's receipt says the operation began; its `Complete`, that it
         // completed for the birth.
-        if let Some(action @ (AttemptAction::DeleteConnections { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. } | AttemptAction::Delete { path, .. })) = &build.action {
+        if let Some(action @ (AttemptAction::DeleteConnections { node_id, .. } | AttemptAction::Stop { node_id, .. } | AttemptAction::Start { node_id, .. } | AttemptAction::Delete { node_id, .. })) = &build.action {
             let (operation, first) = match action {
-                AttemptAction::DeleteConnections { .. } => (format!("node.connection.delete:{path}"), "DeleteConnections"),
-                AttemptAction::Start { .. } => (format!("node.start:{path}"), "StartNode"),
+                AttemptAction::DeleteConnections { .. } => (rdm_core::OperationId::node("node.connection.delete", node_id), "DeleteConnections"),
+                AttemptAction::Start { .. } => (rdm_core::OperationId::node("node.start", node_id), "StartNode"),
                 // node.delete's one key, whether the birth is deleted stopped or live (`plan_with`).
-                AttemptAction::Delete { .. } => (format!("node.delete:{path}"), "NodeDeleting"),
-                _ => (format!("node.stop:{path}"), "StopNode"),
+                AttemptAction::Delete { .. } => (rdm_core::OperationId::node("node.delete", node_id), "NodeDeleting"),
+                _ => (rdm_core::OperationId::node("node.stop", node_id), "StopNode"),
             };
             let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= build.opened && build.carried(s.attempt, action));
             return Self { started: done(first), finished: done("Complete"), ..Self::default() };
         }
         // A termination of a deleted birth heard again: its one operation's receipts in an attempt that
         // carried it (Q128).
-        if let Some(action @ AttemptAction::Terminate { path, from_incarnation, .. }) = &build.action {
-            let operation = format!("node.terminate:{path}@{}", from_incarnation.as_str());
+        if let Some(action @ AttemptAction::Terminate { node_id, from_incarnation, .. }) = &build.action {
+            let operation = rdm_core::OperationId::new("node.terminate", rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: from_incarnation.clone() });
             let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action));
             return Self { started: done("TerminateRuntime"), finished: done("Complete"), ..Self::default() };
         }
         // A recovery: how far its two operations got for the exited birth.
-        if let Some(AttemptAction::Recover { path, node_id, from_incarnation, .. }) = &build.action {
+        if let Some(AttemptAction::Recover { kind, mesh, path, node_id, from_incarnation, .. }) = &build.action {
             let recovery = recovery_progress(build, path, node_id, from_incarnation).0;
             return Self { started: false, finished: recovery == RecoveryProgress::Recovered, recovery, ..Self::default() };
         }
         // Steps: each step is done once its operation's `Complete` is receipted in an attempt that
         // carried these steps (a Build names each operation once, `steps_action`).
-        if let Some(action @ AttemptAction::Steps { steps, .. }) = &build.action {
+        if let Some(action @ AttemptAction::Steps { steps, pinned, .. }) = &build.action {
+            let births = step_births(steps, pinned).ok();
             let steps_done = steps
                 .iter()
-                .map(|step| {
-                    let operation = crate::build::step_key(step);
+                .enumerate()
+                .map(|(i, step)| {
+                    let Some((birth, _, _)) = births.as_ref().and_then(|births| births.get(i)) else { return false };
+                    let operation = crate::build::admitted_step_key(step, birth.as_ref(), Some(i as u32 + 1));
                     build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action))
                 })
                 .collect();
@@ -905,12 +938,12 @@ impl ActionProgress {
 /// `node.create:<path>` `Complete` follows that. A `Complete` from before the deletion (the path's
 /// original create, an earlier recovery's) is not this recovery's.
 pub(crate) fn recovery_progress(build: &crate::build_state::BuildProjection, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> (RecoveryProgress, Option<u32>) {
-    let delete = format!("node.delete:{path}");
-    let completed_from = |operation: &str, from: u32| {
+    let delete = rdm_core::OperationId::node("node.delete", node_id);
+    let completed_from = |operation: &rdm_core::OperationId, from: u32| {
         build
             .steps
             .iter()
-            .filter(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from)
+            .filter(|s| &s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from)
             .map(|s| s.attempt)
             .min()
     };
@@ -925,7 +958,7 @@ pub(crate) fn recovery_progress(build: &crate::build_state::BuildProjection, pat
         return (RecoveryProgress::Owed, None);
     };
     let Some(deleted) = completed_from(&delete, deleted) else { return (RecoveryProgress::Owed, None) };
-    match completed_from(&format!("node.create:{path}"), deleted) {
+    match completed_from(&rdm_core::OperationId::location("node.create", path), deleted) {
         Some(created) => (RecoveryProgress::Recovered, Some(created)),
         None => (RecoveryProgress::Deleted, Some(deleted)),
     }
@@ -953,7 +986,7 @@ pub(crate) fn surplus_births<'a>(topology: &'a FabricTopology, observed: &'a Top
 /// birth). `None` for a manifest naming no parseable birth.
 fn final_primary_birth(manifest: &crate::mesh_delete::ExitManifest) -> Option<(PathName, crate::build::PinnedBirth)> {
     let b = &manifest.final_primary;
-    Some((b.node.parse().ok()?, crate::build::PinnedBirth { node_id: NodeId::parse(&b.node_id).ok()?, incarnation: IncarnationId::parse(&b.incarnation_id).ok()? }))
+    Some((b.node.clone(), crate::build::PinnedBirth { kind: b.kind, mesh: b.mesh.clone(), node_id: NodeId::parse(&b.node_id).ok()?, incarnation: IncarnationId::parse(&b.incarnation_id).ok()? }))
 }
 
 /// [`plan`] for `build`'s current attempt, given what its receipts say already ran.
@@ -976,13 +1009,11 @@ pub fn plan_with_replacements(build: &crate::build_state::BuildProjection, obser
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AtlasBirth(pub Option<crate::build::PinnedBirth>);
 
-/// The path the standalone stop, start, connections delete or delete of `build`'s current attempt acts
-/// on, whose birth is planned from the fabric-primary's atlas ([`AtlasBirth`]); `None` for any other
-/// attempt, and for a delete of a stopped `<path>.old`, planned from the record of that exact birth.
-pub fn action_path(build: &crate::build_state::BuildProjection) -> Option<PathName> {
+/// The globally unique node ID admitted for a standalone node action.
+/// The location is descriptive metadata and is never used to recover the target identity.
+pub fn action_node_id(build: &crate::build_state::BuildProjection) -> Option<NodeId> {
     match build.action.as_ref()? {
-        AttemptAction::Delete { path, .. } if path.old => None,
-        AttemptAction::DeleteConnections { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. } | AttemptAction::Delete { path, .. } => Some(path.clone()),
+        AttemptAction::DeleteConnections { node_id, .. } | AttemptAction::Stop { node_id, .. } | AttemptAction::Start { node_id, .. } | AttemptAction::Delete { node_id, .. } => Some(node_id.clone()),
         _ => None,
     }
 }
@@ -999,7 +1030,7 @@ pub fn plan_for_build_with(build: &crate::build_state::BuildProjection, observed
 /// [`plan_for_build_with`], with `created` the paths the fabric-primary's atlas holds a create of this
 /// Build at ([`crate::atlas::Atlas::created_by`]): a birth at one of them is not surplus to the accepted
 /// topology (Luke 2026-10-30: drift is decided from the atlas, not the topology).
-pub fn plan_for_build_created(build: &crate::build_state::BuildProjection, observed: &Topology, recorded: Option<&Recorded>, atlas: Option<&AtlasBirth>, created: &BTreeSet<String>) -> BuildPlan {
+pub fn plan_for_build_created(build: &crate::build_state::BuildProjection, observed: &Topology, recorded: Option<&Recorded>, atlas: Option<&AtlasBirth>, created: &BTreeSet<PathName>) -> BuildPlan {
     let replacing = recorded.filter(|_| build.submitted_change.as_ref().is_some_and(TopologyChange::plans_replacements));
     // A replacement's progress is read from the receipts of the Build's own topology attempts: a create
     // an attempt carrying an action made (a recovery's, on the row's executable) replaced nothing, and
@@ -1025,7 +1056,7 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
     replacements
         .iter()
         .filter_map(|op| match op {
-            BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(b) } if !pinned.iter().any(|(at, _)| at == node) => Some((node.clone(), b.clone())),
+            BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(b), .. } if !pinned.iter().any(|(at, _)| at == node) => Some((node.clone(), b.clone())),
             _ => None,
         })
         .collect()
@@ -1045,13 +1076,13 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
 /// Q305). A write the node or a caller makes after it stands until the next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
 /// the replacement's, whose claim writes its properties.
 fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
-    let receipted = |operation: &str, step: &str| steps.iter().any(|r| r.operation == operation && r.step == step && r.outcome == crate::build_state::StepOutcome::Complete);
+    let receipted = |operation: &rdm_core::OperationId, step: &str| steps.iter().any(|r| r.operation == *operation && r.step == step && r.outcome == crate::build_state::StepOutcome::Complete);
     // The node this Build's create at `path` minted (its AllocateIdentity receipt's output).
     let minted = |path: &PathName| {
         steps
             .iter()
-            .filter(|r| r.operation == format!("node.create:{path}") && r.step == "AllocateIdentity" && r.outcome == crate::build_state::StepOutcome::Complete)
-            .filter_map(|r| r.output.as_ref()?.get("node_id")?.as_str().map(str::to_string))
+            .filter(|r| r.operation == rdm_core::OperationId::location("node.create", path) && r.step == "AllocateIdentity" && r.outcome == crate::build_state::StepOutcome::Complete)
+            .filter_map(|r| serde_json::from_value::<NodeId>(r.output.as_ref()?.get("node_id")?.clone()).ok())
             .last()
     };
     // A create that claimed the name wrote its entry's properties (Q305): a plain create's, and a
@@ -1059,8 +1090,7 @@ fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, 
     // path, or a recovery that applied no entry, proves nothing). Its predecessor's delete does not
     // undo that evidence.
     let claimed = |path: &PathName, row: &RecordedRow| {
-        receipted(&format!("node.create:{path}"), "PrepareStorage")
-            && (!steps.iter().any(|r| r.operation == format!("node.delete:{path}")) || minted(path).as_deref() == Some(row.node_id.as_str()))
+        receipted(&rdm_core::OperationId::location("node.create", path), "PrepareStorage") && minted(path).as_ref() == Some(&row.node_id)
     };
     let replacing = paths_owed_replacement(topology, recorded);
     let mut ops = Vec::new();
@@ -1076,16 +1106,16 @@ fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, 
         let config = (!applied && row.config.as_ref().is_some_and(|c| *c != spec.config)) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
         let mut owed = Vec::new();
         if config {
-            owed.push(BuildOperation::UpdateConfig { node: path.clone(), entry: None });
+            owed.push(BuildOperation::UpdateConfig { node_id: recorded[&path].node_id.clone(), kind: spec.kind, mesh: spec.mesh.clone(), node: path.clone(), entry: None });
         }
         if let Some(tags) = row.tags.as_ref().filter(|_| !applied) {
             let added: BTreeSet<String> = spec.tags.difference(tags).cloned().collect();
             let removed: BTreeSet<String> = tags.difference(&spec.tags).cloned().collect();
             if !added.is_empty() {
-                owed.push(BuildOperation::CreateTags { node: path.clone(), labels: added });
+                owed.push(BuildOperation::CreateTags { node_id: recorded[&path].node_id.clone(), kind: spec.kind, mesh: spec.mesh.clone(), node: path.clone(), labels: added });
             }
             if !removed.is_empty() {
-                owed.push(BuildOperation::DeleteTags { node: path.clone(), labels: removed });
+                owed.push(BuildOperation::DeleteTags { node_id: recorded[&path].node_id.clone(), kind: spec.kind, mesh: spec.mesh.clone(), node: path.clone(), labels: removed });
             }
         }
         ops.extend(owed.into_iter().filter(|op| !receipted(&op.key(), "Complete")));
@@ -1093,12 +1123,16 @@ fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, 
     ops
 }
 
-/// What the node rows record of one member, for a Reconcile's plan: the node the row at its `path.name`
+/// What the node rows record of one member, for a Reconcile's plan: the node the row at its `(path, name)`
 /// names and the sha256 of the executable it records (`NodeRow::executable`), none for a row written
 /// before the field; and the node's own properties the Build compares with its entry (build.md §1, "The
 /// Build applies the diff"), each `None` where the row was not read for it or records none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedRow {
+    /// Explicit mesh of this recorded birth.
+    pub mesh: String,
+    /// The runtime kind recorded for this birth.
+    pub kind: NodeKind,
     /// Atomic property applications recorded by the node, including inherited knowledge.
     pub applied: BTreeSet<rdm_core::properties::PropertyApplication>,
     /// The node the row names.
@@ -1125,7 +1159,7 @@ pub type Recorded = BTreeMap<PathName, RecordedRow>;
 pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, properties: Option<&dyn rdm_node::node_records::NodeRecordsStorage>, topology: &FabricTopology) -> Result<Recorded, String> {
     let mut out = Recorded::new();
     for p in topology.meshes.values().flat_map(|m| m.nodes.iter()) {
-        let row = crate::node_rows::record_at(rows, p).await.map_err(|e| format!("the row at {p} could not be read for its executable: {e}"))?;
+        let row = crate::node_rows::record_at(rows, p).await.map_err(|e| format!("the row at path {:?}, name {:?} could not be read for its executable: {e}", p.path, p.name))?;
         if let Some(mut row) = row.filter(|r| r.status != NodeStatus::Deleted) {
             let mut applied = BTreeSet::new();
             if let Some(properties) = properties {
@@ -1135,7 +1169,7 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, prope
                     applied = own.applied;
                 }
             }
-            out.insert(p.clone(), RecordedRow { applied, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config: Some(row.config), tags: Some(row.tags), storage_persistence: row.storage_persistence, placement: row.placement });
+            out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, applied, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config: Some(row.config), tags: Some(row.tags), storage_persistence: row.storage_persistence, placement: row.placement });
         }
     }
     Ok(out)
@@ -1168,14 +1202,14 @@ pub fn paths_owed_replacement(topology: &FabricTopology, recorded: &Recorded) ->
         .meshes
         .values()
         .flat_map(|m| m.nodes.iter())
-        .filter(|p| target_executable(topology, p).is_some_and(|b| recorded.get(*p).and_then(|r| r.sha256.as_deref()) != Some(b.sha256.as_str())))
+        .filter(|p| topology.node_spec(p).is_some_and(|entry| replaced_by_target(entry, recorded.get(*p)) || (entry.executable.is_some() && !recorded.contains_key(*p))))
         .cloned()
         .collect()
 }
 
 /// How far a replacement of the member at `path` got (proposal executable-bindings-at-create.md rule 2:
 /// "an attempt interrupted halfway finishes the remaining ... the same way"): read from the receipts,
-/// keyed by path.name and step so they name the member, and from the row at the path.
+/// keyed by path and name and step so they name the member, and from the row at the path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ReplacementProgress {
     /// Nothing of this Build at the path: the member is replaced when its row records another executable
@@ -1185,7 +1219,7 @@ enum ReplacementProgress {
     /// receipt, and the row at the path still names the birth: the delete is finished, then the create.
     Deleting(crate::build::ExitedBirth),
     /// The predecessor deleted (its `NodeDeleted` receipted, or begun and its row no longer live: the
-    /// row at the path.name Deleted, the name free) and no create at the path completed since: the
+    /// row at the path and name Deleted, the name free) and no create at the path completed since: the
     /// remaining work is the create over that birth.
     Deleted(crate::build::ExitedBirth),
     /// This Build created a node at the path that no later delete of it deleted (a replaced member's
@@ -1196,13 +1230,12 @@ enum ReplacementProgress {
 /// [`ReplacementProgress`] of the member at `path` in `steps`, the latest delete of the path this Build began
 /// read against what `recorded` holds at the path.
 fn replacement_progress(steps: &[crate::build_state::BuildStepReceipt], path: &PathName, recorded: &Recorded) -> ReplacementProgress {
-    let delete = format!("node.delete:{path}");
-    let create = format!("node.create:{path}");
+    let create = rdm_core::OperationId::location("node.create", path);
     let created_from = |from: u32| steps.iter().any(|s| s.operation == create && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from);
     let latest = |step: &str| {
         steps
             .iter()
-            .filter(|s| s.operation == delete)
+            .filter(|s| s.operation.action == "node.delete")
             .filter_map(|s| crate::build_state::delete_step_birth(s, step).filter(|(p, ..)| p == path).map(|(_, node_id, incarnation)| (s.attempt, crate::build::ExitedBirth { node_id, incarnation })))
             .max_by_key(|(a, _)| *a)
     };
@@ -1240,7 +1273,7 @@ fn replacement_creates_owed(topology: &FabricTopology, steps: &[crate::build_sta
 /// The replacements still owed (build-deployment.md §3; proposal executable-bindings-at-create.md rule 5),
 /// in RDM's order: mesh by mesh in name order; in a mesh its non-primary node-admins, then its primary node-admin, then the
 /// nodes of each other type, non-primary before primary, the primaries read from `observed` now. A
-/// member is replaced by two operations keyed by its path.name: `node.delete` of the birth the view
+/// member is replaced by two operations keyed by its path and name: `node.delete` of the birth the view
 /// holds there (the whole stop composed inside it; a primary with a successor moved first by
 /// node.primary.update, as every delete of a primary is; R5: a type's only node moves none), then
 /// `node.create` at the same path over that birth's kept data dir launching the executable its entry
@@ -1258,28 +1291,30 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
             order.extend(m.nodes_of_type(kind).filter(|p| Some(*p) == at.as_ref()));
         }
         for p in order {
-            let Some(binding) = target_executable(topology, p) else { continue };
+            let Some(entry) = topology.node_spec(p) else { continue };
+            let binding = entry.executable.as_ref();
             let held = observed.node(p).filter(|n| (n.status.is_live() || n.stopped) && n.incarnation_id.is_some());
-            let on_entry = |n: &crate::model::Node| recorded.get(p).is_some_and(|r| r.node_id == n.node_id && r.sha256.as_deref() == Some(binding.sha256.as_str()));
+            let on_entry = |n: &crate::model::Node| recorded.get(p).is_some_and(|r| r.node_id == n.node_id && !replaced_by_target(entry, Some(r)));
             match (replacement_progress(steps, p, recorded), held) {
                 // The successor its create launched is live on its entry's sha, its receipt never written:
                 // it is the member, and nothing remains for it.
                 (ReplacementProgress::Deleted(birth), Some(n)) if n.node_id != birth.node_id && on_entry(n) => {}
                 // The predecessor deleted, the successor not yet created: the create alone is owed.
                 (ReplacementProgress::Deleted(birth), held) if held.is_none_or(|n| n.node_id == birth.node_id) => {
-                    ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(birth), executable: Some(binding.clone()), entry: None });
+                    ops.push(BuildOperation::CreateNode { kind: entry.kind, mesh: name.clone(), node: p.clone(), over: Some(birth), executable: binding.cloned(), entry: None });
                 }
                 // The predecessor's delete began and its row still names it: the delete of that exact
                 // birth is finished, from the stop when the view holds it live or stopped, else targeted at
                 // its incarnation, a birth absent from the executor's view rebuilt from its record and its
                 // data-root runtime record (as a resumed delete's is), then the create over it.
                 (ReplacementProgress::Deleting(birth), held) if held.is_none_or(|n| n.node_id == birth.node_id) => {
-                    let pin = crate::build::PinnedBirth { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() };
+                    let Some(old) = topology.pinned.iter().find(|(at, _)| at == p).map(|(_, b)| (b.mesh.clone(), b.kind)).or_else(|| recorded.get(p).map(|r| (r.mesh.clone(), r.kind))) else { continue };
+                    let pin = crate::build::PinnedBirth { kind: old.1, mesh: old.0, node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() };
                     ops.push(match held {
-                        Some(_) => BuildOperation::DeleteLiveNode { node: p.clone(), exited: None, birth: Some(pin) },
-                        None => BuildOperation::DeleteNode { node: p.clone(), node_id: pin.node_id, from_incarnation: pin.incarnation },
+                        Some(_) => BuildOperation::DeleteLiveNode { kind: pin.kind, mesh: pin.mesh.clone(), node: p.clone(), exited: None, birth: Some(pin) },
+                        None => BuildOperation::DeleteNode { kind: pin.kind, mesh: pin.mesh.clone(), node: p.clone(), node_id: pin.node_id, from_incarnation: pin.incarnation },
                     });
-                    ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(birth), executable: Some(binding.clone()), entry: None });
+                    ops.push(BuildOperation::CreateNode { kind: entry.kind, mesh: name.clone(), node: p.clone(), over: Some(birth), executable: binding.cloned(), entry: None });
                 }
                 // Replaced or created by this Build: never replaced again. Every create of a topology
                 // attempt launches the path's target (the step names it; the launching admin reads the
@@ -1290,9 +1325,9 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
                     // the Build's acceptance pinned at the path (build.md §4.4; Q228, decided by Q218 and
                     // Q221), else, for a replacement a later attempt finds, the one the view holds now. A
                     // birth replaced since its pin is refused `birth-replaced` by the executing mesh-primary.
-                    let pin = topology.pinned.iter().find(|(at, _)| at == p).map(|(_, b)| b.clone()).unwrap_or_else(|| crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().expect("a held birth names its incarnation") });
-                    ops.push(BuildOperation::DeleteLiveNode { node: p.clone(), exited: None, birth: Some(pin.clone()) });
-                    ops.push(BuildOperation::CreateNode { node: p.clone(), over: Some(crate::build::ExitedBirth { node_id: pin.node_id, incarnation: pin.incarnation }), executable: Some(binding.clone()), entry: None });
+                    let pin = topology.pinned.iter().find(|(at, _)| at == p).map(|(_, b)| b.clone()).unwrap_or_else(|| crate::build::PinnedBirth { kind: n.kind, mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().expect("a held birth names its incarnation") });
+                    ops.push(BuildOperation::DeleteLiveNode { kind: pin.kind, mesh: pin.mesh.clone(), node: p.clone(), exited: None, birth: Some(pin.clone()) });
+                    ops.push(BuildOperation::CreateNode { kind: entry.kind, mesh: name.clone(), node: p.clone(), over: Some(crate::build::ExitedBirth { node_id: pin.node_id, incarnation: pin.incarnation }), executable: binding.cloned(), entry: None });
                 }
                 _ => {}
             }
@@ -1355,14 +1390,14 @@ fn plan_with(
     steps: &[crate::build_state::BuildStepReceipt],
     replacements: Option<(&crate::build::BuildId, &Recorded, &[crate::build_state::BuildStepReceipt])>,
     atlas: Option<&AtlasBirth>,
-    created: &BTreeSet<String>,
+    created: &BTreeSet<PathName>,
 ) -> BuildPlan {
     let mut ops = Vec::new();
     // A termination of a deleted birth heard again is its one operation, the topology unchanged, until
     // its `Complete` is receipted for the birth (Q128).
-    if let Some(AttemptAction::Terminate { path, node_id, from_incarnation }) = action {
+    if let Some(AttemptAction::Terminate { kind, mesh: mesh, path, node_id, from_incarnation }) = action {
         if !progress.finished {
-            ops.push(BuildOperation::TerminateNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() });
+            ops.push(BuildOperation::TerminateNode { kind: *kind, mesh: mesh.clone(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() });
         }
         return BuildPlan { operations: ops };
     }
@@ -1373,19 +1408,19 @@ fn plan_with(
     // say it began (a stop's view drops the Leaving birth), and not once its `Complete` receipt names
     // the birth.
     if let Some(
-        AttemptAction::DeleteConnections { path, node_id, from_incarnation }
-        | AttemptAction::Stop { path, node_id, from_incarnation }
-        | AttemptAction::Start { path, node_id, from_incarnation }
-        | AttemptAction::Delete { path, node_id, from_incarnation },
+        AttemptAction::DeleteConnections { kind, mesh: mesh, path, node_id, from_incarnation }
+        | AttemptAction::Stop { kind, mesh: mesh, path, node_id, from_incarnation }
+        | AttemptAction::Start { kind, mesh: mesh, path, node_id, from_incarnation }
+        | AttemptAction::Delete { kind, mesh: mesh, path, node_id, from_incarnation },
     ) = action
     {
-        // A delete of a stopped `<path>.old` is admitted from the record the fabric-primary holds of
+        // A delete of a stopped the predecessor name `<name>-old` at the same path is admitted from the record the fabric-primary holds of
         // that exact birth, never from a view (only the renaming executor's view names the path):
         // it is planned until its `Complete` names the birth. A delete of the last admin of a deleted
         // mesh (mesh-delete.md step 7) is the ordinary node.delete of that exact birth, planned while
         // the view holds it.
-        let stopped_old = matches!(action, Some(AttemptAction::Delete { .. })) && path.old;
-        let pin = crate::build::PinnedBirth { node_id: node_id.clone(), incarnation: from_incarnation.clone() };
+        let stopped_old = matches!(action, Some(AttemptAction::Delete { .. })) && observed.births().any(|n| n.node_id == *node_id && n.stopped && n.renamed_from.is_some());
+        let pin = crate::build::PinnedBirth { kind: *kind, mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() };
         let held = stopped_old
             || match atlas {
                 Some(AtlasBirth(birth)) => birth.as_ref() == Some(&pin),
@@ -1394,30 +1429,30 @@ fn plan_with(
         if !progress.finished && (held || progress.started) {
             let (node, node_id, from_incarnation) = (path.clone(), node_id.clone(), from_incarnation.clone());
             ops.push(match action {
-                Some(AttemptAction::DeleteConnections { .. }) => BuildOperation::DeleteConnections { node, node_id, from_incarnation },
-                Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, node_id, from_incarnation },
-                Some(AttemptAction::Delete { .. }) if stopped_old => BuildOperation::DeleteNode { node, node_id, from_incarnation },
-                Some(AttemptAction::Delete { .. }) => BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(pin) },
-                _ => BuildOperation::StopNode { node, node_id, from_incarnation },
+                Some(AttemptAction::DeleteConnections { .. }) => BuildOperation::DeleteConnections { kind: *kind, mesh: mesh.clone(), node, node_id, from_incarnation },
+                Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { kind: *kind, mesh: mesh.clone(), node, node_id, from_incarnation },
+                Some(AttemptAction::Delete { .. }) if stopped_old => BuildOperation::DeleteNode { kind: *kind, mesh: mesh.clone(), node, node_id, from_incarnation },
+                Some(AttemptAction::Delete { .. }) => BuildOperation::DeleteLiveNode { kind: *kind, mesh: mesh.clone(), node, exited: None, birth: Some(pin) },
+                _ => BuildOperation::StopNode { kind: *kind, mesh: mesh.clone(), node, node_id, from_incarnation },
             });
         }
         return BuildPlan { operations: ops };
     }
     // A recovery is its two operations of the exited birth, in order (node-recovery.md "Steps"):
-    // node.delete of the exited instance, then node.create at the same path.name over its data dir,
+    // node.delete of the exited instance, then node.create at the same path and name over its data dir,
     // whose claim seeds config and tags from the Deleted row (proposal node-properties-own-commands.md
     // §8); nothing is copied after it. The topology is unchanged, the path is never created by the
     // generic loop, and no other member is swept. Each is planned whatever the view holds at
     // the path (the exited birth unheard, nothing, or the new node mid-attempt) until the receipts say
     // it is done, so a later attempt runs only what is left and never deletes again.
-    if let Some(AttemptAction::Recover { path, node_id, from_incarnation, .. }) = action {
+    if let Some(AttemptAction::Recover { kind, mesh, path, node_id, from_incarnation, .. }) = action {
         let exited = crate::build::ExitedBirth { node_id: node_id.clone(), incarnation: from_incarnation.clone() };
         let done = progress.recovery;
         if done < RecoveryProgress::Deleted {
-            ops.push(BuildOperation::DeleteLiveNode { node: path.clone(), exited: Some(exited.clone()), birth: None });
+            ops.push(BuildOperation::DeleteLiveNode { kind: *kind, mesh: mesh.clone(), node: path.clone(), exited: Some(exited.clone()), birth: None });
         }
         if done < RecoveryProgress::Recovered {
-            ops.push(BuildOperation::CreateNode { node: path.clone(), over: Some(exited), executable: None, entry: None });
+            ops.push(BuildOperation::CreateNode { kind: *kind, mesh: mesh.clone(), node: path.clone(), over: Some(exited), executable: None, entry: None });
         }
         return BuildPlan { operations: ops };
     }
@@ -1425,12 +1460,12 @@ fn plan_with(
     // The topology is unchanged, the generic loop plans nothing beside them, and no other member is
     // swept. A step on a node an earlier step creates carries no birth: its executor resolves the node
     // at its path when the step runs.
-    if let Some(AttemptAction::Steps { steps, pinned }) = action {
+    if let Some(AttemptAction::Steps { steps, pinned, rename_intents }) = action {
         match step_births(steps, pinned) {
             Ok(births) => {
-                for (i, (step, birth)) in steps.iter().zip(births).enumerate() {
+                for (i, (step, (birth, mesh, kind))) in steps.iter().zip(births).enumerate() {
                     if !progress.steps_done.get(i).copied().unwrap_or(false) {
-                        ops.push(BuildOperation::Step { step: step.clone(), birth, entry: None });
+                        ops.push(BuildOperation::Step { rename_intent: rename_intents.get(&(i as u32 + 1)).cloned().unwrap_or_default(), recipe_step: Some(i as u32 + 1), kind, mesh, step: step.clone(), birth, entry: None });
                     }
                 }
             }
@@ -1446,7 +1481,7 @@ fn plan_with(
         // A storage change the delete interrupted: each mesh-primary is sent `mesh.unblock` before the
         // teardown (storage.md §2 "Changing it").
         if let Some(change) = &topology.storage_change {
-            let done = |key: &str| steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
+            let done = |key: &rdm_core::OperationId| steps.iter().any(|r| &r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
             let mut meshes: Vec<&crate::model::Mesh> = observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).collect();
             meshes.sort_by(|a, b| a.name.cmp(&b.name));
             for m in meshes.into_iter().filter(|m| !done(&crate::storage_change::unblock_operation(&change.change_id, &m.name))) {
@@ -1457,16 +1492,16 @@ fn plan_with(
         // A deleted mesh the view no longer holds: its final primary's node.delete, once this Build began
         // it, is owed its receipt (fabric-delete.md "Failure": a runtime whose delete has no receipt is
         // never reported deleted).
-        let mut begun_ops: std::collections::BTreeSet<&str> = steps.iter().filter(|r| r.operation.starts_with("mesh.delete:")).map(|r| r.operation.as_str()).collect();
-        begun_ops.retain(|op| !observed.meshes.iter().any(|m| m.id.as_ref().is_some_and(|id| crate::mesh_delete::operation(id) == *op)));
+        let mut begun_ops: std::collections::BTreeSet<&rdm_core::OperationId> = steps.iter().filter(|r| r.operation.action == "mesh.delete").map(|r| &r.operation).collect();
+        begun_ops.retain(|op| !observed.meshes.iter().any(|m| m.id.as_ref().is_some_and(|id| &crate::mesh_delete::operation(id) == *op)));
         for op_key in begun_ops {
             if let Ok(crate::mesh_delete::OwnerResume::Deleted(manifest)) = crate::mesh_delete::owner_resume(steps, op_key) {
                 if let Some((node, birth)) = final_primary_birth(&manifest) {
-                    let delete_key = format!("node.delete:{node}");
+                    let delete_key = rdm_core::OperationId::node("node.delete", &birth.node_id);
                     let completed = steps.iter().any(|r| r.operation == delete_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
                     let begun = steps.iter().any(|r| r.operation == delete_key);
-                    if !completed && begun && Some(node.mesh.as_str()) != fp_mesh {
-                        ops.push(BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(birth) });
+                    if !completed && begun && Some(birth.mesh.as_str()) != fp_mesh {
+                        ops.push(BuildOperation::DeleteLiveNode { kind: birth.kind, mesh: birth.mesh.clone(), node, exited: None, birth: Some(birth) });
                     }
                 }
             }
@@ -1485,14 +1520,14 @@ fn plan_with(
                 Ok(crate::mesh_delete::OwnerResume::Deleted(manifest)) => {
                     if !is_fp_mesh {
                         if let Some((node, birth)) = final_primary_birth(&manifest) {
-                            let delete_key = format!("node.delete:{node}");
+                            let delete_key = rdm_core::OperationId::node("node.delete", &birth.node_id);
                             let completed = steps.iter().any(|r| r.operation == delete_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
                             let held = observed.nodes.iter().any(|n| n.node_id.as_str() == manifest.final_primary.node_id);
                             // A delete this Build began is owed its receipt whether or not the view still
                             // holds the birth (fabric-delete.md "Failure").
                             let begun = steps.iter().any(|r| r.operation == delete_key);
                             if !completed && (held || begun) {
-                                ops.push(BuildOperation::DeleteLiveNode { node, exited: None, birth: Some(birth) });
+                                ops.push(BuildOperation::DeleteLiveNode { kind: birth.kind, mesh: birth.mesh.clone(), node, exited: None, birth: Some(birth) });
                             }
                         }
                     }
@@ -1535,14 +1570,14 @@ fn plan_with(
             // no create of this Build has checked is planned, and the check decides: reached, held;
             // unreached, deleted and the path created again.
             let create_done = || {
-                let key = format!("node.create:{p}");
+                let key = rdm_core::OperationId::location("node.create", p);
                 steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete)
             };
             // A held peer mesh's birth under a silence mark satisfies its path ([`plan_holding`]).
             let held_silent = |n: &crate::model::Node| held.contains(name) && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead);
-            if !observed.node(p).is_some_and(|n| n.status.is_live() || (n.stopped && create_done()) || held_silent(n)) {
+            if !observed.node(p).is_some_and(|n| n.mesh == *name && m.spec(p).is_some_and(|s| s.kind == n.kind) && (n.status.is_live() || (n.stopped && create_done()) || held_silent(n))) {
                 // The executable the path's entry names (a request named it).
-                ops.push(BuildOperation::CreateNode { node: p.clone(), over: None, executable: target_executable(topology, p).cloned(), entry: None });
+                ops.push(BuildOperation::CreateNode { kind: m.spec(p).expect("listed node has a spec").kind, mesh: name.clone(), node: p.clone(), over: None, executable: target_executable(topology, p).cloned(), entry: None });
             }
         }
     }
@@ -1564,7 +1599,7 @@ fn plan_with(
     // A birth the fabric-primary's atlas holds a create of this Build at is not surplus: a recipe's
     // `Create` step adds no path to the accepted topology, which only a forward Build or the gossiped
     // topology finalizes (Luke 2026-10-30: drift is decided from the atlas, not the topology).
-    let mut extra: Vec<&PathName> = surplus_births(topology, observed).filter(|_| action.is_none()).map(|n| &n.name).filter(|p| !created.contains(&p.to_string())).collect();
+    let mut extra: Vec<&PathName> = surplus_births(topology, observed).filter(|_| action.is_none()).map(|n| &n.name).filter(|p| !created.contains(*p)).collect();
     extra.sort();
     // Each delete carries the exact birth it acts on (build.md §4.4): the one its Build pinned at
     // acceptance, else, for a birth that became surplus after it (runtime drift: a failed create's node),
@@ -1572,7 +1607,9 @@ fn plan_with(
     // mesh-primary verifies it before any effect either way.
     for p in extra {
         let birth = topology.pinned.iter().find(|(at, _)| at == p).map(|(_, b)| b.clone()).or_else(|| observed.node(p).and_then(crate::build::PinnedBirth::of));
-        ops.push(BuildOperation::DeleteLiveNode { node: p.clone(), exited: None, birth });
+        if let Some(birth) = birth {
+            ops.push(BuildOperation::DeleteLiveNode { kind: birth.kind, mesh: birth.mesh.clone(), node: p.clone(), exited: None, birth: Some(birth) });
+        }
     }
     // A deleted mesh (its row Dead at mesh.deleted) is done: its mesh.delete ended, and its last
     // admin's end is a separate node.delete (mesh-delete.md steps 5-7), never planned from here. Only
@@ -1592,12 +1629,12 @@ fn plan_with(
     // switch; each mesh's `mesh.unblock`; the Build's verdict. Each is planned until its `Complete` is
     // receipted.
     if let Some(change) = topology.storage_change.as_ref().filter(|_| action.is_none()) {
-        let done = |key: &str| steps.iter().any(|r| r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
-        let waited = |key: &str| steps.iter().filter(|r| r.operation == key && r.step == "Waiting").count();
+        let done = |key: &rdm_core::OperationId| steps.iter().any(|r| &r.operation == key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
+        let waited = |key: &rdm_core::OperationId| steps.iter().filter(|r| &r.operation == key && r.step == "Waiting").count();
         let fp_mesh = observed.fabric_primary().map(|n| n.mesh.clone());
         let mut meshes: Vec<&String> = topology.meshes.keys().collect();
         meshes.sort_by_key(|m| (Some(m.as_str()) != fp_mesh.as_deref(), m.to_string()));
-        for (key_of, block) in [(crate::storage_change::block_operation as fn(&rdm_core::ChangeId, &str) -> String, true), (crate::storage_change::unblock_operation, false)] {
+        for (key_of, block) in [(crate::storage_change::block_operation as fn(&rdm_core::ChangeId, &str) -> rdm_core::OperationId, true), (crate::storage_change::unblock_operation, false)] {
             let mut owed: Vec<&String> = meshes.iter().copied().filter(|m| !done(&key_of(&change.change_id, m))).collect();
             owed.sort_by_key(|m| waited(&key_of(&change.change_id, m)));
             for mesh in owed {
@@ -1666,15 +1703,15 @@ impl AcceptedStore {
     /// A store over memory `fabric.storage` holding the Fabric's identity, and a Build of `topology`
     /// that `builds` holds settled (accepted, attempt 1 claimed by `me`, converged): the current
     /// Build. Fixtures: what a Day 0 plus one converged Build leaves behind.
-    pub async fn seeded(builds: &dyn BuildStateAdapter, fabric_id: crate::model::FabricId, topology: FabricTopology, me: &str) -> Result<Arc<Self>, BuildStateError> {
+    pub async fn seeded(builds: &dyn BuildStateAdapter, fabric_id: crate::model::FabricId, topology: FabricTopology, me: &rdm_core::framing::Birth, me_mesh: &str) -> Result<Arc<Self>, BuildStateError> {
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         crate::fabric_storage::claim_identity(&*storage, &FabricIdentity { fabric_id, name: topology.fabric.clone() })
             .await.map_err(|e| BuildStateError::Io(e.to_string()))?
             .map_err(|held| BuildStateError::Io(held.to_string()))?;
-        let store = Arc::new(Self::new(storage, me));
+        let store = Arc::new(Self::new(storage, me.node_id.as_str()));
         let build_id = BuildId::mint();
-        crate::build_state::accept(builds, &crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 0 }, None, me, "seeded").await?;
-        builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: me.into() }).await?;
+        crate::build_state::accept(builds, &crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 0 }, None, me.node_id.as_str(), "seeded").await?;
+        builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: me_mesh.to_owned(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: me.clone() }).await?;
         builds
             .append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged })
             .await?;
@@ -1687,8 +1724,8 @@ mod tests {
     use super::*;
     use crate::model::*;
 
-    fn n(name: &str, status: NodeStatus, primary: bool) -> Node {
-        let mut node = Node::allocated(name.parse().unwrap());
+    fn n(name: PathName, mesh: &str, kind: rdm_core::NodeKind, status: NodeStatus, primary: bool) -> Node {
+        let mut node = Node::allocated(name.clone(), mesh, kind);
         node.status = status;
         node.is_primary = primary;
         node.incarnation_id = Some(IncarnationId::mint());
@@ -1696,8 +1733,8 @@ mod tests {
     }
 
     /// The birth `o` holds at `path`, as the gates pin it (build.md §4.4).
-    fn pin_of(o: &Topology, path: &str) -> crate::build::PinnedBirth {
-        crate::build::PinnedBirth::of(o.node(&path.parse().unwrap()).unwrap()).unwrap()
+    fn pin_of(o: &Topology, path: PathName) -> crate::build::PinnedBirth {
+        crate::build::PinnedBirth::of(o.node(&path.clone()).unwrap()).unwrap()
     }
 
     /// `t` with every birth of `o` it deletes pinned, as its acceptance pins them.
@@ -1707,8 +1744,8 @@ mod tests {
     }
 
     /// The node.delete of the birth `o` holds at `path`, pinned to it.
-    fn delete_of(o: &Topology, path: &str) -> BuildOperation {
-        BuildOperation::DeleteLiveNode { node: path.parse().unwrap(), exited: None, birth: Some(pin_of(o, path)) }
+    fn delete_of(o: &Topology, path: PathName) -> BuildOperation {
+        { let pin = pin_of(o, path.clone()); BuildOperation::DeleteLiveNode { mesh: pin.mesh.clone(), kind: pin.kind, node: path.clone(), exited: None, birth: Some(pin) } }
     }
 
     fn observed(nodes: Vec<Node>, meshes: &[&str]) -> Topology {
@@ -1721,15 +1758,15 @@ mod tests {
 
     fn mn() -> Topology {
         use NodeStatus::Ready as R;
-        observed(vec![n("mesh1.admin.1", R, true), n("mesh1.admin.2", R, false), n("mesh1.rpc.1", R, true), n("mesh1.rpc.2", R, false), n("mesh1.rpc.3", R, false)], &["mesh1"])
+        observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, false), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true), n(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false), n(PathName::new("mesh1.rpc", "3").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false)], &["mesh1"])
     }
 
     fn t(meshes: &[(&str, u32, u32)]) -> FabricTopology {
         FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
     }
 
-    fn paths(m: &MeshTopology) -> Vec<String> {
-        m.nodes.iter().map(|p| p.to_string()).collect()
+    fn paths(m: &MeshTopology) -> Vec<PathName> {
+        m.nodes.iter().cloned().collect()
     }
 
     fn counts(name: &str, a: u32, r: u32) -> MeshDesired {
@@ -1745,15 +1782,15 @@ mod tests {
         let cur = t(&[("mesh1", 2, 3)]);
         // Grow: the lowest free ordinals.
         let grown = compile(&cur, &TopologyChange::ReconcileMesh { desired: counts("mesh1", 3, 5) }, &mn()).unwrap();
-        assert_eq!(paths(grown.mesh("mesh1").unwrap()), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.admin.3", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3", "mesh1.rpc.4", "mesh1.rpc.5"]);
+        assert_eq!(paths(grown.mesh("mesh1").unwrap()), [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.admin", "3").unwrap(), PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh1.rpc", "3").unwrap(), PathName::new("mesh1.rpc", "4").unwrap(), PathName::new("mesh1.rpc", "5").unwrap()]);
         // Shrink: the highest ordinals go; the observed primary (rpc.1 here) never does.
         let mut o = mn();
-        o.nodes.iter_mut().for_each(|x| x.is_primary = x.name.to_string() == "mesh1.rpc.3" || x.name.to_string() == "mesh1.admin.1");
+        o.nodes.iter_mut().for_each(|x| x.is_primary = x.name.clone() == PathName::new("mesh1.rpc", "3").unwrap() || x.name.clone() == PathName::new("mesh1.admin", "1").unwrap());
         let shrunk = compile(&cur, &TopologyChange::ReconcileMesh { desired: counts("mesh1", 1, 1) }, &o).unwrap();
-        assert_eq!(paths(shrunk.mesh("mesh1").unwrap()), ["mesh1.admin.1", "mesh1.rpc.3"], "the primary rpc.3 is kept over lower ordinals");
+        assert_eq!(paths(shrunk.mesh("mesh1").unwrap()), [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.rpc", "3").unwrap()], "the primary rpc.3 is kept over lower ordinals");
         // Exact removal: exactly that path, nothing the planner chooses.
-        let removed = compile(&cur, &TopologyChange::RemoveNode { node: "mesh1.rpc.2".parse().unwrap() }, &mn()).unwrap();
-        assert_eq!(paths(removed.mesh("mesh1").unwrap()), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.3"]);
+        let removed = compile(&cur, &TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.rpc", "2").unwrap() }, &mn()).unwrap();
+        assert_eq!(paths(removed.mesh("mesh1").unwrap()), [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "3").unwrap()]);
         // Add fills the gap the removal left.
         let added = compile(&removed, &TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, &mn()).unwrap();
         assert_eq!(paths(added.mesh("mesh1").unwrap()), paths(cur.mesh("mesh1").unwrap()));
@@ -1765,10 +1802,10 @@ mod tests {
         let cur = t(&[("mesh1", 2, 3)]);
         let two = compile(&cur, &TopologyChange::CreateMesh { desired: counts("mesh2", 1, 1) }, &mn()).unwrap();
         assert_eq!(two.meshes.keys().collect::<Vec<_>>(), ["mesh1", "mesh2"]);
-        assert_eq!(paths(two.mesh("mesh2").unwrap()), ["mesh2.admin.1", "mesh2.rpc.1"]);
+        assert_eq!(paths(two.mesh("mesh2").unwrap()), [PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap()]);
         let whole = compile(&two, &TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh3", 1, 0), counts("mesh2", 1, 2)] } }, &mn()).unwrap();
         assert_eq!(whole.meshes.keys().collect::<Vec<_>>(), ["mesh2", "mesh3"], "a mesh the request leaves out is removed");
-        assert_eq!(paths(whole.mesh("mesh2").unwrap()), ["mesh2.admin.1", "mesh2.rpc.1", "mesh2.rpc.2"]);
+        assert_eq!(paths(whole.mesh("mesh2").unwrap()), [PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap(), PathName::new("mesh2.rpc", "2").unwrap()]);
         let one = compile(&two, &TopologyChange::RemoveMesh { mesh: "mesh2".into() }, &mn()).unwrap();
         assert_eq!(one, cur);
         for (change, want) in [
@@ -1777,7 +1814,7 @@ mod tests {
             (TopologyChange::CreateMesh { desired: counts("mesh1", 1, 0) }, BuildReject::MeshAlreadyExists { mesh: "mesh1".into() }),
             (TopologyChange::CreateMesh { desired: counts("Mesh2", 1, 0) }, BuildReject::InvalidMeshName { mesh: "Mesh2".into() }),
             (TopologyChange::CreateMesh { desired: counts("mesh2", 0, 1) }, BuildReject::MeshWithoutAdmin { mesh: "mesh2".into() }),
-            (TopologyChange::RemoveNode { node: "mesh1.rpc.9".parse().unwrap() }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into(), step: None }),
+            (TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.rpc", "9").unwrap() }, BuildReject::UnknownNode { node: rdm_core::PathName::new("mesh1.rpc", "9").unwrap(), step: None }),
             (TopologyChange::ReconcileMesh { desired: counts("mesh7", 1, 1) }, BuildReject::UnknownMesh { mesh: "mesh7".into() }),
             (
                 TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "other".into(), meshes: vec![counts("mesh1", 1, 1)] } },
@@ -1793,7 +1830,7 @@ mod tests {
         }
         let lone = t(&[("mesh1", 1, 1)]);
         assert_eq!(
-            compile(&lone, &TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, &mn()),
+            compile(&lone, &TopologyChange::RemoveNode { node: rdm_core::PathName::new("mesh1.admin", "1").unwrap() }, &mn()),
             Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: "mesh1".into() })
         );
     }
@@ -1815,15 +1852,15 @@ mod tests {
         let cur = t(&[("mesh1", 1, 1), ("mesh2", 1, 1), ("mesh3", 1, 1)]);
         let compiled = compile(&cur, &TopologyChange::DeleteFabric, &mn()).unwrap();
         assert_eq!((compiled.fabric.as_str(), compiled.meshes.len()), ("fabric1", 0), "the Fabric with no mesh");
-        let mut fabric_primary = n("mesh2.admin.1", R, true);
+        let mut fabric_primary = n(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, R, true);
         fabric_primary.is_fabric_primary = true;
-        let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.rpc.1", R, false), fabric_primary, n("mesh2.rpc.1", R, false), n("mesh3.admin.1", R, true), n("mesh3.rpc.1", R, false)], &["mesh1", "mesh2", "mesh3"]);
+        let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false), fabric_primary, n(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, R, false), n(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh3.rpc", "1").unwrap(), "mesh3", rdm_core::NodeKind::RpcNode, R, false)], &["mesh1", "mesh2", "mesh3"]);
         let id = |m: &str| o.meshes.iter().find(|x| x.name == m).and_then(|x| x.id.clone()).unwrap();
         let shutdown = |m: &str| BuildOperation::ShutdownMesh { mesh: m.into(), mesh_id: id(m) };
         let deleted = BuildOperation::DeleteFabric { fabric_id: o.fabric.id.clone() };
         assert_eq!(plan(&compiled, &o, None).operations, vec![shutdown("mesh1"), shutdown("mesh3"), shutdown("mesh2"), deleted.clone()], "step 1, the fabric-primary's own mesh last, then step 3");
 
-        let primary = o.node(&"mesh1.admin.1".parse().unwrap()).unwrap();
+        let primary = o.node(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap();
         let manifest = crate::mesh_delete::ExitManifest { mesh_id: id("mesh1").to_string(), roster: vec![], final_primary: crate::mesh_delete::RosterBirth::of(primary).unwrap(), final_runtime: None, receipts: vec![] };
         let mesh_deleted = crate::build_state::BuildStepReceipt {
             mesh: None,
@@ -1833,26 +1870,26 @@ mod tests {
             step: crate::mesh_delete::STEP_MESH_DELETED.into(),
             outcome: crate::build_state::StepOutcome::Complete,
             output: serde_json::to_value(&manifest).ok(),
-            executor: Some("mesh2.admin.1".into()),
+            executor: None,
         };
         assert_eq!(
             plan_with(&compiled, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted.clone()], None, None, &BTreeSet::new()).operations,
-            vec![delete_of(&o, "mesh1.admin.1"), shutdown("mesh3"), shutdown("mesh2"), deleted],
+            vec![delete_of(&o, PathName::new("mesh1.admin", "1").unwrap()), shutdown("mesh3"), shutdown("mesh2"), deleted],
             "step 2: mesh1's mesh.deleted stands, so its mesh-primary's node.delete takes its place"
         );
 
         // The view no longer holds mesh1 or its final primary: a node.delete of it this Build began is
         // owed its receipt, planned first (fabric-delete.md "Failure").
-        let mut fp = n("mesh2.admin.1", R, true);
+        let mut fp = n(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, R, true);
         fp.is_fabric_primary = true;
-        let gone = observed(vec![fp, n("mesh2.rpc.1", R, false), n("mesh3.admin.1", R, true), n("mesh3.rpc.1", R, false)], &["mesh2", "mesh3"]);
+        let gone = observed(vec![fp, n(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, R, false), n(PathName::new("mesh3.admin", "1").unwrap(), "mesh3", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh3.rpc", "1").unwrap(), "mesh3", rdm_core::NodeKind::RpcNode, R, false)], &["mesh2", "mesh3"]);
         let gid = |m: &str| gone.meshes.iter().find(|x| x.name == m).and_then(|x| x.id.clone()).unwrap();
         let gshutdown = |m: &str| BuildOperation::ShutdownMesh { mesh: m.into(), mesh_id: gid(m) };
         let gdeleted = BuildOperation::DeleteFabric { fabric_id: gone.fabric.id.clone() };
-        let begun = crate::build_state::BuildStepReceipt { attempt: 2, operation: "node.delete:mesh1.admin.1".into(), step: "TerminateRuntime".into(), output: None, ..mesh_deleted.clone() };
+        let begun = crate::build_state::BuildStepReceipt { attempt: 2, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.admin", "1").unwrap()), step: "TerminateRuntime".into(), output: None, ..mesh_deleted.clone() };
         assert_eq!(
             plan_with(&compiled, &gone, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted, begun], None, None, &BTreeSet::new()).operations,
-            vec![delete_of(&o, "mesh1.admin.1"), gshutdown("mesh3"), gshutdown("mesh2"), gdeleted],
+            vec![delete_of(&o, PathName::new("mesh1.admin", "1").unwrap()), gshutdown("mesh3"), gshutdown("mesh2"), gdeleted],
             "the begun node.delete of a deleted mesh's final primary the view no longer holds is still owed"
         );
     }
@@ -1898,17 +1935,17 @@ mod tests {
         // runtime that still runs; a live node outside the topology is deleted.
         let mut o = mn();
         o.nodes[3].status = NodeStatus::PendingReconnect;
-        o.nodes.push(n("mesh1.rpc.7", NodeStatus::Ready, false));
+        o.nodes.push(n(PathName::new("mesh1.rpc", "7").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready, false));
         assert_eq!(
             plan(&pinned(cur.clone(), &o), &o, None).operations,
-            vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: None, entry: None }, delete_of(&o, "mesh1.rpc.7")]
+            vec![BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), over: None, executable: None, entry: None }, delete_of(&o, PathName::new("mesh1.rpc", "7").unwrap())]
         );
         // A birth surplus after the Build's acceptance (drift) is pinned as the view holds it when planned;
         // one the Build pinned keeps its pin whatever the view holds at the path.
-        assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: None, entry: None }, delete_of(&o, "mesh1.rpc.7")]);
+        assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), over: None, executable: None, entry: None }, delete_of(&o, PathName::new("mesh1.rpc", "7").unwrap())]);
         let mut later = o.clone();
-        later.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.7").unwrap().node_id = NodeId::mint();
-        assert_eq!(plan(&pinned(cur.clone(), &o), &later, None).operations[1], delete_of(&o, "mesh1.rpc.7"));
+        later.nodes.iter_mut().find(|x| x.name.clone() == PathName::new("mesh1.rpc", "7").unwrap()).unwrap().node_id = NodeId::mint();
+        assert_eq!(plan(&pinned(cur.clone(), &o), &later, None).operations[1], delete_of(&o, PathName::new("mesh1.rpc", "7").unwrap()));
         // A mesh outside the topology is deleted after everything else.
         let mut o2 = mn();
         let id2 = MeshId::mint();
@@ -1926,22 +1963,22 @@ mod tests {
     fn a_held_peer_meshs_silent_births_satisfy_their_paths_at_acceptance() {
         let mut o = mn();
         o.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
-        for (name, status, primary) in [("mesh2.admin.1", NodeStatus::PendingReconnect, true), ("mesh2.rpc.1", NodeStatus::Dead, true), ("mesh2.rpc.2", NodeStatus::PendingReconnect, false)] {
-            o.nodes.push(n(name, status, primary));
+        for (name, kind, status, primary) in [(PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, NodeStatus::PendingReconnect, true), (PathName::new("mesh2.rpc", "1").unwrap(), NodeKind::RpcNode, NodeStatus::Dead, true), (PathName::new("mesh2.rpc", "2").unwrap(), NodeKind::RpcNode, NodeStatus::PendingReconnect, false)] {
+            o.nodes.push(n(name, "mesh2", kind, status, primary));
         }
         let mut cur = t(&[("mesh1", 2, 4), ("mesh2", 1, 2)]);
         cur.meshes.get_mut("mesh2").unwrap().mesh_id = o.meshes[1].id.clone().unwrap();
         cur.meshes.get_mut("mesh1").unwrap().mesh_id = o.meshes[0].id.clone().unwrap();
         let held: BTreeSet<String> = ["mesh2".to_string()].into();
-        let created = |p: &str| BuildOperation::CreateNode { node: p.parse().unwrap(), over: None, executable: None, entry: None };
-        assert_eq!(plan_holding(&cur, &o, &held).operations, vec![created("mesh1.rpc.4")], "the own mesh's added path alone");
+        let created = |p: PathName| BuildOperation::CreateNode { mesh: cur.node_spec(&p.clone()).unwrap().mesh.clone(), kind: cur.node_spec(&p.clone()).unwrap().kind, node: p.clone(), over: None, executable: None, entry: None };
+        assert_eq!(plan_holding(&cur, &o, &held).operations, vec![created(PathName::new("mesh1.rpc", "4").unwrap())], "the own mesh's added path alone");
         let grown = t(&[("mesh1", 2, 4), ("mesh2", 1, 3)]);
         let mut grown = grown;
         grown.meshes.get_mut("mesh2").unwrap().mesh_id = o.meshes[1].id.clone().unwrap();
         grown.meshes.get_mut("mesh1").unwrap().mesh_id = o.meshes[0].id.clone().unwrap();
-        assert_eq!(plan_holding(&grown, &o, &held).operations, vec![created("mesh1.rpc.4"), created("mesh2.rpc.3")], "a path the request adds in the held mesh is planned");
-        let keys: Vec<String> = plan_holding(&cur, &o, &BTreeSet::new()).operations.iter().map(|op| op.key()).collect();
-        assert_eq!(keys, ["node.create:mesh1.rpc.4", "node.create:mesh2.admin.1", "node.create:mesh2.rpc.1", "node.create:mesh2.rpc.2"], "not held: the silent paths are planned again");
+        assert_eq!(plan_holding(&grown, &o, &held).operations, vec![created(PathName::new("mesh1.rpc", "4").unwrap()), created(PathName::new("mesh2.rpc", "3").unwrap())], "a path the request adds in the held mesh is planned");
+        let keys: Vec<rdm_core::OperationId> = plan_holding(&cur, &o, &BTreeSet::new()).operations.iter().map(|op| op.key()).collect();
+        assert_eq!(keys, [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "4").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.admin", "1").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.rpc", "1").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.rpc", "2").unwrap())], "not held: the silent paths are planned again");
     }
 
     /// CONTRACT (mesh-delete.md steps 5-7): a deleted mesh (its row Dead at mesh.deleted) whose last
@@ -1955,7 +1992,7 @@ mod tests {
         let cur = t(&[("mesh1", 2, 3)]);
         let id2 = MeshId::mint();
         let mut o = mn();
-        o.nodes.push(n("mesh2.admin.1", NodeStatus::Ready, true));
+        o.nodes.push(n(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true));
         o.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Dead });
         assert_eq!(plan(&cur, &o, None).operations, vec![], "a deleted mesh with its last admin alive is planned by no Build");
         let open: BTreeSet<String> = ["mesh2".to_string()].into();
@@ -1969,7 +2006,7 @@ mod tests {
     }
 
     /// CONTRACT (mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): the
-    /// targeted `Delete` action on a birth of a deleted mesh (no `.old` path: the topology names no
+    /// targeted `Delete` action on a birth of a deleted mesh (no retained predecessor location: the topology names no
     /// such mesh) is the ordinary node.delete of that exact birth, `DeleteLiveNode`, planned while the
     /// view holds it, and nothing once it left or its `Complete` is receipted; a `Delete` of a stopped
     /// `.old` stays `DeleteNode`. Must NOT happen: the last admin of a deleted mesh deleted through a
@@ -1978,21 +2015,21 @@ mod tests {
     fn a_delete_of_a_deleted_meshs_last_admin_is_the_ordinary_node_delete() {
         let cur = t(&[("mesh1", 2, 3)]);
         let mut o = mn();
-        let last = n("mesh2.admin.1", NodeStatus::Ready, true);
+        let last = n(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready, true);
         let birth = last.incarnation_id.clone().unwrap();
         let node_id = last.node_id.clone();
         o.nodes.push(last);
         o.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Dead });
-        let path: PathName = "mesh2.admin.1".parse().unwrap();
-        let delete = AttemptAction::Delete { path: path.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() };
-        assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![delete_of(&o, "mesh2.admin.1")]);
+        let path: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
+        let delete = AttemptAction::Delete { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() };
+        assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![delete_of(&o, PathName::new("mesh2.admin", "1").unwrap())]);
         let finished = ActionProgress { started: true, finished: true, ..ActionProgress::default() };
         assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new(), &BTreeSet::new(), &[], None, None, &BTreeSet::new()).operations, vec![], "nothing once its Complete names the birth");
         o.nodes.retain(|n| n.name != path);
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![], "nothing once the view no longer holds it");
-        let old: PathName = "mesh1.rpc.3.old".parse().unwrap();
-        let stopped = AttemptAction::Delete { path: old.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() };
-        assert_eq!(plan(&cur, &o, Some(&stopped)).operations, vec![BuildOperation::DeleteNode { node: old, node_id, from_incarnation: birth }]);
+        let old: PathName = PathName::new("mesh1.rpc", "3-old").unwrap();
+        let stopped = AttemptAction::Delete { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: old.clone(), node_id: node_id.clone(), from_incarnation: birth.clone() };
+        assert_eq!(plan(&cur, &o, Some(&stopped)).operations, vec![BuildOperation::DeleteNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: old, node_id, from_incarnation: birth }]);
     }
 
     /// CONTRACT (lifecycles/node-delete.md, node-identity-and-state.md 6.9 Effect): a stopped node (Leaving,
@@ -2005,12 +2042,12 @@ mod tests {
     fn a_stopped_node_the_topology_no_longer_names_is_deleted() {
         let cur = t(&[("mesh1", 2, 3)]);
         let mut o = mn();
-        let mut stopped = n("mesh1.rpc.7", NodeStatus::Leaving, false);
+        let mut stopped = n(PathName::new("mesh1.rpc", "7").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Leaving, false);
         stopped.stopped = true;
         o.nodes.push(stopped);
-        assert_eq!(plan(&pinned(cur.clone(), &o), &o, None).operations, vec![delete_of(&o, "mesh1.rpc.7")]);
+        assert_eq!(plan(&pinned(cur.clone(), &o), &o, None).operations, vec![delete_of(&o, PathName::new("mesh1.rpc", "7").unwrap())]);
         let mut leaving = mn();
-        leaving.nodes.push(n("mesh1.rpc.7", NodeStatus::Leaving, false));
+        leaving.nodes.push(n(PathName::new("mesh1.rpc", "7").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Leaving, false));
         assert_eq!(plan(&cur, &leaving, None).operations, vec![], "a departure already under way is not deleted again");
     }
 
@@ -2026,32 +2063,32 @@ mod tests {
     #[test]
     fn a_stopped_births_create_is_planned_once_and_never_again_once_its_complete_is_receipted() {
         let mut o = mn();
-        let stopped = o.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.1").unwrap();
+        let stopped = o.nodes.iter_mut().find(|x| x.name.clone() == PathName::new("mesh1.rpc", "1").unwrap()).unwrap();
         stopped.status = NodeStatus::Stopped;
         stopped.stopped = true;
         stopped.is_primary = false;
         let other_removed = pinned(t(&[("mesh1", 2, 2)]), &o);
-        let create = BuildOperation::CreateNode { node: "mesh1.rpc.1".parse().unwrap(), over: None, executable: None, entry: None };
-        assert_eq!(plan(&other_removed, &o, None).operations, vec![create, delete_of(&o, "mesh1.rpc.3")], "the stopped path's create is planned for its check, beside the other path's delete");
+        let create = BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), over: None, executable: None, entry: None };
+        assert_eq!(plan(&other_removed, &o, None).operations, vec![create, delete_of(&o, PathName::new("mesh1.rpc", "3").unwrap())], "the stopped path's create is planned for its check, beside the other path's delete");
         let held = crate::build_state::BuildStepReceipt {
             mesh: None,
             build_id: BuildId::mint(),
             attempt: 1,
-            operation: "node.create:mesh1.rpc.1".into(),
+            operation: rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()),
             step: "Complete".into(),
             outcome: crate::build_state::StepOutcome::Complete,
             output: None,
-            executor: Some("mesh1.admin.1".into()),
+            executor: None,
         };
         let steps = [held];
-        assert_eq!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None, &BTreeSet::new()).operations, vec![delete_of(&o, "mesh1.rpc.3")], "once its Complete is receipted the stopped path's create is never planned again");
+        assert_eq!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None, &BTreeSet::new()).operations, vec![delete_of(&o, PathName::new("mesh1.rpc", "3").unwrap())], "once its Complete is receipted the stopped path's create is never planned again");
         assert_eq!(plan_with(&pinned(t(&[("mesh1", 2, 3)]), &o), &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &steps, None, None, &BTreeSet::new()).operations, vec![], "the settled topology with a held stopped birth plans nothing");
         let mut failed = steps[0].clone();
         failed.outcome = crate::build_state::StepOutcome::Failed { reason: "x".into(), code: rdm_core::outcome::Code::Unavailable };
-        assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[failed], None, None, &BTreeSet::new()).operations.iter().any(|op| op.key() == "node.create:mesh1.rpc.1"), "a create that did not complete is planned again");
+        assert!(plan_with(&other_removed, &o, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[failed], None, None, &BTreeSet::new()).operations.iter().any(|op| op.key() == rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap())), "a create that did not complete is planned again");
     }
 
-    /// CONTRACT: a replaced predecessor (`<path>.old`) is neither the live birth at `<path>` nor a missing
+    /// CONTRACT: a replaced predecessor (the predecessor name `<name>-old` at the same path) is neither the live birth at `<path>` nor a missing
     /// node nor a surplus one: the plan of the settled topology is empty with it in the view, and a
     /// successor at the path is the one birth the plan counts.
     #[test]
@@ -2059,17 +2096,17 @@ mod tests {
         let cur = t(&[("mesh1", 2, 3)]);
         for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving, NodeStatus::Dead, NodeStatus::Ready] {
             let mut o = mn();
-            let mut old = n("mesh1.rpc.2", status, false);
-            old.name = old.name.renamed();
+            let mut old = n(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, status, false);
+            old.name = old.name.renamed().unwrap();
             old.stopped = status == NodeStatus::Leaving;
             o.nodes.push(old);
             assert_eq!(plan(&cur, &o, None).operations, vec![], "{status:?}");
             let mut missing = mn();
-            let mut old = n("mesh1.rpc.2", status, false);
-            old.name = old.name.renamed();
-            missing.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.2");
+            let mut old = n(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, status, false);
+            old.name = old.name.renamed().unwrap();
+            missing.nodes.retain(|x| x.name.clone() != PathName::new("mesh1.rpc", "2").unwrap());
             missing.nodes.push(old);
-            assert_eq!(plan(&cur, &missing, None).operations, vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), over: None, executable: None, entry: None }], "the path itself is missing: {status:?}");
+            assert_eq!(plan(&cur, &missing, None).operations, vec![BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), over: None, executable: None, entry: None }], "the path itself is missing: {status:?}");
         }
     }
 
@@ -2077,11 +2114,11 @@ mod tests {
     fn an_attempt_action_targets_its_exact_birth_and_never_changes_the_topology() {
         let cur = t(&[("mesh1", 2, 3)]);
         let o = mn();
-        let path: PathName = "mesh1.rpc.2".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
         let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
         let node_id = o.node(&path).unwrap().node_id.clone();
-        let stop = AttemptAction::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }]);
+        let stop = AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
+        assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }]);
         // Once the path runs another birth, the action is satisfied: a re-plan does nothing.
         let mut later = mn();
         later.nodes.iter_mut().find(|x| x.name == path).unwrap().incarnation_id = Some(IncarnationId::mint());
@@ -2091,9 +2128,9 @@ mod tests {
         same.nodes.iter_mut().find(|x| x.name == path).unwrap().node_id = NodeId::mint();
         assert_eq!(plan(&cur, &same, Some(&stop)).operations, vec![]);
         // Day 0 roots one admin; a topology without an admin is refused.
-        assert_eq!(paths(FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()).mesh("mesh1").unwrap()), ["mesh1.admin.1"]);
+        assert_eq!(paths(FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()).mesh("mesh1").unwrap()), [PathName::new("mesh1.admin", "1").unwrap()]);
         let mut bad = cur.clone();
-        bad.meshes.get_mut("mesh1").unwrap().nodes.retain(|p| p.kind == NodeKind::RpcNode);
+        bad.meshes.get_mut("mesh1").unwrap().nodes.retain(|p| cur.node_spec(p).unwrap().kind == NodeKind::RpcNode);
         assert_eq!(bad.validate(), Err(BuildReject::MeshWithoutAdmin { mesh: "mesh1".into() }));
     }
 
@@ -2105,14 +2142,14 @@ mod tests {
     #[test]
     fn an_action_plans_only_its_birth_whatever_other_members_the_view_lacks() {
         let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
         let exited = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let recover = AttemptAction::Recover { path: path.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation.clone(), backbone: false };
+        let recover = AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation.clone(), backbone: false };
         let mut o = mn();
-        o.nodes.retain(|x| x.name != path && x.name.to_string() != "mesh1.rpc.2" && x.name.to_string() != "mesh1.admin.2");
+        o.nodes.retain(|x| x.name != path && x.name.clone() != PathName::new("mesh1.rpc", "2").unwrap() && x.name.clone() != PathName::new("mesh1.admin", "2").unwrap());
         let want = vec![
-            BuildOperation::DeleteLiveNode { node: path.clone(), exited: Some(exited.clone()), birth: None },
-            BuildOperation::CreateNode { node: path.clone(), over: Some(exited), executable: None, entry: None },
+            BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), exited: Some(exited.clone()), birth: None },
+            BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), over: Some(exited), executable: None, entry: None },
         ];
         assert_eq!(plan(&cur, &o, Some(&recover)).operations, want);
         // With no action the generic create still plans every missing member.
@@ -2121,20 +2158,20 @@ mod tests {
 
     /// CONTRACT (fabric-recovery.md step 3, Q142, Q148: "its node.delete of the exact lost birth writes
     /// that birth's row deleted with no `TerminateRuntime` and releases the name, then node.create at the
-    /// path.name"): fabric recovery's backbone attempt plans the same two operations as every recovery,
+    /// path and name"): fabric recovery's backbone attempt plans the same two operations as every recovery,
     /// the delete keyed on the lost birth, then the create; what differs is its delete's runtime step,
     /// which the action carries, and the action crosses a Build message as itself. Must NOT happen: a
-    /// backbone attempt planned without its delete, so a path.name whose row stands is never freed.
+    /// backbone attempt planned without its delete, so a path and name whose row stands is never freed.
     #[test]
     fn a_backbone_recovery_plans_the_delete_of_the_lost_birth_then_the_create() {
         let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.admin.1".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let lost = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let backbone = AttemptAction::Recover { path: path.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation.clone(), backbone: true };
+        let backbone = AttemptAction::Recover { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), path: path.clone(), node_id: lost.node_id.clone(), from_incarnation: lost.incarnation.clone(), backbone: true };
         let o = mn();
         assert_eq!(
             plan(&cur, &o, Some(&backbone)).operations,
-            vec![BuildOperation::DeleteLiveNode { node: path.clone(), exited: Some(lost.clone()), birth: None }, BuildOperation::CreateNode { node: path.clone(), over: Some(lost), executable: None, entry: None }]
+            vec![BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: path.clone(), exited: Some(lost.clone()), birth: None }, BuildOperation::CreateNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: path.clone(), over: Some(lost), executable: None, entry: None }]
         );
         let wire = crate::wire::action_round_trip(&backbone);
         assert_eq!(wire, backbone, "the backbone action crosses a Build message as itself");
@@ -2145,10 +2182,35 @@ mod tests {
         vec![
             Step::DeleteConnections { node: node.clone() },
             Step::LeaveMesh { node: node.clone() },
-            Step::Update { node: node.clone(), name: node.renamed() },
-            Step::Stop { node: node.renamed() },
+            Step::Update { node: node.clone(), name: node.renamed().unwrap() },
+            Step::Stop { node: node.renamed().unwrap() },
             Step::Create { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node: node.clone(), executable: None },
         ]
+    }
+
+    /// CONTRACT: admission records replacement intent from ordered actions and exact birth
+    /// provenance, never solely from a name ending in -old.
+    // @feature: node-records
+    #[test]
+    fn steps_admission_distinguishes_ordinary_rename_replacement_and_rollback() {
+        let mut observed = mn();
+        let original = PathName::new("mesh1.rpc", "1").unwrap();
+        let retained = original.renamed().unwrap();
+        let rename = Step::Update { node: original.clone(), name: retained.clone() };
+        let AttemptAction::Steps { rename_intents, .. } = steps_action(vec![rename.clone()], &observed).unwrap() else { unreachable!() };
+        assert_eq!(rename_intents.get(&1), Some(&RenameIntent::Ordinary));
+        let create = Step::Create { node: original.clone(), mesh: "mesh1".into(), kind: NodeKind::RpcNode, executable: None };
+        let cross_mesh = Step::Create { node: original.clone(), mesh: "mesh2".into(), kind: NodeKind::RpcNode, executable: None };
+        assert!(matches!(steps_action(vec![rename.clone(), cross_mesh], &observed), Err(BuildReject::InvalidNodeRename { step: 1, .. })), "refuse before execution rather than write a predecessor through another mesh's writer");
+        let admitted = steps_action(vec![rename, create], &observed).unwrap();
+        let AttemptAction::Steps { rename_intents, .. } = &admitted else { unreachable!() };
+        assert_eq!(rename_intents.get(&1), Some(&RenameIntent::Replacement { original: original.clone() }));
+        assert_eq!(crate::wire::action_round_trip(&admitted), admitted);
+        let predecessor = observed.nodes.iter_mut().find(|n| n.name == original).unwrap();
+        predecessor.renamed_from = Some(original.clone());
+        predecessor.name = retained.clone();
+        let AttemptAction::Steps { rename_intents, .. } = steps_action(vec![Step::Update { node: retained, name: original.clone() }], &observed).unwrap() else { unreachable!() };
+        assert_eq!(rename_intents.get(&1), Some(&RenameIntent::Rollback { original }));
     }
 
     /// CONTRACT (build.md §1: "Rafka's replace steps (one Build of node primitives ...)";
@@ -2168,26 +2230,32 @@ mod tests {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let o = mn();
-        let path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let held = o.node(&path).unwrap();
-        let pin = PinnedBirth { node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().unwrap() };
+        let pin = PinnedBirth { kind: held.kind, mesh: held.mesh.clone(), node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().unwrap() };
         let steps = replace_steps(&path);
         let action = steps_action(steps.clone(), &o).unwrap();
-        assert_eq!(action, AttemptAction::Steps { steps: steps.clone(), pinned: vec![(path.clone(), pin.clone())] }, "only the predecessor's path holds a birth at acceptance");
+        assert_eq!(action, AttemptAction::Steps { rename_intents: [(3, RenameIntent::Replacement { original: path.clone() })].into(), steps: steps.clone(), pinned: vec![(path.clone(), pin.clone())] }, "only the predecessor's path holds a birth at acceptance");
         let births = [Some(pin.clone()), Some(pin.clone()), Some(pin.clone()), Some(pin.clone()), None];
-        let all: Vec<BuildOperation> = steps.iter().zip(births.iter()).map(|(s, b)| BuildOperation::Step { step: s.clone(), birth: b.clone(), entry: None }).collect();
+        let all: Vec<BuildOperation> = steps.iter().zip(births.iter()).enumerate().map(|(i, (s, b))| BuildOperation::Step { rename_intent: if i == 2 { RenameIntent::Replacement { original: path.clone() } } else { RenameIntent::Ordinary }, recipe_step: Some(i as u32 + 1), mesh: held.mesh.clone(), kind: held.kind, step: s.clone(), birth: b.clone(), entry: None }).collect();
         assert_eq!(plan(&cur, &o, Some(&action)).operations, all);
-        let keys: Vec<String> = all.iter().map(BuildOperation::key).collect();
+        let keys: Vec<rdm_core::OperationId> = all.iter().map(BuildOperation::key).collect();
         assert_eq!(
             keys,
-            ["node.connection.delete:mesh1.rpc.1", "node.mesh.leave:mesh1.rpc.1", "node.update:mesh1.rpc.1", "node.stop:mesh1.rpc.1.old", "node.create:mesh1.rpc.1"]
+            vec![
+                rdm_core::OperationId::node("node.connection.delete", &pin.node_id).in_recipe(Some(1)),
+                rdm_core::OperationId::node("node.mesh.leave", &pin.node_id).in_recipe(Some(2)),
+                rdm_core::OperationId::node("node.update", &pin.node_id).in_recipe(Some(3)),
+                rdm_core::OperationId::node("node.stop", &pin.node_id).in_recipe(Some(4)),
+                rdm_core::OperationId::location("node.create", &path).in_recipe(Some(5)),
+            ]
         );
-        assert!(!keys.iter().any(|k| k.starts_with("replace-node:")));
-        let receipt = |attempt: u32, operation: &str| BuildStepReceipt {
+        assert!(!keys.iter().any(|k| k.action == "replace-node"));
+        let receipt = |attempt: u32, operation: &rdm_core::OperationId| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
-            operation: operation.into(),
+            operation: operation.clone(),
             step: "Complete".into(),
             outcome: StepOutcome::Complete,
             output: None,
@@ -2205,8 +2273,8 @@ mod tests {
             last_failure: None,
             reason: AttemptReason::Steps,
             action: Some(action.clone()),
-            attempt_actions: [(3, AttemptAction::Stop { path: path.clone(), node_id: pin.node_id.clone(), from_incarnation: pin.incarnation.clone() }), (4, action.clone())].into(),
-            attempt_executors: Default::default(),
+            attempt_actions: [(3, AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: pin.node_id.clone(), from_incarnation: pin.incarnation.clone() }), (4, action.clone())].into(),
+            attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened: 4,
             failed_at: None,
             completed_at: None,
@@ -2225,19 +2293,19 @@ mod tests {
         assert_eq!(steps_action(vec![], &o), Err(BuildReject::EmptySteps));
         assert_eq!(
             steps_action(vec![Step::Stop { node: path.clone() }, Step::Stop { node: path.clone() }], &o),
-            Err(BuildReject::StepRepeated { operation: "node.stop:mesh1.rpc.1".into() })
+            Err(BuildReject::StepRepeated { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()) })
         );
         // build.md §4.4 gate 4 (Q223): a step on a path no birth holds is refused `unknown-node`, the one
         // name the gate gives, its detail naming the step and the target.
         let unknown = [
-            (vec![Step::Start { node: "mesh1.rpc.9".parse().unwrap() }], 1, "mesh1.rpc.9", "no birth at the path"),
-            (vec![Step::Update { node: path.clone(), name: path.renamed() }, Step::Stop { node: path.clone() }], 2, "mesh1.rpc.1", "the node left the path at its rename: nothing is at it for the stop"),
+            (vec![Step::Start { node: rdm_core::PathName::new("mesh1.rpc", "9").unwrap() }], 1, PathName::new("mesh1.rpc", "9").unwrap(), "no birth at the path"),
+            (vec![Step::Update { node: path.clone(), name: path.renamed().unwrap() }, Step::Stop { node: path.clone() }], 2, PathName::new("mesh1.rpc", "1").unwrap(), "the node left the path at its rename: nothing is at it for the stop"),
         ];
         for (steps, step, node, why) in unknown {
             let reject = steps_action(steps, &o).expect_err(why);
             assert_eq!(reject.reason(), "unknown-node", "{why}: {reject}");
             let detail = reject.to_string();
-            assert!(detail.contains(&format!("step {step} ")) && detail.contains(&format!("`{node}`")), "{why}: the detail names the step and the target: {detail}");
+            assert!(detail.contains(&format!("step {step} ")) && detail.contains(&format!("path `{}`, name `{}`", node.path, node.name)), "{why}: the detail names the step and the target: {detail}");
         }
     }
 
@@ -2247,17 +2315,17 @@ mod tests {
     #[test]
     fn a_connections_delete_or_stop_plans_only_its_operation_for_its_exact_birth() {
         let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.2".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
         let mut o = mn();
         let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
         let node_id = o.node(&path).unwrap().node_id.clone();
-        o.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.3");
-        let connections = AttemptAction::DeleteConnections { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
-        let stop = AttemptAction::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan(&cur, &o, Some(&connections)).operations, vec![BuildOperation::DeleteConnections { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }]);
-        assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }]);
-        assert_eq!(BuildOperation::DeleteConnections { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }.key(), "node.connection.delete:mesh1.rpc.2");
-        assert_eq!(BuildOperation::StopNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }.key(), "node.stop:mesh1.rpc.2");
+        o.nodes.retain(|x| x.name.clone() != PathName::new("mesh1.rpc", "3").unwrap());
+        let connections = AttemptAction::DeleteConnections { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
+        let stop = AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
+        assert_eq!(plan(&cur, &o, Some(&connections)).operations, vec![BuildOperation::DeleteConnections { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }]);
+        assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }]);
+        assert_eq!(BuildOperation::DeleteConnections { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }.key(), rdm_core::OperationId::node("node.connection.delete", &node_id));
+        assert_eq!(BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }.key(), rdm_core::OperationId::node("node.stop", &node_id));
         // A ConnectionsDeleting or Leaving birth of the path is still the birth the operation acts on.
         for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving] {
             o.nodes.iter_mut().find(|x| x.name == path).unwrap().status = status;
@@ -2269,36 +2337,36 @@ mod tests {
         assert_eq!(plan(&cur, &later, Some(&stop)).operations, vec![]);
     }
 
-    /// CONTRACT (lifecycles/node-delete.md): the delete of the stopped predecessor at `<path>.old` plans its
-    /// one operation `node.delete:<path>.old` until its `Complete` names the birth, whatever the view
+    /// CONTRACT (lifecycles/node-delete.md): the delete of the stopped predecessor at the predecessor name `<name>-old` at the same path plans its
+    /// one typed `node.delete` operation naming its node ID until its `Complete` names the birth, whatever the view
     /// holds: the fabric-primary admitted it from the record it holds of that exact birth, and no view
-    /// names a `.old` path but its replace's executor's. It never plans a create or repair of the
+    /// names a retained predecessor location but its replace's executor's. It never plans a create or repair of the
     /// path's successor.
     #[test]
     fn a_delete_of_a_stopped_old_birth_plans_only_its_operation_until_its_complete_names_the_birth() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "2-old").unwrap();
         let mut held = mn();
-        let from = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
-        let node_id = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().node_id.clone();
-        let mut stopped = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().clone();
+        let from = held.node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().incarnation_id.clone().unwrap();
+        let node_id = held.node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().node_id.clone();
+        let mut stopped = held.node(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).unwrap().clone();
         stopped.name = path.clone();
         stopped.status = NodeStatus::Leaving;
         stopped.stopped = true;
-        held.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.2").unwrap().incarnation_id = Some(IncarnationId::mint());
+        held.nodes.iter_mut().find(|x| x.name.clone() == PathName::new("mesh1.rpc", "2").unwrap()).unwrap().incarnation_id = Some(IncarnationId::mint());
         held.nodes.push(stopped);
-        held.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.3");
-        let delete = AttemptAction::Delete { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
-        let op = vec![BuildOperation::DeleteNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
+        held.nodes.retain(|x| x.name.clone() != PathName::new("mesh1.rpc", "3").unwrap());
+        let delete = AttemptAction::Delete { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
+        let op = vec![BuildOperation::DeleteNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
         assert_eq!(plan(&cur, &held, Some(&delete)).operations, op, "only the delete, never a repair of mesh1.rpc.3");
-        assert_eq!(op[0].key(), "node.delete:mesh1.rpc.2.old");
+        assert_eq!(op[0].key(), rdm_core::OperationId::node("node.delete", &node_id));
         // The Complete commits no output: the attempt's targeted action names the birth.
         let step = |attempt: u32, step: &str| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
-            operation: format!("node.delete:{path}"),
+            operation: rdm_core::OperationId::node("node.delete", &node_id),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: None,
@@ -2318,8 +2386,8 @@ mod tests {
             reason: AttemptReason::Delete,
             action: Some(delete.clone()),
             // Attempt 8 deleted another stopped birth at the path; attempt 9 is this delete.
-            attempt_actions: [(8, AttemptAction::Delete { path: path.clone(), node_id: NodeId::mint(), from_incarnation: other.clone() }), (9, delete.clone())].into(),
-            attempt_executors: Default::default(),
+            attempt_actions: [(8, AttemptAction::Delete { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: NodeId::mint(), from_incarnation: other.clone() }), (9, delete.clone())].into(),
+            attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened: 0,
             failed_at: None,
             completed_at: None,
@@ -2341,7 +2409,7 @@ mod tests {
     fn a_stop_is_planned_until_its_complete_receipt_names_its_birth() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
         let from = IncarnationId::mint();
         let node_id = NodeId::mint();
         // The Complete commits no output: the attempt's targeted action names the birth.
@@ -2349,7 +2417,7 @@ mod tests {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
-            operation: format!("node.stop:{path}"),
+            operation: rdm_core::OperationId::node("node.stop", &node_id),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: None,
@@ -2367,10 +2435,10 @@ mod tests {
             steps,
             last_failure: None,
             reason: AttemptReason::Stop,
-            action: Some(AttemptAction::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }),
+            action: Some(AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }),
             // Attempt 6 stopped an earlier birth of the path; attempt 7 is this stop.
-            attempt_actions: [(6, AttemptAction::Stop { path: path.clone(), node_id: NodeId::mint(), from_incarnation: other.clone() }), (7, AttemptAction::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() })].into(),
-            attempt_executors: Default::default(),
+            attempt_actions: [(6, AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: NodeId::mint(), from_incarnation: other.clone() }), (7, AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() })].into(),
+            attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened: 0,
             failed_at: None,
             completed_at: None,
@@ -2380,7 +2448,7 @@ mod tests {
         };
         let mut gone = mn();
         gone.nodes.retain(|x| x.name != path);
-        let stop = vec![BuildOperation::StopNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
+        let stop = vec![BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
         assert_eq!(plan_for_build(&build(vec![]), &gone).operations, vec![], "the view never held the birth and nothing began");
         assert_eq!(plan_for_build(&build(vec![step(7, "StopNode")]), &gone).operations, stop, "begun, the birth pruned from the view: still owed");
         assert_eq!(plan_for_build(&build(vec![step(7, "StopNode"), step(7, "Complete")]), &gone).operations, vec![], "completed for this birth");
@@ -2400,20 +2468,20 @@ mod tests {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let o = mn();
-        let path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
         let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
         let node_id = o.node(&path).unwrap().node_id.clone();
         let receipt = |attempt: u32, operation: &str, step: &str| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
-            operation: format!("{operation}:{path}"),
+            operation: rdm_core::OperationId::node(operation, &node_id),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: None,
             executor: None,
         };
-        let (stop, start) = (AttemptAction::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }, AttemptAction::Start { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() });
+        let (stop, start) = (AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }, AttemptAction::Start { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() });
         let build = |action: &AttemptAction, opened: u32, actions: Vec<(u32, AttemptAction)>, steps: Vec<BuildStepReceipt>| BuildProjection {
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
@@ -2427,7 +2495,7 @@ mod tests {
             reason: AttemptReason::Stop,
             action: Some(action.clone()),
             attempt_actions: actions.into_iter().collect(),
-            attempt_executors: Default::default(),
+            attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened,
             failed_at: None,
             completed_at: None,
@@ -2437,7 +2505,7 @@ mod tests {
         };
         let first_runs = vec![receipt(4, "node.stop", "StopNode"), receipt(4, "node.stop", "Complete"), receipt(5, "node.start", "StartNode"), receipt(5, "node.start", "Complete")];
         let second_stop = build(&stop, 6, vec![(4, stop.clone()), (5, start.clone()), (6, stop.clone())], first_runs.clone());
-        assert_eq!(plan_for_build(&second_stop, &o).operations, vec![BuildOperation::StopNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }], "the second stop of the live birth is planned");
+        assert_eq!(plan_for_build(&second_stop, &o).operations, vec![BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }], "the second stop of the live birth is planned");
         let mut stopped = o.clone();
         stopped.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| {
             n.status = NodeStatus::Leaving;
@@ -2446,7 +2514,7 @@ mod tests {
         let mut steps = first_runs;
         steps.extend([receipt(6, "node.stop", "StopNode"), receipt(6, "node.stop", "Complete")]);
         let second_start = build(&start, 7, vec![(4, stop.clone()), (5, start.clone()), (6, stop), (7, start.clone())], steps);
-        assert_eq!(plan_for_build(&second_start, &stopped).operations, vec![BuildOperation::StartNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from }], "the second start of the stopped birth is planned");
+        assert_eq!(plan_for_build(&second_start, &stopped).operations, vec![BuildOperation::StartNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from }], "the second start of the stopped birth is planned");
     }
 
     /// CONTRACT (fabric-atlas.md R-FA1: the fabric-primary decides from its atlas, "from it, and from
@@ -2462,7 +2530,7 @@ mod tests {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let o = mn();
-        let path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
         let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
         let node_id = o.node(&path).unwrap().node_id.clone();
         let mut gone = o.clone();
@@ -2471,7 +2539,7 @@ mod tests {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
-            operation: format!("{operation}:{path}"),
+            operation: rdm_core::OperationId::node(operation, &node_id),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: None,
@@ -2490,7 +2558,7 @@ mod tests {
             reason: AttemptReason::Stop,
             action: Some(action.clone()),
             attempt_actions: actions.into_iter().collect(),
-            attempt_executors: Default::default(),
+            attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened: 6,
             failed_at: None,
             completed_at: None,
@@ -2498,15 +2566,15 @@ mod tests {
             claimant: None,
             lanes: Default::default(),
         };
-        let pin = crate::build::PinnedBirth { node_id: node_id.clone(), incarnation: from.clone() };
+        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: node_id.clone(), incarnation: from.clone() };
         let (held, none) = (AtlasBirth(Some(pin.clone())), AtlasBirth(None));
-        let replaced = AtlasBirth(Some(crate::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }));
-        let (stop, start) = (AttemptAction::Stop { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }, AttemptAction::Start { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() });
+        let replaced = AtlasBirth(Some(crate::build::PinnedBirth { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), incarnation: IncarnationId::mint() }));
+        let (stop, start) = (AttemptAction::Stop { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }, AttemptAction::Start { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() });
         // Attempt 4 stopped the birth, attempt 5 started it, attempt 6 is the stop sent the moment the
         // start completed.
         let first_runs = vec![receipt(4, "node.stop", "StopNode"), receipt(4, "node.stop", "Complete"), receipt(5, "node.start", "StartNode"), receipt(5, "node.start", "Complete")];
         let second_stop = build(&stop, vec![(4, stop.clone()), (5, start.clone()), (6, stop.clone())], first_runs.clone());
-        let stop_op = vec![BuildOperation::StopNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
+        let stop_op = vec![BuildOperation::StopNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }];
         assert_eq!(plan_for_build_with(&second_stop, &gone, None, Some(&held)).operations, stop_op, "the atlas holds the birth the view dropped: the stop is planned");
         assert_eq!(plan_for_build_with(&second_stop, &o, None, Some(&none)).operations, vec![], "the atlas holds no birth at the path: nothing, whatever the view holds");
         assert_eq!(plan_for_build_with(&second_stop, &o, None, Some(&replaced)).operations, vec![], "the atlas holds another birth at the path: nothing, whatever the view holds");
@@ -2518,18 +2586,18 @@ mod tests {
         assert_eq!(plan_for_build_with(&build(&stop, vec![(4, stop.clone()), (5, start.clone()), (6, stop.clone())], done), &gone, None, Some(&held)).operations, vec![], "completed for this birth");
         // A start, a connections delete and a delete of the birth the atlas holds, from a view without it.
         let start_only = build(&start, vec![(6, start.clone())], vec![]);
-        assert_eq!(plan_for_build_with(&start_only, &gone, None, Some(&held)).operations, vec![BuildOperation::StartNode { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }], "the start of the birth the atlas holds is planned");
-        let connections = AttemptAction::DeleteConnections { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan_for_build_with(&build(&connections, vec![(6, connections.clone())], vec![]), &gone, None, Some(&held)).operations, vec![BuildOperation::DeleteConnections { node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }], "the connections delete of the birth the atlas holds is planned");
-        let delete = AttemptAction::Delete { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan_for_build_with(&build(&delete, vec![(6, delete.clone())], vec![]), &gone, None, Some(&held)).operations, vec![BuildOperation::DeleteLiveNode { node: path.clone(), exited: None, birth: Some(pin) }], "the delete of the birth the atlas holds is planned");
+        assert_eq!(plan_for_build_with(&start_only, &gone, None, Some(&held)).operations, vec![BuildOperation::StartNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }], "the start of the birth the atlas holds is planned");
+        let connections = AttemptAction::DeleteConnections { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
+        assert_eq!(plan_for_build_with(&build(&connections, vec![(6, connections.clone())], vec![]), &gone, None, Some(&held)).operations, vec![BuildOperation::DeleteConnections { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() }], "the connections delete of the birth the atlas holds is planned");
+        let delete = AttemptAction::Delete { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone() };
+        assert_eq!(plan_for_build_with(&build(&delete, vec![(6, delete.clone())], vec![]), &gone, None, Some(&held)).operations, vec![BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), exited: None, birth: Some(pin) }], "the delete of the birth the atlas holds is planned");
     }
 
     /// CONTRACT (node-recovery.md, Operation summary "Steps"; proposal node-properties-own-commands.md
     /// §5 item 8, §8: "Replace's caller-meta copy step goes with recovery's"; rdm-code-conformance.md
     /// §0.1 and §2 item 4): an admitted recovery is two operations of its exited birth, in the doc's
     /// order and each by the delete and create workflows' own keys: node.delete of the exited instance
-    /// (`node.delete:<path>`), then node.create at the same path.name over the inherited data dir
+    /// (`node.delete:<path>`), then node.create at the same path and name over the inherited data dir
     /// (`node.create:<path>`), whose claim seeds config and tags from the Deleted row. There is no
     /// third step: nothing is copied after the create. It is planned whatever the view holds at the
     /// path (the exited birth unheard, nothing, or the new node live), never as a generic create, and
@@ -2547,20 +2615,20 @@ mod tests {
     fn a_recovery_plans_node_delete_then_node_create_of_its_exited_birth_and_nothing_after() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.2".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
         let (node_id, from) = (NodeId::mint(), IncarnationId::mint());
         let receipt = |attempt: u32, operation: &str, step: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
-            operation: format!("{operation}:{path}"),
+            operation: if operation == "node.create" { rdm_core::OperationId::location(operation, &path) } else { rdm_core::OperationId::node(operation, &node_id) },
             step: step.into(),
             outcome: StepOutcome::Complete,
             output,
             executor: None,
         };
         let deleted = |attempt: u32, id: &NodeId, inc: &IncarnationId| {
-            let op = rdm_core::LifecycleOp { mesh: path.mesh.clone(), build_id: "b1".into(), attempt, operation: format!("node.delete:{path}"), node_id: id.clone(), incarnation: inc.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+            let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), build_id: "b1".into(), attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id: id.clone(), incarnation: inc.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
             receipt(attempt, "node.delete", "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
         };
         let complete = |attempt: u32, operation: &str| receipt(attempt, operation, "Complete", None);
@@ -2575,9 +2643,9 @@ mod tests {
             steps,
             last_failure: None,
             reason: AttemptReason::Recovery,
-            action: Some(AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone(), backbone: false }),
+            action: Some(AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone(), backbone: false }),
             attempt_actions: Default::default(),
-            attempt_executors: Default::default(),
+            attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened: 0,
             failed_at: None,
             completed_at: None,
@@ -2586,17 +2654,17 @@ mod tests {
             lanes: Default::default(),
         };
         let keys = |steps: Vec<BuildStepReceipt>, o: &Topology| plan_for_build(&build(&path, &node_id, steps), o).operations.iter().map(|op| op.key()).collect::<Vec<_>>();
-        let all = vec![format!("node.delete:{path}"), format!("node.create:{path}")];
+        let all = vec![rdm_core::OperationId::node("node.delete", &node_id), rdm_core::OperationId::location("node.create", &path)];
         // Whatever the view holds at the path, and with another member unheard and a third missing:
         // the two operations, nothing else.
         for dead in [NodeStatus::PendingReconnect, NodeStatus::Dead] {
             let mut o = mn();
             o.nodes.iter_mut().find(|x| x.name == path).unwrap().status = dead;
-            o.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.3").unwrap().status = dead;
-            o.nodes.retain(|x| x.name.to_string() != "mesh1.admin.2");
+            o.nodes.iter_mut().find(|x| x.name.clone() == PathName::new("mesh1.rpc", "3").unwrap()).unwrap().status = dead;
+            o.nodes.retain(|x| x.name.clone() != PathName::new("mesh1.admin", "2").unwrap());
             assert_eq!(keys(vec![], &o), all, "{dead:?}");
             for op in &plan_for_build(&build(&path, &node_id, vec![]), &o).operations {
-                assert_eq!(crate::executor::executor_for(op, &o).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "{} is the member's mesh-primary's", op.key());
+                assert_eq!(crate::executor::executor_for(op, &o), o.node(&PathName::new("mesh1.admin", "1").unwrap()).map(|n| n.node_id.clone()), "{:?} is the member's mesh-primary's", op.key());
             }
         }
         let mut gone = mn();
@@ -2613,17 +2681,17 @@ mod tests {
         assert_eq!(keys(vec![original_create.clone(), deleted(4, &node_id, &from), complete(4, "node.delete")], &gone), created_left, "deleted: the create is left, the path's original create is not this one");
         assert_eq!(keys(vec![deleted(4, &node_id, &from), complete(5, "node.delete")], &gone), created_left, "deleted on a rerun that reused the NodeDeleted");
         let recovered = vec![original_create, deleted(4, &node_id, &from), complete(4, "node.delete"), complete(5, "node.create")];
-        assert_eq!(keys(recovered.clone(), &mn()), Vec::<String>::new(), "created after the deletion: recovered, nothing is left");
-        assert_eq!(keys(recovered, &gone), Vec::<String>::new(), "recovered, whatever the view holds");
+        assert_eq!(keys(recovered.clone(), &mn()), Vec::<rdm_core::OperationId>::new(), "created after the deletion: recovered, nothing is left");
+        assert_eq!(keys(recovered, &gone), Vec::<rdm_core::OperationId>::new(), "recovered, whatever the view holds");
         // A mesh-primary's own recovery: the view may still role the exited primary; every operation
         // is executed by the admin its mesh elects in its place.
-        let admin: PathName = "mesh1.admin.1".parse().unwrap();
+        let admin: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let mut o = mn();
         o.nodes.iter_mut().find(|x| x.name == admin).unwrap().status = NodeStatus::PendingReconnect;
         let ops = plan_for_build(&build(&admin, &node_id, vec![]), &o).operations;
-        assert_eq!(ops.iter().map(|op| op.key()).collect::<Vec<_>>(), vec![format!("node.delete:{admin}"), format!("node.create:{admin}")]);
+        assert_eq!(ops.iter().map(|op| op.key()).collect::<Vec<_>>(), vec![rdm_core::OperationId::node("node.delete", &node_id), rdm_core::OperationId::location("node.create", &admin)]);
         for op in &ops {
-            assert_eq!(crate::executor::executor_for(op, &o).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.2"), "{} of the exited mesh-primary is executed by its mesh's next admin", op.key());
+            assert_eq!(crate::executor::executor_for(op, &o), o.node(&PathName::new("mesh1.admin", "2").unwrap()).map(|n| n.node_id.clone()), "{:?} of the exited mesh-primary is executed by its mesh's next admin", op.key());
         }
     }
 
@@ -2638,10 +2706,10 @@ mod tests {
         assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.spec_by_path.len(), 5);
         let preserve = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
-        assert_eq!(m.spec(&"mesh1.broker.2".parse().unwrap()).unwrap().storage_persistence, preserve);
-        assert_eq!(m.spec(&"mesh1.admin.1".parse().unwrap()).unwrap().storage_persistence, preserve);
-        assert_eq!(m.spec(&"mesh1.gateway.1".parse().unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
-        assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.broker", "2").unwrap()).unwrap().storage_persistence, preserve);
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().storage_persistence, preserve);
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
         let mut topology = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
         // Grow and shrink keep the create specs in step with the paths.
@@ -2653,20 +2721,20 @@ mod tests {
         resize(&mut m, &MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3), (NodeKind::Gateway, 0), (NodeKind::RpcNode, 1)]), &observed);
         assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.spec_by_path.len(), 5);
-        assert_eq!(m.spec(&"mesh1.broker.3".parse().unwrap()).unwrap().storage_persistence, preserve, "the grown path carries its default");
-        assert!(m.spec(&"mesh1.gateway.1".parse().unwrap()).is_none(), "the dropped path's create spec goes with it");
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.broker", "3").unwrap()).unwrap().storage_persistence, preserve, "the grown path carries its default");
+        assert!(m.spec(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).is_none(), "the dropped path's create spec goes with it");
         // An explicit create spec stands; a path the mesh does not hold is refused.
-        let release = NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for("mesh1.rpc.1".parse().unwrap(), "mesh1", rdm_core::NodeKind::RpcNode) };
+        let release = NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode) };
         assert_eq!(m.set_spec(release.clone()), Ok(()));
-        assert_eq!(m.spec(&"mesh1.rpc.1".parse().unwrap()), Some(&release));
-        assert!(matches!(m.set_spec(NodeSpec { path: "mesh1.rpc.9".parse().unwrap(), ..release.clone() }), Err(BuildReject::UnknownNode { .. })));
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), Some(&release));
+        assert!(matches!(m.set_spec(NodeSpec { path: rdm_core::PathName::new("mesh1.rpc", "9").unwrap(), ..release.clone() }), Err(BuildReject::UnknownNode { .. })));
         // The consistency ratchet.
-        m.spec_by_path.remove(&"mesh1.rpc.1".parse().unwrap());
-        m.spec_by_path.insert("mesh1.compute.7".parse().unwrap(), NodeSpec { path: "mesh1.compute.7".parse().unwrap(), ..release });
+        m.spec_by_path.remove(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
+        m.spec_by_path.insert(rdm_core::PathName::new("mesh1.compute", "7").unwrap(), NodeSpec { path: rdm_core::PathName::new("mesh1.compute", "7").unwrap(), ..release });
         topology.meshes.insert("mesh1".into(), m);
         assert_eq!(
             topology.validate(),
-            Err(BuildReject::NodeSpecMismatch { mesh: "mesh1".into(), missing: vec!["mesh1.rpc.1".into()], extra: vec!["mesh1.compute.7".into()] })
+            Err(BuildReject::NodeSpecMismatch { mesh: "mesh1".into(), missing: vec![rdm_core::PathName::new("mesh1.rpc", "1").unwrap()], extra: vec![crate::build::NodeSpecConflict { location: rdm_core::PathName::new("mesh1.compute", "7").unwrap(), declared_location: rdm_core::PathName::new("mesh1.compute", "7").unwrap(), declared_mesh: "mesh1".into() }] })
         );
     }
 
@@ -2677,7 +2745,7 @@ mod tests {
         let mut next = topology.clone();
         for m in next.meshes.values_mut() {
             for (p, c) in m.spec_by_path.iter_mut() {
-                c.executable = Some(exe(tag, p.kind));
+                c.executable = Some(exe(tag, c.kind));
             }
         }
         next
@@ -2704,63 +2772,64 @@ mod tests {
         use crate::build_state::{BuildStepReceipt, StepOutcome};
         use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 2, 2), ("mesh2", 2, 1)]);
-        let nodes = vec![n("mesh1.admin.1", R, true), n("mesh1.admin.2", R, false), n("mesh1.rpc.1", R, false), n("mesh1.rpc.2", R, true), n("mesh2.admin.1", R, true), n("mesh2.admin.2", R, false), n("mesh2.rpc.1", R, true)];
+        let nodes = vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, false), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false), n(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true), n(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, R, false), n(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, R, true)];
         let o = observed(nodes.clone(), &["mesh1", "mesh2"]);
         let next = on_entries(&cur, "b");
-        let birth = |name: &str, o: &Topology| o.node(&name.parse().unwrap()).map(|n| crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }).unwrap();
-        let on = |name: &str, tag: Option<&str>, o: &Topology| {
-            let node = o.node(&name.parse().unwrap()).unwrap();
-            (node.name.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.name.kind.name())) })
+        let birth = |name: PathName, o: &Topology| o.node(&name.clone()).map(|n| crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }).unwrap();
+        let on = |name: PathName, tag: Option<&str>, o: &Topology| {
+            let node = o.node(&name.clone()).unwrap();
+            (node.name.clone(), RecordedRow { mesh: node.mesh.clone(), kind: node.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.kind.name())) })
         };
         // Every member on "a", but mesh1.rpc.1 on "b" already and mesh2.admin.2 a row with no executable.
-        let mut recorded: Recorded = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.2", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|p| on(p, Some("a"), &o)).collect();
-        recorded.extend([on("mesh1.rpc.1", Some("b"), &o), on("mesh2.admin.2", None, &o)]);
-        let replace = |name: &str, o: &Topology| {
-            let node: PathName = name.parse().unwrap();
-            let executable = Some(exe("b", node.kind));
+        let mut recorded: Recorded = [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap()].iter().map(|p| on(p.clone(), Some("a"), &o)).collect();
+        recorded.extend([on(PathName::new("mesh1.rpc", "1").unwrap(), Some("b"), &o), on(PathName::new("mesh2.admin", "2").unwrap(), None, &o)]);
+        let replace = |name: PathName, o: &Topology| {
+            let node: PathName = name.clone();
+            let exact = o.node(&node).unwrap();
+            let executable = Some(exe("b", exact.kind));
             let b = birth(name, o);
-            vec![BuildOperation::DeleteLiveNode { node: node.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }) }, BuildOperation::CreateNode { node, over: Some(b), executable, entry: None }]
+            vec![BuildOperation::DeleteLiveNode { mesh: exact.mesh.clone(), kind: exact.kind, node: node.clone(), exited: None, birth: Some(crate::build::PinnedBirth { kind: exact.kind, mesh: exact.mesh.clone(), node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }) }, BuildOperation::CreateNode { mesh: exact.mesh.clone(), kind: exact.kind, node, over: Some(b), executable, entry: None }]
         };
-        let all: Vec<BuildOperation> = ["mesh1.admin.2", "mesh1.admin.1", "mesh1.rpc.2", "mesh2.admin.2", "mesh2.admin.1", "mesh2.rpc.1"].iter().flat_map(|p| replace(p, &o)).collect();
+        let all: Vec<BuildOperation> = [PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh2.admin", "2").unwrap(), PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap()].iter().flat_map(|p| replace(p.clone(), &o)).collect();
         assert_eq!(replacement_plan(&next, &o, &recorded, vec![]), all, "non-primary admins, the primary admin, then each type non-primary before primary; the member on its entry is left alone");
         assert_eq!(plan(&next, &o, None).operations, vec![], "a Build that does not plan replacements plans none");
 
-        let step = |attempt: u32, operation: &str, step: &str, output: Option<serde_json::Value>| BuildStepReceipt {
+        let step = |attempt: u32, operation: &rdm_core::OperationId, step: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
-            operation: operation.into(),
+            operation: operation.clone(),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output,
             executor: None,
         };
-        let deleted = |attempt: u32, name: &str, b: &crate::build::ExitedBirth| {
-            let op = rdm_core::LifecycleOp { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), build_id: "b1".into(), attempt, operation: format!("node.delete:{name}"), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), name: name.parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-            step(attempt, &format!("node.delete:{name}"), "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
+        let deleted = |attempt: u32, name: PathName, mesh: &str, kind: NodeKind, b: &crate::build::ExitedBirth| {
+            let op = rdm_core::LifecycleOp { mesh: mesh.to_owned(), kind, build_id: "b1".into(), attempt, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), name: name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+            step(attempt, &rdm_core::OperationId::node("node.delete", &b.node_id), "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
         };
         // The executor lost after mesh1.admin.2's node.deleted: its create alone is owed, over the deleted
         // birth, launching its entry's executable; the view no longer holds it, and the generic create does not plan it.
-        let gone = birth("mesh1.admin.2", &o);
+        let gone = birth(PathName::new("mesh1.admin", "2").unwrap(), &o);
         let mut after_delete = o.clone();
-        after_delete.nodes.retain(|n| n.name.to_string() != "mesh1.admin.2");
-        let receipts = vec![deleted(1, "mesh1.admin.2", &gone), step(1, "node.delete:mesh1.admin.2", "Complete", None)];
+        after_delete.nodes.retain(|n| n.name.clone() != PathName::new("mesh1.admin", "2").unwrap());
+        let receipts = vec![deleted(1, PathName::new("mesh1.admin", "2").unwrap(), "mesh1", NodeKind::NodeAdmin, &gone), step(1, &rdm_core::OperationId::node("node.delete", &gone.node_id), "Complete", None)];
         let owed = replacement_plan(&next, &after_delete, &recorded, receipts.clone());
-        assert_eq!(owed[0], BuildOperation::CreateNode { node: "mesh1.admin.2".parse().unwrap(), over: Some(gone.clone()), executable: Some(exe("b", NodeKind::NodeAdmin)), entry: None }, "{owed:?}");
-        assert_eq!(owed.iter().filter(|op| op.key() == "node.create:mesh1.admin.2").count(), 1, "one create of the member, the replacement's: {owed:?}");
+        assert_eq!(owed[0], BuildOperation::CreateNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.admin", "2").unwrap(), over: Some(gone.clone()), executable: Some(exe("b", NodeKind::NodeAdmin)), entry: None }, "{owed:?}");
+        assert_eq!(owed.iter().filter(|op| op.key() == rdm_core::OperationId::location("node.create", &PathName::new("mesh1.admin", "2").unwrap())).count(), 1, "one create of the member, the replacement's: {owed:?}");
         assert_eq!(owed[1..], all[2..], "the rest as before");
         // Killed after the successor's check-in and before its receipt: the successor is live on its
         // entry's sha, and nothing remains for it.
-        let mut successor = n("mesh1.admin.2", R, false);
+        let mut successor = n(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, false);
         successor.node_id = NodeId::mint();
         let mut live_again = after_delete.clone();
         live_again.nodes.push(successor.clone());
         let mut on_entry = recorded.clone();
-        on_entry.insert("mesh1.admin.2".parse().unwrap(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
+        on_entry.insert(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
         assert_eq!(replacement_plan(&next, &live_again, &on_entry, receipts.clone()), all[2..].to_vec(), "a live successor on its entry is the member");
         // Its create receipted: never replaced again, whatever its row reads.
         let mut done = receipts;
-        done.push(step(2, "node.create:mesh1.admin.2", "Complete", None));
+        done.push(step(2, &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.admin", "2").unwrap()), "Complete", None));
         assert_eq!(replacement_plan(&next, &live_again, &recorded, done), all[2..].to_vec(), "no member is replaced twice");
     }
 
@@ -2779,26 +2848,26 @@ mod tests {
         use crate::build_state::{BuildStepReceipt, StepOutcome};
         use NodeStatus::Ready as R;
         let cur = t(&[("mesh2", 2, 1)]);
-        let nodes = vec![n("mesh2.admin.1", R, true), n("mesh2.admin.2", R, false), n("mesh2.rpc.1", R, true)];
+        let nodes = vec![n(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, R, false), n(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, R, true)];
         let o = observed(nodes, &["mesh2"]);
         let next = on_entries(&cur, "b");
-        let path: PathName = "mesh2.rpc.1".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
         let node = o.node(&path).unwrap().clone();
         let birth = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().unwrap() };
-        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.name.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.name.kind.name())) })).collect();
+        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.kind.name())) })).collect();
         let step = |s: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt: 1,
-            operation: "node.delete:mesh2.rpc.1".into(),
+            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()),
             step: s.into(),
             outcome: StepOutcome::Complete,
             output,
             executor: None,
         };
-        let op = rdm_core::LifecycleOp { mesh: path.mesh.clone(), build_id: "b1".into(), attempt: 1, operation: "node.delete:mesh2.rpc.1".into(), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".to_owned(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let receipts = vec![step("NodeDeleting", Some(serde_json::to_value(op).unwrap())), step("StopNode", None), step("AwaitNodeLeft", None), step("TerminateRuntime", None)];
-        let create = BuildOperation::CreateNode { node: path.clone(), over: Some(birth.clone()), executable: Some(exe("b", NodeKind::RpcNode)), entry: None };
+        let create = BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), node: path.clone(), over: Some(birth.clone()), executable: Some(exe("b", NodeKind::RpcNode)), entry: None };
         let mut gone = o.clone();
         gone.nodes.retain(|n| n.name != path);
         let mut leaving = o.clone();
@@ -2808,8 +2877,8 @@ mod tests {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![create.clone()], "the row Deleted: the remaining work is the create");
         }
         // The row still live, naming the birth on its old sha: the delete of that exact birth is finished, then the create.
-        recorded.insert(path.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
-        let finish = BuildOperation::DeleteNode { node: path.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() };
+        recorded.insert(path.clone(), RecordedRow { mesh: "mesh2".into(), kind: NodeKind::RpcNode, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
+        let finish = BuildOperation::DeleteNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), node: path.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() };
         for view in [&gone, &leaving] {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![finish.clone(), create.clone()], "the row live: the delete is finished, then the create");
         }
@@ -2823,14 +2892,14 @@ mod tests {
     #[test]
     fn the_members_off_their_entries_are_named_until_each_row_records_its_sha() {
         let next = on_entries(&t(&[("mesh1", 2, 1)]), "b");
-        let row = |tag: Option<&str>, kind: &str| RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
-        let mut recorded: Recorded = [("mesh1.admin.1".parse().unwrap(), row(Some("b"), "node_admin")), ("mesh1.admin.2".parse().unwrap(), row(None, "node_admin")), ("mesh1.rpc.1".parse().unwrap(), row(Some("a"), "rpc_node"))].into();
-        assert_eq!(paths_owed_replacement(&next, &recorded).iter().map(ToString::to_string).collect::<Vec<_>>(), ["mesh1.admin.2", "mesh1.rpc.1"]);
-        recorded.insert("mesh1.admin.2".parse().unwrap(), row(Some("b"), "node_admin"));
-        recorded.insert("mesh1.rpc.1".parse().unwrap(), row(Some("b"), "rpc_node"));
+        let row = |tag: Option<&str>, kind: &str| RecordedRow { mesh: "mesh1".into(), kind: if kind == "node_admin" { NodeKind::NodeAdmin } else { NodeKind::RpcNode }, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
+        let mut recorded: Recorded = [(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), row(Some("b"), "node_admin")), (rdm_core::PathName::new("mesh1.admin", "2").unwrap(), row(None, "node_admin")), (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), row(Some("a"), "rpc_node"))].into();
+        assert_eq!(paths_owed_replacement(&next, &recorded).iter().cloned().collect::<Vec<_>>(), [PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()]);
+        recorded.insert(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), row(Some("b"), "node_admin"));
+        recorded.insert(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), row(Some("b"), "rpc_node"));
         assert_eq!(paths_owed_replacement(&next, &recorded), Vec::<PathName>::new());
-        recorded.remove(&"mesh1.rpc.1".parse::<PathName>().unwrap());
-        assert_eq!(paths_owed_replacement(&next, &recorded).iter().map(ToString::to_string).collect::<Vec<_>>(), ["mesh1.rpc.1"], "a path no live row is written at is not on its entry");
+        recorded.remove(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
+        assert_eq!(paths_owed_replacement(&next, &recorded).iter().cloned().collect::<Vec<_>>(), [PathName::new("mesh1.rpc", "1").unwrap()], "a path no live row is written at is not on its entry");
         assert_eq!(paths_owed_replacement(&t(&[("mesh1", 2, 1)]), &Recorded::new()), Vec::<PathName>::new(), "no entry names one, no blocker");
     }
 
@@ -2840,10 +2909,10 @@ mod tests {
     }
 
     /// `path`'s entry in a complete-topology request: its kind's default create spec on `tag`'s executable.
-    fn entry(path: &str, tag: Option<&str>) -> NodeSpec {
-        let p: PathName = path.parse().unwrap();
-        let executable = tag.map(|t| exe(t, p.kind));
-        NodeSpec { executable, ..NodeSpec::default_for(p.clone(), &p.mesh, p.kind) }
+    fn entry(path: PathName, mesh: &str, kind: NodeKind, tag: Option<&str>) -> NodeSpec {
+        let p: PathName = path.clone();
+        let executable = tag.map(|t| exe(t, kind));
+        NodeSpec { executable, ..NodeSpec::default_for(p.clone(), mesh, kind) }
     }
 
     fn reconcile(nodes: Vec<NodeSpec>) -> TopologyChange {
@@ -2852,11 +2921,11 @@ mod tests {
 
     /// What the rows record: every live member of `o` on `tag`'s executable of its kind.
     fn rows_on(o: &Topology, tag: &str) -> Recorded {
-        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.name.kind.name())) })).collect()
+        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.kind.name())) })).collect()
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "the complete topology, an array of nodes,
-    /// each identified by its `path.name` ... From the accepted result: a node left out is removed; one added
+    /// each identified by its `(path, name)` ... From the accepted result: a node left out is removed; one added
     /// is created ... A mesh named for the first time comes into being with the create of its first
     /// node-admin; a mesh absent from the request is mesh.delete; a request that ... lists no nodes at all, is
     /// refused by name pointing to fabric.delete ... a created path whose config names no executable is
@@ -2869,28 +2938,28 @@ mod tests {
     #[test]
     fn a_complete_topology_request_compiles_to_exactly_its_listed_paths_and_refuses_by_name() {
         let mut cur = t(&[("mesh1", 2, 3), ("mesh3", 1, 0)]);
-        let held: PathName = "mesh1.rpc.1".parse().unwrap();
+        let held: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         cur.meshes.get_mut("mesh1").unwrap().spec_by_path.get_mut(&held).unwrap().executable = Some(exe("a", NodeKind::RpcNode));
-        let request = vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), entry("mesh1.rpc.1", None), entry("mesh1.rpc.2", Some("b")), entry("mesh2.admin.1", Some("b")), entry("mesh2.rpc.1", Some("b"))];
+        let request = vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None), entry(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("b")), entry(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Some("b")), entry(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some("b"))];
         let next = compile(&cur, &reconcile(request), &mn()).unwrap();
         assert_eq!(next.meshes.keys().collect::<Vec<_>>(), ["mesh1", "mesh2"], "mesh3, left out, is gone (its mesh.delete)");
-        assert_eq!(paths(next.mesh("mesh1").unwrap()), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2"], "mesh1.rpc.3, left out, is removed");
+        assert_eq!(paths(next.mesh("mesh1").unwrap()), [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "2").unwrap()], "mesh1.rpc.3, left out, is removed");
         assert_eq!(next.mesh("mesh1").unwrap().mesh_id, cur.mesh("mesh1").unwrap().mesh_id, "a kept mesh keeps its id");
         assert!(next.meshes.values().all(|m| m.mesh_id != next.mesh("mesh2").unwrap().mesh_id || m.name == "mesh2") && cur.meshes.values().all(|m| m.mesh_id != next.mesh("mesh2").unwrap().mesh_id), "mesh2 enters under an id of its own");
-        assert_eq!(paths(next.mesh("mesh2").unwrap()), ["mesh2.admin.1", "mesh2.rpc.1"], "a mesh named for the first time, with its first node-admin");
-        let config = |p: &str| next.mesh(&p.parse::<PathName>().unwrap().mesh).unwrap().spec(&p.parse().unwrap()).unwrap().executable.clone();
-        assert_eq!(config("mesh1.rpc.1"), Some(exe("a", NodeKind::RpcNode)), "a held path listed with none keeps its entry's");
-        assert_eq!(config("mesh1.rpc.2"), Some(exe("b", NodeKind::RpcNode)), "a held path's entry takes the executable the request names");
-        assert_eq!(config("mesh1.admin.1"), None, "a held path whose entry named none and that the request names none for stays as it was: nothing to replace");
-        assert_eq!(config("mesh2.admin.1"), Some(exe("b", NodeKind::NodeAdmin)));
+        assert_eq!(paths(next.mesh("mesh2").unwrap()), [PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap()], "a mesh named for the first time, with its first node-admin");
+        let config = |p: PathName| next.node_spec(&p.clone()).unwrap().executable.clone();
+        assert_eq!(config(PathName::new("mesh1.rpc", "1").unwrap()), Some(exe("a", NodeKind::RpcNode)), "a held path listed with none keeps its entry's");
+        assert_eq!(config(PathName::new("mesh1.rpc", "2").unwrap()), Some(exe("b", NodeKind::RpcNode)), "a held path's entry takes the executable the request names");
+        assert_eq!(config(PathName::new("mesh1.admin", "1").unwrap()), None, "a held path whose entry named none and that the request names none for stays as it was: nothing to replace");
+        assert_eq!(config(PathName::new("mesh2.admin", "1").unwrap()), Some(exe("b", NodeKind::NodeAdmin)));
         assert_eq!(next.validate(), Ok(()));
         for (request, want) in [
             (vec![], BuildReject::NoNodeListed),
-            (vec![entry("mesh1.admin.1", None), entry("mesh1.rpc.4", None)], BuildReject::ExecutableMissing { node: "mesh1.rpc.4".into() }),
-            (vec![entry("mesh1.admin.1", None), entry("mesh2.admin.1", None)], BuildReject::ExecutableMissing { node: "mesh2.admin.1".into() }),
-            (vec![entry("mesh1.admin.1", None), entry("mesh1.admin.1", Some("b"))], BuildReject::NodeNamedTwice { node: "mesh1.admin.1".into() }),
-            (vec![entry("mesh1.admin.1", None), entry("mesh1.rpc.1.old", Some("b"))], BuildReject::UnknownNode { node: "mesh1.rpc.1.old".into(), step: None }),
-            (vec![entry("mesh1.admin.1", None), entry("mesh2.rpc.1", Some("b"))], BuildReject::MeshWithoutAdmin { mesh: "mesh2".into() }),
+            (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, None)], BuildReject::ExecutableMissing { node: rdm_core::PathName::new("mesh1.rpc", "4").unwrap() }),
+            (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, None)], BuildReject::ExecutableMissing { node: rdm_core::PathName::new("mesh2.admin", "1").unwrap() }),
+            (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Some("b"))], BuildReject::NodeNamedTwice { node: rdm_core::PathName::new("mesh1.admin", "1").unwrap() }),
+            (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.rpc", "1-old").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("b"))], BuildReject::UnknownNode { node: PathName::new("mesh1.rpc", "1-old").unwrap(), step: None }),
+            (vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Some("b"))], BuildReject::MeshWithoutAdmin { mesh: "mesh2".into() }),
         ] {
             assert_eq!(compile(&cur, &reconcile(request.clone()), &mn()), Err(want), "{request:?}");
         }
@@ -2898,7 +2967,7 @@ mod tests {
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: the request is "an array of nodes, each
-    /// identified by its `path.name` ... with `tags`, `storage`, `placement` and `executable`";
+    /// identified by its `(path, name)` ... with `tags`, `storage`, `placement` and `executable`";
     /// node-rpc-envelope.md node.tags: "A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading
     /// '.'"; build.md §1, Q166: "The reconciler compares each node's entry with what the node's row records
     /// and applies every property that differs"): a created path's entry keeps the tag labels the request
@@ -2910,18 +2979,18 @@ mod tests {
     #[test]
     fn a_request_entrys_tags_stand_on_its_entry_and_a_label_outside_the_grammar_is_refused_by_name() {
         let cur = t(&[("mesh1", 2, 3)]);
-        let tagged = |path: &str, tags: &[&str]| NodeSpec { tags: tags.iter().map(|t| t.to_string()).collect(), ..entry(path, Some("b")) };
-        let next = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_a", "v1.2~rc"])]), &mn()).unwrap();
-        let p: PathName = "mesh1.rpc.4".parse().unwrap();
+        let tagged = |path: PathName, tags: &[&str]| NodeSpec { tags: tags.iter().map(|t| t.to_string()).collect(), ..entry(path, "mesh1", NodeKind::RpcNode, Some("b")) };
+        let next = compile(&cur, &reconcile(vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), tagged(PathName::new("mesh1.rpc", "4").unwrap(), &["zone_a", "v1.2~rc"])]), &mn()).unwrap();
+        let p: PathName = rdm_core::PathName::new("mesh1.rpc", "4").unwrap();
         assert_eq!(next.mesh("mesh1").unwrap().spec(&p).unwrap().tags, ["v1.2~rc".to_string(), "zone_a".to_string()].into(), "the created path's entry keeps its tags");
-        let again = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &[])]), &mn()).unwrap();
+        let again = compile(&next, &reconcile(vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), tagged(PathName::new("mesh1.rpc", "4").unwrap(), &[])]), &mn()).unwrap();
         assert!(again.mesh("mesh1").unwrap().spec(&p).unwrap().tags.is_empty(), "a held path takes the request's tags: none");
-        let same = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_a", "v1.2~rc"])]), &mn()).unwrap();
+        let same = compile(&next, &reconcile(vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), tagged(PathName::new("mesh1.rpc", "4").unwrap(), &["zone_a", "v1.2~rc"])]), &mn()).unwrap();
         assert_eq!(same, next, "the same request changes nothing");
-        let other = compile(&next, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), tagged("mesh1.rpc.4", &["zone_b"])]), &mn()).unwrap();
+        let other = compile(&next, &reconcile(vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), tagged(PathName::new("mesh1.rpc", "4").unwrap(), &["zone_b"])]), &mn()).unwrap();
         assert_eq!(other.mesh("mesh1").unwrap().spec(&p).unwrap().tags, ["zone_b".to_string()].into(), "another request's labels stand on the entry");
-        let refused = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), tagged("mesh1.rpc.4", &["Zone A"])]), &mn());
-        assert!(matches!(&refused, Err(BuildReject::TagsRefused { node, .. }) if node == "mesh1.rpc.4"), "{refused:?}");
+        let refused = compile(&cur, &reconcile(vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), tagged(PathName::new("mesh1.rpc", "4").unwrap(), &["Zone A"])]), &mn());
+        assert!(matches!(&refused, Err(BuildReject::TagsRefused { node, .. }) if node == &rdm_core::PathName::new("mesh1.rpc", "4").unwrap()), "{refused:?}");
         assert_eq!(refused.unwrap_err().reason(), "tags-refused");
     }
 
@@ -2944,14 +3013,14 @@ mod tests {
     fn a_recovered_entry_preserves_later_properties_and_finishes_owed_metadata() {
         use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
         let mut topology = t(&[("mesh1", 1, 1)]);
-        let path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let persistent = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
         topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec {
             config: [("source".into(), "entry".into())].into(), tags: ["entry".into()].into(),
             storage_persistence: persistent, ..NodeSpec::default_for(path.clone(), "mesh1", NodeKind::RpcNode)
         }).unwrap();
         let build_id = property_build_id();
-        let mut recorded: Recorded = [(path.clone(), RecordedRow {
+        let mut recorded: Recorded = [(path.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode,
             node_id: NodeId::mint(), sha256: None,
             config: Some([("source".into(), "node".into())].into()),
             tags: Some(["node".into()].into()),
@@ -2959,7 +3028,7 @@ mod tests {
             applied: [rdm_core::properties::PropertyApplication::entry(&build_id, &path)].into(),
         })].into();
         assert_eq!(properties_owed(&build_id, &topology, &recorded, &[], &[]),
-            vec![BuildOperation::UpdateConfig { node: path.clone(), entry: None }],
+            vec![BuildOperation::UpdateConfig { node_id: recorded[&path].node_id.clone(), kind: NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), entry: None }],
             "a missing metadata completion is still owed, with no tag replay");
         recorded.get_mut(&path).unwrap().storage_persistence = Some(persistent);
         assert!(properties_owed(&build_id, &topology, &recorded, &[], &[]).is_empty(),
@@ -2973,26 +3042,26 @@ mod tests {
         use crate::build_state::{BuildStepReceipt, StepOutcome};
         use rdm_core::meta::{PersistentDisposition, StorageMeta};
         let cur = t(&[("mesh1", 1, 1)]);
-        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
-        let admin: PathName = "mesh1.admin.1".parse().unwrap();
+        let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let admin: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let mut topology = cur.clone();
         let persistent = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let zone = |z: &str| [("zone".to_string(), z.to_string())].into_iter().collect::<BTreeMap<String, String>>();
         topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec { config: zone("b"), tags: labels(&["x"]), storage_persistence: persistent, ..NodeSpec::default_for(rpc.clone(), "mesh1", NodeKind::RpcNode) }).unwrap();
-        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage), placement: Some(Default::default()) };
+        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage), placement: Some(Default::default()) };
         let mut recorded: Recorded = [(rpc.clone(), row(zone("a"), labels(&["y"]), StorageMeta::Ephemeral))].into();
-        recorded.insert(admin.clone(), RecordedRow { applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None, placement: None });
-        let all = vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }, BuildOperation::CreateTags { node: rpc.clone(), labels: labels(&["x"]) }, BuildOperation::DeleteTags { node: rpc.clone(), labels: labels(&["y"]) }];
+        recorded.insert(admin.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None, placement: None });
+        let all = vec![BuildOperation::UpdateConfig { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), entry: None }, BuildOperation::CreateTags { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["x"]) }, BuildOperation::DeleteTags { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["y"]) }];
         assert_eq!(properties_owed(&property_build_id(), &topology, &recorded, &[], &[]), all, "each property that differs, by its own operation");
-        assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), ["node.config.update:mesh1.rpc.1", "node.tag.create:mesh1.rpc.1", "node.tag.delete:mesh1.rpc.1"]);
+        assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), [rdm_core::OperationId::node("node.config.update", &recorded[&rpc].node_id), rdm_core::OperationId::node("node.tag.create", &recorded[&rpc].node_id), rdm_core::OperationId::node("node.tag.delete", &recorded[&rpc].node_id)]);
         let storage_only: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), StorageMeta::Ephemeral))].into();
-        assert_eq!(properties_owed(&property_build_id(), &topology, &storage_only, &[], &[]), vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }], "a storage-only difference is the config op's row write");
+        assert_eq!(properties_owed(&property_build_id(), &topology, &storage_only, &[], &[]), vec![BuildOperation::UpdateConfig { node_id: storage_only[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), entry: None }], "a storage-only difference is the config op's row write");
         let same: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), persistent))].into();
         assert_eq!(properties_owed(&property_build_id(), &topology, &same, &[], &[]), vec![], "nothing differs");
-        let complete = BuildStepReceipt { mesh: None, build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), attempt: 1, operation: "node.config.update:mesh1.rpc.1".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+        let complete = BuildStepReceipt { mesh: None, build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), attempt: 1, operation: rdm_core::OperationId::node("node.config.update", &recorded[&rpc].node_id), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
         assert_eq!(properties_owed(&property_build_id(), &topology, &recorded, &[complete], &[]), all[1..].to_vec(), "a Complete operation is not planned again");
-        let created = [BuildOperation::CreateNode { node: rpc.clone(), over: None, executable: None, entry: None }];
+        let created = [BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), over: None, executable: None, entry: None }];
         assert_eq!(properties_owed(&property_build_id(), &topology, &recorded, &[], &created), vec![], "a path the plan creates is the create's");
         // An attempt's plan through the journal and back: the operations keep their names.
         let json = serde_json::to_value(&all).unwrap();
@@ -3020,28 +3089,28 @@ mod tests {
     #[test]
     fn a_property_this_build_applied_is_not_applied_again_and_a_later_write_stands() {
         let cur = t(&[("mesh1", 1, 1)]);
-        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
+        let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
-        let own: Recorded = [(rpc.clone(), RecordedRow { applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) })].into();
-        let create = "node.create:mesh1.rpc.1";
-        let claimed = vec![receipt(1, create, "AllocateIdentity", None), receipt(1, create, "PrepareStorage", None), receipt(1, create, "Complete", None)];
+        let own: Recorded = [(rpc.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) })].into();
+        let create = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
+        let claimed = vec![receipt(1, &create, "AllocateIdentity", None), receipt(1, &create, "PrepareStorage", None), receipt(1, &create, "Complete", None)];
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &claimed, &[]), vec![], "the create's claim applied the entry: the node's own writes since stand");
-        let cut = vec![receipt(1, create, "AllocateIdentity", None), receipt(1, create, "PrepareStorage", None)];
+        let cut = vec![receipt(1, &create, "AllocateIdentity", None), receipt(1, &create, "PrepareStorage", None)];
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &cut, &[]), vec![], "an executor lost after the claim: the claim applied the entry all the same");
-        let unclaimed = vec![receipt(1, create, "AllocateIdentity", None)];
-        let all = vec![BuildOperation::UpdateConfig { node: rpc.clone(), entry: None }, BuildOperation::DeleteTags { node: rpc.clone(), labels: labels(&["y"]) }];
+        let unclaimed = vec![receipt(1, &create, "AllocateIdentity", None)];
+        let all = vec![BuildOperation::UpdateConfig { node_id: own[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), entry: None }, BuildOperation::DeleteTags { node_id: own[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["y"]) }];
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &unclaimed, &[]), all, "a create that never claimed the name applied nothing");
-        let untagged = vec![receipt(1, "node.tag.delete:mesh1.rpc.1", "Complete", None)];
+        let untagged = vec![receipt(1, &rdm_core::OperationId::node("node.tag.delete", &own[&rpc].node_id), "Complete", None)];
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &untagged, &[]), all[..1].to_vec(), "the label this Build deleted, written again since, stands; the config it never applied is applied");
         let b = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let successor = own[&rpc].node_id.clone();
-        let minted = |id: &NodeId| receipt(2, create, "AllocateIdentity", Some(serde_json::json!({ "node_id": id.as_str() })));
-        let replaced = vec![deleted_receipt(1, "mesh1.rpc.1", &b), minted(&successor), receipt(2, create, "PrepareStorage", None), receipt(2, create, "Complete", None)];
+        let minted = |id: &NodeId| receipt(2, &create, "AllocateIdentity", Some(serde_json::json!({ "node_id": id.as_str() })));
+        let replaced = vec![deleted_receipt(1, PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode, &b), minted(&successor), receipt(2, &create, "PrepareStorage", None), receipt(2, &create, "Complete", None)];
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &replaced, &[]), vec![], "a replacement's successor's claim wrote its entry's properties: its own writes since stand");
-        let other = vec![deleted_receipt(1, "mesh1.rpc.1", &b), minted(&NodeId::mint()), receipt(2, create, "PrepareStorage", None)];
+        let other = vec![deleted_receipt(1, PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode, &b), minted(&NodeId::mint()), receipt(2, &create, "PrepareStorage", None)];
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &other, &[]), all, "a create whose minted node is not the row's proves nothing of it: the entry's are applied");
-        let unnamed = vec![deleted_receipt(1, "mesh1.rpc.1", &b), receipt(2, create, "PrepareStorage", None)];
+        let unnamed = vec![deleted_receipt(1, PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode, &b), receipt(2, &create, "PrepareStorage", None)];
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &unnamed, &[]), all, "a replacement's create that recorded no identity proves nothing: the entry's are applied");
         assert_eq!(properties_owed(&property_build_id(), &cur, &own, &[], &[]), all, "a later Build applies the entry's config and tags");
     }
@@ -3052,16 +3121,16 @@ mod tests {
     #[test]
     fn a_created_paths_config_is_on_its_entry() {
         let cur = t(&[("mesh1", 2, 3)]);
-        let configured = |config: BTreeMap<String, String>| NodeSpec { config, ..entry("mesh1.rpc.4", Some("b")) };
+        let configured = |config: BTreeMap<String, String>| NodeSpec { config, ..entry(PathName::new("mesh1.rpc", "4").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("b")) };
         let zone: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
-        let next = compile(&cur, &reconcile(vec![entry("mesh1.admin.1", None), entry("mesh1.admin.2", None), configured(zone.clone())]), &mn()).unwrap();
-        let p: PathName = "mesh1.rpc.4".parse().unwrap();
+        let next = compile(&cur, &reconcile(vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), entry(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, None), configured(zone.clone())]), &mn()).unwrap();
+        let p: PathName = rdm_core::PathName::new("mesh1.rpc", "4").unwrap();
         assert_eq!(next.mesh("mesh1").unwrap().spec(&p).unwrap().config, zone, "the created path's entry carries its config");
         assert_eq!(serde_json::from_value::<FabricTopology>(serde_json::to_value(&next).unwrap()).unwrap(), next, "the journal's form keeps it");
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 5, R4 arm A: "a mesh whose only node-admin is to
-    /// be replaced first gets a second node-admin on the new executable at a new `path.name` of the
+    /// be replaced first gets a second node-admin on the new executable at a new `(path, name)` of the
     /// node-admin type in that mesh (the next free one, `mesh1.admin.2`), whose entry the compiler adds to
     /// the accepted topology at acceptance, so every attempt and every read holds it"): a request naming
     /// another executable for mesh1's only node-admin than its row records adds `mesh1.admin.2` on the new
@@ -3072,18 +3141,18 @@ mod tests {
     fn a_request_replacing_a_meshs_only_admin_adds_a_second_on_the_new_executable_at_acceptance() {
         use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 1, 1), ("mesh2", 2, 0)]);
-        let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.rpc.1", R, true), n("mesh2.admin.1", R, true), n("mesh2.admin.2", R, false)], &["mesh1", "mesh2"]);
+        let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true), n(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, R, false)], &["mesh1", "mesh2"]);
         let rows = rows_on(&o, "a");
-        let request = |admin: &str| reconcile(vec![entry("mesh1.admin.1", Some(admin)), entry("mesh1.rpc.1", Some("a")), entry("mesh2.admin.1", Some("b")), entry("mesh2.admin.2", Some("b"))]);
+        let request = |admin: &str| reconcile(vec![entry(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Some(admin)), entry(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some("a")), entry(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Some("b")), entry(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Some("b"))]);
         let next = compile_against(&cur, &request("b"), &o, &rows).unwrap();
-        assert_eq!(paths(next.mesh("mesh1").unwrap()), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"], "mesh1 gains its second node-admin at acceptance");
-        assert_eq!(next.mesh("mesh1").unwrap().spec(&"mesh1.admin.2".parse().unwrap()).unwrap().executable, Some(exe("b", NodeKind::NodeAdmin)), "on the new executable");
-        assert_eq!(paths(next.mesh("mesh2").unwrap()), ["mesh2.admin.1", "mesh2.admin.2"], "a mesh with two admins gains none");
+        assert_eq!(paths(next.mesh("mesh1").unwrap()), [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()], "mesh1 gains its second node-admin at acceptance");
+        assert_eq!(next.mesh("mesh1").unwrap().spec(&rdm_core::PathName::new("mesh1.admin", "2").unwrap()).unwrap().executable, Some(exe("b", NodeKind::NodeAdmin)), "on the new executable");
+        assert_eq!(paths(next.mesh("mesh2").unwrap()), [PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.admin", "2").unwrap()], "a mesh with two admins gains none");
         let same = compile_against(&cur, &request("a"), &o, &rows).unwrap();
-        assert_eq!(paths(same.mesh("mesh1").unwrap()), ["mesh1.admin.1", "mesh1.rpc.1"], "an admin on the executable its row records is not replaced: no second admin");
+        assert_eq!(paths(same.mesh("mesh1").unwrap()), [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()], "an admin on the executable its row records is not replaced: no second admin");
         let ops = replacement_plan(&next, &o, &rows, vec![]);
-        let created = ops.iter().position(|op| op == &BuildOperation::CreateNode { node: "mesh1.admin.2".parse().unwrap(), over: None, executable: Some(exe("b", NodeKind::NodeAdmin)), entry: None }).unwrap_or_else(|| panic!("the added admin is created: {ops:?}"));
-        let replaced = ops.iter().position(|op| op == &delete_of(&o, "mesh1.admin.1")).unwrap_or_else(|| panic!("the original is replaced: {ops:?}"));
+        let created = ops.iter().position(|op| op == &BuildOperation::CreateNode { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".into(), node: rdm_core::PathName::new("mesh1.admin", "2").unwrap(), over: None, executable: Some(exe("b", NodeKind::NodeAdmin)), entry: None }).unwrap_or_else(|| panic!("the added admin is created: {ops:?}"));
+        let replaced = ops.iter().position(|op| op == &delete_of(&o, PathName::new("mesh1.admin", "1").unwrap())).unwrap_or_else(|| panic!("the original is replaced: {ops:?}"));
         assert!(created < replaced, "the added admin is created first: {ops:?}");
     }
 
@@ -3098,19 +3167,19 @@ mod tests {
     fn a_later_attempt_of_the_build_that_created_a_node_keeps_the_config_the_node_wrote_since() {
         use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 1, 1)]);
-        let rpc: PathName = "mesh1.rpc.1".parse().unwrap();
-        let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.rpc.1", R, true)], &["mesh1"]);
-        let row = |config: BTreeMap<String, String>| RecordedRow { applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
+        let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true)], &["mesh1"]);
+        let row = |config: BTreeMap<String, String>| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
         let mut recorded: Recorded = [(rpc.clone(), row(port))].into();
-        recorded.insert("mesh1.admin.1".parse().unwrap(), RecordedRow { storage_persistence: None, placement: None, ..row(BTreeMap::new()) });
-        let create = "node.create:mesh1.rpc.1";
-        let attempt1: Vec<_> = ["AllocateIdentity", "PrepareStorage", "DeployRuntime", "WaitForNodeReady", "Complete"].iter().map(|s| receipt(1, create, s, None)).collect();
+        recorded.insert(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), RecordedRow { storage_persistence: None, placement: None, ..row(BTreeMap::new()) });
+        let create = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
+        let attempt1: Vec<_> = ["AllocateIdentity", "PrepareStorage", "DeployRuntime", "WaitForNodeReady", "Complete"].iter().map(|s| receipt(1, &create, s, None)).collect();
         assert_eq!(replacement_plan(&cur, &o, &recorded, attempt1), vec![], "attempt 2 plans nothing: the node's own config stands");
         let mut later = cur.clone();
         let zone = [("zone".to_string(), "b".to_string())].into_iter().collect::<BTreeMap<String, String>>();
         later.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec { config: zone, ..NodeSpec::default_for(rpc.clone(), "mesh1", NodeKind::RpcNode) }).unwrap();
-        assert_eq!(replacement_plan(&later, &o, &recorded, vec![]), vec![BuildOperation::UpdateConfig { node: rpc, entry: None }], "a later Build naming another config applies it");
+        assert_eq!(replacement_plan(&later, &o, &recorded, vec![]), vec![BuildOperation::UpdateConfig { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc, entry: None }], "a later Build naming another config applies it");
     }
 
     /// A Build accepted from `request`'s change over `topology` with `steps`, planned against `o` and `recorded`.
@@ -3133,7 +3202,7 @@ mod tests {
             reason: AttemptReason::Requested,
             action,
             attempt_actions,
-            attempt_executors: Default::default(),
+            attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened: 0,
             failed_at: None,
             completed_at: None,
@@ -3148,7 +3217,7 @@ mod tests {
     /// acceptance"; Q228, decided by Q218 and Q221): a Reconcile accepted on a member whose executable it
     /// changes pins the birth its acceptance saw at that path, and the replacement's delete and the create
     /// over it carry that birth. The birth replaced between acceptance and the delete (recovered at the
-    /// same path.name under a new node id), the delete still carries the acceptance pin, so the executing
+    /// same path and name under a new node id), the delete still carries the acceptance pin, so the executing
     /// mesh-primary refuses it `birth-replaced` and the replacement birth is untouched.
     /// Must NOT happen: the delete pinned to whatever birth the view holds when the attempt is planned.
     #[test]
@@ -3156,40 +3225,40 @@ mod tests {
         use NodeStatus::Ready as R;
         let desired = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Gateway, 1)]);
         let cur = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&desired))].into() };
-        let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.gateway.1", R, true)], &["mesh1"]);
+        let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway, R, true)], &["mesh1"]);
         let rows = rows_on(&o, "a");
-        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
+        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(x.name.clone(), &x.mesh, x.kind, Some(if x.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
         let mut next = compile_against(&cur, &reconcile(request), &o, &rows).unwrap();
         // The acceptance, as the control plane runs it: the replacements owed, then their pins.
         let replacements = replacement_operations(&next, &o, &rows);
         let more = replacement_pins(&replacements, &next.pinned);
         next.pinned.extend(more);
-        let path: PathName = "mesh1.gateway.1".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.gateway", "1").unwrap();
         let seen = crate::build::PinnedBirth::of(o.node(&path).unwrap()).unwrap();
         assert!(next.pinned.iter().any(|(p, b)| *p == path && *b == seen), "the acceptance pins the birth it saw at the replaced path: {:?}", next.pinned);
-        // Recovered at the same path.name before the replacement's delete: a new node id there.
+        // Recovered at the same path and name before the replacement's delete: a new node id there.
         let mut now = o.clone();
         let held = now.nodes.iter_mut().find(|x| x.name == path).unwrap();
         held.node_id = NodeId::mint();
         held.incarnation_id = Some(IncarnationId::mint());
         let replacement = crate::build::PinnedBirth::of(now.node(&path).unwrap()).unwrap();
         let ops = replacement_plan(&next, &now, &rows, vec![]);
-        let delete = ops.iter().find(|op| op.key() == "node.delete:mesh1.gateway.1").unwrap_or_else(|| panic!("the replacement's delete is planned: {ops:?}"));
+        let delete = ops.iter().find(|op| op.key() == rdm_core::OperationId::node("node.delete", &seen.node_id)).unwrap_or_else(|| panic!("the replacement's delete is planned: {ops:?}"));
         let Some(BuildOperation::DeleteLiveNode { birth: Some(carried), .. }) = Some(delete) else { panic!("a replacement's delete composes its stop: {delete:?}") };
         assert_eq!(*carried, seen, "the delete carries the acceptance pin, not the birth the view holds now");
         let create = ops.iter().find_map(|op| match op { BuildOperation::CreateNode { node, over: Some(b), .. } if *node == path => Some(b.clone()), _ => None }).unwrap_or_else(|| panic!("the create over it is planned: {ops:?}"));
         assert_eq!((create.node_id, create.incarnation), (seen.node_id.clone(), seen.incarnation.clone()), "the create is over the pinned birth");
-        let refused = carried.held_in(&now, "node.delete:mesh1.gateway.1", &path).expect_err("the executing mesh-primary refuses the replaced birth");
+        let refused = carried.held_in(&now, &rdm_core::OperationId::node("node.delete", &seen.node_id), &path).expect_err("the executing mesh-primary refuses the replaced birth");
         assert_eq!((refused.reason(), refused.observed.clone()), ("birth-replaced", Some(replacement.clone())));
         assert_eq!(crate::build::PinnedBirth::of(now.node(&path).unwrap()), Some(replacement), "the replacement birth is untouched");
     }
 
-    fn receipt(attempt: u32, operation: &str, step: &str, output: Option<serde_json::Value>) -> crate::build_state::BuildStepReceipt {
+    fn receipt(attempt: u32, operation: &rdm_core::OperationId, step: &str, output: Option<serde_json::Value>) -> crate::build_state::BuildStepReceipt {
         crate::build_state::BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
-            operation: operation.into(),
+            operation: operation.clone(),
             step: step.into(),
             outcome: crate::build_state::StepOutcome::Complete,
             output,
@@ -3197,9 +3266,9 @@ mod tests {
         }
     }
 
-    fn deleted_receipt(attempt: u32, name: &str, b: &crate::build::ExitedBirth) -> crate::build_state::BuildStepReceipt {
-        let op = rdm_core::LifecycleOp { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), build_id: "b1".into(), attempt, operation: format!("node.delete:{name}"), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), name: name.parse().unwrap(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        receipt(attempt, &format!("node.delete:{name}"), "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
+    fn deleted_receipt(attempt: u32, name: PathName, mesh: &str, kind: NodeKind, b: &crate::build::ExitedBirth) -> crate::build_state::BuildStepReceipt {
+        let op = rdm_core::LifecycleOp { mesh: mesh.to_owned(), kind, build_id: "b1".into(), attempt, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), name: name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        receipt(attempt, &rdm_core::OperationId::node("node.delete", &b.node_id), "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 2: "A live node whose row already records its
@@ -3220,34 +3289,35 @@ mod tests {
         let cur = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: ["mesh1", "mesh2"].iter().map(|m| (m.to_string(), MeshTopology::of(&mesh(m)))).collect() };
         let mut nodes = Vec::new();
         for m in ["mesh1", "mesh2"] {
-            nodes.extend([n(&format!("{m}.admin.1"), R, true), n(&format!("{m}.admin.2"), R, false), n(&format!("{m}.broker.1"), R, true), n(&format!("{m}.gateway.1"), R, true), n(&format!("{m}.gateway.2"), R, false), n(&format!("{m}.compute.1"), R, true)]);
+            nodes.extend([n(PathName::new(format!("{m}.admin"), "1").unwrap(), m, NodeKind::NodeAdmin, R, true), n(PathName::new(format!("{m}.admin"), "2").unwrap(), m, NodeKind::NodeAdmin, R, false), n(PathName::new(format!("{m}.broker"), "1").unwrap(), m, NodeKind::Broker, R, true), n(PathName::new(format!("{m}.gateway"), "1").unwrap(), m, NodeKind::Gateway, R, true), n(PathName::new(format!("{m}.gateway"), "2").unwrap(), m, NodeKind::Gateway, R, false), n(PathName::new(format!("{m}.compute"), "1").unwrap(), m, NodeKind::Compute, R, true)]);
         }
         let o = observed(nodes, &["mesh1", "mesh2"]);
         let rows = rows_on(&o, "a");
-        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
+        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(x.name.clone(), &x.mesh, x.kind, Some(if x.kind == NodeKind::Gateway { "b" } else { "a" }))).collect();
         let next = compile_against(&cur, &reconcile(request), &o, &rows).unwrap();
         assert_eq!(next.meshes.iter().map(|(k, m)| (k.clone(), paths(m))).collect::<Vec<_>>(), cur.meshes.iter().map(|(k, m)| (k.clone(), paths(m))).collect::<Vec<_>>(), "the paths are the same");
-        let birth = |name: &str| o.node(&name.parse().unwrap()).map(|x| crate::build::ExitedBirth { node_id: x.node_id.clone(), incarnation: x.incarnation_id.clone().unwrap() }).unwrap();
-        let replace = |name: &str| {
-            let node: PathName = name.parse().unwrap();
+        let birth = |name: PathName| o.node(&name.clone()).map(|x| crate::build::ExitedBirth { node_id: x.node_id.clone(), incarnation: x.incarnation_id.clone().unwrap() }).unwrap();
+        let replace = |name: PathName| {
+            let node: PathName = name.clone();
+            let exact = o.node(&node).unwrap();
             let b = birth(name);
-            vec![BuildOperation::DeleteLiveNode { node: node.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }) }, BuildOperation::CreateNode { node, over: Some(b), executable: Some(exe("b", NodeKind::Gateway)), entry: None }]
+            vec![BuildOperation::DeleteLiveNode { mesh: exact.mesh.clone(), kind: exact.kind, node: node.clone(), exited: None, birth: Some(crate::build::PinnedBirth { kind: exact.kind, mesh: exact.mesh.clone(), node_id: b.node_id.clone(), incarnation: b.incarnation.clone() }) }, BuildOperation::CreateNode { mesh: exact.mesh.clone(), kind: exact.kind, node, over: Some(b), executable: Some(exe("b", NodeKind::Gateway)), entry: None }]
         };
-        let all: Vec<BuildOperation> = ["mesh1.gateway.2", "mesh1.gateway.1", "mesh2.gateway.2", "mesh2.gateway.1"].iter().flat_map(|p| replace(p)).collect();
+        let all: Vec<BuildOperation> = [PathName::new("mesh1.gateway", "2").unwrap(), PathName::new("mesh1.gateway", "1").unwrap(), PathName::new("mesh2.gateway", "2").unwrap(), PathName::new("mesh2.gateway", "1").unwrap()].iter().flat_map(|p| replace(p.clone())).collect();
         assert_eq!(replacement_plan(&next, &o, &rows, vec![]), all, "the gateways alone, each type's non-primary first");
         assert_eq!(plan(&next, &o, None).operations, vec![], "a Build whose change plans no replacement replaces nothing");
-        assert_eq!(paths_owed_replacement(&next, &rows).iter().map(ToString::to_string).collect::<Vec<_>>(), ["mesh1.gateway.1", "mesh1.gateway.2", "mesh2.gateway.1", "mesh2.gateway.2"], "the fabric is ready again only once every gateway's row records its entry's");
+        assert_eq!(paths_owed_replacement(&next, &rows).iter().cloned().collect::<Vec<_>>(), [PathName::new("mesh1.gateway", "1").unwrap(), PathName::new("mesh1.gateway", "2").unwrap(), PathName::new("mesh2.gateway", "1").unwrap(), PathName::new("mesh2.gateway", "2").unwrap()], "the fabric is ready again only once every gateway's row records its entry's");
         // Interrupted after mesh2.gateway.2's successor was created: the rest, never it again.
         let mut after = o.clone();
-        let gone = birth("mesh2.gateway.2");
-        let mut successor = n("mesh2.gateway.2", R, false);
+        let gone = birth(PathName::new("mesh2.gateway", "2").unwrap());
+        let mut successor = n(PathName::new("mesh2.gateway", "2").unwrap(), "mesh2", rdm_core::NodeKind::Gateway, R, false);
         successor.node_id = NodeId::mint();
-        after.nodes.retain(|x| x.name.to_string() != "mesh2.gateway.2");
+        after.nodes.retain(|x| x.name.clone() != PathName::new("mesh2.gateway", "2").unwrap());
         after.nodes.push(successor.clone());
         let mut on = rows.clone();
-        on.insert("mesh2.gateway.2".parse().unwrap(), RecordedRow { applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
-        let done = vec![deleted_receipt(1, "mesh2.gateway.2", &gone), receipt(1, "node.delete:mesh2.gateway.2", "Complete", None), receipt(1, "node.create:mesh2.gateway.2", "Complete", None)];
-        let left: Vec<BuildOperation> = ["mesh1.gateway.2", "mesh1.gateway.1", "mesh2.gateway.1"].iter().flat_map(|p| replace(p)).collect();
+        on.insert(rdm_core::PathName::new("mesh2.gateway", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
+        let done = vec![deleted_receipt(1, PathName::new("mesh2.gateway", "2").unwrap(), "mesh2", NodeKind::Gateway, &gone), receipt(1, &rdm_core::OperationId::node("node.delete", &gone.node_id), "Complete", None), receipt(1, &rdm_core::OperationId::location("node.create", &PathName::new("mesh2.gateway", "2").unwrap()), "Complete", None)];
+        let left: Vec<BuildOperation> = [PathName::new("mesh1.gateway", "2").unwrap(), PathName::new("mesh1.gateway", "1").unwrap(), PathName::new("mesh2.gateway", "1").unwrap()].iter().flat_map(|p| replace(p.clone())).collect();
         assert_eq!(replacement_plan(&next, &after, &on, done.clone()), left, "the next attempt finishes the rest");
         assert_eq!(replacement_plan(&next, &after, &rows, done), left, "a gateway this Build created is never replaced again, whatever a stale row read says");
     }
@@ -3265,27 +3335,27 @@ mod tests {
     fn a_recovery_runs_on_the_rows_executable_and_the_replacement_is_the_next_attempts() {
         use NodeStatus::Ready as R;
         let cur = t(&[("mesh1", 2, 2)]);
-        let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.admin.2", R, false), n("mesh1.rpc.1", R, false), n("mesh1.rpc.2", R, true)], &["mesh1"]);
+        let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, false), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, false), n(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true)], &["mesh1"]);
         let rows = rows_on(&o, "a");
-        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(&x.name.to_string(), Some(if x.name.to_string() == "mesh1.rpc.1" { "b" } else { "a" }))).collect();
+        let request: Vec<NodeSpec> = o.nodes.iter().map(|x| entry(x.name.clone(), &x.mesh, x.kind, Some(if x.name.clone() == PathName::new("mesh1.rpc", "1").unwrap() { "b" } else { "a" }))).collect();
         let next = compile_against(&cur, &reconcile(request), &o, &rows).unwrap();
-        let path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let exited = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let recover = AttemptAction::Recover { path: path.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation.clone(), backbone: false };
+        let recover = AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation.clone(), backbone: false };
         let mut lost = o.clone();
         lost.nodes.retain(|x| x.name != path);
         assert_eq!(
             replacement_build_plan(&next, &lost, &rows, vec![], Some(recover.clone()), [(2, recover.clone())].into()),
-            vec![BuildOperation::DeleteLiveNode { node: path.clone(), exited: Some(exited.clone()), birth: None }, BuildOperation::CreateNode { node: path.clone(), over: Some(exited.clone()), executable: None, entry: None }],
+            vec![BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), exited: Some(exited.clone()), birth: None }, BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), over: Some(exited.clone()), executable: None, entry: None }],
             "the recovery alone, on the row's executable"
         );
         // Recovered by attempt 2 on a: the next attempt replaces it on b.
         let recovered = o.node(&path).unwrap();
-        let steps = vec![deleted_receipt(2, "mesh1.rpc.1", &exited), receipt(2, "node.delete:mesh1.rpc.1", "Complete", None), receipt(2, "node.create:mesh1.rpc.1", "Complete", None)];
+        let steps = vec![deleted_receipt(2, PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode, &exited), receipt(2, &rdm_core::OperationId::node("node.delete", &exited.node_id), "Complete", None), receipt(2, &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap()), "Complete", None)];
         let birth = crate::build::ExitedBirth { node_id: recovered.node_id.clone(), incarnation: recovered.incarnation_id.clone().unwrap() };
         assert_eq!(
             replacement_build_plan(&next, &o, &rows, steps, None, [(2, recover)].into()),
-            vec![BuildOperation::DeleteLiveNode { node: path.clone(), exited: None, birth: Some(crate::build::PinnedBirth { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() }) }, BuildOperation::CreateNode { node: path, over: Some(birth), executable: Some(exe("b", NodeKind::RpcNode)), entry: None }],
+            vec![BuildOperation::DeleteLiveNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path.clone(), exited: None, birth: Some(crate::build::PinnedBirth { kind: recovered.kind, mesh: recovered.mesh.clone(), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() }) }, BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: path, over: Some(birth), executable: Some(exe("b", NodeKind::RpcNode)), entry: None }],
             "the replacement follows as the next attempt's"
         );
     }
@@ -3308,7 +3378,7 @@ mod tests {
     fn a_stored_topology_without_explicit_node_ownership_is_refused_by_name() {
         let old = serde_json::json!({
             "fabric": "fabric1",
-            "meshes": {"mesh1": {"name": "mesh1", "mesh_id": "meshd0000001", "nodes": ["mesh1.admin.1"], "spec_by_path": {
+            "meshes": {"mesh1": {"name": "mesh1", "mesh_id": "meshd0000001", "nodes": [PathName::new("mesh1.admin", "1").unwrap()], "spec_by_path": {
                 "mesh1.admin.1": {"path": "mesh1.admin.1", "storage_persistence": {"persistence": "persistent", "disposition": "preserve"}, "placement": {}}
             }}}
         });
@@ -3320,7 +3390,7 @@ mod tests {
     /// preserves those values and validation refuses a different owning mesh instead of moving it.
     #[test]
     fn a_complete_topology_preserves_explicit_ownership_independently_of_the_path() {
-        let path: PathName = "elsewhere.gateway.north".parse().unwrap();
+        let path: PathName = rdm_core::PathName::new("elsewhere.gateway", "north").unwrap();
         let spec = NodeSpec { executable: Some(exe("worker", NodeKind::Compute)), ..NodeSpec::default_for(path.clone(), "mesh2", NodeKind::Compute) };
         let mut mesh = MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)]));
         mesh.nodes.insert(path.clone());
@@ -3343,7 +3413,7 @@ mod tests {
         let other = duplicate.meshes.get_mut("mesh1").unwrap();
         other.nodes.insert(path.clone());
         other.spec_by_path.insert(path.clone(), NodeSpec::default_for(path.clone(), "mesh1", NodeKind::Compute));
-        assert_eq!(duplicate.validate(), Err(BuildReject::NodeNamedTwice { node: path.to_string() }));
+        assert_eq!(duplicate.validate(), Err(BuildReject::NodeNamedTwice { node: path.clone() }));
         let mut changed = topology.clone();
         changed.meshes.get_mut("mesh2").unwrap().spec_by_path.get_mut(&path).unwrap().kind = NodeKind::Gateway;
         assert!(!same_on_the_rows(&topology, &changed, &Recorded::new()), "a declared kind change changes the topology");
@@ -3352,17 +3422,17 @@ mod tests {
     // @feature: node-replace
     /// CONTRACT: docs/architecture/lifecycles/node-replace.md:30
     /// "1. node[1]: node.connection.delete `{ scope: All }`, then node.mesh.leave.
-    ///  2. node.name.update of node[1] to `<name>.old` ... Then node[1].stop ...
+    ///  2. node.name.update of node[1] to `<name>-old` ... Then node[1].stop ...
     ///  3. node.create of node[2] at `<name>`, free only because the row above moved the key: a re-birth with a new node.id, incarnation and the specified bin."
     #[test]
     fn replace_steps_pin_predecessor_across_rename_leave_successor_create_unpinned_and_resume_from_receipts() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 2)]);
         let o = mn();
-        let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let old_name = name.renamed();
+        let name: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+        let old_name = name.renamed().unwrap();
         let pred = o.node(&name).unwrap();
-        let pred_pin = PinnedBirth {
+        let pred_pin = PinnedBirth { kind: pred.kind, mesh: pred.mesh.clone(),
             node_id: pred.node_id.clone(),
             incarnation: pred.incarnation_id.clone().unwrap(),
         };
@@ -3401,7 +3471,7 @@ mod tests {
             reason: AttemptReason::Steps,
             action: Some(action.clone()),
             attempt_actions: [(3, action.clone())].into(),
-            attempt_executors: Default::default(),
+            attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened: 3,
             failed_at: None,
             completed_at: None,
@@ -3414,27 +3484,27 @@ mod tests {
         assert_eq!(
             initial_ops,
             vec![
-                BuildOperation::Step {
+                BuildOperation::Step { rename_intent: RenameIntent::Ordinary, recipe_step: Some(1), mesh: "mesh1".into(), kind: NodeKind::RpcNode,
                     step: forward_steps[0].clone(),
                     birth: Some(pred_pin.clone()),
                     entry: None,
                 },
-                BuildOperation::Step {
+                BuildOperation::Step { rename_intent: RenameIntent::Ordinary, recipe_step: Some(2), mesh: "mesh1".into(), kind: NodeKind::RpcNode,
                     step: forward_steps[1].clone(),
                     birth: Some(pred_pin.clone()),
                     entry: None,
                 },
-                BuildOperation::Step {
+                BuildOperation::Step { rename_intent: RenameIntent::Replacement { original: name.clone() }, recipe_step: Some(3), mesh: "mesh1".into(), kind: NodeKind::RpcNode,
                     step: forward_steps[2].clone(),
                     birth: Some(pred_pin.clone()),
                     entry: None,
                 },
-                BuildOperation::Step {
+                BuildOperation::Step { rename_intent: RenameIntent::Ordinary, recipe_step: Some(4), mesh: "mesh1".into(), kind: NodeKind::RpcNode,
                     step: forward_steps[3].clone(),
                     birth: Some(pred_pin),
                     entry: None,
                 },
-                BuildOperation::Step {
+                BuildOperation::Step { rename_intent: RenameIntent::Ordinary, recipe_step: Some(5), mesh: "mesh1".into(), kind: NodeKind::RpcNode,
                     step: forward_steps[4].clone(),
                     birth: None,
                     entry: None,
@@ -3442,11 +3512,11 @@ mod tests {
             ]
         );
 
-        let complete = |op: &str| BuildStepReceipt {
+        let complete = |op: &rdm_core::OperationId| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt: 3,
-            operation: op.into(),
+            operation: op.clone(),
             step: "Complete".into(),
             outcome: StepOutcome::Complete,
             output: None,
@@ -3454,9 +3524,9 @@ mod tests {
         };
         let after_rename = plan_for_build(
             &build(vec![
-                complete("node.connection.delete:mesh1.rpc.1"),
-                complete("node.mesh.leave:mesh1.rpc.1"),
-                complete("node.update:mesh1.rpc.1"),
+                complete(&initial_ops[0].key()),
+                complete(&initial_ops[1].key()),
+                complete(&initial_ops[2].key()),
             ]),
             &o,
         )
@@ -3473,18 +3543,18 @@ mod tests {
                 &o
             ),
             Err(BuildReject::StepRepeated {
-                operation: "node.stop:mesh1.rpc.1".into()
+                operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap())
             })
         );
         assert_eq!(
             steps_action(
                 vec![Step::Stop {
-                    node: "mesh1.rpc.9".parse().unwrap(),
+                    node: rdm_core::PathName::new("mesh1.rpc", "9").unwrap(),
                 }],
                 &o
             ),
             Err(BuildReject::UnknownNode {
-                node: "mesh1.rpc.9".into(),
+                node: rdm_core::PathName::new("mesh1.rpc", "9").unwrap(),
                 step: Some(1),
             })
         );

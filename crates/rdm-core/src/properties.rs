@@ -10,8 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct PropertyApplication {
     /// The Build applying the entry.
     pub build_id: String,
-    /// The semantic entry operation within that Build.
-    pub operation: String,
+    /// The entry location, carried as separate path and name fields.
+    /// The receiving record supplies the globally unique node ID.
+    pub location: crate::PathName,
 }
 
 /// One complete entry-owned effect, persisted together with its application identity.
@@ -29,6 +30,6 @@ pub struct EntryProperties {
 impl PropertyApplication {
     /// The one semantic entry operation shared by its config and tag diff steps.
     pub fn entry(build_id: &crate::BuildId, node: &crate::PathName) -> Self {
-        Self { build_id: build_id.to_string(), operation: format!("node.properties.update:{node}") }
+        Self { build_id: build_id.to_string(), location: node.clone() }
     }
 }

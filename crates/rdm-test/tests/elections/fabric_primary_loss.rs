@@ -2,10 +2,14 @@
 //! (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives"; elections §3, §4.1).
 //! The lowest Ready node-admin of its mesh runs fabric recovery and takes no primary role;
 //! node investigation decides what becomes of the lost birth, and node recovery re-creates the
-//! node-admin at its path.name; when that node is Ready the workflow restores it as
+//! node-admin at its separate path and name; when that node is Ready the workflow restores it as
 //! mesh-primary and fabric-primary, and the node records both on its own row.
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
+use rdm_core::PathName;
+
+fn location(node: &Value) -> PathName { serde_json::from_value(node["name"].clone()).expect("separate path and name") }
+fn actor_is(span: &Value, location: &PathName) -> bool { span["attributes"]["node_path"] == location.path && span["attributes"]["node_name"] == location.name }
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
@@ -32,9 +36,9 @@ fn signal(pid: u32, sig: &str) {
     let ok = std::process::Command::new("kill").args([sig, &pid.to_string()]).status().expect("kill runs").success();
     assert!(ok, "kill {sig} {pid}");
 }
-/// The fabric-primary's name and whether it also holds its mesh's role, from a view.
+/// The fabric-primary's node ID and whether it also holds its mesh's role, from a view.
 fn primaries(nodes: &[Value]) -> Option<(String, bool)> {
-    nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| (s(&n["name"]), n["is_primary"] == true))
+    nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| (s(&n["node_id"]), n["is_primary"] == true))
 }
 
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" steps 1-4;
@@ -55,14 +59,15 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let fp = "mesh1.admin.1";
-    let standby = "mesh1.admin.2";
-    let before = estate.node_view(fp).await;
+    let fp = PathName::new("mesh1.admin", "1").unwrap();
+    let standby = PathName::new("mesh1.admin", "2").unwrap();
+    let standby_id = estate.node_view(&standby).await.node_id;
+    let before = estate.node_view(&fp).await;
     let nodes0 = estate.node_values().await;
-    assert_eq!(primaries(&nodes0), Some((fp.to_string(), true)), "the Day-0 admin holds both roles: {nodes0:#?}");
+    assert_eq!(primaries(&nodes0), Some((before.node_id.to_string(), true)), "the Day-0 admin holds both roles: {nodes0:#?}");
     // Control is read through the standby from here: a held admin answers nothing.
-    estate.enter(&Estate::path(standby)).await;
-    let pid = estate.bootstrap_pid().unwrap_or_else(|| panic!("{fp} is the bootstrap admin and the estate holds its pid"));
+    estate.enter_by_id(&standby_id).await;
+    let pid = estate.bootstrap_pid().unwrap_or_else(|| panic!("{fp:?} is the bootstrap admin and the estate holds its pid"));
 
     let held_at = now_ns();
     signal(pid, "-STOP");
@@ -73,12 +78,12 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     let restored = estate
         .until_view("the node re-created at mesh1.admin.1 is Ready, mesh-primary and fabric-primary", floor * 12 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
-            let primaries: Vec<String> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
-            let mesh1_primary: Vec<String> = ns.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true && s(&n["name"]).starts_with("mesh1.")).map(|n| s(&n["name"])).collect();
-            assert!(primaries.iter().all(|h| h == fp), "only the node at {fp} is ever fabric-primary: {primaries:?}");
-            assert!(mesh1_primary.iter().all(|h| h == fp), "only the node at {fp} is ever mesh1's primary: {mesh1_primary:?}");
+            let primaries: Vec<PathName> = ns.iter().filter(|n| n["is_fabric_primary"] == true).map(location).collect();
+            let mesh1_primary: Vec<PathName> = ns.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true && n["mesh"] == "mesh1").map(location).collect();
+            assert!(primaries.iter().all(|h| h == &fp), "only the node at {fp:?} is ever fabric-primary: {primaries:?}");
+            assert!(mesh1_primary.iter().all(|h| h == &fp), "only the node at {fp:?} is ever mesh1's primary: {mesh1_primary:?}");
             ns.iter()
-                .find(|n| n["name"] == fp && s(&n["node_id"]) != before.node_id.to_string() && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true)
+                .find(|n| location(n) == fp && s(&n["node_id"]) != before.node_id.to_string() && n["status"] == "ready" && n["is_fabric_primary"] == true && n["is_primary"] == true)
                 .cloned()
         })
         .await;
@@ -88,29 +93,29 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
     let spans = estate.spans();
     // The standby's own view, sampled by every read sent to it, held no primary of mesh1 while fabric
     // recovery ran: a read refused naming none to send it on to.
-    let restored_at = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == fp && at(sp) >= held_at).map(at).min().unwrap_or(u64::MAX);
+    let restored_at = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| actor_is(sp, &fp) && at(sp) >= held_at).map(at).min().unwrap_or(u64::MAX);
     let sampled_vacant = spans.iter().any(|sp| {
         let name = sp["name"].as_str().unwrap_or_default();
-        name.starts_with("rdm.node_admin.") && name.ends_with(".serve.via-forward") && s(&sp["attributes"]["node"]) == standby && s(&sp["attributes"]["outcome"]) == "not-ready" && s(&sp["attributes"]["mesh_primary"]).is_empty() && s(&sp["attributes"]["fabric_primary"]).is_empty() && at(sp) >= held_at && at(sp) < restored_at
+        name.starts_with("rdm.node_admin.") && name.ends_with(".serve.via-forward") && actor_is(sp, &standby) && s(&sp["attributes"]["outcome"]) == "not-ready" && s(&sp["attributes"]["mesh_primary"]).is_empty() && s(&sp["attributes"]["fabric_primary"]).is_empty() && at(sp) >= held_at && at(sp) < restored_at
     });
     assert!(sampled_vacant, "a view was sampled with neither role held while fabric recovery ran");
     let ran: Vec<Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= held_at).cloned().collect();
-    assert!(ran.iter().any(|sp| s(&sp["attributes"]["node"]) == standby && s(&sp["attributes"]["arm"]) == "own-mesh" && s(&sp["attributes"]["outcome"]).starts_with("restored")), "{standby} ran fabric recovery in its own mesh and restored the node at {fp}: {ran:#?}");
-    assert!(ran.iter().all(|sp| s(&sp["attributes"]["node"]) == standby), "nobody else ran it: {ran:#?}");
+    assert!(ran.iter().any(|sp| actor_is(sp, &standby) && s(&sp["attributes"]["arm"]) == "own-mesh" && s(&sp["attributes"]["outcome"]).starts_with("restored")), "{standby:?} ran fabric recovery in its own mesh and restored the node at {fp:?}: {ran:#?}");
+    assert!(ran.iter().all(|sp| actor_is(sp, &standby)), "nobody else ran it: {ran:#?}");
     let verdict = ran.iter().find_map(|sp| sp["attributes"]["verdict"].as_str().map(str::to_string)).unwrap_or_default();
     assert!(!verdict.is_empty() && verdict != "reached", "node investigation decided the re-create: verdict {verdict:?}");
-    let created = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == fp && at(sp) >= held_at).count();
-    assert!(created >= 1, "node recovery re-created the node-admin at {fp}");
-    let installed = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == fp && at(sp) >= held_at).count();
+    let created = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| actor_is(sp, &fp) && at(sp) >= held_at).count();
+    assert!(created >= 1, "node recovery re-created the node-admin at {fp:?}");
+    let installed = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| actor_is(sp, &fp) && at(sp) >= held_at).count();
     assert!(installed >= 1, "the restored node installed both roles on the workflow's call");
-    assert_ne!(s(&restored["node_id"]), before.node_id.to_string(), "a new node id at the same path.name");
+    assert_ne!(s(&restored["node_id"]), before.node_id.to_string(), "a new node id at the same separate path and name");
 }
 
 /// CONTRACT (fabric-recovery.md intro: "while any node-admin lives, the fabric-primary moves and is
-/// brought back without a person"; "The launched node-admin is a new node at the same path.name: a new
+/// brought back without a person"; "The launched node-admin is a new node at the same separate path and name: a new
 /// node.id and incarnation and a new port, with the same endpoint key over the inherited data dir";
 /// node-admin-lifecycle.md §4.4, "fabric-primary is launched again into its own mesh"; elections §4.3:
-/// "the node-admin at the fabric-primary's path.name is re-created and is mesh-primary and
+/// "the node-admin at the fabric-primary's separate path and name is re-created and is mesh-primary and
 /// fabric-primary again when it is Ready"; Q156: "a launch that finds a living admin is
 /// refused, never an ordinary admin at the primary's name"; Q199): mesh1 has two node-admins; the
 /// fabric-primary mesh1.admin.1's process is killed (SIGKILL) and a person starts a node-admin again over
@@ -119,7 +124,7 @@ async fn a_fabric_primary_held_past_the_floor_is_restored_at_its_path_name_by_fa
 /// within the bound of the held-primary cell above, `fabric.get` names the fabric-primary at
 /// mesh1.admin.1, and the views name exactly one birth at mesh1.admin.1, ready, mesh-primary
 /// and fabric-primary: the one mesh1.admin.2's fabric recovery re-created. What must NOT happen: the
-/// launch taking the path.name, two births contending for mesh1.admin.1 (a node.delete of the lost birth
+/// launch taking the separate path and name, two births contending for mesh1.admin.1 (a node.delete of the lost birth
 /// refused `name-held` by the started one, again and again), or mesh1 left with no fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives_ends_with_one_birth_at_its_path_that_is_fabric_primary() {
@@ -129,29 +134,30 @@ async fn a_fabric_primary_started_again_on_its_data_dir_while_a_node_admin_lives
     estate.settled_views(&[("mesh1", 2, 1)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::topology::staleness_floor();
-    let fp = "mesh1.admin.1";
-    let standby = "mesh1.admin.2";
-    let before = estate.node_view(fp).await;
+    let fp = PathName::new("mesh1.admin", "1").unwrap();
+    let standby = PathName::new("mesh1.admin", "2").unwrap();
+    let standby_id = estate.node_view(&standby).await.node_id;
+    let before = estate.node_view(&fp).await;
     let nodes0 = estate.node_values().await;
-    assert_eq!(primaries(&nodes0), Some((fp.to_string(), true)), "the Day-0 admin holds both roles: {nodes0:#?}");
+    assert_eq!(primaries(&nodes0), Some((before.node_id.to_string(), true)), "the Day-0 admin holds both roles: {nodes0:#?}");
     // Control is read through the standby from here: the killed admin answers nothing.
-    estate.enter(&Estate::path(standby)).await;
+    estate.enter_by_id(&standby_id).await;
     let killed_at = now_ns();
     estate.kill_bootstrap();
     let (status, stderr) = estate.admin_launch_refused(&estate.bootstrap_data_dir("mesh1"), &[], Duration::from_secs(60));
-    assert!(!status.success() && stderr.contains("NameHeld") && stderr.contains(standby), "the node-admin started on the fabric-primary's data dir is refused NameHeld naming {standby}: {status}: {stderr}");
+    assert!(!status.success() && stderr.contains("NameHeld") && stderr.contains(standby_id.as_str()), "the node-admin started on the fabric-primary's data dir is refused NameHeld naming {standby:?}: {status}: {stderr}");
     let within = floor * 12 + Duration::from_secs(120);
     let killed = before.node_id.to_string();
     let one = estate
-        .until_view_at(&Estate::path(standby), &format!("one birth at {fp}, not the killed {killed}, ready, mesh-primary and fabric-primary"), within, |views| {
+        .until_view_at(&standby, &format!("one birth at {fp:?}, not the killed {killed}, ready, mesh-primary and fabric-primary"), within, |views| {
             let ns = Estate::values(views);
-            let at_fp: Vec<&Value> = ns.iter().filter(|n| n["name"] == fp && n["status"] != "deleted").collect();
+            let at_fp: Vec<&Value> = ns.iter().filter(|n| location(n) == fp && n["status"] != "deleted").collect();
             (at_fp.len() == 1 && s(&at_fp[0]["node_id"]) != killed && at_fp[0]["status"] == "ready" && at_fp[0]["is_fabric_primary"] == true && at_fp[0]["is_primary"] == true).then(|| at_fp[0].clone())
         })
         .await;
-    let named_fp = estate.fabric_view_at(&Estate::path(standby)).await.and_then(|f| f.fabric_primary).map(|p| p.to_string());
-    assert_eq!(named_fp.as_deref(), Some(fp), "fabric.get at {standby} names the fabric-primary at {fp}");
-    assert_ne!(s(&one["node_id"]), before.node_id.to_string(), "the birth at {fp} is not the killed one");
+    let named_fp = estate.fabric_view_at(&standby).await.and_then(|f| f.fabric_primary).map(|p| p.to_string());
+    assert_eq!(named_fp.as_deref(), one["node_id"].as_str(), "fabric.get at {standby:?} names the fabric-primary at {fp:?}");
+    assert_ne!(s(&one["node_id"]), before.node_id.to_string(), "the birth at {fp:?} is not the killed one");
     estate.stop().await;
     let spans = estate.spans();
     let refused: Vec<&Value> = spans.iter().filter(|sp| at(sp) >= killed_at && s(&sp["attributes"]["error"]).contains("name-held")).collect();

@@ -26,13 +26,13 @@ fn bytes(hex: &str) -> Vec<u8> {
 fn the_requests_match_the_frozen_six_variant_wire_schema() {
     assert_eq!(NodeCommand::REQUEST_VARIANTS, 6);
     for (req, hex) in [
-        (NodeCommandRequest::StopNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: "o".into() }, "010c3031323334353637383961620c397763707266677776746879016201016f"),
-        (NodeCommandRequest::StartNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: "o".into() }, "020c3031323334353637383961620c397763707266677776746879016201016f"),
+        (NodeCommandRequest::StopNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o") }, "010c3031323334353637383961620c397763707266677776746879016201016f"),
+        (NodeCommandRequest::StartNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o") }, "020c3031323334353637383961620c397763707266677776746879016201016f"),
         (NodeCommandRequest::DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::All }, "000c3031323334353637383961620c39776370726667777674687900"),
         (NodeCommandRequest::DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "000c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
         (NodeCommandRequest::StorageBlock { node_id: node(), incarnation: birth(), build_id: "b".into(), change_id: change() }, "050c3031323334353637383961620c39776370726667777674687901620c333132333435363738396162"),
         (NodeCommandRequest::StorageStep { node_id: node(), incarnation: birth(), build_id: "b".into(), change_id: change(), provider: "f".into() }, "030c3031323334353637383961620c39776370726667777674687901620c3331323334353637383961620166"),
-        (NodeCommandRequest::LeaveMesh { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: "o".into() }, "040c3031323334353637383961620c397763707266677776746879016201016f"),
+        (NodeCommandRequest::LeaveMesh { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o") }, "040c3031323334353637383961620c397763707266677776746879016201016f"),
     ] {
         let expected = bytes(hex);
         assert_eq!(NodeCommand::encode_request(&req).unwrap(), expected, "{req:?}");

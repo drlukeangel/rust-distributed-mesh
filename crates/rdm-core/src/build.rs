@@ -108,12 +108,12 @@ pub enum BuildChange {
     },
     /// Recover the node at `node` whose exact birth `(node_id, incarnation)` its mesh-primary proved
     /// exited (node-recovery.md): node.delete of that instance, then node.create at the same
-    /// path.name over the inherited data dir, with a new node.id. Keyed on the exited birth: a
+    /// path and name over the inherited data dir, with a new node.id. Keyed on the exited birth: a
     /// repeat answers `AlreadyApplied` or `BuildInProgress`, never a second recovery.
     ///
     /// Position 10 on the wire.
     Recover {
-        /// The node's `path.name`.
+        /// The node's `(path, name)`.
         node: PathName,
         /// The exited instance's node.id.
         node_id: NodeId,
@@ -145,7 +145,7 @@ pub enum BuildChange {
     ///
     /// Position 13 on the wire.
     Terminate {
-        /// The `path.name` the birth held.
+        /// The `(path, name)` the birth held.
         node: PathName,
         /// The deleted birth's node.id.
         node_id: NodeId,
@@ -160,7 +160,7 @@ pub enum BuildChange {
     /// Position 14 on the wire.
     Reserved14,
     /// The complete topology (proposal executable-bindings-at-create.md rule 1): every node of the
-    /// fabric, each by its create spec ([`crate::meta::NodeSpec`]: its `path.name` and its properties,
+    /// fabric, each by its create spec ([`crate::meta::NodeSpec`]: its `(path, name)` and its properties,
     /// flat, Q166), the executable included. A node left out is
     /// removed, one added is created, one whose executable differs from what its row records is
     /// replaced (node.delete then node.create at the path, in RDM's order). A mesh named for the
@@ -193,18 +193,18 @@ impl BuildChange {
     }
 }
 
-/// One step of a [`BuildChange::Steps`]: one node primitive acting on the node a `path.name` names
+/// One step of a [`BuildChange::Steps`]: one node primitive acting on the node a `(path, name)` names
 /// when the step runs. A path an earlier step of the same steps creates or renames to names the node
 /// that step left there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Step {
-    /// node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name`
+    /// node.create at `node`: a new node.id, incarnation and data dir at that exact `(path, name)`
     /// (for a replace's successor, the `<name>` its predecessor released), claimed before anything is
     /// launched.
     ///
     /// Position 0 on the wire.
     Create {
-        /// The `path.name` the node is created at.
+        /// The `(path, name)` the node is created at.
         node: PathName,
         /// The owning mesh, independent of the path/name.
         mesh: String,
@@ -226,7 +226,7 @@ pub enum Step {
         /// The node.
         node: PathName,
     },
-    /// node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the
+    /// node.update of the node at `node`: its `(path, name)` becomes `name` (lifecycles/node-name-update.md, under the
     /// rename precondition: the node is live, its `node.connections.deleted` of an `All` and then its
     /// `node.mesh.left` held, and it holds no connection; a stopped node is never renamed).
     ///
@@ -234,7 +234,7 @@ pub enum Step {
     Update {
         /// The node.
         node: PathName,
-        /// The `path.name` it takes.
+        /// The `(path, name)` it takes.
         name: PathName,
     },
     /// node.start of the stopped node at `node`: the same process rejoins under the name its row holds.
@@ -272,7 +272,7 @@ pub enum Step {
 }
 
 impl Step {
-    /// The `path.name` the step acts on when it runs.
+    /// The `(path, name)` the step acts on when it runs.
     pub fn node(&self) -> &PathName {
         match self {
             Self::Create { node, .. } | Self::Stop { node } | Self::Update { node, .. } | Self::Start { node } | Self::Delete { node } | Self::DeleteConnections { node } | Self::LeaveMesh { node } => node,
@@ -353,8 +353,8 @@ pub enum BuildRequest {
         build_id: String,
         /// The attempt, already won by `executor` on the fabric-primary's log.
         attempt: u32,
-        /// The executor the claim names (a node-admin's path.name).
-        executor: String,
+        /// The exact executor birth committed by the claim.
+        executor: crate::framing::Birth,
         /// The attempt's observability context, as the claim returned it.
         context: CallContext,
         /// The operations the fabric-primary planned for this run, in plan order: the contiguous
@@ -365,7 +365,7 @@ pub enum BuildRequest {
         /// The executor of the operation that follows this run, when the run is not the whole of
         /// what is left: the run then ends `HandedOff` to it. `None` when the run is the rest of the
         /// plan, and the attempt ends `Complete`.
-        hand_off_to: Option<String>,
+        hand_off_to: Option<crate::NodeId>,
         /// The attempt's mesh for a drift attempt, numbered `(build_id, mesh, attempt)` (build.md section
         /// 5.3); `None` for a topology attempt (Q118).
         mesh: Option<String>,
@@ -463,11 +463,18 @@ pub struct StepReceipt {
     /// The attempt that wrote it.
     pub attempt: u32,
     /// The operation's idempotency key.
-    pub operation: String,
+    pub operation: crate::OperationId,
     /// The step.
     pub step: String,
     /// How the step ended.
     pub result: StepResult,
+}
+
+impl StepReceipt {
+    /// Encoded size used to bound reply chunks containing structured operation identities.
+    pub fn encoded_len(&self) -> Result<usize, postcard::Error> {
+        postcard::to_allocvec(self).map(|bytes| bytes.len())
+    }
 }
 
 /// Where a Build is in its life.
@@ -514,7 +521,7 @@ pub struct BuildHeader {
     /// The current attempt.
     pub attempt: u32,
     /// The executor of the current attempt, when one is.
-    pub executor: Option<String>,
+    pub executor: Option<crate::framing::Birth>,
     /// Why the current attempt exists.
     pub reason: String,
     /// Why the last attempt failed, when one did.
@@ -548,7 +555,7 @@ pub enum BuildReply {
         /// The attempt.
         attempt: u32,
         /// The operation's idempotency key.
-        operation: String,
+        operation: crate::OperationId,
         /// The step.
         step: String,
         /// On the inner attempt stream the step's receipt (its output and executor), JSON-encoded, which
@@ -565,7 +572,7 @@ pub enum BuildReply {
         /// The attempt.
         attempt: u32,
         /// The operation the blocked step belongs to.
-        operation: String,
+        operation: crate::OperationId,
         /// The blocked step.
         step: String,
         /// What it waits for.
@@ -602,7 +609,7 @@ pub enum BuildReply {
         /// The attempt that failed.
         attempt: u32,
         /// The operation the failed step belongs to.
-        operation: String,
+        operation: crate::OperationId,
         /// The step that failed.
         step: String,
         /// The step's own reason.
@@ -620,7 +627,7 @@ pub enum BuildReply {
         /// The attempt that ran.
         attempt: u32,
         /// The admin that executes the operation the attempt stopped at.
-        to: String,
+        to: crate::NodeId,
     },
     /// Terminal of `Get`: the Build's header; the receipts came in `Steps` chunks.
     ///
@@ -633,7 +640,7 @@ pub enum BuildReply {
         /// The current attempt.
         attempt: u32,
         /// The executor of the current attempt, when one is.
-        executor: Option<String>,
+        executor: Option<crate::framing::Birth>,
         /// Why the current attempt exists.
         reason: String,
         /// Why the last attempt failed, when one did.
@@ -655,16 +662,16 @@ pub enum BuildReply {
     /// Position 9 on the wire.
     NotFabricPrimary {
         /// The fabric-primary the receiver sees, when it sees one.
-        fabric_primary: Option<String>,
+        fabric_primary: Option<crate::NodeId>,
     },
     /// Refusal: the recipient is not the executor the claim names.
     ///
     /// Position 10 on the wire.
     NotExecutor {
         /// The executor the claim names.
-        named: String,
+        named: crate::framing::Birth,
         /// The recipient.
-        recipient: String,
+        recipient: crate::framing::Birth,
     },
     /// Refusal: the claim is not the current folded attempt of the Build.
     ///
@@ -673,7 +680,7 @@ pub enum BuildReply {
         /// The attempt the recipient's fold holds as current.
         held_attempt: u32,
         /// The executor of that attempt, when one is.
-        held_executor: Option<String>,
+        held_executor: Option<crate::framing::Birth>,
         /// The attempt the call carried.
         carried_attempt: u32,
     },
@@ -704,7 +711,7 @@ pub enum BuildReply {
         mesh: Option<String>,
         /// The admin that claimed the holding attempt (the fabric-primary for a topology attempt,
         /// the mesh's mesh-primary for its drift attempt), when one claimed it.
-        held_by: Option<String>,
+        held_by: Option<crate::NodeId>,
     },
     /// Refusal: the attempt number was opened first by another action.
     ///
@@ -719,7 +726,7 @@ pub enum BuildReply {
     /// Position 16 on the wire.
     RoleYielded {
         /// The admin whose Build log yielded the role.
-        node: String,
+        node: NodeId,
         /// The record that moved the role, in words.
         by: String,
     },
@@ -782,8 +789,8 @@ pub enum BuildReply {
     FabricPrimaryMoved {
         /// The Build.
         build_id: String,
-        /// The admin (path.name) that holds the role now, when the receiver's view names one.
-        fabric_primary: Option<String>,
+        /// The admin (path and name) that holds the role now, when the receiver's view names one.
+        fabric_primary: Option<crate::NodeId>,
     },
     /// Refusal: the receiver may not claim on the mesh the request acts in (R-BI7): a topology
     /// Build's attempt is the fabric-primary's, a drift attempt its mesh's mesh-primary's. Both are
@@ -794,11 +801,11 @@ pub enum BuildReply {
         /// The mesh the request acts in.
         mesh: Option<String>,
         /// The fabric-primary the receiver sees, when it sees one.
-        fabric_primary: Option<String>,
+        fabric_primary: Option<crate::NodeId>,
         /// The mesh's mesh-primary the receiver sees, when it sees one.
-        mesh_primary: Option<String>,
+        mesh_primary: Option<crate::NodeId>,
     },
-    /// A chunk of one Build's topology `GetBuilds` reads: its nodes' create specs, in `path.name`
+    /// A chunk of one Build's topology `GetBuilds` reads: its nodes' create specs, in `(path, name)`
     /// order. A topology no reply frame holds takes several chunks.
     ///
     /// Position 26 on the wire.
@@ -824,7 +831,7 @@ pub enum BuildReply {
         /// The current attempt.
         attempt: u32,
         /// The executor of the current attempt, when one is.
-        executor: Option<String>,
+        executor: Option<crate::framing::Birth>,
         /// Why the current attempt exists.
         reason: String,
         /// Why the last attempt failed, when one did.
@@ -891,7 +898,7 @@ impl BuildReply {
     }
 
     /// The receipt key `(attempt, operation, step)` of a progress frame, when it is one.
-    pub fn progress_key(&self) -> Option<(&str, u32, &str, &str)> {
+    pub fn progress_key(&self) -> Option<(&str, u32, &crate::OperationId, &str)> {
         match self {
             Self::Step {
                 build_id,
@@ -1051,12 +1058,12 @@ mod tests {
     /// "Replace is Rafka's steps, submitted as one Build. RDM executes its primitives and records their receipts"
     /// CONTRACT: docs/architecture/lifecycles/node-replace.md:30
     /// "1. node[1]: node.connection.delete `{ scope: All }`, then node.mesh.leave.
-    ///  2. node.name.update of node[1] to `<name>.old` ... Then node[1].stop ... If no rollback is wanted, node[1].delete ...
+    ///  2. node.name.update of node[1] to `<name>-old` ... Then node[1].stop ... If no rollback is wanted, node[1].delete ...
     ///  3. node.create of node[2] at `<name>` ... The Build fixes the bin on its Create step"
     #[test]
     fn replace_step_primitives_preserve_wire_positions_and_reserved_changes_are_refused() {
-        let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let old_name = name.renamed();
+        let name: PathName = crate::PathName::new("mesh1.rpc", "1").unwrap();
+        let old_name = name.renamed().unwrap();
         let binding = Binding {
             launch_id: "rpc_node".into(),
             executable: "/bin/rdm-rpc-node-v2".into(),
@@ -1120,4 +1127,53 @@ mod tests {
             );
         }
     }
+}
+
+/// Why an admitted step cannot resolve its structured target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepTargetError {
+    /// No preceding create or admission pin supplies this target.
+    Unknown {
+        /// Separate path and name of the target.
+        node: PathName,
+        /// Original one-based step position.
+        step: u32,
+    },
+    /// A rename violates the immutable path or name grammar.
+    InvalidRename {
+        /// Original one-based step position.
+        step: u32,
+        /// The violated rule.
+        detail: String,
+    },
+}
+
+/// Resolve each original step against explicit admission pins, carrying a pin through renames.
+/// Creates receive their value from `created`; no location spelling supplies identity or metadata.
+pub fn step_targets<T: Clone>(steps: &[Step], mut at: std::collections::BTreeMap<PathName, T>, mut created: impl FnMut(&PathName, &str, crate::NodeKind) -> T) -> Result<Vec<T>, StepTargetError> {
+    let mut out = Vec::with_capacity(steps.len());
+    for (index, step) in steps.iter().enumerate() {
+        let position = index as u32 + 1;
+        let unknown = || StepTargetError::Unknown { node: step.node().clone(), step: position };
+        let target = match step {
+            Step::Create { node, mesh, kind, .. } => {
+                let target = created(node, mesh, *kind);
+                at.insert(node.clone(), target.clone());
+                target
+            }
+            Step::Update { node, name } => {
+                if node.path != name.path {
+                    return Err(StepTargetError::InvalidRename { step: position, detail: "a node's path is immutable".into() });
+                }
+                PathName::new(&name.path, &name.name).map_err(|error| StepTargetError::InvalidRename { step: position, detail: error.to_string() })?;
+                let target = at.remove(node).ok_or_else(unknown)?;
+                at.insert(name.clone(), target.clone());
+                target
+            }
+            Step::Delete { node } => at.remove(node).ok_or_else(unknown)?,
+            Step::Stop { node } | Step::Start { node } | Step::DeleteConnections { node } | Step::LeaveMesh { node } => at.get(node).cloned().ok_or_else(unknown)?,
+        };
+        out.push(target);
+    }
+    Ok(out)
 }

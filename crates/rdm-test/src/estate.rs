@@ -142,7 +142,7 @@ pub const RUNTIME_IMAGE: &str = crate::container_faults::RUNTIME_IMAGE;
 /// is given an address on it, and it drives the host's Docker daemon through its socket. The
 /// returned child is the attached `docker run`; the container is labelled like every container of
 /// the fabric, so the estate stops and removes it with them.
-fn spawn_admin_in_container(env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf]) -> (Child, MeshNode, String) {
+fn spawn_admin_in_container(env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &rdm_core::PathName, exe: &Path, read_dirs: &[PathBuf]) -> (Child, MeshNode, String) {
     spawn_admin_in_container_within(env, root, evidence, node, exe, read_dirs, ADVERTISE_WITHIN, "docker").unwrap_or_else(|e| panic!("{}", e.message))
 }
 
@@ -166,9 +166,9 @@ const ADVERTISE_WITHIN: Duration = Duration::from_secs(30);
 pub fn remove_fabric(fabric_id: &str, artifacts: Option<&Path>) -> Vec<String> {
     let mut left = Vec::new();
     let list = || -> Vec<(String, String)> {
-        let out = Command::new("docker").args(["ps", "-a", "--no-trunc", "--filter", &format!("label=rafka.fabric={fabric_id}"), "--format", "{{.Label \"rafka.node\"}} {{.ID}}"]).output();
-        let mut v: Vec<(String, String)> = out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.split_once(' ').map(|(n, i)| (n.to_string(), i.to_string()))).collect()).unwrap_or_default();
-        v.sort_by_key(|(n, _)| !n.contains(".admin."));
+        let mut rows = listed_containers(fabric_id, true);
+        rows.sort_by_key(|row| row["kind"] != "node_admin");
+        let v = rows.into_iter().filter_map(|row| row["id"].as_str().map(|id| (id.to_string(), id.to_string()))).collect();
         v
     };
     let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -209,7 +209,7 @@ pub fn remove_fabric(fabric_id: &str, artifacts: Option<&Path>) -> Vec<String> {
 /// give-up: `docker create` is awaited to completion (never abandoned in flight), then the
 /// container is started attached. `program` is the Docker client for those two calls. When `within` passes before the API base is advertised, the
 /// start is killed and everything labelled with the fabric, plus its network, is removed.
-pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf], within: Duration, program: &str) -> Result<(Child, MeshNode, String), GiveUp> {
+pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &rdm_core::PathName, exe: &Path, read_dirs: &[PathBuf], within: Duration, program: &str) -> Result<(Child, MeshNode, String), GiveUp> {
     let begun = Instant::now();
     let fabric_id = mint_fabric_id();
     let network = format!("rafka-{fabric_id}");
@@ -239,8 +239,8 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
     let root_for_mounts = root.to_path_buf();
     let (root, evidence) = (root.display().to_string(), evidence.display().to_string());
     let mut args: Vec<String> = vec![
-        "create".into(), "--name".into(), format!("rafka-{node}-{fabric_id}"),
-        "--label".into(), format!("rafka.fabric={fabric_id}"), "--label".into(), format!("rafka.node={node}"),
+        "create".into(), "--name".into(), format!("rafka-bootstrap-{fabric_id}"),
+        "--label".into(), format!("rafka.fabric={fabric_id}"), "--label".into(), format!("rafka.node.path={}", node.path), "--label".into(), format!("rafka.node.name={}", node.name), "--label".into(), "rafka.node.kind=node_admin".into(),
         "--network".into(), network, "--ip".into(), ip.to_string(),
         "-v".into(), format!("{bin}:{bin}:ro"), "-v".into(), format!("{root}:{root}"), "-v".into(), format!("{evidence}:{evidence}"),
         "-v".into(), "/var/run/docker.sock:/var/run/docker.sock".into(),
@@ -262,7 +262,7 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
     }
     args.push(RUNTIME_IMAGE.into());
     args.push(exe.display().to_string());
-    let name = format!("rafka-{node}-{fabric_id}");
+    let name = format!("rafka-bootstrap-{fabric_id}");
     let give_up = |why: String, child: Option<Child>| -> GiveUp {
         if let Some(mut c) = child {
             let _ = c.kill();
@@ -306,7 +306,7 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
         Ok(Err(e)) => return Err(give_up(e, Some(child))),
         Err(_) => return Err(give_up(format!("never advertised RDM_NODE_ADMIN_API_BASE within {within:?}"), Some(child))),
     };
-    eprintln!("[container] {name} advertised its birth {} {:?} after docker start", birth.name, started.elapsed());
+    eprintln!("[container] {name} advertised its birth {:?} {:?} after docker start", birth.name, started.elapsed());
     Ok((child, birth, fabric_id))
 }
 
@@ -784,7 +784,7 @@ impl Estate {
                 Some(named) => read_dirs.extend(named.split(',').filter(|d| !d.is_empty()).map(PathBuf::from)),
                 None => env.push(executable_dirs_env(&read_dirs)),
             }
-            spawn_admin_in_container(env, &root, &evidence, &format!("{mesh}.admin.1"), &admin_exe, &read_dirs)
+            spawn_admin_in_container(env, &root, &evidence, &rdm_core::PathName::new(format!("{mesh}.admin"), "1").unwrap(), &admin_exe, &read_dirs)
         } else {
             let (c, b) = spawn_admin(&admin_exe, &env, "bootstrap node-admin");
             (c, b, String::new())
@@ -809,7 +809,7 @@ impl Estate {
         // Complete before a cell submits anything: a cell's first build.create is never refused for a
         // Build in progress it did not start. The Day-0 Build is Complete only from its own
         // ready (states.md "Resize and executable replacement": "as fabric.create's is").
-        let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
+        let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {:?} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
         let id = rdm_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
         let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));
         let mut frames = Vec::new();
@@ -821,7 +821,7 @@ impl Estate {
             frames.push(frame.clone());
             match frame {
                 rdm_client::BuildFrame::Complete { .. } => break,
-                rdm_client::BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("the Day-0 Build {id} attempt {attempt} failed at {operation} {step}: {reason}"),
+                rdm_client::BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("the Day-0 Build {id} attempt {attempt} failed at {operation:?} {step}: {reason}"),
                 rdm_client::BuildFrame::FabricPrimaryMoved { fabric_primary } => panic!("the fabric-primary role moved ({fabric_primary:?}) while the Day-0 Build {id} ran"),
                 _ => {}
             }
@@ -836,7 +836,7 @@ impl Estate {
             &json!({
                 "product": o.product, "feature": o.feature, "subfeature": o.subfeature,
                 "rung": o.rung, "provider": o.provider, "test": o.test,
-                "seed": self.seed, "entry_admin": self.admin.to_string(),
+                "seed": self.seed, "entry_admin": self.admin,
                 "executable_bindings": self.external.as_ref().map(|x| json!({ "mode": "explicit", "binding_file": x.file, "receipt": x.validated.receipt() })).unwrap_or_else(|| json!({ "mode": "testkit" })),
             }),
         );
@@ -884,6 +884,18 @@ impl Estate {
         }
     }
 
+    /// Latest appended node-owned properties, selected by globally unique node ID.
+    pub fn node_properties(&self, node_id: &rdm_core::NodeId) -> Option<rdm_node::node_records::NodeProperties> {
+        let stored = rdm_admin::store_log::read_record(
+            &self.fabric_store_root().join(rdm_node::node_records::NODE_RECORDS_FILE),
+            "node-properties", Some(node_id.as_str()),
+        )?;
+        let properties: rdm_node::node_records::NodeProperties = serde_json::from_value(stored["record"].clone())
+            .expect("complete node-owned properties");
+        assert_eq!(&properties.birth.node_id, node_id, "property record matches its node ID index");
+        Some(properties)
+    }
+
     /// The latest record of `node_id` in the root's `nodes.jsonl` (R-SR1), as
     /// `{"format", "key", "record"}`; `None` while there is none, or while the file cannot be read whole.
     pub fn node_record(&self, node_id: &str) -> Option<serde_json::Value> {
@@ -892,20 +904,20 @@ impl Estate {
 
     /// The node's raw connection log on the fabric's store root: every fact it wrote to the root's
     /// `connections.jsonl`, oldest first, each as JSON (none while the file cannot be read whole).
-    pub fn connection_history(&self, node: &str) -> Vec<serde_json::Value> {
+    pub fn connection_history(&self, node: &rdm_core::NodeId) -> Vec<serde_json::Value> {
         rdm_node::storage::connection_history(&self.fabric_store_root(), node).unwrap_or_default().iter().filter_map(|f| serde_json::to_value(f).ok()).collect()
     }
 
     /// The pid of `node`'s runtime: its process (process provider: its `deployment.json`), or its
     /// container's init as the host sees it (container provider).
-    pub async fn pid_of(&self, node: &str) -> u64 {
+    pub async fn pid_of(&self, node: &rdm_core::PathName) -> u64 {
         if self.owner.provider == "container" {
-            let id = self.container_of(node).await.unwrap_or_else(|| panic!("{node}: no running container of fabric {}", self.fabric_id));
-            return docker(&["inspect", "--format", "{{.State.Pid}}", &id]).ok().and_then(|p| p.parse().ok()).filter(|p| *p > 0).unwrap_or_else(|| panic!("{node}: container {id} has no running init"));
+            let id = self.container_of(node).await.unwrap_or_else(|| panic!("{node:?}: no running container of fabric {}", self.fabric_id));
+            return docker(&["inspect", "--format", "{{.State.Pid}}", &id]).ok().and_then(|p| p.parse().ok()).filter(|p| *p > 0).unwrap_or_else(|| panic!("{node:?}: container {id} has no running init"));
         }
         let dir = self.data_dir(node).await;
         let d: Value = serde_json::from_slice(&std::fs::read(format!("{dir}/deployment.json")).unwrap()).unwrap();
-        d["pid"].as_u64().unwrap_or_else(|| panic!("{node}: no pid in {d}"))
+        d["pid"].as_u64().unwrap_or_else(|| panic!("{node:?}: no pid in {d}"))
     }
 
     /// The witness a kill or terminate of one of this fabric's nodes takes ([`FabricReady`]): refused by
@@ -921,11 +933,11 @@ impl Estate {
 
     /// SIGKILL `node`'s runtime (a fault: it flushes nothing), once the fabric has first been
     /// ready ([`Self::fabric_ready`]).
-    pub async fn kill_node(&self, node: &str) {
+    pub async fn kill_node(&self, node: &rdm_core::PathName) {
         self.fabric_ready();
         let pid = self.pid_of(node).await;
         let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
-        assert!(ok, "kill -9 {pid} ({node})");
+        assert!(ok, "kill -9 {pid} ({node:?})");
     }
 
     /// Run one probe invocation and record it in the RPC ledger.
@@ -1163,7 +1175,7 @@ impl Estate {
     /// (`--admin-birth`). An entry whose birth the estate never held is named with every birth it holds.
     pub fn entry_birth(&self) -> MeshNode {
         let births = self.births.lock().unwrap();
-        births.get(&self.admin).cloned().unwrap_or_else(|| panic!("the entry {} has no birth this estate holds; births held: {:?}", self.admin, births.keys().collect::<Vec<_>>()))
+        births.get(&self.admin).cloned().unwrap_or_else(|| panic!("the entry {:?} has no birth this estate holds; births held: {:?}", self.admin, births.keys().collect::<Vec<_>>()))
     }
 
     /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone, once the fabric has first
@@ -1194,7 +1206,7 @@ impl Estate {
         if let Some(mut c) = self.bootstrap.take() {
             // A containerised Day-0 admin: the kill reaches its container, not only the attached CLI.
             if self.owner.provider == "container" {
-                if let Some(id) = self.container_launched_as(&format!("{}.admin.1", self.root_mesh())) {
+                if let Some(id) = self.container_launched_as(&rdm_core::PathName::new(format!("{}.admin", self.root_mesh()), "1").unwrap()) {
                     let _ = docker(&["kill", &id]);
                 }
             }
@@ -1217,23 +1229,22 @@ impl Estate {
     /// Every runtime a provider started for this estate that still runs:
     /// `(data dir, pid)` from each node's `deployment.json` (process provider).
     /// The running containers of this estate's Fabric (container provider): `(node, container id)`.
-    /// The provider labels each container with the Fabric's id and the node's path.name.
-    pub fn live_containers(&self) -> Vec<(String, String)> {
+    /// The provider labels each container with the Fabric ID and separate node path/name fields.
+    pub fn live_containers(&self) -> Vec<(rdm_core::PathName, String)> {
         if self.owner.provider != "container" || self.fabric_id.is_empty() {
             return Vec::new();
         }
-        let out = Command::new("docker")
-            .args(["ps", "--no-trunc", "--filter", &format!("label=rafka.fabric={}", self.fabric_id), "--filter", "status=running", "--format", "{{.Label \"rafka.node\"}} {{.ID}}"])
-            .output();
-        let Ok(out) = out else { return Vec::new() };
-        String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_once(' ').map(|(n, i)| (n.to_string(), i.to_string()))).collect()
+        listed_containers(&self.fabric_id, false).into_iter().filter_map(|v| {
+            let location = rdm_core::PathName::new(v["path"].as_str()?, v["name"].as_str()?).ok()?;
+            Some((location, v["id"].as_str()?.to_string()))
+        }).collect()
     }
 
     /// The running container of `node`'s current birth (container provider): the container id its
     /// birth's RuntimeFact names, which the provider writes to the birth's data dir (`runtime.json`).
     /// Never the `rafka.node` label: that is the name the container was launched under, and a node
-    /// renamed since (a replace's predecessor, renamed `<path.name>.old`) keeps it.
-    pub async fn container_of(&self, node: &str) -> Option<String> {
+    /// renamed since (a replace's predecessor, renamed `<name>-old` at the same path) keeps it.
+    pub async fn container_of(&self, node: &rdm_core::PathName) -> Option<String> {
         if self.owner.provider != "container" {
             return None;
         }
@@ -1245,7 +1256,7 @@ impl Estate {
 
     /// The running container launched under `name` (its `rafka.node` label): the bootstrap admin's,
     /// which the estate holds as the birth it started.
-    fn container_launched_as(&self, name: &str) -> Option<String> {
+    fn container_launched_as(&self, name: &rdm_core::PathName) -> Option<String> {
         self.live_containers().into_iter().find(|(n, _)| n == name).map(|(_, id)| id)
     }
 
@@ -1376,7 +1387,7 @@ pub struct ProbeHandle {
 
 impl ProbeHandle {
     fn command(&self, admin: &MeshNode, args: &[&str]) -> Result<Command, String> {
-        let birth = serde_json::to_string(admin).map_err(|e| format!("the birth of {} does not serialize: {e}", admin.name))?;
+        let birth = serde_json::to_string(admin).map_err(|e| format!("the birth of {:?} does not serialize: {e}", admin.name))?;
         let mut cmd = Command::new(binary("rdm-rpc-probe"));
         cmd.arg("--admin-birth").arg(birth).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
         if let Some(gw) = &self.bind { cmd.env("RDM_PROBE_BIND", gw); }
@@ -1940,10 +1951,10 @@ impl crate::container_faults::ContainerEstate for Estate {
     fn fabric_id(&self) -> &str {
         &self.fabric_id
     }
-    fn container_of(&self, node: &str) -> impl std::future::Future<Output = Option<String>> + Send {
+    fn container_of(&self, node: &rdm_core::PathName) -> impl std::future::Future<Output = Option<String>> + Send {
         Estate::container_of(self, node)
     }
-    fn live_containers(&self) -> Vec<(String, String)> {
+    fn live_containers(&self) -> Vec<(rdm_core::PathName, String)> {
         Estate::live_containers(self)
     }
 }
@@ -2026,4 +2037,15 @@ mod span_reader_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Docker listing retains each label as its own field; cleanup orders by explicit runtime kind.
+fn listed_containers(fabric_id: &str, all: bool) -> Vec<Value> {
+    let mut command = Command::new("docker");
+    command.arg("ps");
+    if all { command.arg("-a"); } else { command.args(["--filter", "status=running"]); }
+    let format = r#"{"id":{{json .ID}},"path":{{json (.Label "rafka.node.path")}},"name":{{json (.Label "rafka.node.name")}},"kind":{{json (.Label "rafka.node.kind")}}}"#;
+    command.args(["--no-trunc", "--filter", &format!("label=rafka.fabric={fabric_id}"), "--format", format]);
+    let Ok(output) = command.output() else { return Vec::new() };
+    String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
 }

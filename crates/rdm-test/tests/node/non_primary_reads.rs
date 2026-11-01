@@ -23,8 +23,12 @@ fn attr(sp: &Value, k: &str) -> String {
     }
 }
 
-fn names(nodes: &[NodeView]) -> Vec<String> {
-    nodes.iter().map(|n| n.name.to_string()).collect()
+fn ids(nodes: &[NodeView]) -> Vec<String> {
+    nodes.iter().map(|n| n.node_id.to_string()).collect()
+}
+
+fn at_node(sp: &Value, node: &NodeView) -> bool {
+    attr(sp, "node_path") == node.name.path && attr(sp, "node_name") == node.name.name
 }
 
 fn labels(l: &[&str]) -> BTreeSet<String> {
@@ -33,7 +37,7 @@ fn labels(l: &[&str]) -> BTreeSet<String> {
 
 /// The exact birth of `n`, the node a tags or config command names.
 fn birth_of(n: &NodeView) -> ExactBirth {
-    ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap_or_else(|| panic!("{} names its incarnation", n.name)) }
+    ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap_or_else(|| panic!("{:?} names its incarnation", n.name)) }
 }
 
 /// The two meshes the cells read: mesh1 holds the fabric-primary alone; mesh2 holds its mesh-primary, a
@@ -59,17 +63,17 @@ async fn two_meshes_tagged(test: &str) -> (Estate, NodeView, NodeView, NodeView,
     // node's mesh-primary.
     let nodes = estate.nodes_obj().await;
     for (n, tag) in [(&fp, "red"), (&rpc, "blue")] {
-        let reply = nodes.tags_create(&birth_of(n), &fp.node_id, &rdm_transport::RouteChoice::Direct, &labels(&[tag])).await.unwrap_or_else(|e| panic!("node.tag.create of {} at the fabric-primary: {e:?}", n.name));
-        assert_eq!(reply.name(), "tags-created", "{}: {reply:?}", n.name);
+        let reply = nodes.tags_create(&birth_of(n), &fp.node_id, &rdm_transport::RouteChoice::Direct, &labels(&[tag])).await.unwrap_or_else(|e| panic!("node.tag.create of {:?} at the fabric-primary: {e:?}", n.name));
+        assert_eq!(reply.name(), "tags-created", "{:?}: {reply:?}", n.name);
     }
     let config: BTreeMap<String, String> = [("zone".to_string(), "eu-1".to_string())].into();
     let carrier = estate.carrier().await;
-    let reply = NodeRpc::new(carrier.client()).config_update(&fp.node_id, &rdm_transport::RouteChoice::Direct, &birth_of(&rpc), config.clone(), &rdm_transport::CallOptions::default()).await.unwrap_or_else(|e| panic!("node.config.update of {} at the fabric-primary: {e:?}", rpc.name));
-    assert!(matches!(reply, StatusReply::ConfigUpdated { .. }), "node.config.updated of {}: {reply:?}", rpc.name);
+    let reply = NodeRpc::new(carrier.client()).config_update(&fp.node_id, &rdm_transport::RouteChoice::Direct, &birth_of(&rpc), config.clone(), &rdm_transport::CallOptions::default()).await.unwrap_or_else(|e| panic!("node.config.update of {:?} at the fabric-primary: {e:?}", rpc.name));
+    assert!(matches!(reply, StatusReply::ConfigUpdated { .. }), "node.config.updated of {:?}: {reply:?}", rpc.name);
     wait_for("the fabric-primary answers both tags and the config", Duration::from_secs(30), || async {
         let red = nodes.get(&Filter::new().eq("tags", ["red"])).await.ok()?;
         let blue = nodes.get(&Filter::new().eq("tags", ["blue"])).await.ok()?;
-        (names(&red) == [fp.name.to_string()] && names(&blue) == [rpc.name.to_string()] && blue[0].config == config).then_some(())
+        (ids(&red) == [fp.node_id.to_string()] && ids(&blue) == [rpc.node_id.to_string()] && blue[0].config == config).then_some(())
     })
     .await;
     (estate, fp, mp, other, rpc, config)
@@ -90,17 +94,17 @@ async fn a_node_admin_that_is_not_a_primary_forwards_nodes_get_to_its_mesh_prima
     let test = "a_node_admin_that_is_not_a_primary_forwards_nodes_get_to_its_mesh_primary";
     let (mut estate, fp, mp, other, rpc, config) = two_meshes_tagged(test).await;
 
-    let at_other = Nodes::new(estate.carrier_at(&other.name).await);
-    let own_mesh = at_other.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await.unwrap_or_else(|e| panic!("node.get [mesh2, blue] at {}: {e:?}", other.name));
-    assert_eq!(names(&own_mesh), [rpc.name.to_string()], "the record mesh2's mesh-primary's atlas holds, its tag present");
+    let at_other = Nodes::new(estate.peers().await.carrier_for(other.node_id.clone()));
+    let own_mesh = at_other.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await.unwrap_or_else(|e| panic!("node.get [mesh2, blue] at {:?}: {e:?}", other.name));
+    assert_eq!(ids(&own_mesh), [rpc.node_id.to_string()], "the record mesh2's mesh-primary's atlas holds, its tag present");
     assert_eq!(own_mesh[0].config, config, "the record's config present: {:?}", own_mesh[0]);
-    let no_mesh = at_other.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [red] at {}: {e:?}", other.name));
-    assert_eq!(names(&no_mesh), [fp.name.to_string()], "a read naming no mesh reaches the fabric-primary's atlas through mesh2's mesh-primary");
+    let no_mesh = at_other.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [red] at {:?}: {e:?}", other.name));
+    assert_eq!(ids(&no_mesh), [fp.node_id.to_string()], "a read naming no mesh reaches the fabric-primary's atlas through mesh2's mesh-primary");
 
     estate.stop().await;
     let spans = estate.spans();
-    let (other_name, mp_name) = (other.name.to_string(), mp.name.to_string());
-    let forwarded: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-forward").into_iter().filter(|sp| attr(sp, "node") == other_name).collect();
+    let (other_name, mp_name) = (other.node_id.to_string(), mp.node_id.to_string());
+    let forwarded: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-forward").into_iter().filter(|sp| at_node(sp, &other)).collect();
     let own = forwarded.iter().find(|sp| attr(sp, "pairs").contains("blue")).unwrap_or_else(|| panic!("{other_name} forwards [mesh2, blue]: {forwarded:#?}"));
     assert_eq!(attr(own, "mesh_primary"), mp_name, "forwarded to its own mesh-primary: {own}");
     assert_eq!(attr(own, "fabric_primary"), "", "never to the fabric-primary: {own}");
@@ -108,10 +112,10 @@ async fn a_node_admin_that_is_not_a_primary_forwards_nodes_get_to_its_mesh_prima
     let none = forwarded.iter().find(|sp| attr(sp, "pairs").contains("red")).unwrap_or_else(|| panic!("{other_name} forwards [red]: {forwarded:#?}"));
     assert_eq!(attr(none, "mesh_primary"), mp_name, "a read naming no mesh is forwarded to its own mesh-primary too: {none}");
     assert_eq!(attr(none, "fabric_primary"), "", "never to the fabric-primary: {none}");
-    let carried: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-forward").into_iter().filter(|sp| attr(sp, "node") == mp_name && attr(sp, "pairs").contains("red")).collect();
+    let carried: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-forward").into_iter().filter(|sp| at_node(sp, &mp) && attr(sp, "pairs").contains("red")).collect();
     let up = carried.last().unwrap_or_else(|| panic!("{mp_name} carries [red] up"));
-    assert_eq!(attr(up, "fabric_primary"), fp.name.to_string(), "mesh2's mesh-primary carries it up to the fabric-primary: {up}");
-    let answered = named(&spans, "rdm.node_admin.node.serve.via-get").into_iter().filter(|sp| attr(sp, "node") == mp_name && attr(sp, "pairs").contains("blue")).count();
+    assert_eq!(attr(up, "fabric_primary"), fp.node_id.to_string(), "mesh2's mesh-primary carries it up to the fabric-primary: {up}");
+    let answered = named(&spans, "rdm.node_admin.node.serve.via-get").into_iter().filter(|sp| at_node(sp, &mp) && attr(sp, "pairs").contains("blue")).count();
     assert!(answered > 0, "{mp_name} answers [mesh2, blue] from its atlas");
     let trace = own["trace_id"].as_str().unwrap_or_default().to_string();
     println!("forwarded read: http://192.168.68.99:16687/trace/{trace}");
@@ -131,27 +135,27 @@ async fn an_rpc_node_forwards_nodes_get_to_its_mesh_primary() {
     let test = "an_rpc_node_forwards_nodes_get_to_its_mesh_primary";
     let (mut estate, fp, mp, _other, rpc, config) = two_meshes_tagged(test).await;
 
-    let at_rpc = Nodes::new(estate.carrier_at(&rpc.name).await);
-    let own_mesh = at_rpc.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await.unwrap_or_else(|e| panic!("node.get [mesh2, blue] at {}: {e:?}", rpc.name));
-    assert_eq!(names(&own_mesh), [rpc.name.to_string()], "the record mesh2's mesh-primary's atlas holds, its tag present");
+    let at_rpc = Nodes::new(estate.peers().await.carrier_for(rpc.node_id.clone()));
+    let own_mesh = at_rpc.get(&Filter::new().eq("mesh", ["mesh2"]).eq("tags", ["blue"])).await.unwrap_or_else(|e| panic!("node.get [mesh2, blue] at {:?}: {e:?}", rpc.name));
+    assert_eq!(ids(&own_mesh), [rpc.node_id.to_string()], "the record mesh2's mesh-primary's atlas holds, its tag present");
     assert_eq!(own_mesh[0].config, config, "the record's config present: {:?}", own_mesh[0]);
-    let no_mesh = at_rpc.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [red] at {}: {e:?}", rpc.name));
-    assert_eq!(names(&no_mesh), [fp.name.to_string()], "a read naming no mesh reaches the fabric-primary's atlas through mesh2's mesh-primary");
-    let connections = rdm_client::Connections::new(estate.carrier_at(&rpc.name).await).get(&birth_of(&rpc), &Filter::new()).await;
+    let no_mesh = at_rpc.get(&Filter::new().eq("tags", ["red"])).await.unwrap_or_else(|e| panic!("node.get [red] at {:?}: {e:?}", rpc.name));
+    assert_eq!(ids(&no_mesh), [fp.node_id.to_string()], "a read naming no mesh reaches the fabric-primary's atlas through mesh2's mesh-primary");
+    let connections = rdm_client::Connections::new(estate.peers().await.carrier_for(rpc.node_id.clone())).get(&birth_of(&rpc), &Filter::new()).await;
     assert!(connections.is_ok(), "node.connection.get of the rpc node is its own: {connections:?}");
 
     estate.stop().await;
     let spans = estate.spans();
-    let (rpc_name, mp_name) = (rpc.name.to_string(), mp.name.to_string());
+    let (rpc_name, mp_name) = (rpc.node_id.to_string(), mp.node_id.to_string());
     let forwarded: Vec<&Value> = named(&spans, "rdm.node.node.serve.via-forward").into_iter().filter(|sp| attr(sp, "node") == rpc_name).collect();
     let own = forwarded.iter().find(|sp| attr(sp, "pairs").contains("blue")).unwrap_or_else(|| panic!("{rpc_name} forwards [mesh2, blue]: {forwarded:#?}"));
     assert_eq!(attr(own, "mesh_primary"), mp_name, "forwarded to its own mesh-primary: {own}");
     assert_eq!(attr(own, "outcome"), "nodes", "{own}");
     let none = forwarded.iter().find(|sp| attr(sp, "pairs").contains("red")).unwrap_or_else(|| panic!("{rpc_name} forwards [red]: {forwarded:#?}"));
     assert_eq!(attr(none, "mesh_primary"), mp_name, "a read naming no mesh is forwarded to its own mesh-primary too: {none}");
-    let carried: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-forward").into_iter().filter(|sp| attr(sp, "node") == mp_name && attr(sp, "pairs").contains("red")).collect();
+    let carried: Vec<&Value> = named(&spans, "rdm.node_admin.node.serve.via-forward").into_iter().filter(|sp| at_node(sp, &mp) && attr(sp, "pairs").contains("red")).collect();
     let up = carried.last().unwrap_or_else(|| panic!("{mp_name} carries [red] up"));
-    assert_eq!(attr(up, "fabric_primary"), fp.name.to_string(), "mesh2's mesh-primary carries it up to the fabric-primary: {up}");
+    assert_eq!(attr(up, "fabric_primary"), fp.node_id.to_string(), "mesh2's mesh-primary carries it up to the fabric-primary: {up}");
     let trace = own["trace_id"].as_str().unwrap_or_default().to_string();
     println!("forwarded read: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);

@@ -54,30 +54,30 @@ async fn a_mesh_primary_restarted_and_made_mesh_primary_again_writes_its_mesh_ro
     let before = estate.node_values().await;
     let admin = |primary: bool| before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds an admin with is_primary={primary}: {before:#?}"));
     let (first, second) = (admin(true), admin(false));
-    let name = |n: &Value| n["name"].as_str().unwrap_or_default().to_string();
+    let name = |n: &Value| serde_json::from_value::<PathName>(n["name"].clone()).expect("structured location");
     let nodes = estate.nodes_obj().await;
     let mut operations = Vec::new();
     for target in [&first, &second] {
-        let path: PathName = name(target).parse().unwrap();
-        let mut stream = nodes.stop(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {path}: {e}"));
+        let path = name(target);
+        let mut stream = nodes.stop(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {path:?}: {e}"));
+        operations.push(stream.accepted().clone());
         Estate::complete(&mut stream).await;
         estate.until_stopped_at_the_fabric_primary(&path).await;
-        let mut stream = nodes.start(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.start of {path}: {e}"));
+        let mut stream = nodes.start(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.start of {path:?}: {e}"));
         Estate::complete(&mut stream).await;
-        operations.push(format!("node.stop:{path}"));
-        let after = estate.until_node(&name(target), &format!("{path} ready again after its stop and start"), Duration::from_secs(60), |n| {
+        let after = estate.until_node(&name(target), &format!("{path:?} ready again after its stop and start"), Duration::from_secs(60), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (n["status"] == "ready" && n["stopped"] == false).then_some(n)
         }).await;
-        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&target["node_id"], &target["incarnation_id"]), "{path} is the same birth after its stop and start: {after}");
+        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&target["node_id"], &target["incarnation_id"]), "{path:?} is the same birth after its stop and start: {after}");
     }
     let primary = estate.node_values().await.into_iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2 holds a primary");
-    assert_eq!(primary["node_id"], first["node_id"], "the second stop moved mesh2's role back to {}", name(&first));
+    assert_eq!(primary["node_id"], first["node_id"], "the second stop moved mesh2's role back to {:?}", name(&first));
 
     estate.stop().await;
     let spans = estate.spans();
-    let back: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "operation").contains(&operations[1])).collect();
-    assert_eq!(back.len(), 1, "the second stop's successor, {}, installed itself once: {back:#?}", name(&first));
+    let back: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "build_id") == operations[1].build_id.to_string() && attr(sp, "run") == operations[1].attempt.to_string()).collect();
+    assert_eq!(back.len(), 1, "the second stop's successor, {:?}, installed itself once: {back:#?}", name(&first));
     let trace = back[0]["trace_id"].as_str().unwrap_or_default().to_string();
     println!("role given back: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);

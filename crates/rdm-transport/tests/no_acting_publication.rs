@@ -21,13 +21,14 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(name: &str, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, port: u16) -> MeshDigest {
+    let node_id = NodeId::mint();
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
-            node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
-            endpoint_id: EndpointId(format!("key-{name}")),
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
+            node_id: node_id.clone(),
+            name,
+            endpoint_id: EndpointId(format!("key-{node_id}")),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -47,10 +48,10 @@ fn digest(name: &str, port: u16) -> MeshDigest {
 }
 
 fn op(kind: &str, d: &MeshDigest) -> LifecycleOp {
-    LifecycleOp { mesh: d.node.mesh.clone(),
+    LifecycleOp { kind: d.node.kind, mesh: d.node.mesh.clone(),
         build_id: "b-s53".into(),
         attempt: 1,
-        operation: format!("{kind}:{}", d.node.name),
+        operation: rdm_core::OperationId::new(kind, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         node_id: d.node.node_id.clone(),
         incarnation: d.node.incarnation.clone(),
         name: d.node.name.clone(),
@@ -93,7 +94,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         let fp_n = node().await;
         let fab = fabric();
         let fp_m = TopologyView::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fp_own = digest("mesh1.admin.1", 41_001);
+        let fp_own = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, 41_001);
         let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: fp_own.node.incarnation.clone(), node_id: fp_own.node.node_id.clone() }, vec![]).await.unwrap();
         fp_bb.set_mesh_primary(true);
         // The view a node-admin hands its backbone at each install: it names mesh2 live, for the
@@ -101,8 +102,8 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         // with no primary goes unheard (R-RX4).
             fp_bb.set_fabric_primary(true);
 
-        let admin2 = digest("mesh2.admin.1", 42_001);
-        let rpc = digest("mesh2.rpc.1", 42_101);
+        let admin2 = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, 42_001);
+        let rpc = digest(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, 42_101);
         for d in [&admin2, &rpc] {
             assert!(fp_m.digest_view.record(d.clone()));
         }

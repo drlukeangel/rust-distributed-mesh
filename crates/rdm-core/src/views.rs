@@ -141,7 +141,7 @@ pub struct DataDirUnreadable {
 /// One node as the answering node-admin's view holds it (`node.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeView {
-    /// The node's `path.name`.
+    /// The node's `(path, name)`.
     pub name: PathName,
     /// The node's kind.
     pub kind: NodeKind,
@@ -185,7 +185,7 @@ pub struct NodeView {
     #[serde(default)]
     pub gossip: Option<GossipStats>,
     /// The node's tag labels (R-TG1): caller-owned meta set through `node.update`, read from the
-    /// node's row at its `path.name`, never from its digest.
+    /// node's row at its `(path, name)`, never from its digest.
     #[serde(default)]
     pub tags: std::collections::BTreeSet<String>,
     /// The node's config (R-TG1, node-rpc-envelope.md "Meta and config"): the application's property
@@ -268,14 +268,14 @@ impl NodeView {
         self.name.path()
     }
 
-    /// The node's name within its path (`<base>[.old]`).
+    /// The node's name within its path (an ordinary name, or `<name>-old` for an explicitly replaced predecessor).
     pub fn node_name(&self) -> String {
         self.name.name()
     }
 
     /// The node's `node_type`.
     pub fn node_type(&self) -> &'static str {
-        self.name.node_type()
+        self.kind.node_type()
     }
 }
 
@@ -289,11 +289,11 @@ pub struct MeshView {
     /// The mesh's lifecycle state.
     pub status: ScopeStatus,
     /// The node-admin that is the mesh's primary, when one is elected.
-    pub primary_admin: Option<PathName>,
+    pub primary_admin: Option<NodeId>,
     /// The control API base of the mesh's primary.
     pub admin_api_base: Option<String>,
-    /// The `path.name` of every node of the mesh.
-    pub nodes: Vec<PathName>,
+    /// The globally unique ID of every node of the mesh.
+    pub nodes: Vec<NodeId>,
     /// The mesh's member renewals, when they stall (fabric-certs.md §Tracking).
     #[serde(default)]
     pub renewals: Option<Renewals>,
@@ -311,7 +311,7 @@ pub struct FabricView {
     /// The provider that runs the fabric's nodes.
     pub provider: ProviderKind,
     /// The node-admin that is the fabric primary, when one is elected.
-    pub fabric_primary: Option<PathName>,
+    pub fabric_primary: Option<NodeId>,
     /// The control API base of the fabric primary.
     pub admin_api_base: Option<String>,
     /// The fabric's meshes.
@@ -363,27 +363,27 @@ pub struct CaView {
 }
 
 /// The fabric-primary's atlas (`fabric.atlas.get`; docs/plans/proposal/fabric-atlas.md):
-/// one row for every node the current Build's topology names, in `path.name` order. Each row's birth
+/// one row for every node the current Build's topology names, in `(path, name)` order. Each row's birth
 /// is the one its node row names current, and its lifecycle is what the ops left it: the
 /// fabric-primary's own (what it accepted and the receipts its attempts returned) and the effects the
 /// node row records of any admin's op. Gossip is context only (`observed`) and decides nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtlasView {
-    /// The rows, one per node, in `path.name` order.
+    /// The rows, one per node, in `(path, name)` order.
     pub nodes: Vec<AtlasNodeView>,
 }
 
 impl AtlasView {
     /// The row of the node at `name`, when the atlas holds one.
-    pub fn node(&self, name: &str) -> Option<&AtlasNodeView> {
-        self.nodes.iter().find(|n| n.name.to_string() == name)
+    pub fn node(&self, node_id: &NodeId) -> Option<&AtlasNodeView> {
+        self.nodes.iter().find(|n| n.node_id == *node_id)
     }
 }
 
 /// One node of the [`AtlasView`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AtlasNodeView {
-    /// The node's `path.name`.
+    /// The node's `(path, name)`.
     pub name: PathName,
     /// The minted id of the birth the node row names current.
     pub node_id: NodeId,
@@ -395,7 +395,7 @@ pub struct AtlasNodeView {
     pub stopped: bool,
     /// The operation key (`node.stop:mesh2.rpc.1`) of the command accepted on the node whose attempt
     /// has not completed; `None` once its receipts are in.
-    pub accepted: Option<String>,
+    pub accepted: Option<crate::OperationId>,
     /// Context only: the status the answering admin's gossip view holds for the same birth, when it
     /// holds it. Never read by acceptance.
     pub observed: Option<NodeStatus>,
@@ -406,15 +406,15 @@ pub struct AtlasNodeView {
 pub struct ConnectionView {
     /// The entry's minted id: an open entry's id names its connection to `node.connection.delete`.
     pub id: String,
-    /// The source node's `path.name`.
+    /// The source node's globally unique ID.
     pub source: String,
-    /// The destination node's `path.name`.
+    /// The destination node's globally unique ID.
     pub destination: String,
     /// `direct` or `proxy`.
     pub kind: String,
     /// `connected`, `disconnected` or `failed`.
     pub state: String,
-    /// The carrier's `path.name`, for a proxy.
+    /// The carrier's globally unique node ID, for a proxy.
     #[serde(default)]
     pub carrier: Option<String>,
     /// Why the connection is in its state, when known.
@@ -428,7 +428,7 @@ pub struct ConnectionView {
 /// The connection facts one node holds (`node.connection.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionsView {
-    /// The answering node's `path.name`, the name it holds.
+    /// The answering node's globally unique ID.
     pub node: String,
     /// Whether the node holds the complete set.
     pub complete: bool,

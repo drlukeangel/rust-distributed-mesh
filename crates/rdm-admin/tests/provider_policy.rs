@@ -16,19 +16,21 @@ use std::sync::Arc;
 
 async fn first_admin(spawn_type: Option<&str>) -> (Arc<MemoryBuildStateAdapter>, Arc<ControlPlane>) {
     let policy = FabricPolicy::bootstrap(spawn_type).expect("bootstrap");
-    let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
+    let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
     admin.status = NodeStatus::Ready;
     admin.is_primary = true;
     admin.is_fabric_primary = true;
     admin.admin_api_base = Some("http://127.0.0.1:18001".into());
+    let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: IncarnationId::mint() };
+    admin.incarnation_id = Some(executor.incarnation.clone());
     let topology = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: policy.provider },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Pending }],
         nodes: vec![admin],
     };
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&topology), "mesh1.admin.1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), topology, crate::adopted_time()));
+    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&topology), &executor, "mesh1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), topology, crate::adopted_time()));
     (builds, cp)
 }
 

@@ -7,14 +7,42 @@ use crate::accepted::FabricTopology;
 use crate::admin::PeerRecovery;
 use crate::model::{IncarnationId, NodeKind, PathName};
 use crate::status_rpc::MeshReport;
+use rdm_core::framing::Birth;
 use rdm_core::{MemberStatus, MeshDigest};
 use std::collections::BTreeMap;
+
+/// A checklist subject keeps node identity distinct from a planned location or a label.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MissingSubject {
+    /// An existing node selected by globally unique ID.
+    Node(crate::model::NodeId),
+    /// An unresolved allocation with separate path and name.
+    Location(PathName),
+    /// A diagnostic label that is never parsed as identity.
+    Label(String),
+}
+
+impl From<String> for MissingSubject {
+    fn from(label: String) -> Self { Self::Label(label) }
+}
+impl From<&str> for MissingSubject {
+    fn from(label: &str) -> Self { Self::Label(label.into()) }
+}
+impl std::fmt::Display for MissingSubject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Node(id) => write!(f, "node_id={id}"),
+            Self::Location(at) => write!(f, "path={:?}, name={:?}", at.path, at.name),
+            Self::Label(label) => f.write_str(label),
+        }
+    }
+}
 
 /// A planned birth that has not checked in this checklist, and why.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Missing {
     /// Who has not checked in.
-    pub who: String,
+    pub who: MissingSubject,
     /// Why.
     pub why: &'static str,
 }
@@ -35,31 +63,36 @@ pub fn planned(topology: &FabricTopology, mesh: &str) -> Vec<PathName> {
     topology.meshes.get(mesh).map(|m| m.nodes.iter().cloned().collect()).unwrap_or_default()
 }
 
-/// The planned births that have not checked in. `me` is the primary running the checklist, ready or not
+/// The planned births that have not checked in. `me` is the primary ID; `current` resolves each
+/// separate path/name pair to its exact current birth. The primary is ready or not
 /// by its own status. `heard` are the digests received from their members since the checklist began;
 /// `known` every digest held (to tell a birth never heard from one heard before the checklist). A path
 /// `stopped` names is at rest by command and holds no checklist (states.md:16, Q240): it sends no
 /// digest and is never missing.
-pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: bool, heard: &[MeshDigest], known: &[MeshDigest], deleted: &dyn Fn(&str) -> bool, stopped: &dyn Fn(&PathName) -> bool) -> Vec<Missing> {
+pub(crate) fn missing_members(planned: &[PathName], me: &crate::model::NodeId, current: &dyn Fn(&PathName) -> Option<Birth>, me_ready: bool, heard: &[MeshDigest], known: &[MeshDigest], deleted: &dyn Fn(&str) -> bool, stopped: &dyn Fn(&PathName) -> bool) -> Vec<Missing> {
     let mut out = Vec::new();
     for path in planned {
         if stopped(path) {
             continue;
         }
-        let who = path.to_string();
-        if path == me {
+        let birth = current(path);
+        let who = birth.as_ref().map(|b| MissingSubject::Node(b.node_id.clone())).unwrap_or_else(|| MissingSubject::Location(path.clone()));
+        if birth.as_ref().is_some_and(|b| &b.node_id == me) {
             if !me_ready {
                 out.push(Missing { who, why: "not-ready" });
             }
             continue;
         }
-        let live = |d: &&MeshDigest| &d.node.name == path && !deleted(d.node.node_id.as_str());
+        let matches = |d: &&MeshDigest| birth.as_ref().map_or(&d.node.name == path, |b| d.node.node_id == b.node_id && d.node.incarnation == b.incarnation);
+        let live = |d: &&MeshDigest| matches(d) && !deleted(d.node.node_id.as_str());
         let here: Vec<&MeshDigest> = heard.iter().filter(live).collect();
-        if here.iter().any(|d| d.status == MemberStatus::Ready) {
+        if birth.is_some() && here.iter().any(|d| d.status == MemberStatus::Ready) {
             continue;
         }
-        let held: Vec<&MeshDigest> = known.iter().filter(|d| &d.node.name == path).collect();
-        let why = if !here.is_empty() {
+        let held: Vec<&MeshDigest> = known.iter().filter(matches).collect();
+        let why = if birth.is_none() {
+            "no-current-birth"
+        } else if !here.is_empty() {
             "not-ready"
         } else if held.is_empty() {
             "no-birth-heard"
@@ -77,10 +110,10 @@ pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: boo
 /// each mesh with its current primary node-admin's birth (`None`: no primary), and whether that
 /// primary is `me`; `my_mesh_done` says whether `me`'s own mesh checklist is finished. A report counts
 /// only from the exact birth that is the mesh's primary now.
-pub(crate) fn fabric_missing(meshes: &[(String, Option<IncarnationId>, bool)], my_mesh_done: bool, reports: &BTreeMap<String, MeshReport>) -> Vec<Missing> {
+pub(crate) fn fabric_missing(meshes: &[(String, Option<Birth>, bool)], my_mesh_done: bool, reports: &BTreeMap<String, MeshReport>) -> Vec<Missing> {
     let mut out = Vec::new();
     for (mesh, primary, is_me) in meshes {
-        let who = mesh.clone();
+        let who = MissingSubject::Label(mesh.clone());
         let Some(primary) = primary else {
             out.push(Missing { who, why: "no-primary" });
             continue;
@@ -93,7 +126,7 @@ pub(crate) fn fabric_missing(meshes: &[(String, Option<IncarnationId>, bool)], m
         }
         match reports.get(mesh) {
             None => out.push(Missing { who, why: "no-report" }),
-            Some(r) if &r.incarnation != primary => out.push(Missing { who, why: "report-of-another-birth" }),
+            Some(r) if &r.birth != primary => out.push(Missing { who, why: "report-of-another-birth" }),
             Some(_) => {}
         }
     }
@@ -109,9 +142,9 @@ pub(crate) fn reports_of<'a>(declared: &crate::status_rpc::Declared, view: &crat
 /// Whether the mesh a fabric-primary decided to recover is back: its current primary is a birth the
 /// decision did not find, it reported to this fabric-primary, and it reported after the decision.
 /// A ready primary of a newer birth that has not reported is not this.
-pub fn recovered(recovery: &PeerRecovery, primary: Option<&IncarnationId>, report: Option<&MeshReport>) -> bool {
+pub fn recovered(recovery: &PeerRecovery, primary: Option<&Birth>, report: Option<&MeshReport>) -> bool {
     let (Some(primary), Some(report)) = (primary, report) else { return false };
-    !recovery.lost.contains(primary) && &report.incarnation == primary && report.at >= recovery.opened_at
+    !recovery.lost.contains(primary) && &report.birth == primary && report.at >= recovery.opened_at
 }
 
 #[cfg(test)]
@@ -121,13 +154,13 @@ mod tests {
     use std::time::Instant;
 
     fn path(mesh: &str, kind: NodeKind, ord: u32) -> PathName {
-        PathName::new(mesh, kind, ord)
+        PathName::numbered(mesh, kind, ord)
     }
 
     fn digest(p: &PathName, status: MemberStatus) -> MeshDigest {
         MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
-            node: MeshNode { mesh: p.mesh.clone(), kind: p.kind,
+            node: MeshNode { mesh: "mesh1".into(), kind: NodeKind::RpcNode,
                 node_id: crate::model::NodeId::mint(),
                 name: p.clone(),
                 endpoint_id: crate::model::EndpointId(String::new()),
@@ -157,55 +190,74 @@ mod tests {
         let ready = digest(&r1, MemberStatus::Ready);
         let pending = digest(&r2, MemberStatus::Pending);
         let before_opening = digest(&r3, MemberStatus::Ready);
+        let me = birth();
         let none = |_: &str| false;
         let no_stop = |_: &PathName| false;
-        // r1 checked in ready; r2 checked in but is not ready; r3 was heard only before the checklist began.
-        let m = missing_members(&planned, &a1, true, &[ready.clone(), pending.clone()], &[ready.clone(), pending.clone(), before_opening.clone()], &none, &no_stop);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.rpc.2(not-ready)", "mesh1.rpc.3(not-heard-since-opening)"]);
-        // A planned birth never heard at all is named as such, and the primary itself counts only when ready.
-        let m = missing_members(&planned, &a1, false, &[ready.clone()], &[ready.clone()], &none, &no_stop);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.admin.1(not-ready)", "mesh1.rpc.2(no-birth-heard)", "mesh1.rpc.3(no-birth-heard)"]);
-        // A deleted birth does not check in.
+        let resolve = |at: &PathName| {
+            if at == &a1 { return Some(me.clone()); }
+            [&ready, &pending, &before_opening].into_iter().find(|d| &d.node.name == at)
+                .map(|d| Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() })
+        };
+        let subject = |d: &MeshDigest| MissingSubject::Node(d.node.node_id.clone());
+        let m = missing_members(&planned, &me.node_id, &resolve, true, &[ready.clone(), pending.clone()], &[ready.clone(), pending.clone(), before_opening.clone()], &none, &no_stop);
+        assert_eq!(m, vec![Missing { who: subject(&pending), why: "not-ready" }, Missing { who: subject(&before_opening), why: "not-heard-since-opening" }]);
+        let unresolved = |at: &PathName| if at == &a1 { Some(me.clone()) } else if at == &r1 { resolve(at) } else { None };
+        let m = missing_members(&planned, &me.node_id, &unresolved, false, &[ready.clone()], &[ready.clone()], &none, &no_stop);
+        assert_eq!(m, vec![Missing { who: MissingSubject::Node(me.node_id.clone()), why: "not-ready" }, Missing { who: MissingSubject::Location(r2.clone()), why: "no-current-birth" }, Missing { who: MissingSubject::Location(r3.clone()), why: "no-current-birth" }]);
         let gone = |id: &str| id == ready.node.node_id.as_str();
-        let m = missing_members(&[r1.clone()], &a1, true, &[ready.clone()], &[ready.clone()], &gone, &no_stop);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.rpc.1(deleted)"]);
-        // Every planned birth checked in: nothing is missing.
-        let all: Vec<MeshDigest> = [&r1, &r2, &r3].iter().map(|p| digest(p, MemberStatus::Ready)).collect();
-        assert!(missing_members(&planned, &a1, true, &all, &all, &none, &no_stop).is_empty());
-        // A stopped birth holds no checklist (Q240): r3, stopped and never heard, is not missing; r2 still is.
+        let m = missing_members(&[r1.clone()], &me.node_id, &resolve, true, &[ready.clone()], &[ready.clone()], &gone, &no_stop);
+        assert_eq!(m, vec![Missing { who: subject(&ready), why: "deleted" }]);
+        let mut all = vec![ready.clone(), pending.clone(), before_opening.clone()];
+        for d in &mut all { d.status = MemberStatus::Ready; }
+        assert!(missing_members(&planned, &me.node_id, &resolve, true, &all, &all, &none, &no_stop).is_empty());
         let r3_stopped = |p: &PathName| p == &r3;
-        let m = missing_members(&planned, &a1, true, &[ready.clone()], &[ready.clone()], &none, &r3_stopped);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1.rpc.2(no-birth-heard)"]);
+        let m = missing_members(&planned, &me.node_id, &unresolved, true, &[ready.clone()], &[ready.clone()], &none, &r3_stopped);
+        assert_eq!(m, vec![Missing { who: MissingSubject::Location(r2), why: "no-current-birth" }]);
+
+        // A replacement at the same location never inherits the old node's self exemption,
+        // even when its incarnation value happens to match.
+        let replacement = Birth { node_id: crate::model::NodeId::mint(), incarnation: me.incarnation.clone() };
+        let m = missing_members(&[a1], &me.node_id, &|_| Some(replacement.clone()), true, &[], &[], &none, &no_stop);
+        assert_eq!(m, vec![Missing { who: MissingSubject::Node(replacement.node_id), why: "no-birth-heard" }]);
+        let unresolved_stale = missing_members(&[r1.clone()], &me.node_id, &|_| None, true, &[ready.clone()], &[ready.clone()], &none, &no_stop);
+        assert_eq!(unresolved_stale, vec![Missing { who: MissingSubject::Location(r1.clone()), why: "no-current-birth" }]);
+        let different = Birth { node_id: crate::model::NodeId::mint(), incarnation: ready.node.incarnation.clone() };
+        assert!(!missing_members(&[r1], &me.node_id, &|_| Some(different.clone()), true, &[ready.clone()], &[ready], &none, &no_stop).is_empty());
     }
 
-    fn report(incarnation: &IncarnationId, at: Instant) -> MeshReport {
-        MeshReport { incarnation: incarnation.clone(), at }
+    fn birth() -> Birth { Birth { node_id: crate::model::NodeId::mint(), incarnation: IncarnationId::mint() } }
+
+    fn report(birth: &Birth, at: Instant) -> MeshReport {
+        MeshReport { birth: birth.clone(), at }
     }
 
     // @feature: node-lifecycle
     #[test]
     fn fabric_checklist_waits_for_a_report_from_each_mesh_primarys_current_birth() {
-        let (old, new, other) = (IncarnationId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        let (old, new, other) = (birth(), birth(), birth());
         let t0 = Instant::now();
         let meshes = vec![("mesh1".to_string(), Some(other.clone()), true), ("mesh2".to_string(), Some(new.clone()), false), ("mesh3".to_string(), None, false)];
         let mut reports = BTreeMap::new();
         let m = fabric_missing(&meshes, true, &reports);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh2(no-report)", "mesh3(no-primary)"]);
+        assert_eq!(m, vec![Missing { who: "mesh2".into(), why: "no-report" }, Missing { who: "mesh3".into(), why: "no-primary" }]);
         // A report of the birth the mesh's primary replaced is not the current primary's report.
         reports.insert("mesh2".to_string(), report(&old, t0));
         let m = fabric_missing(&meshes[..2], true, &reports);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh2(report-of-another-birth)"]);
+        assert_eq!(m, vec![Missing { who: "mesh2".into(), why: "report-of-another-birth" }]);
+        let same_incarnation = Birth { node_id: crate::model::NodeId::mint(), incarnation: new.incarnation.clone() };
+        reports.insert("mesh2".to_string(), report(&same_incarnation, t0));
+        assert_eq!(fabric_missing(&meshes[..2], true, &reports)[0].why, "report-of-another-birth");
         reports.insert("mesh2".to_string(), report(&new, t0));
         assert!(fabric_missing(&meshes[..2], true, &reports).is_empty());
         // The holder's own mesh counts only once its own checklist is finished.
         let m = fabric_missing(&meshes[..2], false, &reports);
-        assert_eq!(m.iter().map(Missing::to_string).collect::<Vec<_>>(), vec!["mesh1(own-mesh-checklist-open)"]);
+        assert_eq!(m, vec![Missing { who: "mesh1".into(), why: "own-mesh-checklist-open" }]);
     }
 
     // @feature: node-lifecycle
     #[test]
     fn degraded_clears_only_on_the_current_primarys_report_after_the_decision() {
-        let (lost, recovered_id) = (IncarnationId::mint(), IncarnationId::mint());
+        let (lost, recovered_id) = (birth(), birth());
         let opened_at = Instant::now();
         let recovery = PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(1), opened_at, lost: vec![lost.clone()] };
         let later = opened_at + std::time::Duration::from_millis(5);
@@ -214,10 +266,14 @@ mod tests {
         // The birth the decision found never does, reported or not.
         assert!(!recovered(&recovery, Some(&lost), Some(&report(&lost, later))));
         // A report from a birth that is not the primary now is not the primary's.
-        assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&IncarnationId::mint(), later))));
+        assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&birth(), later))));
         // A report received before the decision is not fresh.
         assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&recovered_id, opened_at - std::time::Duration::from_millis(1)))));
         assert!(!recovered(&recovery, None, Some(&report(&recovered_id, later))));
+        let same_incarnation = Birth { node_id: crate::model::NodeId::mint(), incarnation: recovered_id.incarnation.clone() };
+        assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&same_incarnation, later))));
+        let reused_incarnation = Birth { node_id: crate::model::NodeId::mint(), incarnation: lost.incarnation.clone() };
+        assert!(recovered(&recovery, Some(&reused_incarnation), Some(&report(&reused_incarnation, later))));
         assert!(recovered(&recovery, Some(&recovered_id), Some(&report(&recovered_id, later))));
     }
 }

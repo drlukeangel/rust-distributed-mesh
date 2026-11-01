@@ -17,13 +17,13 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, status: MemberStatus, seq: u64, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, incarnation: &IncarnationId, status: MemberStatus, seq: u64, port: u16) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
             node_id: node_id.clone(),
-            name: name.parse().unwrap(),
-            endpoint_id: EndpointId(format!("key-{name}")),
+            name,
+            endpoint_id: EndpointId(format!("key-{node_id}")),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: incarnation.clone(),
             supersedes: None,
@@ -117,11 +117,11 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let publication = || async { assert!(bb.publish(&p, bb.own_members(&p)).await, "the primary publishes its publication") };
 
-        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_101);
+        let p_digest = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_101);
         p.publish(&p_digest).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.digest_view.record(digest("mesh1.rpc.1", &one, &one_birth, MemberStatus::Ready, 1, 41_111)));
-        assert!(p.digest_view.started(&one, &one_birth, &"mesh1.rpc.1".parse().unwrap()));
+        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &one, &one_birth, MemberStatus::Ready, 1, 41_111)));
+        assert!(p.digest_view.started(&one, &one_birth, &rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1"));
         let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;
 
         // Version N: the publication puts the projection into the mesh; a joiner reads it and installs it.
@@ -134,11 +134,11 @@ fn a_read_between_a_material_change_and_its_publication_serves_the_published_mem
 
         // A birth joins the view: a material change no publication has published yet.
         let (two, two_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.digest_view.record(digest("mesh1.rpc.2", &two, &two_birth, MemberStatus::Pending, 1, 41_112)));
+        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &two, &two_birth, MemberStatus::Pending, 1, 41_112)));
         assert!(p.digest_view.get(two.as_str()).is_some(), "the primary's view holds the new birth");
 
         let served = of(p.held_topology(&own()), "mesh1");
-        let names = |s: &SourceSnapshot| s.digests.iter().map(|d| d.node.name.to_string()).collect::<Vec<_>>();
+        let names = |s: &SourceSnapshot| s.digests.iter().map(|d| d.node.name.clone()).collect::<Vec<_>>();
         assert_eq!((served.publisher.clone(), served.topology_version), (publisher.clone(), n), "the read serves the version its content was published at");
         let again = take_read(&reader, &served, 2);
         assert!(!matches!(again, Taken::Refused(rdm_transport::snapshot::Refusal::Inconsistent)), "a joiner holding version {n} takes the read as the same content: {again:?}, serving {:?}", names(&served));
@@ -177,9 +177,9 @@ fn a_read_of_one_mesh_serves_that_mesh_as_the_whole_read_does() {
         let (p_birth, p_node_id) = (IncarnationId::mint(), NodeId::mint());
         let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
-        p.publish(&digest("mesh1.admin.1", &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_201)).await.unwrap();
+        p.publish(&digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &p_node_id, &p_birth, MemberStatus::Ready, 0, 41_201)).await.unwrap();
         let (one, one_birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(p.digest_view.record(digest("mesh1.rpc.1", &one, &one_birth, MemberStatus::Ready, 1, 41_211)));
+        assert!(p.digest_view.record(digest(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &one, &one_birth, MemberStatus::Ready, 1, 41_211)));
         let own = || p.digest_view.get(p_node_id.as_str()).expect("the primary holds itself").0;
         let same = |when: &str| {
             let whole = of(p.held_topology(&own()), "mesh1");

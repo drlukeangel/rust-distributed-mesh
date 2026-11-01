@@ -8,6 +8,13 @@ use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
 
+fn executor_birth() -> rdm_core::framing::Birth {
+    rdm_core::framing::Birth {
+        node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(),
+        incarnation: rdm_core::IncarnationId::parse("0123456789ac").unwrap(),
+    }
+}
+
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();
     hex.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()
@@ -17,22 +24,22 @@ fn bytes(hex: &str) -> Vec<u8> {
 fn requests_match_the_frozen_four_variant_wire_schema() {
     let fixtures = [
         // positions 0, 1, 2 and 4 are reserved (the count forms): `a_request_at_a_reserved_count_position_is_an_unknown_variant`; position 6 (the removed restart): `a_request_at_the_removed_restart_position_is_an_unknown_variant`
-        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: "m.rpc.1".parse().unwrap() }) }, "00 00 03 07 6d2e7270632e31"),
+        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: rdm_core::PathName::new("m.rpc", "1").unwrap() }) }, "00 00 03 07 6d2e7270632e31"),
         (
-            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: "mesh1.rpc.1".parse().unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }) },
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }) },
             "00 00 0a 0b 6d657368312e7270632e31 0c 303132333435363738396162 0c 79727a34396a333033796834",
         ),
         (
             BuildRequest::Create {
                 submit: BuildSubmit::Change(BuildChange::Steps {
                     steps: vec![
-                        Step::DeleteConnections { node: "m.rpc.1".parse().unwrap() },
-                        Step::LeaveMesh { node: "m.rpc.1".parse().unwrap() },
-                        Step::Update { node: "m.rpc.1".parse().unwrap(), name: "m.rpc.1.old".parse().unwrap() },
-                        Step::Stop { node: "m.rpc.1.old".parse().unwrap() },
-                        Step::Create { mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, node: "m.rpc.1".parse().unwrap(), executable: None },
-                        Step::Start { node: "m.rpc.1.old".parse().unwrap() },
-                        Step::Delete { node: "m.rpc.1.old".parse().unwrap() },
+                        Step::DeleteConnections { node: rdm_core::PathName::new("m.rpc", "1").unwrap() },
+                        Step::LeaveMesh { node: rdm_core::PathName::new("m.rpc", "1").unwrap() },
+                        Step::Update { node: rdm_core::PathName::new("m.rpc", "1").unwrap(), name: rdm_core::PathName::new("m.rpc.old", "1").unwrap() },
+                        Step::Stop { node: rdm_core::PathName::new("m.rpc.old", "1").unwrap() },
+                        Step::Create { mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, node: rdm_core::PathName::new("m.rpc", "1").unwrap(), executable: None },
+                        Step::Start { node: rdm_core::PathName::new("m.rpc.old", "1").unwrap() },
+                        Step::Delete { node: rdm_core::PathName::new("m.rpc.old", "1").unwrap() },
                     ],
                 }),
             },
@@ -50,14 +57,14 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                     based_on: rdm_core::BuildId::parse("0123456789ab").unwrap(),
                     nodes: vec![
                         rdm_core::meta::NodeSpec {
-                            path: "m.admin.1".parse().unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
+                            path: rdm_core::PathName::new("m.admin", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
                             storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
                             placement: Default::default(),
                             executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
                             tags: ["t".to_string()].into(),
                             config: Default::default(),
                         },
-                        rdm_core::meta::NodeSpec { path: "m.rpc.1".parse().unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
+                        rdm_core::meta::NodeSpec { path: rdm_core::PathName::new("m.rpc", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
                     ],
                     topology_storage_provider: None,
                 }),
@@ -71,9 +78,9 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
             "00 00 0f 0c 303132333435363738396162 00 01 04 66696c65",
         ),
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
-        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), operations: vec![b"{}".to_vec()], hand_off_to: Some("n".into()), mesh: None }, "01 01 62 02 01 65 00 00 00 00 01 02 7b7d 01 01 6e 00"),
+        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: executor_birth(), context: CallContext::default(), operations: vec![b"{}".to_vec()], hand_off_to: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh: None }, "01 01 62 02 0c 303132333435363738396162 0c 303132333435363738396163 00 00 00 00 01 02 7b7d 01 0c 303132333435363738396162 00"),
         // a drift attempt names its mesh (Q118): mesh "m"
-        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), operations: vec![], hand_off_to: None, mesh: Some("m".into()) }, "01 01 62 02 01 65 00 00 00 00 00 00 01 01 6d"),
+        (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: executor_birth(), context: CallContext::default(), operations: vec![], hand_off_to: None, mesh: Some("m".into()) }, "01 01 62 02 0c 303132333435363738396162 0c 303132333435363738396163 00 00 00 00 00 00 01 01 6d"),
         (BuildRequest::Get { build_id: "b".into() }, "02 01 62"),
         (BuildRequest::Delete { build_id: "b".into() }, "03 01 62"),
         // builds.get (Q167 R-RD5), appended: no pair, then one pair (phase, [failed]).
@@ -124,7 +131,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
             Step {
                 build_id: b(),
                 attempt: 1,
-                operation: s("o"),
+                operation: rdm_core::OperationId::unscoped("o"),
                 step: s("s"),
                 receipt: None,
             },
@@ -135,7 +142,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
             Step {
                 build_id: b(),
                 attempt: 1,
-                operation: s("o"),
+                operation: rdm_core::OperationId::unscoped("o"),
                 step: s("s"),
                 receipt: Some(vec![0x7b, 0x7d]),
             },
@@ -145,7 +152,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
             Blocked {
                 build_id: b(),
                 attempt: 1,
-                operation: s("o"),
+                operation: rdm_core::OperationId::unscoped("o"),
                 step: s("s"),
                 reason: s("r"),
             },
@@ -158,7 +165,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
                 chunk_count: 1,
                 steps: vec![StepReceipt {
                     attempt: 1,
-                    operation: s("o"),
+                    operation: rdm_core::OperationId::unscoped("o"),
                     step: s("s"),
                     result: StepResult::Complete,
                 }],
@@ -172,7 +179,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
                 chunk_count: 1,
                 steps: vec![StepReceipt {
                     attempt: 1,
-                    operation: s("o"),
+                    operation: rdm_core::OperationId::unscoped("o"),
                     step: s("s"),
                     result: StepResult::Failed {
                         reason: s("r"),
@@ -193,7 +200,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
             Failed {
                 build_id: b(),
                 attempt: 2,
-                operation: s("o"),
+                operation: rdm_core::OperationId::unscoped("o"),
                 step: s("s"),
                 reason: s("r"),
                 code: rdm_core::outcome::Code::FailedPrecondition,
@@ -204,33 +211,33 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
             HandedOff {
                 build_id: b(),
                 attempt: 2,
-                to: s("t"),
+                to: rdm_core::NodeId::parse("0123456789ab").unwrap(),
             },
-            "06 01 62 02 01 74",
+            "06 01 62 02 0c 303132333435363738396162",
         ),
         (
             Got {
                 build_id: b(),
                 phase: BuildPhase::Complete,
                 attempt: 2,
-                executor: Some(s("e")),
+                executor: Some(executor_birth()),
                 reason: s("requested"),
                 last_failure: None,
                 steps: 3,
                 chunks: 1,
             },
-            "07 01 62 02 02 01 01 65 09 726571756573746564 00 03 01",
+            "07 01 62 02 02 01 0c 303132333435363738396162 0c 303132333435363738396163 09 726571756573746564 00 03 01",
         ),
         (Deleted { build_id: b() }, "08 01 62"),
-        (NotFabricPrimary { fabric_primary: Some(s("p")) }, "09 01 01 70"),
-        (NotExecutor { named: s("n"), recipient: s("r") }, "0a 01 6e 01 72"),
+        (NotFabricPrimary { fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) }, "09 01 0c 303132333435363738396162"),
+        (NotExecutor { named: executor_birth(), recipient: executor_birth() }, "0a 0c 303132333435363738396162 0c 303132333435363738396163 0c 303132333435363738396162 0c 303132333435363738396163"),
         (StaleClaim { held_attempt: 3, held_executor: None, carried_attempt: 2 }, "0b 03 00 02"),
         (UnknownBuild { build_id: b() }, "0c 01 62"),
         (Rejected { reason: s("r"), detail: s("d") }, "0d 01 72 01 64"),
-        (BuildInProgress { current_build_id: s("c"), mesh: Some(s("m")), held_by: Some(s("h")) }, "0e 01 63 01 01 6d 01 01 68"),
+        (BuildInProgress { current_build_id: s("c"), mesh: Some(s("m")), held_by: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) }, "0e 01 63 01 01 6d 01 0c 303132333435363738396162"),
         (BuildInProgress { current_build_id: s("c"), mesh: None, held_by: None }, "0e 01 63 00 00"),
         (AttemptTaken { detail: s("d") }, "0f 01 64"),
-        (RoleYielded { node: s("n"), by: s("b") }, "10 01 6e 01 62"),
+        (RoleYielded { node: executor_birth().node_id, by: s("b") }, "10 0c 303132333435363738396162 01 62"),
         (CannotDelete { build_id: b(), reason: s("r") }, "11 01 62 01 72"),
         (PeerUnresolved { reason: s("p") }, "12 01 70"),
         (NotReady { reason: s("n") }, "13 01 6e"),
@@ -238,9 +245,9 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
         (ConnectionsDeleting { reason: s("d") }, "15 01 64"),
         (Malformed { kind: MalformedKind::Corrupt }, "16 02"),
         (Unauthorized { reason: s("u") }, "17 01 75"),
-        (FabricPrimaryMoved { build_id: b(), fabric_primary: Some(s("p")) }, "18 01 62 01 01 70"),
+        (FabricPrimaryMoved { build_id: b(), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) }, "18 01 62 01 01 70"),
         (FabricPrimaryMoved { build_id: b(), fabric_primary: None }, "18 01 62 00"),
-        (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(s("p")), mesh_primary: None }, "19 01 01 6d 01 01 70 00"),
+        (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh_primary: None }, "19 01 01 6d 01 01 70 00"),
         // build.get's frames (Q167 R-RD5), appended after NotClaimant.
         (Topology { build_id: b(), chunk_index: 0, chunk_count: 1, nodes: vec![] }, "1a 01 62 00 01 00"),
         (BuildReply::Build { build_id: b(), phase: BuildPhase::Failed, attempt: 2, executor: None, reason: s("r"), last_failure: Some(s("x")), current: true, steps: 1, chunks: 1 }, "1b 01 62 03 02 00 01 72 01 01 78 01 01 01"),
@@ -270,14 +277,14 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         Step {
             build_id: "b".into(),
             attempt: 1,
-            operation: "o".into(),
+            operation: rdm_core::OperationId::unscoped("o"),
             step: "s".into(),
             receipt: None,
         },
         Blocked {
             build_id: "b".into(),
             attempt: 1,
-            operation: "o".into(),
+            operation: rdm_core::OperationId::unscoped("o"),
             step: "s".into(),
             reason: "r".into(),
         },
@@ -295,9 +302,9 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     }
     for terminal in [
         Complete { build_id: "b".into(), attempt: 1 },
-        Failed { build_id: "b".into(), attempt: 1, operation: "o".into(), step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition },
-        HandedOff { build_id: "b".into(), attempt: 1, to: "t".into() },
-        FabricPrimaryMoved { build_id: "b".into(), fabric_primary: Some("p".into()) },
+        Failed { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o"), step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition },
+        HandedOff { build_id: "b".into(), attempt: 1, to: rdm_core::NodeId::parse("0123456789ab").unwrap() },
+        FabricPrimaryMoved { build_id: "b".into(), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) },
         Got { build_id: "b".into(), phase: BuildPhase::Pending, attempt: 0, executor: None, reason: "requested".into(), last_failure: None, steps: 0, chunks: 0 },
         Deleted { build_id: "b".into() },
         End { builds: 0 },
@@ -306,14 +313,14 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     }
     for refusal in [
         NotFabricPrimary { fabric_primary: None },
-        NotExecutor { named: "n".into(), recipient: "r".into() },
+        NotExecutor { named: executor_birth(), recipient: executor_birth() },
         StaleClaim { held_attempt: 1, held_executor: None, carried_attempt: 2 },
         UnknownBuild { build_id: "b".into() },
         Rejected { reason: "r".into(), detail: "d".into() },
         BuildInProgress { current_build_id: "c".into(), mesh: None, held_by: None },
         NotClaimant { mesh: Some("m".into()), fabric_primary: None, mesh_primary: None },
         AttemptTaken { detail: "d".into() },
-        RoleYielded { node: "n".into(), by: "b".into() },
+        RoleYielded { node: executor_birth().node_id, by: "b".into() },
         CannotDelete { build_id: "b".into(), reason: "r".into() },
         RejectedFilter { reason: "build.get: the pair (zone, [eu]) names no property of a Build header row".into() },
     ] {
@@ -325,15 +332,15 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
 
 #[test]
 fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() {
-    let r = BuildReply::Failed { build_id: "cq2tyb03krac".into(), attempt: u32::MAX, operation: "o".repeat(256), step: "s".repeat(256), reason: "r".repeat(16 * 1024) , code: rdm_core::outcome::Code::FailedPrecondition };
+    let r = BuildReply::Failed { build_id: "cq2tyb03krac".into(), attempt: u32::MAX, operation: rdm_core::OperationId::unscoped("o".repeat(256)), step: "s".repeat(256), reason: "r".repeat(16 * 1024) , code: rdm_core::outcome::Code::FailedPrecondition };
     assert!(Build::encode_reply(&r).unwrap().len() <= Build::MAX_REPLY_FRAME_BYTES);
     let q = BuildRequest::AttemptRun {
         build_id: "cq2tyb03krac".into(),
         attempt: u32::MAX,
-        executor: "mesh1.admin.1".into(),
+        executor: executor_birth(),
         context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("t".repeat(55)), tracestate: Some("s".repeat(512)), baggage: Some("b".repeat(8192)) },
         operations: (0..64).map(|_| vec![0u8; 256]).collect(),
-        hand_off_to: Some("mesh1.admin.1".into()),
+        hand_off_to: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()),
         mesh: Some("mesh1".into()),
     };
     assert!(Build::encode_request(&q).unwrap().len() <= Build::MAX_REQUEST_FRAME_BYTES);
@@ -349,12 +356,12 @@ fn every_reply_variant_of_build_classifies_to_one_code() {
 fn failure_codes_are_appended_and_retained_by_the_build_wire() {
     use rdm_core::outcome::Code;
     for (code, suffix) in [(Code::Unknown, 2), (Code::DeadlineExceeded, 4), (Code::Unavailable, 14)] {
-        let terminal = BuildReply::Failed { build_id: "b".into(), attempt: 2, operation: "o".into(), step: "s".into(), reason: "r".into(), code };
+        let terminal = BuildReply::Failed { build_id: "b".into(), attempt: 2, operation: rdm_core::OperationId::unscoped("o"), step: "s".into(), reason: "r".into(), code };
         let mut golden = bytes("05 01 62 02 01 6f 01 73 01 72"); golden.push(suffix);
         assert_eq!(Build::encode_reply(&terminal).unwrap(), golden);
         assert_eq!(Build::decode_reply(&golden).unwrap(), terminal);
         assert_eq!(Build::classify_reply(&terminal).code(), code);
-        let receipt = BuildReply::Steps { build_id: "b".into(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: "o".into(), step: "s".into(), result: StepResult::Failed { reason: "r".into(), code } }] };
+        let receipt = BuildReply::Steps { build_id: "b".into(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: rdm_core::OperationId::unscoped("o"), step: "s".into(), result: StepResult::Failed { reason: "r".into(), code } }] };
         let mut golden = bytes("03 01 62 00 01 01 01 01 6f 01 73 01 01 72"); golden.push(suffix);
         assert_eq!(Build::encode_reply(&receipt).unwrap(), golden);
         assert_eq!(Build::decode_reply(&golden).unwrap(), receipt);
@@ -423,14 +430,14 @@ fn a_create_spec_carries_explicit_ownership_and_the_complete_config_map() {
         ("m.rpc.1", "07 6d2e7270632e31 01 6d 01 00 00 00 00"),
     ];
     let admin = rdm_core::meta::NodeSpec {
-        path: "m.admin.1".parse().unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
+        path: rdm_core::PathName::new("m.admin", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
         storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
         placement: Default::default(),
         executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
         tags: ["t".to_string()].into(),
         config: Default::default(),
     };
-    let rpc = rdm_core::meta::NodeSpec::default_for("m.rpc.1".parse().unwrap(), "m", rdm_core::NodeKind::RpcNode);
+    let rpc = rdm_core::meta::NodeSpec::default_for(rdm_core::PathName::new("m.rpc", "1").unwrap(), "m", rdm_core::NodeKind::RpcNode);
     for ((path, expected), spec) in fixtures.iter().zip([&admin, &rpc]) {
         assert_eq!(postcard::to_allocvec(spec).unwrap(), bytes(expected), "{path}: explicit mesh, kind and complete properties");
     }

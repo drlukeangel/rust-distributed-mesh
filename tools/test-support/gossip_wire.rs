@@ -66,7 +66,7 @@ pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Opt
         Frame::NodeDeleting { op: o, .. } | Frame::NodeDeleted { op: o, .. } | Frame::NodeRestarting { op: o, .. } | Frame::NodeStopped { op: o, .. } | Frame::NodeConnectionsDeleting { op: o, .. } | Frame::NodeConnectionsDeleted { op: o, .. } | Frame::NodeLeaving { op: o, .. } | Frame::NodeLeft { op: o, .. } => {
             ms = o.event_at_rafka_ms;
             if let Frame::NodeDeleting { publisher, .. } | Frame::NodeRestarting { publisher, .. } | Frame::NodeStopped { publisher, .. } = f.data() { source = format!("rdm://{}/{}/{}", a.fabric, publisher.node_id, publisher.incarnation); }
-            (format!("operation/{}/{}/{}/birth/{}/{}", esc(&o.build_id), o.attempt, esc(&o.operation), o.node_id, o.incarnation), vec![o.build_id.clone(), o.attempt.to_string(), o.operation.clone(), o.node_id.to_string(), o.incarnation.to_string()])
+            (format!("birth/{}/{}/{}", a.fabric, o.node_id, o.incarnation), vec![o.build_id.clone(), o.attempt.to_string(), o.operation.action.clone(), o.operation.recipe_step.map(|step| step.to_string()).unwrap_or_default(), o.operation.occurrence.as_ref().map(ToString::to_string).unwrap_or_default(), o.mesh.clone(), o.node_id.to_string(), o.incarnation.to_string()])
         }
         Frame::Concern { node_id, incarnation, observer, .. } => (format!("birth/{}/{node_id}/{incarnation}", a.fabric), vec![node_id.to_string(), incarnation.to_string(), observer.clone()]),
         Frame::NewFabricPrimary { primary: h, .. } => (format!("fabric/{}/primary", a.fabric), vec![h.node_id.to_string(), h.incarnation.to_string()]),

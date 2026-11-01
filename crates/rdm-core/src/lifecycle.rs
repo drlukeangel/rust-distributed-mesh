@@ -18,17 +18,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleOp {
+    /// The subject's explicit immutable kind.
+    pub kind: crate::NodeKind,
     /// The Build the operation belongs to.
     pub build_id: String,
     /// The attempt of the Build.
     pub attempt: u32,
-    /// The operation's idempotency key (`node.delete:mesh2.rpc.2`), never a pipeline step.
-    pub operation: String,
+    /// The admitted structured operation identity, preserving its original step position.
+    pub operation: crate::OperationId,
     /// The logical node.
     pub node_id: NodeId,
     /// The incarnation of the birth.
     pub incarnation: IncarnationId,
-    /// The node's `path.name`.
+    /// The node's separate path and name fields.
     pub name: PathName,
     /// The subject owning mesh, independent of the path/name spelling.
     pub mesh: String,
@@ -50,13 +52,14 @@ pub struct LifecycleOp {
 
 impl PartialEq for LifecycleOp {
     fn eq(&self, other: &Self) -> bool {
-        let Self { build_id, attempt, operation, node_id, incarnation, name, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
+        let Self { build_id, attempt, operation, node_id, incarnation, name, kind, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
         *build_id == other.build_id
             && *attempt == other.attempt
             && *operation == other.operation
             && *node_id == other.node_id
             && *incarnation == other.incarnation
             && *name == other.name
+            && *kind == other.kind
             && *mesh == other.mesh
             && *event_at_rafka_ms == other.event_at_rafka_ms
     }
@@ -80,8 +83,8 @@ pub struct StateHook {
     /// The Build attempt that holds the checklist.
     pub attempt: u32,
     /// The operation.
-    pub operation: String,
-    /// The author at this hop, by `path.name`.
+    pub operation: crate::OperationId,
+    /// The author at this hop, by `(path, name)`.
     pub publisher: String,
     /// When the event happened, in Rafka-time; evidence only.
     pub event_at_rafka_ms: u64,
@@ -91,7 +94,7 @@ impl LifecycleOp {
     /// A stop operation (`node.stop:<path>`): the birth is stopped and rejoins as itself; its
     /// departure is `NodeStopped`, never `NodeDeleted`.
     pub fn is_stop(&self) -> bool {
-        self.operation.starts_with("node.stop:")
+        self.operation.action == "node.stop"
     }
 
     /// This operation carrying the trace context `traceparent` and `tracestate` (the carrier's).
@@ -100,7 +103,7 @@ impl LifecycleOp {
     }
 
     /// The operation's identity: the same for its `NodeDeleting` and `NodeDeleted`.
-    pub fn key(&self) -> (String, u32, String) {
+    pub fn key(&self) -> (String, u32, crate::OperationId) {
         (self.build_id.clone(), self.attempt, self.operation.clone())
     }
 }
@@ -117,19 +120,19 @@ mod tests {
 
     #[test]
     fn an_op_round_trips_and_its_key_is_the_operation_not_a_step() {
-        let op = LifecycleOp { mesh: "mesh2".into(),
+        let op = LifecycleOp { kind: crate::NodeKind::RpcNode, mesh: "mesh2".into(),
             build_id: "b1".into(),
             attempt: 2,
-            operation: "node.delete:mesh2.rpc.2".into(),
+            operation: crate::OperationId::location("node.delete", &crate::PathName::new("mesh2.rpc", "2").unwrap()),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
-            name: "mesh2.rpc.2".parse().unwrap(),
+            name: crate::PathName::new("mesh2.rpc", "2").unwrap(),
             event_at_rafka_ms: 7,
             traceparent: None,
             tracestate: None,
         };
         let back: LifecycleOp = serde_json::from_str(&serde_json::to_string(&op).unwrap()).unwrap();
         assert_eq!(back, op);
-        assert_eq!(op.key(), ("b1".to_string(), 2, "node.delete:mesh2.rpc.2".to_string()));
+        assert_eq!(op.key(), ("b1".to_string(), 2, op.operation.clone()));
     }
 }

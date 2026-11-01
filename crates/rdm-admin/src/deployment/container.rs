@@ -109,7 +109,7 @@ impl DockerError {
     pub(crate) fn into_deploy(self, wrap: impl FnOnce(String) -> DeployError) -> DeployError {
         match self.failure {
             super::client::Failure::Deadline { elapsed, bound, mutation } => DeployError::Deadline {
-                operation: self.operation.to_string(),
+                operation: rdm_core::OperationId::unscoped(self.operation),
                 deployment: self.deployment.unwrap_or_default(),
                 elapsed,
                 bound,
@@ -227,9 +227,9 @@ pub(crate) fn env_args(spec: &ResolvedNodeLaunch) -> Result<(Vec<String>, std::c
     Ok((args, client))
 }
 
-/// One launch's container: fixed by node and deployment id, so a re-run finds it.
+/// One launch's container: fixed by its globally unique deployment ID, so a re-run finds it.
 fn container_name(spec: &ResolvedNodeLaunch) -> String {
-    format!("rafka-{}-{}", docker_safe(&spec.node.to_string()), docker_safe(&spec.deployment_id.as_str()))
+    format!("rafka-{}", docker_safe(spec.deployment_id.as_str()))
 }
 
 /// Every address a container holds on `network` right now (`docker network inspect`). `Err`
@@ -538,7 +538,7 @@ impl ContainerDeploymentProvider {
             let out = deadline
                 .run(child.wait_with_output())
                 .await
-                .map_err(|elapsed| DeployError::Deadline { operation: "image.import".into(), deployment: String::new(), elapsed, bound: deadline.bound(), mutation: true })?
+                .map_err(|elapsed| DeployError::Deadline { operation: rdm_core::OperationId::unscoped("image.import"), deployment: String::new(), elapsed, bound: deadline.bound(), mutation: true })?
                 .map_err(|e| unsupported(format!("docker import: {e}")))?;
             if !out.status.success() {
                 return Err(unsupported(format!("cannot create {RUNTIME_IMAGE}: {}", String::from_utf8_lossy(&out.stderr).trim())));
@@ -610,7 +610,7 @@ impl ContainerDeploymentProvider {
     /// read.
     async fn find_by_name(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<Found, DeployError> {
         let name = container_name(spec);
-        let named = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason: format!("finding container {name}: {reason}") };
+        let named = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason: format!("finding container {name}: {reason}") };
         let deployment = spec.deployment_id.to_string();
         let on = On { deployment: Some(deployment.as_str()), ..On::default() };
         let state = match self.docker_text(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name], deadline, on).await {
@@ -635,7 +635,7 @@ impl ContainerDeploymentProvider {
                     Ok(_) => return Err(named(format!("the created container {id} is still there after its removal, so nothing is launched"))),
                     Err(e) => return Err(e.into_deploy(|r| named(format!("the created container {id} was removed, but its absence could not be read, so nothing is launched: {r}")))),
                 }
-                tracing::info_span!("rdm.node_admin.deployment.remove.via-created-container", node = %spec.node, deployment_id = %spec.deployment_id, container = id)
+                tracing::info_span!("rdm.node_admin.deployment.remove.via-created-container", node_path = %spec.node.path, node_name = %spec.node.name, deployment_id = %spec.deployment_id, container = id)
                     .in_scope(|| tracing::info!("a container Docker created and never started is removed by its exact id and read absent before the launch record decides"));
                 return self.by_launch_record(spec).await.map_err(named);
             }
@@ -689,7 +689,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     }
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch, deadline: super::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
-        let err = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
+        let err = |reason: String| DeployError::Spawn { node: spec.node.clone(), reason };
         let ip = spec.transport.ip();
         if let Some((n, a)) = spec.listeners.iter().find(|(_, a)| a.ip() != ip) {
             return Err(err(format!("listener {n} is assigned {a}, but one container has one address ({ip})")));
@@ -697,7 +697,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         let exe_name = spec.executable.file_name().ok_or_else(|| err(format!("{} names no file", spec.executable.display())))?;
         let exe_in = Path::new(BIN_DIR).join(exe_name);
         // The data dir, the mounts and an earlier birth's runtime record, on the blocking pool.
-        let admin = spec.node.kind == rdm_core::NodeKind::NodeAdmin;
+        let admin = spec.kind == rdm_core::NodeKind::NodeAdmin;
         let disk = {
             let (data_dir, env) = (spec.data_dir.clone(), spec.env.clone());
             crate::blocking::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
@@ -716,7 +716,11 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             "--label".into(),
             format!("rafka.fabric={}", self.fabric),
             "--label".into(),
-            format!("rafka.node={}", spec.node),
+            format!("rafka.node.path={}", spec.node.path),
+            "--label".into(),
+            format!("rafka.node.name={}", spec.node.name),
+            "--label".into(),
+            format!("rafka.node.kind={}", spec.kind.name()),
             "--network".into(),
             self.network.name.clone(),
             "--ip".into(),
@@ -899,12 +903,12 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     /// A container is given its own address on the fabric network before it starts (`--ip`): the
     /// one pre-boot address a container needs. Its ports are the operating system's. The address
     /// belongs to the birth it was given to: that birth binds it again, and a new birth at the same
-    /// `path.name` (a replace re-births there while its renamed predecessor's container still runs,
+    /// `(path, name)` (a replace re-births there while its renamed predecessor's container still runs,
     /// Q79) is given one no container holds. The addresses already taken on the network are asked of
     /// the daemon (no lock held across it); a daemon that cannot answer by the deadline, or a network
     /// with no address left, is an error naming it.
     async fn bind_ip(&self, node: &crate::model::PathName, birth: &crate::model::DeploymentId, deadline: super::deadline::Deadline) -> Result<IpAddr, DeployError> {
-        let err = |reason: String| DeployError::Spawn { node: node.to_string(), reason };
+        let err = |reason: String| DeployError::Spawn { node: node.clone(), reason };
         if let Some(ip) = self.ips.lock().unwrap().held.get(birth) {
             return Ok(*ip);
         }
@@ -1160,10 +1164,10 @@ mod tests {
             (rdm_core::launch::ENV_FABRIC_CA_KEY, "ca-key-hex"),
             (rdm_core::launch::ENV_DECLARED_SECRETS, "{\"v\":1,\"declared\":[]}"),
         ];
-        let spec = ResolvedNodeLaunch {
+        let spec = ResolvedNodeLaunch { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::NodeAdmin,
             secrets: std::collections::BTreeMap::from([("APP_KEY".to_string(), rdm_core::launch::SecretHex::of_value("app,value=with\nnewline")), ("APP_EMPTY".to_string(), rdm_core::launch::SecretHex::of_value(""))]),
             withhold: vec!["APP_KEY".into(), "APP_EMPTY".into()],
-            node: "mesh1.admin.2".parse().unwrap(),
+            node: rdm_core::PathName::new("mesh1.admin", "2").unwrap(),
             deployment_id: crate::model::DeploymentId::mint(),
             executable: "/bin/true".into(),
             args: vec![],
@@ -1249,10 +1253,10 @@ esac
             ContainerDeploymentProvider::prepare_with(Docker::program(self.dir.join("docker").display().to_string()), "fab", super::super::deadline::Deadline::step()).await.unwrap()
         }
         fn spec(&self) -> ResolvedNodeLaunch {
-            ResolvedNodeLaunch {
+            ResolvedNodeLaunch { mesh: "mesh1".to_owned(), kind: rdm_core::NodeKind::RpcNode,
                 secrets: Default::default(),
                 withhold: Vec::new(),
-                node: "mesh1.rpc.1".parse().unwrap(),
+                node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
                 deployment_id: crate::model::DeploymentId::mint(),
                 executable: "/bin/true".into(),
                 args: vec![],
@@ -1284,7 +1288,7 @@ esac
         let spec = fake.spec();
         fake.flag("hang-run");
         match p.spawn(&spec, short()).await {
-            Err(DeployError::Deadline { operation, mutation: true, .. }) => assert_eq!(operation, "container.run"),
+            Err(DeployError::Deadline { operation, mutation: true, .. }) => assert_eq!(operation, rdm_core::OperationId::unscoped("container.run")),
             other => panic!("a hung run is a deadline with its outcome unknown, got {other:?}"),
         }
         match p.find(&spec, super::super::deadline::Deadline::step()).await.unwrap() {
@@ -1338,7 +1342,7 @@ esac
         fake.set("created");
         fake.flag("hang-rm");
         match p.find(&spec, short()).await {
-            Err(DeployError::Deadline { operation, mutation: true, .. }) => assert_eq!(operation, "container.rm"),
+            Err(DeployError::Deadline { operation, mutation: true, .. }) => assert_eq!(operation, rdm_core::OperationId::unscoped("container.rm")),
             other => panic!("a hung cleanup is a deadline, got {other:?}"),
         }
         assert_eq!(fake.runs(), 0, "no replacement is launched");

@@ -10,7 +10,7 @@
 //! `TerminateRuntime` step proves its exit (mesh-delete.md step 7). The last admin's departure is read
 //! from its own leg spans, the executor's steps and a peer's resolver.
 
-use rdm_core::NodeKind;
+use rdm_core::{NodeKind, NodeId, PathName};
 use rdm_client::{NodeStatus, NodeView};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -67,12 +67,14 @@ fn alive(pid: u64) -> bool {
 /// its last admin's node.delete's (an attempt of the accepted Build), what a peer's resolver answers
 /// for the last admin's birth after the delete, and every span.
 struct Deleted {
-    last: String,
+    last: PathName,
+    last_id: NodeId,
+    last_incarnation: rdm_core::IncarnationId,
     builds: Vec<String>,
     resolution: Value,
     spans: Vec<Value>,
-    /// Every mesh1 birth's path.name and pid before the delete.
-    pids: Vec<(String, u64)>,
+    /// Every mesh1 node ID and runtime PID captured before the delete.
+    pids: Vec<(NodeId, u64)>,
 }
 
 /// mesh1 deleted, then its last admin's own node.delete, run to their end and read back.
@@ -81,14 +83,14 @@ async fn delete_mesh1(test: &str) -> Deleted {
     let both = [mesh("mesh1"), mesh("mesh2")];
     estate.reconcile_shape("fabric1", &both).await;
     let before = estate.settled_views(&both).await;
-    let mut pids: Vec<(String, u64)> = Vec::new();
+    let mut pids: Vec<(NodeId, u64)> = Vec::new();
     for n in before.iter().filter(|n| n.mesh == "mesh1") {
-        let name = n.name.to_string();
+        let name = &n.name;
         let pid = match estate.bootstrap_pid() {
-            Some(p) if name == "mesh1.admin.1" => u64::from(p),
-            _ => estate.pid_of(&name).await,
+            Some(p) if *name == PathName::new("mesh1.admin", "1").unwrap() => u64::from(p),
+            _ => estate.pid_of(name).await,
         };
-        pids.push((name, pid));
+        pids.push((n.node_id.clone(), pid));
     }
     // The Build deletes mesh1, a mesh.delete, which the initial fabric refuses until it has first reached
     // ready (states.md "The initial fabric before ready").
@@ -104,10 +106,11 @@ async fn delete_mesh1(test: &str) -> Deleted {
             (mesh1.len() == 1 && mesh1[0].status == NodeStatus::Ready).then(|| vec![mesh1[0].clone()])
         })
         .await;
-    let last = left[0].name.to_string();
-    let last_id = before.iter().find(|n| n.name.to_string() == last).map(|n| n.node_id.to_string()).unwrap();
+    let last = left[0].name.clone();
+    let last_id = left[0].node_id.clone();
+    let last_incarnation = left[0].incarnation_id.clone().expect("the ready last admin has an incarnation");
     estate.enter_fabric_primary().await;
-    let mut delete = estate.nodes_obj().await.delete(&last.parse().unwrap()).await.unwrap_or_else(|e| panic!("the node.delete of mesh1's last admin {last} was refused: {e}"));
+    let mut delete = estate.nodes_obj().await.delete(&last).await.unwrap_or_else(|e| panic!("the node.delete of mesh1's last admin {last:?} was refused: {e}"));
     let c = Estate::complete(&mut delete).await.build_id.to_string();
     estate.settled_views(&[mesh("mesh2")]).await;
     for (name, pid) in &pids {
@@ -115,8 +118,10 @@ async fn delete_mesh1(test: &str) -> Deleted {
     }
     // A peer mesh's ordinary node holds the deleted birth Gone, from its executor's NodeDeleted.
     let query = format!("exact:{last_id}");
-    let resolution = wait_for(&format!("mesh2.rpc.1 holds {last} Gone"), Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", "path:mesh2.rpc.1", "--query", &query]);
+    let peer = before.iter().find(|n| n.name == PathName::new("mesh2.rpc", "1").unwrap()).expect("fixture peer");
+    let target = format!("exact:{}", peer.node_id);
+    let resolution = wait_for(&format!("mesh2.rpc.1 holds {last:?} Gone"), Duration::from_secs(30), || async {
+        let r = estate.probe(&["resolve", "--target", &target, "--query", &query]);
         (r["reply"]["resolution"] == "gone").then_some(r)
     })
     .await;
@@ -125,7 +130,7 @@ async fn delete_mesh1(test: &str) -> Deleted {
     if !builds.contains(&c) {
         builds.push(c);
     }
-    Deleted { last, builds, resolution, spans: estate.spans(), pids }
+    Deleted { last, last_id, last_incarnation, builds, resolution, spans: estate.spans(), pids }
 }
 
 /// mesh1's last admin, stopped by its own node.delete, announces nothing after its stop's cut, and
@@ -144,62 +149,64 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     let cell = "a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let Deleted { last, builds, resolution, spans, pids } = delete_mesh1(cell).await;
+    let Deleted { last, last_id, last_incarnation, builds, resolution, spans, pids } = delete_mesh1(cell).await;
     let of_builds = |sp: &Value| builds.iter().any(|x| sp["attributes"]["build_id"] == x.as_str());
 
     // The executor's exited verdict: the TerminateRuntime of the last admin's node.delete, complete inside
     // the unchanged bound, a child of the pipeline run for this node and Build in the same trace.
-    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && of_builds(sp) && sp["attributes"]["node"] == last.as_str()).collect();
-    let obs = *observe.iter().max_by_key(|sp| start(sp)).unwrap_or_else(|| panic!("the node.delete proved {last}'s exit under {builds:?}"));
+    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && of_builds(sp) && sp["attributes"]["node_path"] == last.path && sp["attributes"]["node_name"] == last.name).collect();
+    let obs = *observe.iter().max_by_key(|sp| start(sp)).unwrap_or_else(|| panic!("the node.delete proved {last:?}'s exit under {builds:?}"));
     let obs_elapsed = attr_u64(obs, "elapsed_ms");
-    assert_eq!(obs["attributes"]["outcome"], "complete", "TerminateRuntime of {last} completed: {obs}");
-    assert!(obs_elapsed < OBSERVE_BOUND_MS, "TerminateRuntime of {last} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
+    assert_eq!(obs["attributes"]["outcome"], "complete", "TerminateRuntime of {last:?} completed: {obs}");
+    assert!(obs_elapsed < OBSERVE_BOUND_MS, "TerminateRuntime of {last:?} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
     let pipeline = named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
         .into_iter()
         .find(|sp| sp["span_id"] == obs["parent_span_id"] && sp["trace_id"] == obs["trace_id"])
         .unwrap_or_else(|| panic!("TerminateRuntime's parent is a pipeline span of its trace: {obs}"));
-    assert_eq!(pipeline["attributes"]["node"], last.as_str());
+    assert_eq!(pipeline["attributes"]["node_path"], last.path);
+    assert_eq!(pipeline["attributes"]["node_name"], last.name);
+    assert_eq!(pipeline["attributes"]["attempt"], obs["attributes"]["attempt"]);
     assert_eq!(pipeline["attributes"]["build_id"], obs["attributes"]["build_id"]);
 
     // The stopped node's own legs: its stop's cut, then nothing said by it on any channel, no
     // ConnectionsDeleting and no Leaving announcement; its transport closes.
-    let mine = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str()).collect() };
+    let mine = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == last_id.as_str()).collect() };
     let cut = mine("rdm.node_admin.node.update.via-stop-transport-cut");
-    assert_eq!(cut.len(), 1, "{last}'s stop cut its connections once: {cut:?}");
+    assert_eq!(cut.len(), 1, "{last:?}'s stop cut its connections once: {cut:?}");
     let cut_at = start(cut[0]);
     let announced: Vec<&Value> = mine("rdm.mesh.node.update.via-leave-announcement");
-    assert!(announced.is_empty(), "{last} announced nothing, stopped (R-ON1): {announced:#?}");
+    assert!(announced.is_empty(), "{last:?} announced nothing, stopped (R-ON1): {announced:#?}");
     let connections_deleting = mine("rdm.mesh.node.update.via-leave-connections-deleting");
-    assert!(connections_deleting.is_empty(), "{last} said no connections-deleting of its own: {connections_deleting:?}");
+    assert!(connections_deleting.is_empty(), "{last:?} said no connections-deleting of its own: {connections_deleting:?}");
     let shutdown = mine("rdm.mesh.node.update.via-leave-shutdown");
-    assert_eq!(shutdown.len(), 1, "one transport shutdown by {last}: {shutdown:?}");
-    assert!(start(shutdown[0]) > cut_at, "{last}'s transport shut down after its stop's cut");
+    assert_eq!(shutdown.len(), 1, "one transport shutdown by {last:?}: {shutdown:?}");
+    assert!(start(shutdown[0]) > cut_at, "{last:?}'s transport shut down after its stop's cut");
 
     // The departure is the executor's: NodeDeleted for the exact birth after the exited verdict, and a
     // peer's resolver holds it Gone.
-    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str() && of_builds(sp)).collect();
-    assert_eq!(deleted.len(), 1, "NodeDeleted published once for {last}: {deleted:?}");
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == last_id.as_str() && sp["attributes"]["incarnation_id"] == last_incarnation.as_str() && of_builds(sp)).collect();
+    assert_eq!(deleted.len(), 1, "NodeDeleted published once for {last:?}: {deleted:?}");
     assert!(start(deleted[0]) >= end(obs), "NodeDeleted follows the exited verdict: {}", deleted[0]);
-    assert_eq!(resolution["reply"]["resolution"], "gone", "a peer holds {last} Gone: {resolution}");
+    assert_eq!(resolution["reply"]["resolution"], "gone", "a peer holds {last:?} Gone: {resolution}");
     // Every member's end is node.delete's (mesh-delete.md step 3): its NodeDeleted published once by
     // its executor.
-    for (name, _) in pids.iter().filter(|(n, _)| *n != last) {
-        let published: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == name.as_str() && of_builds(sp)).collect();
+    for (name, _) in pids.iter().filter(|(n, _)| *n != last_id) {
+        let published: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == name.as_str() && of_builds(sp)).collect();
         assert_eq!(published.len(), 1, "{name}'s NodeDeleted is published once under {builds:?}: {published:?}");
     }
 
     let result = json!({
         "cell": cell,
         "builds": builds,
-        "deleting_admin": last,
+        "deleting_admin": { "node_id": last_id, "path": last.path, "name": last.name, "incarnation_id": last_incarnation },
         "stop_cut": { "start_unix_nano": cut_at, "trace_id": cut[0]["trace_id"], "span_id": cut[0]["span_id"] },
         "announcements_after_stop": announced.len(),
         "shutdown": { "start_unix_nano": start(shutdown[0]), "elapsed_ms": shutdown[0]["attributes"]["elapsed_ms"], "outcome": shutdown[0]["attributes"]["outcome"], "span_id": shutdown[0]["span_id"] },
-        "executor": { "step": "TerminateRuntime", "node": last, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"], "pipeline_span_id": pipeline["span_id"] },
+        "executor": { "step": "TerminateRuntime", "node_id": last_id, "path": last.path, "name": last.name, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"], "pipeline_span_id": pipeline["span_id"] },
         "node_deleted": { "trace_id": deleted[0]["trace_id"], "span_id": deleted[0]["span_id"] },
         "peer_resolution": resolution["reply"],
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
-    eprintln!("2942: {last} stopped (cut trace {}), nothing announced, TerminateRuntime {obs_elapsed} ms (trace {}), NodeDeleted trace {}", s(&cut[0]["trace_id"]), s(&obs["trace_id"]), s(&deleted[0]["trace_id"]));
+    eprintln!("2942: {last:?} stopped (cut trace {}), nothing announced, TerminateRuntime {obs_elapsed} ms (trace {}), NodeDeleted trace {}", s(&cut[0]["trace_id"]), s(&obs["trace_id"]), s(&deleted[0]["trace_id"]));
 }

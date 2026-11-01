@@ -21,13 +21,13 @@ fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
 
-fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
     MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
             node_id: node_id.clone(),
-            name: name.parse().unwrap(),
-            endpoint_id: EndpointId(format!("key-{name}")),
+            name,
+            endpoint_id: EndpointId(format!("key-{node_id}")),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: incarnation.clone(),
             supersedes: None,
@@ -104,16 +104,16 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
 
         // mesh2.admin.1, the previous mesh-primary of mesh2: every view holds it.
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let subject = digest("mesh2.admin.1", &id, &inc, 42_001);
+        let subject = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &id, &inc, 42_001);
         for v in [&fp_m, &m2_m, &rpc_m] {
             assert!(v.digest_view.record(subject.clone()), "the view holds mesh2.admin.1");
         }
 
         // The fabric-primary, as executor, proves the exit and publishes NodeDeleted on its own mesh channel.
-        let op = LifecycleOp { mesh: subject.node.mesh.clone(),
+        let op = LifecycleOp { kind: subject.node.kind, mesh: subject.node.mesh.clone(),
             build_id: "b-peer-mesh-deletion".into(),
             attempt: 3,
-            operation: "node.delete:mesh2.admin.1".into(),
+            operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()),
             node_id: id.clone(),
             incarnation: inc.clone(),
             name: subject.node.name.clone(),

@@ -27,7 +27,7 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
             fabric_id: fabric.clone(),
             mesh: "mesh1".into(),
             kind: rdm_core::NodeKind::RpcNode,
-            name: "mesh1.rpc.1".parse().unwrap(),
+            name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -55,7 +55,7 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         assert!(admin.config_updates.lock().unwrap().is_empty(), "own properties never travel to the mesh-primary");
         assert_eq!(running.topology_view.config(), Some(config.clone()));
         let addr = running.topology_view.endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the node's address");
-        admin.observer.resolver.insert(rdm_transport::ResolvedNode { node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), incarnation: launch.incarnation.clone(), transport_addr: addr });
+        admin.observer.resolver.insert(rdm_transport::ResolvedNode { mesh: launch.mesh.clone(), kind: launch.kind, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), incarnation: launch.incarnation.clone(), transport_addr: addr });
         let target = rdm_transport::NodeTarget::ExactNode(launch.node_id.clone());
         let caller: BTreeMap<String, String> = [("source".into(), "caller".into())].into();
         let apply = StatusRequest::ApplyNodeConfig { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), config: caller.clone(), revision: 0 };
@@ -108,9 +108,9 @@ fn estate_owner(test: &str) -> rdm_test::estate::Owner {
 }
 
 /// The config `node.get` at `admin` answers for `node`, from that admin's atlas.
-async fn config_at(estate: &rdm_test::estate::Estate, admin: &str, node: &str) -> Option<BTreeMap<String, String>> {
-    let views = estate.node_views_at(&admin.parse().unwrap()).await?;
-    views.into_iter().find(|v| v.name.to_string() == node).map(|v| v.config)
+async fn config_at(estate: &rdm_test::estate::Estate, admin: &rdm_core::PathName, node: &rdm_core::NodeId) -> Option<BTreeMap<String, String>> {
+    let views = estate.node_views_at(admin).await?;
+    views.into_iter().find(|v| v.node_id == *node).map(|v| v.config)
 }
 
 // @feature: node-lifecycle
@@ -121,20 +121,22 @@ async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
     let cell = "a_nodes_own_config_is_read_from_its_record_at_both_primaries";
     let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
-    estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
+    let views = estate.settled_views(&[("mesh1", 1, 0), ("mesh2", 1, 1)]).await;
+    let node_id = views.iter().find(|n| n.mesh == "mesh2" && n.kind == rdm_core::NodeKind::RpcNode).expect("mesh2 rpc node").node_id.clone();
+    let target = format!("exact:{node_id}");
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let out = estate.probe(&["own-config", "--target", "path:mesh2.rpc.1", "--value", "listener.data=127.0.0.1:45005"]);
+    let out = estate.probe(&["own-config", "--target", &target, "--value", "listener.data=127.0.0.1:45005"]);
     assert_eq!(out["own_config"], "config-updated", "mesh2's primary answers the node's own update: {out}");
     let config: BTreeMap<String, String> = [("listener.data".to_string(), "127.0.0.1:45005".to_string())].into();
-    assert_eq!(config_at(&estate, "mesh2.admin.1", "mesh2.rpc.1").await, Some(config.clone()), "mesh2's primary answers the map at once, from its atlas");
-    assert_eq!(config_at(&estate, "mesh1.admin.1", "mesh2.rpc.1").await, Some(config), "the fabric-primary reads the same durable record without a push");
+    assert_eq!(config_at(&estate, &rdm_core::PathName::new("mesh2.admin", "1").unwrap(), &node_id).await, Some(config.clone()), "mesh2's primary answers the map at once, from its atlas");
+    assert_eq!(config_at(&estate, &rdm_core::PathName::new("mesh1.admin", "1").unwrap(), &node_id).await, Some(config), "the fabric-primary reads the same durable record without a push");
     estate.stop().await;
     let spans = estate.spans();
     let attr = |sp: &serde_json::Value, k: &str| sp["attributes"][k].as_str().map(str::to_string).unwrap_or_else(|| sp["attributes"][k].to_string());
-    let written = rdm_test::estate::named(&spans, "rdm.node.record.update.via-properties").into_iter().find(|span| attr(span, "node") == "mesh2.rpc.1").expect("the node wrote its own record");
+    let written = rdm_test::estate::named(&spans, "rdm.node.record.update.via-properties").into_iter().find(|span| attr(span, "node_id") == node_id.as_str()).expect("the node wrote its own record");
     assert_eq!(attr(written, "outcome"), "durable");
     assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-config-push").is_empty(), "no primary sends copied config upward");
-    assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-apply-node-config").iter().all(|span| attr(span, "node") != "mesh2.rpc.1"), "an own update requires no config command back to the node");
+    assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-apply-node-config").iter().all(|span| attr(span, "node") != node_id.as_str()), "an own update requires no config command back to the node");
     assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-config").iter().all(|span| attr(span, "apply") != "own"));
     estate.record_trace_url(written["trace_id"].as_str().unwrap());
 }

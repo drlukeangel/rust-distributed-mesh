@@ -30,9 +30,9 @@ fn owner() -> Owner {
 async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_at_all() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 2)])] }).await;
-    let want = ["mesh1.admin.1", "mesh1.broker.1", "mesh1.broker.2", "mesh1.gateway.1", "mesh1.gateway.2"].iter().map(|n| n.to_string()).collect();
+    let want = [rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "1").unwrap(), rdm_core::PathName::new("mesh1.broker", "2").unwrap(), rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), rdm_core::PathName::new("mesh1.gateway", "2").unwrap()].into_iter().collect();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
-    let (b1, b2) = (estate.node_value("mesh1.broker.1").await, estate.node_value("mesh1.broker.2").await);
+    let (b1, b2) = (estate.node_value(&rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await, estate.node_value(&rdm_core::PathName::new("mesh1.broker", "2").unwrap()).await);
     let (b1_id, b2_id) = (b1["node_id"].as_str().unwrap().to_string(), b2["node_id"].as_str().unwrap().to_string());
     let exact_b1 = format!("exact:{b1_id}");
 
@@ -45,8 +45,10 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     assert_eq!(direct["reply"]["result"], json!({"found": true, "value": "one"}));
 
     // 2. ViaPeer through gateway.2 to the same broker.
-    estate.witness_holds_birth("mesh1.gateway.2", "mesh1.broker.1").await;
-    let carried = estate.probe(&["get", "--target", &exact_b1, "--via", "path:mesh1.gateway.2", "--key", "r1"]);
+    let carrier_id = estate.node_view(&rdm_core::PathName::new("mesh1.gateway", "2").unwrap()).await.node_id;
+    let carrier_target = format!("exact:{carrier_id}");
+    estate.witness_holds_birth(&rdm_core::PathName::new("mesh1.gateway", "2").unwrap(), &rdm_core::PathName::new("mesh1.broker", "1").unwrap()).await;
+    let carried = estate.probe(&["get", "--target", &exact_b1, "--via", &carrier_target, "--key", "r1"]);
     assert_eq!((carried["outcome"].as_str(), carried["route"].as_str()), (Some("Reply"), Some("via-peer")), "{carried}");
     assert_eq!(carried["reply"]["executing_node"], b1_id, "the carrier reached exactly broker.1: {carried}");
     assert_eq!(carried["reply"]["result"], json!({"found": true, "value": "one"}));
@@ -71,14 +73,16 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     let direct_b1: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "direct" && s["attributes"]["target"] == b1_id).collect();
     assert!(!direct_b1.is_empty() && direct_b1.iter().all(|r| r["attributes"]["outcome"] == "Reply"), "{direct_b1:?}");
     let direct_served = served_in(&direct_b1);
-    assert!(!direct_served.is_empty() && direct_served.iter().all(|s| s["attributes"]["incarnation_id"] == b1["incarnation_id"]), "the direct calls were served by broker.1's birth only: {direct_served:?}");
+    assert!(!direct_served.is_empty() && direct_served.iter().all(|s| s["attributes"]["node_id"] == b1["node_id"] && s["attributes"]["incarnation_id"] == b1["incarnation_id"]), "the direct calls were served by broker.1's birth only: {direct_served:?}");
     let carried_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.serve.via-carried-inner").collect();
     assert_eq!(carried_t.len(), 1, "exactly one carried inner call in the whole run: {carried_t:?}");
     assert_eq!(carried_t[0]["attributes"]["target"], b1_id, "the carrier was handed exactly broker.1");
     let via: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "via-peer").collect();
     assert_eq!(via.len(), 1, "{via:?}");
-    assert_eq!((via[0]["attributes"]["target"].as_str(), via[0]["attributes"]["carrier"].as_str(), via[0]["attributes"]["outcome"].as_str()), (Some(b1_id.as_str()), Some("mesh1.gateway.2"), Some("Reply")));
-    assert!(served_in(&via).iter().all(|s| s["attributes"]["incarnation_id"] == b1["incarnation_id"]), "the carried call was served by broker.1's birth only");
+    assert_eq!((via[0]["attributes"]["target"].as_str(), via[0]["attributes"]["carrier"].as_str(), via[0]["attributes"]["outcome"].as_str()), (Some(b1_id.as_str()), Some(carrier_id.as_str()), Some("Reply")));
+    let via_served = served_in(&via);
+    assert_eq!(via_served.len(), 1, "one carried proof-store request was served: {via_served:?}");
+    assert!(via_served.iter().all(|s| s["attributes"]["node_id"] == b1["node_id"] && s["attributes"]["incarnation_id"] == b1["incarnation_id"]), "the carried call was served by broker.1's birth only");
     let none_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "no-active-route").collect();
     assert_eq!(none_t.len(), 1, "{none_t:?}");
     assert_eq!(none_t[0]["attributes"]["outcome"], "NotSent");
@@ -88,9 +92,9 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     // NoActiveRoute choice opens none.
     let entry = estate.entry_birth();
     let opened: Vec<&Value> = spans.iter().filter(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")).collect();
-    assert!(opened.iter().all(|s| s["attributes"]["incarnation_id"] == entry.incarnation.as_str()), "no route: no connection was opened but the entry admin {}'s view read: {opened:?}", entry.name);
+    assert!(opened.iter().all(|s| s["attributes"]["incarnation_id"] == entry.incarnation.as_str()), "no route: no connection was opened but the entry admin {:?}'s view read: {opened:?}", entry.name);
     assert!(served_in(&none_t).is_empty(), "no route: nothing served");
-    let b2_served: Vec<_> = served.iter().filter(|s| s["attributes"]["incarnation_id"] == b2["incarnation_id"]).collect();
+    let b2_served: Vec<_> = served.iter().filter(|s| s["attributes"]["node_id"] == b2["node_id"] && s["attributes"]["incarnation_id"] == b2["incarnation_id"]).collect();
     assert_eq!(b2_served.len(), 1, "broker.2 served exactly the one call selected for it: {b2_served:?}");
     estate.record_trace_url(via[0]["trace_id"].as_str().unwrap_or(""));
 }

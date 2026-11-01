@@ -141,9 +141,9 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::Runtime
     let key = iroh::SecretKey::from_bytes(&hex::decode(key_hex.trim()).unwrap().try_into().unwrap());
     rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: rdm_core::FabricId::parse(&env("RDM_FABRIC_ID")).unwrap(),
-        node: rdm_core::MeshNode { mesh: (env("RDM_NODE_NAME").parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (env("RDM_NODE_NAME").parse::<rdm_core::PathName>().unwrap()).kind,
+        node: rdm_core::MeshNode { mesh: spec.mesh.clone(), kind: spec.kind,
             node_id: NodeId::parse(&env("RDM_NODE_ID")).unwrap(),
-            name: env("RDM_NODE_NAME").parse().unwrap(),
+            name: rdm_core::PathName::new(env("RDM_NODE_PATH"), env("RDM_NODE_NAME")).unwrap(),
             endpoint_id: rdm_core::EndpointId(key.public().to_string()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId::parse(&env("RDM_INCARNATION_ID")).unwrap(),
@@ -273,7 +273,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rdm-rpc-node".into(),
             seeds: vec![(key.into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), name: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
             store_dir: data_root.to_path_buf(),
@@ -317,7 +317,7 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
 }
 
 fn request(build_id: &BuildId, attempt: u32, node: &PathName) -> CreateRequest {
-    CreateRequest { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt, node: node.clone(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None }
+    CreateRequest { predecessor: None, operation: rdm_core::OperationId::location("node.create", &(node)), mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, build_id: build_id.clone(), attempt, node: node.clone(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new(), entry: None }
 }
 
 /// Attempt 1 by `lost`, killed at `dies`.
@@ -333,7 +333,7 @@ async fn lost_attempt(fleet: &Fleet, lost: &Executor, builds: &MemoryBuildStateA
 }
 
 fn complete_attempts(view: &rdm_admin::build_state::BuildProjection, step: CreateStep, node: &PathName) -> Vec<u32> {
-    view.steps.iter().filter(|r| r.step == step.name() && r.operation == format!("node.create:{node}") && r.outcome == StepOutcome::Complete).map(|r| r.attempt).collect()
+    view.steps.iter().filter(|r| r.step == step.name() && r.operation == rdm_core::OperationId::location("node.create", node) && r.outcome == StepOutcome::Complete).map(|r| r.attempt).collect()
 }
 
 /// CONTRACT (#2892): a create re-run by a successor executor (the lost admin's recovery, at
@@ -357,7 +357,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         let successor = executor(&fleet, &data_root, "successoradminkey");
 
         // CONTROL: the same executor re-runs its own cut-short run: its birth is handed on.
-        let own = "mesh1.rpc.1".parse::<PathName>().unwrap();
+        let own = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let build_own = accepted_build(&builds).await;
         lost_attempt(&fleet, &lost, &builds, &build_own, &own, Dies::BeforeJoin).await;
         let own_birth = fleet.spawns().last().cloned().expect("attempt 1 launched the birth");
@@ -367,7 +367,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert!(fleet.terminated.lock().unwrap().is_empty(), "nothing of the executor's own is stopped");
 
         // CONTROL: a birth that JOINED under the lost executor is handed on by the successor.
-        let joined = "mesh1.rpc.2".parse::<PathName>().unwrap();
+        let joined = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
         let build_joined = accepted_build(&builds).await;
         lost_attempt(&fleet, &lost, &builds, &build_joined, &joined, Dies::AfterJoin).await;
         let spawns_before = fleet.spawns().len();
@@ -378,7 +378,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert!(fleet.running(joined_birth.pid), "a birth that joined keeps running");
 
         // THE FINDING: the lost executor's launch never joined; its seed is the lost endpoint.
-        let stranded = "mesh1.rpc.3".parse::<PathName>().unwrap();
+        let stranded = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
         let build_stranded = accepted_build(&builds).await;
         lost_attempt(&fleet, &lost, &builds, &build_stranded, &stranded, Dies::BeforeJoin).await;
         let dead = fleet.spawns().last().cloned().unwrap();
@@ -395,17 +395,17 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         assert!(fleet.running(fresh.pid));
 
         // A node the lost executor never launched: its identity decision is executor-independent.
-        let unborn = "mesh1.rpc.4".parse::<PathName>().unwrap();
+        let unborn = rdm_core::PathName::new("mesh1.rpc", "4").unwrap();
         let build_unborn = accepted_build(&builds).await;
         let decided = rdm_admin::build_state::BuildStepReceipt {
             mesh: None,
             build_id: build_unborn.clone(),
             attempt: 1,
-            operation: format!("node.create:{unborn}"),
+            operation: rdm_core::OperationId::location("node.create", &unborn),
             step: CreateStep::AllocateIdentity.name().into(),
             outcome: StepOutcome::Complete,
             output: Some(json!({"node_id": NodeId::mint(), "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": DeploymentId::mint()})),
-            executor: Some("lostadminkey".into()),
+            executor: Some(lost.template.executor_birth()),
         };
         let decided_node_id = decided.output.as_ref().unwrap()["node_id"].as_str().unwrap().to_string();
         builds.append_step_receipt(&decided).await.unwrap();

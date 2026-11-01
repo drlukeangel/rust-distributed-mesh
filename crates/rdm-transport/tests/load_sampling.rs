@@ -15,14 +15,14 @@ use rdm_transport::topology::{learn_addresses, Backbone, TopologyView};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-fn digest(name: &str, ep: &iroh::Endpoint) -> MeshDigest {
+fn digest(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind, ep: &iroh::Endpoint) -> MeshDigest {
     let port = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
     MeshDigest {
         held_hash: Default::default(),
         fabric_id: FabricId::parse("fab000000001").unwrap(),
-        node: MeshNode { mesh: (name.parse::<rdm_core::PathName>().unwrap()).mesh.clone(), kind: (name.parse::<rdm_core::PathName>().unwrap()).kind,
+        node: MeshNode { mesh: mesh.to_owned(), kind: kind,
             node_id: NodeId::mint(),
-            name: name.parse().unwrap(),
+            name,
             endpoint_id: EndpointId(ep.id().to_string()),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
@@ -105,13 +105,13 @@ fn published_digest_carries_process_load_with_configured_budgets_to_backbone_and
         let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let mem_m = TopologyView::join(&mem_node.gossip, &mem_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
 
-        let src_digest = digest("mesh2.admin.1", &src_node.ep);
+        let src_digest = digest(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &src_node.ep);
         let src_pub = PublisherId {
             node: "mesh2.admin.1".to_string(),
             incarnation: src_digest.node.incarnation.clone(),
             node_id: src_digest.node.node_id.clone(),
         };
-        let fwd_digest = digest("mesh1.admin.1", &fwd_node.ep);
+        let fwd_digest = digest(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, &fwd_node.ep);
         let fwd_pub = PublisherId {
             node: "mesh1.admin.1".to_string(),
             incarnation: fwd_digest.node.incarnation.clone(),

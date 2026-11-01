@@ -35,8 +35,6 @@ pub enum RouteChoice {
     ViaPeer {
         /// The carrier's node id.
         carrier: NodeId,
-        /// The carrier's `path.name`.
-        path: PathName,
     },
     /// No active route to the target exists.
     NoActiveRoute,
@@ -57,9 +55,8 @@ impl From<&EffectiveRoute> for RouteChoice {
     fn from(r: &EffectiveRoute) -> Self {
         match r {
             EffectiveRoute::Direct { .. } => RouteChoice::Direct,
-            EffectiveRoute::ViaPeer { carrier, proxy } => RouteChoice::ViaPeer {
-                carrier: proxy.carrier.as_ref().map(|c| c.node_id.clone()).expect("a valid Proxy names its carrier"),
-                path: carrier.clone(),
+            EffectiveRoute::ViaPeer { carrier, .. } => RouteChoice::ViaPeer {
+                carrier: carrier.clone(),
             },
             EffectiveRoute::NoActiveRoute => RouteChoice::NoActiveRoute,
         }
@@ -73,8 +70,8 @@ pub enum RouteLeg {
     Direct,
     /// The call was carried.
     ViaPeer {
-        /// The carrier's `path.name`.
-        carrier: String,
+        /// The carrier's globally unique ID.
+        carrier: NodeId,
     },
     /// No leg: nothing was resolved, dialled or sent.
     None,
@@ -115,10 +112,10 @@ impl NodeRpcClient {
                 let (out, ev) = self.call::<P>(&NodeTarget::ExactNode(target.clone()), req, opts).await;
                 (out, ev, RouteLeg::Direct)
             }
-            RouteChoice::ViaPeer { carrier, path } => {
-                span.record("carrier", path.to_string().as_str());
+            RouteChoice::ViaPeer { carrier } => {
+                span.record("carrier", carrier.to_string().as_str());
                 let (out, ev) = self.call_via::<P>(&NodeTarget::ExactNode(carrier.clone()), target, req, opts).await;
-                (out, ev, RouteLeg::ViaPeer { carrier: path.to_string() })
+                (out, ev, RouteLeg::ViaPeer { carrier: carrier.clone() })
             }
             RouteChoice::NoActiveRoute => (PreCommit::begin(P::OP).not_sent(NotSentReason::NoActiveRoute), None, RouteLeg::None),
         };
@@ -156,14 +153,14 @@ impl NodeRpcClient {
     pub async fn call_connected<P: NodeProtocol>(
         &self,
         held: &ConnectionsHeld,
-        own: &PathName,
+        own: &NodeId,
         destination: &PathName,
         target: &NodeId,
         policy: CarrierPolicy,
         req: &P::Request,
         opts: &CallOptions,
     ) -> ConnectedCall<P::Reply> {
-        let resolution = resolve(held, own, destination, policy);
+        let resolution = resolve(held, own, target, policy);
         self.call_resolved::<P>(resolution, own, destination, target, req, opts).await
     }
 
@@ -172,7 +169,7 @@ impl NodeRpcClient {
     pub async fn call_resolved<P: NodeProtocol>(
         &self,
         resolution: rdm_core::connections::RouteResolution,
-        own: &PathName,
+        own: &NodeId,
         destination: &PathName,
         target: &NodeId,
         req: &P::Request,
@@ -181,8 +178,8 @@ impl NodeRpcClient {
         let span = tracing::info_span!(
             "rdm.node_rpc.route.resolve.via-held-projection",
             protocol = P::NAME,
-            own = %own,
-            destination = %destination,
+            own_node_id = %own,
+            destination_path = %destination.path, destination_name = %destination.name,
             route = resolution.route.token(),
             deleted = tracing::field::Empty,
         );

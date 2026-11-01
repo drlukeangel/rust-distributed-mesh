@@ -526,7 +526,7 @@ impl NodeRpcClient {
             }
             _ => match self.resolver.resolve(target) {
                 Ok(n) => {
-                    tracing::info!(step = "resolved", node = %n.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.as_str(), "the target resolved to one birth");
+                    tracing::info!(step = "resolved", node_path = %n.name.path, node_name = %n.name.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.as_str(), "the target resolved to one birth");
                     // Whatever this node's record no longer names leaves the pool now.
                     self.pool.purge_stale(&n);
                     Reach { peer: n.endpoint_id, addr: n.transport_addr, observed: Some(n.clone()), node: Some(n) }
@@ -617,7 +617,7 @@ impl NodeRpcClient {
                     "rdm.node_rpc.connection.reject.via-admission-block",
                     peer = %key.peer.fmt_short(),
                     incarnation_id = %key.birth(),
-                    destination = %node.node.as_ref().map(|n| n.name.to_string()).unwrap_or_default(),
+                    destination = %node.node.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(),
                     destination_node_id = %node.node.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(),
                     at,
                     reason = %why,
@@ -1365,10 +1365,10 @@ impl Attempts {
             };
             let mut carried = match &leg {
                 crate::route::RouteChoice::Direct => None,
-                crate::route::RouteChoice::ViaPeer { carrier, path } => match self.forward_payload(pacing.floor) {
-                    Ok(p) => Some((NodeTarget::ExactNode(carrier.clone()), path.to_string(), p)),
+                crate::route::RouteChoice::ViaPeer { carrier } => match self.forward_payload(pacing.floor) {
+                    Ok(p) => Some((NodeTarget::ExactNode(carrier.clone()), carrier.to_string(), p)),
                     Err(why) => {
-                        tracing::info_span!("rdm.node_rpc.delivery.reject.via-carried-leg", delivery_id = %self.id, attempt, carrier = %path, reason = %why)
+                        tracing::info_span!("rdm.node_rpc.delivery.reject.via-carried-leg", delivery_id = %self.id, attempt, carrier = %carrier, reason = %why)
                             .in_scope(|| tracing::info!("the attempt is not carried: it goes direct"));
                         None
                     }

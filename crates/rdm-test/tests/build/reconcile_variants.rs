@@ -69,16 +69,16 @@ async fn verbatim(estate: &Estate) -> (rdm_client::BuildId, Vec<NodeSpec>, Vec<N
     (current.based_on, nodes, current.rows)
 }
 
-fn at<'a>(request: &'a mut [NodeSpec], path: &str) -> &'a mut NodeSpec {
-    request.iter_mut().find(|s| s.path.to_string() == path).unwrap_or_else(|| panic!("the request lists {path}"))
+fn at<'a>(request: &'a mut [NodeSpec], path: &PathName) -> &'a mut NodeSpec {
+    request.iter_mut().find(|s| &s.path == path).unwrap_or_else(|| panic!("the request lists {path:?}"))
 }
 
 /// The executable the live row at `path` records.
-fn row_executable(rows: &[NodeView], path: &str) -> Binding {
+fn row_executable(rows: &[NodeView], path: &PathName) -> Binding {
     rows.iter()
-        .find(|n| n.name.to_string() == path && !matches!(n.status, rdm_client::NodeStatus::Deleted | rdm_client::NodeStatus::Dead))
+        .find(|n| &n.name == path && !matches!(n.status, rdm_client::NodeStatus::Deleted | rdm_client::NodeStatus::Dead))
         .and_then(|n| n.executable.clone())
-        .unwrap_or_else(|| panic!("the row at {path} records its executable"))
+        .unwrap_or_else(|| panic!("the row at {path:?} records its executable"))
 }
 
 /// `b` copied under the estate's root with one byte appended: the same program under another sha256.
@@ -94,11 +94,18 @@ fn another_build(estate: &Estate, b: &Binding, tag: &str) -> Binding {
     Binding { sha256: sha256_file(&to).unwrap(), executable: to, ..b.clone() }
 }
 
-/// The record of the live node at `path` on the fabric's store root, and its view (`fabric.nodes.get`).
-async fn node_row(estate: &Estate, path: &str) -> (Value, NodeView) {
-    let node = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("node.get: {e}")).into_iter().find(|n| n.name.to_string() == path).unwrap_or_else(|| panic!("fabric.nodes.get answers {path}"));
-    let stored: Value = estate.node_record(node.node_id.as_str()).unwrap_or_else(|| panic!("the record of {path} is not in nodes.jsonl"));
+/// The lifecycle/launch record of the live node at `path` on the fabric's store root, and its view (`fabric.nodes.get`).
+async fn node_row(estate: &Estate, path: &PathName) -> (Value, NodeView) {
+    let node = estate.nodes_obj().await.get(&rdm_client::Filter::new()).await.unwrap_or_else(|e| panic!("node.get: {e}")).into_iter().find(|n| &n.name == path).unwrap_or_else(|| panic!("fabric.nodes.get answers {path:?}"));
+    let stored: Value = estate.node_record(node.node_id.as_str()).unwrap_or_else(|| panic!("the record of {path:?} is not in nodes.jsonl"));
     (stored["record"].clone(), node)
+}
+
+/// Node-owned values are read by node ID from the latest appended property record.
+fn properties(estate: &Estate, node: &NodeView) -> rdm_node::node_records::NodeProperties {
+    let properties = estate.node_properties(&node.node_id).expect("node-owned property record");
+    assert_eq!(Some(properties.birth.incarnation_id.clone()), node.incarnation_id);
+    properties
 }
 
 /// One Build of the matrix: `request` submitted on `based_on`, Complete within [`BOUND`], and the fabric
@@ -143,46 +150,46 @@ fn resets_as_the_pages_say(estate: &Estate, rows: &[(String, String, Back)]) {
 /// The variants that act on `mesh`'s rpc paths, in order, from a fabric where `mesh` holds `<mesh>.rpc.1`
 /// on the estate's executable: tags only, storage only, a new path, another executable, a removed path.
 async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, String, Back)>) {
-    let rpc1 = format!("{mesh}.rpc.1");
-    let rpc2 = format!("{mesh}.rpc.2");
+    let rpc1 = PathName::new(format!("{mesh}.rpc"), "1").unwrap();
+    let rpc2 = PathName::new(format!("{mesh}.rpc"), "2").unwrap();
     let (based_on, mut r, _) = verbatim(estate).await;
     at(&mut r, &rpc1).tags = ["zone_a".to_string()].into();
     row(estate, &format!("{mesh}: tags only"), based_on, r, Back::Stays, rows).await;
-    let (record, node) = node_row(estate, &rpc1).await;
-    assert_eq!(record["tags"], json!(["zone_a"]), "{mesh}: the tags reach {rpc1}'s row: {record}");
+    let (_, node) = node_row(estate, &rpc1).await;
+    assert_eq!(properties(estate, &node).tags, ["zone_a".to_string()].into(), "tags reach node-owned properties");
     assert_eq!(node.tags, ["zone_a".to_string()].into(), "{mesh}: and fabric.nodes.get answers them");
 
     let (based_on, mut r, _) = verbatim(estate).await;
     let zone: std::collections::BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
     at(&mut r, &rpc1).config = zone.clone();
     row(estate, &format!("{mesh}: config only"), based_on, r, Back::Stays, rows).await;
-    let (record, _) = node_row(estate, &rpc1).await;
-    assert_eq!(record["config"], json!({"zone": "a"}), "{mesh}: the config reaches {rpc1}'s row: {record}");
-    // The node applied it before the Build's operation completed (row first, then the node); its digest
-    // carries it from its next gossip, which mesh.nodes.get answers a live node's config from.
-    estate.until_node(&rpc1, &format!("{rpc1} carries the config"), Duration::from_secs(30), |n| n.filter(|n| n.config == zone).map(|_| ())).await;
+    let (_, node) = node_row(estate, &rpc1).await;
+    assert_eq!(properties(estate, &node).config, zone, "config reaches node-owned properties");
+    // The completed property operation persisted the node-owned config before replying.
+    // Node reads return that config for the same node ID.
+    estate.until_node(&rpc1, &format!("{rpc1:?} carries the config"), Duration::from_secs(30), |n| n.filter(|n| n.config == zone).map(|_| ())).await;
 
     let (based_on, mut r, _) = verbatim(estate).await;
     at(&mut r, &rpc1).storage_persistence = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
     row(estate, &format!("{mesh}: storage only"), based_on, r, Back::Stays, rows).await;
     let (record, node) = node_row(estate, &rpc1).await;
-    assert_eq!(record["storage_persistence"], json!({"persistence": "persistent", "disposition": "preserve"}), "{mesh}: the storage reaches {rpc1}'s row: {record}");
-    assert_eq!((record["config"].clone(), node.config), (json!({"zone": "a"}), zone), "{mesh}: a storage-only change leaves the config as it is");
+    assert_eq!(record["storage_persistence"], json!({"persistence": "persistent", "disposition": "preserve"}), "{mesh}: the storage reaches {rpc1:?}'s row: {record}");
+    assert_eq!((properties(estate, &node).config, node.config), (zone.clone(), zone), "{mesh}: a storage-only change leaves the config as it is");
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    r.push(rdm_test::executables::created_spec(rpc2.parse().unwrap(), mesh, NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode)));
+    r.push(rdm_test::executables::created_spec(rpc2.clone(), mesh, NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode)));
     row(estate, &format!("{mesh}: a new path"), based_on, r, Back::ToPending, rows).await;
-    estate.until_node(&rpc2, &format!("{rpc2} ready"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).map(|_| ())).await;
+    estate.until_node(&rpc2, &format!("{rpc2:?} ready"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready).map(|_| ())).await;
 
     let (based_on, mut r, rows_now) = verbatim(estate).await;
     let next = another_build(estate, &row_executable(&rows_now, &rpc2), &format!("{mesh}-next"));
     at(&mut r, &rpc2).executable = Some(next.clone());
     row(estate, &format!("{mesh}: another executable"), based_on, r, Back::ToPending, rows).await;
-    let replaced = estate.until_node(&rpc2, &format!("{rpc2} on the new executable"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.executable.as_ref() == Some(&next)).cloned()).await;
-    assert_eq!(replaced.executable.as_ref(), Some(&next), "{rpc2} runs the executable its request named");
+    let replaced = estate.until_node(&rpc2, &format!("{rpc2:?} on the new executable"), BOUND, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.executable.as_ref() == Some(&next)).cloned()).await;
+    assert_eq!(replaced.executable.as_ref(), Some(&next), "{rpc2:?} runs the executable its request named");
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    r.retain(|s| s.path.to_string() != rpc2);
+    r.retain(|s| s.path != rpc2);
     row(estate, &format!("{mesh}: a removed path"), based_on, r, Back::ToPending, rows).await;
 }
 
@@ -193,7 +200,8 @@ async fn day0_variants(estate: &Estate, rows: &mut Vec<(String, String, Back)>) 
     row(estate, "the unchanged request (each held path naming none)", based_on, r, Back::Stays, rows).await;
 
     let (based_on, mut r, rows_now) = verbatim(estate).await;
-    at(&mut r, "mesh1.admin.1").executable = Some(row_executable(&rows_now, "mesh1.admin.1"));
+    let admin = PathName::new("mesh1.admin", "1").unwrap();
+    at(&mut r, &admin).executable = Some(row_executable(&rows_now, &admin));
     row(estate, "the Day-0 admin named on the executable its row records", based_on, r, Back::Stays, rows).await;
 
     // Every entry names what its row records now (the Day-0 admin's from the row above, every created
@@ -218,7 +226,7 @@ async fn every_reconcile_variant_on_a_day0_fabric_completes_with_the_fabric_read
     day0_variants(&estate, &mut rows).await;
     // mesh1.rpc.1, so the rpc variants have a held path to act on.
     let (based_on, mut r, _) = verbatim(&estate).await;
-    r.push(rdm_test::executables::created_spec("mesh1.rpc.1".parse().unwrap(), "mesh1", NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode)));
+    r.push(rdm_test::executables::created_spec(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode, estate.executables.of(NodeKind::RpcNode)));
     row(&estate, "mesh1: a new path, mesh1.rpc.1", based_on, r, Back::ToPending, &mut rows).await;
     rpc_variants(&estate, "mesh1", &mut rows).await;
     estate.stop().await;
@@ -237,8 +245,8 @@ async fn every_reconcile_variant_on_a_two_mesh_fabric_completes_with_the_fabric_
     estate.until_fabric_ready(BOUND).await;
     let mut rows = Vec::new();
     let (based_on, mut r, _) = verbatim(&estate).await;
-    for (p, kind) in [("mesh2.admin.1", NodeKind::NodeAdmin), ("mesh2.rpc.1", NodeKind::RpcNode)] {
-        r.push(rdm_test::executables::created_spec(p.parse().unwrap(), "mesh2", kind, estate.executables.of(kind)));
+    for (p, kind) in [(PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin), (PathName::new("mesh2.rpc", "1").unwrap(), NodeKind::RpcNode)] {
+        r.push(rdm_test::executables::created_spec(p, "mesh2", kind, estate.executables.of(kind)));
     }
     row(&estate, "mesh2 created, the Day-0 admin's entry kept naming none", based_on, r, Back::ToPending, &mut rows).await;
     estate.settles_to(&[("mesh1", 1, 0), ("mesh2", 1, 1)], BOUND).await;
