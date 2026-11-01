@@ -357,9 +357,12 @@ fn done_steps(build: &Value, operation: &Op, attempt: u64) -> Vec<String> {
 
 /// How many receipts each step of `operation` holds at `attempt`.
 
-/// The attempts a Build that put the fabric back to pending ends at when its one run ran every
-/// operation: that run, attempt 1, then the attempt claimed once the fabric changed to
-/// ready, which completes it and runs no step (Q154; states.md "Resize and executable replacement").
+/// The latest attempt a Build that put the fabric back to pending ends at when its one run ran every
+/// operation: the run, attempt 1, completes it when the fabric is already ready at its dispatch (no
+/// planned member is unready: states.md "The fabric's ready", build.md "every planned member ready"),
+/// else the attempt claimed once the fabric changed to ready, which runs no step. The order (the
+/// fabric's ready before the completing dispatch, Q154) is fabric_states.rs's cell's to prove; the
+/// attempt count follows from timing, never from the page.
 const RUN_THEN_CHANGE: u64 = 2;
 
 /// Whether every step receipt of `build` (the Build view's JSON) is of its one run, attempt 1: the
@@ -701,7 +704,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     });
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
-    rec.check("the Build completed at its one run and the Complete after the fabric's change", done["state"] == "complete" && attempt == RUN_THEN_CHANGE && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
+    rec.check("the Build completed at its one run and the Complete after the fabric's change", done["state"] == "complete" && (1..=RUN_THEN_CHANGE).contains(&attempt) && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
     let current = run.fabric_build_id().await;
     rec.check("the current build_id names the Build", current == build_id, format!("{current} vs {build_id}"));
     rec.check("the Build is current, not the previous Build", current_before != build_id, format!("previous {current_before}"));
@@ -816,7 +819,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     });
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
-    rec.check("the Build completed at its one run and the Complete after the fabric's change", done["state"] == "complete" && attempt == RUN_THEN_CHANGE && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
+    rec.check("the Build completed at its one run and the Complete after the fabric's change", done["state"] == "complete" && (1..=RUN_THEN_CHANGE).contains(&attempt) && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
     rec.check("the current build_id names the Build", run.fabric_build_id().await == build_id && current_before != build_id, format!("previous {current_before}"));
     create_checks(run, &mut rec, &done).await;
     rec.check("the advertised primaries equal the public candidates' after the release", roles_after, detail_after);
