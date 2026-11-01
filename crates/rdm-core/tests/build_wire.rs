@@ -24,10 +24,10 @@ fn bytes(hex: &str) -> Vec<u8> {
 fn requests_match_the_frozen_four_variant_wire_schema() {
     let fixtures = [
         // positions 0, 1, 2 and 4 are reserved (the count forms): `a_request_at_a_reserved_count_position_is_an_unknown_variant`; position 6 (the removed restart): `a_request_at_the_removed_restart_position_is_an_unknown_variant`
-        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: rdm_core::PathName::new("m.rpc", "1").unwrap() }) }, "00 00 03 07 6d2e7270632e31"),
+        (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { node: rdm_core::PathName::new("m.rpc", "1").unwrap() }) }, "00 00 03 05 6d 2e 72 70 63 01 31"),
         (
             BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }) },
-            "00 00 0a 0b 6d657368312e7270632e31 0c 303132333435363738396162 0c 79727a34396a333033796834",
+            "00 00 0a 09 6d657368312e7270630131 0c 303132333435363738396162 0c 79727a34396a333033796834",
         ),
         (
             BuildRequest::Create {
@@ -135,7 +135,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
                 step: s("s"),
                 receipt: None,
             },
-            "01 01 62 01 01 6f 01 73 00",
+            "01 01 62 01 01 6f 00 00 00 01 73 00",
         ),
         // the inner stream's Step carries its receipt for the fabric-primary to write (Q118)
         (
@@ -146,7 +146,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
                 step: s("s"),
                 receipt: Some(vec![0x7b, 0x7d]),
             },
-            "01 01 62 01 01 6f 01 73 01 02 7b7d",
+            "01 01 62 01 01 6f 00 00 00 01 73 01 02 7b7d",
         ),
         (
             Blocked {
@@ -156,7 +156,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
                 step: s("s"),
                 reason: s("r"),
             },
-            "02 01 62 01 01 6f 01 73 01 72",
+            "02 01 62 01 01 6f 00 00 00 01 73 01 72",
         ),
         (
             Steps {
@@ -170,7 +170,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
                     result: StepResult::Complete,
                 }],
             },
-            "03 01 62 00 01 01 01 01 6f 01 73 00",
+            "03 01 62 00 01 01 01 01 6f 00 00 00 01 73 00",
         ),
         (
             Steps {
@@ -187,7 +187,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
                     },
                 }],
             },
-            "03 01 62 00 01 01 01 01 6f 01 73 01 01 72 09",
+            "03 01 62 00 01 01 01 01 6f 00 00 00 01 73 01 01 72 09",
         ),
         (
             Complete {
@@ -205,7 +205,7 @@ fn replies_match_the_frozen_thirty_variant_wire_schema() {
                 reason: s("r"),
                 code: rdm_core::outcome::Code::FailedPrecondition,
             },
-            "05 01 62 02 01 6f 01 73 01 72 09",
+            "05 01 62 02 01 6f 00 00 00 01 73 01 72 09",
         ),
         (
             HandedOff {
@@ -416,7 +416,7 @@ fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
     ] {
         assert_eq!(Build::decode_request(&bytes(sent)), Err(DecodeFailure::UnknownVariant), "{what}");
     }
-    assert!(matches!(Build::decode_request(&bytes("00 00 03 07 6d2e7270632e31")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { .. }) })), "RemoveNode keeps position 3");
+    assert!(matches!(Build::decode_request(&bytes("00 00 03 05 6d2e7270630131")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveNode { .. }) })), "RemoveNode keeps position 3");
     assert!(matches!(Build::decode_request(&bytes("00 00 05 01 6d")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::RemoveMesh { .. }) })), "RemoveMesh keeps position 5");
     assert!(matches!(Build::decode_request(&bytes("00 00 0f 0c 303132333435363738396162 00 00")), Ok(BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Reconcile { .. }) })), "Reconcile keeps position 15");
 }
@@ -426,8 +426,8 @@ fn a_request_at_a_reserved_count_position_is_an_unknown_variant() {
 #[test]
 fn a_create_spec_carries_explicit_ownership_and_the_complete_config_map() {
     let fixtures = [
-        ("m.admin.1", "09 6d2e61646d696e2e31 01 6d 00 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 00"),
-        ("m.rpc.1", "07 6d2e7270632e31 01 6d 01 00 00 00 00"),
+        ("m.admin.1", "07 6d 2e 61 64 6d 69 6e 01 31 01 6d 00 01 00 01 0a 6e 6f 64 65 5f 61 64 6d 69 6e 02 2f 78 01 73 00 01 01 74 00"),
+        ("m.rpc.1", "05 6d2e7270630131 01 6d 01 00 00 00 00"),
     ];
     let admin = rdm_core::meta::NodeSpec {
         path: rdm_core::PathName::new("m.admin", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
@@ -442,7 +442,7 @@ fn a_create_spec_carries_explicit_ownership_and_the_complete_config_map() {
         assert_eq!(postcard::to_allocvec(spec).unwrap(), bytes(expected), "{path}: explicit mesh, kind and complete properties");
     }
     let configured = rdm_core::meta::NodeSpec { config: [("k".to_string(), "v".to_string())].into(), ..rpc.clone() };
-    assert_eq!(postcard::to_allocvec(&configured).unwrap(), bytes("07 6d2e7270632e31 01 6d 01 00 00 00 01 01 6b 01 76"));
+    assert_eq!(postcard::to_allocvec(&configured).unwrap(), bytes("05 6d2e7270630131 01 6d 01 00 00 00 01 01 6b 01 76"));
     let old_request = bytes("00 00 0f 0c 303132333435363738396162 02 09 6d2e61646d696e2e31 01 00 01 0a 6e6f64655f61646d696e 02 2f78 01 73 00 01 01 74 07 6d2e7270632e31 00 00 00");
     assert!(Build::decode_request(&old_request).is_err(), "a request written before Q166 does not decode against the create spec");
 }

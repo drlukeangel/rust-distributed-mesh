@@ -39,11 +39,11 @@ fn requests_match_the_frozen_thirty_eight_variant_wire_schema() {
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c3031323334353637383961620c397763707266677776746879"),
         (ApplyMeshState { mesh_id: mesh(), mesh_name: "mesh1".into(), state: MeshState::Pending, changed_at_rafka_ms: 300 }, "040c313132333435363738396162056d6573683100ac02"),
         (ApplyFabricEvent { fabric_id: fabric(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } }, "050c323132333435363738396162010d6d657368312e61646d696e2e31"),
-        (Reserved6 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.rpc.1") }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31"),
-        (Reserved7 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.rpc.1") }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31"),
-        (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.rpc.1") }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31"),
-        (NodeLeft { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.rpc.1") }, "090c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31"),
-        (DeleteMesh { mesh_id: mesh(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("shutdown-mesh:1123456789ab") }, "0a0c3131323334353637383961620c796e6835673262717a663472011a73687574646f776e2d6d6573683a313132333435363738396162"),
+        (Reserved6 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.rpc.1") }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31000000"),
+        (Reserved7 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.rpc.1") }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31000000"),
+        (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.rpc.1") }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31000000"),
+        (NodeLeft { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.rpc.1") }, "090c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31000000"),
+        (DeleteMesh { mesh_id: mesh(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("shutdown-mesh:1123456789ab") }, "0a0c3131323334353637383961620c796e6835673262717a663472011a73687574646f776e2d6d6573683a313132333435363738396162000000"),
         (
             MeshDeleted {
                 mesh_id: mesh(),
@@ -368,8 +368,8 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     ] { golden(phase, expected); }
     // DeclareNodeState's operation (i146 Q36): build_id | attempt | operation, and its Option.
     let op = DeclaredOperation { build_id: "b".into(), attempt: 2, operation: rdm_core::OperationId::unscoped("node.stop:m") };
-    golden(op.clone(), "0162020b6e6f64652e73746f703a6d");
-    golden(Some(op), "010162020b6e6f64652e73746f703a6d");
+    golden(op.clone(), "0162020b6e6f64652e73746f703a6d000000");
+    golden(Some(op), "010162020b6e6f64652e73746f703a6d000000");
     golden(FabricEvent::Ready, "00");
     golden(FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() }, "010d6d657368312e61646d696e2e31");
     golden(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary".into() }, "000c6d6573682d7072696d617279");
@@ -419,7 +419,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(ProviderKind::Process, "00");
     golden(ProviderKind::Container, "01");
     // build_id "b" | attempt 300 (ac 02) | operation "o"
-    golden(MeshDeleteIdentity { build_id: "b".into(), attempt: 300, operation: rdm_core::OperationId::unscoped("o") }, "0162ac02016f");
+    golden(MeshDeleteIdentity { build_id: "b".into(), attempt: 300, operation: rdm_core::OperationId::unscoped("o") }, "0162ac02016f000000");
 }
 
 #[test]
