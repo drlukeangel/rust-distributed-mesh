@@ -627,7 +627,8 @@ mod tests {
         assert_eq!(direct_spans.len(), 1);
         assert_eq!(
             direct_spans[0].attributes.get("leads").map(String::as_str),
-            Some("mesh1.rpc.3,mesh2.rpc.1")
+            Some(format!("{},{}", r3.node_id, m1.node_id).as_str()),
+            "the leads, in path order, by node id"
         );
 
         let peer_spans = capture.named("rdm.node.tickle.resolve.via-peer");

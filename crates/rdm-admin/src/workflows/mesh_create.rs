@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(
             crate::executor::executor_for(&create_m2_admin, &settled_view)
                 .map(|n| n.to_string()),
-            Some("mesh1.admin.1".into()),
+            settled_view.fabric_primary().map(|n| n.node_id.to_string()),
             "fabric-primary is maker and executor of mesh2's first node-admin"
         );
         let mut view_without_m2_primary = settled_view.clone();
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(
             crate::executor::executor_for(&create_m2_rpc, &view_with_m2_primary)
                 .map(|n| n.to_string()),
-            Some("mesh2.admin.1".into()),
+            view_with_m2_primary.node(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).map(|n| n.node_id.to_string()),
             "once mesh2.admin.1 is mesh-primary, it creates mesh2's other nodes under the same Build"
         );
 
@@ -780,7 +780,8 @@ mod tests {
         assert!(
             reach_spans.iter().any(|s| {
                 s.attributes.get("mesh").map(String::as_str) == Some("mesh2")
-                    && s.attributes.get("target").map(String::as_str) == Some("mesh2.admin.1")
+                    && s.attributes.get("target_path").map(String::as_str) == Some("mesh2.admin")
+                    && s.attributes.get("target_name").map(String::as_str) == Some("1")
                     && s.attributes.get("reachable").map(String::as_str) == Some("true")
             }),
             "Ping reachability emits rdm.node_admin.mesh.update.via-pending-reachability: {reach_spans:?}"
@@ -800,7 +801,8 @@ mod tests {
         assert!(
             election_spans.iter().any(|s| {
                 s.attributes.get("mesh").map(String::as_str) == Some("mesh2")
-                    && s.attributes.get("primary").map(String::as_str) == Some("mesh2.admin.1")
+                    && s.attributes.get("winner_path").map(String::as_str) == Some("mesh2.admin")
+                    && s.attributes.get("winner_name").map(String::as_str) == Some("1")
             }),
             "election emits rdm.mesh.election.resolve.via-recompute for mesh2: {election_spans:?}"
         );

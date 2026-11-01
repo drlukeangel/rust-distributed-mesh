@@ -519,7 +519,7 @@ mod tests {
         rx.wait_for(|v| *v).await.unwrap();
         assert_eq!(commands.complete(&k), Accepted::Again);
         let other = CommandKey { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), ..k.clone() };
-        assert_eq!(commands.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: "node.start:mesh1.rpc.1".into(), reported: "node.stop:mesh1.rpc.1".into() });
+        assert_eq!(commands.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: format!("{:?}", k.operation), reported: format!("{:?}", other.operation) });
         let attempt = CommandKey { attempt: 2, ..k.clone() };
         assert_eq!(commands.complete(&attempt), Accepted::NoOpenCommand { field: "attempt".into(), expected: "1".into(), reported: "2".into() });
         let stranger = CommandKey { node_id: NodeId::mint(), ..k.clone() };

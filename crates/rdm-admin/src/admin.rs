@@ -2844,7 +2844,7 @@ mod tests {
         let spans = capture.named("rdm.node_admin.node.remove.via-mesh-left-contact");
         assert_eq!(spans.len(), 1, "{spans:?}");
         let dropped = spans[0].attributes.get("dropped").cloned().unwrap_or_default();
-        assert!(dropped.contains("mesh2.admin.1") && dropped.contains("mesh2.rpc.1"), "the span names each birth whose address is taken off: {dropped}");
+        assert!(dropped.contains(last.node.node_id.as_str()) && dropped.contains(member.node.node_id.as_str()), "the span names each birth whose address is taken off, by node id: {dropped}");
         eprintln!("span rdm.node_admin.node.remove.via-mesh-left-contact trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
     }
 
