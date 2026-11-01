@@ -2492,8 +2492,12 @@ impl DriveEnv {
                 }
                 item = stream.next() => item,
             };
+            // A reported Step of another attempt of this Build is the claim record's to refuse
+            // (`via-stale-claim`, written nowhere: build.md, Q118, Q239); any other frame of another
+            // Build or attempt breaks the run.
             if let InnerItem::Frame(frame) = &item {
-                if !crate::build_run::reported_frame_matches(frame, id, attempt) {
+                let stale_step = matches!(frame, BuildReply::Step { build_id, .. } if build_id == id.as_str());
+                if !stale_step && !crate::build_run::reported_frame_matches(frame, id, attempt) {
                     return Inner::Broke("the executor reported another Build or attempt".into());
                 }
             }
@@ -2501,7 +2505,15 @@ impl DriveEnv {
                 InnerItem::Frame(f) => match f {
                     BuildReply::Step { ref operation, ref step, attempt: a, ref receipt, .. } => {
                         // A reported receipt (Q118): this fabric-primary writes it, decided by the claim
-                        // record it holds, never by the view (build.md, Q239).
+                        // record it holds, never by the view (build.md, Q239). Another attempt's is
+                        // refused there (`via-stale-claim`) and is no progress of this run.
+                        if a != attempt {
+                            if let Some(bytes) = receipt {
+                                self.write_reported(id, a, executor, operation, step, bytes).await;
+                            }
+                            stream.accepted().await;
+                            continue;
+                        }
                         if let Some(bytes) = receipt {
                             if !self.write_reported(id, a, executor, operation, step, bytes).await {
                                 return Inner::Broke("the reported receipt was refused or could not be recorded".into());

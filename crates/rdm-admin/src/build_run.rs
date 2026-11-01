@@ -666,7 +666,14 @@ impl RunDoor {
         if let Some(held) = self.builds.held_name() {
             return held;
         }
-        self.exec.builds.held_name().unwrap_or_else(|| self.me.clone())
+        if let Some(held) = self.exec.builds.held_name() {
+            return held;
+        }
+        // The name the view holds for this executor's own birth, whatever name it booted under.
+        if let Some(n) = self.exec.topology.read().await.own(&self.exec.executor.node_id) {
+            return n.name.clone();
+        }
+        self.me.clone()
     }
 
     /// Answer `build.attempt.run` for `attempt` of `build_id`, claimed for `executor`. `plan` is the

@@ -426,7 +426,7 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     let mut reader = drive.reader(1);
     for pass in 0..3 {
         match r.env.run(&drive).await {
-            DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "pass {pass}: {why}"),
+            DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains(&format!("node {} (PendingReconnect)", r.birth("mesh2.admin", "2").await.node_id)), "pass {pass}: {why}"),
             other => panic!("pass {pass}: the fabric-primary never takes mesh2's work while mesh2.admin.2 is held: {other:?}"),
         }
     }
@@ -505,7 +505,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     let targeted = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(targeted.len(), 1, "the target is named once: {targeted:?}");
     let a = &targeted[0].1;
-    assert_eq!((a.get("mesh").map(String::as_str), a.get("target").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin.1"), Some("31000"), Some("false")), "{a:?}");
+    assert_eq!((a.get("mesh").map(String::as_str), a.get("target_path").map(String::as_str), a.get("target_name").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin"), Some("1"), Some("31000"), Some("false")), "{a:?}");
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {a:?}", targeted[0].0);
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the target on the unheard mesh is named on its span and frames no Blocked to the caller");
 
@@ -513,7 +513,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     // the fabric-primary.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.2") && why.contains("first recovering node-admin"), "the mesh's second admin waits for the mesh to be heard: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()))) && why.contains("first recovering node-admin"), "the mesh's second admin waits for the mesh to be heard: {why}"),
         other => panic!("mesh2's other nodes wait until the mesh is heard again: {other:?}"),
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())], "only the first recovering node-admin ran");
@@ -521,7 +521,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     assert!(r.proofs.given.lock().unwrap().is_empty(), "a recovery the ladder decided is told by the ladder, never by the proof of a fully crashed mesh");
     let second = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(second.len(), 2, "{second:?}");
-    assert_eq!((second[1].1.get("target").map(String::as_str), second[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{:?}", second[1].1);
+    assert_eq!((second[1].1.get("target_path").map(String::as_str), second[1].1.get("target_name").map(String::as_str), second[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin"), Some("2"), Some("true")), "{:?}", second[1].1);
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", second[1].0, second[1].1);
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the second admin's wait for the mesh frames no Blocked to the caller");
 
@@ -569,7 +569,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     // No decision: the target stands for the first admin.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.1") && why.contains("no recovery decided"), "{why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()))) && why.contains("no recovery decided"), "{why}"),
         other => panic!("nothing is claimed for a held mesh with no decision: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
@@ -577,7 +577,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     // The 60 s decision came out unreachable: the create of the first node-admin, and only it, runs on the fabric-primary.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.2") && why.contains("unreachable"), "the second admin waits for the mesh to be heard, and the stall names the decision: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()))) && why.contains("unreachable"), "the second admin waits for the mesh to be heard, and the stall names the decision: {why}"),
         other => panic!("the mesh's other nodes wait until it is heard again: {other:?}"),
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())], "only the mesh's first node-admin ran");
@@ -586,7 +586,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     assert_eq!(*r.proofs.given.lock().unwrap(), vec![("mesh2".to_string(), r.build.to_string(), before.attempt + 1)], "the claim of the fully crashed mesh's create told the proof the mesh was given a node-admin");
     let targeted = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(targeted.len(), 2, "the target is named for the undecided admin.1 and then for admin.2: {targeted:?}");
-    assert_eq!((targeted[1].1.get("target").map(String::as_str), targeted[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("false")), "{:?}", targeted[1].1);
+    assert_eq!((targeted[1].1.get("target_path").map(String::as_str), targeted[1].1.get("target_name").map(String::as_str), targeted[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin"), Some("2"), Some("false")), "{:?}", targeted[1].1);
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", targeted[1].0, targeted[1].1);
 }
 
@@ -621,14 +621,14 @@ async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-second-drive");
     let first = Drive::detached(r.build.clone());
     match r.env.run(&first).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.2"), "the first drive stops at mesh2's second admin: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()))), "the first drive stops at mesh2's second admin: {why}"),
         other => panic!("the first drive restores one admin and stops: {other:?}"),
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())]);
     // A second drive instance (a drive replaced on the same fabric-primary) over the same Build.
     let second = Drive::detached(r.build.clone());
     match r.env.run(&second).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.2") && why.contains("first recovering node-admin"), "a second drive admits no second admin: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()))) && why.contains("first recovering node-admin"), "a second drive admits no second admin: {why}"),
         other => panic!("a second drive over the same Build admits no second recovering admin: {other:?}"),
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())], "no second admin of mesh2 crossed the target");
@@ -637,13 +637,13 @@ async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of
     assert!(matches!(r.env.door.claim(&r.birth("mesh1.admin", "2").await.node_id, &r.build, open).await, rdm_core::build_claim::BuildClaimReply::Won { .. }));
     let third = Drive::detached(r.build.clone());
     let end = r.env.run(&third).await;
-    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("node.create:mesh2.admin.2")), "a running attempt held by another admin admits no second admin either: {end:?}");
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap())))), "a running attempt held by another admin admits no second admin either: {end:?}");
     assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())], "no second admin of mesh2 crossed the target");
     // Each drive names the target on mesh2's second admin once, on its own span.
     let targeted = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(targeted.len(), 3, "{targeted:?}");
     for (trace, a) in &targeted {
-        assert_eq!((a.get("target").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{a:?}");
+        assert_eq!((a.get("target_path").map(String::as_str), a.get("target_name").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin"), Some("2"), Some("true")), "{a:?}");
         eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={trace} {a:?}");
     }
 }
@@ -744,7 +744,7 @@ async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_
     let r = held_successor_rig(true).await;
     let drive = Drive::detached(r.build.clone());
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "the stall names the held admin: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains(&format!("node {} (PendingReconnect)", r.birth("mesh2.admin", "2").await.node_id)), "the stall names the held admin: {why}"),
         other => panic!("mesh2's work waits for its own role: {other:?}"),
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap())], "the run was cut before mesh2's admins");
@@ -766,7 +766,7 @@ async fn a_run_handed_back_is_never_dispatched_again_for_an_operation_its_receip
     let ran = r.ran.0.lock().unwrap().clone();
     assert_eq!((dispatched.len(), ran.len()), (1, 1), "the completed operation is dispatched once: dispatched {} times, ran {:?}", dispatched.len(), &ran[..ran.len().min(4)]);
     match end {
-        Ok(DriveEnd::Stalled(why)) => assert!(why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "{why}"),
+        Ok(DriveEnd::Stalled(why)) => assert!(why.contains(&format!("node {} (PendingReconnect)", r.birth("mesh2.admin", "2").await.node_id)), "{why}"),
         other => panic!("the drive stalls naming mesh2's held admin: {other:?}"),
     }
     let drives = capture.spans("rdm.node_admin.build.update.via-drive");
@@ -834,7 +834,7 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
     assert!(remote.read_build(&r.build).await.unwrap().completed_in_run(&rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap())), "the receipt is durable on the executor");
     assert!(!r.builds.read_build(&r.build).await.unwrap().completed_in_run(&rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap())), "the fabric-primary's log has not heard the receipt");
     match end {
-        Ok(DriveEnd::Stalled(why)) => assert!(why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "{why}"),
+        Ok(DriveEnd::Stalled(why)) => assert!(why.contains(&format!("node {} (PendingReconnect)", r.birth("mesh2.admin", "2").await.node_id)), "{why}"),
         other => panic!("the drive stalls naming mesh2's held admin: {other:?}"),
     }
     let drives = capture.spans("rdm.node_admin.build.update.via-drive");
@@ -2445,7 +2445,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         .unwrap();
     let _g = tracing::dispatcher::set_default(&dispatch);
 
-    rt.block_on(async {
+    let fp_id = rt.block_on(async {
         let boot: PathName = rdm_core::PathName::new("mesh1.admin", "9").unwrap();
         let held: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let t = Topology {
@@ -2462,6 +2462,8 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         let contexts = Arc::new(AttemptContexts::in_memory());
         let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
         let mut cp = crate::control_plane(builds.clone(), accepted, boot.clone(), t, crate::adopted_time()).with_contexts(contexts.clone()).with_claims(claims.clone());
+        // Its birth's node id, whatever name it booted under (boot sets it from the birth).
+        let _ = cp.node_id.set(fp_id.clone());
         cp.topology = topology.clone();
 
         let change = TopologyChange::ReconcileMesh {
@@ -2514,7 +2516,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             topology: topology.clone(),
             builds: builds.clone(),
             door: Arc::new(ClaimDoor {
-                node_id: fp_id,
+                node_id: fp_id.clone(),
                 incarnation: fp_birth.incarnation.clone(),
                 me: boot.clone(),
                 topology: topology.clone(),
@@ -2538,20 +2540,21 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         let projected = builds.read_build(&opened.build_id).await.unwrap();
         assert_eq!(projected.state, rdm_admin::build_state::BuildState::Complete);
         assert_eq!(projected.executor.as_ref(), Some(&fp_birth), "the attempt was claimed for the held name");
+        fp_id
     });
 
     capture.flush(Duration::from_secs(10)).expect("spans flush");
     let spans = exporter.get_finished_spans().unwrap();
     crate::assert_own_story(spans.iter().map(|s| s.name.as_ref()));
+    // The boot name is path "mesh1.admin", name "9": no span names it, in any `<role>_path`/`<role>_name` pair.
     for s in &spans {
-        for kv in &s.attributes {
-            let val = kv.value.to_string();
+        let get = |k: &str| s.attributes.iter().find(|kv| kv.key.as_str() == k).map(|kv| kv.value.to_string());
+        for kv in s.attributes.iter().filter(|kv| kv.key.as_str().ends_with("_path")) {
+            let role = kv.key.as_str().trim_end_matches("_path");
             assert!(
-                !val.contains("mesh1.admin.9"),
-                "span {} attribute {}={} still carries the boot name mesh1.admin.9",
-                s.name,
-                kv.key,
-                val
+                !(kv.value.to_string() == "mesh1.admin" && get(&format!("{role}_name")).as_deref() == Some("9")),
+                "span {} attribute {role}_path/{role}_name still carries the boot name mesh1.admin 9",
+                s.name
             );
         }
     }
@@ -2562,15 +2565,24 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             .filter_map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.to_string()))
             .collect()
     };
-    assert_eq!(attr("rdm.node_admin.build.create.via-accepted", "node"), vec!["mesh1.admin.1", "mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.node.create.via-node-row", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-claim-decision", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-claim-decision", "executor"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-drive", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-dispatch", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-dispatch", "executor"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.serve.via-attempt-run", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-reconcile", "executor"), vec!["mesh1.admin.1"]);
+    // Each span names the held admin: by its held path and name, or by its node id where it names a node.
+    let named = |name: &str, n: usize| {
+        let (paths, names, ids) = (attr(name, "node_path"), attr(name, "node_name"), attr(name, "node"));
+        assert!(!paths.is_empty() || !ids.is_empty(), "{name} is spanned");
+        assert!(paths.iter().all(|p| p == "mesh1.admin") && names.iter().all(|n| n == "1"), "{name} names the held name: {paths:?} {names:?}");
+        assert!(ids.iter().all(|i| *i == fp_id.to_string()), "{name} names the held birth's node id: {ids:?}");
+        assert_eq!(paths.len().max(ids.len()), n, "{name} spans");
+    };
+    named("rdm.node_admin.build.create.via-accepted", 2);
+    named("rdm.node_admin.node.create.via-node-row", 1);
+    named("rdm.node_admin.build.update.via-claim-decision", 1);
+    named("rdm.node_admin.build.update.via-drive", 1);
+    named("rdm.node_admin.build.update.via-dispatch", 1);
+    named("rdm.node_admin.build.serve.via-attempt-run", 1);
+    for (span, key) in [("rdm.node_admin.build.update.via-claim-decision", "executor"), ("rdm.node_admin.build.update.via-dispatch", "executor"), ("rdm.node_admin.build.update.via-reconcile", "executor")] {
+        let executors = attr(span, key);
+        assert!(!executors.is_empty() && executors.iter().all(|e| e.starts_with(&fp_id.to_string())), "{span} {key} is the held birth: {executors:?}");
+    }
 }
 
 /// CONTRACT (R-BI3: only a caller's resubmit drives a failed Build on): a Build that completed once
@@ -3157,7 +3169,8 @@ async fn a_decided_recovery_admits_no_delete_of_a_node_admin_of_the_held_mesh() 
     r.switch.peer.lock().unwrap().insert("mesh2".into(), rdm_admin::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: true, unreachable_decided: false });
     let drive = Drive::detached(r.build.clone());
     let end = r.env.run(&drive).await;
-    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("node.delete:mesh2.admin.2")), "the delete of mesh2's second admin waits for the mesh to be heard: {end:?}");
+    let delete = format!("{:?}", rdm_core::OperationId::node("node.delete", &r.birth("mesh2.admin", "2").await.node_id));
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains(&delete)), "the delete of mesh2's second admin waits for the mesh to be heard: {end:?}");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of the held mesh ran: {:?}", r.ran.0.lock().unwrap());
 }
 
@@ -3204,7 +3217,7 @@ async fn the_drive_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary
     let mut reader = unnamed.reader(attempt);
     let end = tokio::time::timeout(Duration::from_secs(5), r.env.run(&unnamed)).await.expect("the drive ends");
     let claimed = r.builds.read_build(&r.build).await.unwrap().attempt_executors;
-    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("mesh2") && why.contains("mesh2.admin.2")), "the drive stalls naming the mesh and the node-admin the election names here: {end:?}; claims: {claimed:?}");
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("mesh2") && why.contains(&r.birth("mesh2.admin", "2").await.node_id.to_string())), "the drive stalls naming the mesh and the node-admin the election names here: {end:?}; claims: {claimed:?}");
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the wait for the election's mesh-primary frames no Blocked to the caller");
     assert_eq!(claimed.get(&attempt), None, "nothing is claimed before the view names mesh2's primary: {claimed:?}");
 
@@ -3266,7 +3279,7 @@ async fn a_remote_executors_reported_receipts_are_written_by_the_claim_record_an
     let refused = capture.spans("rdm.node_admin.build.reject.via-stale-claim");
     assert_eq!(refused.len(), 1, "{refused:?}");
     let attrs = &refused[0].1;
-    assert_eq!((attrs.get("attempt").map(String::as_str), attrs.get("held_attempt").map(String::as_str), attrs.get("executor").map(String::as_str)), (Some("2"), Some("1"), Some("mesh1.admin.2")), "{attrs:?}");
+    assert_eq!((attrs.get("attempt").map(String::as_str), attrs.get("held_attempt").map(String::as_str), attrs.get("executor").cloned()), (Some("2"), Some("1"), Some(r.birth("mesh1.admin", "2").await.to_string())), "{attrs:?}");
     eprintln!("span rdm.node_admin.build.reject.via-stale-claim trace_id={} {:?}", refused[0].0, attrs);
 }
 
@@ -3300,7 +3313,7 @@ impl OperationRunner for AtOnce {
         if self.fails.as_ref().is_some_and(|f| op.key() == rdm_core::OperationId::location("node.create", f)) && self.failing.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
             self.ran.0.lock().unwrap().push(op.key());
             let node = self.fails.as_ref().expect("the selected create failed");
-            return Err(rdm_admin::executor::RunEnd::failed(format!("WaitForBind failed: {node:?} did not report where it bound (JoinNode) within 300ms")));
+            return Err(rdm_admin::executor::RunEnd::failed(format!("WaitForBind failed: path {:?}, name {:?} did not report where it bound (JoinNode) within 300ms", node.path, node.name)));
         }
         self.ran.run(build, lane, attempt, op).await
     }
@@ -3438,7 +3451,7 @@ async fn a_section_that_fails_stops_no_other_and_the_same_operation_failing_twic
     match frames.last() {
         Some(Read::Terminal(BuildReply::Failed { operation, step, reason, .. })) => {
             assert_eq!((operation.clone(), step.as_str()), (rdm_core::OperationId::location("node.create", &PathName::new("mesh3.rpc", "2").unwrap()), "WaitForBind"), "the terminal names the second failure's operation and step");
-            assert!(reason.contains("mesh3.rpc.2 did not report where it bound"), "the step's own reason: {reason}");
+            assert!(reason.contains(r#"path "mesh3.rpc", name "2" did not report where it bound"#), "the step's own reason: {reason}");
         }
         other => panic!("the stream ends Failed {{ step, reason }}: {other:?}; frames {frames:?}"),
     }
@@ -3497,8 +3510,8 @@ fn a_member_create_that_fails_once_is_created_by_the_next_attempt_and_the_build_
     let spans = cap.spans();
     let runs = reconciles(&spans);
     eprintln!("cell trace_id={trace_id} reconcile spans {runs:?}");
-    assert!(runs.iter().any(|(a, o, _, inc)| a == "1" && o == "handed-off" && inc.contains("WaitForBind failed: mesh1.rpc.3")), "attempt 1 is handed back with the failed create's reason: {runs:?}");
-    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "converged" && ops == "node.create:mesh1.rpc.3"), "attempt 2 runs the failed create alone and converges: {runs:?}");
+    assert!(runs.iter().any(|(a, o, _, inc)| a == "1" && o == "handed-off" && inc.contains(r#"WaitForBind failed: path "mesh1.rpc", name "3""#)), "attempt 1 is handed back with the failed create's reason: {runs:?}");
+    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "converged" && *ops == format!("{:?}", [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap())])), "attempt 2 runs the failed create alone and converges: {runs:?}");
 }
 
 /// CONTRACT (Q245, Q252; node-rpc-envelope.md: "A failure is `Failed { step, reason }`", "Only a
@@ -3536,7 +3549,7 @@ fn a_member_create_that_fails_on_the_next_attempt_too_ends_the_build_failed_nami
     match frames.last() {
         Some(Read::Terminal(BuildReply::Failed { attempt, operation, step, reason, .. })) => {
             assert_eq!((*attempt, operation.clone(), step.as_str()), (2, rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap()), "WaitForBind"), "the terminal names the failed operation and step");
-            assert!(reason.contains("mesh1.rpc.3 did not report where it bound"), "the step's own reason: {reason}");
+            assert!(reason.contains(r#"path "mesh1.rpc", name "3" did not report where it bound"#), "the step's own reason: {reason}");
         }
         other => panic!("the stream ends Failed {{ step, reason }}: {other:?}; frames {frames:?}"),
     }
@@ -3546,8 +3559,8 @@ fn a_member_create_that_fails_on_the_next_attempt_too_ends_the_build_failed_nami
     assert!([rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "2").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "4").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "5").unwrap())].iter().all(|k| count(k) == 1), "the completed creates ran once: {ran:?}");
     let runs = reconciles(&spans);
     eprintln!("cell trace_id={trace_id} reconcile spans {runs:?}");
-    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "failed" && ops == "node.create:mesh1.rpc.3"), "attempt 2 runs the create alone and fails: {runs:?}");
-    let healed: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-create-failed" && s["attributes"]["operation"] == "node.create:mesh1.rpc.3").map(|s| s["attributes"]["attempt"].as_str().unwrap_or("").to_string()).collect();
+    assert!(runs.iter().any(|(a, o, ops, _)| a == "2" && o == "failed" && *ops == format!("{:?}", [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap())])), "attempt 2 runs the create alone and fails: {runs:?}");
+    let healed: Vec<String> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-create-failed" && s["attributes"]["operation"] == "node.create" && s["attributes"]["operation_subject"].as_str().is_some_and(|o| o.contains(r#"path: "mesh1.rpc", name: "3""#))).map(|s| s["attributes"]["attempt"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(healed, ["1"], "one heal attempt: only attempt 1's failure hands back");
     assert!(spans.iter().all(|s| s["name"] != "rdm.node_admin.build.update.via-stalled"), "nothing stalls");
 }
@@ -3618,7 +3631,7 @@ async fn an_executor_that_refuses_the_dispatch_stalls_the_drive_and_frames_nothi
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("refused attempt 1") && why.contains("mesh1.admin.9"), "the stall names the refusal: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("refused attempt 1") && why.contains("not-executor"), "the stall names the refusal: {why}"),
         other => panic!("a refused dispatch stalls the drive: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
@@ -3713,7 +3726,7 @@ async fn a_primary_update_the_view_does_not_show_stalls_the_drive_and_frames_not
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match tokio::time::timeout(Duration::from_secs(60), r.env.run(&drive)).await.expect("the drive ends") {
-        DriveEnd::Stalled(why) => assert!(why.contains("still names it") && why.contains("node.delete:mesh1.admin.1"), "the stall names the update the view does not show: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("still names it") && why.contains("node.delete"), "the stall names the update the view does not show: {why}"),
         other => panic!("an update the view does not show stalls the drive: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
