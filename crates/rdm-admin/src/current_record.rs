@@ -80,6 +80,17 @@ impl CurrentRecords<'_> {
         row_of(&lifecycle, properties.as_ref(), mesh).map(Some)
     }
 
+    /// Every lifecycle record of `mesh` under its current writer in `t` (query.md §1: "`node.get`
+    /// materializes records"; historical records, Deleted ones included, are among them), each as a row of
+    /// its lifecycle facts alone: no property record is read. `Ok(empty)` when the mesh has no Mesh
+    /// record. `Err`: a read failed, or `t` installs no writer of the mesh.
+    pub async fn lifecycle_rows(&self, t: &Topology, mesh: &str) -> Result<Vec<NodeRow>, String> {
+        let Some(record) = self.meshes.mesh_named(mesh).await.map_err(|e| format!("the Mesh record of {mesh} could not be read: {e}"))? else { return Ok(Vec::new()) };
+        let writer = writer_of(t, mesh)?;
+        let written = self.records.lifecycles(&record.mesh_id).await.map_err(|e| format!("the lifecycle records of mesh {mesh} could not be read: {e}"))?;
+        written.iter().filter(|l| l.writer == writer).map(|l| row_of(l, None, mesh.to_string())).collect()
+    }
+
     /// The current-pair lookup: the record of the node whose name claim holds `name`, while that record
     /// stands at `name`. `Ok(None)` when no claim holds the name, or its claimant's current record stands
     /// at another pair or was never written (the claim decides, never a record last written there).

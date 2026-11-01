@@ -1860,10 +1860,16 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
         mp.rows.written().feeds(atlas.clone()).await;
         let properties = rdm_node::node_records::MemoryNodeRecords::default();
+        let meshes = rdm_admin::storage::MemoryMeshStorage::default();
+        // Each record read through the reader (query.md §1): the writer's records as lifecycle records
+        // under the view's mesh-primary, its properties the node's own.
         let get = |filter: Filter| {
-            let (view, loads, atlas, properties, me) = (mp.view.clone(), loads.clone(), atlas.clone(), &properties, me.clone());
+            let (view, loads, atlas, properties, meshes, me, storage) = (mp.view.clone(), loads.clone(), atlas.clone(), &properties, &meshes, me.clone(), storage.clone());
             async move {
-                let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer_with_status(&me, &*view.read().await, &loads, &atlas, &Ok(BTreeMap::new()), &filter, &|_| {}, Some(properties)).await else {
+                let view = view.read().await;
+                crate::write_lifecycles(&storage, &view, meshes, properties).await;
+                let current = rdm_admin::current_record::CurrentRecords { claims: &*storage, meshes, records: properties };
+                let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer_with_status(&me, &view, &loads, &atlas, &Ok(BTreeMap::new()), &filter, &|_| {}, Some(current)).await else {
                     panic!("expected StatusReply::Nodes");
                 };
                 nodes

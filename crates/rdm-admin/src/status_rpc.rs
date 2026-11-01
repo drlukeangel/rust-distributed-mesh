@@ -1569,7 +1569,8 @@ impl StatusDoor {
                 self.read_connections(view, incarnation, &read.filter).await
             }
             Entity::Nodes => {
-                // Answered from this admin's atlas, never the node store (Q203).
+                // Each record read through the reader (query.md §1); the lifecycle the ops left each birth
+                // in from this admin's atlas.
                 let Some(atlas) = self.atlas.get() else {
                     return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no fabric atlas yet; {op} is refused", me_name_path = &me_name.path, me_name_name = &me_name.name));
                 };
@@ -1594,7 +1595,11 @@ impl StatusDoor {
                         n.held_hash = rdm_core::app_types::hash(&n.held);
                     }
                 };
-                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &planned, &read.filter, &amend, self.configs.get().and_then(|c| c.records()).map(|r| &**r)).await
+                // Each record through the reader (query.md §1): the name claims and the Mesh records this
+                // admin's stores hold, the lifecycle and property records its node records hold.
+                let records = self.configs.get().and_then(|c| c.records());
+                let current = records.map(|r| crate::current_record::CurrentRecords { claims: &*self.nodes_storage, meshes: &*self.meshes_storage, records: &**r });
+                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &planned, &read.filter, &amend, current).await
             }
             Entity::Meshes => {
                 if self.loads.is_none() {

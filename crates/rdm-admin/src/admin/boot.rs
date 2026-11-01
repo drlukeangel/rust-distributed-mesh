@@ -2016,7 +2016,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let row = held.or_else(|| atlas.record_of_endpoint(&caller)).filter(|r| r.mesh == mesh && r.node_id != me)?;
                                             // A lifecycle row has no revision (node-identity-and-state.md §2.5); the
                                             // OwnRow frame still carries one on the wire, sent as 0.
-                                            Some((crate::views::own_row_view(&view, &atlas, &row), 0))
+                                            let predecessor = row.predecessor.as_ref().and_then(|p| atlas.record(&p.node_id));
+                                            Some((crate::views::own_row_view(&view, &atlas, &row, predecessor.as_ref()), 0))
                                         })
                                     })
                                 };
