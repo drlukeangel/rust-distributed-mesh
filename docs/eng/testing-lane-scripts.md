@@ -160,7 +160,7 @@ The gate builds once and runs every check and stem in parallel, each from a preb
 | one build | `cargo build --timings --message-format=json --tests --bins` over every member; nothing compiles after it | line 74 |
 | the timings row | `scripts/timings_row.py` over `target/cargo-timings/cargo-timing.html` | line 76 |
 | one set of test executables | any test executable in `target/debug/deps` this build did not produce is deleted | lines 80-95 |
-| discovery ratchet | every test executable's `--list` on the candidate against `origin/main`'s; a test that left must have moved, or be named in a commit body as `removed: <module>::<cell>` | lines 97-245 |
+| discovery ratchet | every test executable's `--list` on the candidate against `origin/main`'s; a test that left must have moved, be named in a commit body as `removed: <module>::<cell>`, or be named `renamed: <module>::<old> -> <new>` with the new name in the same binary | lines 97-245 |
 | scenario stems | each name in `SCENARIOS` runs as its own job: `rdm-test`'s `main` filtered to `<stem>::` | lines 58, 279-291 |
 | `rdm-test`'s other cells | `main` split into `RDM_TEST_MAIN_SHARDS` jobs (default 4), dealt by test count | lines 326-349 |
 | one job per test executable | every other package's executables, each its own job | lines 301-378 |

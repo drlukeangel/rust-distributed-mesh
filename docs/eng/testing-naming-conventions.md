@@ -105,8 +105,9 @@ providers lives in one file, its provider variant in `mod process` and `mod cont
 cell's full name reads `<module>::<provider>::<cell>`.
 
 **Rule 3.4: a removed cell is named.** A cell deleted with its code is named in the landing's
-commit body as `removed: <module>::<cell>`, the name `--list` prints; the gate's discovery check
-refuses any other drop (`scripts/rdm-gate-at.sh:165-168`).
+commit body as `removed: <module>::<cell>`, the name `--list` prints; a renamed cell as
+`renamed: <module>::<old> -> <module>::<new>`, both names whole. The gate's discovery check
+refuses any other drop (`scripts/rdm-gate-at.sh`, the discovery ratchet).
 
 ## 4. What the landing refuses: `scripts/name-check.py`
 
