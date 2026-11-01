@@ -626,7 +626,6 @@ mod tests {
                 fabric_recovery: Default::default(),
                 configs: Default::default(),
                 republish: Default::default(),
-                configure: Default::default(),
                 pre_node_ready: Default::default(),
                 rename: Default::default(),
                 row_moved: Default::default(),

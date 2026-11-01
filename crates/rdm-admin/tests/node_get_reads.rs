@@ -345,7 +345,6 @@ fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atl
         fabric_recovery: Default::default(),
         configs: Default::default(),
         republish: Default::default(),
-        configure: Default::default(),
         pre_node_ready: Default::default(),
         rename: Default::default(),
         row_moved: Default::default(),

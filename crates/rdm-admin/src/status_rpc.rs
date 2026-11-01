@@ -589,9 +589,6 @@ pub struct StatusDoor {
     /// re-join), filled once its digest exists: the check-in a probed birth owes (states.md "The
     /// check-in checklist"), what the checklist's down op reads.
     pub republish: Republish,
-    /// This admin as the subject of `ApplyNodeConfig`: it holds the config (node-config-update.md
-    /// step 3; no digest carries it, Q203); filled once its digest exists.
-    pub configure: Configure,
     /// Where this admin's own `pre_node_ready` stands (the cell its start writes): while it is
     /// Blocked, a probe naming this admin is answered `Blocked` carrying its blocker.
     pub pre_node_ready: PreNodeReadyCell,
@@ -1345,7 +1342,7 @@ impl StatusDoor {
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.own(&self.node_id) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.pre_node_ready, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.rename, &self.pre_node_ready, &self.wake).await {
                 return reply;
             }
         }
@@ -2467,26 +2464,6 @@ pub type PreNodeReadyCell = Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHand
 
 /// A node's re-publish of its presence (its digest published on the channel it is on), filled once it has joined its mesh.
 pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
-/// What a node-admin's own config is handed (node-config-update.md; Q203, Q235 P1, P2).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigHeld {
-    /// `ApplyNodeConfig`: the row's map at its revision, installed over an older revision.
-    Told {
-        /// The row's config.
-        config: BTreeMap<String, String>,
-        /// The row's revision.
-        revision: u64,
-    },
-    /// Its own update, just sent to its mesh-primary: held at once.
-    Sent(BTreeMap<String, String>),
-    /// Its own update answered: the row the answer carried (its config at its revision), installed over
-    /// an older revision; `None` when the answer carried none.
-    Answered(Option<(BTreeMap<String, String>, u64)>),
-}
-
-/// This node holding its config (`ApplyNodeConfig`, its own update; no digest carries it, Q203).
-pub type Configure = Arc<OnceLock<Arc<dyn Fn(ConfigHeld) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
-
 /// This node deciding a name its mesh-primary's row gives it (`ApplyNodeName`): the name it held
 /// and the decision, the name taken and published only on `Applied`.
 pub type Rename = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = (rdm_core::PathName, crate::node_name::NameApply)> + Send>> + Send + Sync>>>;
@@ -2556,9 +2533,9 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// `pre_node_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
 /// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connection.delete` and a stop is `stop-node`.
 #[allow(clippy::too_many_arguments)]
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, pre_node_ready: &PreNodeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, rename: &Rename, pre_node_ready: &PreNodeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
-        StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
+        StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
         _ => return None,
     };
     // The exact birth the call names is checked, so a call that reached another birth is refused
@@ -2614,17 +2591,6 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node_path = %me.name.path, node_name = %me.name.name, sender = %sender_name, requested = ?state, current = ?current, reason = "node.connection.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state", "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("apply-node-state refused"));
             Some(rdm_core::reply::status::rejected_invalid_node_transition(current))
-        }
-        StatusRequest::ApplyNodeConfig { config, revision, .. } => {
-            // node-config-update.md, a caller's update, step 3: the node installs the map over an older
-            // revision (P1; no digest carries it, Q203).
-            let Some(configure) = configure.get() else {
-                return Some(rdm_core::reply::status::not_ready(format!("node {}: its digest does not exist yet; the config is not held", me.node_id)));
-            };
-            configure(ConfigHeld::Told { config: config.clone(), revision: *revision }).await;
-            tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node_path = %me.name.path, node_name = %me.name.name, sender = %sender_name, keys = config.len(), revision = *revision, outcome = "applied", "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the config its mesh-primary wrote is held over an older revision"));
-            Some(rdm_core::reply::applied())
         }
         StatusRequest::ApplyNodeName { name, .. } => {
             // R12, R-CR1: the node owns its name and takes the row's name only while it holds no connection.
@@ -3037,7 +3003,7 @@ mod tests {
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -3103,7 +3069,7 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             caches: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -3187,7 +3153,7 @@ mod tests {
             nodes_storage: status,
             caches: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -3530,7 +3496,7 @@ mod tests {
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -3590,12 +3556,12 @@ mod tests {
             })
         }));
         for sender in [Some(&carrier), Some(&admin), None] {
-            let answered = self_subject(&admin, sender, None, &probe, &republish, &Configure::default(), &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+            let answered = self_subject(&admin, sender, None, &probe, &republish, &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
             assert_eq!(answered, Some(R::Current { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Ready }), "from {:?}: {answered:?}", sender.map(|n| n.node_id.to_string()));
         }
         assert_eq!(republished.load(std::sync::atomic::Ordering::SeqCst), 3, "each answered Current probe re-publishes presence once");
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::ConnectionsDeleting };
-        let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Configure::default(), &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Rename::default(), &PreNodeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
 
@@ -3626,7 +3592,7 @@ mod tests {
             wake: Default::default(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -4030,7 +3996,7 @@ mod tests {
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -4132,7 +4098,7 @@ mod tests {
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -4241,7 +4207,7 @@ mod tests {
             nodes_storage: status.clone(),
             caches: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),

@@ -3226,7 +3226,7 @@ mod tests {
             wake: records.wake.clone(),
             fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
             configs: Default::default(),
-            republish: Default::default(), configure: Default::default(),
+            republish: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),

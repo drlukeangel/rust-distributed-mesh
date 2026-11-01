@@ -198,7 +198,7 @@ mod tests {
         let written = Arc::new(crate::node_rows::WrittenRows::default());
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[9u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let door = NodeConfigs::new(client, Default::default(), written.clone());
+        let door = NodeConfigs::new(client, written.clone());
 
         let set = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
 

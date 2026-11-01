@@ -1483,9 +1483,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // digest exists, below.
                                 let republish: crate::status_rpc::Republish =
                                     Arc::new(std::sync::OnceLock::new());
-                                // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
-                                let configure: crate::status_rpc::Configure =
-                                    Arc::new(std::sync::OnceLock::new());
                                 // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
                                 let rename: crate::status_rpc::Rename =
                                     Arc::new(std::sync::OnceLock::new());
@@ -1508,7 +1505,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // Every record the writer holds is this admin's atlas's too (Q203).
                                 written.feeds(control.atlas.clone()).await;
                                 control.atlas.writes(&own_mesh);
-                                let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), configure.clone(), written.clone());
+                                let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), written.clone());
                                 configs.uses_records(topology_storage.node_records(), topology_view.clone());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
                                 configs.watch_views(records.subscribe_view());
@@ -1542,7 +1539,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     fabric_states: states_slot.clone(), atlas: Arc::new(std::sync::OnceLock::from(control.atlas.clone())), fabric_recovery: Arc::new(std::sync::OnceLock::from(crate::fabric_recovery::reader(digest_view.clone(), records.clone()))),
                                     configs: configs_slot.clone(),
                                     republish: republish.clone(),
-                                    configure: configure.clone(),
                                     pre_node_ready: pre_node_ready_cell.clone(),
                                     rename: rename.clone(),
                                     row_moved: {
@@ -2307,22 +2303,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             Box::pin(async move {
                                                 let d = digest.lock().unwrap().clone();
                                                 let _ = topology_view.publish(&d).await;
-                                            })
-                                        }));
-                                    }
-                                    {
-                                        let topology_view = topology_view.clone();
-                                        let _ = configure.set(Arc::new(move |held: crate::status_rpc::ConfigHeld| {
-                                            let topology_view = topology_view.clone();
-                                            Box::pin(async move {
-                                                // Every install over an older revision (Q235 P1); its own update held at once (P2).
-                                                match held {
-                                                    crate::status_rpc::ConfigHeld::Told { config, revision } => {
-                                                        topology_view.install_config(config, revision);
-                                                    }
-                                                    crate::status_rpc::ConfigHeld::Sent(config) => topology_view.hold_sent_config(config),
-                                                    crate::status_rpc::ConfigHeld::Answered(row) => topology_view.own_config_answered(row),
-                                                }
                                             })
                                         }));
                                     }

@@ -93,9 +93,9 @@ pub(crate) enum Owed {
 pub type NodeConfigsSlot = Arc<std::sync::OnceLock<Arc<NodeConfigs>>>;
 
 impl NodeConfigs {
-    /// The door over `client`; `own` holds this admin's config when it is the subject; `written` is
-    /// the record the writer of this admin's mesh rows holds (`NodeRows::with_written`).
-    pub fn new(client: Arc<NodeRpcClient>, _own: crate::status_rpc::Configure, written: Arc<crate::node_rows::WrittenRows>) -> Self {
+    /// The door over `client`; `written` is the record the writer of this admin's mesh rows holds
+    /// (`NodeRows::with_written`).
+    pub fn new(client: Arc<NodeRpcClient>, written: Arc<crate::node_rows::WrittenRows>) -> Self {
         Self { own_channels: Default::default(), records: Default::default(), own_properties: Default::default(), client, one_at_a_time: tokio::sync::Mutex::new(()), written, views: Default::default() }
     }
 
@@ -725,7 +725,7 @@ mod tests {
         let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[9u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         // No node endpoint is registered: any repeat of the property RPC makes this test fail.
         let client = Arc::new(NodeRpcClient::new(endpoint.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let door = NodeConfigs::new(client, Default::default(), written.clone());
+        let door = NodeConfigs::new(client, written.clone());
         assert!(door.records.set(records.clone()).is_ok());
         let entry = EntryProperties { application, config: [("source".into(), "entry".into())].into(), tags: ["entry".into()].into() };
         let placed = (StorageMeta::Persistent { disposition: PersistentDisposition::Preserve }, PlacementMeta::default());
@@ -759,7 +759,7 @@ mod tests {
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &view.fabric.id, "mesh1", &mesh_id, admin.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let door = NodeConfigs::new(client, Default::default(), Arc::new(crate::node_rows::WrittenRows::default()));
+        let door = NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
         let records = Arc::new(MemoryNodeRecords::default());
         let storage = MemoryNodesStorage::default();
         let req = |value: &str| StatusRequest::UpdateNodeConfig {

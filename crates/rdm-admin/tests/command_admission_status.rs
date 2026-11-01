@@ -151,7 +151,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
-        republish: Default::default(), configure: Default::default(),
+        republish: Default::default(),
         pre_node_ready: Default::default(),
         rename: Default::default(),
         row_moved: Default::default(),

@@ -331,8 +331,8 @@ impl<'a> NodeRpc<'a> {
     /// (Forward `0x1A`) when the receiver is not directly reachable, executed exactly as chosen
     /// (`NodeRpcClient::call_routed`). `ConfigUpdated` is `node.config.updated`: the mesh-primary wrote
     /// the node's row and the birth applied the config. A caller that is not a node-admin may send it to
-    /// any node-admin: one that is not the fabric-primary carries it up and hands the answer back
-    /// ([`Self::own_config_update`]). A node-admin's call at an admin holding neither the fabric-primary
+    /// any node-admin: one that is not the fabric-primary carries it up and hands the answer back.
+    /// A node-admin's call at an admin holding neither the fabric-primary
     /// nor the node's mesh-primary is refused `RejectedNotPrimary`, naming the fabric-primary.
     pub async fn config_update(&self, receiver: &NodeId, route: &RouteChoice, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
@@ -344,26 +344,6 @@ impl<'a> NodeRpc<'a> {
             Err(e) => e.outcome(),
         });
         span.in_scope(|| tracing::info!(op = NodeOp::ConfigUpdate.name(), route = route.token(), "an object call ended"));
-        r
-    }
-
-    /// A node's own `node.config.update` (node-config-update.md, a node's own update, step 1; Q235), sent
-    /// to `mesh_primary`, the mesh-primary its topology view names: put the whole config of `birth`, the
-    /// node itself. The mesh-primary writes the row and its atlas and owes the row up to the
-    /// fabric-primary; the node is sent no `ApplyNodeConfig`. `opts` as the caller's (`Budget::Owed`:
-    /// owed until it answers). `ConfigUpdated` is `node.config.updated`, carrying the row as written
-    /// (its config and revision); a refusal by name carries the row as it stands where the mesh-primary
-    /// holds one (`ConfigRowRefused`).
-    pub async fn own_config_update(&self, mesh_primary: &NodeTarget, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
-        let span = NodeOp::ConfigUpdate.span();
-        let (out, _) = tracing::Instrument::instrument(self.client.call::<Status>(mesh_primary, &req, opts), span.clone()).await;
-        let r = ended(out);
-        span.record("outcome", match &r {
-            Ok(reply) => reply.name(),
-            Err(e) => e.outcome(),
-        });
-        span.in_scope(|| tracing::info!(op = NodeOp::ConfigUpdate.name(), route = "mesh-primary", "an object call ended"));
         r
     }
 

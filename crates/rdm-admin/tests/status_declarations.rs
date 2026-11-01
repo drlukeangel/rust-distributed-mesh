@@ -179,7 +179,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
-        republish: Default::default(), configure: Default::default(),
+        republish: Default::default(),
         pre_node_ready: Default::default(),
         rename: Default::default(),
         row_moved: Default::default(),
@@ -603,14 +603,14 @@ async fn configs_door_for(rig: &Rig, nodes: &[&ServedNode]) {
     }
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     // The door writes from the one copy of the records this admin holds, its authority's.
-    let _ = rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.door.configure.clone(), rig.door.caches.nodes.clone())).await));
+    let _ = rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.door.caches.nodes.clone())).await));
 }
 
 /// mesh1's primary's config door, the one door its record changes take turns at, its client
 /// resolving no node: what a cell whose subject is told nothing (a stopped birth) needs.
 async fn quiet_door(rig: &Rig) {
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), rig.door.configure.clone(), Default::default())).await));
+    let _ = rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), Default::default())).await));
 }
 
 fn exact(b: &Birth) -> rdm_client::ExactBirth {
@@ -629,16 +629,6 @@ fn updated(reply: &StatusReply) -> (NodeId, IncarnationId, BTreeMap<String, Stri
 /// [`updated`] of `b` carrying `config`.
 fn updated_of(b: &Birth, config: &BTreeMap<String, String>) -> (NodeId, IncarnationId, BTreeMap<String, String>) {
     (b.node.node_id.clone(), b.node.incarnation_id.clone().unwrap(), config.clone())
-}
-
-/// What a held-config closure records: each map installed or held, in order (`ConfigHeld`).
-fn holding() -> (Arc<Mutex<Vec<rdm_admin::status_rpc::ConfigHeld>>>, Arc<dyn Fn(rdm_admin::status_rpc::ConfigHeld) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>) {
-    let held: Arc<Mutex<Vec<rdm_admin::status_rpc::ConfigHeld>>> = Arc::default();
-    let h = held.clone();
-    (held, Arc::new(move |c: rdm_admin::status_rpc::ConfigHeld| {
-        let h = h.clone();
-        Box::pin(async move { h.lock().unwrap().push(c) })
-    }))
 }
 
 /// CONTRACT (`docs/architecture/lifecycles/node-config-update.md:5` — "`node.config.update` replaces a
@@ -832,7 +822,7 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
         let (rig, _) = rig().await;
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let refusing = Arc::new(RefusingRecords::default());
-        let door = crate::bound_configs_over(refusing.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), Default::default(), Default::default())).await;
+        let door = crate::bound_configs_over(refusing.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), Default::default())).await;
         let view = rig.topology.read().await.clone();
         let me = &rig.admin.node;
         let req = StatusRequest::UpdateNodeConfig { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "c".to_string())].into() };
@@ -856,7 +846,7 @@ async fn door_at(key: &SecretKey, node: &ServedNode) -> rdm_admin::node_config::
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default(), Default::default())).await
+    crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())).await
 }
 
 /// CONTRACT (node-config-update.md steps 1-2: "The caller sends `node.config.update` to the
@@ -1034,8 +1024,6 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
     cap.run(async {
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
-        let (held, hold) = holding();
-        let _ = rig.door.configure.set(hold);
         let node = serve_node(rpc1).await;
         configs_door(&rig, &node).await;
         let me = &rig.admin.node;
@@ -1046,7 +1034,6 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
         let row = rig.nodes.record_at(&me.name).await.unwrap().expect("mesh1's primary wrote its own row");
         let (row_config, row_tags) = props(&rig, &row.node_id).await;
         assert_eq!((row.node_id.clone(), row_config.clone()), (me.node_id.clone(), config.clone()));
-        assert!(held.lock().unwrap().is_empty(), "the admin's own writer holds the config; nothing else is handed it: {:?}", held.lock().unwrap());
         assert!(node.seen.lock().unwrap().is_empty(), "no other node is told");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
@@ -1098,7 +1085,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
         wake: Default::default(),
         fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
         configs: Default::default(),
-        republish: Default::default(), configure: Default::default(),
+        republish: Default::default(),
         pre_node_ready: Default::default(),
         rename: Default::default(),
         row_moved: Default::default(),
@@ -1114,7 +1101,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
     status.caches.nodes.feeds(atlas.clone()).await;
     let _ = status.atlas.set(atlas.clone());
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = status.configs.set(Arc::new(crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm")), status.configure.clone(), status.caches.nodes.clone())).await));
+    let _ = status.configs.set(Arc::new(crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm")), status.caches.nodes.clone())).await));
     let slot: Arc<OnceLock<Arc<StatusDoor>>> = Arc::new(OnceLock::new());
     let _ = slot.set(status.clone());
     let server = rdm_admin::status_rpc::serve(ServerBuilder::new(), slot).build(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() }).unwrap();
@@ -1140,7 +1127,7 @@ async fn fabric_primary_door(rig: &Rig, births: &[&Birth], resolves: &[ResolvedN
         resolver.insert(r.clone());
     }
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let _ = rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.door.configure.clone(), rig.door.caches.nodes.clone())).await));
+    let _ = rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.door.caches.nodes.clone())).await));
     atlas
 }
 
@@ -1212,8 +1199,8 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
         let client = own_client(&node, &joined.resolved);
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
         let opts = CallOptions { budget: Budget::Owed, ..CallOptions::default() };
-        let (rpc, admin_target, birth) = (rdm_client::NodeRpc::new(&client), NodeTarget::ExactNode(admin2.node.node_id.clone()), exact(rpc2));
-        let call = rpc.own_config_update(&admin_target, &birth, config.clone(), &opts);
+        let (rpc, birth) = (rdm_client::NodeRpc::new(&client), exact(rpc2));
+        let call = rpc.config_update(&admin2.node.node_id, &rdm_transport::RouteChoice::Direct, &birth, config.clone(), &opts);
         let land = async {
             tokio::time::timeout(Duration::from_secs(10), fp.heard.notified()).await.expect("mesh1.admin.2 carried the command up");
             landed.store(true, Ordering::SeqCst);
@@ -1284,21 +1271,18 @@ async fn mesh1_primary_is_admin2(rig: &Rig, admin2: &Birth) {
 /// no copy in its atlas, no row written. Must NOT happen: a `node.config.update` carried to a primary,
 /// or a map copied into an atlas.
 #[test]
-fn a_node_admins_own_config_update_goes_to_its_mesh_primary_which_writes_it_and_tells_it_nothing() {
+fn a_node_admins_own_config_update_is_written_by_its_own_writer_and_nothing_travels_upward() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
         let admin2 = &b["admin2"];
         let joined = second_admin(&rig, admin2, &[rig.resolved.clone()]).await;
         let fp_atlas = fabric_primary_door(&rig, &[admin2], &[joined.resolved.clone()]).await;
-        let (held, hold) = holding();
-        let _ = joined.status.configure.set(hold);
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "rdm://mesh1.admin.2".to_string())].into();
         let reply = tokio::time::timeout(Duration::from_secs(20), joined.status.own_config_update(admin2.node.incarnation_id.clone().unwrap(), config.clone())).await.expect("the command completes");
         assert_eq!(updated(&reply), updated_of(admin2, &config));
         assert_eq!(config_of(&admin2.node.node_id).await, config, "mesh1.admin.2's own record holds the whole config");
         assert!(fp_atlas.record(&admin2.node.node_id).is_some_and(|r| r.config.is_empty()), "no copy of the map is installed in the fabric-primary's atlas");
-        assert!(held.lock().unwrap().is_empty(), "the own writer holds the config; nothing else is handed it: {:?}", held.lock().unwrap());
         assert!(joined.status.nodes_storage.node_at(&admin2.node.name).await.unwrap().is_none(), "mesh1.admin.2 writes no row");
     });
     for name in ["rdm.node_admin.node.update.via-config", "rdm.node_admin.node.update.via-forward", "rdm.node_admin.node.update.via-fabric-primary"] {
@@ -1412,8 +1396,6 @@ fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
     cap.run(async {
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
-        let (held, hold) = holding();
-        let _ = rig.door.configure.set(hold);
         quiet_door(&rig).await;
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
         let later: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:10".to_string())].into();
@@ -1425,7 +1407,6 @@ fn a_node_admin_told_its_own_config_holds_it_and_answers_applied() {
         assert_eq!(props(&rig, &me.node_id).await.0, config, "the refusal wrote nothing");
         assert_eq!(reply(&call(&rig, rpc1, &told(me.incarnation_id.clone().unwrap(), later.clone())).await), StatusReply::Applied, "the subject answers whoever sends it");
         assert_eq!(props(&rig, &me.node_id).await.0, later, "each apply puts the whole map");
-        assert!(held.lock().unwrap().is_empty(), "the admin's own writer holds the config; nothing else is handed it: {:?}", held.lock().unwrap());
     });
     for name in ["rdm.node_rpc.request.update.via-call", "rdm.node_rpc.connection.create.via-dial"] {
         for (trace, attrs, events) in cap.spans_with_events(name) {
@@ -2307,7 +2288,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 wake: Default::default(),
                 fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(),
                 configs: Default::default(),
-                republish: Default::default(), configure: Default::default(),
+                republish: Default::default(),
                 pre_node_ready: Default::default(),
                 rename: Default::default(),
                 row_moved: Default::default(),
@@ -2560,7 +2541,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
         caller_delivery.set(client.delivery().clone()).unwrap_or_else(|_| panic!("one caller"));
-        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, rig.door.configure.clone(), Default::default())).await)).is_ok());
+        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
         let answer = call(&rig, &b["rpc1"], &StatusRequest::DeleteConnections { node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation_id.clone().unwrap(), scope: rdm_core::status::ConnectionScope::All }).await;
         assert!(matches!(reply(&answer), StatusReply::ConnectionsDeleted { .. }), "{answer:?}");
         assert!(rdm_transport::DeliveryStats::get(&server_delivery.get().unwrap().stats().responses_resent) >= 1);
@@ -2636,7 +2617,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         resolver.insert(ResolvedNode { mesh: subject.mesh.clone(), kind: subject.kind, node_id: subject.node_id.clone(), name: subject.name.clone(), endpoint_id: births["rpc2"].key.public(), transport_addr: addr, incarnation: subject.incarnation_id.clone().unwrap() });
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
-        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default(), Default::default())).await)).is_ok());
+        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
         let ctx = CommandContext { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node(if start { "node.start" } else { "node.stop" }, &subject.node_id) };
         let (door, target) = (rig.door.clone(), subject.clone());
         let call = tokio::spawn(async move { door.carry_lifecycle(&target, start, &ctx).await });
@@ -2713,7 +2694,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
         caller_delivery.set(client.delivery().clone()).unwrap_or_else(|_| panic!("one caller"));
-        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, rig.door.configure.clone(), Default::default())).await)).is_ok());
+        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
         let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let answer = rig.door.carry_lifecycle(&rpc.node, true, &context).await;
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
@@ -2796,7 +2777,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         resolver.insert(ResolvedNode { mesh: rpc.node.mesh.clone(), kind: rpc.node.kind, node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: rpc.key.public(), transport_addr: addr, incarnation: incarnation.clone() });
         let admin_ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(admin_ep, resolver).with_caller_system("rdm"));
-        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, rig.door.configure.clone(), Default::default())).await)).is_ok());
+        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
         let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b-start".into(), attempt: 1, operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let (door, target) = (rig.door.clone(), rpc.node.clone());
         let start = tokio::spawn(async move { door.carry_lifecycle(&target, true, &context).await });
@@ -2914,7 +2895,7 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     // The caller owns and serves one birth on one endpoint: recovered responses arrive
     // through this router and find the invocation in the same Delivery as the call.
     let client = Arc::new(NodeRpcClient::new(rig.endpoint.clone(), resolver).with_delivery(rig.server.delivery().clone()).with_caller_system("rdm"));
-    assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default(), Default::default())).await)).is_ok());
+    assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
     let context = CommandContext { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &subject.node.node_id) };
     let end = tokio::time::timeout(Duration::from_secs(5), rig.door.carry_lifecycle(&subject.node, false, &context)).await.expect("the lost physical stream recovers its terminal on the same invocation");
     assert!(matches!(end, A::Stopped { .. }), "{end:?}");
@@ -2965,7 +2946,7 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
         resolver.insert(ResolvedNode { mesh: rpc.node.mesh.clone(), kind: rpc.node.kind, node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: rpc.key.public(), transport_addr: addr, incarnation: incarnation.clone() });
         let admin_ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(admin_ep, resolver).with_caller_system("rdm"));
-        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, rig.door.configure.clone(), Default::default())).await)).is_ok());
+        assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
         let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), attempt: 2, operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let answer = rig.door.carry_lifecycle(&rpc.node, true, &context).await;
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");

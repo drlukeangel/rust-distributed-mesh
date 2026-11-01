@@ -305,7 +305,6 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
         let configs = Arc::new(crate::bound_configs(NodeConfigs::new(
             admin_client,
             Default::default(),
-            Default::default(),
         )).await);
         let configs_slot = Arc::new(OnceLock::new());
         let _ = configs_slot.set(configs);
@@ -379,7 +378,6 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             fabric_recovery: Default::default(),
             configs: configs_slot,
             republish: Default::default(),
-            configure: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),

@@ -118,10 +118,10 @@ impl NodeObserver for LiveMesh {
                 caches: Default::default(),
                 commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
                 hold_next_reply: Default::default(), wake: Default::default(), fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(), configs: Default::default(),
-                republish: Default::default(), configure: Default::default(), pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
+                republish: Default::default(), pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
                 digest_view: Some(self.topology_view.digest_view.clone()), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
-            assert!(door.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default(), Default::default()))).is_ok());
+            assert!(door.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default()))).is_ok());
             return door.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await;
         }
         rdm_admin::node_commands::send_command(&self.client, &self.commands, &target, node, cmd, ctx).await

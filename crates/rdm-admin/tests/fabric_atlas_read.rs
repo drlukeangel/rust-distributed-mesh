@@ -218,7 +218,6 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(),
-            configure: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),

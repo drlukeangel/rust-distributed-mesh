@@ -335,7 +335,6 @@ mod tests {
             fabric_recovery: Default::default(),
             configs: Default::default(),
             republish: Default::default(),
-            configure: Default::default(),
             pre_node_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -358,7 +357,6 @@ mod tests {
                     republished.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 })
             }));
-            let _ = door.configure.set(Arc::new(|_held| Box::pin(async {})));
         }
 
         // node-status.md:5-7 — Status never moves through a meta or config put. The put goes through this
@@ -367,7 +365,7 @@ mod tests {
             use rdm_node::node_records::MemoryNodeRecords;
             let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[11u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
             let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
-            let configs = crate::node_config::NodeConfigs::new(client, Default::default(), Arc::new(crate::node_rows::WrittenRows::default()));
+            let configs = crate::node_config::NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
             let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             let snapshot = topology.read().await.clone();
             let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
