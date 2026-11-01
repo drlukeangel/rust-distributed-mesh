@@ -1611,7 +1611,8 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
 async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after: Option<Duration>) -> (Value, Vec<Value>, String) {
     let mut estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", &[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", bound_ms)]).await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await;
-    estate.settled_views(&[("mesh1", 2, 1)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 1)]).await;
+    let node_id = views.iter().find(|n| n.name == node_at()).map(|n| n.node_id.to_string()).expect("the node is in the settled views");
     estate.until_fabric_ready(SETTLE).await;
     let primary_pid = estate.bootstrap_pid().expect("the Day-0 admin is mesh1's primary and the estate holds its pid");
     let pid = estate.pid_of(&node_at()).await;
@@ -1635,7 +1636,7 @@ async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after
     send("-KILL", primary_pid as u64);
     estate.stop().await;
     let spans = estate.spans();
-    let outcome = named(&spans, "rdm.node_admin.node.update.via-stop-declarations").into_iter().find(|sp| at_location(sp, &node_at())).cloned().unwrap_or_else(|| panic!("{:?}'s signal stop ended on no outcome span", node_at()));
+    let outcome = named(&spans, "rdm.node_admin.node.update.via-stop-declarations").into_iter().find(|sp| rdm_test::estate::of_node(sp, &node_at(), &node_id)).cloned().unwrap_or_else(|| panic!("{:?}'s signal stop ended on no outcome span", node_at()));
     estate.record_trace_url(outcome["trace_id"].as_str().unwrap_or(""));
     let trace = s(&outcome["trace_id"]);
     println!("{:?} ended {ended_in:?} after its signal; outcome span: {outcome}", node_at());

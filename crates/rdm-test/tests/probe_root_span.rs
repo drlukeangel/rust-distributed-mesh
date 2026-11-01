@@ -122,7 +122,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
         let mut missing = Vec::new();
         for run in 0..40 {
             // Runs 0-19 call the node directly; runs 20-39 are carried through the gateway.
-            let via: Vec<String> = if run >= 20 { vec!["--via".into(), "path:mesh1.gateway.1".into()] } else { vec![] };
+            let via: Vec<String> = if run >= 20 { vec!["--via".into(), rdm_test::estate::path_target(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap())] } else { vec![] };
             let (admin, evidence_dir, id) = (admin.clone(), evidence.clone(), launch.node_id.to_string());
             // CONTRACT: the cell counts span files (`*.spans.jsonl`) only. The evidence dir is the
             // probe's one log location, so it also holds the probe's transport diagnostic file

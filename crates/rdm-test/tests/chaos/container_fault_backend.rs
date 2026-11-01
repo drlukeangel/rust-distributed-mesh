@@ -1521,7 +1521,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     .await;
     let replacement_c = ExactContainer::of(&estate, &kill).await.expect("the replacement's container");
     assert_ne!(replacement_c.id, kill_c.id, "the replacement runs in a new container");
-    let fresh = estate.probe(&["get", "--target", &format!("path:{kill:?}"), "--key", "83"]);
+    let fresh = estate.probe(&["get", "--target", &rdm_test::estate::path_target(&kill), "--key", "83"]);
     assert_eq!(fresh["reply"]["result"], json!({"found": true, "value": "before-fault"}), "the recovered node serves the store of the data dir it inherited: {fresh}");
     let old = estate.probe(&["get", "--target", &kill_exact, "--key", "83"]);
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows the recovered node: {old}");
@@ -1669,8 +1669,8 @@ async fn container_node_silenced_past_the_floor_is_terminated_and_re_created_at_
     let old = container_faults::inspect(&container);
     assert!(old.as_ref().map_or(true, |i| !i.running), "the silenced birth's container no longer runs: {old:?}");
     assert_ne!(s(&recovered["data_dir"]), old_dir, "re-created over a newly allocated data dir: {recovered}");
-    let put = estate.probe(&["put", "--target", &format!("path:{name:?}"), "--key", "after", "--value", "re-created"]);
-    let value = estate.probe(&["get", "--target", &format!("path:{name:?}"), "--key", "after"]);
+    let put = estate.probe(&["put", "--target", &rdm_test::estate::path_target(&name), "--key", "after", "--value", "re-created"]);
+    let value = estate.probe(&["get", "--target", &rdm_test::estate::path_target(&name), "--key", "after"]);
     assert_eq!(value["reply"]["result"], json!({"found": true, "value": "re-created"}), "the new birth serves: {put} {value}");
     assert_eq!(value["reply"]["executing_node"], recovered["node_id"], "the new birth serves it: {value}");
 

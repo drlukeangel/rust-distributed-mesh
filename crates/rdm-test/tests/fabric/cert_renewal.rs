@@ -208,12 +208,21 @@ fn cut_calls(admin: &Running, to: &RunningNode) {
     admin.node_rpc.client.close_pooled_to(&key, "the cell cuts this admin's calls");
 }
 
-/// Every span named `name` with its fields, in the order they began.
+/// Every span named `name` with its fields, in the order they began; an admin span's `node_path` and
+/// `node_name` are also read as `node` = `path.name`, the way a cell names a node.
 fn named(spans: &crate::common::Spans, name: &str) -> Vec<BTreeMap<String, String>> {
     let held = spans.0.lock().unwrap();
     let mut found: Vec<(u64, BTreeMap<String, String>)> = held.iter().filter(|(_, (n, _, _))| n == name).map(|(k, (_, _, f))| (*k, f.clone())).collect();
     found.sort_by_key(|(k, _)| *k);
-    found.into_iter().map(|(_, f)| f).collect()
+    found
+        .into_iter()
+        .map(|(_, mut f)| {
+            if let (Some(path), Some(name)) = (f.get("node_path").cloned(), f.get("node_name").cloned()) {
+                f.entry("node".into()).or_insert(format!("{path}.{name}"));
+            }
+            f
+        })
+        .collect()
 }
 
 fn num(f: &BTreeMap<String, String>, k: &str) -> u64 {
@@ -367,7 +376,7 @@ fn a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admi
         assert!(renew_window(issued_at, first.cert.expiry_ms).contains(&num(&renewal, "issued_at")), "renewed at its row's point: {renewal:?}");
         assert_eq!((num(&renewal, "expires_at") - num(&renewal, "issued_at"), num(&renewal, "previous_expires_at")), (MEMBER_TTL_SECS * 1000, first.cert.expiry_ms), "{renewal:?}");
         assert_eq!(renewal.get("incarnation_id"), Some(&a.digest.node.incarnation.to_string()), "renewed for the exact birth");
-        until("mesh1.rpc.1 spans its install", BOUND, async || named(&spans, "rdm.node.cert.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.rpc.1"))).await;
+        until("mesh1.rpc.1 spans its install", BOUND, async || named(&spans, "rdm.node.cert.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some(a.digest.node.node_id.as_str()))).await;
 
         let past = first.cert.expiry_ms + rdm_core::cadence::staleness_floor().as_millis() as u64 + 200;
         until("rafka-time passes the first cert's expiry and its skew", BOUND, async || (a.rafka_time.now_ms() > past && b.rafka_time.now_ms() > past).then_some(())).await;
@@ -464,7 +473,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
 
         until("mesh1.rpc.1 is renewed and installs it", BOUND, async || {
             let installed = renewals_of(&spans, "mesh1.rpc.1").iter().any(|f| f["outcome"] == "installed");
-            let on_node = named(&spans, "rdm.node.cert.update.via-installed").iter().any(|f| f.get("node").map(String::as_str) == Some("mesh1.rpc.1"));
+            let on_node = named(&spans, "rdm.node.cert.update.via-installed").iter().any(|f| f.get("node").map(String::as_str) == Some(a.digest.node.node_id.as_str()));
             (installed && on_node).then_some(())
         })
         .await;
@@ -579,7 +588,7 @@ fn a_cert_for_another_birth_is_refused_by_name() {
             other => panic!("bytes that are no cert must be refused by name: {other:?}"),
         }
         assert!(
-            !named(&spans, "rdm.node.cert.update.via-installed").iter().any(|f| f.get("node").map(String::as_str) == Some("mesh1.rpc.1")),
+            !named(&spans, "rdm.node.cert.update.via-installed").iter().any(|f| f.get("node").map(String::as_str) == Some(a.digest.node.node_id.as_str())),
             "the member installed neither"
         );
         stop_all(vec![a, b], vec![root]).await;
@@ -771,7 +780,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         assert_eq!((new_issuer.cert.expiry_ms, new_issuer.cert.mesh.as_str()), (num(&rotated, "issuer_expires_at"), "mesh1"));
         assert_eq!(certs::verify_issuer(&new_issuer, &[test_root_public()]), Ok(()), "the new issuer chains to the root");
         newer.data_connections_for_testkit().probe_direct(&birth_of(&holder), ALPN).await.expect("the old issuer's holder admits the new issuer's member");
-        assert!(!named(&spans, "rdm.node.cert.update.via-installed").iter().any(|f| f.get("node").map(String::as_str) == Some("mesh1.rpc.1")), "the holder still holds the old issuer's cert");
+        assert!(!named(&spans, "rdm.node.cert.update.via-installed").iter().any(|f| f.get("node").map(String::as_str) == Some(holder.digest.node.node_id.as_str())), "the holder still holds the old issuer's cert");
         let admitted = named(&spans, "rdm.node.connection.serve.via-admitted").into_iter().rfind(|f| f.get("destination").map(String::as_str) == Some("mesh1.rpc.1")).expect("the admission fact");
         assert_eq!(num(&admitted, "cert_expires_at"), signed(&newer.member_cert).cert.expiry_ms);
         stop_all(vec![holder, newer, first], vec![admin2, root]).await;
@@ -1139,9 +1148,14 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         assert!(!shown.roots.as_ref().unwrap().stalled, "a rotation updated is not stalled: {:?}", shown.roots);
         assert!(shown.ca.is_some(), "fabric.get carries the CA row: {shown:?}");
         let alone = vec![hex(&new.verifying_key())];
-        for node in ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"] {
+        let ids = [
+            ("mesh1.admin.1", root.digest.lock().unwrap().node.node_id.to_string()),
+            ("mesh1.admin.2", second.digest.lock().unwrap().node.node_id.to_string()),
+            ("mesh1.rpc.1", a.digest.node.node_id.to_string()),
+        ];
+        for (node, id) in &ids {
             until(&format!("{node} installs the new root alone"), BOUND, async || {
-                named(&spans, "rdm.node.root.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some(node) && f.get("roots").is_some_and(|r| r.contains(&alone[0]) && !r.contains(',')))
+                named(&spans, "rdm.node.root.update.via-installed").into_iter().find(|f| f.get("node") == Some(id) && f.get("roots").is_some_and(|r| r.contains(&alone[0]) && !r.contains(',')))
             })
             .await;
         }

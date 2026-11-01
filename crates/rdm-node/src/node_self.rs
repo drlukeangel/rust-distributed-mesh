@@ -427,7 +427,7 @@ impl NodeSelf {
             return rdm_core::reply::status::not_ready(format!("{me:?} is still starting: it holds no connections registry to present a cert from"));
         };
         registry.set_member_cert(cert.to_vec());
-        tracing::info_span!("rdm.node.cert.update.via-installed", node_location = ?me, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str(), expires_at = signed.cert.expiry_ms)
+        tracing::info_span!("rdm.node.cert.update.via-installed", node = %self.node_id, incarnation_id = %self.incarnation.as_str(), expires_at = signed.cert.expiry_ms)
             .in_scope(|| tracing::info!("the renewed member cert is installed: every connection opened from now presents it"));
         StatusReply::CertRenewed { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), expires_at: signed.cert.expiry_ms }
     }

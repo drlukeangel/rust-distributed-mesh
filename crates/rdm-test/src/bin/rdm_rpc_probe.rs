@@ -480,9 +480,31 @@ fn probe_bind() -> std::net::SocketAddr {
 /// `snapshot --target <source>`: the testkit's originate door on the source node (op 0x73).
 async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     use rdm_test::originate::{Originate, OriginateReply, OriginateRequest, ProofOp};
+    // A destination or carrier is a node id: `exact:<node_id>` as given, or `path:<JSON>` read as the
+    // node the entry admin's view holds at that location now.
+    let mut held: Option<Vec<NodeView>> = None;
+    for value in [&a.destination, &a.carrier].into_iter().flatten() {
+        if value.starts_with("path:") && held.is_none() {
+            let (client, _) = enter(&a.admin_birth).await?;
+            let views = views_of(&client, &a.admin_birth.node_id).await;
+            client.endpoint().close().await;
+            held = Some(views?);
+        }
+    }
     let exact = |what: &str, value: &Option<String>| -> Result<NodeId, String> {
-        let id = value.as_deref().and_then(|v| v.strip_prefix("exact:")).ok_or_else(|| format!("{what} requires exact:<node_id>"))?;
-        NodeId::parse(id).map_err(|e| format!("{what}: {e}"))
+        match value.as_deref().and_then(|v| v.split_once(':')) {
+            Some(("exact", id)) => NodeId::parse(id).map_err(|e| format!("{what}: {e}")),
+            Some(("path", p)) => {
+                let at = serde_json::from_str::<PathName>(p).map_err(|e| format!("{what} path {p:?}: {e}"))?;
+                let mut ids = held.iter().flatten().filter(|n| n.name == at).map(|n| n.node_id.clone());
+                match (ids.next(), ids.next()) {
+                    (Some(id), None) => Ok(id),
+                    (None, _) => Err(format!("{what} path {p:?}: the entry admin's view holds no node there")),
+                    (Some(_), Some(_)) => Err(format!("{what} path {p:?}: the entry admin's view holds more than one node there; name it exact:<node_id>")),
+                }
+            }
+            _ => Err(format!("{what} requires exact:<node_id> or path:<JSON object with path and name>")),
+        }
     };
     let req = match a.op.as_str() {
         "originate" => {

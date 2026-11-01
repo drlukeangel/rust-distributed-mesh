@@ -185,7 +185,7 @@ async fn a_nodes_row_is_read_from_the_nodes_storage_by_another_node_process_with
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(std::time::Duration::from_secs(120)).await;
-    let out = estate.probe(&["own-config", "--target", "path:mesh1.rpc.2", "--value", "listener.data=127.0.0.1:45007"]);
+    let out = estate.probe(&["own-config", "--target", &rdm_test::estate::path_target(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), "--value", "listener.data=127.0.0.1:45007"]);
     assert_eq!(out["own_config"], "config-updated", "mesh1.rpc.2's mesh-primary writes its row: {out}");
 
     // Every primary is gone: the fabric's one node-admin is killed.

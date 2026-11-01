@@ -26,6 +26,8 @@ pub struct LiveMesh {
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
     pub commands: Arc<rdm_admin::node_commands::CommandView>,
+    /// The fixture admin's own path and name, its launcher's.
+    pub location: rdm_core::PathName,
 }
 
 impl LiveMesh {
@@ -97,7 +99,7 @@ impl NodeObserver for LiveMesh {
         if matches!(cmd, rdm_admin::node_commands::NodeCommand::Stop | rdm_admin::node_commands::NodeCommand::Start) {
             // Use the real mesh-primary frame owner; the fixture supplies its held view and stores.
             let birth = self.client.delivery().me().clone();
-            let mut me = Node::allocated(self.topology_view.digest_view.get(birth.node_id.as_str()).expect("the fixture admin has its digest").0.node.name, self.topology_view.mesh_name(), rdm_core::NodeKind::NodeAdmin);
+            let mut me = Node::allocated(self.location.clone(), self.topology_view.mesh_name(), rdm_core::NodeKind::NodeAdmin);
             me.node_id = birth.node_id.clone();
             me.incarnation_id = Some(birth.incarnation.clone());
             me.is_primary = true;
@@ -621,7 +623,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
-        observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands },
+        observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, location: name.clone() },
         seed: (admin_ep.id().to_string(), addr),
         fabric: fabric.clone(),
         joins,
