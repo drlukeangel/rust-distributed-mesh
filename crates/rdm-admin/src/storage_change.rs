@@ -418,7 +418,10 @@ impl StorageChanges {
     /// (the old one when the change failed before its switch), this mesh-primary and each other node of
     /// the mesh moved onto it, each row recording it; a node that will not move is re-created on it by
     /// `recreate`, steps of this attempt (i149 R19); once every node moved or was re-created it replies
-    /// `unblocked` (its receipt) and issues commands again.
+    /// `unblocked` (its receipt) and issues commands again. Every move carries the change's own Build
+    /// and `change_id` (`StorageChange::build_id`), the pair each node blocked under, whichever Build
+    /// runs the unblock: a fabric.delete that resolves the change included. The receipt is the running
+    /// attempt's.
     #[allow(clippy::too_many_arguments)]
     pub async fn unblock_mesh<F, Fut>(&self, builds: &dyn crate::build_state::BuildStateAdapter, build_id: &BuildId, attempt: u32, mesh: &str, change: &StorageChange, status_door: Option<Arc<crate::status_rpc::StatusDoor>>, topology: Arc<RwLock<Topology>>, recreate: &F) -> Result<(), crate::executor::RunEnd>
     where
@@ -428,11 +431,11 @@ impl StorageChanges {
         let door = Self::door(status_door)?;
         let provider = self.decide(change).await;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-unblock", build_id = %build_id.log(), change_id = %change.change_id, mesh = %mesh, node_id = %self.node_id, provider = %provider, moved = tracing::field::Empty, recreated = tracing::field::Empty, outcome = tracing::field::Empty);
-        self.move_own(&door, build_id, &change.change_id, &provider).await?;
+        self.move_own(&door, &change.build_id, &change.change_id, &provider).await?;
         // Moved: this admin writes rows again, on the decided provider (its re-creates' rows among them).
         door.commands.release_rows();
         let paths: Vec<PathName> = topology.read().await.births().filter(|n| n.mesh == mesh && n.node_id != self.node_id && n.status != crate::model::NodeStatus::Deleted).map(|n| n.name.clone()).collect();
-        let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, build_id, &change.change_id, mesh, p, &provider, recreate))).await;
+        let ends = futures_util::future::join_all(paths.iter().map(|p| self.move_until(&door, &topology, &change.build_id, &change.change_id, mesh, p, &provider, recreate))).await;
         let recreated = ends.iter().filter(|e| **e == PathEnd::Recreated).count();
         door.commands.unblock();
         span.record("moved", (paths.len() - recreated) as u64).record("recreated", recreated as u64).record("outcome", "unblocked");
