@@ -2,6 +2,17 @@
 
 ## i150 dependency — node-owned properties (2026-10-31)
 
+### i150 removal debt (Luke, 2026-11-01: each item found no longer needed is listed here and removed at the end)
+
+| # | Item | Where | Why it is dead | Removal needs |
+|---|---|---|---|---|
+| D1 | `PublisherId.node`, the publisher's descriptive name | `crates/rdm-core/src/publisher.rs` | Decides nothing (identity is `node_id` + `incarnation`); since the path/name split it carried the name half alone | **Removing now (Q309)**: topology wire goldens move; Jaeger flame of a topology publish at the tip |
+| D2 | `revision` on `StatusReply::ConfigUpdated` and `StatusRequest::ApplyNodeConfig`, and `config_apply`'s revision argument | `crates/rdm-core/src/status.rs`, `crates/rdm-admin/src/node_config.rs` | A node's property record carries no revision (node writes its own, written whole); every writer sends `0` | Status wire change: Luke's yes; Rafka consumer's `ConfigUpdated.revision` read removed with it (handoff e6) |
+| D3 | `config` and `tags` on the lifecycle `NodeRow` | `crates/rdm-node/src/nodes_storage.rs` | Properties live in the node's own record; still read by `node_rows.rs` (824, 836, 997, 1036), `join.rs:445`, `node_name_update.rs:256`, the tags index `storage.rs:554` | The e3/e5 reader cut first; then a durable-format move (marker) |
+| D4 | `node.get`'s fallback to the atlas row's config/tags when no property record is read (`Ok(None)`) | `crates/rdm-admin/src/views.rs` ~308 | A missing-properties fallback (the handoff forbids it) | After D3's reader cut: a missing current record is unavailable, named |
+| D5 | `revision` on node rows and the atlas's per-node revision expectations | `NodeRow.revision`, `Atlas` records | No node revision under i150 (primary revisions stay) | With D3 |
+
+
 Latest `heard-again-fields-check.log`: exit 1, 554 scenario compilation errors; no tests ran. Node reads reached 565 and mesh creation 563 errors in preceding checks. Architect 1 reviewed node-read actor fields, mesh creation, and heard-again exact-birth selectors; findings corrected. Reconcile spans now expose executor_node_id and executor_incarnation separately, so consumers never parse a full-Birth display. Recovery launch detection compares separate PATH/NAME environment fields. Connection-all ID selectors and typed operations are compiling in `connections-all-fields-check.log`. All remaining production migration, runtime checks and final review remain open.
 
 Latest `role-container-fields-check.log`: exit 1, 585 scenario compilation errors; no tests ran. Named listeners previously reached 594 errors, with no attributed listener error; Architect 1 accepted its schema and exact-birth checks. Role/container fixtures now use explicit location pairs, ID route/connection selectors and full recovery birth checks; the remaining block_direct caller was corrected after review. Reconcile variants now use structured pairs and node-owned tags/config, sharing Estate::node_properties with listener fixtures. `reconcile-variants-fields-check.log` is active. Final runtime proof and the broader implementation backlog remain open.
