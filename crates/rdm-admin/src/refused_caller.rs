@@ -230,6 +230,9 @@ mod tests {
     /// refused callers it installed.
     async fn atlas_deciding_over(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>, client: Option<Arc<rdm_transport::NodeRpcClient>>) -> (Arc<Atlas>, Arc<RefusedCallers>) {
         let atlas = Arc::new(Atlas::default());
+        // The admin's row writer feeds its atlas, as boot wires it: the atlas publishes rows under that writer.
+        let written: Arc<crate::node_rows::WrittenRows> = Default::default();
+        written.feeds(atlas.clone()).await;
         atlas.scope(&**rows, [admin.mesh.clone()].into()).await.unwrap();
         let recovery = crate::admin::RecoverySubmitter {
             me: admin.name.clone(),
@@ -238,7 +241,7 @@ mod tests {
             digest_view: Default::default(),
             provider: Arc::new(crate::deployment::process::ProcessDeploymentProvider::new()),
             nodes_storage: rows.clone(),
-            written: Default::default(),
+            written,
             door: Default::default(),
             client,
             builds: builds.clone(),
@@ -361,16 +364,16 @@ mod tests {
         let (d, spans) = decided(&capture).await;
         let d = d.unwrap_or_else(|| panic!("the declaration door decided the caller: {spans:?}"));
         assert_eq!(d["door"], "declaration", "{d}");
-        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's (path, name): {d}");
+        assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.rpc"), Some("2")), "decided at the caller's (path, name): {d}");
         assert_eq!(d["own"], "delete-deleted-birth", "{d}");
         assert_eq!(d["decision"], "delete-deleted-birth", "a caller whose record is deleted is deleted, never re-admitted (Q217): {d}");
         assert_eq!(d["needed"], "true", "the current Build still needs the path: node recovery re-creates it: {d}");
         assert_eq!(d["root"], "self", "the fabric-primary decides from its own atlas: {d}");
         // The rig builds no Build door: the termination's open is refused naming it (node_replace's
         // e2e runs it to the runtime's end).
-        assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some("mesh1.admin.1: its Build door is not built yet")), "{d}");
+        assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some(format!("{}: its Build door is not built yet", admin.node_id).as_str())), "{d}");
         let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the caller was reported for node.terminate: {spans:?}"));
-        assert_eq!((reported["returned"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh1.rpc.2"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the terminate report names the exact birth: {reported}");
+        assert_eq!((reported["returned_path"].as_str(), reported["returned_name"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh1.rpc"), Some("2"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the terminate report names the exact birth: {reported}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -471,18 +474,18 @@ mod tests {
         };
         let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), types: Default::default(), listeners: Vec::new() };
         let reply = door.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
-        assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "name" && deployed.contains(recreated.node_id.as_str())), "the deleted birth's join is refused at once by name, naming the re-created birth: {reply:?}");
+        assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "node_id" && deployed.contains(recreated.node_id.as_str())), "the deleted birth's join is refused at once by its node id, naming the re-created birth: {reply:?}");
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
         let d = d.unwrap_or_else(|| panic!("the join door decided the caller: {spans:?}"));
         assert_eq!(d["door"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
-        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's (path, name): {d}");
+        assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.rpc"), Some("2")), "decided at the caller's (path, name): {d}");
         assert_eq!(d["decision"], "delete-path-held", "another birth is at the caller's (path, name): the caller is deleted (Q207): {d}");
         assert_eq!(d["root"], "self", "the fabric-primary decides from its own atlas: {d}");
-        assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some("mesh1.admin.1: its Build door is not built yet")), "{d}");
+        assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some(format!("{}: its Build door is not built yet", admin.node_id).as_str())), "{d}");
         let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the caller was reported for node.terminate: {spans:?}"));
-        assert_eq!((reported["returned"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh1.rpc.2"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the terminate report names the exact birth: {reported}");
+        assert_eq!((reported["returned_path"].as_str(), reported["returned_name"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh1.rpc"), Some("2"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the terminate report names the exact birth: {reported}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -584,12 +587,12 @@ mod tests {
         let d = d.unwrap_or_else(|| panic!("the join door decided the caller: {spans:?}"));
         assert_eq!(d["door"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
-        assert_eq!(d["subject"], "mesh1.rpc.2", "decided at the caller's (path, name): {d}");
+        assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.rpc"), Some("2")), "decided at the caller's (path, name): {d}");
         assert_eq!(d["decision"], "delete-deleted-birth", "the caller's own record is deleted: it is deleted, never re-admitted (Q217): {d}");
         assert_eq!(d["root"], "self", "the fabric-primary decides from its own atlas: {d}");
-        assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some("mesh1.admin.1: its Build door is not built yet")), "{d}");
+        assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-unreported"), Some(format!("{}: its Build door is not built yet", admin.node_id).as_str())), "{d}");
         let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the caller was reported for node.terminate: {spans:?}"));
-        assert_eq!((reported["returned"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh1.rpc.2"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the terminate report names the exact birth: {reported}");
+        assert_eq!((reported["returned_path"].as_str(), reported["returned_name"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh1.rpc"), Some("2"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the terminate report names the exact birth: {reported}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -691,7 +694,7 @@ mod tests {
         assert_eq!(decisions.len(), 1, "one decision of the birth: {decisions:?}");
         let d = &decisions[0];
         assert_eq!(d["door"], "declaration", "{d}");
-        assert_eq!(d["subject"], "mesh2.admin.1", "decided at the caller's (path, name): {d}");
+        assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh2.admin"), Some("1")), "decided at the caller's (path, name): {d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that declared: {d}");
         assert_eq!(d["root"], "agrees", "verified at the fabric-primary once a view names it: {d}");
         assert_eq!(d["decision"], "re-admit", "nothing else at its (path, name), its record live and the Build needing it: re-admitted (Q207): {d}");
@@ -796,7 +799,7 @@ mod tests {
         assert_eq!(decisions.len(), 1, "one decision of the birth: {decisions:?}");
         assert_eq!(decisions[0]["root"], "agrees", "{}", decisions[0]);
         let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the returned birth was reported for node.terminate: {spans:?}"));
-        assert_eq!((reported["returned"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh2.admin.1"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the report names the exact birth: {reported}");
+        assert_eq!((reported["returned_path"].as_str(), reported["returned_name"].as_str(), reported["node_id"].as_str(), reported["incarnation_id"].as_str()), (Some("mesh2.admin"), Some("1"), Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the report names the exact birth: {reported}");
         let sent = terminates.lock().unwrap().clone();
         assert_eq!(sent.len(), 2, "the Terminate refused BuildInProgress is sent again until the fabric-primary opens it: {sent:?} {reported}");
         assert!(sent.iter().all(|t| *t == (PathName::new("mesh2.admin", "1").unwrap(), caller.node_id.to_string(), caller_inc.as_str().to_string())), "every send names the exact birth: {sent:?}");

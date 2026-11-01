@@ -1286,6 +1286,7 @@ pub async fn deleted_birth(storage: &dyn NodesStorage, name: &PathName, node_id:
 }
 
 /// Why a `Deleted` record was not written.
+#[derive(Debug)]
 pub enum DeletedRefused {
     /// Another node's live claim holds the name.
     NameHeld(NameHeld),

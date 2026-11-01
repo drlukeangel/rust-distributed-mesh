@@ -3152,6 +3152,15 @@ mod tests {
     }
 
     /// The status authority of `admin`, with `topology` as its view and `status` as its status store.
+    /// Each node's record as its create's claim leaves it in the store: a join is accepted for a node
+    /// that has one, and its mesh and kind are read from it.
+    async fn claimed(status: &crate::storage::MemoryNodesStorage, nodes: &[&crate::model::Node]) {
+        for n in nodes {
+            let row = crate::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status);
+            assert_eq!(crate::node_rows::write_record(status, &row).await, Ok(Ok(())), "{}'s record is claimed", n.node_id);
+        }
+    }
+
     fn mesh_primary_with_store(admin: &crate::model::Node, topology: Arc<tokio::sync::RwLock<Topology>>, fabric_id: FabricId, status: Arc<crate::storage::MemoryNodesStorage>) -> StatusDoor {
         StatusDoor {
             certs: None,
@@ -3209,6 +3218,7 @@ mod tests {
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
         let door = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id, status.clone()));
+        claimed(&status, &[&rpc]).await;
         assert_eq!(door.joined_pending(&rpc.node_id, &rpc.name, &birth, true).await, R::Applied, "the accepted join report records its Pending");
         let on_record = async || {
             let rows = crate::storage::NodesStorage::nodes(&*status, "mesh1").await.unwrap();
@@ -3256,6 +3266,7 @@ mod tests {
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), own.clone(), other.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
         let door = mesh_primary_with_store(&admin, topology, fabric_id, status.clone());
+        claimed(&status, &[&own, &other]).await;
         for n in [&own, &other] {
             assert_eq!(door.joined_pending(&n.node_id, &n.name, n.incarnation_id.as_ref().unwrap(), true).await, R::Applied, "node {}'s accepted join report records its Pending", n.node_id);
         }
@@ -3296,6 +3307,7 @@ mod tests {
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: Vec::new(), nodes: vec![admin.clone(), rpc.clone()] }));
         let status = Arc::new(crate::storage::MemoryNodesStorage::default());
         let status_door = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id.clone(), status.clone()));
+        claimed(&status, &[&rpc]).await;
         // The join door, its accepted report's Pending recorded by this authority as boot wires it.
         let replies: Arc<Mutex<Vec<R>>> = Arc::default();
         let joins = Arc::new(crate::join::Joins::default());
@@ -3793,7 +3805,7 @@ mod tests {
 
         let (reply, effect) = decide(&mesh_primary_of(&second, with_primary.clone()), &with_primary, &Declared::default(), &pending);
         assert!(
-            matches!(&reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed.contains("mesh2.admin.1")) && effect.is_none(),
+            matches!(&reply, R::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed.contains(first.node_id.as_str())) && effect.is_none(),
             "an admin whose view names mesh2.admin.1 mesh2's primary applies no Mesh status of mesh2: {reply:?}"
         );
 
@@ -4239,7 +4251,9 @@ mod tests {
         };
         // The records: the predecessor's row is Deleted (it released the path and name), and the current
         // birth's row claims the name over it.
-        assert!(crate::node_rows::write_deleted(&*status, &door.caches.nodes, &predecessor.name, &predecessor.node_id, None).await.is_ok(), "the predecessor's Deleted row is written");
+        claimed(&status, &[&predecessor]).await;
+        let deleted = crate::node_rows::write_deleted(&*status, &door.caches.nodes, &predecessor.name, &predecessor.node_id, None).await;
+        assert!(deleted.is_ok(), "the predecessor's Deleted row is written: {deleted:?}");
         let declare = StatusRequest::DeclareNodeState { node_id: current.node_id.clone(), incarnation: current.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         assert_eq!(door.apply(Some(current.clone()), &declare).await, R::Applied);
         use crate::storage::NodesStorage as _;
