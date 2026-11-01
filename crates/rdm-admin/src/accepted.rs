@@ -130,8 +130,7 @@ pub struct FabricTopology {
     pub meshes: BTreeMap<String, MeshTopology>,
     /// The fabric's `topology_storage_provider` the Build realizes (storage.md §2): the request's, or,
     /// when it names none, the Fabric row's at acceptance (Q166). The journal's record of the accepted
-    /// Build carries it, a record written before the field read as `file`; the Build topic does not
-    /// carry it, so a copy heard there holds `None`.
+    /// Build carries it; the Build topic does not carry it, so a copy heard there holds `None`.
     pub topology_storage_provider: Option<String>,
     /// The storage change this Build is (storage.md §2 "Changing it"): its `change_id`, minted and
     /// recorded with the accepted Build before its first command, and the old and new providers. `None`
@@ -1089,8 +1088,14 @@ fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, 
     // replace's successor's once the node the claim minted is the row's node (an earlier birth at the
     // path, or a recovery that applied no entry, proves nothing). Its predecessor's delete does not
     // undo that evidence.
+    // An earlier birth this Build deleted at the path (a recovery's, or a replace's predecessor at its
+    // retained name): the delete's receipt names the birth's path and name in its lifecycle op.
+    let deleted_at = |path: &PathName| steps.iter().any(|r| r.operation.action == "node.delete" && match &r.operation.subject {
+        Some(rdm_core::OperationSubject::Location(at)) => at == path,
+        _ => r.output.as_ref().and_then(|v| serde_json::from_value::<rdm_core::LifecycleOp>(v.clone()).ok()).is_some_and(|op| op.name == *path || path.renamed().is_ok_and(|old| op.name == old)),
+    });
     let claimed = |path: &PathName, row: &RecordedRow| {
-        receipted(&rdm_core::OperationId::location("node.create", path), "PrepareStorage") && minted(path).as_ref() == Some(&row.node_id)
+        receipted(&rdm_core::OperationId::location("node.create", path), "PrepareStorage") && (!deleted_at(path) || minted(path).as_ref() == Some(&row.node_id))
     };
     let replacing = paths_owed_replacement(topology, recorded);
     let mut ops = Vec::new();
@@ -1417,11 +1422,12 @@ fn plan_with(
         // A delete of a stopped retained predecessor (its name `<name>-old` at the same path) is admitted
         // from the record the fabric-primary holds of that exact birth, never from a view (a view that did
         // not run the replace may never name it): it is planned until its `Complete` names the birth. The
+        // accepted topology never names a retained predecessor's name, while its mesh is still named; the
         // admission admits a delete of nothing else but the last admin of a deleted mesh (mesh-delete.md
         // step 7), whose mesh the accepted topology no longer names: that one is the ordinary node.delete
         // of that exact birth, planned while the view holds it.
         let stopped_old = matches!(action, Some(AttemptAction::Delete { .. }))
-            && (topology.meshes.contains_key(mesh.as_str()) || observed.births().any(|n| n.node_id == *node_id && n.stopped && n.renamed_from.is_some()));
+            && ((topology.meshes.contains_key(mesh.as_str()) && !topology.contains(path)) || observed.births().any(|n| n.node_id == *node_id && n.stopped && n.renamed_from.is_some()));
         let pin = crate::build::PinnedBirth { kind: *kind, mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() };
         let held = stopped_old
             || match atlas {
@@ -1888,7 +1894,7 @@ mod tests {
         let gid = |m: &str| gone.meshes.iter().find(|x| x.name == m).and_then(|x| x.id.clone()).unwrap();
         let gshutdown = |m: &str| BuildOperation::ShutdownMesh { mesh: m.into(), mesh_id: gid(m) };
         let gdeleted = BuildOperation::DeleteFabric { fabric_id: gone.fabric.id.clone() };
-        let begun = crate::build_state::BuildStepReceipt { attempt: 2, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh1.admin", "1").unwrap()), step: "TerminateRuntime".into(), output: None, ..mesh_deleted.clone() };
+        let begun = crate::build_state::BuildStepReceipt { attempt: 2, operation: rdm_core::OperationId::node("node.delete", &primary.node_id), step: "TerminateRuntime".into(), output: None, ..mesh_deleted.clone() };
         assert_eq!(
             plan_with(&compiled, &gone, None, ActionProgress::default(), &BTreeSet::new(), &BTreeSet::new(), &[mesh_deleted, begun], None, None, &BTreeSet::new()).operations,
             vec![delete_of(&o, PathName::new("mesh1.admin", "1").unwrap()), gshutdown("mesh3"), gshutdown("mesh2"), gdeleted],
@@ -1972,7 +1978,8 @@ mod tests {
         cur.meshes.get_mut("mesh2").unwrap().mesh_id = o.meshes[1].id.clone().unwrap();
         cur.meshes.get_mut("mesh1").unwrap().mesh_id = o.meshes[0].id.clone().unwrap();
         let held: BTreeSet<String> = ["mesh2".to_string()].into();
-        let created = |p: PathName| BuildOperation::CreateNode { mesh: cur.node_spec(&p.clone()).unwrap().mesh.clone(), kind: cur.node_spec(&p.clone()).unwrap().kind, node: p.clone(), over: None, executable: None, entry: None };
+        let specs = t(&[("mesh1", 2, 4), ("mesh2", 1, 3)]);
+        let created = |p: PathName| BuildOperation::CreateNode { mesh: specs.node_spec(&p).unwrap().mesh.clone(), kind: specs.node_spec(&p).unwrap().kind, node: p.clone(), over: None, executable: None, entry: None };
         assert_eq!(plan_holding(&cur, &o, &held).operations, vec![created(PathName::new("mesh1.rpc", "4").unwrap())], "the own mesh's added path alone");
         let grown = t(&[("mesh1", 2, 4), ("mesh2", 1, 3)]);
         let mut grown = grown;
@@ -2633,7 +2640,7 @@ mod tests {
             executor: None,
         };
         let deleted = |attempt: u32, id: &NodeId, inc: &IncarnationId| {
-            let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), build_id: "b1".into(), attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id: id.clone(), incarnation: inc.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+            let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id: id.clone(), incarnation: inc.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
             receipt(attempt, "node.delete", "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
         };
         let complete = |attempt: u32, operation: &str| receipt(attempt, operation, "Complete", None);
@@ -2648,7 +2655,8 @@ mod tests {
             steps,
             last_failure: None,
             reason: AttemptReason::Recovery,
-            action: Some(AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone(), backbone: false }),
+            // The exited birth's kind, as the view's node at its path holds it.
+            action: Some(AttemptAction::Recover { kind: mn().node(path).map_or(rdm_core::NodeKind::RpcNode, |n| n.kind), mesh: "mesh1".into(), path: path.clone(), node_id: node_id.clone(), from_incarnation: from.clone(), backbone: false }),
             attempt_actions: Default::default(),
             attempt_executors: Default::default(), attempt_executor_meshes: Default::default(), attempt_claimed_meshes: Default::default(),
             opened: 0,
@@ -2810,7 +2818,7 @@ mod tests {
             executor: None,
         };
         let deleted = |attempt: u32, name: PathName, mesh: &str, kind: NodeKind, b: &crate::build::ExitedBirth| {
-            let op = rdm_core::LifecycleOp { mesh: mesh.to_owned(), kind, build_id: "b1".into(), attempt, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), name: name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+            let op = rdm_core::LifecycleOp { mesh: mesh.to_owned(), kind, build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), name: name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
             step(attempt, &rdm_core::OperationId::node("node.delete", &b.node_id), "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
         };
         // The executor lost after mesh1.admin.2's node.deleted: its create alone is owed, over the deleted
@@ -2870,7 +2878,7 @@ mod tests {
             output,
             executor: None,
         };
-        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".to_owned(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".to_owned(), build_id: rdm_core::fixture_crockford60("b1"), attempt: 1, operation: rdm_core::OperationId::location("node.delete", &rdm_core::PathName::new("mesh2.rpc", "1").unwrap()), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let receipts = vec![step("NodeDeleting", Some(serde_json::to_value(op).unwrap())), step("StopNode", None), step("AwaitNodeLeft", None), step("TerminateRuntime", None)];
         let create = BuildOperation::CreateNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), node: path.clone(), over: Some(birth.clone()), executable: Some(exe("b", NodeKind::RpcNode)), entry: None };
         let mut gone = o.clone();
@@ -3178,7 +3186,9 @@ mod tests {
         let row = |config: BTreeMap<String, String>| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, applied: Default::default(), node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
         let mut recorded: Recorded = [(rpc.clone(), row(port))].into();
-        recorded.insert(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), RecordedRow { storage_persistence: None, placement: None, ..row(BTreeMap::new()) });
+        recorded.insert(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), RecordedRow { kind: NodeKind::NodeAdmin, storage_persistence: None, placement: None, ..row(BTreeMap::new()) });
+        // Each row is the record of the birth the view holds at its path.
+        for (p, r) in recorded.iter_mut() { r.node_id = o.node(p).unwrap().node_id.clone(); }
         let create = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
         let attempt1: Vec<_> = ["AllocateIdentity", "PrepareStorage", "DeployRuntime", "WaitForNodeReady", "Complete"].iter().map(|s| receipt(1, &create, s, None)).collect();
         assert_eq!(replacement_plan(&cur, &o, &recorded, attempt1), vec![], "attempt 2 plans nothing: the node's own config stands");
@@ -3273,7 +3283,7 @@ mod tests {
     }
 
     fn deleted_receipt(attempt: u32, name: PathName, mesh: &str, kind: NodeKind, b: &crate::build::ExitedBirth) -> crate::build_state::BuildStepReceipt {
-        let op = rdm_core::LifecycleOp { mesh: mesh.to_owned(), kind, build_id: "b1".into(), attempt, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), name: name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { mesh: mesh.to_owned(), kind, build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), name: name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         receipt(attempt, &rdm_core::OperationId::node("node.delete", &b.node_id), "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
     }
 
@@ -3366,13 +3376,12 @@ mod tests {
         );
     }
 
-    /// CONTRACT (storage.md §2: the Build's topology carries `topology_storage_provider`; i149 e1: a
-    /// record written before the field reads `file`): the journal's accepted topology written before the
-    /// field reads `file`; one written with it reads back as written; the Build topic's copy carries none.
+    /// CONTRACT (storage.md §2: the Build's topology carries `topology_storage_provider`): the journal's
+    /// accepted topology written with it reads back as written. A record of the layout before node
+    /// records is refused, never read with a guessed provider (i150 format changes: "named rejection of
+    /// unsupported stored layouts").
     #[test]
-    fn an_accepted_topology_written_before_the_provider_reads_file() {
-        let old = serde_json::json!({"fabric": "fabric1", "meshes": {}});
-        assert_eq!(serde_json::from_value::<FabricTopology>(old).unwrap().topology_storage_provider.as_deref(), Some("file"));
+    fn an_accepted_topology_reads_back_its_topology_storage_provider() {
         let named = FabricTopology::root_on("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap(), "app");
         assert_eq!(serde_json::from_value::<FabricTopology>(serde_json::to_value(&named).unwrap()).unwrap(), named);
         assert_eq!(named.topology_storage_provider.as_deref(), Some("app"));
@@ -3384,9 +3393,9 @@ mod tests {
     fn a_stored_topology_without_explicit_node_ownership_is_refused_by_name() {
         let old = serde_json::json!({
             "fabric": "fabric1",
-            "meshes": {"mesh1": {"name": "mesh1", "mesh_id": "meshd0000001", "nodes": [PathName::new("mesh1.admin", "1").unwrap()], "spec_by_path": {
-                "mesh1.admin.1": {"path": "mesh1.admin.1", "storage_persistence": {"persistence": "persistent", "disposition": "preserve"}, "placement": {}}
-            }}}
+            "meshes": {"mesh1": {"name": "mesh1", "mesh_id": "meshd0000001", "nodes": [PathName::new("mesh1.admin", "1").unwrap()], "spec_by_path": [
+                {"path": PathName::new("mesh1.admin", "1").unwrap(), "storage_persistence": {"persistence": "persistent", "disposition": "preserve"}, "placement": {}}
+            ]}}
         });
         let error = serde_json::from_value::<FabricTopology>(old).unwrap_err().to_string();
         assert!(error.contains("missing field `mesh`"), "{error}");

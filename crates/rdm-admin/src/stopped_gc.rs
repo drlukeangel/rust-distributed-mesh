@@ -480,6 +480,8 @@ mod tests {
         };
         // Each attempt is claimed before its executor writes a receipt: the fold holds an attempt's action from its claim.
         let claim = |attempt: u32| BuildFact::Claim(crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse("n4w3mjy921q8").unwrap() } });
+        // Each attempt ends before the next opens: a Build in flight takes no new attempt.
+        let ended = |attempt: u32| BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Converged });
         let mut facts = vec![
             BuildFact::Accepted(crate::build_state::BuildAccepted {
                 build_id: build_id.clone(), submitted_change: None, submitted_at_ms: 0,
@@ -534,6 +536,7 @@ mod tests {
         assert!(!references_birth(&held, false, &node_id, &inc));
 
         // A later start of the same birth ends the stopped period.
+        facts.push(ended(1));
         facts.push(BuildFact::Opened(AttemptOpened {
             mesh: None,
             build_id: build_id.clone(),
@@ -555,9 +558,10 @@ mod tests {
             output: None,
             executor: None,
         }));
-        assert!(matches!(stop_age(&facts, &node_id, &inc), Age::NoCurrentReceipt(ref r) if r.contains("node.start")));
+        { let age = stop_age(&facts, &node_id, &inc); assert!(matches!(age, Age::NoCurrentReceipt(ref r) if r.contains("node.start")), "{age:?}"); }
 
         // A targeted stop receipt with missing output is reported as Unreadable, never expired.
+        facts.push(ended(2));
         facts.push(BuildFact::Opened(AttemptOpened {
             mesh: None,
             build_id: build_id.clone(),
