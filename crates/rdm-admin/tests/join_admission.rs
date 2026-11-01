@@ -206,17 +206,18 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// An admin's atlas holding `row` (Q234: a joiner's row is read from it, never the store).
-fn atlas_holding(row: rdm_admin::storage::NodeRow) -> Arc<rdm_admin::atlas::Atlas> {
-    let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
-    atlas.write_record(&row);
-    atlas
+/// The records of an admin, the writer of `row`'s mesh, holding `row` (Q234: a joiner's row is read from
+/// them, never the store), over a nodes store of its own.
+fn writer_holding(row: rdm_admin::storage::NodeRow) -> Option<(Arc<dyn rdm_admin::storage::NodesStorage>, Arc<rdm_admin::node_rows::WrittenRows>)> {
+    let written = Arc::new(rdm_admin::node_rows::WrittenRows::default());
+    written.hold(&row);
+    Some((Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), written))
 }
 
 /// The door of an admin whose node row at `mesh1.rpc.1` is `row`, its installs logged in `log`.
 fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row: rdm_admin::storage::NodeRow) -> JoinDoor {
     JoinDoor {
-        nodes: None,
+        nodes: writer_holding(row),
         me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
         joins,
         answer: Arc::new(|| {
@@ -233,7 +234,7 @@ fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row:
         known: Arc::new(|| Box::pin(async {})),
         pending: Arc::new(|_, _| Box::pin(async {})),
         primary: Arc::new(|| Some(rdm_core::NodeId::parse("0123456789ab").unwrap())),
-        atlas: Some(atlas_holding(row)),
+        atlas: None,
         issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
             let t = rdm_transport::clock::RafkaTime::unadopted();
             t.adopt(1_000);
@@ -360,7 +361,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             placement: None,
         };
         let door = JoinDoor {
-            nodes: None,
+            nodes: writer_holding(row),
             me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
             joins: joins.clone(),
             answer: Arc::new(|| {
@@ -377,7 +378,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
             primary: Arc::new(|| Some(rdm_core::NodeId::parse("0123456789ab").unwrap())),
-            atlas: Some(atlas_holding(row)),
+            atlas: None,
             issuer: Arc::new(rdm_admin::certs::CertIssuer::no_certs({
                 let t = rdm_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);

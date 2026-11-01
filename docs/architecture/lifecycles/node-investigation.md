@@ -37,8 +37,7 @@ caller; nothing there, its record live and the topology needing the path re-admi
 caller whose record is deleted is deleted, its runtime terminated, never re-admitted; a path still
 needed is recovered by re-create (Q217). A
 node-admin's atlas is its topology and its in-flight commands over the meshes it is primary for, its own
-mesh as a mesh-primary and every mesh as the fabric-primary, each filled once from the node records as
-it takes that primary and narrowed off as it hands it away. A node-admin that is not the fabric-primary
+mesh as a mesh-primary and every mesh as the fabric-primary, taken as it takes that primary and narrowed off as it hands it away; the caller's record and the record at its path.name are read through the current-pair lookup ([query.md §1](../query.md#1-external-a-query-to-the-fabric-primary)). A node-admin that is not the fabric-primary
 verifies its decision at the root with `fabric.atlas.get` before it acts, and the root's answer wins, except that a caller whose record it holds deleted stays deleted (Q217). A
 deleted caller is reported to the fabric-primary (`rdm.node_admin.node.update.via-returned-reported`),
 which terminates its runtime under `node.terminate:<path>@<incarnation>`; each decision is one

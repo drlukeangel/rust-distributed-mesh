@@ -29,6 +29,27 @@ pub struct CurrentRecords<'a> {
     pub records: &'a dyn NodeRecordsStorage,
 }
 
+/// [`CurrentRecords`]' stores, held: what a reader that outlives one call keeps.
+#[derive(Clone)]
+pub struct RecordStores {
+    /// The name claims.
+    pub claims: std::sync::Arc<dyn NodesStorage>,
+    /// The Mesh records, by mesh id.
+    pub meshes: std::sync::Arc<dyn MeshStorage>,
+    /// The lifecycle and property records.
+    pub records: std::sync::Arc<dyn NodeRecordsStorage>,
+}
+
+impl RecordStores {
+    /// The reader over these stores.
+    pub fn reader(&self) -> CurrentRecords<'_> {
+        CurrentRecords { claims: &*self.claims, meshes: &*self.meshes, records: &*self.records }
+    }
+}
+
+/// Where a reader that outlives one call takes its stores from, once they are open: `None` before.
+pub type RecordStoresSource = std::sync::Arc<dyn Fn() -> Option<RecordStores> + Send + Sync>;
+
 /// The writer birth whose lifecycle records of `mesh` are current in the installed view `t`: the mesh's
 /// installed mesh-primary, else the fabric-primary acting for a mesh with none. `Err` names why the view
 /// selects no writer: an unavailable read, never another writer's record.
@@ -145,4 +166,32 @@ pub fn row_of(lifecycle: &NodeLifecycle, properties: Option<&NodeProperties>, me
     row.placement = l.placement;
     row.writer = Some(birth_ref(&l.writer));
     Ok(row)
+}
+
+/// The stores a reader reads in a unit cell: `rows`' name claims (each live record's name claimed, as its
+/// writer's put claims it), and every record `rows` holds of a
+/// mesh `t` names written as a lifecycle record under that mesh's writer in `t` ([`writer_of`]), each
+/// mesh given its Mesh record and name claim (`t`'s id for it, else a minted one).
+#[cfg(test)]
+pub(crate) async fn stores_over(rows: std::sync::Arc<crate::storage::MemoryNodesStorage>, t: &Topology) -> RecordStores {
+    let meshes = std::sync::Arc::new(crate::storage::MemoryMeshStorage::default());
+    let records = std::sync::Arc::new(rdm_node::node_records::MemoryNodeRecords::default());
+    let names: std::collections::BTreeSet<String> = t.nodes.iter().map(|n| n.mesh.clone()).chain(t.meshes.iter().map(|m| m.name.clone())).collect();
+    for mesh in names {
+        let Ok(writer) = writer_of(t, &mesh) else { continue };
+        let writer = BirthRef { node_id: writer.node_id, incarnation_id: writer.incarnation_id };
+        let id = t.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone()).unwrap_or_else(crate::model::MeshId::mint);
+        meshes.put_mesh(&crate::storage::MeshRecord::new(id.clone(), mesh.clone())).await.expect("the Mesh record is written");
+        meshes.claim_mesh_name(&mesh, &id).await.expect("the mesh store writes").expect("the mesh's name is free");
+        for row in rows.nodes(&mesh).await.expect("the nodes store reads") {
+            if let Some(record) = crate::node_rows::lifecycle_record(&row, &t.fabric.id, Some(&id), row.node_type().to_string(), &writer, (false, false)) {
+                records.put_lifecycle(&record).await.expect("the lifecycle record is written");
+            }
+            // A live record holds its name's claim, as its writer's put takes it.
+            if !crate::node_rows::released_its_name(&row) {
+                rows.claim_node_name(&row.name, &row.node_id).await.expect("the nodes store writes").expect("one live record at each name");
+            }
+        }
+    }
+    RecordStores { claims: rows, meshes, records }
 }

@@ -500,29 +500,9 @@ impl Atlas {
         self.held.lock().unwrap().records.values().find(|r| r.name == *path).cloned()
     }
 
-    /// The record a join at `path` of the node `node_id` is reconciled to (Q234; never the store,
-    /// Q227): the live record at `path` (the node's own first), else a `Deleted` one there (the node's
-    /// own first): a live claim of another node at the name stands over the joiner's deleted record, as
-    /// the store's `(path, name)` index names the last record written there. A `Withdrawn` record names
-    /// nothing (a withdrawn claim).
-    pub fn record_for_join(&self, path: &PathName, node_id: &NodeId) -> Option<NodeRow> {
-        let held = self.held.lock().unwrap();
-        let at: Vec<&NodeRow> = held.records.values().filter(|r| r.name == *path && r.status != NodeStatus::Withdrawn).collect();
-        let (live, deleted): (Vec<&NodeRow>, Vec<&NodeRow>) = at.into_iter().partition(|r| r.status != NodeStatus::Deleted);
-        let own_first = |rows: &[&NodeRow]| rows.iter().find(|r| r.node_id == *node_id).or_else(|| rows.first()).map(|r| (*r).clone());
-        own_first(&live).or_else(|| own_first(&deleted))
-    }
-
     /// Every record the atlas holds, in node id order.
     pub fn records(&self) -> Vec<NodeRow> {
         self.held.lock().unwrap().records.values().cloned().collect()
-    }
-
-    /// The record of the node whose birth holds the endpoint key `endpoint_id`, its newest birth first.
-    pub fn record_of_endpoint(&self, endpoint_id: &str) -> Option<NodeRow> {
-        let held = self.held.lock().unwrap();
-        let of = |r: &&NodeRow| r.newest_birth().and_then(|b| b.endpoint_id.as_ref()).is_some_and(|e| e.0 == endpoint_id);
-        held.records.values().find(of).cloned()
     }
 
     /// Fill the records of each mesh in `meshes` from the node records, read whole (one listing per
@@ -574,15 +554,17 @@ impl Atlas {
         self.held.lock().unwrap().meshes.clone()
     }
 
-    /// Q207: the caller birth `(node_id, incarnation)` a primary refused as one it does not hold, decided
-    /// from this atlas alone (its records and the ops executing; never the gossip view, never a store
-    /// read): another birth at the caller's `(path, name)`, or an op executing that fills it, deletes the
-    /// caller; nothing there and the caller's record deleted deletes it, never re-admitted (Q217);
-    /// nothing there, its record live and `planned` (the current Build's topology, by mesh) naming the
-    /// path re-admits it; nothing there and the topology not naming it deletes it.
-    pub(crate) fn refused_caller(&self, node_id: &NodeId, incarnation: &IncarnationId, planned: &BTreeMap<String, Vec<PathName>>) -> CallerDecision {
+    /// Q207: the caller birth of `caller`'s node, `incarnation`, a primary refused as one it does not hold,
+    /// decided from `caller` (its record under its mesh's current writer, query.md §1), `at_path` (the
+    /// record the current-pair lookup names at `caller`'s `(path, name)`) and the ops executing (never the
+    /// gossip view): another birth at the caller's `(path, name)`, or an op executing that fills it,
+    /// deletes the caller; nothing there and the caller's record deleted deletes it, never re-admitted
+    /// (Q217); nothing there, its record live and `planned` (the current Build's topology, by mesh) naming
+    /// the path re-admits it; nothing there and the topology not naming it deletes it.
+    pub(crate) fn refused_caller(&self, caller: Option<&NodeRow>, at_path: Option<&NodeRow>, incarnation: &IncarnationId, planned: &BTreeMap<String, Vec<PathName>>) -> CallerDecision {
         let held = self.held.lock().unwrap();
-        let Some(caller) = held.records.get(node_id) else { return CallerDecision::NoRecord };
+        let Some(caller) = caller else { return CallerDecision::NoRecord };
+        let node_id = &caller.node_id;
         let path = caller.name.clone();
         if !held.meshes.contains(&caller.mesh) {
             return CallerDecision::NotMine { path };
@@ -590,7 +572,7 @@ impl Atlas {
         let gone = |r: &NodeRow| matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn);
         // Another birth at the path now: another node's live record there, or a newer birth of the
         // caller's own node.
-        let other = held.records.values().find(|r| r.name == path && r.node_id != *node_id && !gone(r)).and_then(|r| r.newest_birth().map(|b| format!("{}@{}", r.node_id, b.incarnation_id.as_str())));
+        let other = at_path.filter(|r| r.name == path && r.node_id != *node_id && !gone(r)).and_then(|r| r.newest_birth().map(|b| format!("{}@{}", r.node_id, b.incarnation_id.as_str())));
         let newer = (!gone(caller)).then(|| caller.newest_birth()).flatten().filter(|b| b.incarnation_id != *incarnation).map(|b| format!("{}@{}", node_id, b.incarnation_id.as_str()));
         if let Some(by) = other.or(newer) {
             return CallerDecision::DeleteHeld { path, by };
@@ -1036,6 +1018,11 @@ impl crate::control_plane::ControlPlane {
         Some(crate::current_record::CurrentRecords { claims: &**self.node_rows.get()?, meshes: &*self.claims, records: &**self.node_records.get()? })
     }
 
+    /// [`Self::current_records`]' stores, held, once they are open.
+    pub(crate) fn record_stores(&self) -> Option<crate::current_record::RecordStores> {
+        Some(crate::current_record::RecordStores { claims: self.node_rows.get()?.clone(), meshes: self.claims.clone(), records: self.node_records.get()?.clone() })
+    }
+
     /// The atlas row of `path` Build acceptance reads (fabric-atlas.md R-FA1): the current-pair lookup over
     /// this admin's records once they are open (query.md §1), else none.
     pub(crate) async fn atlas_row(&self, path: &PathName, observed: &Topology) -> Result<Option<AtlasRow>, crate::control_plane::Refusal> {
@@ -1220,6 +1207,12 @@ mod tests {
         atlas
     }
 
+    /// The record the current-pair lookup names at `name` among `rows`: the one whose node holds the
+    /// name's claim, the live record there (a released one holds no claim).
+    fn claimant<'a>(rows: &[&'a NodeRow], name: &PathName) -> Option<&'a NodeRow> {
+        rows.iter().copied().find(|r| r.name == *name && !matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn))
+    }
+
     fn planned(paths: &[(PathName, &str)]) -> BTreeMap<String, Vec<PathName>> {
         let mut out: BTreeMap<String, Vec<PathName>> = BTreeMap::new();
         for (p, mesh) in paths {
@@ -1294,7 +1287,7 @@ mod tests {
         let (old, old_inc) = record(path("mesh2.compute", "2"), "mesh2", rdm_core::NodeKind::Compute, NodeStatus::Deleted);
         let (new, new_inc) = record(path("mesh2.compute", "2"), "mesh2", rdm_core::NodeKind::Compute, NodeStatus::Ready);
         let atlas = atlas_of(&[&old, &new], &["mesh2"]).await;
-        let decided = atlas.refused_caller(&old.node_id, &old_inc, &planned(&[(path("mesh2.compute", "2"), "mesh2")]));
+        let decided = atlas.refused_caller(Some(&old), claimant(&[&old, &new], &old.name), &old_inc, &planned(&[(path("mesh2.compute", "2"), "mesh2")]));
         assert_eq!(decided, CallerDecision::DeleteHeld { path: path("mesh2.compute", "2"), by: format!("{}@{}", new.node_id, new_inc.as_str()) });
     }
 
@@ -1305,7 +1298,7 @@ mod tests {
     async fn nothing_at_a_needed_path_re_admits_a_caller_whose_record_is_live() {
         let (live, live_inc) = record(path("mesh1.rpc", "1"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
         let atlas = atlas_of(&[&live], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "1") });
+        assert_eq!(atlas.refused_caller(Some(&live), claimant(&[&live], &live.name), &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "1") });
     }
 
     /// CONTRACT (Q217, Luke: "delete a caller deletes the caller, not just from the record but
@@ -1317,8 +1310,8 @@ mod tests {
     async fn a_caller_whose_record_is_deleted_is_deleted_needed_or_not() {
         let (gone, gone_inc) = record(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Deleted);
         let atlas = atlas_of(&[&gone], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: true });
-        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: false });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: true });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteDeletedBirth { path: path("mesh1.rpc", "2"), needed: false });
     }
 
     /// CONTRACT (Q207): nothing is at the caller's path and name, its record is live, and the topology does
@@ -1327,7 +1320,7 @@ mod tests {
     async fn nothing_at_an_unneeded_path_deletes_the_caller() {
         let (live, live_inc) = record(path("mesh1.rpc", "3"), "mesh1", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
         let atlas = atlas_of(&[&live], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&live.node_id, &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteUnneeded { path: path("mesh1.rpc", "3") });
+        assert_eq!(atlas.refused_caller(Some(&live), claimant(&[&live], &live.name), &live_inc, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteUnneeded { path: path("mesh1.rpc", "3") });
     }
 
     /// CONTRACT (Q207, the atlas is topology and in-flight ops): an op accepted on the caller's path that
@@ -1338,7 +1331,7 @@ mod tests {
         let atlas = atlas_of(&[&gone], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
         atlas.note_accepted(&build, 1, &AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path("mesh1.rpc", "2"), from_incarnation: gone_inc.clone(), node_id: gone.node_id.clone(), backbone: false });
-        assert_eq!(atlas.refused_caller(&gone.node_id, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "2"), by: format!("Build {} attempt 1 action node.create", build) });
+        assert_eq!(atlas.refused_caller(Some(&gone), None, &gone_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "2"), by: format!("Build {} attempt 1 action node.create", build) });
     }
 
     /// CONTRACT (Q207): a create executing at the path of a caller whose record is live is that caller's
@@ -1350,7 +1343,7 @@ mod tests {
         let atlas = atlas_of(&[&born], &["mesh1"]).await;
         let build = crate::build::BuildId::parse("66h8qrqvaajk").unwrap();
         atlas.note_accepted(&build, 1, &AttemptAction::Recover { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), path: path("mesh1.rpc", "2"), from_incarnation: IncarnationId::mint(), node_id: NodeId::mint(), backbone: false });
-        assert_eq!(atlas.refused_caller(&born.node_id, &born_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "2") });
+        assert_eq!(atlas.refused_caller(Some(&born), claimant(&[&born], &born.name), &born_inc, &planned(&[(path("mesh1.rpc", "2"), "mesh1")])), CallerDecision::ReAdmit { path: path("mesh1.rpc", "2") });
     }
 
     /// CONTRACT (Q207): an older birth of a node whose newer birth is current at the path is deleted.
@@ -1360,7 +1353,7 @@ mod tests {
         let newer = IncarnationId::mint();
         r.birth_mut(&newer, &path("mesh1.rpc", "1"));
         let atlas = atlas_of(&[&r], &["mesh1"]).await;
-        assert_eq!(atlas.refused_caller(&r.node_id, &older, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "1"), by: format!("{}@{}", r.node_id, newer.as_str()) });
+        assert_eq!(atlas.refused_caller(Some(&r), claimant(&[&r], &r.name), &older, &planned(&[(path("mesh1.rpc", "1"), "mesh1")])), CallerDecision::DeleteHeld { path: path("mesh1.rpc", "1"), by: format!("{}@{}", r.node_id, newer.as_str()) });
     }
 
     /// CONTRACT (Q207, one atlas for every node-admin): an admin decides only for the meshes it is
@@ -1370,8 +1363,8 @@ mod tests {
         let (other, other_inc) = record(path("mesh2.rpc", "1"), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Deleted);
         let atlas = atlas_of(&[&other], &["mesh1"]).await;
         atlas.write_record(&other);
-        assert_eq!(atlas.refused_caller(&other.node_id, &other_inc, &planned(&[(path("mesh2.rpc", "1"), "mesh2")])), CallerDecision::NotMine { path: path("mesh2.rpc", "1") });
-        assert_eq!(atlas.refused_caller(&NodeId::mint(), &IncarnationId::mint(), &planned(&[])), CallerDecision::NoRecord);
+        assert_eq!(atlas.refused_caller(Some(&other), None, &other_inc, &planned(&[(path("mesh2.rpc", "1"), "mesh2")])), CallerDecision::NotMine { path: path("mesh2.rpc", "1") });
+        assert_eq!(atlas.refused_caller(None, None, &IncarnationId::mint(), &planned(&[])), CallerDecision::NoRecord);
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:39
