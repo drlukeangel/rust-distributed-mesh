@@ -2357,7 +2357,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 Box::pin(async move {
                                                     let view = topology.read().await.clone();
                                                     if view.node_type_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == me_id) {
-                                                        tracing::info_span!("rdm.node_admin.status.reject.via-own-mesh-primary", node_path = %me.path, node_name = %me.name, state = ?state, operation = ?operation.as_ref().map(|o| &o.operation), "otel.kind" = "internal")
+                                                        tracing::info_span!("rdm.node_admin.status.reject.via-own-mesh-primary", node_path = %me.path, node_name = %me.name, state = ?state, operation = %operation.as_ref().map(|o| o.operation.action.as_str()).unwrap_or(""), operation_subject = ?operation.as_ref().and_then(|o| o.operation.subject.as_ref()), "otel.kind" = "internal")
                                                             .in_scope(|| tracing::info!("this admin is its own mesh's primary: there is no primary to report its state to, and after its cut it publishes nothing"));
                                                         return;
                                                     }
