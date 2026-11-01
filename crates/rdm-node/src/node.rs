@@ -871,7 +871,6 @@ async fn start_booted(
                                 status: status.clone(),
                                 owed: owed_state.clone(),
                                 operation: None,
-                                progress: None,
                             };
                             let parts = crate::workflows::node_start::HookParts {
                                 birth: crate::node_hooks::Birth {
@@ -1142,7 +1141,6 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             status: s.status.clone(),
             owed: s.owed.clone(),
             operation: Some(self.operation.clone()),
-            progress: self.progress.clone(),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::node_hooks::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.kind },
@@ -1263,7 +1261,6 @@ struct Becoming {
     /// The operation that makes this birth ready: the start's, or `None` at its first boot, a state
     /// the birth measured itself (i146 Q36).
     operation: Option<rdm_core::status::DeclaredOperation>,
-    progress: Option<crate::node_self::CommandProgress>,
 }
 
 impl Becoming {
@@ -1292,14 +1289,11 @@ impl Becoming {
         )
         .in_scope(|| tracing::info!("ready"));
         let d = set_own_status(&self.status, &self.digest, MemberStatus::Ready);
-        let ready: Declaration = (rdm_core::status::NodeState::Ready, self.operation.clone());
-        // Owed before anything that follows it can be (Q210): a stop's declarations queue behind it.
-        if self.progress.is_none() {
-            drop(self.owed.owe(ready));
-        } else {
-            // The open start stream reports readiness; keep the declaration for the next mesh-primary.
-            self.owed.keep_last(ready);
-        }
+        // The node also declares Ready to its mesh-primary as an owed message, as it declares Stopped
+        // (node-start.md step 5; Q36, Q87), with or without a start stream reporting it: frame and
+        // declaration apply once (Q49). Owed before anything that follows it can be (Q210): a stop's
+        // declarations queue behind it.
+        drop(self.owed.owe((rdm_core::status::NodeState::Ready, self.operation.clone())));
         let _ = self.topology_view.publish(&d).await;
     }
 }
@@ -1426,11 +1420,6 @@ impl OwedDeclarations {
         }
         self.wake.notify_one();
         rx
-    }
-
-    /// Keep `declaration` as the last one made without owing it (a start's stream reported it).
-    fn keep_last(&self, declaration: Declaration) {
-        self.queue.lock().unwrap().last = Some(declaration);
     }
 
     /// Owe `state` again to a new mesh-primary: with the operation of the last declaration when that
@@ -2058,5 +2047,67 @@ mod primary_tests {
         let (at, _) = owed.first().expect("Stopped is owed");
         assert!(owed.replied(at, &StatusReply::Applied), "an applied reply answers it");
         assert!(owed.is_empty(), "nothing is owed once every declaration was answered");
+    }
+
+    /// CONTRACT (node-start.md step 5): "The node also declares Ready to its mesh-primary as an owed
+    /// message, as it declares Stopped (Q36, Q87); frame and declaration apply once (Q49)." A start of a
+    /// stopped birth whose hook passed turns it Ready and owes its mesh-primary `Ready` naming the start's
+    /// operation, the declaration its `NodeStarted` frame on the start stream is applied beside. Must NOT
+    /// happen: the start stream's frame standing for the declaration, nothing owed.
+    #[test]
+    fn a_start_owes_its_ready_naming_the_start() {
+        use rdm_core::status::{DeclaredOperation, NodeState};
+        let dir = std::env::temp_dir().join(format!("rdm-node-start-owes-ready-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-start-owes-ready").expect("evidence capture starts");
+        capture.run(2, async {
+            let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+            let (node_id, incarnation, fabric_id, mesh_id) = (NodeId::mint(), IncarnationId::mint(), rdm_core::FabricId::mint(), rdm_core::MeshId::mint());
+            let name = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+            let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
+            clock.adopt(1_000_000);
+            let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+            let topology_view = TopologyView::join(&g, &endpoint, &fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock, Vec::new(), &[]).await.unwrap();
+            let digest = MeshDigest {
+                held_hash: [0u8; 32],
+                fabric_id: fabric_id.clone(),
+                node: MeshNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: node_id.clone(), name, endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
+                status: MemberStatus::Pending,
+                node_state: Default::default(),
+                admin_api_base: None,
+                digest_seq: 1,
+                emitted_at_rafka_ms: 1_000,
+                data_dir: None,
+                mesh_id: Some(mesh_id.clone()),
+                in_flight: None,
+                load: None,
+                gossip: None,
+                is_primary: None,
+                is_fabric_primary: None,
+            };
+            let start = DeclaredOperation { build_id: "build-1".into(), attempt: 1, operation: rdm_core::OperationId::node("node.start", &node_id) };
+            let owed: Arc<OwedDeclarations> = Arc::default();
+            let status = Arc::new(Mutex::new(MemberStatus::Pending));
+            let becoming = Becoming {
+                boot: tracing::info_span!("rdm.mesh.node.update.via-start", node_id = %node_id),
+                name: node_id.to_string(),
+                kind: rdm_core::NodeKind::RpcNode.name(),
+                incarnation_id: incarnation.to_string(),
+                node_id: node_id.clone(),
+                mesh_id: mesh_id.to_string(),
+                fabric_id: fabric_id.to_string(),
+                runtime: rdm_core::RuntimeFact::of_this_process(rdm_core::DeploymentId::mint().as_str()).unwrap(),
+                topology_view,
+                digest,
+                status: status.clone(),
+                owed: owed.clone(),
+                operation: Some(start.clone()),
+            };
+            becoming.go().await;
+            assert_eq!(*status.lock().unwrap(), MemberStatus::Ready, "the start's hook passed: the birth is Ready");
+            assert_eq!(owed.first().map(|(_, d)| d), Some((NodeState::Ready, Some(start))), "the start owes its mesh-primary Ready naming the start");
+            endpoint.close().await;
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
