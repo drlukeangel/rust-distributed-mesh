@@ -554,6 +554,17 @@ async fn all_node_fields_survive_node_restart() {
     let (was, now) = (lifecycle.cert.as_ref().expect("the record's member cert dates"), restarted.cert.as_ref().expect("the started record's member cert dates"));
     assert!(now.issued_at >= was.issued_at && now.issuer_expires_at == was.issuer_expires_at, "the record holds the fresh member cert of the start's join, under the same issuer: {was:?} -> {now:?}");
 
+    // Evidence export is batched and a SIGKILL flushes nothing: the own update's write span (the OTLP
+    // table's control) is observed before the kill, as own_properties_survive_node_restart does.
+    let write_trace = wait_for("the own update's durable write span is exported", Duration::from_secs(10), || async {
+        estate
+            .spans_named(&["rdm.node.record.update.via-properties"])
+            .into_iter()
+            .find(|sp| attr(sp, "node_id") == before.node_id.as_str() && attr(sp, "outcome") == "durable")
+            .and_then(|sp| sp["trace_id"].as_str().map(str::to_string))
+    })
+    .await;
+
     // 2. Forced exit: recovered at the pair as a new node over the inherited data dir.
     estate.kill_node(&subject).await;
     let recovered = estate.until_node(&subject, "a recovered node is ready at the pair", crate::node_recovery_due(), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
@@ -568,12 +579,7 @@ async fn all_node_fields_survive_node_restart() {
     assert_eq!(recovered_lifecycle.predecessor.as_ref().map(|p| &p.node_id), Some(&before.node_id), "the recovered record names its predecessor: {recovered_lifecycle:?}");
     estate.artifact("all-fields.json", &json!({"before": before, "started": started, "recovered": recovered, "lifecycle": lifecycle, "recovered_lifecycle": recovered_lifecycle}));
     estate.stop().await;
-    let spans = estate.spans();
-    let write = named(&spans, "rdm.node.record.update.via-properties")
-        .into_iter()
-        .find(|sp| attr(sp, "node_id") == before.node_id.as_str() && attr(sp, "outcome") == "durable")
-        .unwrap_or_else(|| panic!("the node's own update is one durable node-owned write ({})", before.node_id));
-    estate.record_trace_url(write["trace_id"].as_str().unwrap());
+    estate.record_trace_url(&write_trace);
 }
 
 // @feature: node-records
