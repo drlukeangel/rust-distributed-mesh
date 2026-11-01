@@ -186,7 +186,7 @@ async fn a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is
     let read = fabric_nodes(&estate).await;
     assert_eq!(read[&PathName::new("mesh1.rpc", "2").unwrap()].executable.as_ref(), Some(&next), "fabric.nodes.get returns it from the row");
     assert_eq!(read[&PathName::new("mesh1.rpc", "2").unwrap()].tags, ["zone_a".to_string()].into(), "the node carries the tags its entry named, from its claim");
-    assert_eq!(row["record"]["config"], json!({"zone": "a"}), "its row records its create spec's config from the claim: {row}");
+    assert_eq!((&row["record"]["initial_properties"]["config"], &row["record"]["initial_properties"]["tags"]), (&json!({"zone": "a"}), &json!(["zone_a"])), "its claim records its create spec's config and tags as its launch snapshot: {row}");
     assert_eq!(read[&PathName::new("mesh1.rpc", "2").unwrap()].config, zone, "the node carries the config its create spec named");
     // Spans reach the evidence folder in batches (rdm-transport telemetry), so the join the node made is read once it is there.
     let node_id = created.node_id.to_string();

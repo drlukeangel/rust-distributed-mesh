@@ -244,8 +244,9 @@ fn rows_taken(spans: &[Value], node: &PathName, from: u64) -> Vec<(String, Strin
 }
 
 /// `rows`, `rdm.node_admin.node.update.via-row-status` spans of one record, in the order its writer
-/// made the writes: by start. The record carries no revision (node-identity-and-state.md §2.5); its
-/// writes are made one at a time under the node's lock, each span following its write.
+/// made the writes: by start. A node record carries no revision (node-identity-and-state.md §2.5), so
+/// the span's start, opened right after its write under the node's one writer, is the order it
+/// records.
 pub(crate) fn in_write_order(rows: &mut [&Value]) {
     rows.sort_by_key(|sp| start_ns(sp));
 }

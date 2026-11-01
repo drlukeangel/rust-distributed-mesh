@@ -244,7 +244,13 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
             );
         }
         let top_up = spans_named(&spans, "rdm.mesh.entry.update.via-top-up", topped).remove(0);
-        assert_eq!((top_up["mesh_primary"].as_str(), top_up["served_by"].as_str(), top_up["still_desynced"].as_str()), (root_id.as_str(), root_id.as_str(), ""), "served by its own Mesh's primary, nothing left desynchronized: {top_up:?}");
+        let root_at = root_digest.node.name.clone();
+        let field = |k: &str| top_up.get(k).cloned().unwrap_or_default();
+        assert_eq!(
+            (field("mesh_primary_path"), field("mesh_primary_name"), field("served_by_path"), field("served_by_name"), field("still_desynced")),
+            (root_at.path.clone(), root_at.name.clone(), root_at.path.clone(), root_at.name.clone(), String::new()),
+            "served by its own Mesh's primary, nothing left desynchronized: {top_up:?}"
+        );
         assert!(top_up["reasons"].contains("mesh1:"), "the span names the gap it repaired: {top_up:?}");
         assert!(admin.topology_view.desynced_sources().is_empty(), "no source stays desynchronized: {:?}", admin.topology_view.desynced_sources());
         let own = admin.digest.lock().unwrap().clone();

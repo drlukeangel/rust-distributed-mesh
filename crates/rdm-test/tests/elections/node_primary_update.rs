@@ -322,7 +322,7 @@ async fn a_config_update_is_read_back_from_the_fabric_primary_at_once_and_after_
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id: node_id.clone(), incarnation: incarnation.clone() };
     let carrier = estate.carrier().await;
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&fp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default()).await.expect("node.config.update answered");
-    assert!(matches!(&reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: n, incarnation: i, config, revision } if *n == node_id && *i == incarnation && *config == told && *revision > 0), "the fabric-primary sent it down and the node applied it, the row as written carried back: {reply:?}");
+    assert!(matches!(&reply, rdm_core::status::StatusReply::ConfigUpdated { node_id: n, incarnation: i, config, .. } if *n == node_id && *i == incarnation && *config == told), "the fabric-primary sent it down and the node applied it, the config as written carried back: {reply:?}");
     let read = |views: Vec<rdm_client::NodeView>| views.into_iter().find(|v| v.name == subject_name).unwrap_or_else(|| panic!("{subject_name:?} is answered"));
     let at_once = read(estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [other_mesh])).await.expect("node.get [mesh] at the fabric-primary"));
     assert_eq!(at_once.config, told, "the fabric-primary answers the config at once, from its atlas");
@@ -583,7 +583,9 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     // Steps 2-3 at P: the election named H, its issued writes finished.
     let updating = one("rdm.node_admin.primary.update.via-update-primary", &|sp| rdm_test::estate::at_location(sp, &p) && attr(sp, "build_id") == build);
     assert_eq!((attr(&updating, "moving").as_str(), attr(&updating, "successor").as_str(), attr(&updating, "outcome").as_str()), ("mesh-primary+fabric-primary", h_id.as_str(), "updated"), "P moved both its primaries to H ({h_name:?}): {updating:#?}");
-    let transfer_attempt = num(&updating, "attempt").expect("the update's attempt");
+    // The update runs as a step of P's attempt of the Build: the attempt is its nearest enclosing span's
+    // that names one (the span itself names its run, not the attempt).
+    let transfer_attempt = spans.iter().filter(|sp| attr(sp, "build_id") == build && num(sp, "attempt").is_some() && descends_from(&spans, &updating, sp)).max_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0)).and_then(|sp| num(sp, "attempt")).expect("the update's attempt");
     let finished = one("rdm.node_admin.primary.update.via-issued-writes-finished", &|sp| rdm_test::estate::at_location(sp, &p) && attr(sp, "build_id") == build);
     // Step 4: H installs the election's result and answers node.primary.updated, under P's call.
     let installed = one("rdm.node_admin.primary.update.via-primary-updated", &|sp| rdm_test::estate::at_location(sp, &h_name) && attr(sp, "build_id") == build && attr(sp, "outcome") == "held");

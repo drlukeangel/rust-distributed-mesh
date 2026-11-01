@@ -417,7 +417,7 @@ async fn the_demo_teardown_deletes_the_fabric_then_the_fabric_primary_from_outsi
     assert_eq!((deleted["outcome"].as_str(), deleted["terminal"].as_str()), (Some("Reply"), Some("Complete")), "the probe's fabric.delete completes: {deleted}");
     assert_eq!(estate.live_runtimes(), vec![], "only the fabric-primary is left, for its separate node.delete");
     let begun = std::time::Instant::now();
-    let own = estate.probe(&["node-delete", "--target", &target]);
+    let own = estate.probe(&["node-delete", "--target", &rdm_test::estate::path_target(&path("mesh1.admin", "1"))]);
     assert_eq!((own["outcome"].as_str(), own["deleted"].as_bool()), (Some("Reply"), Some(true)), "the probe's node.delete of the fabric-primary answers node.deleted: {own}");
     assert!(!own["replies"].as_array().into_iter().flatten().any(|r| r.as_str().is_some_and(|r| r.starts_with("Failed"))), "no step failed: {own}");
     while running(pid) && begun.elapsed() < DELETE_BOUND {

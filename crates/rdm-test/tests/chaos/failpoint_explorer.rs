@@ -18,7 +18,7 @@ use rdm_client::{LaunchKind as NodeKind, MeshDesired, NodeStatus, Nodes, PathNam
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
 use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, DeleteStep};
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{at_location, named, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -576,10 +576,10 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             return json!({"cut": cut, "hold_span_id": hold["span_id"], "held_calls": held_calls, "hold_ms": hold_ms, "accepted_span_id": written[0]["span_id"], "node": attr(written[0], "node"), "ended_ms_after_release": (span_end(written[0]) as i64 - span_end(hold) as i64) / 1_000_000});
         }
         "ready-after" => {
-            let node = c["node"].as_str().unwrap();
-            let ready: Vec<&Value> = named(spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|s| attr(s, "node") == node).collect();
-            assert_eq!(ready.len(), 1, "`{cut}`: {node} committed Ready once");
-            assert!(span_start(ready[0]) >= span_end(hold), "`{cut}`: {node} reached Ready only after the release");
+            let node: PathName = serde_json::from_value(c["node"].clone()).expect("the cut names its node's path and name");
+            let ready: Vec<&Value> = named(spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|s| at_location(s, &node)).collect();
+            assert_eq!(ready.len(), 1, "`{cut}`: {node:?} committed Ready once");
+            assert!(span_start(ready[0]) >= span_end(hold), "`{cut}`: {node:?} reached Ready only after the release");
             let want = c["blocked_detail"].as_str().unwrap();
             if want.is_empty() {
                 // Held inside its own start: it has not bound its control listener, published or evaluated a gate.
@@ -587,7 +587,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             }
             let blocked: Vec<&Value> = named(spans, "rdm.node_admin.runtime.reject.via-not-ready")
                 .into_iter()
-                .filter(|s| attr(s, "node") == node && attr(s, "detail").contains(want))
+                .filter(|s| at_location(s, &node) && attr(s, "detail").contains(want))
                 .collect();
             // The event that clears the blocker: for a mesh's first admin, the fabric primary's Pending
             // hand-off at its mesh; otherwise the release of the cut that holds the admin.
@@ -597,25 +597,26 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
                     assert_eq!(handoff.len(), 1, "`{cut}`: one applied Pending hand-off for {mesh}: {handoff:#?}");
                     // The node's own apply of the Pending it was handed: the fabric primary's span records the
                     // call's answer once it returns, which a node quick to Ready can precede.
-                    let applied: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|s| attr(s, "node") == node && attr(s, "op") == "apply-mesh-state" && attr(s, "outcome") == "applied").collect();
-                    assert!(!applied.is_empty(), "`{cut}`: {node} applied the Pending it was handed");
-                    assert!(span_start(ready[0]) >= span_start(applied[0]), "`{cut}`: {node} reached Ready only after the Pending hand-off applied");
+                    let applied: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|s| at_location(s, &node) && attr(s, "op") == "apply-mesh-state" && attr(s, "outcome") == "applied").collect();
+                    assert!(!applied.is_empty(), "`{cut}`: {node:?} applied the Pending it was handed");
+                    assert!(span_start(ready[0]) >= span_start(applied[0]), "`{cut}`: {node:?} reached Ready only after the Pending hand-off applied");
                     ("pending-handoff", span_start(applied[0]))
                 }
                 None => ("release", span_end(hold)),
             };
             let blocked: Vec<&Value> = blocked.into_iter().filter(|s| span_start(s) < cleared_at).collect();
-            assert!(!blocked.is_empty(), "`{cut}`: {node} named its blocker (\"{want}\") before the {cleared_by}");
+            assert!(!blocked.is_empty(), "`{cut}`: {node:?} named its blocker (\"{want}\") before the {cleared_by}");
             return json!({"cut": cut, "hold_span_id": hold["span_id"], "held_calls": held_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000, "blocked_span_id": blocked[0]["span_id"], "blocked_detail": attr(blocked[0], "detail")});
         }
         _ => {}
     }
-    let (build_id, node, pipeline, attempt) = (c["build_id"].as_str().unwrap(), c["node"].as_str().unwrap(), c["pipeline"].as_str().unwrap(), c["attempt"].as_u64().unwrap());
+    let (build_id, pipeline, attempt) = (c["build_id"].as_str().unwrap(), c["pipeline"].as_str().unwrap(), c["attempt"].as_u64().unwrap());
+    let node: PathName = serde_json::from_value(c["node"].clone()).expect("the cut names its node's path and name");
     let pipelines: Vec<&Value> = named(spans, "rdm.node_admin.deployment.update.via-pipeline")
         .into_iter()
-        .filter(|p| attr(p, "build_id") == build_id && attr(p, "node") == node && attr(p, "pipeline") == pipeline && attr(p, "attempt") == attempt.to_string())
+        .filter(|p| attr(p, "build_id") == build_id && at_location(p, &node) && attr(p, "pipeline") == pipeline && attr(p, "attempt") == attempt.to_string())
         .collect();
-    assert_eq!(pipelines.len(), 1, "`{cut}`: one {pipeline} pipeline span for {node} in {build_id}");
+    assert_eq!(pipelines.len(), 1, "`{cut}`: one {pipeline} pipeline span for {node:?} in {build_id}");
     let mut steps: Vec<&Value> = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["parent_span_id"] == pipelines[0]["span_id"]).collect();
     steps.sort_by_key(|s| span_start(s));
     let names: Vec<&str> = steps.iter().map(|s| attr(s, "step")).collect();

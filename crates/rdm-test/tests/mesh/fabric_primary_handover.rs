@@ -365,7 +365,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let completion = named(&spans, "rdm.node_admin.mesh.update.via-mesh-deleted-receipt").into_iter().find(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).cloned().unwrap_or_else(|| panic!("the fabric-primary recorded mesh.deleted's completion receipt for mesh1"));
     assert!(start_ns(&completion) >= end_ns(&handoff), "the completion receipt follows the validated handoff: {completion}");
     assert_eq!((attr_u(&completion, "receipts"), attr_u(&completion, "roster"), s(&completion["attributes"]["final_primary_node_id"])), (3, 4, final_id.clone()), "{completion}");
-    assert_eq!(s(&completion["attributes"]["executor"]), owner_name, "the mesh.delete's owner records its completion: {completion}");
+    // The reconcile names the owner's birth (`<node id>/<incarnation>`); the completion its node id.
+    assert_eq!(Some(s(&completion["attributes"]["executor"]).as_str()), owner_name.split('/').next(), "the mesh.delete's owner records its completion: {completion}");
     eprintln!("bullet 1: mesh.deleted completion trace {} by {owner_name}, handoff trace {}", s(&completion["trace_id"]), s(&handoff["trace_id"]));
 
     let recorded = named(&spans, "rdm.node_admin.mesh.update.via-exit-manifest-recorded");

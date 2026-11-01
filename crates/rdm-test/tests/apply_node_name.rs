@@ -154,10 +154,11 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let fields_of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect() };
         let deletes = fields_of("rdm.node_admin.connection.delete.via-connection-delete");
         assert_eq!(deletes.len(), 1, "All deletes the one data-plane connection, on its own span: {deletes:#?}");
-        assert_eq!((deletes[0].get("entry"), deletes[0].get("node").map(String::as_str), deletes[0].get("destination").map(String::as_str)), (Some(&closed), Some("mesh1.rpc.7"), Some("mesh1.admin.1")), "{deletes:#?}");
+        let get = |f: &std::collections::BTreeMap<String, String>, k: &str| f.get(k).cloned().unwrap_or_default();
+        assert_eq!((get(&deletes[0], "entry"), get(&deletes[0], "node"), get(&deletes[0], "destination_path"), get(&deletes[0], "destination_name")), (closed.clone(), launch.node_id.to_string(), "mesh1.admin".to_string(), "1".to_string()), "{deletes:#?}");
         let observed = fields_of("rdm.node_admin.connection.update.via-observed");
         let dialled = observed.iter().find(|f| f.get("entry") == Some(&closed)).unwrap_or_else(|| panic!("the observed fact names the entry All closed ({closed}): {observed:#?}"));
-        assert_eq!((dialled.get("source").map(String::as_str), dialled.get("destination").map(String::as_str), dialled.get("origin").map(String::as_str)), (Some("mesh1.rpc.7"), Some("mesh1.admin.1"), Some("dial")), "{dialled:#?}");
+        assert_eq!((get(dialled, "source_id"), get(dialled, "source_path"), get(dialled, "source_name"), get(dialled, "destination_path"), get(dialled, "destination_name"), get(dialled, "origin")), (launch.node_id.to_string(), "mesh1.rpc".to_string(), "7".to_string(), "mesh1.admin".to_string(), "1".to_string(), "dial".to_string()), "{dialled:#?}");
         assert!(dialled.get("peer").is_some_and(|p| !p.is_empty()) && dialled.get("peer") == deletes[0].get("peer"), "the observed fact and the delete name the same peer: {dialled:#?} vs {deletes:#?}");
         assert!(fields_of("rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "All hard-cuts no pool");
         assert_eq!(call(apply.clone()).await, StatusReply::Applied);

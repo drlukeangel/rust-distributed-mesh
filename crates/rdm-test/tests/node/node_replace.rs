@@ -13,7 +13,7 @@ use rdm_client::{BuildFrame, CallEnd, Change, Frame, NodeEvent, NodeStatus, Node
 use rdm_core::build::Step;
 use rdm_test::estate::{at_location, descends_from, is_operation, location, named, wait_for, Estate, Owner};
 use rdm_core::{NodeId, OperationSubject};
-use rdm_test::steps::{predecessor_steps, replace as replace_steps, rollback as rollback_steps};
+use rdm_test::steps::{replace as replace_steps, replace_keeping_predecessor, rollback as rollback_steps};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde_json::{json, Value};
@@ -1158,7 +1158,7 @@ async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_it
     assert!(named(&spans, "rdm.node_admin.name.update.via-writer").into_iter().all(|sp| sp["attributes"]["node_id"] != after["node_id"]), "the successor is never renamed");
     let mark = named(&spans, "rdm.node_admin.node.update.via-inherited-row").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).expect("the retained row's mark").clone();
     let m = &mark["attributes"];
-    assert_eq!((s(&m["original_path"]), s(&m["original_name"]), s(&m["inherited_by"]), s(&m["tags"]), s(&m["outcome"])), (node_path.path.clone(), node_path.name.clone(), s(&after["node_id"]), "rabbit".to_string(), "inherited".to_string()), "the retained row says who inherited it and keeps its tag: {mark}");
+    assert_eq!((s(&m["original_path"]), s(&m["original_name"]), s(&m["inherited_by"]), s(&m["outcome"])), (node_path.path.clone(), node_path.name.clone(), s(&after["node_id"]), "inherited".to_string()), "the retained row says who inherited it (its tag stays in its own property record, read below): {mark}");
     assert_eq!(mark["parent_span_id"], claim["span_id"], "the mark is the claim's last write: {mark} under {claim}");
     // The successor's join under the name hands it the row's config, its entry's: none (node-start.md step 2).
     let joined = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["admitted_path"] == node_path.path && sp["attributes"]["admitted_name"] == node_path.name).expect("the successor's join under the name").clone();
@@ -1276,7 +1276,8 @@ const DELETE_STOPPED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "No
 /// CONTRACT: the Build's `node[1].delete` of the stopped predecessor at `<name>-old` at the unchanged path
 /// (lifecycles/node-replace.md step 2; node-delete.md) as its own call: `mesh1.rpc.1` has its
 /// connections deleted, leaves its mesh, is renamed path `mesh1.rpc`, name `1-old` live by node.name.update at its
-/// mesh-primary and is stopped there (the predecessor's half of the replace steps), then `build.create` of a
+/// mesh-primary and is stopped there, its successor created at `1` (the replace steps keeping the
+/// predecessor for a rollback, node-replace.md steps 1-3), then `build.create` of a
 /// RemoveNode change at `<name>-old` at the unchanged path is the next attempt of the accepted Build (reason delete,
 /// action delete targeted to the exact stopped birth, no Build minted). One operation
 /// `node.delete:<path>.old` (node.delete's one key) asks the provider to end the stopped runtime
@@ -1419,9 +1420,11 @@ async fn objects(estate: &Estate) -> Nodes {
     estate.nodes_obj().await
 }
 
-/// `node` off its mesh, renamed `<name>-old` at its unchanged path live and stopped there by the
-/// predecessor's half of a replace steps (lifecycles/node-replace.md steps 1-2): the stopped birth a
-/// Build's `node[1].delete` deletes.
+/// `node` off its mesh, renamed `<name>-old` at its unchanged path live and stopped there, and its
+/// successor created at `<name>`, by the replace steps that keep the predecessor stopped for a rollback
+/// (lifecycles/node-replace.md steps 1-3): the stopped predecessor a Build's `node[1].delete` deletes.
+/// The successor's create in the same Build is what makes the renamed birth a predecessor; a name
+/// ending `-old` does not.
 async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &PathName) -> StoppedBirth {
     let before = estate.node_value(node).await;
     let pid = estate.pid_of(node).await;
@@ -1429,7 +1432,8 @@ async fn leave_rename_and_stop(estate: &Estate, nodes: &Nodes, node: &PathName) 
     // The fabric-primary as fabric.get names it, and the node's mesh-primary as mesh.get names it.
     let fabric_primary = rdm_test::typed::the_fabric(&estate.fabrics_obj().await).await.expect("fabric.get").fabric_primary.expect("a fabric-primary");
     let primary = rdm_test::typed::one_mesh(&estate.meshes_obj().await, &s(&before["mesh"])).await.expect("mesh.get").expect("the admin holds the node's mesh").primary_admin.expect("the node's mesh-primary");
-    let got = frames(nodes.steps(predecessor_steps(node).expect("valid replacement fixture name")).await.expect("the predecessor's half of the replace was accepted")).await;
+    let kind: rdm_core::NodeKind = serde_json::from_value(before["kind"].clone()).expect("a node kind");
+    let got = frames(nodes.steps(replace_keeping_predecessor(node, &s(&before["mesh"]), kind).expect("valid replacement fixture name")).await.expect("the replace keeping its predecessor was accepted")).await;
     assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
     let old = node.renamed().expect("the reserved name fits");
     let mesh = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", [&s(&before["mesh"])])).await.expect("node.get [mesh]");
@@ -2274,7 +2278,10 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     assert_eq!(s(&a["tags"]), "rabbit", "the claim seeds the Deleted row's tags in the same write: {claim}");
     let deleted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect();
     assert_eq!(deleted.len(), 1, "one Deleted row of the exited birth: {deleted:?}");
-    assert_eq!(s(&deleted[0]["attributes"]["keys"]), "1", "the Deleted row keeps the config: {deleted:?}");
+    // The record and its config stay (node-delete.md step 3): the exited node's own property record,
+    // at its node id, still holds the config and the tag.
+    let exited = estate.node_properties(&s(&before["node_id"]).parse().unwrap()).expect("the exited node's property record stays");
+    assert_eq!((exited.config.clone(), exited.tags.clone()), (told.clone(), labels.clone()), "the exited node's property record keeps its config and tag: {exited:?}");
     // The new node is handed that config in its join answer (node-start.md step 2), before it
     // publishes anything or declares readiness: the claim was written before it was launched.
     let joined = wait_for("the new node's join is exported", Duration::from_secs(60), || async {

@@ -334,8 +334,8 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         spans_of(&spans, "rdm.mesh.entry.update.via-top-up", &member_id, t_gap).into_iter().find(|sp| attr(sp, "installed").contains("mesh2@")).cloned()
     })
     .await;
-    assert_eq!(attr(&topped, "mesh_primary"), "mesh1.admin.1", "the member's own mesh-primary");
-    assert_eq!(attr(&topped, "served_by"), "mesh1.admin.1");
+    assert_eq!((attr(&topped, "mesh_primary_path"), attr(&topped, "mesh_primary_name")), ("mesh1.admin".to_string(), "1".to_string()), "the member's own mesh-primary: {topped}");
+    assert_eq!((attr(&topped, "served_by_path"), attr(&topped, "served_by_name")), ("mesh1.admin".to_string(), "1".to_string()), "{topped}");
     assert!(attr(&topped, "meshes").split(',').all(|m| m == "mesh2"), "only the desynchronized source is topped up: {topped}");
     assert!(attr(&topped, "still_desynced").is_empty(), "the top-up resumed the source: {topped}");
     let installed_version: u64 = attr(&topped, "installed").split(',').find_map(|e| e.strip_prefix("mesh2@")).unwrap().parse().unwrap();

@@ -224,7 +224,7 @@ async fn three_mesh_primaries_keep_the_day0_fabric_primary_and_elect_the_lowest_
         .into_iter()
         .filter(|sp| sp["attributes"]["winner_node_id"] == winner_node["node_id"])
         .collect();
-    let observers: std::collections::BTreeSet<String> = first.iter().map(|sp| s(&sp["attributes"]["observer"])).collect();
+    let observers: std::collections::BTreeSet<String> = first.iter().map(|sp| s(&sp["attributes"]["observer_node_id"])).collect();
     assert!(observers.len() >= 2, "more than one mesh primary resolved the same winner: {observers:?}");
     assert!(first.iter().all(|sp| sp["attributes"]["election_level"] == "fabric_primary" && sp["attributes"]["election_key"] == "node_id_crockford"));
     // The role is vacant while the primary's mesh is only silent (`winner_node_id` empty, previous
