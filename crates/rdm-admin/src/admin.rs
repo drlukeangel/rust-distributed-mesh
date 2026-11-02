@@ -4523,4 +4523,28 @@ mod tests {
             assert_eq!((e.specversion.as_str(), e.datacontenttype.as_str(), e.subject.as_ref(), e.source.as_str()), ("1.0", "application/json", None, source.as_str()), "a CloudEvents 1.0 event about no node, by this admin's birth: {e:?}");
         }
     }
+
+    /// CONTRACT (node-identity-and-state.md §2.8, the Fabrics schema's `state`): the Fabric record holds
+    /// one `state`; its fabric-primary's commit of the fabric's ready moves it pending -> ready, one
+    /// `rdm.fabric.state` event naming the fabric and `ready`; a repeat moves nothing and writes none.
+    /// Must NOT happen: the move with no event, or a second event for it.
+    // @feature: fabric-lifecycle
+    #[tokio::test]
+    async fn the_fabric_state_moves_to_ready_with_one_event() {
+        let fabric = crate::fabric_storage::MemoryFabricStorage::new();
+        let records = Records::default();
+        let appended = std::sync::Arc::new(AppendedEvents::default());
+        let identity = crate::fabric_storage::FabricIdentity { fabric_id: rdm_core::FabricId::mint(), name: "fabric1".into() };
+        records.caches.writes_events(crate::events_storage::EventsWriter::on(appended.clone(), &identity.fabric_id, &rdm_core::NodeId::mint()));
+        crate::fabric_storage::write_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is claimed");
+        for _ in 0..2 {
+            let reply = crate::status_rpc::commit_fabric_event(&fabric, &records.caches, &records.declared, &identity.fabric_id, Some("fabric1"), "ready").await;
+            assert!(matches!(reply, rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied), "{reply:?}");
+        }
+        let record = crate::fabric_storage::FabricStorage::fabric(&fabric).await.unwrap().expect("the Fabric record");
+        assert_eq!(record.state, crate::fabric_storage::FabricState::Ready, "{record:?}");
+        let events = appended.0.lock().unwrap().clone();
+        let moves: Vec<(&str, serde_json::Value, serde_json::Value)> = events.iter().map(|e| (e.r#type.as_str(), e.data["fabric_id"].clone(), e.data["state"].clone())).collect();
+        assert_eq!(moves, vec![(crate::events_storage::FABRIC_STATE, serde_json::json!(identity.fabric_id.to_string()), serde_json::json!("ready"))], "one rdm.fabric.state event for the move: {events:#?}");
+    }
 }

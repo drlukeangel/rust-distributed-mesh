@@ -215,9 +215,6 @@ impl NodeType {
 
     /// Refuse, by name, a declared list naming one of RDM's two types, an empty name or a name twice.
     pub fn check_declared(types: &[NodeType]) -> Result<(), String> {
-        if !types.is_empty() {
-            return Ok(());
-        }
         let mut seen = BTreeSet::new();
         for t in types {
             if RDM_TYPES.contains(&t.name.as_str()) {

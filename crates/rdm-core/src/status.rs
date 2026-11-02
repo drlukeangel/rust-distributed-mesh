@@ -2503,6 +2503,7 @@ mod tests {
             StatusRequest::ProbeNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 },
+            StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::Ready },
             StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-6:mesh1.rpc.1") },
             StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-7:mesh1.rpc.1") },
             StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },

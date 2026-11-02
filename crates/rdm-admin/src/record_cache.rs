@@ -120,6 +120,7 @@ impl Caches {
         let r = change(&mut record);
         if record != before || new {
             storage.put_mesh(&record).await.map_err(|e| format!("mesh.storage refused the record of {mesh_id}: {e}"))?;
+            self.mesh_moved((!new).then_some(&before), &record).await;
         }
         self.meshes.hold(mesh_id.clone(), record);
         Ok(Some(r))
@@ -143,6 +144,7 @@ impl Caches {
         let r = change(&mut record);
         if record != before || new {
             storage.put_fabric(&record).await.map_err(|e| format!("fabric.storage refused the Fabric record: {e}"))?;
+            self.fabric_moved((!new).then_some(&before), &record).await;
         }
         self.fabric.hold(fabric_id.clone(), record);
         Ok(Some(r))

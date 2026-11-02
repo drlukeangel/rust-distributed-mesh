@@ -269,7 +269,14 @@ pub(crate) async fn write_mesh_row(meshes: &dyn crate::storage::MeshStorage, cac
         };
         let mut record = held.clone().unwrap_or_else(|| crate::storage::MeshRecord::new(mesh_id.clone(), mesh));
         record.name = mesh.to_string();
+        // The write is of a live mesh: a deleted one's is refused (`MeshDead`), never written.
+        if record.is_deleted() {
+            record.state = rdm_core::status::MeshState::Pending;
+        }
         let claimed = crate::storage::write_mesh(&*meshes, held.as_ref(), &record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"))?;
+        if let Ok(crate::storage::MeshWritten::Written) = &claimed {
+            caches.mesh_moved(held.as_ref(), &record).await;
+        }
         if claimed.is_ok() {
             caches.meshes.hold(mesh_id.clone(), record);
         }

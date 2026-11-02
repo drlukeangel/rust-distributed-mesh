@@ -896,6 +896,7 @@ pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, cach
     row.state = rdm_core::status::MeshState::Deleted;
     match crate::storage::write_mesh(meshes, held.as_ref(), &row).await {
         Ok(Ok(crate::storage::MeshWritten::Written { .. })) => {
+            caches.mesh_moved(held.as_ref(), &row).await;
             caches.meshes.hold(mesh_id.clone(), row);
             Ok("dead-written")
         }

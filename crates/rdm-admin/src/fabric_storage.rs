@@ -274,7 +274,7 @@ mod tests {
     /// previous provider; a record written with them reads back as written, an unnamed one as none.
     #[test]
     fn a_fabric_record_written_before_the_provider_reads_file() {
-        let old: FabricRecord = serde_json::from_value(serde_json::json!({"fabric_id": FabricId::mint().to_string(), "name": "fabric1", "events": []})).unwrap();
+        let old: FabricRecord = serde_json::from_value(serde_json::json!({"fabric_id": FabricId::mint().to_string(), "name": "fabric1", "state": "pending"})).unwrap();
         assert_eq!((old.topology_storage_provider.as_deref(), old.previous_topology_storage_providers.len()), (Some("file"), 0));
         let mut moved = FabricRecord::new(old.identity());
         assert_eq!(serde_json::from_value::<FabricRecord>(serde_json::to_value(&moved).unwrap()).unwrap().topology_storage_provider, None, "a record naming none reads none, never file");
