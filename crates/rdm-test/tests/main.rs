@@ -122,6 +122,8 @@ mod proxy_cutback;
 mod restarted_member_rejoin;
 #[path = "node/node_heard_again.rs"]
 mod node_heard_again;
+#[path = "node/spent_call_investigation.rs"]
+mod spent_call_investigation;
 #[path = "node/node_recovery_backoff.rs"]
 mod node_recovery_backoff;
 #[path = "node/silent_node_view.rs"]
