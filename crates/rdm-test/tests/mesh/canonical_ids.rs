@@ -160,8 +160,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     estate.settles_to_named(&names(&["mesh1"], 2), Duration::from_secs(30)).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
     let recreated = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await);
-    // R-NS1 item 1 + states.md ("A mesh id is never reissued; dead is final ... a mesh created again
-    // under that name is a new mesh with a new id"): the removed mesh2 was Dead, and Dead belongs to its
+    // R-NS1 item 1 + states.md ("A mesh id is never reissued; deleted is final ... a mesh created again
+    // under that name is a new mesh with a new id"): the removed mesh2 was deleted, and Dead belongs to its
     // id. No admin's view states the new mesh2 Dead.
     for n in recreated.iter().filter(|n| n["kind"] == "node_admin") {
         let carrier = estate.peers().await.carrier_for(s(&n["node_id"]).parse().unwrap());
@@ -257,7 +257,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
 
     // R-MN1: mesh2's removal deleted every roster birth (each member's row by its node.delete under
     // the mesh.delete, the last admin's by its own node.delete, the fabric-primary its executor) and
-    // wrote the mesh row Dead; mesh2 created again claimed mesh2.admin.1 over the Deleted row, its
+    // wrote the mesh row deleted; mesh2 created again claimed mesh2.admin.1 over the Deleted row, its
     // fresh properties, under a new MeshId.
     let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-row");
     for n in regrown.iter().filter(|n| n["mesh"] == "mesh2") {
@@ -267,8 +267,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         });
         assert!(row.is_some_and(|sp| sp["attributes"]["outcome"] == "row-deleted"), "{}'s row is written Deleted by mesh2's removal: {row:?}", n["name"]);
     }
-    let dead = named(&spans, "rdm.node_admin.mesh.update.via-dead-row");
-    assert!(dead.iter().any(|sp| s(&sp["attributes"]["mesh_id"]) == mesh_ids["mesh2"] && sp["attributes"]["outcome"] == "applied"), "the old mesh2's row is written Dead: {dead:?}");
+    let dead = named(&spans, "rdm.node_admin.mesh.update.via-deleted-row");
+    assert!(dead.iter().any(|sp| s(&sp["attributes"]["mesh_id"]) == mesh_ids["mesh2"] && sp["attributes"]["outcome"] == "applied"), "the old mesh2's row is written deleted: {dead:?}");
     let old_admin = regrown.iter().find(|n| location(n) == PathName::new("mesh2.admin", "1").unwrap()).unwrap();
     let new_admin = recreated.iter().find(|n| location(n) == PathName::new("mesh2.admin", "1").unwrap()).unwrap();
     assert_ne!(new_admin["node_id"], old_admin["node_id"], "the recreated mesh's admin is a new node");
@@ -283,7 +283,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // node-identity-and-state.md §2.7 + R-MN1 change 4: a mesh's name is claimed at its key, by its
     // writer (Q109), before anything else of the mesh is written (CLAUDE.md), at CreateMesh by the
     // fabric-primary as the acting primary of a mesh with none (R13); the removed mesh2's Mesh row is
-    // written Dead, which releases the name; the recreated mesh2 claims the released name under its new
+    // written deleted, which releases the name; the recreated mesh2 claims the released name under its new
     // MeshId, before the recreated mesh2.admin.1's row is claimed, by the same
     // writer. No mesh's claim conflicts with itself across creation and a re-claim.
     let claims = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
@@ -291,8 +291,8 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let old_claim = claim_of(&mesh_ids["mesh2"]).unwrap_or_else(|| panic!("the removed mesh2's name was claimed: {claims:?}"));
     assert_eq!(old_claim["attributes"]["outcome"], "row-written", "{old_claim}");
     assert!(
-        dead.iter().any(|sp| s(&sp["attributes"]["mesh_id"]) == mesh_ids["mesh2"] && sp["attributes"]["mesh_row"] == "dead-written"),
-        "the removed mesh2's Mesh row is written Dead, releasing its name: {dead:?}"
+        dead.iter().any(|sp| s(&sp["attributes"]["mesh_id"]) == mesh_ids["mesh2"] && sp["attributes"]["mesh_row"] == "deleted-written"),
+        "the removed mesh2's Mesh row is written deleted, releasing its name: {dead:?}"
     );
     let new_claim = claim_of(&s(&m2["id"])).unwrap_or_else(|| panic!("the recreated mesh2's name is claimed: {claims:?}"));
     assert_eq!(new_claim["attributes"]["outcome"], "row-written", "{new_claim}");

@@ -51,7 +51,7 @@ pub(crate) struct MeshRowsWriter {
     pub(crate) caches: crate::record_cache::Caches,
     /// The claim of the mesh's name this role tenure decided: `None` outside a tenure or before the
     /// store answered it; `Some(Ok)` once it won; `Some(Err)` when it was refused (another mesh's
-    /// live row holds the name, or this mesh is Dead): the mesh's rows stay unwritten for the tenure.
+    /// live row holds the name, or this mesh is deleted): the mesh's rows stay unwritten for the tenure.
     pub(crate) written: Option<Result<(), crate::storage::MeshRefused>>,
 }
 
@@ -219,17 +219,17 @@ pub(crate) async fn take_recorded_primaries(meshes: &dyn crate::storage::MeshSto
 }
 
 /// The Mesh row of the mesh a restarting node-admin's own row names, read by that mesh's id (R-MN1: a
-/// mesh created again under the same name is a new mesh with a new id; R-ML2: a dead mesh is never
+/// mesh created again under the same name is a new mesh with a new id; R-ML2: a deleted mesh is never
 /// restarted): the point read at the mesh's key, the name, is taken as the admin's mesh only when it
 /// is the record of the mesh id its own row holds, read by that id, and live. The name's claim held by
 /// another MeshId means the admin's mesh was removed and a mesh created again under the name; refused
-/// by name, naming both ids, as are a Dead record and no record.
+/// by name, naming both ids, as are a deleted record and no record.
 pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: &crate::storage::NodeRecord) -> Result<crate::storage::MeshRecord, String> {
     let (mesh, mesh_id) = (&own.mesh, &own.mesh_id);
     let unread = |e: crate::storage_error::StorageError| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage could not read the record of {mesh}: {e}", own.node_id);
     let held = meshes.mesh(mesh_id).await.map_err(unread)?;
     if held.as_ref().is_some_and(|row| row.is_deleted()) {
-        return Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), whose record is Dead: a dead mesh is never restarted", own.node_id));
+        return Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), whose record is deleted: a deleted mesh is never restarted", own.node_id));
     }
     if let Some(other) = meshes.mesh_named(mesh).await.map_err(unread)?.filter(|row| row.mesh_id != *mesh_id) {
         return Err(format!(
@@ -269,7 +269,7 @@ pub(crate) async fn write_mesh_row(meshes: &dyn crate::storage::MeshStorage, cac
         };
         let mut record = held.clone().unwrap_or_else(|| crate::storage::MeshRecord::new(mesh_id.clone(), mesh));
         record.name = mesh.to_string();
-        // The write is of a live mesh: a deleted one's is refused (`MeshDead`), never written.
+        // The write is of a live mesh: a deleted one's is refused (`MeshDeleted`), never written.
         if record.is_deleted() {
             record.state = rdm_core::status::MeshState::Pending;
         }

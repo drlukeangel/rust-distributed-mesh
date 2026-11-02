@@ -129,7 +129,7 @@ mod tests {
             fabric_id: fabric_id.clone(),
             name: "fabric1".to_string(),
         });
-        fabric_rec.state = crate::fabric_storage::FabricState::Ready;
+        fabric_rec.state = crate::fabric_state::FabricState::Ready;
 
         let folded_count = declared.fold_records(
             &[mesh_rec],

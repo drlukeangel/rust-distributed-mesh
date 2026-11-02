@@ -96,7 +96,7 @@ impl Gate for Switch {
     fn mesh_unheard_ms(&self, mesh: &str) -> Option<u64> {
         self.peer.lock().unwrap().get(mesh).copied()
     }
-    async fn dead_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<MeshId>, String> {
+    async fn deleted_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<MeshId>, String> {
         Ok(self.dead.lock().unwrap().clone())
     }
     async fn recorded_executables(&self, topology: &rdm_admin::accepted::FabricTopology) -> Result<rdm_admin::accepted::Recorded, String> {

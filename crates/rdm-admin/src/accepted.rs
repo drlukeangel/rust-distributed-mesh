@@ -61,8 +61,8 @@ fn write_specs<S: serde::Serializer>(specs: &BTreeMap<PathName, NodeSpec>, s: S)
 }
 
 /// The explicit node-admin storage default written at the Day-0 claim.
-pub fn root_storage() -> rdm_core::meta::StorageMeta {
-    rdm_core::meta::StorageMeta::for_kind(NodeKind::NodeAdmin)
+pub fn root_storage() -> rdm_core::meta::StoragePersistence {
+    rdm_core::meta::StoragePersistence::for_kind(NodeKind::NodeAdmin)
 }
 
 impl MeshTopology {
@@ -1164,7 +1164,7 @@ pub struct RecordedRow {
     /// The tag labels the row carries.
     pub tags: Option<BTreeSet<String>>,
     /// The storage_persistence the row records.
-    pub storage_persistence: Option<rdm_core::meta::StorageMeta>,
+    pub storage_persistence: Option<rdm_core::meta::StoragePersistence>,
 }
 
 /// [`RecordedRow`] of each path of a topology that a live row is written at.
@@ -1363,7 +1363,7 @@ fn replacements_owed(topology: &FabricTopology, observed: &Topology, recorded: &
 /// fabric.delete's plan: the delete deletes every mesh the store holds a row of, never only the meshes the
 /// view still projects, which drops a mesh once its members are gone (fabric-delete.md "Failure": "a runtime
 /// inside the workflow whose delete has no receipt is never reported deleted"; mesh-delete.md "Resume after
-/// the primary's loss": the new executor runs only the tiers without a terminal receipt). A row written Dead
+/// the primary's loss": the new executor runs only the tiers without a terminal receipt). A row written deleted
 /// is added Dead: the plan resumes it only while its mesh.delete is open in the Build's receipts.
 pub fn with_mesh_rows(observed: &Topology, rows: &[crate::storage::MeshRecord]) -> Topology {
     use rdm_core::status::MeshState;
@@ -1637,7 +1637,7 @@ fn plan_with(
             ops.push(BuildOperation::DeleteLiveNode { kind: birth.kind, mesh: birth.mesh.clone(), node: p.clone(), exited: None, birth: Some(birth) });
         }
     }
-    // A deleted mesh (its row Dead at mesh.deleted) is done: its mesh.delete ended, and its last
+    // A deleted mesh (its row deleted at mesh.deleted) is done: its mesh.delete ended, and its last
     // admin's end is a separate node.delete (mesh-delete.md steps 5-7), never planned from here. Only
     // the Build that admitted its mesh.delete and holds no completion of it plans it again, to resume.
     let mut gone: Vec<&String> = observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead || open_deletes.contains(&m.name)).map(|m| &m.name).filter(|m| !topology.meshes.contains_key(*m)).collect();
@@ -2017,7 +2017,7 @@ mod tests {
         assert_eq!(keys, [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "4").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.admin", "1").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.rpc", "1").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh2.rpc", "2").unwrap())], "not held: the silent paths are planned again");
     }
 
-    /// CONTRACT (mesh-delete.md steps 5-7): a deleted mesh (its row Dead at mesh.deleted) whose last
+    /// CONTRACT (mesh-delete.md steps 5-7): a deleted mesh (its row deleted at mesh.deleted) whose last
     /// admin lives on is done for every Build: the plan names nothing of it, so no later Build runs
     /// its mesh.delete again or deletes its last admin unasked. Only the Build that admitted its
     /// mesh.delete and holds no completion of it plans it again, to resume from the receipts; a
@@ -2741,15 +2741,15 @@ mod tests {
     /// set explicitly stands.
     #[test]
     fn every_materialized_path_carries_exactly_one_create_spec() {
-        use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
+        use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
         let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1), (NodeKind::RpcNode, 1)]));
         assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.spec_by_path.len(), 5);
-        let preserve = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
+        let preserve = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.broker", "2").unwrap()).unwrap().storage_persistence, preserve);
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).unwrap().storage_persistence, preserve);
-        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
-        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).unwrap().storage_persistence, StorageMeta::Ephemeral);
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).unwrap().storage_persistence, StoragePersistence::Ephemeral);
+        assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).unwrap().storage_persistence, StoragePersistence::Ephemeral);
         let mut topology = FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
         // Grow and shrink keep the create specs in step with the paths.
@@ -2764,7 +2764,7 @@ mod tests {
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.broker", "3").unwrap()).unwrap().storage_persistence, preserve, "the grown path carries its default");
         assert!(m.spec(&rdm_core::PathName::new("mesh1.gateway", "1").unwrap()).is_none(), "the dropped path's create spec goes with it");
         // An explicit create spec stands; a path the mesh does not hold is refused.
-        let release = NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode) };
+        let release = NodeSpec { storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode) };
         assert_eq!(m.set_spec(release.clone()), Ok(()));
         assert_eq!(m.spec(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), Some(&release));
         assert!(matches!(m.set_spec(NodeSpec { path: rdm_core::PathName::new("mesh1.rpc", "9").unwrap(), ..release.clone() }), Err(BuildReject::UnknownNode { .. })));
@@ -3048,10 +3048,10 @@ mod tests {
     /// the journal holds its receipt.
     #[test]
     fn a_later_attempt_whose_step_receipt_is_in_the_journal_does_not_apply_the_entry_over_a_later_node_update() {
-        use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
+        use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
         let mut topology = t(&[("mesh1", 1, 1)]);
         let path: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
-        let persistent = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
+        let persistent = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
         topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec {
             config: [("source".into(), "entry".into())].into(), tags: ["entry".into()].into(),
             storage_persistence: persistent, ..NodeSpec::default_for(path.clone(), "mesh1", NodeKind::RpcNode)
@@ -3092,22 +3092,22 @@ mod tests {
     #[test]
     fn a_reconcile_applies_each_property_that_differs_from_the_row_by_its_own_operation() {
         use crate::build_state::{BuildStepReceipt, StepOutcome};
-        use rdm_core::meta::{PersistentDisposition, StorageMeta};
+        use rdm_core::meta::{PersistentDisposition, StoragePersistence};
         let cur = t(&[("mesh1", 1, 1)]);
         let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let admin: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let mut topology = cur.clone();
-        let persistent = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
+        let persistent = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let zone = |z: &str| [("zone".to_string(), z.to_string())].into_iter().collect::<BTreeMap<String, String>>();
         topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec { config: zone("b"), tags: labels(&["x"]), storage_persistence: persistent, ..NodeSpec::default_for(rpc.clone(), "mesh1", NodeKind::RpcNode) }).unwrap();
-        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage) };
-        let mut recorded: Recorded = [(rpc.clone(), row(zone("a"), labels(&["y"]), StorageMeta::Ephemeral))].into();
+        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StoragePersistence| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage) };
+        let mut recorded: Recorded = [(rpc.clone(), row(zone("a"), labels(&["y"]), StoragePersistence::Ephemeral))].into();
         recorded.insert(admin.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None });
         let all = vec![BuildOperation::UpdateConfig { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), entry: None }, BuildOperation::CreateTags { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["x"]) }, BuildOperation::DeleteTags { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["y"]) }];
         assert_eq!(properties_owed(&topology, &recorded, &[], &[]), all, "each property that differs, by its own operation");
         assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), [rdm_core::OperationId::node("node.config.update", &recorded[&rpc].node_id), rdm_core::OperationId::node("node.tag.create", &recorded[&rpc].node_id), rdm_core::OperationId::node("node.tag.delete", &recorded[&rpc].node_id)]);
-        let storage_only: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), StorageMeta::Ephemeral))].into();
+        let storage_only: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), StoragePersistence::Ephemeral))].into();
         assert_eq!(properties_owed(&topology, &storage_only, &[], &[]), vec![BuildOperation::UpdateConfig { node_id: storage_only[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), entry: None }], "a storage-only difference is the config op's row write");
         let same: Recorded = [(rpc.clone(), row(zone("b"), labels(&["x"]), persistent))].into();
         assert_eq!(properties_owed(&topology, &same, &[], &[]), vec![], "nothing differs");
@@ -3144,7 +3144,7 @@ mod tests {
         let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
-        let own: Recorded = [(rpc.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral) })].into();
+        let own: Recorded = [(rpc.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StoragePersistence::Ephemeral) })].into();
         let create = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
         let claimed = vec![receipt(1, &create, "AllocateIdentity", None), receipt(1, &create, "PrepareStorage", None), receipt(1, &create, "Complete", None)];
         assert_eq!(properties_owed(&cur, &own, &claimed, &[]), vec![], "the create's claim applied the entry: the node's own writes since stand");
@@ -3221,7 +3221,7 @@ mod tests {
         let cur = t(&[("mesh1", 1, 1)]);
         let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true)], &["mesh1"]);
-        let row = |config: BTreeMap<String, String>| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral) };
+        let row = |config: BTreeMap<String, String>| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StoragePersistence::Ephemeral) };
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
         let mut recorded: Recorded = [(rpc.clone(), row(port))].into();
         recorded.insert(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), RecordedRow { kind: NodeKind::NodeAdmin, storage_persistence: None, ..row(BTreeMap::new()) });

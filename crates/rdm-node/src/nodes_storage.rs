@@ -263,7 +263,7 @@ pub struct NodeRow {
     /// written before the field carries none, and no Build compares it. A row written before storage.md
     /// §1's rename carries it as `storage` (durable format moved).
     #[serde(default, alias = "storage", skip_serializing_if = "Option::is_none")]
-    pub storage_persistence: Option<rdm_core::meta::StorageMeta>,
+    pub storage_persistence: Option<rdm_core::meta::StoragePersistence>,
     /// The `topology_storage_provider` the node writes (storage.md §2): the fact, beside the Fabric
     /// row's intent, recorded by RDM at the node's name claim from the provider the claiming admin
     /// writes, the one it writes into the node's launch; never put by a caller. A row written before

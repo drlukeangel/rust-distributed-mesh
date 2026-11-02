@@ -277,8 +277,8 @@ impl Row for NodeView {
             "admin_api_base" => Value::of(self.admin_api_base.as_ref()),
             "listeners" => Value::set(self.listeners.iter().map(|(name, _)| name)),
             "storage_persistence" => Value::of(self.storage_persistence.as_ref().map(|s| match s {
-                crate::meta::StorageMeta::Ephemeral => "ephemeral",
-                crate::meta::StorageMeta::Persistent { .. } => "persistent",
+                crate::meta::StoragePersistence::Ephemeral => "ephemeral",
+                crate::meta::StoragePersistence::Persistent { .. } => "persistent",
             })),
             "topology_storage_provider" => Value::of(self.topology_storage_provider.as_ref()),
             _ => Value::Absent,

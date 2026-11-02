@@ -3570,8 +3570,8 @@ mod tests {
         let current = j.current().await.unwrap().expect("the old Build is current");
         assert_eq!((current.build_id.clone(), current.state), (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), BuildState::Complete));
         assert_eq!(current.topology, intent("b1").topology, "read as it is: every entry names none");
-        let admin = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, path: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve }, executable: None, tags: Default::default(), config: Default::default() };
-        let mut rpc = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
+        let admin = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::NodeAdmin, path: rdm_core::PathName::new("mesh1.admin", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve }, executable: None, tags: Default::default(), config: Default::default() };
+        let mut rpc = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
         rpc.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         let change = crate::accepted::TopologyChange::Reconcile { topology_storage_provider: None, based_on: current.build_id.clone(), nodes: vec![admin, rpc] };
         let observed = crate::topology::Topology {
@@ -3599,7 +3599,7 @@ mod tests {
         let rpc: crate::model::PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let m = stored.topology.meshes.get_mut("mesh1").unwrap();
         m.nodes.insert(rpc.clone());
-        let mut spec = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: rpc.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
+        let mut spec = rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, path: rpc.clone(), storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: Default::default() };
         spec.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc".into(), sha256: "b".into(), image: None });
         m.set_spec(spec).unwrap();
         let writer = open_at(&dir).await.unwrap();

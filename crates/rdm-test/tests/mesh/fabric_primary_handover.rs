@@ -10,7 +10,7 @@
 //! fabric-primary is its executor, proves its exit and, as acting primary of a mesh that has no
 //! primary, writes its row deleted; from that admin's stop on it publishes the deleted mesh's
 //! mesh topology." R-MD1 items 2-3: mesh-left requires complete exact-birth terminal coverage, and
-//! "Peers retain the Dead mesh and its final birth while that birth lives": the fabric-primary
+//! "Peers retain the deleted mesh and its final birth while that birth lives": the fabric-primary
 //! publishes MeshLeft only once the final birth's node.delete has its exact exited verdict. R-RX4 (a
 //! live mesh with no primary goes unheard) does not cover a deleted mesh.
 //!
@@ -416,8 +416,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let final_exit = terminal_end(&final_name, true);
     let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && on(sp, &ids, &final_name) && attr_u(sp, "members") == 1 && start_ns(sp) < final_exit).collect();
     assert!(!lone.is_empty(), "the last admin {final_name:?} published mesh1's topology with itself the only member while it lived");
-    let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-dead-row").into_iter().filter(|sp| on(sp, &ids, &final_name) && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
-    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= start_ns(&completion)), "the last admin {final_name:?} committed mesh1's row Dead at mesh.deleted: {dead_row:?}");
+    let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-deleted-row").into_iter().filter(|sp| on(sp, &ids, &final_name) && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
+    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= start_ns(&completion)), "the last admin {final_name:?} committed mesh1's row deleted at mesh.deleted: {dead_row:?}");
     let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| on(sp, &ids, &final_name) && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();
     assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name:?} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
     eprintln!("bullet 1: {final_name:?} lone mesh topology trace {}, MeshStatus Dead trace {}", s(&lone[0]["trace_id"]), dead_sent.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());

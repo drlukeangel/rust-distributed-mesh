@@ -256,7 +256,7 @@ impl Declared {
         }
         if let Some(f) = fabric {
             let held = self.fabric.entry(f.fabric_id.clone()).or_default();
-            if f.state == crate::fabric_storage::FabricState::Ready && !held.iter().any(|e| e == "ready") {
+            if f.state == crate::fabric_state::FabricState::Ready && !held.iter().any(|e| e == "ready") {
                 held.push("ready".into());
             }
         }
@@ -382,7 +382,7 @@ impl RoleFold {
                 let births = declared.lock().unwrap().fold_records(&meshes, fabric.as_ref(), &nodes, holds_birth);
                 span.record("node_declared_rows", births);
                 span.record("mesh_status_rows", meshes.len());
-                span.record("fabric_state", fabric.as_ref().map_or("none", |f| f.state.name()));
+                span.record("fabric_state", fabric.as_ref().map_or("none", |f| f.state.as_str()));
                 *self.folded.lock().unwrap() = true;
                 span.in_scope(|| tracing::info!("this admin took its mesh's role: the mesh's status rows are folded into what it applied"));
                 if let Some(digest_view) = digest_view {
@@ -775,8 +775,8 @@ pub(crate) fn event_key(e: &FabricEvent) -> String {
 
 /// The Fabric state the Fabric event `event` moves the record to: the one event, `ready`, is its move
 /// to ready.
-fn fabric_state_of(event: &str) -> Option<crate::fabric_storage::FabricState> {
-    (event == "ready").then_some(crate::fabric_storage::FabricState::Ready)
+fn fabric_state_of(event: &str) -> Option<crate::fabric_state::FabricState> {
+    (event == "ready").then_some(crate::fabric_state::FabricState::Ready)
 }
 
 /// One commit of a Fabric event by its writer, the fabric-primary (states.md, "Who sets each state"):
@@ -950,7 +950,7 @@ impl StatusDoor {
     /// `node.config.update` (`UpdateNodeConfig`) of a Build's create spec at this admin, in-process
     /// (build.md §1, "The Build applies the diff"): the one config door, the spec's `storage` and
     /// `placement` written onto the row with the map.
-    pub async fn update_config_from_spec(&self, req: &StatusRequest, storage: rdm_core::meta::StorageMeta) -> StatusReply {
+    pub async fn update_config_from_spec(&self, req: &StatusRequest, storage: rdm_core::meta::StoragePersistence) -> StatusReply {
         let me = self.held_name().await;
         let view = self.topology.read().await.clone();
         match self.configs.get() {
@@ -960,7 +960,7 @@ impl StatusDoor {
     }
 
     /// A Build's entry follows the same downward route and node writer as caller changes.
-    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, storage: rdm_core::meta::StorageMeta) -> Result<(), String> {
+    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, storage: rdm_core::meta::StoragePersistence) -> Result<(), String> {
         self.commands.admitted().await;
         let view = self.topology.read().await.clone();
         let me = self.held_name_in(&view);

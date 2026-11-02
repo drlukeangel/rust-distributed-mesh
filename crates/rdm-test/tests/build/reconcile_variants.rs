@@ -22,14 +22,14 @@
 //! the bound and the fabric holds ready after it; a resize or a replacement puts the fabric
 //! back to pending at its acceptance, and a request that is neither (the same executables, the unchanged
 //! request, tags only, config only, storage only: proposal executable-bindings-at-create.md rule 5 re-births a path
-//! for a storage or placement change only "with its executable") leaves it ready, read from
+//! for a storage change only "with its executable") leaves it ready, read from
 //! the `via-state-reset` spans. Must NOT happen: a
 //! Build never Complete (Pending at attempt 1 with no step) after a request that changed nothing the
 //! fabric runs (Rafka 141).
 
 use rdm_client::{BuildFrame, Change, LaunchKind as NodeKind, NodeView, PathName, ScopeStatus};
 use rdm_core::binding::{sha256_file, Binding};
-use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use rdm_test::estate::{Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -169,7 +169,7 @@ async fn rpc_variants(estate: &Estate, mesh: &str, rows: &mut Vec<(String, Strin
     estate.until_node(&rpc1, &format!("{rpc1:?} carries the config"), Duration::from_secs(30), |n| n.filter(|n| n.config == zone).map(|_| ())).await;
 
     let (based_on, mut r, _) = verbatim(estate).await;
-    at(&mut r, &rpc1).storage_persistence = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
+    at(&mut r, &rpc1).storage_persistence = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
     row(estate, &format!("{mesh}: storage only"), based_on, r, Back::Stays, rows).await;
     let (record, node) = node_row(estate, &rpc1).await;
     assert_eq!(record["storage_persistence"], json!({"persistence": "persistent", "disposition": "preserve"}), "{mesh}: the storage reaches {rpc1:?}'s row: {record}");

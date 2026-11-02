@@ -512,7 +512,7 @@ async fn replaced(estate: &Estate, name: &PathName, was: &Member, next: &Binding
     let now = estate.until_node(name, &format!("{name:?} ready as a new node"), SETTLE, |n| n.filter(|n| n.status == rdm_client::NodeStatus::Ready && n.node_id != was.view.node_id).cloned()).await;
     assert_ne!(now.incarnation_id, was.view.incarnation_id, "{name:?}: a new birth");
     assert_eq!(exe_of(estate, name).await, next.executable, "{name:?} runs the executable its entry names");
-    if matches!(NodeSpec::default_for(was.view.name.clone(), &was.view.mesh, was.view.kind).storage_persistence, rdm_core::meta::StorageMeta::Persistent { .. }) {
+    if matches!(NodeSpec::default_for(was.view.name.clone(), &was.view.mesh, was.view.kind).storage_persistence, rdm_core::meta::StoragePersistence::Persistent { .. }) {
         assert_eq!(now.endpoint_id, was.view.endpoint_id, "{name:?}: its endpoint key kept, loaded from its kept data dir");
         assert_eq!(estate.data_dir(name).await, was.data_dir, "{name:?}: created over its kept data dir");
     } else {
@@ -537,7 +537,7 @@ async fn an_ephemeral_paths_replacement_is_created_over_a_newly_allocated_data_d
     estate.until_fabric_ready(SETTLE).await;
     let before = members(&estate).await;
     let (based_on, request) = read_request(&estate).await;
-    assert_eq!(request.iter().find(|s| s.path == PathName::new("mesh1.rpc", "1").unwrap()).map(|s| s.storage_persistence), Some(rdm_core::meta::StorageMeta::Ephemeral), "mesh1.rpc.1's path is Ephemeral");
+    assert_eq!(request.iter().find(|s| s.path == PathName::new("mesh1.rpc", "1").unwrap()).map(|s| s.storage_persistence), Some(rdm_core::meta::StoragePersistence::Ephemeral), "mesh1.rpc.1's path is Ephemeral");
     let current = before[&PathName::new("mesh1.rpc", "1").unwrap()].view.executable.clone().expect("mesh1.rpc.1's row records its executable");
     let next = another_build(&estate, &current, "next");
     followed(&estate, estate.submit_change(Change::Reconcile { topology_storage_provider: None, based_on, nodes: naming(request, PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Some(&next)) }).await).await;

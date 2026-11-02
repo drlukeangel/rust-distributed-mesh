@@ -11,7 +11,7 @@
 //! a change to that copy, writes the whole object, and replaces its cached copy once storage answers.
 //! No write reads storage first; storage is read only to fill a cache.
 //!
-//! - `mesh.storage`: each Mesh record at its id (its identity, Dead, the states it entered) and each
+//! - `mesh.storage`: each Mesh record at its id (its identity and its one state) and each
 //!   live mesh's name claim.
 //! - `nodes.storage`: each node's record at its id (its row and the facts of its births: declared
 //!   states, operation effects, silence, data-dir facts, cert dates, the birth's address and the
@@ -41,7 +41,7 @@ use std::sync::Mutex;
 /// A Mesh record (node-identity-and-state.md §2.7): the mesh's identity and its one `state`. Kept at
 /// its mesh id and written whole by the mesh's writer (its primary; the fabric-primary while the mesh
 /// has none) from the copy it caches (storage-whole-records.md, "The rule"), each move of its state
-/// also an `rdm.mesh.state` event in the events store; its name is read from the live records
+/// also an event in the events store (`rdm.mesh.<state>`, build.md §5); its name is read from the live records
 /// ([`MeshStorage::mesh_named`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,7 +72,7 @@ impl MeshRecord {
 /// What a write of a mesh's record did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MeshWritten {
-    /// The record was written: new, or changed (its Dead write).
+    /// The record was written: new, or changed (its deleted write).
     Written,
     /// This mesh's record stands exactly as given: nothing is written (a retry, a replaced primary).
     Held,
@@ -81,19 +81,19 @@ pub enum MeshWritten {
 /// Why a write of a mesh's record wrote nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MeshRefused {
-    /// Another live mesh's record holds the name: it is free only once that mesh is Dead.
+    /// Another live mesh's record holds the name: it is free only once that mesh is deleted.
     NameHeld {
         /// The name claimed.
         name: String,
         /// The mesh that holds it.
         by: MeshId,
     },
-    /// This mesh is Dead: a dead mesh is never written live again and its id is never reissued
-    /// (states.md); only its Dead record is ever written again.
-    MeshDead {
+    /// This mesh is deleted: a deleted mesh is never written live again and its id is never reissued
+    /// (states.md); only its deleted record is ever written again.
+    MeshDeleted {
         /// The name claimed.
         name: String,
-        /// The dead mesh.
+        /// The deleted mesh.
         mesh_id: MeshId,
     },
 }
@@ -103,7 +103,7 @@ impl MeshRefused {
     pub fn outcome(&self) -> &'static str {
         match self {
             Self::NameHeld { .. } => "name-held",
-            Self::MeshDead { .. } => "mesh-dead",
+            Self::MeshDeleted { .. } => "mesh-deleted",
         }
     }
 }
@@ -111,8 +111,8 @@ impl MeshRefused {
 impl std::fmt::Display for MeshRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NameHeld { name, by } => write!(f, "the mesh name {name} is held by mesh {by}: it is free only once that mesh is Dead"),
-            Self::MeshDead { name, mesh_id } => write!(f, "mesh {mesh_id} at {name} is Dead: a dead mesh is never written live again"),
+            Self::NameHeld { name, by } => write!(f, "the mesh name {name} is held by mesh {by}: it is free only once that mesh is deleted"),
+            Self::MeshDeleted { name, mesh_id } => write!(f, "mesh {mesh_id} at {name} is deleted: a deleted mesh is never written live again"),
         }
     }
 }
@@ -121,13 +121,13 @@ impl std::error::Error for MeshRefused {}
 
 /// Write `record`, the whole record its writer holds (node-identity-and-state.md §2.7; Q109: the
 /// storage decides nothing, the writer does). `held` is the writer's cached copy of this mesh's record,
-/// or `None` for a mesh it holds none of. A Dead mesh is never written live again (`MeshDead`). A live
+/// or `None` for a mesh it holds none of. A deleted mesh is never written live again (`MeshDeleted`). A live
 /// record's name is checked against the records: another live mesh's record at the name refuses it
-/// `NameHeld` naming that mesh, and nothing is written; a Dead record frees its name (R-MN1). The
+/// `NameHeld` naming that mesh, and nothing is written; a deleted record frees its name (R-MN1). The
 /// record is then written whole unless it stands exactly as `held`.
 pub async fn write_mesh(meshes: &dyn MeshStorage, held: Option<&MeshRecord>, record: &MeshRecord) -> Result<Result<MeshWritten, MeshRefused>, StorageError> {
     if held.is_some_and(|h| h.is_deleted()) && !record.is_deleted() {
-        return Ok(Err(MeshRefused::MeshDead { name: record.name.clone(), mesh_id: record.mesh_id.clone() }));
+        return Ok(Err(MeshRefused::MeshDeleted { name: record.name.clone(), mesh_id: record.mesh_id.clone() }));
     }
     if !record.is_deleted() {
         if let Some(by) = meshes.mesh_named(&record.name).await?.filter(|h| h.mesh_id != record.mesh_id) {
@@ -544,7 +544,7 @@ mod tests {
         let written = WrittenRows::default();
         let (name, node_id, inc): (PathName, NodeId, IncarnationId) = (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), NodeId::mint(), IncarnationId::mint());
         let mut held = NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, node_id.clone(), crate::model::NodeStatus::Ready);
-        held.storage_persistence = Some(rdm_core::meta::StorageMeta::Ephemeral);
+        held.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
         held.executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/bin/rpc".into(), sha256: "1".repeat(64), image: None });
         written.hold(&held);
         written.update(&store, &node_id, None, |r| { r.birth_mut(&inc, &name).declared.insert(NodeState::Ready); }).await.unwrap();
@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(*store.log.lock().unwrap(), ["put", "put", "put"], "three writes, no read before any of them");
         let puts = store.puts.lock().unwrap().clone();
         let last = puts.last().unwrap();
-        assert_eq!((last.storage_persistence, last.executable.is_some()), (Some(rdm_core::meta::StorageMeta::Ephemeral), true), "the record's own fields go with every put");
+        assert_eq!((last.storage_persistence, last.executable.is_some()), (Some(rdm_core::meta::StoragePersistence::Ephemeral), true), "the record's own fields go with every put");
         let b = last.birth(&inc).unwrap();
         assert!(b.declared.contains(&NodeState::Ready) && b.silence.is_some() && b.cert.is_some(), "the last put carries every fact the copy held: {b:?}");
         assert!(puts[1].birth(&inc).unwrap().declared.contains(&NodeState::Ready), "the second put carries the first's fact too");
@@ -877,7 +877,7 @@ mod tests {
 
     /// CONTRACT (R-ML2 item 4 as amended: the recreated mesh shares the in-flight lock under its name,
     /// not a directory; §5.4): mesh2 created again under its name, a new mesh with a new id, takes the
-    /// mesh's name over the Dead mesh's record, its node-admin's path and name over the Deleted record
+    /// mesh's name over the deleted mesh's record, its node-admin's path and name over the Deleted record
     /// there, and its records carry the new MeshId; a delayed release
     /// of an attempt on the old mesh against the name's in-flight lock finds it naming the recreated
     /// mesh's attempt and releases nothing. Must NOT happen: the recreated mesh refused its name, or the
@@ -897,13 +897,13 @@ mod tests {
         let build = crate::build::BuildId::mint();
         let old_attempt = InFlight { build_id: build.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: first.node_id.clone(), };
         assert_eq!(meshes.take_in_flight("mesh2", &old_attempt).await.unwrap(), Taken::Won);
-        // mesh2 is removed: its node Deleted, its record Dead, its attempt's verdict released.
+        // mesh2 is removed: its node Deleted, its record deleted, its attempt's verdict released.
         nodes.put_node(&NodeRow { status: crate::model::NodeStatus::Deleted, ..first.clone() }).await.unwrap();
-        write_mesh(&meshes, Some(&old), &MeshRecord { state: MeshState::Deleted, ..old.clone() }).await.unwrap().expect("the Dead record is written");
+        write_mesh(&meshes, Some(&old), &MeshRecord { state: MeshState::Deleted, ..old.clone() }).await.unwrap().expect("the deleted record is written");
         meshes.release_in_flight("mesh2", &old_attempt).await.unwrap();
         // mesh2 created again.
         let new = MeshRecord::new(MeshId::mint(), "mesh2");
-        assert_eq!(write_mesh(&meshes, None, &new).await.unwrap(), Ok(MeshWritten::Written), "the recreated mesh takes its name over the Dead mesh's");
+        assert_eq!(write_mesh(&meshes, None, &new).await.unwrap(), Ok(MeshWritten::Written), "the recreated mesh takes its name over the deleted mesh's");
         assert_eq!(meshes.mesh_named("mesh2").await.unwrap().map(|m| m.mesh_id), Some(new.mesh_id.clone()));
         let second = NodeRow { mesh_id: Some(new.mesh_id.clone()), ..NodeRow::new(admin.clone(), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeId::mint(), crate::model::NodeStatus::Pending) };
         assert_eq!(crate::node_rows::write_record(&nodes, &second).await.unwrap(), Ok(()), "its node-admin's record takes the name over the Deleted record");
@@ -1036,12 +1036,12 @@ mod tests {
     /// CONTRACT (node-identity-and-state.md §2.7: the mesh-primary "claims the mesh's name at the key
     /// `(path, name)` ... Held means held by a different MeshId: `NameHeld` names that holder.
     /// The same MeshId re-claiming its own name ... is idempotent and accepted"; R-MN1: only a delete
-    /// releases a name, a mesh's by its removal, the record Dead; states.md: a mesh id is never
-    /// reissued, dead is final; Q109: the storage decides nothing): the record's writer claims a
+    /// releases a name, a mesh's by its removal, the record deleted; states.md: a mesh id is never
+    /// reissued, deleted is final; Q109: the storage decides nothing): the record's writer claims a
     /// mesh's name. A free name takes the claim and the record; the same mesh re-claiming with its
     /// record unchanged writes nothing; another mesh's claim of the live name is refused naming the
-    /// holder and writes nothing; the holder's Dead record is a write of its own record that releases
-    /// the name, and a repeat of it writes nothing; the Dead mesh is never written live again; another
+    /// holder and writes nothing; the holder's deleted record is a write of its own record that releases
+    /// the name, and a repeat of it writes nothing; the deleted mesh is never written live again; another
     /// mesh then claims the name. The memory store and the file store each run their own check.
     #[tokio::test]
     async fn a_mesh_name_is_claimed_by_its_writer_and_only_a_dead_row_releases_it() {
@@ -1054,13 +1054,13 @@ mod tests {
             assert_eq!(crate::storage::write_mesh(&*m, Some(&live(&first)), &live(&first)).await, Ok(Ok(MeshWritten::Held)), "{store}: the same mesh re-claiming its name writes nothing");
             assert_eq!(crate::storage::write_mesh(&*m, None, &live(&second)).await, Ok(Err(MeshRefused::NameHeld { name: "mesh2".into(), by: first.clone() })), "{store}: another mesh's live claim holds mesh2");
             assert_eq!(m.mesh_named("mesh2").await.unwrap(), Some(live(&first)), "{store}: nothing is written by a refused claim");
-            assert_eq!(crate::storage::write_mesh(&*m, Some(&live(&first)), &dead(&first)).await, Ok(Ok(MeshWritten::Written)), "{store}: the holder's Dead record is a write of its own record");
-            assert_eq!(m.mesh_named("mesh2").await.unwrap(), None, "{store}: the Dead record released the name");
-            assert_eq!(crate::storage::write_mesh(&*m, Some(&dead(&first)), &dead(&first)).await, Ok(Ok(MeshWritten::Held)), "{store}: a repeat of the Dead record writes nothing");
-            assert_eq!(crate::storage::write_mesh(&*m, Some(&dead(&first)), &live(&first)).await, Ok(Err(MeshRefused::MeshDead { name: "mesh2".into(), mesh_id: first.clone() })), "{store}: a dead mesh is never written live again");
+            assert_eq!(crate::storage::write_mesh(&*m, Some(&live(&first)), &dead(&first)).await, Ok(Ok(MeshWritten::Written)), "{store}: the holder's deleted record is a write of its own record");
+            assert_eq!(m.mesh_named("mesh2").await.unwrap(), None, "{store}: the deleted record released the name");
+            assert_eq!(crate::storage::write_mesh(&*m, Some(&dead(&first)), &dead(&first)).await, Ok(Ok(MeshWritten::Held)), "{store}: a repeat of the deleted record writes nothing");
+            assert_eq!(crate::storage::write_mesh(&*m, Some(&dead(&first)), &live(&first)).await, Ok(Err(MeshRefused::MeshDeleted { name: "mesh2".into(), mesh_id: first.clone() })), "{store}: a deleted mesh is never written live again");
             assert_eq!(crate::storage::write_mesh(&*m, None, &live(&second)).await, Ok(Ok(MeshWritten::Written)), "{store}: the released name is claimed again");
             assert_eq!(m.mesh_named("mesh2").await.unwrap(), Some(live(&second)), "{store}: the claim names the new mesh's record");
-            assert_eq!(m.mesh(&first).await.unwrap(), Some(dead(&first)), "{store}: the dead mesh's record stands, read by id");
+            assert_eq!(m.mesh(&first).await.unwrap(), Some(dead(&first)), "{store}: the deleted mesh's record stands, read by id");
         };
         check(&MemoryMeshStorage::default(), "memory").await;
         check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")), &crate::store_log::LogWriter::mint()).await.unwrap(), "file").await;

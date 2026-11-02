@@ -1741,14 +1741,14 @@ impl DeploymentPipeline<'_> {
                 step_span.record("awaiting", "entry-spec");
                 let held = self.builds.read_build(&req.build_id).await.map_err(|e| format!("path {:?}, name {:?}: the accepted Build {} could not be read for the node's create spec; nothing is launched: {e}", &req.node.path, &req.node.name, req.build_id))?;
                 done_awaits.push("entry-spec");
-                let placed = held.topology.node_spec(&req.node).map(|s| s.storage_persistence);
+                let storage_persistence = held.topology.node_spec(&req.node).map(|s| s.storage_persistence);
                 // A replace's successor takes its entry's config and tags, never its predecessor's (Q305).
                 let (tags, config) = match (of, &req.entry) {
                     (crate::node_rows::ClaimFor::Create | crate::node_rows::ClaimFor::Successor | crate::node_rows::ClaimFor::Replacement, Some(e)) => (e.tags.clone(), e.config.clone()),
                     _ => Default::default(),
                 };
                 step_span.record("awaiting", "claim");
-                rows.claim_spec(&req.node, &req.mesh, req.kind, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, placed, of)
+                rows.claim_spec(&req.node, &req.mesh, req.kind, &id.node_id, &run_operation, Some(&allocated), self.template.binding.as_ref(), &tags, &config, storage_persistence, of)
                     .await
                     .map_err(|e| format!("path {:?}, name {:?}: the name claim refused the birth {}; nothing is launched: {e}", &req.node.path, &req.node.name, id.node_id))?;
                 done_awaits.push("claim");

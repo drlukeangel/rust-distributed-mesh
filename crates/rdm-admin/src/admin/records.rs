@@ -387,7 +387,7 @@ pub struct Records {
     /// mesh.deleted the last admin, still its primary, publishes MeshStatus Dead (R-NS1 item 1).
     pub(crate) heard_dead: Mutex<BTreeMap<(String, String, u64), Option<MeshId>>>,
     /// The meshes this admin, as fabric-primary, accepted mesh.deleted for: a validated `MeshDeleted`,
-    /// which the mesh-primary calls only after it committed the mesh row Dead (node-rpc-envelope.md,
+    /// which the mesh-primary calls only after it committed the mesh row deleted (node-rpc-envelope.md,
     /// mesh delete command pair). Dead in this admin's projection from that acceptance on, without
     /// waiting for the MeshStatus Dead gossip; dropped with the mesh's id at mesh-left.
     pub(crate) deleted_meshes: Mutex<std::collections::HashSet<MeshId>>,
@@ -605,7 +605,7 @@ impl Records {
     }
 
     /// Hold that this fabric-primary accepted mesh.deleted for the mesh `id` (a validated `MeshDeleted`),
-    /// or read its Mesh record Dead (a fabric-primary that took over after the mesh.delete).
+    /// or read its Mesh record deleted (a fabric-primary that took over after the mesh.delete).
     pub fn hold_mesh_deleted(&self, id: &MeshId) {
         if self.deleted_meshes.lock().unwrap().insert(id.clone()) {
             self.inputs_moved();

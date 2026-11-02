@@ -58,13 +58,13 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
                     nodes: vec![
                         rdm_core::meta::NodeSpec {
                             path: rdm_core::PathName::new("m.admin", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
-                            storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
+                            storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
                             
                             executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
                             tags: ["t".to_string()].into(),
                             config: Default::default(),
                         },
-                        rdm_core::meta::NodeSpec { path: rdm_core::PathName::new("m.rpc", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
+                        rdm_core::meta::NodeSpec { path: rdm_core::PathName::new("m.rpc", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::RpcNode, storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral, executable: None, tags: Default::default(), config: [("k".to_string(), "v".to_string())].into() },
                     ],
                     topology_storage_provider: None,
                 }),
@@ -431,7 +431,7 @@ fn a_create_spec_carries_explicit_ownership_and_the_complete_config_map() {
     ];
     let admin = rdm_core::meta::NodeSpec {
         path: rdm_core::PathName::new("m.admin", "1").unwrap(), mesh: "m".into(), kind: rdm_core::NodeKind::NodeAdmin,
-        storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
+        storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Preserve },
         
         executable: Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/x".into(), sha256: "s".into(), image: None }),
         tags: ["t".to_string()].into(),

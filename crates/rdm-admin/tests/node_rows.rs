@@ -2019,7 +2019,7 @@ fn a_resumed_deleted_births_own_record_write_is_ignored_on_read() {
         resumed.update(&*storage, &other.node_id, Some(other.clone()), |_| ()).await.expect("another node's record is written");
         // Its mesh's writer deletes it; resumed, it puts its own record whole from its older copy.
         mp.rows.deleted(&victim, &rdm_core::OperationId::node("node.delete", &victim.node_id)).await.expect("the mesh's writer writes the Deleted record");
-        resumed.update(&*storage, &victim.node_id, None, |r| r.storage_persistence = Some(rdm_core::meta::StorageMeta::Ephemeral)).await.expect("storage stores what it is given");
+        resumed.update(&*storage, &victim.node_id, None, |r| r.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral)).await.expect("storage stores what it is given");
         let stored = storage.node(&victim.node_id).await.unwrap().expect("the record");
         // The recovery's claim at the path and name.
         let born = NodeId::mint();

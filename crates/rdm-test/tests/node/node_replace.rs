@@ -125,7 +125,7 @@ async fn recovery_span(estate: &Estate, node: &PathName, node_id: &Value) -> Val
 /// The member under test in a two-mesh estate: an rpc node holding no role, of the mesh that does NOT hold the
 /// fabric-primary, so its mesh-primary is not the fabric-primary; that mesh-primary's view row; and
 /// the fabric-primary's view row.
-fn placement(nodes: &[Value]) -> (PathName, Value, Value) {
+fn member_and_primaries(nodes: &[Value]) -> (PathName, Value, Value) {
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
     let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
     let mesh_primary = nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the node's mesh-primary").clone();
@@ -1558,7 +1558,7 @@ async fn a_hung_member_whose_runtime_runs_is_terminated_and_recovered_at_once() 
         Duration::from_secs(90),
     )
     .await;
-    let (node, mesh_primary, _) = placement(&estate.node_values().await);
+    let (node, mesh_primary, _) = member_and_primaries(&estate.node_values().await);
     let before = estate.node_value(&node).await;
     let mesh = s(&before["mesh"]);
     let rt = exact_runtime(&estate, &node).await;
@@ -1807,7 +1807,7 @@ async fn a_hung_fabric_primary_is_terminated_and_re_created_by_fabric_recovery_f
 async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_applied() {
     use rdm_core::build::{BuildChange, Disposition};
     let (mut estate, birth_build) = two_mesh_estate("a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_applied").await;
-    let (node, mesh_primary, _) = placement(&estate.node_values().await);
+    let (node, mesh_primary, _) = member_and_primaries(&estate.node_values().await);
     let before = estate.node_value(&node).await;
     let mesh = s(&before["mesh"]);
     let killed = exact_runtime(&estate, &node).await.apply(Fault::Kill(estate.fabric_ready())).expect("the exact runtime is killed");
@@ -1912,7 +1912,7 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recovers_the_member() {
     let (estate, birth_build) = two_mesh_estate("an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recovers_the_member").await;
-    let (node, mesh_primary, _) = placement(&estate.node_values().await);
+    let (node, mesh_primary, _) = member_and_primaries(&estate.node_values().await);
     let before = estate.node_value(&node).await;
     let rt = exact_runtime(&estate, &node).await;
     assert_eq!(rt.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
@@ -2239,7 +2239,7 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClien
 async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor() {
     let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor").await;
     let nodes = estate.node_values().await;
-    let (node, mesh_primary, fp) = placement(&nodes);
+    let (node, mesh_primary, fp) = member_and_primaries(&nodes);
     let node_path = &node;
     let before = estate.node_value(node_path).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();

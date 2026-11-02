@@ -746,11 +746,11 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
 /// CONTRACT: R-MN1 with mesh-delete.md step 7 (the final primary's own node.delete, the
 /// fabric-primary its executor, "as acting primary of a mesh that has no primary, writes its row
 /// deleted"), R-NS1 item 2 (from the stop of a mesh's last admin the fabric-primary is the writer of
-/// a mesh with no primary) and R-MD1 item 2 (mesh-left ensures the mesh row Dead). While the final
+/// a mesh with no primary) and R-MD1 item 2 (mesh-left ensures the mesh row deleted). While the final
 /// primary holds its role live, the fabric-primary writes none of mesh2's rows and a second claim of
 /// path `mesh2.admin`, name `1` is refused `name-held`; once it is stopped (its role held) the
 /// fabric-primary writes its row Deleted, node id and config kept, as its node.delete's NodeDeleted
-/// step does; mesh-left puts the mesh row Dead as acting primary when no Dead row is held; and only
+/// step does; mesh-left puts the mesh row deleted as acting primary when no Dead row is held; and only
 /// then a new birth claims path `mesh2.admin`, name `1` over the Deleted row (`row-seeded`, seeded from it), its
 /// row carrying its create spec's config, here none (Q166: a plain create's config is its spec's; only a
 /// recovery's and a successor's claim inherit).
@@ -811,7 +811,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     after.unwrap_or_else(|e| panic!("mesh-left writes its rows: {e}"));
     let row = row.expect("the final primary's row stays, readable by its node id");
     assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &last.node_id), "{row:?}");
-    assert!(dead_held, "the mesh's status is Dead on mesh2 (mesh.storage, R-MD1)");
+    assert!(dead_held, "the mesh's status is deleted on mesh2 (mesh.storage, R-MD1)");
     assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Deleted), "mesh2's one status fact is its Dead, on mesh2: {statuses:?}");
     assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Deleted), "and held as applied");
     match &again {
@@ -824,11 +824,11 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
     let deleted: Vec<String> = named("rdm.node_admin.node.delete.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.name.path && s["attributes"]["subject_name"] == last.name.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(deleted, ["not-mesh-primary", "row-deleted"], "refused while the final primary is live and primary, written once it is stopped: {deleted:?}");
-    let dead = named("rdm.node_admin.mesh.update.via-dead-row");
+    let dead = named("rdm.node_admin.mesh.update.via-deleted-row");
     assert!(dead.iter().any(|s| s["attributes"]["mesh_id"] == mesh_id.as_str() && s["attributes"]["outcome"] == "applied" && s["attributes"]["writer"] == "acting-primary"), "no Dead row held: the fabric-primary writes Dead as acting primary: {dead:#?}");
     let claims: Vec<String> = named("rdm.node_admin.node.create.via-node-row").iter().filter(|s| s["attributes"]["subject_path"] == last.name.path && s["attributes"]["subject_name"] == last.name.name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect();
     assert_eq!(claims, ["row-held-by-node", "name-held", "row-written"], "a plain create's claim names no seed: {claims:?}");
-    eprintln!("trace {trace_id}: delete.via-node-row not-mesh-primary then row-deleted, mesh.update.via-dead-row applied acting-primary, via-node-row claim row-seeded seeded_from={}", last.node_id);
+    eprintln!("trace {trace_id}: delete.via-node-row not-mesh-primary then row-deleted, mesh.update.via-deleted-row applied acting-primary, via-node-row claim row-seeded seeded_from={}", last.node_id);
 }
 
 
@@ -2757,7 +2757,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         let all = mesh_left_manifest(&validated, &terminal).expect("MeshLeft proof covers all 4 roster births");
         mesh_left_rows(Some(&rows), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key(2), "mesh2", &all.receipts)
             .await
-            .expect("mesh row Dead is written");
+            .expect("mesh row deleted is written");
         let survivor_row = rdm_admin::storage::NodesStorage::node(&*storage, &survivor_node.node_id).await.unwrap().expect("mesh-primary row exists");
         let mesh_dead = mesh_storage.mesh(&mesh_id).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted);
         (
@@ -2813,7 +2813,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
         [&failing, &exiting, &other_admin, &final_admin].iter().map(|n| (n.node_id.to_string(), n.incarnation_id.as_ref().unwrap().to_string())).collect::<BTreeSet<_>>()
     );
     assert_eq!(survivor_row.status, NodeStatus::Deleted, "mesh-primary row is written Deleted");
-    assert!(mesh_dead, "mesh row is written Dead");
+    assert!(mesh_dead, "mesh row is written deleted");
     assert_ne!(build_id, delete_build, "mesh-primary delete runs in its own Build");
     assert_ne!(trace_id, delete_trace_id, "mesh-primary delete runs in its own trace");
 

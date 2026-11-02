@@ -180,7 +180,7 @@ mod tests {
             rdm_core::meta::NodeSpec {
                 mesh: mesh.to_owned(), kind,
                 path: p.clone(),
-                storage_persistence: rdm_core::meta::StorageMeta::Ephemeral,
+                storage_persistence: rdm_core::meta::StoragePersistence::Ephemeral,
                 executable: Some(rdm_core::binding::Binding {
                     launch_id: kind.name().into(),
                     sha256: rdm_core::binding::sha256_file(&bin).unwrap(),

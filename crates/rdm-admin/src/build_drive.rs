@@ -117,7 +117,7 @@ pub trait Gate: Send + Sync {
     /// The meshes of `observed` whose Mesh record holds them Dead (mesh-delete.md: the mesh row goes Dead
     /// at mesh.deleted; a `dead` record is final), read from the Mesh records, never from the view: a view
     /// that has not heard a mesh's Dead yet still shows it live. A gate with no Mesh records holds none.
-    async fn dead_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
+    async fn deleted_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
         Ok(Default::default())
     }
     /// Every mesh record the store holds, for a fabric.delete's plan: the delete plans from the Mesh rows
@@ -381,7 +381,7 @@ pub struct Drive {
     /// a replacement's plan ([`crate::accepted::plan_with_replacements`]); `None` until a pass of a Build
     /// that plans replacements read them.
     recorded: Mutex<Option<crate::accepted::Recorded>>,
-    /// The meshes the Mesh records held Dead when this drive's pass last read them ([`Gate::dead_meshes`]):
+    /// The meshes the Mesh records held Dead when this drive's pass last read them ([`Gate::deleted_meshes`]):
     /// planned as Dead whatever the view shows.
     dead: Mutex<std::collections::HashSet<crate::model::MeshId>>,
     /// The endpoint keys of the callers reading this drive's frames now, one per reader
@@ -1026,7 +1026,7 @@ fn world(drive: &Drive, p: &BuildProjection, t: &Topology, fabric_ready: bool) -
 }
 
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
-    // A mesh the Mesh records hold Dead is planned as Dead, whatever the view shows ([`Gate::dead_meshes`]).
+    // A mesh the Mesh records hold Dead is planned as Dead, whatever the view shows ([`Gate::deleted_meshes`]).
     let dead = drive.dead.lock().unwrap().clone();
     let with_dead;
     let t = if t.meshes.iter().any(|m| m.status != crate::model::ScopeStatus::Dead && m.id.as_ref().is_some_and(|id| dead.contains(id))) {
@@ -1373,7 +1373,7 @@ impl DriveEnv {
             // A mesh the Mesh records hold Dead is done whatever the view shows (a view that has not heard
             // its Dead yet): the plan reads mesh death from the records at every pass, before it plans.
             let observed = self.topology.read().await.clone();
-            match self.gate.dead_meshes(&observed).await {
+            match self.gate.deleted_meshes(&observed).await {
                 Ok(dead) => *drive.dead.lock().unwrap() = dead,
                 Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id}: the Mesh records could not be read for which meshes are Dead: {e}", me_path = &me.path, me_name = &me.name)),
             }

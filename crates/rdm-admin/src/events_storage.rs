@@ -41,13 +41,21 @@ pub const STORAGE_COMMITTED: &str = "rdm.storage.committed";
 /// `rdm.storage.ended`: the fabric-primary ended a storage change. `data` {change_id, topology_storage_provider, state}.
 pub const STORAGE_ENDED: &str = "rdm.storage.ended";
 
-/// `rdm.mesh.state`: a mesh's record moved to a new `state`. `data` {mesh_id, mesh, state}.
-pub const MESH_STATE: &str = "rdm.mesh.state";
-/// `rdm.fabric.state`: the Fabric record moved to a new `state`. `data` {fabric_id, state}.
-pub const FABRIC_STATE: &str = "rdm.fabric.state";
+/// `rdm.mesh.pending`: a mesh's record was written pending. `data` {mesh_id, mesh}.
+pub const MESH_PENDING: &str = "rdm.mesh.pending";
+/// `rdm.mesh.ready`: a mesh's record moved to ready. `data` {mesh_id, mesh}.
+pub const MESH_READY: &str = "rdm.mesh.ready";
+/// `rdm.mesh.deleting`: a mesh's record moved to deleting. `data` {mesh_id, mesh}.
+pub const MESH_DELETING: &str = "rdm.mesh.deleting";
+/// `rdm.mesh.deleted`: a mesh's record moved to deleted. `data` {mesh_id, mesh}.
+pub const MESH_DELETED: &str = "rdm.mesh.deleted";
+/// `rdm.fabric.pending`: the Fabric record was written pending. `data` {fabric_id}.
+pub const FABRIC_PENDING: &str = "rdm.fabric.pending";
+/// `rdm.fabric.ready`: the Fabric record moved to ready. `data` {fabric_id}.
+pub const FABRIC_READY: &str = "rdm.fabric.ready";
 
 /// The event types this build writes.
-pub const TYPES: [&str; 10] = [BUILD_STARTED, BUILD_DISPATCHED, BUILD_STEP, BUILD_ENDED, NODE_INVESTIGATED, STORAGE_STARTED, STORAGE_COMMITTED, STORAGE_ENDED, MESH_STATE, FABRIC_STATE];
+pub const TYPES: [&str; 14] = [BUILD_STARTED, BUILD_DISPATCHED, BUILD_STEP, BUILD_ENDED, NODE_INVESTIGATED, STORAGE_STARTED, STORAGE_COMMITTED, STORAGE_ENDED, MESH_PENDING, MESH_READY, MESH_DELETING, MESH_DELETED, FABRIC_PENDING, FABRIC_READY];
 
 /// The CloudEvents version every event carries.
 pub const SPEC_VERSION: &str = "1.0";
@@ -329,25 +337,34 @@ impl Event {
         Self::new(source, time_ms, STORAGE_ENDED, None, object(StorageData { build_id: None, change_id, topology_storage_provider, state: Some(state) }))
     }
 
-    /// `rdm.mesh.state` {mesh_id, mesh, state}.
-    pub fn mesh_state(source: &EventSource, time_ms: u64, mesh_id: &MeshId, mesh: &str, state: MeshState) -> Self {
+    /// The mesh's move to `state`: `rdm.mesh.pending`, `rdm.mesh.ready`, `rdm.mesh.deleting` or
+    /// `rdm.mesh.deleted` {mesh_id, mesh}.
+    pub fn mesh_moved(source: &EventSource, time_ms: u64, mesh_id: &MeshId, mesh: &str, state: MeshState) -> Self {
         #[derive(Serialize)]
         struct Data<'a> {
             mesh_id: &'a MeshId,
             mesh: &'a str,
-            state: MeshState,
         }
-        Self::new(source, time_ms, MESH_STATE, None, object(Data { mesh_id, mesh, state }))
+        let kind = match state {
+            MeshState::Pending => MESH_PENDING,
+            MeshState::Ready => MESH_READY,
+            MeshState::Deleting => MESH_DELETING,
+            MeshState::Deleted => MESH_DELETED,
+        };
+        Self::new(source, time_ms, kind, None, object(Data { mesh_id, mesh }))
     }
 
-    /// `rdm.fabric.state` {fabric_id, state}.
-    pub fn fabric_state(source: &EventSource, time_ms: u64, fabric_id: &FabricId, state: crate::fabric_storage::FabricState) -> Self {
+    /// The Fabric's move to `state`: `rdm.fabric.pending` or `rdm.fabric.ready` {fabric_id}.
+    pub fn fabric_moved(source: &EventSource, time_ms: u64, fabric_id: &FabricId, state: crate::fabric_state::FabricState) -> Self {
         #[derive(Serialize)]
         struct Data<'a> {
             fabric_id: &'a FabricId,
-            state: crate::fabric_storage::FabricState,
         }
-        Self::new(source, time_ms, FABRIC_STATE, None, object(Data { fabric_id, state }))
+        let kind = match state {
+            crate::fabric_state::FabricState::Pending => FABRIC_PENDING,
+            crate::fabric_state::FabricState::Ready => FABRIC_READY,
+        };
+        Self::new(source, time_ms, kind, None, object(Data { fabric_id }))
     }
 
     /// The Build the event is of: its `data.build_id`.

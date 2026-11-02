@@ -408,7 +408,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     assert_eq!(nodes_storage.record_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
 
     // Step 4: a separate call from outside the fabric runs `node.delete` of the fabric-primary.
-    assert!(cp.of_deleted_mesh(&m1_a1.name).await.unwrap(), "the fabric-primary's mesh is Dead after fabric.deleted");
+    assert!(cp.of_deleted_mesh(&m1_a1.name).await.unwrap(), "the fabric-primary's mesh is deleted after fabric.deleted");
     let fp_delete = cp
         .open_attempt_in(tracing::info_span!("cell.fp-delete"), "build.create", AttemptReason::Delete, m1_a1.name.clone(), rdm_admin::control_plane::ActionKind::Delete)
         .await
@@ -429,16 +429,16 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let left_m1 = mesh_left_manifest(&manifest_m1, &term_m1_a1).unwrap();
     mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, m1_a1.node_id.as_str(), &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
 
-    // Every node row is Deleted, and both mesh rows are Dead in status.storage and mesh.storage.
+    // Every node row is Deleted, and both mesh rows are deleted in status.storage and mesh.storage.
     for n in &all_nodes {
         let row = nodes_storage.node(&n.node_id).await.unwrap().expect("node row exists");
         assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s node row is Deleted", n.name);
     }
     for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
-        assert!(mesh_storage.mesh(&id.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted), "{name} status row is Dead");
+        assert!(mesh_storage.mesh(&id.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted), "{name} status row is deleted");
     }
     let mesh_rows = mesh_storage.meshes().await.unwrap();
-    assert!(mesh_rows.iter().all(|m| m.is_deleted()), "every mesh row in mesh.storage is Dead: {mesh_rows:?}");
+    assert!(mesh_rows.iter().all(|m| m.is_deleted()), "every mesh row in mesh.storage is deleted: {mesh_rows:?}");
 
     let _ = std::fs::remove_dir_all(&data_root);
 }
@@ -536,7 +536,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         };
 
         // Every node of mesh2 (mesh2.admin.1 and mesh2.rpc.1) has crashed. Nothing is commanded and no
-        // node-admin is created; rows are written Deleted by each node.delete and mesh2 is written Dead
+        // node-admin is created; rows are written Deleted by each node.delete and mesh2 is written deleted
         // as acting primary.
         fleet.running_pids.lock().unwrap().clear();
         let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &mesh_storage, &*nodes_storage, &key_m2, fp.node_id.as_str(), "mesh2", &m2_nodes, &held_paths, &delete)
@@ -548,8 +548,8 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             let row = nodes_storage.node(&n.node_id).await.unwrap().unwrap();
             assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s row is written Deleted by its node.delete", n.name);
         }
-        assert!(mesh_storage.mesh(&id2.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted), "mesh2 status row is written Dead by acting primary");
-        assert!(mesh_storage.meshes().await.unwrap().iter().all(|m| m.is_deleted()), "mesh2 row in mesh.storage is Dead");
+        assert!(mesh_storage.mesh(&id2.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted), "mesh2 status row is written deleted by acting primary");
+        assert!(mesh_storage.meshes().await.unwrap().iter().all(|m| m.is_deleted()), "mesh2 row in mesh.storage is deleted");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
         assert_eq!(owner_resume(&steps, &op_m2), Ok(OwnerResume::Left), "MeshLeft is recorded so no separate DeleteLiveNode is planned for the crashed primary");
         // Each roster birth's end is node.delete's own (mesh-delete.md step 3, "each member's step is
@@ -1201,7 +1201,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .collect::<Vec<_>>()
     };
     assert!(!named("rdm.node_admin.mesh.update.via-mesh-deleted-receipt").is_empty());
-    assert!(!named("rdm.node_admin.mesh.update.via-dead-row").is_empty());
+    assert!(!named("rdm.node_admin.mesh.update.via-deleted-row").is_empty());
     assert!(!named("rdm.node_admin.build.reject.via-fabric-delete-in-force").is_empty());
     assert!(!named("rdm.node_admin.build.reject.via-recovery-already-applied").is_empty());
     let completed = named("rdm.node_admin.fabric.delete.via-build");

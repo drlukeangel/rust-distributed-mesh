@@ -17,7 +17,7 @@ pub use rdm_core::BuildId;
 /// What a path's entry in the accepted Build names that a Build message does not carry (proposal
 /// executable-bindings-at-create.md rule 7; Q166): its executable, tags and config. The fabric-primary,
 /// the one admin that reads the Build records (Q227), puts it on each create and config operation it
-/// dispatches, so the executor reads no stored record for it. Its storage and placement ride the Build
+/// dispatches, so the executor reads no stored record for it. Its storage rides the Build
 /// message and are read from the Build the executor holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntrySpec {
@@ -282,7 +282,7 @@ pub enum BuildOperation {
         /// The birth.
         from_incarnation: rdm_core::IncarnationId,
     },
-    /// The node's create spec names another `config`, `storage` or `placement` than its row records
+    /// The node's create spec names another `config` or `storage` than its row records
     /// (build.md §1, "The Build applies the diff"): `node.config.update` of the entry's map at the
     /// node's mesh-primary, row first, then the node (a live one sent `ApplyNodeConfig`, a stopped one
     /// handed it at its next join), the entry's storage and placement written onto the row with it. No

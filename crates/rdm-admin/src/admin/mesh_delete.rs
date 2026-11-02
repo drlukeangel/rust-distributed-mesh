@@ -615,7 +615,7 @@ impl AdminRunner {
     /// leave ends. Nothing of the final primary is stopped, written or published here.
     async fn record_mesh_deleted(&self, key: &MeshDeleteKey, manifest: ExitManifest) -> Result<(), String> {
         crate::mesh_delete::record_completion(&*self.builds, key, &self.node_id.to_string(), &manifest).await?;
-        // The mesh-primary committed the row Dead before it called: this fabric-primary's view states
+        // The mesh-primary committed the row deleted before it called: this fabric-primary's view states
         // the mesh deleted from its acceptance on, so a node.delete of its last admin names it.
         self.records.hold_mesh_deleted(&key.mesh_id);
         self.leaves.close(key);
@@ -685,7 +685,7 @@ impl AdminRunner {
     }
 
     /// mesh-left: the complete proof set `all` (every birth, the final primary included) is recorded
-    /// as the `MeshLeft` receipt after the mesh's deleted contacts are dropped and its row Dead is
+    /// as the `MeshLeft` receipt after the mesh's deleted contacts are dropped and its row deleted is
     /// ensured; then the mesh-left hook runs and the mesh's id is dropped.
     async fn record_mesh_left(&self, key: &MeshDeleteKey, mesh: &str, all: ExitManifest) -> Result<(), String> {
         let (build_id, attempt, outer, mesh_id) = (key.build_id.clone(), key.attempt, &key.operation, &key.mesh_id);
@@ -927,25 +927,25 @@ impl AdminRunner {
         }
         // mesh.deleted (ops-naming mesh.delete: "reported by the mesh-primary, still alive, from its
         // members' exited verdicts; mesh is dead, id kept deleted"): every other member's exit is proven,
-        // so this primary commits its mesh row Dead (states.md: "one commit stores the row, applies
+        // so this primary commits its mesh row deleted (states.md: "one commit stores the row, applies
         // it, gossips it and answers"); its view then states the mesh Dead and its status workflow
         // publishes MeshStatus Dead, five sends, while it lives (R-NS1 item 1). A refused put
         // answers no handoff: the owner's repeated delete-mesh decides it afresh.
-        // Its Mesh row is written Dead on mesh.storage with it, which releases the mesh's name (R-MN1
+        // Its Mesh row is written deleted on mesh.storage with it, which releases the mesh's name (R-MN1
         // item 2); a refused write answers no handoff either.
         let committed = crate::status_rpc::commit_mesh_state(&*self.mesh_storage, &self.records.caches, &self.records.declared, &me.mesh, &key.mesh_id, rdm_core::status::MeshState::Deleted, 0).await;
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node_path = %self.held_name().path, node_name = %self.held_name().name, mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation.action, operation_subject = ?key.operation.subject, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-deleted-row", node_path = %self.held_name().path, node_name = %self.held_name().name, mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation.action, operation_subject = ?key.operation.subject, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
         let mesh_row = match committed {
-            StatusReply::Applied | StatusReply::AlreadyApplied => crate::mesh_delete::mesh_row_dead(&*self.mesh_storage, &self.records.caches, &me.mesh, &key.mesh_id).await,
+            StatusReply::Applied | StatusReply::AlreadyApplied => crate::mesh_delete::mesh_row_deleted(&*self.mesh_storage, &self.records.caches, &me.mesh, &key.mesh_id).await,
             refused => Err(format!("the Dead status row was not committed: {}", refused.name())),
         };
         match &mesh_row {
             Ok(row) => span.record("mesh_row", *row),
             Err(e) => span.record("mesh_row", "not-written").record("error", e.as_str()),
         };
-        span.in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exited verdicts, and its name released"));
+        span.in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row deleted is stored and applied from its members' exited verdicts, and its name released"));
         if let Err(e) = mesh_row {
-            tracing::info!(operation = %key.operation.action, operation_subject = ?key.operation.subject, error = %e, "the mesh row Dead was not committed: the handoff waits for a repeated delete-mesh");
+            tracing::info!(operation = %key.operation.action, operation_subject = ?key.operation.subject, error = %e, "the mesh row deleted was not committed: the handoff waits for a repeated delete-mesh");
             return;
         }
         self.refresh_view().await;

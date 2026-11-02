@@ -1313,14 +1313,14 @@ mod tests {
         eprintln!("span rdm.node_admin.fabric.create.via-fabric-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
     }
 
-    /// CONTRACT (R-MN1: a mesh's name is released only by its removal, the row Dead, and "a mesh created
+    /// CONTRACT (R-MN1: a mesh's name is released only by its removal, the row deleted, and "a mesh created
     /// again under the same name is a new mesh with a new id"; change 4: "the mesh-name claim treats a
-    /// Dead mesh row as released"; states.md: dead is final, a mesh id is never reissued): mesh A's
-    /// primary claims `mesh2`; the removal writes A's row Dead (`dead-written`, a repeat
-    /// `already-dead`); mesh2 created again under a new MeshId has its primary claim the name over the
-    /// Dead row, the span naming the Dead mesh it took it over, and its member's address is written on its
+    /// Dead mesh row as released"; states.md: deleted is final, a mesh id is never reissued): mesh A's
+    /// primary claims `mesh2`; the removal writes A's row deleted (`deleted-written`, a repeat
+    /// `already-deleted`); mesh2 created again under a new MeshId has its primary claim the name over the
+    /// Dead row, the span naming the deleted mesh it took it over, and its member's address is written on its
     /// record (the removed mesh's admin's record `Deleted` by its node.delete). A's own
-    /// later tenure claims nothing live again (`mesh-dead`). Must NOT happen: the recreated mesh
+    /// later tenure claims nothing live again (`mesh-deleted`). Must NOT happen: the recreated mesh
     /// refused by the removed mesh's row, or the removed mesh's id written live again.
     // @feature: mesh-lifecycle
     #[cfg(feature = "file-backend")]
@@ -1343,14 +1343,14 @@ mod tests {
         let caches = crate::record_cache::Caches::default();
         let mut aw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", removed.clone(), a_nodes.clone(), meshes.clone(), caches.clone());
         aw.sweep(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
-        assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, &caches, "mesh2", &removed).await, Ok("dead-written"), "the removal writes mesh A's row Dead");
-        assert_eq!(crate::mesh_delete::mesh_row_dead(&*meshes, &caches, "mesh2", &removed).await, Ok("already-dead"), "a repeat of the removal writes nothing");
-        // Mesh A's primary takes a new tenure: its id is Dead and is never written live again.
+        assert_eq!(crate::mesh_delete::mesh_row_deleted(&*meshes, &caches, "mesh2", &removed).await, Ok("deleted-written"), "the removal writes mesh A's row deleted");
+        assert_eq!(crate::mesh_delete::mesh_row_deleted(&*meshes, &caches, "mesh2", &removed).await, Ok("already-deleted"), "a repeat of the removal writes nothing");
+        // Mesh A's primary takes a new tenure: its id is deleted and is never written live again.
         let records_before = a_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
         aw.sweep(std::slice::from_ref(&a_admin), &writing(&[]), |_| false).await;
         aw.sweep(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
         assert_eq!(crate::storage::MeshStorage::mesh(&*meshes, &removed).await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: removed.clone(), name: "mesh2".into(), state: rdm_core::status::MeshState::Deleted }), "the removed mesh's later tenure writes nothing live");
-        assert_eq!(crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap(), None, "its Dead record released the name");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap(), None, "its deleted record released the name");
         assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), records_before, "nor any record");
         // The removed mesh's admin's node.delete wrote its record Deleted; the recreated mesh's admin claimed the name.
         crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &a_admin.node.name, &a_admin.node.node_id).await.ok().expect("the removed mesh's admin's record is Deleted");
@@ -1370,10 +1370,10 @@ mod tests {
             said,
             vec![
                 (removed.to_string(), "row-written".to_string(), String::new()),
-                (removed.to_string(), "mesh-dead".to_string(), String::new()),
+                (removed.to_string(), "mesh-deleted".to_string(), String::new()),
                 (recreated.to_string(), "row-written".to_string(), String::new()),
             ],
-            "the dead mesh claims nothing again, and the recreated mesh claims the name its Dead record released: {spans:?}"
+            "the deleted mesh claims nothing again, and the recreated mesh claims the name its deleted record released: {spans:?}"
         );
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[2].trace_id, spans[2].attributes);
     }
@@ -2924,16 +2924,16 @@ mod tests {
 
     /// CONTRACT (R-MD1 = A, i143-rulings-2026-10-11-dev.md: "The mesh-primary commits the mesh row
     /// Dead at mesh.deleted ... At mesh-left the fabric-primary writes the final primary's row
-    /// Deleted, unchanged. Its ensure-Dead operation returns AlreadyApplied if the mesh-primary wrote
+    /// Deleted, unchanged. Its ensure-deleted operation returns AlreadyApplied if the mesh-primary wrote
     /// Dead; only when no primary survives to make that write does the fabric-primary write Dead as
     /// acting primary ... Retries cause no second transition"; a mesh's status facts live on the mesh,
-    /// `mesh.storage`): with mesh2's status Dead already on mesh2
+    /// `mesh.storage`): with mesh2's state deleted already on mesh2
     /// (its primary's write), mesh-left's Dead write answers AlreadyApplied, writes nothing, and its
-    /// `rdm.node_admin.mesh.update.via-dead-row` span says `already-applied` by `mesh-primary`; with
-    /// none (no primary survived), the fabric-primary puts the row Dead among mesh2's status rows as
+    /// `rdm.node_admin.mesh.update.via-deleted-row` span says `already-applied` by `mesh-primary`; with
+    /// none (no primary survived), the fabric-primary puts the row deleted among mesh2's status rows as
     /// acting primary (`applied`, `acting-primary`), and its replay answers AlreadyApplied. The Mesh
-    /// row on mesh.storage follows the same rule (R-MN1 item 2, the name released): `already-dead`
-    /// over the mesh-primary's, else `dead-written` once and `already-dead` on the replay. No Dead
+    /// row on mesh.storage follows the same rule (R-MN1 item 2, the name released): `already-deleted`
+    /// over the mesh-primary's, else `deleted-written` once and `already-deleted` on the replay. No deleted
     /// row of mesh2 is ever put among the fabric-primary's own mesh's rows. Must NOT happen: a second
     /// transition over the mesh-primary's Dead (the fabric-primary deciding from what it applied
     /// itself, which holds nothing of mesh2), or the row written under the fabric-primary's mesh.
@@ -2943,7 +2943,7 @@ mod tests {
         use crate::storage::MeshStorage;
         let dead_on = async |meshes: &crate::storage::MemoryMeshStorage, m: &str| meshes.mesh(&mesh_id(m)).await.unwrap().is_some_and(|r| r.is_deleted());
         let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), attempt: 1, operation: crate::mesh_delete::operation(&mesh_id("mesh2")) };
-        for case in ["surviving-primary-wrote-dead", "no-survivor"] {
+        for case in ["surviving-primary-wrote-deleted", "no-survivor"] {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
             let last = with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, MemberStatus::Leaving), "200000000000");
             let (_fp, digest_view, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
@@ -2951,8 +2951,8 @@ mod tests {
             depart(&digest_view, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)).await;
             let meshes = crate::storage::MemoryMeshStorage::default();
-            if case == "surviving-primary-wrote-dead" {
-                // mesh2's primary committed Dead at mesh.deleted on mesh2's record, the record Dead with
+            if case == "surviving-primary-wrote-deleted" {
+                // mesh2's primary committed Dead at mesh.deleted on mesh2's record, the record deleted with
                 // it (R-MD1 item 1; admin/leave.rs, mesh.deleted).
                 crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), state: rdm_core::status::MeshState::Deleted }).await.unwrap().unwrap();
             }
@@ -2965,14 +2965,14 @@ mod tests {
             }
             assert!(dead_on(&meshes, "mesh2").await, "{case}: mesh2's record stands Dead, its state Dead among its states");
             assert!(!dead_on(&meshes, "mesh1").await, "{case}: no Dead on the fabric-primary's own mesh's record");
-            let spans = capture.named("rdm.node_admin.mesh.update.via-dead-row");
+            let spans = capture.named("rdm.node_admin.mesh.update.via-deleted-row");
             let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("writer").cloned().unwrap_or_default(), s.attributes.get("mesh_row").cloned().unwrap_or_default())).collect();
             let expected: Vec<(String, String, String)> = match case {
-                "surviving-primary-wrote-dead" => vec![("already-applied".into(), "mesh-primary".into(), "already-dead".into()); 2],
-                _ => vec![("applied".into(), "acting-primary".into(), "dead-written".into()), ("already-applied".into(), "acting-primary".into(), "already-dead".into())],
+                "surviving-primary-wrote-deleted" => vec![("already-applied".into(), "mesh-primary".into(), "already-deleted".into()); 2],
+                _ => vec![("applied".into(), "acting-primary".into(), "deleted-written".into()), ("already-applied".into(), "acting-primary".into(), "already-deleted".into())],
             };
             assert_eq!(said, expected, "{case}: one transition at most, and the span names who wrote the row: {spans:?}");
-            eprintln!("{case}: span rdm.node_admin.mesh.update.via-dead-row trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
+            eprintln!("{case}: span rdm.node_admin.mesh.update.via-deleted-row trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
         }
     }
 
@@ -3678,7 +3678,7 @@ mod tests {
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
         let status = |m: &str| t.meshes.iter().find(|x| x.name == m).unwrap_or_else(|| panic!("{m} is in the view: {:?}", t.meshes)).status;
         assert_eq!(status("mesh1"), ScopeStatus::Leaving, "a mesh whose row holds Leaving is projected leaving, so its primary announces leaving");
-        assert_eq!(status("mesh2"), ScopeStatus::Dead, "a mesh whose row holds Dead is projected dead");
+        assert_eq!(status("mesh2"), ScopeStatus::Dead, "a mesh whose row holds deleted is projected dead");
         assert_eq!(status("mesh3"), ScopeStatus::Ready, "a mesh whose row holds ready is projected from its members, as before");
     }
 
@@ -4489,8 +4489,9 @@ mod tests {
 
     /// CONTRACT (node-identity-and-state.md §2.7, the Meshes schema's `state`): a mesh's record holds
     /// one `state`, and it moves pending (its name claim) -> ready -> deleting -> deleted (its
-    /// removal), each move one `rdm.mesh.state` event, a CloudEvents 1.0 envelope by this admin's
-    /// birth naming the mesh and the state it moved to. A repeat of a state moves nothing and writes
+    /// removal), each move one event of the state it moved to (`rdm.mesh.pending`, `.ready`,
+    /// `.deleting`, `.deleted`; build.md §5), a CloudEvents 1.0 envelope by this admin's birth naming
+    /// the mesh. A repeat of a state moves nothing and writes
     /// none. Must NOT happen: a move with no event, two events for one move, or an event for a state
     /// the record did not move to.
     // @feature: mesh-lifecycle
@@ -4511,14 +4512,15 @@ mod tests {
             let reply = crate::status_rpc::commit_mesh_state(&meshes, &records.caches, &records.declared, "mesh2", &mesh_id, state, 0).await;
             assert!(matches!(reply, rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied), "{state:?}: {reply:?}");
         }
-        assert_eq!(crate::mesh_delete::mesh_row_dead(&meshes, &records.caches, "mesh2", &mesh_id).await, Ok("dead-written"));
-        assert_eq!(crate::mesh_delete::mesh_row_dead(&meshes, &records.caches, "mesh2", &mesh_id).await, Ok("already-dead"));
+        assert_eq!(crate::mesh_delete::mesh_row_deleted(&meshes, &records.caches, "mesh2", &mesh_id).await, Ok("deleted-written"));
+        assert_eq!(crate::mesh_delete::mesh_row_deleted(&meshes, &records.caches, "mesh2", &mesh_id).await, Ok("already-deleted"));
         let record = crate::storage::MeshStorage::mesh(&meshes, &mesh_id).await.unwrap().expect("mesh2's record");
         assert_eq!(record.state, MeshState::Deleted, "the record holds one state, the last it moved to: {record:?}");
         let events = appended.0.lock().unwrap().clone();
-        let moves: Vec<(&str, serde_json::Value, serde_json::Value, serde_json::Value)> = events.iter().map(|e| (e.r#type.as_str(), e.data["mesh_id"].clone(), e.data["mesh"].clone(), e.data["state"].clone())).collect();
-        let (id, mesh) = (serde_json::json!(mesh_id.to_string()), serde_json::json!("mesh2"));
-        assert_eq!(moves, ["pending", "ready", "deleting", "deleted"].map(|s| (crate::events_storage::MESH_STATE, id.clone(), mesh.clone(), serde_json::json!(s))).to_vec(), "one rdm.mesh.state event per move, in order: {events:#?}");
+        let moves: Vec<(&str, serde_json::Value)> = events.iter().map(|e| (e.r#type.as_str(), serde_json::Value::Object(e.data.clone()))).collect();
+        let data = serde_json::json!({"mesh_id": mesh_id.to_string(), "mesh": "mesh2"});
+        use crate::events_storage::{MESH_DELETED, MESH_DELETING, MESH_PENDING, MESH_READY};
+        assert_eq!(moves, [MESH_PENDING, MESH_READY, MESH_DELETING, MESH_DELETED].map(|t| (t, data.clone())).to_vec(), "one event per move, its type the state moved to, in order: {events:#?}");
         for e in &events {
             assert_eq!((e.specversion.as_str(), e.datacontenttype.as_str(), e.subject.as_ref(), e.source.as_str()), ("1.0", "application/json", None, source.as_str()), "a CloudEvents 1.0 event about no node, by this admin's birth: {e:?}");
         }
@@ -4526,7 +4528,7 @@ mod tests {
 
     /// CONTRACT (node-identity-and-state.md §2.8, the Fabrics schema's `state`): the Fabric record holds
     /// one `state`; its fabric-primary's commit of the fabric's ready moves it pending -> ready, one
-    /// `rdm.fabric.state` event naming the fabric and `ready`; a repeat moves nothing and writes none.
+    /// `rdm.fabric.ready` event naming the fabric; a repeat moves nothing and writes none.
     /// Must NOT happen: the move with no event, or a second event for it.
     // @feature: fabric-lifecycle
     #[tokio::test]
@@ -4542,9 +4544,9 @@ mod tests {
             assert!(matches!(reply, rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied), "{reply:?}");
         }
         let record = crate::fabric_storage::FabricStorage::fabric(&fabric).await.unwrap().expect("the Fabric record");
-        assert_eq!(record.state, crate::fabric_storage::FabricState::Ready, "{record:?}");
+        assert_eq!(record.state, crate::fabric_state::FabricState::Ready, "{record:?}");
         let events = appended.0.lock().unwrap().clone();
-        let moves: Vec<(&str, serde_json::Value, serde_json::Value)> = events.iter().map(|e| (e.r#type.as_str(), e.data["fabric_id"].clone(), e.data["state"].clone())).collect();
-        assert_eq!(moves, vec![(crate::events_storage::FABRIC_STATE, serde_json::json!(identity.fabric_id.to_string()), serde_json::json!("ready"))], "one rdm.fabric.state event for the move: {events:#?}");
+        let moves: Vec<(&str, serde_json::Value)> = events.iter().map(|e| (e.r#type.as_str(), serde_json::Value::Object(e.data.clone()))).collect();
+        assert_eq!(moves, vec![(crate::events_storage::FABRIC_READY, serde_json::json!({"fabric_id": identity.fabric_id.to_string()}))], "one rdm.fabric.ready event for the move: {events:#?}");
     }
 }

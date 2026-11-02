@@ -23,7 +23,7 @@ use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use rdm_core::LifecycleOp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -302,8 +302,8 @@ pub(crate) fn action_round_trip(a: &AttemptAction) -> AttemptAction {
 impl From<&NodeSpec> for WireSpec {
     fn from(m: &NodeSpec) -> Self {
         let storage = match m.storage_persistence {
-            StorageMeta::Ephemeral => WireStorage::Ephemeral,
-            StorageMeta::Persistent { disposition } => WireStorage::Persistent { disposition },
+            StoragePersistence::Ephemeral => WireStorage::Ephemeral,
+            StoragePersistence::Persistent { disposition } => WireStorage::Persistent { disposition },
         };
         Self { mesh: m.mesh.clone(), kind: m.kind, storage }
     }
@@ -314,8 +314,8 @@ impl WireSpec {
     /// Build is the one that does.
     fn at(self, path: PathName) -> NodeSpec {
         let storage_persistence = match self.storage {
-            WireStorage::Ephemeral => StorageMeta::Ephemeral,
-            WireStorage::Persistent { disposition } => StorageMeta::Persistent { disposition },
+            WireStorage::Ephemeral => StoragePersistence::Ephemeral,
+            WireStorage::Persistent { disposition } => StoragePersistence::Persistent { disposition },
         };
         NodeSpec { path, mesh: self.mesh, kind: self.kind, storage_persistence, executable: None, tags: Default::default(), config: Default::default() }
     }

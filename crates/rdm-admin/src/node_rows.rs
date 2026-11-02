@@ -581,11 +581,10 @@ impl NodeRows {
     /// executable-bindings-at-create.md rule 1): a plain create's row carries them, written at the claim,
     /// so its first join hands it the config (node-config-update.md); a replace's successor's row carries
     /// them too (node-replace.md "Properties", Q305); a recovery's carries its seed's (node-recovery.md
-    /// "Retained"). `placed`: the
-    /// spec's storage and placement, written onto the row whatever the claim (build.md §1); `None`
-    /// takes the seed's.
+    /// "Retained"). `storage_persistence`: the spec's, written onto the row whatever the claim
+    /// (build.md §1); `None` takes the seed's.
     #[allow(clippy::too_many_arguments)]
-    pub async fn claim_spec(&self, name: &PathName, mesh: &str, kind: NodeKind, node_id: &NodeId, operation: &rdm_core::OperationId, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, config: &BTreeMap<String, String>, placed: Option<rdm_core::meta::StorageMeta>, of: ClaimFor) -> Result<Claimed, RowRefused> {
+    pub async fn claim_spec(&self, name: &PathName, mesh: &str, kind: NodeKind, node_id: &NodeId, operation: &rdm_core::OperationId, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, config: &BTreeMap<String, String>, storage_persistence: Option<rdm_core::meta::StoragePersistence>, of: ClaimFor) -> Result<Claimed, RowRefused> {
         let me = self.held_name_now();
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
@@ -621,7 +620,7 @@ impl NodeRows {
                 span.record("awaited", "writer-check");
                 // A create's claim is the record's first write, and the node is starting (states.md "Who
                 // sets each state": a create's starting from its launch, where no process can acknowledge).
-                self.put_seeded(&me, name, mesh, kind, node_id, NodeStatus::Starting, config, allocated, executable, tags, placed, of, &span, "writer-check").await
+                self.put_seeded(&me, name, mesh, kind, node_id, NodeStatus::Starting, config, allocated, executable, tags, storage_persistence, of, &span, "writer-check").await
             },
             span.clone(),
         )
@@ -872,10 +871,10 @@ impl NodeRows {
     /// ([`WrittenRows::known_row`]), so a node renamed while stopped (told nothing of it, R12) keeps
     /// its one row where the rename put it, whatever name a view still lists it at.
     #[allow(clippy::too_many_arguments)]
-    async fn put_seeded(&self, me: &PathName, name: &PathName, mesh: &str, kind: NodeKind, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, placed: Option<rdm_core::meta::StorageMeta>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
+    async fn put_seeded(&self, me: &PathName, name: &PathName, mesh: &str, kind: NodeKind, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, storage_persistence: Option<rdm_core::meta::StoragePersistence>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
         let claimed = match self.written.known_row(&*self.storage, node_id).await {
             Ok(Some(held)) => Claimed::HeldByNode(held),
-            Ok(None) => seeded_put(&*self.storage, &self.written, me, name, mesh, kind, node_id, status, own, allocated, allocated.and_then(|allocation| allocation.predecessor.as_ref()), executable, tags, placed, of, span, prefix).await?,
+            Ok(None) => seeded_put(&*self.storage, &self.written, me, name, mesh, kind, node_id, status, own, allocated, allocated.and_then(|allocation| allocation.predecessor.as_ref()), executable, tags, storage_persistence, of, span, prefix).await?,
             Err(e) => return Err(RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: the row {node_id} holds could not be read before its row at path {name_path:?}, name {name_name:?} was written: {e}", me_path = &me.path, me_name = &me.name, name_path = &name.path, name_name = &name.name))),
         };
         if of == ClaimFor::Successor {
@@ -1229,7 +1228,7 @@ pub async fn write_deleted(storage: &dyn NodesStorage, written: &WrittenRows, na
 /// A record the same node holds already is left as it is. A recovery's record names the birth it
 /// replaced, the newest birth of the `Deleted` record at the name (`predecessor`).
 #[allow(clippy::too_many_arguments)]
-async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &PathName, name: &PathName, mesh: &str, kind: NodeKind, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, predecessor: Option<&crate::storage::BirthRef>, executable: Option<&rdm_core::binding::Binding>, created_with: &std::collections::BTreeSet<String>, placed: Option<rdm_core::meta::StorageMeta>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
+async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &PathName, name: &PathName, mesh: &str, kind: NodeKind, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, predecessor: Option<&crate::storage::BirthRef>, executable: Option<&rdm_core::binding::Binding>, created_with: &std::collections::BTreeSet<String>, storage_persistence: Option<rdm_core::meta::StoragePersistence>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
     let _one = written.lock(node_id).await;
     let mut awaited = prefix.to_string();
     span.record("awaiting", "read-previous-row");
@@ -1281,10 +1280,10 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
         span.record("seeded_from", p.node_id.as_str());
     }
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
-    // The storage and placement the claim is handed (its create spec's), else the seed's.
-    let storage_meta = placed.or_else(|| seed.as_ref().and_then(|p| p.storage_persistence));
+    // The storage_persistence the claim is handed (its create spec's), else the seed's.
+    let storage_persistence = storage_persistence.or_else(|| seed.as_ref().and_then(|p| p.storage_persistence));
     let initial_properties = Some(rdm_core::launch::InitialProperties { config: config.clone(), tags: tags.clone() });
-    let row = NodeRow { initial_properties, allocated: allocated.cloned(), executable, predecessor, storage_persistence: storage_meta, topology_storage_provider: written.topology_storage_provider(), ..NodeRow::new(name.clone(), mesh, kind, node_id.clone(), status) };
+    let row = NodeRow { initial_properties, allocated: allocated.cloned(), executable, predecessor, storage_persistence, topology_storage_provider: written.topology_storage_provider(), ..NodeRow::new(name.clone(), mesh, kind, node_id.clone(), status) };
     span.record("awaiting", "put-node-row");
     let claimed = check_name(storage, Some(written), name, node_id).await;
     let put = match claimed {
@@ -1443,7 +1442,7 @@ pub async fn claim_day0_name_in_boot(boot: &tracing::Span, storage: &dyn NodesSt
 /// view: [`seeded_put`] under one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`, the
 /// one write a claim is wherever it is made.
 #[allow(clippy::too_many_arguments)]
-async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, mesh: &str, node_id: &NodeId, operation: &rdm_core::OperationId, of: ClaimFor, predecessor: Option<&crate::storage::BirthRef>, executable: Option<&rdm_core::binding::Binding>, placed: Option<rdm_core::meta::StorageMeta>) -> Result<Claimed, RowRefused> {
+async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, mesh: &str, node_id: &NodeId, operation: &rdm_core::OperationId, of: ClaimFor, predecessor: Option<&crate::storage::BirthRef>, executable: Option<&rdm_core::binding::Binding>, storage_persistence: Option<rdm_core::meta::StoragePersistence>) -> Result<Claimed, RowRefused> {
     let span = match parent {
         Some(p) => tracing::info_span!(
             parent: p,
@@ -1480,7 +1479,7 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, w
         ),
     };
     let mut guard = ClaimGuard { span: span.clone(), done: false };
-    let r = tracing::Instrument::instrument(seeded_put(storage, written, name, name, mesh, NodeKind::NodeAdmin, node_id, NodeStatus::Pending, &BTreeMap::new(), None, predecessor, executable, &std::collections::BTreeSet::new(), placed, of, &span, ""), span.clone()).await;
+    let r = tracing::Instrument::instrument(seeded_put(storage, written, name, name, mesh, NodeKind::NodeAdmin, node_id, NodeStatus::Pending, &BTreeMap::new(), None, predecessor, executable, &std::collections::BTreeSet::new(), storage_persistence, of, &span, ""), span.clone()).await;
     guard.done = true;
     record_claim(&span, &r);
     span.in_scope(|| tracing::info!("node.create: the name claim decided"));
@@ -1635,7 +1634,7 @@ mod tests {
                 let old_name = if retained { name.renamed().unwrap() } else { name.clone() };
                 let mut old = NodeRow::new(old_name, "mesh1", NodeKind::RpcNode, NodeId::mint(), if retained { NodeStatus::Stopped } else { NodeStatus::Deleted });
                 old.executable = Some(rdm_core::binding::Binding { launch_id: "old-launch".into(), executable: "/old-executable".into(), sha256: "old-sha".into(), image: None });
-                old.storage_persistence = Some(rdm_core::meta::StorageMeta::Ephemeral);
+                old.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
                 old.birth_mut(&IncarnationId::mint(), &old.name.clone());
                 if retained { old.replacement_from = Some(name.clone()); }
                 storage.put_node(&old).await.unwrap();
@@ -1672,7 +1671,7 @@ mod tests {
             let retained = of == ClaimFor::Successor;
             let mut old = NodeRow::new(if retained { name.renamed().unwrap() } else { name.clone() }, "mesh1", NodeKind::RpcNode, NodeId::mint(), if retained { NodeStatus::Stopped } else { NodeStatus::Deleted });
             old.executable = Some(rdm_core::binding::Binding { launch_id: "previous-launch".into(), executable: "/previous-executable".into(), sha256: "previous-sha".into(), image: None });
-            old.storage_persistence = Some(rdm_core::meta::StorageMeta::Ephemeral);
+            old.storage_persistence = Some(rdm_core::meta::StoragePersistence::Ephemeral);
             let incarnation = IncarnationId::mint();
             old.birth_mut(&incarnation, &old.name.clone());
             if retained { old.replacement_from = Some(name.clone()); }

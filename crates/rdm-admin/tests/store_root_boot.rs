@@ -686,12 +686,12 @@ fn a_launch_whose_store_names_no_node_but_its_own_lost_birth_deletes_that_storag
 }
 
 /// CONTRACT (R-MN1: "a mesh created again under the same name is a new mesh with a new id"; R-ML2: "a
-/// dead mesh's path.name used again is mesh.create of a new mesh with a new MeshId", "a dead mesh is
+/// dead mesh's path.name used again is mesh.create of a new mesh with a new MeshId", "a deleted mesh is
 /// never restarted"; states.md: a mesh id is never reissued; R-SB1: the cell starts an admin on a root
 /// prepared through the storage adapters): an admin started on a prepared root reads its mesh's row by
 /// its mesh's id, the one its own row holds, never by the name alone. mesh1's row on the root another
 /// MeshId's (the mesh removed and created again under the name), the admin is refused by name, naming
-/// both mesh ids, at its storage step; its own mesh's row Dead, it is refused by name. Must NOT happen:
+/// both mesh ids, at its storage step; its own mesh's row deleted, it is refused by name. Must NOT happen:
 /// the admin taking the recreated mesh's id as its own (the row at the name read as its mesh) and
 /// joining it.
 #[test]
@@ -1088,7 +1088,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
 
 impl Prepared {
     /// fabric.delete accepted on this root after its root Build, so the delete is in force; with `dead`,
-    /// mesh1's row is Dead too, its mesh.delete done: no not-yet-deleted mesh remains.
+    /// mesh1's row is deleted too, its mesh.delete done: no not-yet-deleted mesh remains.
     fn delete_in_force(&self, dead: bool) {
         use rdm_admin::storage::MeshStorage as _;
         tokio::runtime::Runtime::new().unwrap().block_on(async {

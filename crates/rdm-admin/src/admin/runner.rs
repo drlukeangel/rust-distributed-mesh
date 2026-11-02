@@ -15,7 +15,7 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
     }
     match mesh_rows.mesh_named(mesh).await {
         Ok(Some(row)) if !row.is_deleted() => Ok(Some(row.mesh_id.to_string())),
-        Ok(Some(row)) => Err(format!("mesh {mesh}'s row is Dead (mesh id {})", row.mesh_id)),
+        Ok(Some(row)) => Err(format!("mesh {mesh}'s row is deleted (mesh id {})", row.mesh_id)),
         Ok(None) => Ok(None),
         Err(e) => Err(format!("neither this admin's records nor its view hold a mesh id for {mesh}, and its row could not be read from mesh.storage: {e}")),
     }
@@ -107,8 +107,8 @@ pub struct AdminRunner {
     pub issuer: Arc<crate::certs::CertIssuer>,
     /// This admin's nodes.storage: the facts on its mesh's births (cert dates among them).
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
-    /// This admin's mesh.storage: as a mesh primary, its mesh's row Dead at mesh.deleted, and as
-    /// fabric-primary at mesh-left, a leaving mesh's row Dead when no primary survived (R-MD1).
+    /// This admin's mesh.storage: as a mesh primary, its mesh's row deleted at mesh.deleted, and as
+    /// fabric-primary at mesh-left, a leaving mesh's row deleted when no primary survived (R-MD1).
     pub mesh_storage: Arc<dyn crate::storage::MeshStorage>,
     /// This admin's fabric.storage: as fabric-primary, releases the fabric name at fabric.deleted.
     pub fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage>,
@@ -934,7 +934,7 @@ impl AdminRunner {
         let Some(spec) = held.topology.node_spec(node) else {
             return Err(format!("node.create:path {node_path:?}, name {node_name:?}: the accepted Build {build_id} holds no entry for the path: its storage decides the successor's data dir; nothing is launched", node_path = &node.path, node_name = &node.name).into());
         };
-        let inherits = matches!(spec.storage_persistence, rdm_core::meta::StorageMeta::Persistent { .. });
+        let inherits = matches!(spec.storage_persistence, rdm_core::meta::StoragePersistence::Persistent { .. });
         let entry = crate::build::EntrySpec::of(spec);
         let first_admin = {
             let t = self.topology.read().await;

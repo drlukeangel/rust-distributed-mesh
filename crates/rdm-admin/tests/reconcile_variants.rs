@@ -63,7 +63,7 @@ use rdm_admin::model::*;
 use rdm_admin::node_rows::WriteRecord as _;
 use rdm_admin::topology::Topology;
 use rdm_core::build::BuildReply;
-use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -131,7 +131,7 @@ impl Variant {
             }
             Self::StorageOnly => {
                 let i = at(&mut r, &path("mesh1.rpc", "1"));
-                r[i].storage_persistence = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
+                r[i].storage_persistence = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
             }
             Self::NewPath => {
                 let mut s = NodeSpec::default_for(path("mesh1.rpc", "2"), "mesh1", rdm_core::NodeKind::RpcNode);

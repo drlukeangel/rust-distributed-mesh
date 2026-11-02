@@ -1346,7 +1346,7 @@ mod tests {
         use crate::build::MeshDesired;
         use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
         use crate::node_rows::WriteRecord;
-        use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
+        use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
         type Edit = fn(&mut Vec<NodeSpec>);
         let exe = |id: &str, sha: &str| rdm_core::binding::Binding { launch_id: id.into(), executable: format!("/b/{id}-{sha}").into(), sha256: sha.into(), image: None };
         let admin: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
@@ -1376,7 +1376,7 @@ mod tests {
                 r.push(NodeSpec { path: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), ..spec });
             }, Back::ToPending),
             ("a removed path (a resize)", None, |r| r.retain(|s| s.path != PathName::new("mesh1.rpc", "1").unwrap()), Back::ToPending),
-            ("storage only", None, |r| at(r, PathName::new("mesh1.rpc", "1").unwrap()).storage_persistence = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve }, Back::Stays),
+            ("storage only", None, |r| at(r, PathName::new("mesh1.rpc", "1").unwrap()).storage_persistence = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve }, Back::Stays),
         ];
         let mut red = Vec::new();
         for (what, admin_entry, edit, want) in rows {

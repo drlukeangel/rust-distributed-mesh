@@ -13,7 +13,7 @@
 
 use rdm_client::binding::{sha256_file, Binding, BindingSet};
 use rdm_client::{BuildCarrier, BuildId, Builds, Filter, LaunchKind as NodeKind, MeshDesired, NodeStatus, NodeView, PathName};
-use rdm_core::meta::{NodeSpec, StorageMeta};
+use rdm_core::meta::{NodeSpec, StoragePersistence};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -74,7 +74,7 @@ fn sha256_once(path: &Path) -> Result<String, String> {
 /// node-admins keep theirs across a restart and a delete; gateways, compute and proof rpc nodes are
 /// ephemeral), no tags, no config, and `executable`.
 pub fn created_spec(path: PathName, mesh: &str, kind: NodeKind, executable: Binding) -> NodeSpec {
-    NodeSpec { path, mesh: mesh.into(), kind, storage_persistence: StorageMeta::for_kind(kind), executable: Some(executable), tags: Default::default(), config: Default::default() }
+    NodeSpec { path, mesh: mesh.into(), kind, storage_persistence: StoragePersistence::for_kind(kind), executable: Some(executable), tags: Default::default(), config: Default::default() }
 }
 
 /// The counts of `mesh`, by kind, in the compiler's order.

@@ -5,7 +5,7 @@
 //! succeeds. A node.delete releases identity, never storage (node-delete.md
 //! "Storage": "Retain data dir and endpoint key; a later spec can inherit
 //! them"): the birth's data dir and its endpoint key stay whatever the Build's
-//! storage meta says.
+//! storage_persistence says.
 //!
 //! The span-asserting cell runs in its own process (`own_process`), and its capture enables every
 //! callsite before installing its dispatcher (`rdm_transport::span_capture` calls `enable_callsites`).
@@ -135,7 +135,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         // node.id and name, not storage"; deployment-provider.md: "Delete releases no storage").
         let mut release = common::add_node();
         let released = rdm_core::meta::NodeSpec {
-            storage_persistence: rdm_core::meta::StorageMeta::Persistent { disposition: rdm_core::meta::PersistentDisposition::Release },
+            storage_persistence: rdm_core::meta::StoragePersistence::Persistent { disposition: rdm_core::meta::PersistentDisposition::Release },
             ..rdm_core::meta::NodeSpec::default_for(again.node.name.clone(), &again.node.mesh, again.node.kind)
         };
         release.meshes.get_mut("mesh1").unwrap().set_spec(released).unwrap();

@@ -219,7 +219,7 @@ pub struct NodeView {
     /// what becomes of the node's own data dir across its births and once it is gone. `None` for a row
     /// that records none.
     #[serde(default)]
-    pub storage_persistence: Option<crate::meta::StorageMeta>,
+    pub storage_persistence: Option<crate::meta::StoragePersistence>,
     /// The `topology_storage_provider` the node writes (storage.md §2), as its row records it: the
     /// fact, beside the fabric's intent on the Fabric row. `None` for a row that records none.
     #[serde(default)]

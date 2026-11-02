@@ -78,27 +78,7 @@ pub async fn write_identity(storage: &dyn FabricStorage, identity: &FabricIdenti
     Ok(Ok(own))
 }
 
-/// The Fabric's state (the Fabrics schema's `state`): `pending` or `ready`, set only by RDM, each move
-/// an `rdm.fabric.state` event in the events store.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FabricState {
-    /// Created and not yet ready.
-    #[default]
-    Pending,
-    /// Ready: every mesh of the fabric checked in (states.md).
-    Ready,
-}
-
-impl FabricState {
-    /// The state's name as the page, the events and the spans carry it.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Ready => "ready",
-        }
-    }
-}
+use crate::fabric_state::FabricState;
 
 /// The Fabric record (storage-whole-records.md, "The objects"; the Fabrics schema): the fabric's
 /// identity, immutable inside it, and its one `state`, rewritten whole by the fabric-primary from the

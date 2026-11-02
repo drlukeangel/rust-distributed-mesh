@@ -12,10 +12,10 @@ pub(crate) struct RoleGate {
     /// The 0x21 door node.primary.update is commanded and run through, which holds what each update
     /// was answered and said (`HandoverDoor::memo`).
     pub(crate) handover: Arc<crate::fabric_handover::HandoverDoor>,
-    /// Projects the digest view into the view now, so a Mesh record read Dead is in the view the plan
+    /// Projects the digest view into the view now, so a Mesh record read deleted is in the view the plan
     /// reads next.
     pub(crate) project: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
-    /// The Mesh records (mesh.storage on the fabric's shared root): which meshes are Dead, for the plan.
+    /// The Mesh records (mesh.storage on the fabric's shared root): which meshes are deleted, for the plan.
     pub(crate) meshes: Arc<dyn crate::storage::MeshStorage>,
 }
 
@@ -100,22 +100,22 @@ impl crate::build_drive::Gate for RoleGate {
         crate::accepted::recorded_executables(&*rows, topology).await
     }
 
-    /// The meshes of `observed` whose Mesh record is Dead: one point read of each record the view does
-    /// not already hold Dead. Each is held as the fabric-primary that accepted its mesh.deleted holds it
-    /// (`Records::hold_mesh_deleted`), so this admin's view shows it Dead from its next projection: a
+    /// The meshes of `observed` whose Mesh record is deleted: one point read of each record the view does
+    /// not already hold deleted. Each is held as the fabric-primary that accepted its mesh.deleted holds it
+    /// (`Records::hold_mesh_deleted`), so this admin's view shows it deleted from its next projection: a
     /// fabric-primary that took over after the mesh.delete reads it from the record, never from gossip.
-    async fn dead_meshes(&self, observed: &crate::topology::Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
-        let mut dead = std::collections::HashSet::new();
+    async fn deleted_meshes(&self, observed: &crate::topology::Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
+        let mut deleted = std::collections::HashSet::new();
         for id in observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).filter_map(|m| m.id.as_ref()) {
             if self.meshes.mesh(id).await.map_err(|e| format!("the Mesh record of {id} could not be read: {e}"))?.is_some_and(|r| r.is_deleted()) {
                 self.handover.records.hold_mesh_deleted(id);
-                dead.insert(id.clone());
+                deleted.insert(id.clone());
             }
         }
-        if !dead.is_empty() {
+        if !deleted.is_empty() {
             (self.project)().await;
         }
-        Ok(dead)
+        Ok(deleted)
     }
 
     fn fabric_ready(&self) -> bool {

@@ -194,7 +194,7 @@ fn a_mesh_deleted_report_naming_a_workflow_the_fabric_primary_does_not_hold_is_r
 /// the mesh-primary writes the mesh row deleted; node-rpc-envelope.md, "Mesh delete command pair":
 /// `DeleteMesh` answers Applied or AlreadyApplied on admission, and a stale workflow is refused by name):
 /// the first `delete-mesh` of the mesh commits its row Leaving and is admitted. Once the members exited
-/// and the row is Dead (mesh.deleted, the handoff's own write), a `delete-mesh` of the workflow held
+/// and the row is deleted (mesh.deleted, the handoff's own write), a `delete-mesh` of the workflow held
 /// replays the recorded MeshDeleted report, an earlier attempt is `RejectedStaleWorkflow`, and the Build's
 /// next attempt is replayed the same recorded report, naming the attempt its manifest was recorded under,
 /// with no member workflow run again (Luke 2026-10-13: "Re-admitting DeleteMesh must replay the recorded
@@ -224,7 +224,7 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_workflow_identity_and_comm
                     async move { Ok::<ExitManifest, String>(m) }
                 })
                 .await;
-                // mesh.deleted: the mesh-primary's handoff commits its mesh row Dead before it calls
+                // mesh.deleted: the mesh-primary's handoff commits its mesh row deleted before it calls
                 // mesh-deleted; the call is lost, so the owner sends delete-mesh again.
                 { let mut r = storage.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh2")); r.state = MeshState::Deleted; storage.put_mesh(&r).await.unwrap(); }
                 declared.lock().unwrap().meshes.insert(mesh_id.clone(), MeshState::Deleted);

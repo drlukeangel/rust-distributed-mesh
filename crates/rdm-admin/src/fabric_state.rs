@@ -3,8 +3,10 @@
 //! A fabric is `pending`, then `ready` once every mesh the accepted Build names is
 //! ready (Q174). Only the fabric-primary moves it.
 
-/// The state of the fabric: the value of a FabricStatus frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+/// The state of the fabric (the Fabrics schema's `state`, the Fabric record's): the value of a
+/// FabricStatus frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum FabricState {
     /// Created; a mesh the accepted Build names is not yet ready.
     ///

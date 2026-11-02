@@ -23,7 +23,7 @@ pub struct NodeSpec {
     /// The node's `storage_persistence` (storage.md §1): what becomes of its own data dir across its
     /// births and once it is gone. Not where RDM's records go: that is the fabric's
     /// `topology_storage_provider` (storage.md §2).
-    pub storage_persistence: StorageMeta,
+    pub storage_persistence: StoragePersistence,
     /// The executable the node runs (path, sha256 and, under the container provider, the image):
     /// named per node by the request that creates it, compiled onto the accepted topology's entry,
     /// recorded on the node's row at the claim and re-hashed at the launch (build-deployment.md §2). An
@@ -48,7 +48,7 @@ pub struct NodeSpec {
 /// (node-delete.md "Storage"). The type holds exactly the three meaningful states; no invalid
 /// combination is representable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StorageMeta {
+pub enum StoragePersistence {
     /// Fresh storage for a new node.
     ///
     /// Position 0 on the wire.
@@ -63,7 +63,7 @@ pub enum StorageMeta {
     },
 }
 
-impl StorageMeta {
+impl StoragePersistence {
     /// The ingress storage default of an explicitly selected runtime kind.
     pub fn for_kind(kind: NodeKind) -> Self {
         match kind {
@@ -73,68 +73,68 @@ impl StorageMeta {
     }
 }
 
-/// The journaled (JSON) shape of [`StorageMeta`], `persistence`-tagged; a positional codec (the Build
-/// wire's postcard, where a request's [`NodeSpec`] travels) carries [`StorageMetaPositional`], since
+/// The journaled (JSON) shape of [`StoragePersistence`], `persistence`-tagged; a positional codec (the Build
+/// wire's postcard, where a request's [`NodeSpec`] travels) carries [`StoragePersistencePositional`], since
 /// an internally tagged enum cannot be read positionally.
 #[derive(Serialize, Deserialize)]
-#[serde(tag = "persistence", rename_all = "kebab-case", try_from = "StorageMetaRow")]
-enum StorageMetaTagged {
+#[serde(tag = "persistence", rename_all = "kebab-case", try_from = "StoragePersistenceRow")]
+enum StoragePersistenceTagged {
     Ephemeral,
     Persistent { disposition: PersistentDisposition },
 }
 
-impl TryFrom<StorageMetaRow> for StorageMetaTagged {
+impl TryFrom<StoragePersistenceRow> for StoragePersistenceTagged {
     type Error = String;
 
-    fn try_from(row: StorageMetaRow) -> Result<Self, String> {
-        Ok(match StorageMeta::try_from(row)? {
-            StorageMeta::Ephemeral => Self::Ephemeral,
-            StorageMeta::Persistent { disposition } => Self::Persistent { disposition },
+    fn try_from(row: StoragePersistenceRow) -> Result<Self, String> {
+        Ok(match StoragePersistence::try_from(row)? {
+            StoragePersistence::Ephemeral => Self::Ephemeral,
+            StoragePersistence::Persistent { disposition } => Self::Persistent { disposition },
         })
     }
 }
 
-/// [`StorageMeta`] on a positional codec: the variant's index, then its fields.
+/// [`StoragePersistence`] on a positional codec: the variant's index, then its fields.
 #[derive(Serialize, Deserialize)]
-enum StorageMetaPositional {
+enum StoragePersistencePositional {
     Ephemeral,
     Persistent { disposition: PersistentDisposition },
 }
 
-impl Serialize for StorageMeta {
+impl Serialize for StoragePersistence {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match (*self, s.is_human_readable()) {
-            (Self::Ephemeral, true) => StorageMetaTagged::Ephemeral.serialize(s),
-            (Self::Persistent { disposition }, true) => StorageMetaTagged::Persistent { disposition }.serialize(s),
-            (Self::Ephemeral, false) => StorageMetaPositional::Ephemeral.serialize(s),
-            (Self::Persistent { disposition }, false) => StorageMetaPositional::Persistent { disposition }.serialize(s),
+            (Self::Ephemeral, true) => StoragePersistenceTagged::Ephemeral.serialize(s),
+            (Self::Persistent { disposition }, true) => StoragePersistenceTagged::Persistent { disposition }.serialize(s),
+            (Self::Ephemeral, false) => StoragePersistencePositional::Ephemeral.serialize(s),
+            (Self::Persistent { disposition }, false) => StoragePersistencePositional::Persistent { disposition }.serialize(s),
         }
     }
 }
 
-impl<'de> Deserialize<'de> for StorageMeta {
+impl<'de> Deserialize<'de> for StoragePersistence {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         if d.is_human_readable() {
-            Ok(match StorageMetaTagged::deserialize(d)? {
-                StorageMetaTagged::Ephemeral => Self::Ephemeral,
-                StorageMetaTagged::Persistent { disposition } => Self::Persistent { disposition },
+            Ok(match StoragePersistenceTagged::deserialize(d)? {
+                StoragePersistenceTagged::Ephemeral => Self::Ephemeral,
+                StoragePersistenceTagged::Persistent { disposition } => Self::Persistent { disposition },
             })
         } else {
-            Ok(match StorageMetaPositional::deserialize(d)? {
-                StorageMetaPositional::Ephemeral => Self::Ephemeral,
-                StorageMetaPositional::Persistent { disposition } => Self::Persistent { disposition },
+            Ok(match StoragePersistencePositional::deserialize(d)? {
+                StoragePersistencePositional::Ephemeral => Self::Ephemeral,
+                StoragePersistencePositional::Persistent { disposition } => Self::Persistent { disposition },
             })
         }
     }
 }
 
-/// The journaled shape of `StorageMeta`, read field by field so an illegal combination is
+/// The journaled shape of `StoragePersistence`, read field by field so an illegal combination is
 /// refused by name: the derived internally-tagged reader would silently drop a field the
 /// `persistence` arm does not carry.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StorageMetaRow {
-    persistence: StoragePersistence,
+struct StoragePersistenceRow {
+    persistence: Persistence,
     /// Read under its name before storage.md §1 too, so a record written before the rename decodes
     /// (durable format moved: this build writes `disposition`).
     #[serde(default, alias = "on_retire")]
@@ -143,23 +143,23 @@ struct StorageMetaRow {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
-enum StoragePersistence {
+enum Persistence {
     Ephemeral,
     Persistent,
 }
 
-impl TryFrom<StorageMetaRow> for StorageMeta {
+impl TryFrom<StoragePersistenceRow> for StoragePersistence {
     type Error = String;
 
-    fn try_from(row: StorageMetaRow) -> Result<Self, String> {
+    fn try_from(row: StoragePersistenceRow) -> Result<Self, String> {
         match (row.persistence, row.disposition) {
-            (StoragePersistence::Ephemeral, None) => Ok(Self::Ephemeral),
-            (StoragePersistence::Ephemeral, Some(_)) => {
-                Err("storage meta: `persistence: ephemeral` carries no `disposition`".into())
+            (Persistence::Ephemeral, None) => Ok(Self::Ephemeral),
+            (Persistence::Ephemeral, Some(_)) => {
+                Err("storage_persistence: `persistence: ephemeral` carries no `disposition`".into())
             }
-            (StoragePersistence::Persistent, Some(disposition)) => Ok(Self::Persistent { disposition }),
-            (StoragePersistence::Persistent, None) => {
-                Err("storage meta: `persistence: persistent` requires `disposition`".into())
+            (Persistence::Persistent, Some(disposition)) => Ok(Self::Persistent { disposition }),
+            (Persistence::Persistent, None) => {
+                Err("storage_persistence: `persistence: persistent` requires `disposition`".into())
             }
         }
     }
@@ -197,7 +197,7 @@ pub struct NodeType {
     /// The type's name, what a node's `node_type` names.
     pub name: String,
     /// The `storage_persistence` a node of the type takes when its create states none.
-    pub storage_persistence: StorageMeta,
+    pub storage_persistence: StoragePersistence,
     /// The executable a node of the type runs when its create states none.
     #[serde(default)]
     pub executable: Option<crate::binding::Binding>,
@@ -237,7 +237,7 @@ impl NodeSpec {
     /// delete; gateways, compute and proof rpc nodes are ephemeral), with no executable, tag or
     /// config. Ingress-only: once a Build is accepted its spec is explicit and nothing re-derives it.
     pub fn default_for(path: PathName, mesh: impl Into<String>, kind: NodeKind) -> Self {
-        Self { path, mesh: mesh.into(), kind, storage_persistence: StorageMeta::for_kind(kind), executable: None, tags: BTreeSet::new(), config: BTreeMap::new() }
+        Self { path, mesh: mesh.into(), kind, storage_persistence: StoragePersistence::for_kind(kind), executable: None, tags: BTreeSet::new(), config: BTreeMap::new() }
     }
 }
 
@@ -249,19 +249,19 @@ mod tests {
     /// versioned migration defaults; a spec reads back from its journaled form as written.
     #[test]
     fn the_kind_defaults_are_the_migration_defaults_and_a_spec_reads_back_as_written() {
-        let preserve = StorageMeta::Persistent { disposition: PersistentDisposition::Preserve };
+        let preserve = StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve };
         let at = |kind| NodeSpec::default_for(crate::PathName::new("elsewhere.gateway", "north").unwrap(), "m", kind).storage_persistence;
         assert_eq!(at(NodeKind::Broker), preserve);
         assert_eq!(at(NodeKind::NodeAdmin), preserve);
-        assert_eq!(at(NodeKind::Gateway), StorageMeta::Ephemeral);
-        assert_eq!(at(NodeKind::Compute), StorageMeta::Ephemeral);
-        assert_eq!(at(NodeKind::RpcNode), StorageMeta::Ephemeral);
-        let release = NodeSpec { storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Release }, config: [("zone".to_string(), "a".to_string())].into(), ..NodeSpec::default_for(crate::PathName::new("m.rpc", "1").unwrap(), "m", NodeKind::RpcNode) };
+        assert_eq!(at(NodeKind::Gateway), StoragePersistence::Ephemeral);
+        assert_eq!(at(NodeKind::Compute), StoragePersistence::Ephemeral);
+        assert_eq!(at(NodeKind::RpcNode), StoragePersistence::Ephemeral);
+        let release = NodeSpec { storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Release }, config: [("zone".to_string(), "a".to_string())].into(), ..NodeSpec::default_for(crate::PathName::new("m.rpc", "1").unwrap(), "m", NodeKind::RpcNode) };
         let json = serde_json::to_string(&release).unwrap();
         assert_eq!(serde_json::from_str::<NodeSpec>(&json).unwrap(), release);
-        assert!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"ephemeral","disposition":"preserve"}"#).unwrap_err().to_string().contains("carries no `disposition`"), "ephemeral carries no disposition");
-        assert!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"persistent"}"#).unwrap_err().to_string().contains("requires `disposition`"), "persistent names its disposition");
-        assert_eq!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"ephemeral"}"#).unwrap(), StorageMeta::Ephemeral);
+        assert!(serde_json::from_str::<StoragePersistence>(r#"{"persistence":"ephemeral","disposition":"preserve"}"#).unwrap_err().to_string().contains("carries no `disposition`"), "ephemeral carries no disposition");
+        assert!(serde_json::from_str::<StoragePersistence>(r#"{"persistence":"persistent"}"#).unwrap_err().to_string().contains("requires `disposition`"), "persistent names its disposition");
+        assert_eq!(serde_json::from_str::<StoragePersistence>(r#"{"persistence":"ephemeral"}"#).unwrap(), StoragePersistence::Ephemeral);
     }
 
     /// CONTRACT (node-identity-and-state.md §2, the Fabrics schema's `types`): the application declares
@@ -273,8 +273,8 @@ mod tests {
     fn rdm_types_cannot_be_declared_and_a_declared_type_reads_back_with_its_defaults() {
         let declared = NodeType::parse_declared(r#"[{"name":"broker","storage_persistence":{"persistence":"persistent","disposition":"preserve"}},{"name":"gateway","storage_persistence":{"persistence":"ephemeral"}}]"#).unwrap();
         assert_eq!(declared, vec![
-            NodeType { name: "broker".into(), storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Preserve }, executable: None },
-            NodeType { name: "gateway".into(), storage_persistence: StorageMeta::Ephemeral, executable: None },
+            NodeType { name: "broker".into(), storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve }, executable: None },
+            NodeType { name: "gateway".into(), storage_persistence: StoragePersistence::Ephemeral, executable: None },
         ]);
         for rdm in RDM_TYPES {
             let e = NodeType::parse_declared(&format!(r#"[{{"name":"{rdm}","storage_persistence":{{"persistence":"ephemeral"}}}}]"#)).unwrap_err();
@@ -295,7 +295,7 @@ mod tests {
         let json = serde_json::to_value(&spec).unwrap();
         assert_eq!(json["storage_persistence"], serde_json::json!({"persistence": "persistent", "disposition": "preserve"}), "{json}");
         assert!(json.get("storage").is_none(), "{json}");
-        let before = serde_json::from_str::<StorageMeta>(r#"{"persistence":"persistent","on_retire":"release"}"#).unwrap();
-        assert_eq!(before, StorageMeta::Persistent { disposition: PersistentDisposition::Release });
+        let before = serde_json::from_str::<StoragePersistence>(r#"{"persistence":"persistent","on_retire":"release"}"#).unwrap();
+        assert_eq!(before, StoragePersistence::Persistent { disposition: PersistentDisposition::Release });
     }
 }

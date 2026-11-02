@@ -501,7 +501,7 @@ mod tests {
         let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let view = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".to_string(), status: ModelScopeStatus::Ready, provider: ModelProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
         let row = |phase: RootsPhase| crate::fabric_storage::FabricRecord {
-            fabric_id: FabricId::mint(), name: "fabric1".into(), state: crate::fabric_storage::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
+            fabric_id: FabricId::mint(), name: "fabric1".into(), state: crate::fabric_state::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
             ca: Some(crate::fabric_storage::CaRow { expires_at: 9_000, previous_expires_at: 5_000, issuer_receipts: Default::default() }),
             roots: Some(crate::fabric_storage::RootsRow { phase, roots: vec!["aa".into(), "bb".into()], expires_at: 3_000 }),
         };
@@ -667,7 +667,7 @@ mod tests {
                 Some(build_id.clone()),
                 Some(&[]),
                 Some(2_000),
-                Some(&crate::fabric_storage::FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), state: crate::fabric_storage::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: Some("file".to_string()), previous_topology_storage_providers: vec!["memory".to_string()], ca: None, roots: None }),
+                Some(&crate::fabric_storage::FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), state: crate::fabric_state::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: Some("file".to_string()), previous_topology_storage_providers: vec!["memory".to_string()], ca: None, roots: None }),
                 &Filter::new().eq("name", ["fabric1"]).eq("build_id", [build_id.clone()]),
             );
             match fabric_reply {
