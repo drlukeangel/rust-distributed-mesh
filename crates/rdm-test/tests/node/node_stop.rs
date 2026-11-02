@@ -1747,7 +1747,8 @@ fn signal_stop_of<'a>(spans: &'a [Value], node_id: &str) -> Option<(&'a Value, &
 /// and nothing after it"; stop_gate.rs: work a stop deletes with the birth "ends at the stop and never
 /// resumes"): mesh1's other node-admin, isolated (every datagram to or from its port dropped) while the
 /// fabric-primary runs, runs fabric recovery's own-mesh arm on the unheard fabric-primary: its node
-/// investigation's direct tickle reaches nobody, so the arm is open. The isolated admin then receives SIGTERM. Its arm ends at its stop, by name, before its
+/// investigation's direct tickle, which can reach nobody, has started, so the arm is open. The isolated admin
+/// then receives SIGTERM, whether that probe went out on a connection pooled at the cut or on a new dial. Its arm ends at its stop, by name, before its
 /// leave aborts its tasks, and no recovery is admitted by it after its signal stop began. Must NOT happen: the
 /// arm outliving the stop (its span never written), or a `via-recovery` of the fabric-primary opened by the
 /// stopping admin.
@@ -1778,12 +1779,21 @@ async fn a_signal_stopped_admin_ends_its_open_fabric_recovery_arm_at_its_stop_an
         Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
     };
     let cut_at = unix_nanos();
-    // The own-mesh arm is open: its node investigation's direct tickle of the fabric-primary is lost. The
-    // signal is sent at that span: the fabric-primary's own recovery of the isolated admin, a floor or two
-    // on, ends it otherwise, while its arm still tickles through its peers (Q111).
+    // The own-mesh arm is open: its node investigation of the fabric-primary has started its direct tickle.
+    // The signal is sent at that start, while the probe is in flight: the fabric-primary's own recovery of
+    // the isolated admin, a floor or two on, ends it otherwise, before a probe sent on a connection pooled
+    // at the cut has ended at its time limit. The tickle's own span closes only when the probe ends, so its
+    // start is read from the provider inspection the investigation closes right before it, the arm's child:
+    // a sibling of the arm's fold of the Build log (`caller` names the arm), under the same open parent.
     let floor = rdm_transport::topology::staleness_floor();
-    wait_for(&format!("{victim:?}'s own-mesh arm tickles {fp:?} and is not answered"), floor * 6 + Duration::from_secs(60), || async {
-        named(&estate.spans(), "rdm.node.tickle.resolve.via-direct").into_iter().find(|sp| start_ns(sp) >= cut_at && attr(sp, "caller") == victim_id && attr(sp, "node_id") == fp_id && !attr(sp, "failure").is_empty()).map(|_| ())
+    let arm_name = "rdm.node_admin.fabric.update.via-fabric-recovery";
+    wait_for(&format!("{victim:?}'s own-mesh arm starts its direct tickle of {fp:?}"), floor * 6 + Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        let folds = named(&spans, "rdm.node.store.resolve.via-fold").into_iter().filter(|sp| attr(sp, "caller") == arm_name).collect::<Vec<_>>();
+        named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
+            .into_iter()
+            .find(|sp| start_ns(sp) >= cut_at && attr(sp, "inspector") == victim_id && attr(sp, "node_id") == fp_id && folds.iter().any(|f| f["parent_span_id"] == sp["parent_span_id"] && f["trace_id"] == sp["trace_id"]))
+            .map(|_| ())
     })
     .await;
     assert!(std::process::Command::new("kill").args(["-TERM", &victim_pid.to_string()]).status().unwrap().success(), "kill -TERM {victim_pid}");
