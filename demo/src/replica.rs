@@ -22,7 +22,7 @@ use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::outcome::{Code, MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::filter::Filter;
-use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
+use rdm_core::{IncarnationId, MemberStatus, NodeId, NodeKind, PathName};
 use rdm_node::node_hooks::{CallFailedCtx, OnCallFailed};
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded};
 use rdm_transport::topology::TopologyView;
@@ -38,8 +38,6 @@ use std::time::Duration;
 pub const OWNER: &str = crate::consumer_example::OWNER;
 /// How long a gateway keeps asking for its mesh's broker primary before it answers `NoBroker`.
 pub const FORWARD_FOR: Duration = Duration::from_secs(30);
-/// How long a gateway waits between two asks of one forward.
-const ASK_EVERY: Duration = Duration::from_millis(250);
 
 /// A request of [`Records`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,8 +298,18 @@ impl Node {
             .collect();
         let primary = self.broker_primary();
         let mut chosen = None;
-        self.passed.0.send_modify(|passed| chosen = choose(primary, &ready, passed));
+        // Told only when a mark is dropped: a choice that changes nothing wakes no waiter.
+        self.passed.0.send_if_modified(|passed| {
+            let before = passed.len();
+            chosen = choose(primary, &ready, passed);
+            passed.len() != before
+        });
         chosen
+    }
+
+    /// `broker`'s status as this node's topology holds it now.
+    fn status_of(&self, broker: &NodeId) -> Option<MemberStatus> {
+        self.view.get()?.digest_view.get(&broker.to_string()).map(|(d, _)| d.status)
     }
 }
 
@@ -317,13 +325,6 @@ impl Default for PassedOver {
 }
 
 impl PassedOver {
-    /// Wait until `broker` is passed over, at most `limit`: a spent call's notice runs on a task of
-    /// its own, after the call has ended to the forward.
-    async fn until_passed(&self, broker: &NodeId, limit: Duration) {
-        let mut passed = self.0.subscribe();
-        let _ = tokio::time::timeout(limit, passed.wait_for(|p| p.contains_key(broker))).await;
-    }
-
     /// A broker answered that it holds `primary` as its broker primary: that birth is asked again.
     fn ask_again(&self, primary: &str) {
         self.0.send_if_modified(|passed| {
@@ -478,17 +479,47 @@ pub fn register_gateway(b: ServerBuilder, client: Arc<NodeRpcClient>, node: Node
     })
 }
 
-/// `request` at the broker `node` asks now ([`Node::broker_to_ask`]), asked again on a domain answer
-/// (`NotPrimary`, not ready) until a broker answers it or [`FORWARD_FOR`] passed. A call whose attempts
-/// are spent is never asked again of that broker by the forward: the gateway's `on_call_failed` passes
-/// the birth over, and the next turn asks the next replica.
+/// Wait until `moved` holds, checked now and again on each tick of `heard` (the topology change
+/// event, `DigestView::heard_changes`) or of `passed` (a birth passed over, or asked again), never on
+/// a timer. `false` once `until` passed with `moved` still false: the forward's own bound,
+/// [`FORWARD_FOR`].
+pub async fn wait_for_change<T>(heard: &mut tokio::sync::watch::Receiver<u64>, passed: &mut tokio::sync::watch::Receiver<T>, until: tokio::time::Instant, mut moved: impl FnMut() -> bool) -> bool {
+    loop {
+        if moved() {
+            return true;
+        }
+        tokio::select! {
+            Ok(()) = heard.changed() => {}
+            Ok(()) = passed.changed() => {}
+            () = tokio::time::sleep_until(until) => return moved(),
+        }
+    }
+}
+
+/// `request` at the broker `node` asks now ([`Node::broker_to_ask`]), until a broker answers it or
+/// [`FORWARD_FOR`] passed. Between two asks the forward waits on the topology ([`wait_for_change`]),
+/// never a timer:
+/// - after `NotPrimary`, until the broker it would ask is another (the topology names a different
+///   broker primary, or the answer named a passed-over birth primary and sends the gateway back to it);
+/// - after not ready, busy or connections-deleting, until that broker's status changes or the broker
+///   it would ask is another;
+/// - after a call that ended unanswered, until the broker it would ask is another: when its attempts
+///   are spent the gateway's `on_call_failed` passes that birth over, and the next replica is asked.
+///   The forward never asks that birth again itself;
+/// - with no broker to ask, until there is one (RDM's election).
 async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) -> RecordsReply {
     let until = tokio::time::Instant::now() + FORWARD_FOR;
     let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() };
+    let Some(view) = node.view.get() else { return Records::not_ready(format!("path {:?}, name {:?} is starting", node.name.path, node.name.name)) };
+    let (mut heard, mut passed) = (view.digest_view.heard_changes(), node.passed.0.subscribe());
     let mut last = String::from("no broker primary is held");
     loop {
-        let mut spent = None;
-        if let Some(broker) = node.broker_to_ask() {
+        // Marked seen before the topology is read: a change from here on wakes the wait.
+        heard.borrow_and_update();
+        passed.borrow_and_update();
+        let asked = node.broker_to_ask();
+        let mut status = None;
+        if let Some(broker) = &asked {
             let (outcome, _) = client.call::<Records>(&NodeTarget::ExactNode(broker.clone()), request, &options).await;
             last = match outcome {
                 RpcOutcome::Reply(reply) => match reply.into_value() {
@@ -496,27 +527,27 @@ async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) 
                         node.passed.ask_again(&held);
                         format!("{broker} is not the broker primary (it holds {held:?})")
                     }
-                    RecordsReply::NotReady { reason } | RecordsReply::Busy { reason } | RecordsReply::ConnectionsDeleting { reason } => format!("{broker}: {reason}"),
+                    RecordsReply::NotReady { reason } | RecordsReply::Busy { reason } | RecordsReply::ConnectionsDeleting { reason } => {
+                        status = Some(node.status_of(broker));
+                        format!("{broker}: {reason}")
+                    }
                     answered => {
                         tracing::info!(target: "rshape", path = %node.name.path, name = %node.name.name, %broker, "a request forwarded to a broker answered");
                         return answered;
                     }
                 },
                 // Never answered: when its attempts are spent (RDM resent it), `on_call_failed` passes
-                // the broker over, and the next turn asks the next replica.
-                outcome @ (RpcOutcome::NotSent(_) | RpcOutcome::Indeterminate(_)) => {
-                    spent = Some(broker.clone());
-                    format!("{broker}: {} {}", outcome.name(), outcome.detail_name())
-                }
+                // the broker over, and the next replica is asked.
                 other => format!("{broker}: {} {}", other.name(), other.detail_name()),
             };
         }
-        if tokio::time::Instant::now() >= until {
+        let moved = wait_for_change(&mut heard, &mut passed, until, || {
+            let now = node.broker_to_ask();
+            now != asked || status.as_ref().is_some_and(|held| node.status_of(asked.as_ref().expect("a status is read of an asked broker")) != *held)
+        })
+        .await;
+        if !moved {
             return RecordsReply::NoBroker { reason: format!("path {:?}, name {:?}: {last}", node.name.path, node.name.name) };
-        }
-        match spent {
-            Some(broker) => node.passed.until_passed(&broker, ASK_EVERY).await,
-            None => tokio::time::sleep(ASK_EVERY).await,
         }
     }
 }
@@ -559,10 +590,59 @@ mod tests {
         let birth = |node_id: NodeId| rdm_node::node_hooks::CallFailedBirth { node_id, incarnation: IncarnationId::mint(), name: PathName::numbered("mesh1", NodeKind::Broker, 1) };
         let reason = rdm_transport::CallFailedReason::NotSent(rdm_core::outcome::NotSentReason::Deadline);
         PassOver(passed.clone()).on_call_failed(&CallFailedCtx { sender: birth(NodeId::mint()), receiver: Some(birth(receiver.clone())), reason }).await;
-        passed.until_passed(&receiver, Duration::from_secs(1)).await;
         assert!(passed.0.borrow().contains_key(&receiver), "the spent call's receiver is passed over");
         passed.ask_again(&receiver.to_string());
         assert!(passed.0.borrow().is_empty(), "a broker that holds it primary sends the gateway back to it");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_not_primary_the_next_ask_waits_for_the_primary_to_change_in_the_view_not_a_fixed_delay() {
+        let (heard_tx, mut heard) = tokio::sync::watch::channel(0u64);
+        let (passed_tx, mut passed) = tokio::sync::watch::channel(BTreeMap::<NodeId, IncarnationId>::new());
+        let (asked, next) = (NodeId::mint(), NodeId::mint());
+        let primary = Arc::new(Mutex::new(asked.clone()));
+        let start = tokio::time::Instant::now();
+        let changes = {
+            let (primary, next) = (primary.clone(), next.clone());
+            tokio::spawn(async move {
+                // At 1 s the topology changes and still names the asked broker primary: no ask.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                heard_tx.send_modify(|n| *n += 1);
+                // At 7 s it names the next broker primary.
+                tokio::time::sleep(Duration::from_secs(6)).await;
+                *primary.lock().unwrap() = next;
+                heard_tx.send_modify(|n| *n += 1);
+                heard_tx
+            })
+        };
+        let moved = wait_for_change(&mut heard, &mut passed, start + FORWARD_FOR, || *primary.lock().unwrap() != asked).await;
+        assert!(moved, "the topology named another broker primary");
+        assert_eq!(start.elapsed(), Duration::from_secs(7), "the next ask is at the primary's change in the view, and only then");
+        let heard_tx = changes.await.unwrap();
+
+        // A broker passed over wakes the wait too (a spent call's notice).
+        let start = tokio::time::Instant::now();
+        let marked = NodeId::mint();
+        let mark = {
+            let marked = marked.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                passed_tx.send_modify(|p| {
+                    p.insert(marked, IncarnationId::mint());
+                });
+                passed_tx
+            })
+        };
+        let passed_rx = passed.clone();
+        assert!(wait_for_change(&mut heard, &mut passed, start + FORWARD_FOR, || passed_rx.borrow().contains_key(&marked)).await);
+        assert_eq!(start.elapsed(), Duration::from_secs(2), "the notice's mark is the wake");
+        let _passed_tx = mark.await.unwrap();
+
+        // Nothing moves: no ask until the forward's own bound.
+        let start = tokio::time::Instant::now();
+        assert!(!wait_for_change(&mut heard, &mut passed, start + FORWARD_FOR, || false).await, "nothing moved");
+        assert_eq!(start.elapsed(), FORWARD_FOR, "the forward answers NoBroker at its bound, and asks nothing before");
+        drop(heard_tx);
     }
 
     #[tokio::test]
