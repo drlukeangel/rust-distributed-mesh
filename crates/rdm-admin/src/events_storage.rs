@@ -151,8 +151,12 @@ impl EventSource {
 #[serde(rename_all = "kebab-case")]
 pub enum StepState {
     /// It completed.
+    ///
+    /// Serialized as `complete`.
     Complete,
     /// It failed.
+    ///
+    /// Serialized as `failed`.
     Failed {
         /// Why.
         reason: String,
@@ -166,8 +170,12 @@ pub enum StepState {
 #[serde(rename_all = "kebab-case")]
 pub enum EndedState {
     /// The Build completed.
+    ///
+    /// Serialized as `complete`.
     Complete,
     /// The Build failed.
+    ///
+    /// Serialized as `failed`.
     Failed {
         /// The step that failed.
         step: String,
