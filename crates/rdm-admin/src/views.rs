@@ -175,10 +175,13 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
 /// left each birth in from `atlas` ([`Atlas::read`]). A birth the view no longer holds is answered at a
 /// path `planned` names and no birth holds, from the data-dir-unreadable fact on the record of that pair
 /// among its mesh's records ([`crate::current_record::CurrentRecords::lifecycle_rows`]:
-/// its Deleted record released the pair's claim). With no `current` (a reader that holds no records) no record is
+/// its Deleted record released the pair's claim). A node `ids` names that the view no longer holds is
+/// answered from its record at that id, its latest line current, a Deleted one included (query.md §1:
+/// "Historical records, including Deleted nodes, remain queryable by their own IDs"); an id with no
+/// record is not answered. With no `current` (a reader that holds no records) no record is
 /// read. `Err` names a record that could not be read (query.md §1: "Record read errors remain named
 /// errors, not empty results or fabricated lifecycle status").
-async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, atlas: &Atlas, current: Option<&crate::current_record::CurrentRecords<'_>>, planned: &BTreeMap<String, Vec<PathName>>) -> Result<Vec<NodeView>, String> {
+async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, atlas: &Atlas, current: Option<&crate::current_record::CurrentRecords<'_>>, planned: &BTreeMap<String, Vec<PathName>>, ids: &BTreeSet<crate::model::NodeId>) -> Result<Vec<NodeView>, String> {
     let mut out: Vec<NodeView> = Vec::new();
     for b in view.births() {
         let (row, predecessor) = match current {
@@ -219,6 +222,21 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
                 n.status = crate::model::NodeStatus::Dead;
                 out.push(record_view(&n, None, None, Some(&r), None));
             }
+        }
+        // A node the filter names by id that the view no longer holds: its record at that id, never
+        // the pair's claimant (query.md §1: "a history query does not redirect to the current pair's
+        // claimant").
+        for id in ids {
+            if view.births().any(|n| &n.node_id == id) || out.iter().any(|v| &v.node_id == id) {
+                continue;
+            }
+            let Some(row) = c.row(id).await? else { continue };
+            // The record its row names as its predecessor, read as a held birth's is (`predecessor_of`).
+            let predecessor = match row.predecessor.as_ref() {
+                Some(p) if row.newest_birth().is_none_or(|b| b.data_dir_lost.is_none()) => c.row(&p.node_id).await?,
+                _ => None,
+            };
+            out.push(own_row_view(view, atlas, &row, predecessor.as_ref()));
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -289,7 +307,10 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         if let Some(reason) = filter.refusal(Entity::Nodes) {
             return rdm_core::reply::status::bounded_rejected_filter(&reason);
         }
-        let mut nodes = match nodes(view, &loads(), records, current.as_ref(), &planned).await {
+        // The ids the filter names (its `id` pairs, never a negated one): each read at its record when
+        // the view no longer holds it.
+        let ids: BTreeSet<crate::model::NodeId> = filter.pairs.iter().filter(|(property, _)| property == "id").flat_map(|(_, values)| values).filter_map(|v| crate::model::NodeId::parse(v).ok()).collect();
+        let mut nodes = match nodes(view, &loads(), records, current.as_ref(), &planned, &ids).await {
             Ok(nodes) => nodes,
             Err(why) => return rdm_core::reply::status::not_ready(format!("path {:?}, name {:?}: {why}", me.path, me.name)),
         };
