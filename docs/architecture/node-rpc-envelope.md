@@ -253,7 +253,7 @@ sees only the catalog.
 | `0x3D` | topic.traffic.get | rafka | live | canonical | Rafka's product op |
 | `0x3E` | topic.slot.delete | rafka | live | canonical | Rafka's product op |
 | `0x3F` | system.framework.update | rafka | live | canonical | Rafka's product op (moved off 0x23) |
-| `0x70` | evidence-store | testkit | live | canonical | `Get`, `Put`, `Delete`, `CompareAndSwap` |
+| `0x70` | testkit-store | testkit | live | canonical | `Get`, `Put`, `Delete`, `CompareAndSwap` |
 | `0x71` | resolve-probe | testkit | live | canonical | `Resolve` |
 | `0x72` | declare-probe | testkit | live | canonical | `Declare` |
 | `0x73` | originate | testkit | live | canonical | `Call`, `ArmFault`, `ReleaseFault`, `Snapshot`, `RecordProxy`, `Dial`, `StopTransport` |
@@ -571,8 +571,8 @@ The testkit oracles and the test product's own families (`rdm-test`,
 evidence:
 
 ```text
-rdm.node_rpc.evidence_store.serve.via-request
-rdm.node_rpc.evidence_store.resolve.via-probe
+rdm.node_rpc.testkit_store.serve.via-request
+rdm.node_rpc.testkit_store.resolve.via-probe
 rdm.node_rpc.resolve_probe.serve.via-request
 rdm.node_rpc.declare_probe.serve.via-request
 rdm.node_rpc.status.update.via-declare-own
@@ -1837,7 +1837,7 @@ pub enum DeclareReply {
 
 Contract source: RDM `crates/rdm-test/src/originate.rs::OriginateRequest`.
 
-Direction: peer. Test clients call a testkit node to originate calls or control its test fault seams. Not forwardable. BadDestination and the runtime refusal variants are typed refusals. OriginateStoreOp here is local to the originate family, distinct from the evidence-store operation label. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
+Direction: peer. Test clients call a testkit node to originate calls or control its test fault seams. Not forwardable. BadDestination and the runtime refusal variants are typed refusals. OriginateStoreOp here is local to the originate family, distinct from the testkit-store operation label. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
 
 ```rust
 pub enum OriginateStoreOp {

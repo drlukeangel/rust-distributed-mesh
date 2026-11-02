@@ -118,7 +118,7 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
         rafka(0x3D, "topic.traffic.get"),
         rafka(0x3E, "topic.slot.delete"),
         rafka(0x3F, "system.framework.update"),
-        LedgerEntry { op: 0x70, family: "evidence-store".into(), owner: OpOwner::Testkit, state: OpState::Live },
+        LedgerEntry { op: 0x70, family: "testkit-store".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x71, family: "resolve-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x72, family: "declare-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x73, family: "originate".into(), owner: OpOwner::Testkit, state: OpState::Live },

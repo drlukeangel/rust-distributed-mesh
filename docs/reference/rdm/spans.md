@@ -770,9 +770,9 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_rpc.delivery.update.via-resend` | `crates/rdm-transport/src/client.rs` | 1620 |
 | `rdm.node_rpc.delivery.update.via-response-resend` | `crates/rdm-transport/src/delivery.rs` | 1082 |
 | `rdm.node_rpc.delivery.update.via-withheld-reply-released` | `crates/rdm-transport/src/server.rs` | 1001 |
-| `rdm.node_rpc.evidence_store.reject.via-probe-arguments` | `crates/rdm-test/src/bin/rdm_rpc_probe.rs` | 399 |
-| `rdm.node_rpc.evidence_store.resolve.via-probe` | `crates/rdm-test/src/bin/rdm_rpc_probe.rs` | 407 |
-| `rdm.node_rpc.evidence_store.serve.via-request` | `crates/rdm-test/src/testkit_store.rs` | 548 |
+| `rdm.node_rpc.testkit_store.reject.via-probe-arguments` | `crates/rdm-test/src/bin/rdm_rpc_probe.rs` | 399 |
+| `rdm.node_rpc.testkit_store.resolve.via-probe` | `crates/rdm-test/src/bin/rdm_rpc_probe.rs` | 407 |
+| `rdm.node_rpc.testkit_store.serve.via-request` | `crates/rdm-test/src/testkit_store.rs` | 548 |
 | `rdm.node_rpc.handler.reject.via-internal-rpc-failure` | `crates/rdm-transport/src/server.rs` | 969 |
 | `rdm.node_rpc.handler.reject.via-internal-rpc-failure` | `crates/rdm-transport/src/server.rs` | 971 |
 | `rdm.node_rpc.handler.reject.via-internal-rpc-failure` | `crates/rdm-transport/src/stream.rs` | 179 |

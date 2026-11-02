@@ -206,7 +206,7 @@ fn testkit_store_applies_cas_reports_exact_executing_birth() {
     let foreign: std::collections::BTreeSet<&str> = spans.iter().filter_map(|s| s["name"].as_str()).filter(|n| !n.starts_with("rdm.")).collect();
     assert!(foreign.is_empty(), "spans outside the cell's story were exported: {foreign:?}");
     // Every call is served at this birth, under its caller's trace, naming the op and its outcome.
-    let served: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.evidence_store.serve.via-request").collect();
+    let served: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.testkit_store.serve.via-request").collect();
     let calls: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.update.via-call").collect();
     let outcomes: Vec<(String, String)> = served.iter().map(|s| (s["attributes"]["op"].as_str().unwrap().to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
     let want: Vec<(String, String)> = [

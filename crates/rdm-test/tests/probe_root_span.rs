@@ -153,7 +153,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
                 Some(file) => std::fs::read_to_string(file).unwrap_or_else(|e| panic!("the span file could not be read: {e}; {}", context())),
                 None => String::new(),
             };
-            if !spans.contains("rdm.node_rpc.evidence_store.resolve.via-probe") {
+            if !spans.contains("rdm.node_rpc.testkit_store.resolve.via-probe") {
                 let written = spans.lines().filter(|l| !l.trim().is_empty()).count();
                 match named_loss(&String::from_utf8_lossy(&out.stderr)) {
                     Some((unwritten, handed)) if unwritten > 0 && written + unwritten >= handed => {
@@ -187,7 +187,7 @@ fn a_probe_that_refuses_its_arguments_exits_two_and_keeps_its_refusal_span() {
     let reason = v["reason"].as_str().unwrap_or_else(|| panic!("no refusal reason: {}", context())).to_string();
     assert!(reason.contains("--no-such-flag"), "the refusal names the argument: {reason}; {}", context());
     let spans: String = std::fs::read_dir(&evidence).unwrap_or_else(|e| panic!("evidence read failed: {e}; {}", context())).flatten().filter(|e| e.file_name().to_string_lossy().starts_with("rdm-rpc-probe.")).map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
-    if spans.contains("rdm.node_rpc.evidence_store.reject.via-probe-arguments") {
+    if spans.contains("rdm.node_rpc.testkit_store.reject.via-probe-arguments") {
         assert!(spans.contains("--no-such-flag"), "the refusal span carries its reason: {spans:?}; {}", context());
     } else {
         let written = spans.lines().filter(|l| !l.trim().is_empty()).count();

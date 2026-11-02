@@ -144,7 +144,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     }
     let mut violations: Vec<String> = Vec::new();
     // The path RAN: the operations reached handlers, the topology actions ran as Build attempts.
-    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").len();
+    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").len();
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
     if report.ledger.issued > 0 && served == 0 {
         violations.push(format!("{} operations were issued and no testkit-store handler span was exported", report.ledger.issued));

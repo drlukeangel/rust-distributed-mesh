@@ -22,7 +22,7 @@ fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "i143-2775".into(),
-        subfeature: "evidence-store".into(),
+        subfeature: "testkit-store".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: test.into(),
@@ -117,7 +117,7 @@ async fn testkit_store_node_restarts_preserves_same_node_store() {
     estate.stop().await;
 
     let spans = estate.spans();
-    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
     let at = |inc: &Value, op: &str, outcome: &str| served.iter().find(|s| s["attributes"]["node_id"] == first["node_id"] && s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).cloned().cloned();
     let put_span = at(&first["incarnation_id"], "put", "stored").expect("the first birth served the put");
     let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
@@ -245,12 +245,12 @@ async fn testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows
         })
         .cloned()
         .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting and creating the selected node, and nothing else, in the recovery's trace: {reconciles:?}"));
-    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
     // The old birth's own serve span of the put is not evidence here: the cell SIGKILLs that process,
     // and spans still queued in its batch exporter die with it (rafka-mesh-telemetry init_telemetry:
     // a batch provider). The put's reply named the old birth as executor (`landed_on` above); the
     // caller's span is the put's trace.
-    let stored = named(&spans, "rdm.node_rpc.evidence_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put" && s["attributes"]["target"] == path.as_str()).cloned().expect("the probe's put call span");
+    let stored = named(&spans, "rdm.node_rpc.testkit_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put" && s["attributes"]["target"] == path.as_str()).cloned().expect("the probe's put call span");
     let inherited = served.iter().find(|s| s["attributes"]["node_id"] == replacement["node_id"] && s["attributes"]["op"] == "get" && s["attributes"]["outcome"] == "value").cloned().expect("the new node served the value the old birth stored");
     let replace_start = replace["start_unix_nano"].as_u64().unwrap_or(0);
     let old_after: Vec<&&Value> = served.iter().filter(|s| s["attributes"]["node_id"] == first["node_id"] && s["start_unix_nano"].as_u64().unwrap_or(0) > replace_start).collect();

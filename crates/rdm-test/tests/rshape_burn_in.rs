@@ -470,7 +470,7 @@ fn probe_call(estate: &Estate, args: &[&str]) -> Call {
     let linked_to_call = |sp: &Value| sp["name"] == "rdm.node_rpc.connection.create.via-dial" && sp["links"].as_array().is_some_and(|ls| ls.iter().any(|l| s(&l["trace_id"]) == trace_id));
     let dial_traces: std::collections::BTreeSet<String> = spans.iter().filter(|sp| linked_to_call(sp)).map(|sp| s(&sp["trace_id"])).collect();
     assert!(spans.iter().all(|sp| s(&sp["trace_id"]) == trace_id || dial_traces.contains(&s(&sp["trace_id"]))), "one probe invocation is one trace and its dials' linked traces: {args:?}");
-    let root_exported = spans.iter().any(|sp| sp["name"] == "rdm.node_rpc.evidence_store.resolve.via-probe");
+    let root_exported = spans.iter().any(|sp| sp["name"] == "rdm.node_rpc.testkit_store.resolve.via-probe");
     Call { args: args.iter().map(|a| a.to_string()).collect(), out, trace_id, started_ms, finished_ms, root_exported }
 }
 
@@ -1056,7 +1056,7 @@ impl RouteRun {
         for (leg, call) in self.legs.iter_mut().zip(self.calls.iter()) {
             let trace = call.trace_id.as_str();
             let in_trace: Vec<&Value> = spans.iter().filter(|sp| sp["trace_id"] == trace).collect();
-            let served: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.evidence_store.serve.via-request").collect();
+            let served: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.testkit_store.serve.via-request").collect();
             let name = s(&leg["leg"]);
             let mut record = json!({"leg": name, "trace_id": trace, "spans_in_trace": in_trace.len(), "proof_store_serves": served.len()});
             let routes: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.route.resolve.via-connections").collect();
@@ -1073,7 +1073,7 @@ impl RouteRun {
                     let terminal = &leg["terminal"];
                     assert_eq!(marker["attributes"]["node_id"], terminal["executing_node"], "{name}: the handler that ran is the replying node");
                     assert_eq!(marker["attributes"]["incarnation_id"], terminal["incarnation_id"], "{name}");
-                    let request_spans: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.request.serve.via-direct" && sp["attributes"]["protocol"] == "evidence-store").collect();
+                    let request_spans: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.request.serve.via-direct" && sp["attributes"]["protocol"] == "testkit-store").collect();
                     assert!(!request_spans.is_empty(), "{name}: the server's request span is in the trace");
                     let parent = spans.iter().find(|sp| sp["span_id"] == marker["parent_span_id"]).unwrap_or_else(|| panic!("{name}: the marker's parent span is missing"));
                     assert_eq!(parent["trace_id"], marker["trace_id"], "{name}: marker parent in the same trace");
@@ -1298,7 +1298,7 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
     // The ledger algebra over the typed outcomes.
     let mut buckets: BTreeMap<Bucket, usize> = Bucket::ALL.iter().map(|b| (*b, 0)).collect();
     let mut seqs = BTreeSet::new();
-    let stored: Vec<&Value> = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").into_iter().filter(|sp| sp["attributes"]["op"] == "put" && sp["attributes"]["outcome"] == "stored").collect();
+    let stored: Vec<&Value> = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").into_iter().filter(|sp| sp["attributes"]["op"] == "put" && sp["attributes"]["outcome"] == "stored").collect();
     let mut operations = Vec::new();
     let mut outcomes = Vec::new();
     let mut indeterminate = Vec::new();
@@ -4222,7 +4222,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     // the canary's handler record off the evidence before it kills the process that holds it.
     let canary_trace = a.traffic.ops[ci].1.trace_id.clone();
     wait_for(&format!("{victim2:?}'s handler span of the canary is in the evidence before the kill"), Duration::from_secs(5), || async {
-        named(&f.estate.spans(), "rdm.node_rpc.evidence_store.serve.via-request").into_iter().any(|sp| sp["trace_id"] == canary_trace.as_str() && sp["attributes"]["outcome"] == "stored").then_some(())
+        named(&f.estate.spans(), "rdm.node_rpc.testkit_store.serve.via-request").into_iter().any(|sp| sp["trace_id"] == canary_trace.as_str() && sp["attributes"]["outcome"] == "stored").then_some(())
     })
     .await;
     let rt2 = exact_runtime(&f, &victim2).await;
@@ -6951,7 +6951,7 @@ async fn soak_run(cell: &str, story: Story) {
         .collect();
     let in_cut_lifecycle: Vec<(String, Vec<String>)> = cuts.iter().map(|(c, h, mesh)| (mesh.clone(), lifecycle_marks(&spans, *c, (*h).min(now_ns())))).filter(|(_, m)| !m.is_empty()).collect();
     // The path RAN.
-    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").len();
+    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").len();
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
     let routes = route_rows(&spans);
     let mut route_classes: BTreeMap<String, usize> = BTreeMap::new();

@@ -85,7 +85,7 @@ process running state
     -> one long-lived NodeRpcClient
 ~~~
 
-Node-admin readiness Ping, control calls, evidence-store calls, Forward inner calls and ordinary RPC-node callers reuse that process client and resolver.
+Node-admin readiness Ping, control calls, testkit-store calls, Forward inner calls and ordinary RPC-node callers reuse that process client and resolver.
 
 The process-scoped LiveNodeResolver is the only topology model Node RPC reads.
 

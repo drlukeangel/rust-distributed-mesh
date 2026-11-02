@@ -25,7 +25,7 @@ fn owner() -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-rpc".into(),
-        subfeature: "evidence-store".into(),
+        subfeature: "testkit-store".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: "the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replacement".into(),
@@ -107,7 +107,7 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     let first_inc = first["incarnation_id"].clone();
     wait_for("the first birth's served calls are exported before its process is killed", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
+        let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
         let count = |op: &str, outcome: &str| served.iter().filter(|s| s["attributes"]["node_id"] == first["node_id"] && s["attributes"]["incarnation_id"] == first_inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).count();
         // Two gets served the value: one before the stop, and the restarted birth's after its start.
         (count("put", "stored") > 0 && count("compare-and-swap", "mismatch") > 0 && count("put", "too-large") > 0 && count("get", "value") >= 2).then_some(())
@@ -179,7 +179,7 @@ async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replace
     estate.stop().await;
     // Every served call is a span on the executing birth, naming the op and its outcome.
     let spans = estate.spans();
-    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
     let on = |node: &Value, op: &str, outcome: &str| {
         served.iter().any(|s| s["attributes"]["node_id"] == node["node_id"] && s["attributes"]["incarnation_id"] == node["incarnation_id"] && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome)
     };

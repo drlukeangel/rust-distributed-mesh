@@ -306,13 +306,13 @@ async fn control(r: &Rig) -> Value {
 /// (propagated context), and the testkit-store span is the child of the serve span.
 fn assert_serve_chain(spans: &[Value], want_serves: usize) -> Value {
     let serves = spans_named(spans, "rdm.node_rpc.request.serve.via-direct");
-    let stores = spans_named(spans, "rdm.node_rpc.evidence_store.serve.via-request");
+    let stores = spans_named(spans, "rdm.node_rpc.testkit_store.serve.via-request");
     let calls = spans_named(spans, "rdm.node_rpc.request.update.via-call");
     assert_eq!(serves.len(), want_serves, "one serve span per dispatched call: {serves:#?}");
     assert_eq!(stores.len(), want_serves, "one testkit-store span per dispatched call");
     let mut chain = Vec::new();
     for s in &serves {
-        assert_eq!(s["attributes"]["protocol"], "evidence-store");
+        assert_eq!(s["attributes"]["protocol"], "testkit-store");
         assert_eq!(s["attributes"]["op"], "112");
         let call = calls.iter().find(|c| c["trace_id"] == s["trace_id"]).unwrap_or_else(|| panic!("a serve span is under its caller's trace: {s}"));
         assert_eq!(s["parent_span_id"], call["span_id"], "the serve span's parent is the transmitted call span");

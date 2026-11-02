@@ -369,7 +369,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         }));
     }
     // The dispatches to the held node's births.
-    for sp in named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").into_iter().filter(|sp| attr(sp, "node_id") == s(&hold_n["node_id"])) {
+    for sp in named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").into_iter().filter(|sp| attr(sp, "node_id") == s(&hold_n["node_id"])) {
         ev.dispatches.push(Dispatch { birth: attr(sp, "incarnation_id").to_string(), current_birth: s(&hold_n["incarnation_id"]), after_supersession: false });
     }
     assert!(!ev.dispatches.is_empty(), "the held node's birth exported serve spans for the calls that reached it");

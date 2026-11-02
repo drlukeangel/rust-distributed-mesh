@@ -796,7 +796,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let resolves: Vec<&Value> = all_resolves.iter().copied().filter(|sp| sp["service"] == "rdm-rpc-probe").collect();
     let control_plane_resolves: Vec<&Value> = all_resolves.iter().copied().filter(|sp| sp["service"] != "rdm-rpc-probe" && start(sp) > cut_at && start(sp) < healed_at).collect();
     let by = |route: &str, replied: bool| resolves.iter().filter(|sp| sp["attributes"]["route"] == route && (sp["attributes"]["outcome"] == "Reply") == replied).cloned().collect::<Vec<_>>();
-    let serves: Vec<&Value> = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").into_iter().filter(|sp| sp["attributes"]["node_id"] == target_id.as_str()).collect();
+    let serves: Vec<&Value> = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").into_iter().filter(|sp| sp["attributes"]["node_id"] == target_id.as_str()).collect();
     let silent_traces: BTreeSet<String> = resolves.iter().filter(|sp| sp["attributes"]["outcome"] != "Reply" && start(sp) > cut_at && start(sp) < healed_at).map(|sp| s(&sp["trace_id"])).collect();
     let served_in_silence: Vec<&&Value> = serves.iter().filter(|sp| silent_traces.contains(&s(&sp["trace_id"]))).collect();
     let silent_resolves: Vec<&&Value> = resolves.iter().filter(|sp| start(sp) > cut_at && start(sp) < healed_at).collect();
@@ -1597,7 +1597,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
         }));
     }
     // The dispatches to the held node's births.
-    for sp in named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").into_iter().filter(|sp| attr(sp, "node_id") == s(&hold_n["node_id"])) {
+    for sp in named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").into_iter().filter(|sp| attr(sp, "node_id") == s(&hold_n["node_id"])) {
         ev.dispatches.push(Dispatch { birth: attr(sp, "incarnation_id").to_string(), current_birth: s(&hold_n["incarnation_id"]), after_supersession: false });
     }
     assert!(!ev.dispatches.is_empty(), "the held node's birth exported serve spans for the calls that reached it");

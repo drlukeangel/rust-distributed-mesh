@@ -90,7 +90,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
         .filter(|e| e.file_name().to_string_lossy().starts_with("rdm-rpc-probe.") && e.file_name().to_string_lossy().ends_with(".spans.jsonl"))
         .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect::<Vec<serde_json::Value>>())
         .collect();
-    let root = spans.iter().find(|s| s["name"] == "rdm.node_rpc.evidence_store.resolve.via-probe").unwrap_or_else(|| panic!("the probe left no via-probe span: {spans:?}"));
+    let root = spans.iter().find(|s| s["name"] == "rdm.node_rpc.testkit_store.resolve.via-probe").unwrap_or_else(|| panic!("the probe left no via-probe span: {spans:?}"));
     let trace = root["trace_id"].as_str().unwrap_or_default();
     for read in ["rdm.node_admin.fabric.resolve.via-call", "rdm.node_admin.node.resolve.via-call"] {
         let s = spans.iter().find(|s| s["name"] == read).unwrap_or_else(|| panic!("the probe left no {read} span: {spans:?}"));

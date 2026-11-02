@@ -396,7 +396,7 @@ async fn probe() -> std::process::ExitCode {
     let args = match parse(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            tracing::info_span!("rdm.node_rpc.evidence_store.reject.via-probe-arguments", reason = %e).in_scope(|| {
+            tracing::info_span!("rdm.node_rpc.testkit_store.reject.via-probe-arguments", reason = %e).in_scope(|| {
                 rdm_transport::report_init_steps_here();
                 tracing::info!("the probe refused its arguments")
             });
@@ -404,7 +404,7 @@ async fn probe() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
-    let span = tracing::info_span!("rdm.node_rpc.evidence_store.resolve.via-probe", op = %args.op, target = %args.target);
+    let span = tracing::info_span!("rdm.node_rpc.testkit_store.resolve.via-probe", op = %args.op, target = %args.target);
     // The invocation is one trace: the process's init steps are reported inside its root.
     span.in_scope(rdm_transport::report_init_steps_here);
     let out = {

@@ -275,7 +275,7 @@ impl TestkitStoreReply {
 
 impl NodeProtocol for TestkitStore {
     const OP: u8 = 0x70;
-    const NAME: &'static str = "evidence-store";
+    const NAME: &'static str = "testkit-store";
     // A compare-and-swap carries a key and two values.
     const MAX_REQUEST_FRAME_BYTES: usize = MAX_KEY_BYTES + 2 * MAX_VALUE_BYTES + 1024;
     const MAX_REPLY_FRAME_BYTES: usize = MAX_VALUE_BYTES + 2048;
@@ -545,7 +545,7 @@ pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileTestkitStore>, launch: &
         let (store, cuts) = (store.clone(), cuts.clone());
         async move {
             let span = tracing::info_span!(
-                "rdm.node_rpc.evidence_store.serve.via-request",
+                "rdm.node_rpc.testkit_store.serve.via-request",
                 node_path = %at.node.path, node_name = %at.node.name,
                 node_id = %at.node_id,
                 incarnation_id = %at.incarnation_id,

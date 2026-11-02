@@ -74,7 +74,7 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
 
     // Evidence: one final target at selection, resolution and execution.
     let spans = estate.spans();
-    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
     let served_in = |t: &[&Value]| served.iter().filter(|s| t.iter().any(|x| x["trace_id"] == s["trace_id"])).cloned().collect::<Vec<_>>();
 
     let direct_b: Vec<&Value> = spans

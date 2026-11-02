@@ -68,7 +68,7 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     estate.stop().await;
 
     let spans = estate.spans();
-    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
     let served_in = |t: &[&Value]| served.iter().filter(|s| t.iter().any(|x| x["trace_id"] == s["trace_id"])).cloned().collect::<Vec<_>>();
     let direct_b1: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "direct" && s["attributes"]["target"] == b1_id).collect();
     assert!(!direct_b1.is_empty() && direct_b1.iter().all(|r| r["attributes"]["outcome"] == "Reply"), "{direct_b1:?}");

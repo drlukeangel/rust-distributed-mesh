@@ -1085,7 +1085,7 @@ async fn finish(run: Run, dir: &std::path::Path) {
     for ev in evidence.iter_mut().filter(|e| e.family == Family::SilentRuntime) {
         let row = rows.lock().unwrap().iter().find(|r| r["cut"] == ev.cut.as_str()).cloned().unwrap();
         let (node_id, current) = (s(&row["node"]["node_id"]), s(&row["node"]["incarnation_id"]));
-        for sp in named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").into_iter().filter(|sp| attr(sp, "node_id") == node_id) {
+        for sp in named(&spans, "rdm.node_rpc.testkit_store.serve.via-request").into_iter().filter(|sp| attr(sp, "node_id") == node_id) {
             ev.dispatches.push(Dispatch { birth: attr(sp, "incarnation_id").to_string(), current_birth: current.clone(), after_supersession: false });
         }
         assert!(!ev.dispatches.is_empty(), "the frozen node's births exported serve spans for the calls that reached them");
