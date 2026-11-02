@@ -150,8 +150,13 @@ async fn delete_followed(estate: &Estate, stream: BuildStream, admin: &PathName)
                     }
                 } else if let Ok(again) = estate.carrier_at(admin).await.reattach(&id).await {
                     // A delete that ended before its view named a fabric-primary again (its last mesh deleted):
-                    // `admin` itself, the fabric-primary that reported fabric.deleted, answers the reattachment.
-                    let own = views.iter().find(|n| n.name == *admin).map(|n| n.node_id.to_string()).unwrap_or_default();
+                    // `admin` itself, the fabric-primary that reported fabric.deleted, answers the reattachment:
+                    // its node id is the row its node.get lists at its name, else, its meshes deleted and no row
+                    // listed, the node the reattachment by its name reached.
+                    let reached = estate.peers().await.node_at(admin);
+                    let own = views.iter().find(|n| n.name == *admin).map(|n| n.node_id.clone()).or(reached)
+                        .unwrap_or_else(|| panic!("{admin:?} answered the reattachment of Build {id}, and neither its node.get nor the reattachment names its node id"))
+                        .to_string();
                     *seen.lock().unwrap() = Some((admin.clone(), own));
                     return Ok(again);
                 }
