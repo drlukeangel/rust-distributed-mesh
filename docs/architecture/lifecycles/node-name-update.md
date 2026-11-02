@@ -18,7 +18,7 @@ step. A node's other properties have their own commands ([node properties](../no
 | Check and move | The mesh-primary checks the destination pair against the records it holds; held by another node it refuses `NameHeld { by: node.id }` and nothing is written. Then one write of the node's record at its node.id (Q323) carrying the destination pair and `renamed_from: <old pair>`: the name move is that one write. A retry, or a successor writer resuming the command, reads the record: one that already carries the destination pair is the move done, and it continues to the apply |
 | Order | Row first, node second |
 | Completion | [By case](#completion-by-case) |
-| Idempotency | Row-held and node-applied are two facts. A repeat naming the name the row already holds finishes any pending release and then, for a live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`. A repeat with a different name is a new rename |
+| Idempotency | Row-held and node-applied are two facts. A repeat naming the name the row already holds, for a live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`. A repeat with a different name is a new rename |
 | Wire | `UpdateName { node_id, incarnation, name: { path, name } }` and `ApplyNodeName { node_id, incarnation, name: { path, name } }` on [`0x1B`](../node-rpc-envelope.md#status-op-0x1b-rdm); replies `NameUpdated`, `NameHeld`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`, `BusyHoldingConnections { connections }` |
 
 ## Numbered end-to-end sequence

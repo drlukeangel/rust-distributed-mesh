@@ -1688,7 +1688,7 @@ before LeaveMesh acceptance:
 A storage change's `mesh.block` and `mesh.unblock` are operations of its Build, each claimed and
 dispatched by the fabric-primary to the mesh's mesh-primary on [Build 0x20](#build-op-0x20-rdm)
 (`build.attempt.run`) and ending in its receipt. In its `mesh.unblock` the mesh-primary moves each
-node of its mesh to the provider the `commit` record decided with `StorageStep` on this op, its own
+node of its mesh to the provider the change's `rdm.storage.committed` event decided with `StorageStep` on this op, its own
 birth in-process; `StorageStepped` answers once the birth writes `provider`, and the mesh-primary then
 records `provider` on the birth's row. A command of a change older than the one the birth acted on is
 refused `rejected-stale-change`, naming that change.

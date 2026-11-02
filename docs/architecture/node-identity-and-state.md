@@ -283,7 +283,7 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
   own path is opaque (§2).
 - **The mesh's primary node-admin writes its row at creation.** The
   mesh's first node-admin is its primary (the only candidate of its election),
-  and the mesh-primary keeps that mesh's row in the mesh store: it claims the mesh's name at the key
+  and the mesh-primary keeps that mesh's row in the mesh store: it checks the mesh's name against the mesh records at the key
   `(path, name)`, unique within its path, the path opaque (a deployment may name it after the
   fabric, as it names a node's after its mesh; that is its choice, not the key's shape), writes
   the row to the store when the mesh is created and writes every status from then on. Held means held by a different MeshId: `NameHeld` names

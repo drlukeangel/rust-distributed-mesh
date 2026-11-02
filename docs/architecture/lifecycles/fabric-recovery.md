@@ -67,7 +67,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
    and the fabric-primary terminates its runtime (Q110).
    Nothing holds, and nothing waits for evidence. From the backbone the re-create terminates nothing in the
    mesh. On `exited`, `os-stopped` or `unproven`, its node.delete of the exact lost birth writes that
-   birth's row deleted with no `TerminateRuntime` and releases the name, then node.create at the
+   birth's row deleted with no `TerminateRuntime`, which frees the name, then node.create at the
    path.name; a delete that finds another birth at the path writes nothing; a lost birth that comes back
    is a deleted birth (Q142, Q148). On `running`, the investigation's report stands and the executor
    writes nothing: no row, no name release, no mark against the birth in its own view, no create. A

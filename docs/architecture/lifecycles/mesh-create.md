@@ -173,7 +173,7 @@ come after Ready; nothing about `mesh2` is on gossip before step 7.
 
 ## Failure and receipts
 
-A refused name claim (`NameHeld` by another MeshId) fails the create step by name and nothing is
+A mesh name another mesh holds (`NameHeld`, naming it) fails the create step by name and nothing is
 launched; a join refusal or a hook failure fails it as [node.create](node-create.md) states, and
 the next attempt of the same Build resumes from the receipts (R-BI4). A mesh whose first
 node-admin exits after creation is not re-created: it is a live mesh that lost its node-admins

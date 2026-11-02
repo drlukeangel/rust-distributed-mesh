@@ -70,7 +70,7 @@ registered in its wiring by name:
 
 | provider | registered by | where the records go |
 |---|---|---|
-| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `events.jsonl`, with the `layout` marker and the `locks/` of the name claims and in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
+| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `events.jsonl`, with the `layout` marker and the `locks/` of the in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
 | the application's | the application's binaries, at `start_on` | its own stores; Rafka binds the traits to its system topics |
 
 A provider is one set of stores for the fabric, reached by every node that writes: a node's own record is written by the node and read by its primaries. A backend that keeps its stores in one process, the testkit's `memory` backend, serves a single-process fabric only.
@@ -112,7 +112,7 @@ It is four steps:
 2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of
    all six stores on the old provider to the new one in source order, including both node-record
    kinds, immutable launch snapshots and unresolved property obligations.
-   every name claim and in-flight row
+   every in-flight row
    with its exact claimant. A copy resumed after a lost answer appends nothing twice; a new provider
    holding lines the old one does not is refused by name, and nothing switches.
 3. **Switch.** The fabric-primary appends the change's `rdm.storage.committed` event for
@@ -121,7 +121,7 @@ It is four steps:
    learns the decision only from that record.
 4. **Unblock.** The fabric-primary sends `mesh.unblock` to every mesh-primary. Each mesh-primary moves
    its nodes to the new provider, then replies `unblocked` and issues commands again.
-   A mesh-primary told to run an unblock attempt reads the change's `commit` record on the new
+   A mesh-primary told to run an unblock attempt reads the change's `rdm.storage.committed` event on the new
    provider first (a Build-storage read by name, Q292); present, it moves its own stores there before
    it reads the attempt's claim; absent, the change is not committed and it reads its claim where it
    is. A read error fails the attempt by name, never as absence.
