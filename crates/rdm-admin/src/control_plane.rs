@@ -281,8 +281,14 @@ impl ControlPlane {
         proof.proven(executor).await.is_ok()
     }
 
-    /// End an unfinished attempt only on its committed executor birth's departure proof.
-    /// The recorded claim scope selects the attempt; the claimant identifies the row to release.
+    /// On its committed executor birth's departure proof, release the in-flight row of the unfinished
+    /// attempt holding `mesh`, and end that attempt when it is a drift lane's. The recorded claim scope
+    /// selects the attempt; the claimant identifies the row to release. A drift lane's attempt ends
+    /// `Failed` naming the departure, so its exits are owed a submit again (node-recovery.md "Failure and
+    /// receipts"). A fabric-lane attempt gets no verdict: "An attempt lost with its executor ... leaves
+    /// the Build in progress (`Running`), and a successor or drift pass claims the next attempt"; only a
+    /// named terminal failure makes the Build failed (build.md §4). Its row is released, and the
+    /// fabric-primary's drive claims the next attempt. Answers whether it ended an attempt.
     async fn end_deleted_attempt(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
         let fabric_holds = current.state == BuildState::Running && current.attempt_claimed_meshes.get(&current.attempt).is_some_and(|held| held == mesh);
         let (lane, attempt, executor, claimant) = if fabric_holds {
@@ -303,23 +309,33 @@ impl ControlPlane {
         let me = self.held_name().await;
         let reason = format!("executor node {}, incarnation {} exited with attempt {attempt} of Build {} unfinished in scope {:?}; its departure is proven", executor.node_id, executor.incarnation, current.build_id, lane);
         let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = lane.as_deref().unwrap_or("fabric"), attempt, claimant = %claimant, executor_node_id = %executor.node_id, executor_incarnation = %executor.incarnation, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty);
-        let verdict = crate::build_state::BuildAttemptReceipt {
-            mesh: lane.clone(), build_id: current.build_id.clone(), attempt,
-            outcome: crate::build_state::AttemptOutcome::Failed { reason, code: rdm_core::outcome::Code::FailedPrecondition },
-        };
-        if let Err(error) = self.builds.append_attempt_receipt(&verdict).await {
-            span.record("outcome", "verdict-unwritten");
-            span.in_scope(|| tracing::info!(%error, "the executor's departure verdict could not be written: the mesh stays held"));
-            return Err(Refusal::State(error));
+        // A drift lane's attempt ends Failed on the departure. A fabric-lane attempt lost with its
+        // executor writes no verdict: the Build stays in progress (build.md §4).
+        let ends = lane.is_some();
+        if ends {
+            let verdict = crate::build_state::BuildAttemptReceipt {
+                mesh: lane.clone(), build_id: current.build_id.clone(), attempt,
+                outcome: crate::build_state::AttemptOutcome::Failed { reason, code: rdm_core::outcome::Code::FailedPrecondition },
+            };
+            if let Err(error) = self.builds.append_attempt_receipt(&verdict).await {
+                span.record("outcome", "verdict-unwritten");
+                span.in_scope(|| tracing::info!(%error, "the executor's departure verdict could not be written: the mesh stays held"));
+                return Err(Refusal::State(error));
+            }
         }
         let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane, attempt, claimant: claimant.clone() };
         if let Err(error) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
-            return Err(Refusal::Unavailable(format!("attempt {attempt} of Build {} ended on executor node {}, incarnation {} departing, but its in-flight row in mesh {mesh} could not be released: {error}", current.build_id, executor.node_id, executor.incarnation)));
+            return Err(Refusal::Unavailable(format!("attempt {attempt} of Build {} lost executor node {}, incarnation {} on its proven departure, but its in-flight row in mesh {mesh} could not be released: {error}", current.build_id, executor.node_id, executor.incarnation)));
         }
-        span.record("outcome", "ended");
-        span.in_scope(|| tracing::info!("the attempt ends on its executor's exact departure, and its claimant's in-flight row is released"));
-        Ok(true)
+        if ends {
+            span.record("outcome", "ended");
+            span.in_scope(|| tracing::info!("the attempt ends on its executor's exact departure, and its claimant's in-flight row is released"));
+        } else {
+            span.record("outcome", "row-released");
+            span.in_scope(|| tracing::info!("the fabric lane's attempt lost with its executor gets no verdict: the Build stays in progress, its in-flight row is released, and the fabric-primary's drive claims the next attempt"));
+        }
+        Ok(ends)
     }
 
     /// Compile `change` once against the current Build's topology into the next complete Build and

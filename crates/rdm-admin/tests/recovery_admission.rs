@@ -2111,3 +2111,73 @@ async fn a_fabric_recovery_waits_for_the_running_fabric_attempt_and_is_opened_at
         other => panic!("once the fabric lane's attempt ended, the recovery is opened: {other:?}"),
     }
 }
+
+/// CONTRACT (build.md §4: "An attempt lost with its executor (no terminal receipt, the executor unheard)
+/// leaves the Build in progress (`Running`), and a successor or drift pass claims the next attempt
+/// (`attempt + 1`); only an attempt that ends with a named terminal failure (`Failed { step, reason }`)
+/// makes the Build failed"): the Build completed once, then a fabric-lane attempt acting in mesh1 was
+/// claimed by an earlier birth at the fabric-primary's own path, which exited with it unfinished. Its
+/// departure is proven, and mesh1's primary submits its member's recovery. The fabric-primary's door
+/// releases mesh1's in-flight row of the lost attempt and writes no verdict for it. The Build stays
+/// Running and current, so its drive is driven again. The fabric-primary claims the next attempt over
+/// the released row, and the recovery waits for it. Must NOT happen: the lost attempt ended `Failed`,
+/// which makes the Build failed, so no pass drives it and its next attempt is never claimed
+/// (rdm#262: `mesh1.rpc.3` never created).
+#[tokio::test]
+async fn a_fabric_attempt_lost_with_its_claimant_leaves_the_build_in_progress_and_its_mesh_free_for_the_next_attempt() {
+    use rdm_admin::accepted::AttemptAction;
+    use rdm_admin::build_state::{AttemptOpened, BuildState, CurrentBuild};
+    use rdm_admin::mesh_claims::{InFlight, Taken};
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rdm_transport::span_capture("i150-lost-fabric-attempt", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
+    let t = view();
+    let path: PathName = rdm_core::PathName::new("mesh1.rpc", "2").unwrap();
+    let exited = t.node(&path).unwrap().clone();
+    let stopped = t.node(&PathName::new("mesh1.rpc", "1").unwrap()).unwrap().clone();
+    let fp_birth = t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap();
+    // The fabric-primary's earlier birth at the same path: it claimed the attempt and exited with it.
+    let lost = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &fp_birth, "mesh1").await.unwrap();
+    let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.admin", "1").unwrap(), t.clone(), crate::adopted_time()).with_claims(claims.clone()));
+    let _ = cp.node_rows.set(crate::records_of(&*cp.topology.read().await).await);
+    let departure = Arc::new(Departure::default());
+    let _ = cp.departure.set(departure.clone());
+    let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0, &fp_birth).await;
+
+    // Attempt 2, a stop in mesh1, is opened and claimed by the lost birth, which holds mesh1's row.
+    let stop = AttemptAction::Stop { kind: stopped.kind, mesh: "mesh1".into(), path: stopped.name.clone(), node_id: stopped.node_id.clone(), from_incarnation: stopped.incarnation_id.clone().unwrap() };
+    builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Requested, action: Some(stop), opened_by: lost.node_id.clone(), opened_at_ms: 1, mesh: None, context: None }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: Some("mesh1".into()), executor_mesh: "mesh1".into(), build_id: b0.clone(), attempt: 2, executor: lost.clone(), claimant: Some(lost.node_id.clone()), mesh: None }).await.unwrap();
+    let held = InFlight { build_id: b0.clone(), lane: None, attempt: 2, claimant: lost.node_id.clone() };
+    assert_eq!(claims.take_in_flight("mesh1", &held).await.unwrap(), Taken::Won);
+    assert_eq!(builds.read_build(&b0).await.unwrap().state, BuildState::Running, "attempt 2 runs");
+
+    // Its departure is proven, and mesh1's primary submits the exited member's recovery.
+    departure.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    let answered = cp.open_recovery("node-recovery", path.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await;
+    let verdicts: Vec<_> = builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
+        BuildFact::Attempt(a) if a.mesh.is_none() && a.attempt == 2 => Some(a.outcome),
+        _ => None,
+    }).collect();
+    assert!(verdicts.is_empty(), "the attempt lost with its executor has no verdict (only a named terminal failure ends the Build failed): {verdicts:?}");
+    let p = builds.read_build(&b0).await.unwrap();
+    assert_eq!((p.state, p.attempt, p.failed_at), (BuildState::Running, 2, None), "the Build stays in progress: {p:?}");
+    assert_eq!(builds.current_build().await.unwrap(), CurrentBuild::InProgress(b0.clone()), "the Build in progress stays current, so the reconcile loop drives it");
+    assert!(matches!(&answered, Err(Refusal::BuildInProgress(h)) if h.current_build_id == b0 && h.mesh.as_deref() == Some("mesh1")), "the recovery waits for the Build's next attempt: {answered:?}");
+    assert_eq!(claims.in_flight("mesh1").await.unwrap(), None, "the lost attempt's row is released");
+    let released = capture.spans("rdm.node_admin.build.update.via-claimant-departure");
+    assert!(released.iter().any(|(_, a)| a.get("lane").map(String::as_str) == Some("fabric") && a.get("attempt").map(String::as_str) == Some("2") && a.get("outcome").map(String::as_str) == Some("row-released")), "the release is spanned: {released:?}");
+
+    // The fabric-primary's drive claims the next attempt (attempt + 1) over the released row.
+    let next = InFlight { build_id: b0.clone(), lane: None, attempt: 3, claimant: fp_birth.node_id.clone() };
+    assert_eq!(claims.take_in_flight("mesh1", &next).await.unwrap(), Taken::Won, "mesh1 is free for the next attempt");
+    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: Some("mesh1".into()), executor_mesh: "mesh1".into(), build_id: b0.clone(), attempt: 3, executor: fp_birth.clone(), claimant: Some(fp_birth.node_id.clone()), mesh: None }).await.unwrap();
+    let p = builds.read_build(&b0).await.unwrap();
+    assert_eq!((p.state, p.attempt, p.claimant.as_ref()), (BuildState::Running, 3, Some(&fp_birth.node_id)), "the next attempt is claimed by the fabric-primary: {p:?}");
+}
