@@ -3102,6 +3102,12 @@ mod tests {
         recorded.get_mut(&path).unwrap().storage_persistence = Some(persistent);
         assert!(properties_owed(&build_id, &topology, &recorded, &[], &[]).is_empty(),
             "a lost reply is not permission to overwrite later properties");
+        let mut repeats = Vec::new();
+        properties_recognizing(&build_id, &topology, &recorded, &[], &[], &mut repeats);
+        assert_eq!(repeats, vec![(recorded[&path].node_id.clone(), path.clone())], "the plan reports the duplicate apply it recognized and does not plan");
+        let mut later = Vec::new();
+        properties_recognizing(&crate::build::BuildId::mint(), &topology, &recorded, &[], &[], &mut later);
+        assert!(later.is_empty(), "a later Build's entry is applied, never a repeat");
         assert_eq!(properties_owed(&crate::build::BuildId::mint(), &topology, &recorded, &[], &[]).len(), 3,
             "a later Build applies the whole entry again");
     }
