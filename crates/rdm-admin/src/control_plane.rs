@@ -238,15 +238,24 @@ impl ControlPlane {
             })
         };
         let mut current = read().await?;
-        // The mesh's own drift attempt whose claimant exited with it unfinished ends on that
-        // departure's exact proof, and the mesh is free for this attempt (`end_deleted_attempt`).
-        if holding(&current, Some(mesh)).is_some() && self.end_deleted_attempt(&current, mesh).await? {
-            current = read().await?;
+        // The attempt holding the mesh whose executor exited with it unfinished holds it no more on that
+        // departure's exact proof (`end_deleted_attempt`; build.md §4: the next attempt is claimed "after
+        // the provider's inspection of the executor's exact runtime answers `exited` or `os-stopped`"): a
+        // drift lane's ends Failed; a fabric-lane attempt stays Running, the Build in progress, its row
+        // released, and its fold claim no longer holds the mesh against this attempt.
+        let mut fabric_lost = false;
+        if holding(&current, Some(mesh)).is_some() {
+            match self.end_deleted_attempt(&current, mesh).await? {
+                Freed::LaneEnded => current = read().await?,
+                Freed::FabricRowReleased => fabric_lost = true,
+                Freed::Nothing => {}
+            }
         }
-        if let Some(attempt) = open_unclaimed(&current, mesh, action) {
+        if let Some(attempt) = open_unclaimed(&current, mesh, action, fabric_lost) {
             return Ok((admission, current, Some(attempt)));
         }
-        if let Some(mut held) = holding(&current, Some(mesh)) {
+        let held = if fabric_lost { lane_holding(&current, mesh) } else { holding(&current, Some(mesh)) };
+        if let Some(mut held) = held {
             // An attempt opened and claimed by no one has no claimant in the fold: the holder is the
             // admin whose in-flight row of the mesh names it, the one that opened it.
             if held.held_by.is_none() {
@@ -288,24 +297,24 @@ impl ControlPlane {
     /// receipts"). A fabric-lane attempt gets no verdict: "An attempt lost with its executor ... leaves
     /// the Build in progress (`Running`), and a successor or drift pass claims the next attempt"; only a
     /// named terminal failure makes the Build failed (build.md §4). Its row is released, and the
-    /// fabric-primary's drive claims the next attempt. Answers whether it ended an attempt.
-    async fn end_deleted_attempt(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
+    /// fabric-primary's drive claims the next attempt. Answers what it freed the mesh of.
+    async fn end_deleted_attempt(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<Freed, Refusal> {
         let fabric_holds = current.state == BuildState::Running && current.attempt_claimed_meshes.get(&current.attempt).is_some_and(|held| held == mesh);
         let (lane, attempt, executor, claimant) = if fabric_holds {
             (None, current.attempt, current.executor.as_ref(), current.claimant.as_ref())
         } else {
-            let Some(held) = current.lanes.get(mesh).filter(|held| held.state == BuildState::Running) else { return Ok(false) };
+            let Some(held) = current.lanes.get(mesh).filter(|held| held.state == BuildState::Running) else { return Ok(Freed::Nothing) };
             (Some(mesh.to_owned()), held.attempt, held.executor.as_ref(), held.claimant.as_ref())
         };
-        let (Some(executor), Some(claimant)) = (executor, claimant) else { return Ok(false) };
+        let (Some(executor), Some(claimant)) = (executor, claimant) else { return Ok(Freed::Nothing) };
         // An attempt this admin claimed is its own to run, never ended on a departure here: the fabric
         // lane's attempt by its claimant, the fabric-primary, whose drive claims the next attempt for the
         // successor once the lost executor's exit is proven (build.md §5.2: "Claims are the claimant's
         // (the fabric-primary's for a topology attempt, the mesh's mesh-primary's for a drift attempt
         // inside its mesh)"); a drift lane's by its executor.
         let own = if fabric_holds { claimant } else { &executor.node_id };
-        if self.node_id.get() == Some(own) { return Ok(false) }
-        if !self.departure_of(executor).await { return Ok(false) }
+        if self.node_id.get() == Some(own) { return Ok(Freed::Nothing) }
+        if !self.departure_of(executor).await { return Ok(Freed::Nothing) }
         let me = self.held_name().await;
         let reason = format!("executor node {}, incarnation {} exited with attempt {attempt} of Build {} unfinished in scope {:?}; its departure is proven", executor.node_id, executor.incarnation, current.build_id, lane);
         let span = tracing::info_span!("rdm.node_admin.build.update.via-claimant-departure", build_id = %current.build_id.log(), lane = lane.as_deref().unwrap_or("fabric"), attempt, claimant = %claimant, executor_node_id = %executor.node_id, executor_incarnation = %executor.incarnation, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty);
@@ -335,7 +344,7 @@ impl ControlPlane {
             span.record("outcome", "row-released");
             span.in_scope(|| tracing::info!("the fabric lane's attempt lost with its executor gets no verdict: the Build stays in progress, its in-flight row is released, and the fabric-primary's drive claims the next attempt"));
         }
-        Ok(ends)
+        Ok(if ends { Freed::LaneEnded } else { Freed::FabricRowReleased })
     }
 
     /// Compile `change` once against the current Build's topology into the next complete Build and
@@ -1519,16 +1528,33 @@ fn holding(p: &crate::build_state::BuildProjection, mesh: Option<&str>) -> Optio
             if fabric_mesh.as_deref() == Some(mesh) {
                 return Some(InProgress { current_build_id: p.build_id.clone(), mesh: Some(mesh.to_string()), held_by: p.claimant.clone() });
             }
-            p.lanes.get(mesh).filter(|l| l.is_open()).map(|l| InProgress { current_build_id: p.build_id.clone(), mesh: Some(mesh.to_string()), held_by: l.claimant.clone() })
+            lane_holding(p, mesh)
         }
     }
 }
 
+/// `mesh`'s own drift lane's open attempt of `p`, which holds the mesh whatever the fabric lane holds.
+fn lane_holding(p: &crate::build_state::BuildProjection, mesh: &str) -> Option<InProgress> {
+    p.lanes.get(mesh).filter(|l| l.is_open()).map(|l| InProgress { current_build_id: p.build_id.clone(), mesh: Some(mesh.to_string()), held_by: l.claimant.clone() })
+}
+
+/// What [`ControlPlane::end_deleted_attempt`] freed a mesh of, on the exact departure proof of the
+/// executor of the attempt holding it.
+enum Freed {
+    /// No attempt: none holds the mesh unfinished with its executor's exit proven.
+    Nothing,
+    /// The mesh's drift-lane attempt, ended `Failed` naming the departure, its row released.
+    LaneEnded,
+    /// The fabric lane's attempt lost with its executor: no verdict, the Build in progress, its row released.
+    FabricRowReleased,
+}
+
 /// The attempt of `mesh`'s drift lane of `p` that is opened with `action` and claimed by no one,
 /// while the fabric lane's attempt does not hold `mesh`: the lane stands at its open (`Pending`, the
-/// open one past the highest claim). An attempt handed off or claimed is not one.
-fn open_unclaimed(p: &crate::build_state::BuildProjection, mesh: &str, action: &AttemptAction) -> Option<u32> {
-    let fabric_holds = p.state == BuildState::Running && p.attempt_claimed_meshes.get(&p.attempt).is_some_and(|m| m == mesh);
+/// open one past the highest claim). An attempt handed off or claimed is not one. `fabric_lost`: the fabric
+/// lane's attempt is lost with its executor, its row released, and holds the mesh no more.
+fn open_unclaimed(p: &crate::build_state::BuildProjection, mesh: &str, action: &AttemptAction, fabric_lost: bool) -> Option<u32> {
+    let fabric_holds = !fabric_lost && p.state == BuildState::Running && p.attempt_claimed_meshes.get(&p.attempt).is_some_and(|m| m == mesh);
     let lane = p.lanes.get(mesh).filter(|l| !fabric_holds && l.state == BuildState::Pending && l.opened == l.attempt + 1)?;
     (lane.action.as_ref() == Some(action)).then_some(lane.opened)
 }

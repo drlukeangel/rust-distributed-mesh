@@ -2118,11 +2118,13 @@ async fn a_fabric_recovery_waits_for_the_running_fabric_attempt_and_is_opened_at
 /// makes the Build failed"): the Build completed once, then a fabric-lane attempt acting in mesh1 was
 /// claimed by an earlier birth at the fabric-primary's own path, which exited with it unfinished. Its
 /// departure is proven, and mesh1's primary submits its member's recovery. The fabric-primary's door
-/// releases mesh1's in-flight row of the lost attempt and writes no verdict for it. The Build stays
-/// Running and current, so its drive is driven again. The fabric-primary claims the next attempt over
-/// the released row, and the recovery waits for it. Must NOT happen: the lost attempt ended `Failed`,
-/// which makes the Build failed, so no pass drives it and its next attempt is never claimed
-/// (rdm#262: `mesh1.rpc.3` never created).
+/// releases mesh1's in-flight row of the lost attempt and writes no verdict for it, and the recovery
+/// claims mesh1 first (node-recovery.md step 1: "no other attempt is claimed in that mesh before it,
+/// the Build's own next attempt included"). The Build stays Running and current throughout, the
+/// recovery's run included. Once the recovery ends and releases mesh1, the Build is still current, so
+/// its drive is driven again and the next attempt takes mesh1. Must NOT happen: the lost attempt
+/// ended `Failed`, which makes the Build failed, so no pass drives it after the recovery and its next
+/// attempt is never claimed (rdm#262: `mesh1.rpc.3` never created).
 #[tokio::test]
 async fn a_fabric_attempt_lost_with_its_claimant_leaves_the_build_in_progress_and_its_mesh_free_for_the_next_attempt() {
     use rdm_admin::accepted::AttemptAction;
@@ -2169,13 +2171,30 @@ async fn a_fabric_attempt_lost_with_its_claimant_leaves_the_build_in_progress_an
     let p = builds.read_build(&b0).await.unwrap();
     assert_eq!((p.state, p.attempt, p.failed_at), (BuildState::Running, 2, None), "the Build stays in progress: {p:?}");
     assert_eq!(builds.current_build().await.unwrap(), CurrentBuild::InProgress(b0.clone()), "the Build in progress stays current, so the reconcile loop drives it");
-    assert!(matches!(&answered, Err(Refusal::BuildInProgress(h)) if h.current_build_id == b0 && h.mesh.as_deref() == Some("mesh1")), "the recovery waits for the Build's next attempt: {answered:?}");
-    assert_eq!(claims.in_flight("mesh1").await.unwrap(), None, "the lost attempt's row is released");
     let released = capture.spans("rdm.node_admin.build.update.via-claimant-departure");
     assert!(released.iter().any(|(_, a)| a.get("lane").map(String::as_str) == Some("fabric") && a.get("attempt").map(String::as_str) == Some("2") && a.get("outcome").map(String::as_str) == Some("row-released")), "the release is spanned: {released:?}");
+    let recovery = match answered {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("the recovery claims mesh1 first, the Build's own next attempt waiting for it: {other:?}"),
+    };
+    assert_eq!((recovery.mesh.as_deref(), recovery.attempt), (Some("mesh1"), 1), "attempt 1 of mesh1's lane");
+    let row = claims.in_flight("mesh1").await.unwrap().expect("mesh1's in-flight row");
+    assert_eq!((row.lane.as_deref(), row.attempt, &row.claimant), (Some("mesh1"), 1, &fp_birth.node_id), "the recovery holds mesh1's row");
 
-    // The fabric-primary's drive claims the next attempt (attempt + 1) over the released row.
+    // While the recovery runs, the Build's next attempt (attempt + 1) is held off mesh1.
     let next = InFlight { build_id: b0.clone(), lane: None, attempt: 3, claimant: fp_birth.node_id.clone() };
+    assert!(matches!(claims.take_in_flight("mesh1", &next).await.unwrap(), Taken::Held(h) if h.lane.as_deref() == Some("mesh1")), "the next attempt answers build-in-progress while the recovery runs");
+    assert_eq!(builds.current_build().await.unwrap(), CurrentBuild::InProgress(b0.clone()), "current while the recovery runs");
+
+    // The recovery ends and releases mesh1: the Build is still current, and its next attempt takes mesh1.
+    for r in recovery_receipts(Some("mesh1"), &b0, 1, &path, &exited.node_id, exited.incarnation_id.as_ref().unwrap(), &fp_birth) {
+        builds.append_step_receipt(&r).await.unwrap();
+    }
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh1".into()), build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+    claims.release_in_flight("mesh1", &row).await.unwrap();
+    let p = builds.read_build(&b0).await.unwrap();
+    assert_eq!((p.state, p.attempt, p.lane_open()), (BuildState::Running, 2, false), "the recovery ended; the Build is still in progress: {p:?}");
+    assert_eq!(builds.current_build().await.unwrap(), CurrentBuild::InProgress(b0.clone()), "after the recovery's end the Build is current, so the pass its release wakes drives it");
     assert_eq!(claims.take_in_flight("mesh1", &next).await.unwrap(), Taken::Won, "mesh1 is free for the next attempt");
     builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: Some("mesh1".into()), executor_mesh: "mesh1".into(), build_id: b0.clone(), attempt: 3, executor: fp_birth.clone(), claimant: Some(fp_birth.node_id.clone()), mesh: None }).await.unwrap();
     let p = builds.read_build(&b0).await.unwrap();
