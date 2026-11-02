@@ -329,7 +329,7 @@ async fn incomplete_send(seed: u64) -> Report {
                 let mut behind = n.record.clone();
                 behind.transport_addr = tap.addr();
                 let p = caller(behind).await;
-                let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(1) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+                let opts = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_millis(400)) }, ..Default::default() };
                 let (o, ev) = p.call(b"partitioned", &opts).await;
                 assert_eq!(r.saw("partitioned_dial", &o), "NotSent(Deadline)");
                 assert!(ev.is_none_or(|e| !e.committed));
@@ -394,7 +394,7 @@ async fn reply_cut(seed: u64) -> Report {
         let (o, _) = control(&c, b"control").await;
         assert_eq!(r.saw("control", &o), "Reply(OK)");
         let value = format!("v{}", r.s.draw("value", 1000));
-        let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(600) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+        let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(600)), ..Default::default() };
         let mode = if cut == Cut::ReplyLost { Mode::Drop } else { Mode::Hold };
         let put = format!("put:{value}");
         let call = c.call(put.as_bytes(), &opts);

@@ -75,7 +75,7 @@ async fn a_caller_joining_a_dial_is_not_ended_by_the_starters_shorter_budget() {
     let mut behind = n.resolved.clone();
     behind.transport_addr = tap.addr();
     let r = rig(behind).await;
-    let short = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(1) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+    let short = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_millis(300)) }, ..Default::default() };
     let rr = &r;
     let tapr = &tap;
     let ((starter, starter_ended_ms), (joiner, joiner_ended_ms)) = tokio::join!(

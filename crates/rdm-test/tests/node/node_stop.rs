@@ -1403,9 +1403,13 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     let early: Vec<&&Value> = ready.iter().filter(|sp| attr(sp, "to") == successor_s && start_ns(sp) < installed).collect();
     assert!(early.is_empty(), "no declaration to {successor_s} before it held the primary role: {early:#?}");
     let cancelled: Vec<&Value> = named(&spans, "rdm.node_rpc.status.remove.via-primary-changed").into_iter().filter(|sp| births.contains(&attr(sp, "node"))).collect();
-    // One call carried the declaration across the hold, in flight at the old primary's door until the
-    // role moved: the node runs no declaration loop of its own (Q52).
-    assert_eq!(cancelled.len(), 1, "one call to the old primary, cancelled once when the role moved: {cancelled:#?}");
+    // The declaration's calls to the old primary across the hold: each cancelled when the role moved
+    // while it was in flight, or ended unanswered once its attempts were spent (Q311), the
+    // declaration then owed until the node's queue sends it again. None was applied by the old primary.
+    let to_old: Vec<&&Value> = ready.iter().filter(|sp| attr(sp, "to") == primary_s).collect();
+    assert!(cancelled.len() + to_old.len() >= 1, "the declaration was sent to the old primary across the hold: cancelled {cancelled:#?}, ended {to_old:#?}");
+    assert!(cancelled.len() <= 1, "at most the one call in flight at the move is cancelled: {cancelled:#?}");
+    assert!(to_old.iter().all(|sp| attr(sp, "outcome").starts_with("Indeterminate")), "the old primary held the declaration unanswered, each call spent: {to_old:#?}");
     println!(
         "declaration across a role move: applied by {} (route {}); flame http://192.168.68.99:16687/trace/{}; drift held {} pass(es), then attempt {attempt} of {build} deleted {node:?}: flame http://192.168.68.99:16687/trace/{}",
         attr(applied[0], "to"),

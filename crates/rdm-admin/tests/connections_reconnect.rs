@@ -69,7 +69,8 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         resolver.insert(destination.clone());
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
-        let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(300)), ..Default::default() };
+        // One attempt per call: each call is one dial, one Direct Failed row.
+        let opts = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_millis(300)) }, ..Default::default() };
 
         // ATTEMPTS completed NotSent dials, each one's completion paired with the rows it left.
         let mut attempts = Vec::new();

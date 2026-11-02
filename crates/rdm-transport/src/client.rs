@@ -261,8 +261,8 @@ pub(crate) enum Attempted {
     /// The call's attempts are spent with no answer (Q311): it ends `NotSent` with the last reason
     /// when no attempt committed, `Indeterminate` otherwise.
     Spent,
-    /// A stream op, committed, lost the connection (or the stream) its request committed on: a
-    /// stream request is never resent after its commit (node-rpc.md §34).
+    /// A stream op, acked, lost the stream its frames rode, and its invocation did not complete
+    /// within the call's time limit from that loss: the stream ends.
     TransportLost(String),
     /// The attempt task's last word: the path it ended on, after any outcome above (i146 Q38). The
     /// call names it when its attempts end with no reply delivered.
@@ -276,12 +276,10 @@ pub(crate) enum AttemptEnd {
     CompleteAtTurn,
     /// The call's attempts are spent with no answer (`Attempted::Spent`).
     AttemptsSpent,
-    /// The connection a stream op's request committed on closed (`Attempted::TransportLost`).
-    CommittedConnectionClosed,
     /// The receiving birth's exit or removal is proven (`Attempted::ReceiverGone`).
     ReceiverGone,
-    /// Acked, its stream lost, and no resent response is waited for: a stream op whose connection
-    /// closed (`Attempted::TransportLost`).
+    /// Acked, its stream lost, and the invocation not complete within the call's time limit from the
+    /// loss: a stream op held past its limit (`Attempted::TransportLost`).
     HoldLost,
     /// The target did not resolve and an unsent attempt ends the call (`Attempted::EndedPreCommit`).
     UnreachedFinal,
@@ -303,7 +301,6 @@ impl AttemptEnd {
         match self {
             Self::CompleteAtTurn => "complete-at-turn",
             Self::AttemptsSpent => "attempts-spent",
-            Self::CommittedConnectionClosed => "committed-connection-closed",
             Self::ReceiverGone => "receiver-gone",
             Self::HoldLost => "hold-lost",
             Self::UnreachedFinal => "unreached-final",
@@ -602,13 +599,14 @@ impl NodeRpcClient {
                     Some(n) => format!("incarnation {} superseded by {}", key.birth(), n.incarnation.as_str()),
                     None => format!("incarnation {} no longer resolves", key.birth()),
                 };
-                // The pool also invalidates a dial when its receiving birth ends: that proof ends the
-                // call as receiver-gone. A moved slot of a living birth (or, for a call addressed to
-                // a primary, the role's next birth) is neither the receiver's answer nor its exited
-                // verdict (i146 Q52, Q313), so the attempt sent nothing and the next one dials what
-                // the view names then.
-                if let Some(why) = node.observed.as_ref().and_then(|n| self.receiver_gone(target, &n.incarnation)) {
-                    return Phase::ReceiverGone(why);
+                // The pool also invalidates a dial when its receiving birth ends: the caller's
+                // stale-target refusal, decided before anything is sent (node-rpc.md §20.1). A moved
+                // slot of a living birth (or, for a call addressed to a primary, the role's next
+                // birth) is neither the receiver's answer nor its exited verdict (i146 Q52, Q313), so
+                // the attempt sent nothing and the next one dials what the view names then.
+                if node.observed.as_ref().and_then(|n| self.receiver_gone(target, &n.incarnation)).is_some() {
+                    stale_span(&request_target, &moved);
+                    return Phase::Done(pre.stale_before_finish(&request_target));
                 }
                 tracing::info!(step = "dial-superseded", moved = %moved, "the dial's slot moved under a living birth: the request is resent");
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(format!("the dial was superseded: {moved}"))));
@@ -902,7 +900,6 @@ impl NodeRpcClient {
             tx,
             state: state.clone(),
             attempts: attempts.clone(),
-            committed_on: None,
         };
         // The attempts run on the dispatcher of the call's span, as the pool's dial does: a worker that
         // holds no dispatcher still delivers their events to the call's subscriber.
@@ -1230,7 +1227,8 @@ struct Attempts {
     carried_floor: Option<u64>,
     payload: Payload,
     opts: CallOptions,
-    /// The op answers with one frame; a stream op is never resent after its commit (node-rpc.md §34).
+    /// The op answers with one frame; a stream op's frames have no time limit while its stream
+    /// lives, and once its stream is lost it is held for its time limit at most.
     unary: bool,
     /// The attempts spent before the task started: a receiver the view did not hold yet.
     spent: u32,
@@ -1238,8 +1236,6 @@ struct Attempts {
     tx: mpsc::UnboundedSender<Attempted>,
     state: watch::Receiver<SlotState>,
     attempts: Arc<std::sync::atomic::AtomicU32>,
-    /// The connection a stream op's request committed on: the stream lives as long as it does.
-    committed_on: Option<iroh::endpoint::Connection>,
 }
 
 /// A carrier's response frame `h` as the answer to `invocation`, the request it carried (i146 Q52):
@@ -1393,6 +1389,8 @@ impl Attempts {
         let mut attempt = self.spent;
         let mut on_birth = self.spent;
         let mut held = 0u32;
+        // Since when a stream op has held its lost stream.
+        let mut held_since: Option<Instant> = None;
         // The last attempt on a birth committed: its wait for the ack runs to its time limit.
         let mut last_until: Option<Instant> = None;
         let mut committed = false;
@@ -1403,11 +1401,6 @@ impl Attempts {
         loop {
             if self.state.borrow().complete {
                 return AttemptEnd::CompleteAtTurn;
-            }
-            // A stream op's only bound after its commit is the connection the request committed on.
-            if let Some(why) = self.committed_on.as_ref().and_then(|c| c.close_reason()) {
-                let _ = self.tx.send(Attempted::TransportLost(format!("the connection the request committed on closed ({why})")));
-                return AttemptEnd::CommittedConnectionClosed;
             }
             if let Some(why) = self.receiver_gone() {
                 return self.end_receiver_gone(why, attempt);
@@ -1422,7 +1415,7 @@ impl Attempts {
                 // Acked, its response not complete: hold a connection the responder can resend on,
                 // within the reply's time limit, which its owner keeps.
                 held += 1;
-                if let Err(why) = self.hold_connection(held).await {
+                if let Err(why) = self.hold_connection(held, &mut held_since).await {
                     let _ = self.tx.send(Attempted::TransportLost(why));
                     return AttemptEnd::HoldLost;
                 }
@@ -1550,15 +1543,12 @@ impl Attempts {
                         committed = true;
                         let _ = self.tx.send(Attempted::Committed { frame_len });
                     }
-                    if !self.unary {
-                        self.committed_on = Some(opened.conn.clone());
-                    }
                     // The wait for the ack runs from the write: a slow dial spends none of it. An
                     // unacked request is sent again at the schedule's next delay; the last attempt
                     // waits for its ack until its time limit. A carried attempt waits for its
                     // carrier's answer, which the carrier gives inside the `remaining_ms` it was
-                    // told. A stream op is never resent after its commit (node-rpc.md §34): its
-                    // stream lives as long as the connection it committed on.
+                    // told. A stream op is resent only when its stream is lost before its first
+                    // frame: its frames are not bounded by a time limit.
                     let ack_by = match &outer {
                         Some(_) => Some(Instant::now() + pacing.floor),
                         None if !self.unary => None,
@@ -1580,14 +1570,14 @@ impl Attempts {
                             return AttemptEnd::Reset;
                         }
                         StreamEnd::NoAck => continue,
-                        // A stream op's request is never resent after its commit.
-                        StreamEnd::Lost if !self.unary && !self.state.borrow().acked => {
-                            let _ = self.tx.send(Attempted::TransportLost("the stream the request committed on was lost before its first frame".into()));
-                            return AttemptEnd::CommittedConnectionClosed;
-                        }
                         StreamEnd::Lost => {
-                            if !self.state.borrow().acked && !last_on_birth {
-                                self.pause(resend_at).await;
+                            if !self.state.borrow().acked {
+                                if last_on_birth {
+                                    // Its last attempt's stream is gone unacked: no answer can come.
+                                    last_until = None;
+                                } else {
+                                    self.pause(resend_at).await;
+                                }
                             }
                         }
                         // A carrier failure never ends the call (i146 Q52): the request is unacked, and the
@@ -1607,14 +1597,18 @@ impl Attempts {
     }
 
     /// Acked, response not complete, its stream gone: keep a pooled connection to the responder,
-    /// on the schedule, until the response completes there. The owner's reply limit, counted from
-    /// the ack, ends it.
-    /// `Err` for a stream op whose connection closed: it waits for no resent response (the
-    /// connection it committed on is its only bound).
-    async fn hold_connection(&mut self, turn: u32) -> Result<(), String> {
+    /// on the schedule, so the responder resends what it holds there, until the response completes.
+    /// A unary call's reply limit, counted from the ack, is its owner's and ends it. A stream op's
+    /// frames have no limit while its stream lives; once lost, `Err` when the invocation has not
+    /// completed within the call's time limit from the loss (`held_since`).
+    async fn hold_connection(&mut self, turn: u32, held_since: &mut Option<Instant>) -> Result<(), String> {
         let pacing = self.client.delivery.pacing();
-        if let Some(why) = self.committed_on.as_ref().and_then(|c| c.close_reason()) {
-            return Err(format!("the connection the request committed on closed ({why})"));
+        let limit = self.opts.resend.time_limit.0;
+        if !self.unary {
+            let since = *held_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= limit {
+                return Err(format!("the stream was lost and its invocation did not complete within {} ms", since.elapsed().as_millis()));
+            }
         }
         if let Ok(node) = self.client.reach(&self.target) {
             let key = PoolKey { scope: self.opts.scope.clone(), peer: node.peer, incarnation: node.observed.as_ref().map(|n| n.incarnation.clone()) };
@@ -1636,7 +1630,10 @@ impl Attempts {
                 _ = self.state.changed() => {}
             }
         }
-        let until = Instant::now() + pacing.after(turn.max(1));
+        let mut until = Instant::now() + pacing.after(turn.max(1));
+        if let Some(since) = held_since.filter(|_| !self.unary) {
+            until = until.min(since + limit);
+        }
         self.pause(until).await;
         Ok(())
     }
@@ -1813,6 +1810,20 @@ impl Attempts {
         }
         StreamEnd::Lost
     }
+}
+
+/// The caller's stale-target refusal: its resolver no longer names the birth the call was dialled
+/// to. Only a caller decides it; no receiver refuses a call for the node id it names (R-UC1a).
+/// `current` is what the resolver holds instead, in its own words.
+fn stale_span(asked: &Target, current: &str) {
+    tracing::info_span!(
+        "rdm.node_rpc.connection.reject.via-stale-target",
+        decided_by = "caller",
+        node_id = %asked.node_id,
+        op = asked.op,
+        current,
+    )
+    .in_scope(|| tracing::info!("the target is stale: RejectedStale, never dispatched"));
 }
 
 /// Records the caller's typed cancellation when its future is dropped before an outcome exists.

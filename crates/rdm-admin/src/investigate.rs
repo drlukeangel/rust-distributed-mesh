@@ -813,9 +813,10 @@ impl TickleCalls for WatchCalls<'_> {
     }
 
     async fn via_peer(&self, carrier: &Node, admin: &Node, req: &StatusRequest) -> ProbeEnd {
-        // A carrier that took the kick has the whole carried time for its answer, connection-lost
+        // The same probe, carried (node-tickle.md "Ladder"): one attempt, as the direct probe's. A
+        // carrier that took the kick has the whole carried time for its answer, connection-lost
         // included (mesh-investigation.md steps 1, 3), plus the transport's share.
-        let opts = CallOptions { resend: Resend::with_time_limit(carried_budget(self.0.interval) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
+        let opts = CallOptions { resend: Resend { attempts: 1, time_limit: TimeLimit(carried_budget(self.0.interval) + rdm_transport::TRANSPORT_LIMIT) }, ..CallOptions::default() };
         let (out, _) = self.0.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, req, &opts).await;
         ProbeEnd::of(out)
     }

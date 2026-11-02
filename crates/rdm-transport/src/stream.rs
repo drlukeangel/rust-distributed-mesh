@@ -397,9 +397,9 @@ pub struct ReplyStream<P: StreamingProtocol> {
     started: Instant,
     owed: ResendCall,
     order: FrameOrder,
-    /// Until the request is acked (its first frame, or the responder's ack): the call's time limit
-    /// from the commit (node-rpc.md §34). After it the stream lives as long as the connection the
-    /// request committed on.
+    /// No time limit bounds a committed stream's frames while its stream lives (node-rpc.md §34):
+    /// `None` for every stream the client opens. A stream lost and not recovered within the call's
+    /// time limit ends (`Attempted::TransportLost`).
     deadline: Option<Instant>,
     done: bool,
     /// The acks of the frames handed over and not yet recovered by the owner, in order.
@@ -441,7 +441,6 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                 biased;
                 f = self.owed.frames.recv() => match f {
                     Some(SlotEvent::Frame(bytes, ack)) => {
-                        self.deadline = None;
                         let frame = match P::decode_reply(&bytes) {
                             Ok(f) => f,
                             Err(e) => return Some(self.fail(StreamFailure::Violation(format!("a frame does not decode: {e:?}")))),
@@ -477,11 +476,6 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                     Some(SlotEvent::Violation(why)) => return Some(self.fail(StreamFailure::Violation(why))),
                     None => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into())))),
                 },
-                changed = self.owed.state.changed(), if self.deadline.is_some() => {
-                    if changed.is_err() || self.owed.state.borrow().acked {
-                        self.deadline = None;
-                    }
-                }
                 ev = self.owed.attempted.recv() => match ev {
                     Some(Attempted::Reset(c)) => {
                         let failure = StreamFailure::of_reset(self.committed.take(), c);
@@ -594,9 +588,8 @@ impl NodeRpcClient {
                         opening.complete();
                         finish("stream-open");
                         span.in_scope(|| tracing::info!("node rpc stream call opened"));
-                        // Its first frame (or the responder's ack) within the call's time limit; its later
-                        // frames as long as the connection the request committed on (node-rpc.md §34).
-                        let deadline = (!owed.state.borrow().acked).then(|| Instant::now() + opts.resend.time_limit.0);
+                        // Once committed, no time limit bounds the stream's frames (node-rpc.md §34).
+                        let deadline = None;
                         let evidence = owed.evidence.lock().unwrap().clone();
                         span.record("reused", evidence.reused);
                         return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: Some(committed), _p: PhantomData }, evidence));

@@ -21,7 +21,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::delivery::MAX_REORDER_POSITIONS;
 use rdm_core::framing::{Birth, DeliveryId};
-use rdm_core::outcome::{IndeterminateReason, MalformedKind, ReplyKind, RpcOutcome};
+use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use rdm_core::{IncarnationId, NodeId};
@@ -109,8 +109,7 @@ pub enum Check {
     Unserved,
     /// A second delivery of one request (its identity) is acked without dispatch: the handler runs once.
     DuplicateSuppressed,
-    /// A unary reply lost after the request's acceptance is delivered on a new stream; a stream whose
-    /// connection is lost after acceptance ends `Indeterminate` by name, never resent. The handler runs once.
+    /// A reply lost after the request's acceptance is delivered on a new stream; the handler runs once.
     ReplyLostAfterAcceptance,
     /// Streaming: `Started`, data frames, the terminal, at consecutive positions of one invocation.
     FramesInOrder,
@@ -959,9 +958,8 @@ where
 }
 
 /// The consumer reads the long stream to the bound without acknowledging; every connection the
-/// server holds is cut. A stream lives as long as the connection its request committed on (Q311):
-/// the stream ends `Indeterminate`/`ReplyLost` by name, its request never resent, its handler run
-/// once; its owner reattaches by its own rule.
+/// server holds is cut, the frames it owes are resent on a new stream, and once acknowledged the
+/// stream goes on to its terminal: every position handed over once, in order, the handler run once.
 async fn stream_reply_lost<P>(f: &Streaming<P>) -> Result<(), String>
 where
     P: StreamingProtocol,
@@ -971,25 +969,27 @@ where
     let bound = MAX_REORDER_POSITIONS as usize;
     let r = Rig::new(&f.serve, P::OP, false).await?;
     let mut s = open::<P>(&r, &f.long, &options()).await?;
+    let mut seen = Vec::new();
     for i in 0..bound {
-        frame(&mut s).await.map_err(|why| format!("frame {i}: {why}"))?;
+        let (kind, _) = frame(&mut s).await.map_err(|why| format!("frame {i}: {why}"))?;
+        seen.push((kind, s.position().map(|(id, seq)| (id.clone(), seq))));
     }
     let d = r.server.delivery().clone();
     if !eventually(FRAME_BOUND, || d.owed_frames() == bound).await {
         return Err(format!("{} frames owed before the cut, expected {bound}", d.owed_frames()));
     }
-    if r.server.close_connections_except(&[], "conformance: the stream's connection is lost after acceptance") == 0 {
+    if r.server.close_connections_except(&[], "conformance: the stream's frames are lost after acceptance") == 0 {
         return Err("no connection to cut".into());
     }
-    match tokio::time::timeout(FRAME_BOUND, s.next()).await {
-        Ok(Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(_))))) => {}
-        other => return Err(format!("the stream did not end ReplyLost with its connection: {other:?}")),
+    if !eventually(FRAME_BOUND, || DeliveryStats::get(&d.stats().responses_resent) >= 1).await {
+        return Err(format!("no owed frame was resent within {FRAME_BOUND:?} of the cut"));
     }
-    let resends = DeliveryStats::get(&r.client.delivery().stats().resends);
-    if resends != 0 {
-        return Err(format!("the stream's request was resent {resends} times after its commit"));
-    }
-    r.dispatched_exactly(1)
+    s.accepted().await;
+    read_to_terminal(&mut s, &mut seen).await.map_err(|why| format!("after the cut: {why}"))?;
+    in_order(&seen)?;
+    r.dispatched_exactly(1)?;
+    r.acked_every(seen.len(), "the stream read to its terminal after the cut").await?;
+    r.owes_nothing("the stream read to its terminal after the cut").await
 }
 
 /// The protocol's consumer reads the short stream with a [`StreamRecord`]: no frame is

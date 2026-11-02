@@ -50,7 +50,9 @@ where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, S
     let node = digest.node.node_id.to_string();
     let mut last = String::new();
     for attempt in 1..=attempts.max(1) {
-        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(5)), ..Default::default() };
+        // One attempt per anchor: this loop's own attempts go on to the anchor `next` names (Q315:
+        // the caller owns its attempts).
+        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_secs(5)) }, ..Default::default() };
         let to = next().await;
         let anchor = match &to {
             Ok((_, anchor)) => anchor.clone(),

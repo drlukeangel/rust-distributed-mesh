@@ -39,11 +39,17 @@ pub fn update_operation(role: PrimaryRole, operation: &rdm_core::OperationId) ->
     rdm_core::OperationId::primary_update(role, operation)
 }
 
-/// The commander's bound on reaching the primary and sending it the command (`UpdatePrimary`). The
-/// command's reply is the primary's whole update, its own call to the successor included, so nothing
-/// but the primary's liveness bounds the reply: the transport's idle timeout and keepalive, as for the
-/// Build carrier (node-rpc.md §34).
-const COMMAND_SEND: std::time::Duration = std::time::Duration::from_secs(10);
+/// The time limit of the command (`UpdatePrimary`): its reply is the primary's whole update, so it
+/// is the primary's own bound plus the transport's 10 s (Q311): its call to the successor, node
+/// investigation of the successor when that call is not answered, and the call made again once
+/// investigation reaches it (`call_and_look`). Each call to the successor is `Resend::default()`: its
+/// attempts' time limits and the schedule's delays between them.
+fn command_limit() -> std::time::Duration {
+    let r = Resend::default();
+    let delays = rdm_core::cadence::gossip_interval() * ((1u32 << (r.attempts.max(1) - 1)) - 1);
+    let successor_call = r.time_limit.0 * u32::from(r.attempts) + delays;
+    successor_call * 2 + crate::offline::tickle_ladder_at_default_budget() + rdm_transport::TRANSPORT_LIMIT
+}
 
 /// Finishes every write this admin's stores have issued (node-primary-update.md step 3, Q109): the
 /// primary runs it before it calls its successor, so no write it issued lands after it.
@@ -516,7 +522,7 @@ impl HandoverDoor {
             };
         }
         let req = Request::UpdatePrimary { node_type: primary.kind.node_type().to_string(), build_id: build_id.to_string(), run, operation: operation.clone(), successor: None };
-        match self.call_once(&to.node_id, &req, &CallOptions { resend: Resend::with_time_limit(COMMAND_SEND), ..CallOptions::default() }).await {
+        match self.call_once(&to.node_id, &req, &CallOptions { resend: Resend::with_time_limit(command_limit()), ..CallOptions::default() }).await {
             Ok(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => {
                 self.take(&revisions).await;
                 Ok(revisions)
@@ -663,7 +669,7 @@ impl HandoverDoor {
             return Err(rdm_core::reply::handover::bounded_failed(STEP, &text, rdm_core::outcome::Code::FailedPrecondition));
         };
         let req = Request::UpdatePrimary { node_type: primary.kind.node_type().to_string(), build_id: build_id.to_string(), run, operation: operation.clone(), successor: Some(exact(&named)) };
-        match self.call_once(&primary.node_id, &req, &CallOptions { resend: Resend::with_time_limit(COMMAND_SEND), ..CallOptions::default() }).await {
+        match self.call_once(&primary.node_id, &req, &CallOptions { resend: Resend::with_time_limit(command_limit()), ..CallOptions::default() }).await {
             Ok(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => {
                 self.take(&revisions).await;
                 Ok(revisions)

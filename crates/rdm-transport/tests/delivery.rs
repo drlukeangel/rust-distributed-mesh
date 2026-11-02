@@ -1175,14 +1175,12 @@ async fn a_new_sender_birth_starts_at_one_and_the_old_window_stays_until_its_end
     assert_eq!(s.delivery.window_of(&new).0, 1, "the live birth's window stays");
 }
 
-/// Cell 22 (i151.s1; Q311, the stream op's rule in node-rpc.md §34 as the i151 proposal states it).
-/// CONTRACT: a stream op lives as long as the connection its request committed on: once acked, its
-/// frames are bounded by that connection, never by its time limit, and the connection's closure
-/// ends the stream `Indeterminate`/`ReplyLost` by name, its request never resent; the owner
-/// reattaches by its own rule. Must NOT happen: the stream ended by its time limit while its
-/// connection lives, a resend of its request, or a stream that outlives its connection.
+/// Cell 22. CONTRACT (node-rpc.md §31, §43): a response frame its consumer has read but not yet
+/// recovered is not acked: the responder still owes it, and after a reconnect it is resent. The
+/// consumer, which holds it, is not handed it again; its acceptance acks it on the stream it now
+/// arrives on, and the responder settles.
 #[tokio::test]
-async fn a_stream_lives_as_long_as_the_connection_its_request_committed_on() {
+async fn a_frame_its_consumer_has_not_recovered_is_not_acked_and_is_resent_after_a_reconnect() {
     let hold = Arc::new(Semaphore::new(0));
     let h = hold.clone();
     let s = served_with(move |b| {
@@ -1200,20 +1198,24 @@ async fn a_stream_lives_as_long_as_the_connection_its_request_committed_on() {
     })
     .await;
     let (client, _) = client_of(&[&s.node]).await;
-    let cd = client.delivery().clone();
-    let (mut stream, _) = client.call_stream::<Tick>(&s.target(), &TickRequest::Tick, &budget(CADENCE * 2)).await.map_err(|(o, _)| o).expect("the stream opens");
+    let (mut stream, _) = client.call_stream::<Tick>(&s.target(), &TickRequest::Tick, &budget(Duration::from_secs(8))).await.map_err(|(o, _)| o).expect("the stream opens");
     assert!(matches!(stream.next().await, Some(StreamItem::Frame(FrameKind::Started, TickFrame::Started))));
-    stream.accepted().await;
     assert!(matches!(stream.next().await, Some(StreamItem::Frame(FrameKind::Data, TickFrame::Item { i: 1 }))));
-    stream.accepted().await;
-    // Past its time limit, its connection alive: the stream stands.
-    let next = tokio::time::timeout(CADENCE * 6, stream.next()).await;
-    assert!(next.is_err(), "the stream outlives its time limit while its connection lives: {next:?}");
+    tokio::time::sleep(CADENCE * 3).await;
+    assert_eq!(s.delivery.owed_frames(), 2, "read, not yet recovered: neither frame is acked");
     assert!(s.server.close_connections_except(&[], "the cell cuts the connection") >= 1);
-    let next = tokio::time::timeout(Duration::from_secs(3), stream.next()).await.expect("the connection's closure ends the stream");
-    assert!(matches!(&next, Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(_))))), "{next:?}");
-    assert_eq!(get(&cd.stats().resends), 0, "a stream request is never resent after its commit");
+    eventually("the frames still owed are resent after the reconnect", Duration::from_secs(3), || get(&s.delivery.stats().responses_resent) >= 1).await;
+    tokio::time::sleep(CADENCE * 3).await;
+    assert_eq!(s.delivery.owed_frames(), 2, "resent and still owed: the consumer has not recovered them");
+    stream.accepted().await;
+    eventually("the consumer's recovery acks both, on the stream the copies came on", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
     hold.add_permits(1);
+    // The consumer holds both frames: the resent copies are never handed to it again.
+    let next = stream.next().await;
+    assert!(matches!(next, Some(StreamItem::Frame(FrameKind::Terminal, TickFrame::Done))), "the next frame is the terminal: {next:?}");
+    stream.accepted().await;
+    assert!(stream.next().await.is_none());
+    eventually("the terminal is recovered and acked", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
 }
 
 /// Cell 23. CONTRACT (i146 Q38): every return of a request's attempt task names its path, spanned
@@ -1615,10 +1617,11 @@ async fn an_owed_call_ends_when_its_receivers_exit_is_proven_unavailable() {
 }
 
 /// A dial that completed but has not been pooled makes the supersession race deterministic.
-/// Ending the exact receiving birth ends an Owed call (receiver-gone); a moved endpoint slot of a
-/// living birth is neither the holder's answer nor its exited verdict (i146 Q52: "The obligation ends on
-/// the holder's answer or exited verdict"), so the attempt sent nothing and is resent to the slot the view
-/// names then. Neither request is dispatched through the superseded slot.
+/// Ending the exact receiving birth under the dial is the caller's stale-target refusal,
+/// `RejectedStale` (node-rpc.md §20.1); a moved endpoint slot of a living birth is neither the
+/// holder's answer nor its exited verdict (i146 Q52: "The obligation ends on the holder's answer or
+/// exited verdict"), so the attempt sent nothing and is resent to the slot the view names then.
+/// Neither request is dispatched through the superseded slot.
 async fn owed_dial_superseded(ended_birth: bool) {
     let s = served().await;
     let (client, resolver) = client_of(&[&s.node]).await;
@@ -1641,9 +1644,7 @@ async fn owed_dial_superseded(ended_birth: bool) {
     if ended_birth {
         let out = tokio::time::timeout(FLOOR * 2, call).await.expect("the resolver's typed change ends the call").unwrap();
         assert_eq!(get(&s.stats.dispatched), 0, "no request went through the stale slot");
-        assert_eq!(out.code(), rdm_core::outcome::Code::Unavailable, "{out:?}");
-        assert_eq!(out.detail_name(), "receiver-gone");
-        assert!(matches!(out, RpcOutcome::NotSent(_)), "the superseded dial never crossed the commit cut");
+        assert!(matches!(out, RpcOutcome::RejectedStale(_)) && out.proves_not_dispatched(), "the superseded dial is the caller's stale-target refusal: {out:?}");
     } else {
         eventually("the superseded attempt is resent, the call still owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 1).await;
         assert!(!call.is_finished(), "a moved slot of a living birth ends nothing");
@@ -1659,7 +1660,7 @@ async fn owed_dial_superseded(ended_birth: bool) {
 }
 
 #[tokio::test]
-async fn an_owed_dial_superseded_by_a_new_incarnation_ends_receiver_gone_unavailable() { owed_dial_superseded(true).await; }
+async fn a_dial_superseded_by_a_new_incarnation_ends_rejected_stale() { owed_dial_superseded(true).await; }
 
 #[tokio::test]
 async fn an_owed_dial_on_a_moved_slot_of_a_living_birth_is_resent_and_answered() { owed_dial_superseded(false).await; }

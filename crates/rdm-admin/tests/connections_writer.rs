@@ -491,7 +491,7 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     resolver.insert(resolved(&dest));
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
-    let opts = CallOptions { resend: Resend::with_time_limit(std::time::Duration::from_millis(300)), ..Default::default() };
+    let opts = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(std::time::Duration::from_millis(300)) }, ..Default::default() };
     let resolution = resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY);
     let call = client.call_resolved::<Ping>(resolution, &me.node_id, &dest.name, &dest.node_id, &PingRequest::Ping { payload: vec![1] }, &opts).await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });

@@ -102,11 +102,9 @@ impl Rig {
     }
 }
 
-/// The caller found its receiving birth superseded under the dial: the call ends receiver-gone
-/// before its commit cut (node-rpc.md §43: resending stops on the receiver's re-creation), never
-/// dispatched.
+/// The caller found the target stale: `RejectedStale`, never `NotSent`.
 fn superseded(out: &RpcOutcome<PingReply>) -> bool {
-    out.detail_name() == "receiver-gone" && matches!(out, RpcOutcome::NotSent(_)) && out.proves_not_dispatched()
+    matches!(out, RpcOutcome::RejectedStale(_)) && out.proves_not_dispatched()
 }
 
 /// A reply budget the `slow` and `hang` handlers outlast.
@@ -168,7 +166,7 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
         rec.incarnation = IncarnationId::mint();
         rr.resolver.insert(rec);
     });
-    assert!(superseded(&out), "the superseded dial ends receiver-gone: {out:?}");
+    assert!(superseded(&out), "the stale dial ends as RejectedStale: {out:?}");
     assert!(started.elapsed() < Duration::from_millis(1500), "released at the move, not at the deadline");
     assert!(r.client.pooled().is_empty(), "nothing pooled from a dial that never completed: {:?}", r.client.pooled());
 }
@@ -199,7 +197,7 @@ async fn late_superseded_dial_never_pools() {
         rr.resolver.insert(rec);
         fp.release.notify_one();
     });
-    assert!(superseded(&out), "a late connect to a superseded birth ends receiver-gone: {out:?}");
+    assert!(superseded(&out), "a late connect to a superseded birth is RejectedStale: {out:?}");
     assert!(r.client.pooled().is_empty(), "the late connection is never pooled: {:?}", r.client.pooled());
 }
 

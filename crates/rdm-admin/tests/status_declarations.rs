@@ -412,7 +412,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     let c = client_of(&rig, rpc1).await;
     let target = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
     rig.withhold.arm();
-    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(600) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(600)), ..Default::default() };
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &opts).await;
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == rdm_core::outcome::IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was withheld");

@@ -356,7 +356,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     assert_eq!(ServerStats::get(&stats.dropped_unfinished), 1, "the broker dropped the unfinished request");
 
     // 2. Reply lost after commit: Indeterminate on the reply deadline; the request did cross.
-    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(300) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(300)), ..Default::default() };
     let (out, ev) = client.call::<BrokerData>(&target, &append(PROOF_HANG), &opts).await;
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut");

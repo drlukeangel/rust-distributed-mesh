@@ -274,7 +274,7 @@ async fn eventually(what: &str, f: impl Fn() -> bool) {
 }
 
 fn split(reply: Duration) -> CallOptions {
-    CallOptions { resend: Resend::with_time_limit(reply + rdm_transport::TRANSPORT_LIMIT), ..Default::default() }
+    CallOptions { resend: Resend::with_time_limit(reply), ..Default::default() }
 }
 
 /// The trace holds only the cell's own story: every span is a product span (`rdm.*`), none of the

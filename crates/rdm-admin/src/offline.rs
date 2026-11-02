@@ -380,7 +380,9 @@ impl TickleCalls for TickleClient {
 
     async fn via_peer(&self, carrier: &crate::model::Node, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd {
         let route = rdm_transport::RouteChoice::ViaPeer { carrier: carrier.node_id.clone() };
-        let (out, _, _) = self.client.call_routed::<rdm_core::status::Status>(&node.node_id, &route, probe, &rdm_transport::CallOptions::default()).await;
+        // The same probe, carried (node-tickle.md "Ladder"): one attempt, as the direct probe's.
+        let once = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, ..rdm_transport::Resend::default() }, ..rdm_transport::CallOptions::default() };
+        let (out, _, _) = self.client.call_routed::<rdm_core::status::Status>(&node.node_id, &route, probe, &once).await;
         ProbeEnd::of(out)
     }
 
