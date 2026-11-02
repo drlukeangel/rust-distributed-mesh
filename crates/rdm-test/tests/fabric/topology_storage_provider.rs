@@ -732,6 +732,8 @@ async fn a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider
     for (name, birth) in before.iter().filter(|(n, _)| **n != held) {
         assert_eq!(after_births.get(name), Some(birth), "{name:?}: the same birth serves throughout");
     }
+    // The estate's stop deletes every connection: the events it causes are not the change's.
+    let stopped_ns = now_ns();
     estate.stop().await;
     let spans = estate.spans();
     let read: Vec<&Value> = of_build(&spans, SWITCH, &build_id, None).into_iter().filter(|sp| attr(sp, "change_id") == change_id && yes(sp, "commit_found") == Some(false)).collect();
@@ -745,7 +747,7 @@ async fn a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider
         }
     }
     // The control: the connection event of the change lands once, on the old provider.
-    let owed: Vec<&Value> = named(&spans, OBSERVED).into_iter().filter(|sp| attr(sp, "source_id") == source && attr(sp, "destination_id") == peer && attr(sp, "origin") == "dial" && start_ns(sp) >= dialled_ns).collect();
+    let owed: Vec<&Value> = named(&spans, OBSERVED).into_iter().filter(|sp| attr(sp, "source_id") == source && attr(sp, "destination_id") == peer && attr(sp, "origin") == "dial" && (dialled_ns..stopped_ns).contains(&start_ns(sp))).collect();
     assert_eq!(owed.len(), 1, "the connection event during the change lands once: {owed:#?}");
     let entry = attr(owed[0], "entry");
     assert_eq!((lines_naming(&file_root, &entry).len(), lines_naming(&target_root, &entry).len()), (1, 0), "the connection event {entry} is on {FILE} once and not on {TOPOLOGY_STORAGE_TARGET}");
@@ -934,9 +936,11 @@ async fn a_connection_event_during_a_change_lands_once_after_the_unblock() {
     estate.follow(stream).await;
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
     nodes_write(&[estate.node_view(&source_view.name).await], TOPOLOGY_STORAGE_TARGET);
+    // The estate's stop deletes every connection: the events it causes are not the change's.
+    let stopped_ns = now_ns();
     estate.stop().await;
     let spans = estate.spans();
-    let owed: Vec<&Value> = named(&spans, OBSERVED).into_iter().filter(|sp| attr(sp, "source_id") == source && attr(sp, "destination_id") == destination && attr(sp, "origin") == "dial" && start_ns(sp) >= dialled_ns).collect();
+    let owed: Vec<&Value> = named(&spans, OBSERVED).into_iter().filter(|sp| attr(sp, "source_id") == source && attr(sp, "destination_id") == destination && attr(sp, "origin") == "dial" && (dialled_ns..stopped_ns).contains(&start_ns(sp))).collect();
     assert_eq!(owed.len(), 1, "the connection event during the change is written once: {owed:#?}");
     let entry = attr(owed[0], "entry");
     assert_eq!((lines_naming(&file_root, &entry).len(), lines_naming(&target_root, &entry).len()), (1, 1), "the connection event {entry} is on {FILE} once, where the node wrote it, and on {TOPOLOGY_STORAGE_TARGET} once, the copy's");
