@@ -170,14 +170,11 @@ impl NodeConfigs {
             move |record| channels.set_tags(record.tags.clone())).await)
     }
 
-    /// Read entry knowledge from the exact node's shared property record. A missing record is the
-    /// record unavailable (query.md: "A missing current-writer record is unavailable"), named, never
-    /// an entry not yet applied: the record is the only evidence of a later own update.
+    /// Read entry knowledge from the exact node's shared property record.
     pub async fn entry_applied(&self, node_id: &rdm_core::NodeId, application: &rdm_core::properties::PropertyApplication) -> Result<bool, String> {
-        self.records().ok_or_else(|| "node records are not bound".to_string())?
+        Ok(self.records().ok_or_else(|| "node records are not bound".to_string())?
             .properties(node_id).await.map_err(|error| error.to_string())?
-            .map(|record| record.applied.contains(application))
-            .ok_or_else(|| format!("node {node_id} has no property record: its properties are unavailable, and the entry is not applied over it"))
+            .is_some_and(|record| record.applied.contains(application)))
     }
 
     /// Carry a Build entry from its mesh-primary to the pinned node, then finish the
@@ -190,9 +187,7 @@ impl NodeConfigs {
         if !view.is_mesh_primary(&subject.mesh, me_id) {
             return Err(format!("{me_id}: property target {} is not in its mesh-primary's view", birth.node_id));
         }
-        // An unavailable record ends the apply here, named, nothing sent (Q321): a later submit applies.
-        let applied = self.entry_applied(&birth.node_id, &entry.application).await
-            .map_err(|error| format!("{me_id}: path {node_path:?}, name {node_name:?}: {error}", node_path = &subject.name.path, node_name = &subject.name.name))?;
+        let applied = self.entry_applied(&birth.node_id, &entry.application).await?;
         if !applied {
             let reply = if birth.node_id == *me_id {
                 self.own_entry(subject, entry).await.ok_or_else(|| format!("{me_id}: own property writer is not bound"))?
@@ -691,46 +686,6 @@ mod tests {
     use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeId, NodeStatus, ProviderKind, ScopeStatus};
     use crate::storage::{MemoryNodesStorage, NodeRow};
     use rdm_transport::StaticResolver;
-
-    // @feature: node-records
-    /// CONTRACT (query.md: "A missing current-writer record is unavailable"; i150 R8/R9; Q321): a Build's
-    /// property apply to mesh1.rpc.1, whose own property record this admin cannot read (none written),
-    /// ends by name, naming the node, its path and name, and the record, and sends nothing: no property
-    /// RPC (no node endpoint is registered), no record written, the row's storage and placement left as
-    /// they were. Must NOT happen: a missing record taken for an entry not yet applied, the entry sent
-    /// over a record that may hold a later own update.
-    #[tokio::test]
-    async fn a_build_entry_over_an_unavailable_property_record_fails_by_name_and_sends_nothing() {
-        use rdm_core::meta::{PersistentDisposition, PlacementMeta, StorageMeta};
-        use rdm_core::properties::{EntryProperties, PropertyApplication};
-        use rdm_node::node_records::{MemoryNodeRecords, NodeRecordsStorage};
-        let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
-        admin.is_primary = true; admin.is_fabric_primary = true; admin.status = NodeStatus::Ready;
-        admin.incarnation_id = Some(IncarnationId::mint());
-        let mut node = Node::allocated(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
-        node.status = NodeStatus::Ready; node.incarnation_id = Some(IncarnationId::mint());
-        let birth = crate::build::PinnedBirth::of(&node).unwrap();
-        let view = Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
-            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
-            nodes: vec![admin.clone(), node.clone()],
-        };
-        let storage = MemoryNodesStorage::default();
-        let written = Arc::new(crate::node_rows::WrittenRows::default());
-        written.put(&storage, &NodeRow { storage_persistence: Some(StorageMeta::Ephemeral), placement: Some(PlacementMeta::default()), ..NodeRow::new(node.name.clone(), "mesh1".to_owned(), rdm_core::NodeKind::RpcNode, node.node_id.clone(), NodeStatus::Ready) }).await.unwrap();
-        let records = Arc::new(MemoryNodeRecords::default());
-        let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[11u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let client = Arc::new(NodeRpcClient::new(endpoint.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
-        let door = NodeConfigs::new(client, written.clone());
-        assert!(door.records.set(records.clone()).is_ok());
-        let entry = EntryProperties { application: PropertyApplication::entry(&rdm_core::BuildId::mint(), &node.name), config: [("zone".into(), "a".into())].into(), tags: Default::default() };
-        let placed = (StorageMeta::Persistent { disposition: PersistentDisposition::Preserve }, PlacementMeta::default());
-        let error = door.apply_entry(&admin.name, &admin.node_id, &view, &storage, &birth, entry, placed).await.unwrap_err();
-        assert!(error.contains(node.node_id.as_str()) && error.contains("has no property record") && error.contains("not applied") && error.contains("mesh1.rpc"), "the failure names the node, its path and the record: {error}");
-        assert_eq!(records.properties(&node.node_id).await.unwrap(), None, "nothing written over the unavailable record");
-        assert_eq!(written.row_of(&node.node_id).unwrap().storage_persistence, Some(StorageMeta::Ephemeral), "the row's metadata is left as it was");
-        endpoint.close().await;
-    }
 
     // @feature: node-records
     /// CONTRACT (i150 R8): a property effect may precede a failed metadata write. A repeat

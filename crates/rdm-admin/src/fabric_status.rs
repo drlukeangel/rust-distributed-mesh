@@ -1397,7 +1397,7 @@ mod tests {
                 let mut row = crate::storage::NodeRow::new(path.clone(), "mesh1", kind, node_id.clone(), NodeStatus::Ready);
                 row.executable = Some(exe(id, sha));
                 store.write_record(&row).await.unwrap();
-                recorded.insert(path.clone(), RecordedRow { mesh: "mesh1".into(), kind, applied: Default::default(), properties: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id, sha256: Some(sha.into()) });
+                recorded.insert(path.clone(), RecordedRow { mesh: "mesh1".into(), kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id, sha256: Some(sha.into()) });
             }
             let view = projected(vec![fp.clone()]);
             let records = Arc::new(Records::default());
