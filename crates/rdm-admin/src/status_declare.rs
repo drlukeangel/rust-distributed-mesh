@@ -576,7 +576,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     // owed only once every planned birth of the accepted Build checked in (`crate::checklist`), and only
     // while the state this admin holds for its mesh is not past ready: a primary holding
     // Leaving reports the Leaving it holds (below), never a backward move.
-    let past_ready = matches!(own_mesh_held, Some(MeshState::Leaving | MeshState::Dead));
+    let past_ready = matches!(own_mesh_held, Some(MeshState::Deleting | MeshState::Deleted));
     if i_am_mesh_primary && mesh_checklist_done && !past_ready {
         if let (Some(mesh), Some(id)) = (view.meshes.iter().find(|m| m.name == subject.mesh), mesh_ids.get(&subject.mesh)) {
             // Declared with the instant its own MeshStatus holds for Ready, which its publisher stamps in
@@ -592,10 +592,10 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     // when it admitted delete-mesh ("one commit stores the row, applies it, gossips it and answers
     // the op", states.md), reported upward as committed state like its ready, and not
     // gated on a checklist: the fabric-primary's map holds the mesh's state it hands an admin it creates.
-    if i_am_mesh_primary && own_mesh_held == Some(MeshState::Leaving) {
+    if i_am_mesh_primary && own_mesh_held == Some(MeshState::Deleting) {
         if let Some(Ok(mesh_id)) = mesh_ids.get(&subject.mesh).map(|id| crate::model::MeshId::parse(id).map(|m| (id.clone(), m))) {
             let (key, mesh_id) = mesh_id;
-            d.owe(Key::Mesh(key, MeshState::Leaving), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Leaving, changed_at_rafka_ms: own_mesh_changed_at(MeshState::Leaving) });
+            d.owe(Key::Mesh(key, MeshState::Deleting), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id, state: MeshState::Deleting, changed_at_rafka_ms: own_mesh_changed_at(MeshState::Deleting) });
         }
     }
 }
@@ -1096,23 +1096,23 @@ mod tests {
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let none = BTreeSet::new();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &id_of(3), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Leaving), |_| 0, &v, &ids);
+        owed_from_view(&d, &me, &id_of(3), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Deleting), |_| 0, &v, &ids);
         let due: Vec<(Key, StatusRequest)> = d.due(&id_of(3), &v, &none).into_iter().map(|(p, _)| (p.key, p.request)).collect();
         assert_eq!(
             due,
-            vec![(Key::Mesh(mesh2.to_string(), MeshState::Leaving), StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Leaving, changed_at_rafka_ms: 0 })],
+            vec![(Key::Mesh(mesh2.to_string(), MeshState::Deleting), StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Deleting, changed_at_rafka_ms: 0 })],
             "the leaving mesh's primary owes its committed Leaving to the fabric-primary"
         );
         // A primary holding its mesh's Leaving whose checklist is done (the admin created for a leaving
         // mesh, handed Leaving) reports the state it holds, never ready: a backward
         // declaration the fabric-primary can only refuse.
         let d = Declarer::new();
-        owed_from_view(&d, &me, &id_of(3), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, Some(MeshState::Leaving), |_| 7, &v, &ids);
+        owed_from_view(&d, &me, &id_of(3), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, true, Some(MeshState::Deleting), |_| 7, &v, &ids);
         let keys: Vec<Key> = d.due(&id_of(3), &v, &none).into_iter().map(|(p, _)| p.key).collect();
-        assert_eq!(keys, vec![Key::Mesh(mesh2.to_string(), MeshState::Leaving)], "a primary holding Leaving owes no ready declaration");
+        assert_eq!(keys, vec![Key::Mesh(mesh2.to_string(), MeshState::Deleting)], "a primary holding Leaving owes no ready declaration");
         let other: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
         let d = Declarer::new();
-        owed_from_view(&d, &other, &id_of(2), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Leaving), |_| 0, &v, &ids);
+        owed_from_view(&d, &other, &id_of(2), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Pending, false, Some(MeshState::Deleting), |_| 0, &v, &ids);
         assert_eq!(d.owed(), 0, "an admin that is not its mesh's primary owes no Mesh declaration");
     }
 

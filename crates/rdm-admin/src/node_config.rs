@@ -198,7 +198,7 @@ impl NodeConfigs {
 
     /// Carry a Build's entry from its mesh-primary to the pinned node, then finish the
     /// lifecycle metadata owed by that entry.
-    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, placed: (rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)) -> Result<(), String> {
+    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, placed: rdm_core::meta::StorageMeta) -> Result<(), String> {
         let subject = view.own(&birth.node_id).ok_or_else(|| format!("{me_id}: property target {} is not held", birth.node_id))?;
         if !birth.is(subject) {
             return Err(format!("{me_id}: property target {} has a different incarnation", birth.node_id));
@@ -217,8 +217,7 @@ impl NodeConfigs {
             return Err(format!("{me_id}: property target {} answered {}", birth.node_id, reply.name()));
         }
         self.written.update(storage, &birth.node_id, None, |row| {
-            row.storage_persistence = Some(placed.0);
-            row.placement = Some(placed.1);
+            row.storage_persistence = Some(placed);
         }).await?.ok_or_else(|| format!("{me_id}: lifecycle record of {} is absent after property apply", birth.node_id))
     }
 
@@ -601,7 +600,7 @@ impl NodeConfigs {
     /// [`Self::update`] of a Build's create spec (build.md §1, "The Build applies the diff"): the same
     /// put, the spec's `storage` and `placement` (`onto_row`) written onto the row in the same write as
     /// the map, effective at the node's next birth.
-    pub async fn update_with(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest, onto_row: Option<(rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)>) -> StatusReply {
+    pub async fn update_with(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest, onto_row: Option<rdm_core::meta::StorageMeta>) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateNodeConfig only") };
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-config",
@@ -626,7 +625,7 @@ impl NodeConfigs {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, onto_row: Option<(rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)>, span: &tracing::Span) -> StatusReply {
+    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, onto_row: Option<rdm_core::meta::StorageMeta>, span: &tracing::Span) -> StatusReply {
         // The subject is the exact birth the call names, wherever its row stands: a node whose row its
         // mesh-primary moved to the predecessor name `<name>-old` at the same path is still that birth (never found by path and name, its shape
         // included: `Topology::own`). A subject this receiver does not hold is the receiver's own fact
@@ -681,10 +680,9 @@ impl NodeConfigs {
                 span.record("answered", answered).record("detail", detail.as_str());
                 return rdm_core::reply::status::bounded_config_not_applied(subject.node_id.as_str(), answered, &detail);
             }
-            if let Some((storage_persistence, placement)) = onto_row {
+            if let Some(storage_persistence) = onto_row {
                 match self.written.update(storage, node_id, None, |row| {
                     row.storage_persistence = Some(storage_persistence);
-                    row.placement = Some(placement);
                 }).await {
                     Ok(Some(_)) => {},
                     Ok(None) => return rdm_core::reply::status::bounded_node_row_refused(&subject.node_id.to_string(), "lifecycle record is absent after property apply"),
@@ -761,7 +759,7 @@ mod tests {
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "later".into())].into(), "the later local map stands");
         door.own_entry(&admin, entry).await.unwrap().unwrap();
         assert_eq!(records.properties(&admin.node_id).await.unwrap().unwrap().config, [("source".into(), "build".into())].into(), "a Build's entry written after it replaces it");
-        let absent = door.update_with(&admin.name, &admin.node_id, &view, &storage, &req("metadata"), Some((rdm_core::meta::StorageMeta::Ephemeral, Default::default()))).await;
+        let absent = door.update_with(&admin.name, &admin.node_id, &view, &storage, &req("metadata"), Some(rdm_core::meta::StorageMeta::Ephemeral)).await;
         assert!(matches!(absent, StatusReply::NodeRowRefused { .. }), "missing lifecycle metadata cannot report success: {absent:?}");
         let mut stale = req("stale");
         if let StatusRequest::UpdateNodeConfig { incarnation, .. } = &mut stale { *incarnation = IncarnationId::mint(); }

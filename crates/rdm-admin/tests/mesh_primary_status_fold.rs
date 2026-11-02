@@ -86,8 +86,8 @@ async fn taken_over_one_root(trace_id: String) -> Taken {
     // A, mesh1's primary, applied these as the mesh's authority: its rows on the shared root.
     let root = rdm_admin::store_root::StoreRoot::at(&dir);
     let a = stores(&root, &IncarnationId::mint()).await;
-    { let mut r = a.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.states.insert(MeshState::Ready); a.meshes.put_mesh(&r).await.unwrap(); }
-    { let mut r = a.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.events.push("shutdown-initiated:mesh1.admin.1".into()); a.fabric.put_fabric(&r).await.unwrap(); }
+    { let mut r = a.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.state = MeshState::Ready; a.meshes.put_mesh(&r).await.unwrap(); }
+    { let mut r = a.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric_id.clone(), name: "fabric1".into(), state: rdm_admin::fabric_storage::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.state = rdm_admin::fabric_storage::FabricState::Ready; a.fabric.put_fabric(&r).await.unwrap(); }
     { let (node_id, incarnation_id, name) = (rpc_birth.0.clone(), rpc_birth.1.clone(), rpc.name.clone()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Ready); }).await.unwrap(); }
     { let (node_id, incarnation_id, name) = (other.0.clone(), other.1.clone(), rdm_core::PathName::new("mesh1.rpc", "2").unwrap()); rdm_admin::node_rows::WrittenRows::default().update(&*a.nodes, &node_id, Some(rdm_admin::storage::NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::RpcNode, node_id.clone(), NodeStatus::Pending)), |r| { r.birth_mut(&incarnation_id, &name).declared.insert(NodeState::Pending); }).await.unwrap(); }
     let fabric_records = rdm_admin::store_log::latest_in(&root.dir().join(rdm_admin::store_root::FABRIC_FILE)).unwrap().into_keys().filter(|(kind, _)| kind == "fabric-record").count();
@@ -153,12 +153,12 @@ fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
     assert_eq!(t.after.meshes.get(&t.mesh_id), Some(&MeshState::Ready), "the role taker folds the Mesh status row");
     let mut events = t.after.fabric.get(&t.fabric_id).cloned().unwrap_or_default();
     events.sort();
-    assert_eq!(events, vec!["b-own".to_string(), "shutdown-initiated:mesh1.admin.1".to_string()], "the union of the events, each once");
+    assert_eq!(events, vec!["b-own".to_string(), "ready".to_string()], "the union of the events, each once: the Fabric record's ready among them");
     let spans: Vec<Value> = cap.spans().into_iter().filter(|s| s["name"] == "rdm.node_admin.status.resolve.via-successor-fold").collect();
     assert_eq!(spans.len(), 1, "one fold, at the role take: {spans:#?}");
     let s = &spans[0];
     assert_eq!(s["trace_id"], t.trace_id.as_str(), "the fold is the cell's own story: {s:#}");
-    for (k, v) in [("node_path", "mesh1.admin"), ("node_name", "2"), ("mesh", "mesh1"), ("node_declared_rows", "2"), ("mesh_status_rows", "1"), ("fabric_event_rows", "1")] {
+    for (k, v) in [("node_path", "mesh1.admin"), ("node_name", "2"), ("mesh", "mesh1"), ("node_declared_rows", "2"), ("mesh_status_rows", "1"), ("fabric_state", "ready")] {
         assert_eq!(s["attributes"][k], v, "{k}: {s:#}");
     }
 }
@@ -407,8 +407,8 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let disk = rdm_admin::store_root::StoreRoot::at(&dir);
                 let independent = stores(&disk, &IncarnationId::mint()).await;
                 assert_eq!(rdm_admin::status_rpc::Declaration::of_records(&independent.nodes.nodes("mesh1").await.unwrap()).len(), 1, "Applied made the row durable before the reply");
-                { let mut r = storage.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.states.insert(MeshState::Ready); storage.meshes.put_mesh(&r).await.unwrap(); }
-                assert_eq!(independent.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().len(), 1, "the mesh row is on the root at its write");
+                { let mut r = storage.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.state = MeshState::Ready; storage.meshes.put_mesh(&r).await.unwrap(); }
+                assert_eq!(independent.meshes.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>().len(), 1, "the mesh row is on the root at its write");
                 drop(independent);
                 drop(door);
                 drop(storage);

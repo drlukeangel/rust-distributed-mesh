@@ -201,12 +201,9 @@ pub(crate) fn fabric_and_mesh_of(view: &Topology, node: &Node) -> (rdm_core::Fab
 /// application's `on_node_investigated`, sent from the event's write (fabric-node-hooks.md, Q312).
 #[derive(Clone)]
 pub struct NodeInvestigatedWriter {
-    /// `events.storage`, where the verdict is written.
-    pub events: std::sync::Arc<dyn crate::events_storage::EventsStorage>,
-    /// This admin's exact birth: the event's `source`.
-    pub source: crate::events_storage::EventSource,
-    /// This admin's rafka-time: the event's `time`.
-    pub time: rdm_transport::clock::RafkaTime,
+    /// What the verdict is written with: `events.storage`, this admin's exact birth (the event's
+    /// `source`) and its rafka-time (the event's `time`).
+    pub events: crate::events_storage::EventsWriter,
     /// The application's `on_node_investigated`; `None` when it registers none.
     pub on_node_investigated: Option<crate::wiring::NodeInvestigatedNotice>,
 }
@@ -215,14 +212,7 @@ impl NodeInvestigatedWriter {
     /// A writer on an events store held in memory, by the birth `node_id` of `fabric_id`, at
     /// rafka-time `1`, with no hook: what a rig with no topology storage writes its verdicts with.
     pub fn in_memory(fabric_id: &rdm_core::FabricId, node_id: &NodeId) -> Self {
-        let time = rdm_transport::clock::RafkaTime::unadopted();
-        time.adopt(1);
-        Self {
-            events: std::sync::Arc::new(crate::events_storage::MemoryEventsStorage::new()),
-            source: crate::events_storage::EventSource { fabric_id: fabric_id.clone(), node_id: node_id.clone(), incarnation: rdm_core::IncarnationId::mint() },
-            time,
-            on_node_investigated: None,
-        }
+        Self { events: crate::events_storage::EventsWriter::in_memory(fabric_id, node_id), on_node_investigated: None }
     }
 }
 
@@ -250,14 +240,14 @@ pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids
         outcome = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let Some(time_ms) = writer.time.try_now_ms() else {
+    let Some(time_ms) = writer.events.time.try_now_ms() else {
         span.record("outcome", "no-rafka-time");
         span.in_scope(|| tracing::info!("this admin holds no rafka-time: the verdict is not written and the notice is not sent"));
         return;
     };
-    let event = crate::events_storage::Event::node_investigated(&writer.source, time_ms, &node.node_id, incarnation, &node.name.path, &node.name.name, verdict.as_str(), next.as_str());
+    let event = crate::events_storage::Event::node_investigated(&writer.events.source, time_ms, &node.node_id, incarnation, &node.name.path, &node.name.name, verdict.as_str(), next.as_str());
     span.record("event_id", event.id.as_str());
-    if let Err(e) = writer.events.append(&event).instrument(span.clone()).await {
+    if let Err(e) = writer.events.events.append(&event).instrument(span.clone()).await {
         span.record("outcome", "event-not-written");
         span.in_scope(|| tracing::info!(cause = %e, "the verdict's rdm.node.investigated event was not written: the notice is not sent"));
         return;

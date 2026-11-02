@@ -1333,11 +1333,11 @@ mod tests {
     /// fabric (the Day-0 admin's entry names no executable, its row records `aa`; mesh1.rpc.1's entry and row
     /// name `rr`), accepted while the fabric is ready, and the fabric's state read after the
     /// acceptance and after the ready step. A request naming the executable a row records, an
-    /// unchanged request, a tags-only and a placement-only request (`PlacementMeta` declares no constraint) are
+    /// unchanged request and a tags-only request are
     /// neither a resize nor a replacement: the fabric stays ready. A path added or removed (a
     /// resize) and another executable (a replacement, the Day-0 admin's included) put it back to pending. A
     /// storage-only change of a held path is neither (proposal executable-bindings-at-create.md rule 5: a
-    /// storage or placement change re-births a path only "with its executable"): the fabric stays
+    /// storage change re-births a path only "with its executable"): the fabric stays
     /// ready. Must NOT happen: a request naming what a node already runs, or changing only a
     /// held path's storage, reset the fabric to pending for a Build with nothing to do (Rafka 141).
     #[tokio::test]
@@ -1346,7 +1346,7 @@ mod tests {
         use crate::build::MeshDesired;
         use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
         use crate::node_rows::WriteRecord;
-        use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
+        use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
         type Edit = fn(&mut Vec<NodeSpec>);
         let exe = |id: &str, sha: &str| rdm_core::binding::Binding { launch_id: id.into(), executable: format!("/b/{id}-{sha}").into(), sha256: sha.into(), image: None };
         let admin: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
@@ -1364,12 +1364,11 @@ mod tests {
         fn at<'a>(r: &'a mut [NodeSpec], p: PathName) -> &'a mut NodeSpec {
             r.iter_mut().find(|s| s.path == p).expect("the request lists the path")
         }
-        let rows: [(&str, Option<&str>, Edit, Back); 10] = [
+        let rows: [(&str, Option<&str>, Edit, Back); 9] = [
             ("the Day-0 admin named on the executable its row records (its entry names none)", None, |r| at(r, PathName::new("mesh1.admin", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/node_admin-aa".into(), sha256: "aa".into(), image: None }), Back::Stays),
             ("every path named on the executable its entry names", Some("aa"), |_| {}, Back::Stays),
             ("the unchanged request: every held path naming none", None, |r| r.iter_mut().for_each(|s| s.executable = None), Back::Stays),
             ("tags only", None, |r| at(r, PathName::new("mesh1.rpc", "1").unwrap()).tags = ["zone_a".to_string()].into(), Back::Stays),
-            ("placement only (PlacementMeta declares no constraint)", None, |r| at(r, PathName::new("mesh1.rpc", "1").unwrap()).placement = PlacementMeta::default(), Back::Stays),
             ("another executable for mesh1.rpc.1 (a replacement)", None, |r| at(r, PathName::new("mesh1.rpc", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "rpc_node".into(), executable: "/b/rpc_node-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
             ("another executable for the Day-0 admin (a replacement)", None, |r| at(r, PathName::new("mesh1.admin", "1").unwrap()).executable = Some(rdm_core::binding::Binding { launch_id: "node_admin".into(), executable: "/b/node_admin-cc".into(), sha256: "cc".into(), image: None }), Back::ToPending),
             ("a new path (a resize)", None, |r| {
@@ -1393,7 +1392,7 @@ mod tests {
                 let mut row = crate::storage::NodeRow::new(path.clone(), "mesh1", kind, node_id.clone(), NodeStatus::Ready);
                 row.executable = Some(exe(id, sha));
                 store.write_record(&row).await.unwrap();
-                recorded.insert(path.clone(), RecordedRow { mesh: "mesh1".into(), kind, config: None, tags: None, storage_persistence: None, placement: None, node_id, sha256: Some(sha.into()) });
+                recorded.insert(path.clone(), RecordedRow { mesh: "mesh1".into(), kind, config: None, tags: None, storage_persistence: None, node_id, sha256: Some(sha.into()) });
             }
             let view = projected(vec![fp.clone()]);
             let records = Arc::new(Records::default());

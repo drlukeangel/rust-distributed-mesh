@@ -107,6 +107,11 @@ pub struct AdminConfig {
     /// backend its five record stores open on. The bootstrap admin's from `RDM_TOPOLOGY_STORAGE_PROVIDER`,
     /// `file` when unset, and written on the Fabric row on Day 0; a launched admin's from its launch.
     pub topology_storage_provider: String,
+    /// The application's node types (the Fabrics schema's `types`): the bootstrap admin's from
+    /// `RDM_NODE_TYPES`, written on the Fabric record on Day 0, none when unset; a launched admin's
+    /// none (the Fabric record holds the fabric's). Refused by name at startup: a document that does
+    /// not parse, a name declared twice, or `node` or `node-admin` (RDM's two).
+    pub node_types: Vec<rdm_core::NodeType>,
 }
 
 impl AdminConfig {
@@ -198,8 +203,13 @@ impl AdminConfig {
             Some(l) => l.topology_storage_provider.clone(),
             None => rdm_core::launch::decode_topology_storage_provider(get(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER))?,
         };
+        let node_types = match (&launch, get(rdm_core::launch::ENV_NODE_TYPES).filter(|v| !v.trim().is_empty())) {
+            (None, Some(document)) => rdm_core::NodeType::parse_declared(&document).map_err(|e| format!("refusing to start: {}: {e}", rdm_core::launch::ENV_NODE_TYPES))?,
+            _ => Vec::new(),
+        };
         Ok(Self {
             topology_storage_provider,
+            node_types,
             stopped_node_ttl,
             connections_delete_deadline,
             cert_policy,

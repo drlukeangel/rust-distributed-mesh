@@ -64,25 +64,39 @@ pub enum NodeState {
     Stopped,
 }
 
-/// A Mesh's status, as declared.
+/// A Mesh's state (the Meshes schema's `state`): `pending`, `ready`, `deleting` or `deleted`, set
+/// only by RDM, each move an event in the events store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum MeshState {
     /// Created and not yet ready.
     ///
-    /// Position 0 on the wire; serialized as `Pending`.
+    /// Position 0 on the wire; serialized as `pending`.
     Pending,
     /// Ready: it takes traffic.
     ///
-    /// Position 1 on the wire; serialized as `Ready`.
+    /// Position 1 on the wire; serialized as `ready`.
     Ready,
-    /// Leaving: it is closing.
+    /// Deleting: its delete is under way.
     ///
-    /// Position 2 on the wire; serialized as `Leaving`.
-    Leaving,
-    /// Dead: every member is gone.
+    /// Position 2 on the wire; serialized as `deleting`.
+    Deleting,
+    /// Deleted: every node of it is gone; final, its id never written live again.
     ///
-    /// Position 3 on the wire; serialized as `Dead`.
-    Dead,
+    /// Position 3 on the wire; serialized as `deleted`.
+    Deleted,
+}
+
+impl MeshState {
+    /// The state's name as the page, the events and the spans carry it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::Deleting => "deleting",
+            Self::Deleted => "deleted",
+        }
+    }
 }
 
 /// A Fabric event the fabric-primary applies at a mesh primary.
@@ -92,13 +106,6 @@ pub enum FabricEvent {
     ///
     /// Position 0 on the wire.
     Ready,
-    /// A fabric shutdown was initiated by the named admin.
-    ///
-    /// Position 1 on the wire.
-    ShutdownInitiated {
-        /// The admin that initiated the shutdown.
-        initiated_by: String,
-    },
 }
 
 impl FabricEvent {
@@ -106,7 +113,6 @@ impl FabricEvent {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Ready => "ready",
-            Self::ShutdownInitiated { .. } => "shutdown-initiated",
         }
     }
 }
@@ -2430,7 +2436,7 @@ mod tests {
             (StatusReply::RejectedStaleFabric { held: FabricId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, ReplyKind::new(crate::outcome::Code::NotFound)),
             (StatusReply::RejectedInvalidNodeTransition { current: NodeState::Stopped }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Dead }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Deleted }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (Status::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Status::not_ready("n".into()), ReplyKind::NotReady),
             (Status::busy("b".into()), ReplyKind::Busy),
@@ -2497,7 +2503,6 @@ mod tests {
             StatusRequest::ProbeNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 },
-            StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
             StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-6:mesh1.rpc.1") },
             StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-7:mesh1.rpc.1") },
             StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::location("node.stop", &crate::PathName::new("mesh1.rpc", "1").unwrap()) },
@@ -2674,7 +2679,7 @@ mod tests {
     }
 
     fn node_view() -> crate::views::NodeView {
-        crate::views::NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+        crate::views::NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
             name: crate::PathName::new("mesh1.rpc", "12").unwrap(),
             kind: crate::NodeKind::RpcNode,
             mesh: "mesh1".into(),
@@ -2750,6 +2755,6 @@ mod tests {
         assert_eq!(transition(Some(Pending), Stopped), Transition::Apply, "a skip is a forward move");
         assert_eq!(transition(Some(Ready), Ready), Transition::AlreadyApplied);
         assert_eq!(transition(Some(ConnectionsDeleting), Ready), Transition::Backward { current: ConnectionsDeleting });
-        assert_eq!(transition(Some(MeshState::Dead), MeshState::Pending), Transition::Backward { current: MeshState::Dead });
+        assert_eq!(transition(Some(MeshState::Deleted), MeshState::Pending), Transition::Backward { current: MeshState::Deleted });
     }
 }

@@ -70,7 +70,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
 /// and the tags and config its record carries (Q203: config is never gossiped).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>, config: BTreeMap<String, String>) -> NodeView {
-    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
         kind: n.kind,
         mesh: n.mesh.clone(),
@@ -153,7 +153,6 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
     // Its storage_persistence and the topology_storage_provider it writes, as its row records them
     // (storage.md §1, §2): two properties under two names.
     v.storage_persistence = row.and_then(|r| r.storage_persistence);
-    v.placement = row.and_then(|r| r.placement);
     v.topology_storage_provider = row.and_then(|r| r.topology_storage_provider.clone());
     if let Some(declared) = own.and_then(|o| o.app_types.clone()).filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
         v.types = declared.types;
@@ -502,7 +501,7 @@ mod tests {
         let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let view = Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".to_string(), status: ModelScopeStatus::Ready, provider: ModelProviderKind::Process }, meshes: Vec::new(), nodes: Vec::new() };
         let row = |phase: RootsPhase| crate::fabric_storage::FabricRecord {
-            fabric_id: FabricId::mint(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
+            fabric_id: FabricId::mint(), name: "fabric1".into(), state: crate::fabric_storage::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(),
             ca: Some(crate::fabric_storage::CaRow { expires_at: 9_000, previous_expires_at: 5_000, issuer_receipts: Default::default() }),
             roots: Some(crate::fabric_storage::RootsRow { phase, roots: vec!["aa".into(), "bb".into()], expires_at: 3_000 }),
         };
@@ -668,7 +667,7 @@ mod tests {
                 Some(build_id.clone()),
                 Some(&[]),
                 Some(2_000),
-                Some(&crate::fabric_storage::FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: Some("file".to_string()), previous_topology_storage_providers: vec!["memory".to_string()], ca: None, roots: None }),
+                Some(&crate::fabric_storage::FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), state: crate::fabric_storage::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: Some("file".to_string()), previous_topology_storage_providers: vec!["memory".to_string()], ca: None, roots: None }),
                 &Filter::new().eq("name", ["fabric1"]).eq("build_id", [build_id.clone()]),
             );
             match fabric_reply {

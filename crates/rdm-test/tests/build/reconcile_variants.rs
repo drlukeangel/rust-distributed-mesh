@@ -14,8 +14,7 @@
 //! a time, every variant of the complete-topology request: the unchanged request (each held path naming
 //! none), the Day-0 admin named on the executable its row records (its entry names none), every path
 //! named on the executable its entry names, tags only, config only, storage only, a new path, another
-//! executable (a replacement), a removed path. A placement-only request is the unchanged one:
-//! `PlacementMeta` declares no constraint. The tags, the config and the storage each reach the node's
+//! executable (a replacement), a removed path. The tags, the config and the storage each reach the node's
 //! row, the Build applying every property that differs from it (build.md §1, Q166): the tags its tag rows,
 //! the config as `node.config.update` applies a map (the live node carries it), the storage onto the row.
 //!

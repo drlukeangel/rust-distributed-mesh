@@ -55,6 +55,10 @@ pub const ENV_EXECUTABLE_DIRS: &str = "RDM_EXECUTABLE_DIRS";
 pub const ENV_TOPOLOGY_STORAGE_PROVIDER: &str = "RDM_TOPOLOGY_STORAGE_PROVIDER";
 /// The name every RDM binary registers its own file backend under (storage.md §2).
 pub const TOPOLOGY_STORAGE_FILE: &str = "file";
+/// The application's node types (the Fabrics schema's `types`), a JSON list of
+/// [`crate::NodeType`]: read once by the bootstrap admin and written on the Fabric record, as
+/// `MESH_SPAWN_TYPE` fills its provider (D45). Unset: none declared.
+pub const ENV_NODE_TYPES: &str = "RDM_NODE_TYPES";
 /// The id of the node's mesh.
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
 /// A launched node-admin's mesh issuing key (fabric-certs.md "Where a node-admin's signing material

@@ -38,36 +38,34 @@ use std::sync::Mutex;
 
 // ---------------------------------------------------------------- mesh.storage
 
-/// A Mesh record (node-identity-and-state.md §2.7): the mesh's identity, whether its removal made it
-/// Dead, and the states it entered. Kept at its mesh id and written whole by the mesh's writer (its
-/// primary; the fabric-primary while the mesh has none) from the copy it caches
-/// (storage-whole-records.md, "The rule"); its name is read from the live records
+/// A Mesh record (node-identity-and-state.md §2.7): the mesh's identity and its one `state`. Kept at
+/// its mesh id and written whole by the mesh's writer (its primary; the fabric-primary while the mesh
+/// has none) from the copy it caches (storage-whole-records.md, "The rule"), each move of its state
+/// also an `rdm.mesh.state` event in the events store; its name is read from the live records
 /// ([`MeshStorage::mesh_named`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MeshRecord {
     /// The mesh's minted id: the record's key.
     pub mesh_id: MeshId,
     /// The mesh's name, unique among the live meshes.
     pub name: String,
-    /// Set by the mesh's removal (mesh.deleted at its primary, or mesh-left at the fabric-primary as
-    /// acting primary): the mesh is Dead, its name is free (R-MN1 item 2) and its id is never
-    /// written live again.
-    pub dead: bool,
-    /// The states the mesh entered, each once (states.md, "Who sets each state"): a late state never
-    /// removes a greater one, and a reader takes the greatest.
-    #[serde(default)]
-    pub states: BTreeSet<MeshState>,
+    /// The mesh's state (states.md, "Who sets each state"): it only moves forward, pending -> ready
+    /// -> deleting -> deleted. Deleted is set by the mesh's removal (mesh.deleted at its primary, or
+    /// mesh-left at the fabric-primary as acting primary): its name is free (R-MN1 item 2) and its id
+    /// is never written live again.
+    pub state: MeshState,
 }
 
 impl MeshRecord {
-    /// A live mesh's record that holds no state yet.
+    /// A new mesh's record: `pending`.
     pub fn new(mesh_id: MeshId, name: impl Into<String>) -> Self {
-        Self { mesh_id, name: name.into(), dead: false, states: BTreeSet::new() }
+        Self { mesh_id, name: name.into(), state: MeshState::Pending }
     }
 
-    /// The greatest state the mesh entered, if any.
-    pub fn state(&self) -> Option<MeshState> {
-        self.states.iter().next_back().copied()
+    /// Whether the mesh is deleted: its name free, its id never written live again.
+    pub fn is_deleted(&self) -> bool {
+        self.state == MeshState::Deleted
     }
 }
 
@@ -128,10 +126,10 @@ impl std::error::Error for MeshRefused {}
 /// `NameHeld` naming that mesh, and nothing is written; a Dead record frees its name (R-MN1). The
 /// record is then written whole unless it stands exactly as `held`.
 pub async fn write_mesh(meshes: &dyn MeshStorage, held: Option<&MeshRecord>, record: &MeshRecord) -> Result<Result<MeshWritten, MeshRefused>, StorageError> {
-    if held.is_some_and(|h| h.dead) && !record.dead {
+    if held.is_some_and(|h| h.is_deleted()) && !record.is_deleted() {
         return Ok(Err(MeshRefused::MeshDead { name: record.name.clone(), mesh_id: record.mesh_id.clone() }));
     }
-    if !record.dead {
+    if !record.is_deleted() {
         if let Some(by) = meshes.mesh_named(&record.name).await?.filter(|h| h.mesh_id != record.mesh_id) {
             return Ok(Err(MeshRefused::NameHeld { name: record.name.clone(), by: by.mesh_id }));
         }
@@ -146,7 +144,7 @@ pub async fn write_mesh(meshes: &dyn MeshStorage, held: Option<&MeshRecord>, rec
 /// The one live record of `records` named `name`; two are refused by name (`file` the store they were
 /// read from).
 pub fn mesh_holding(records: impl IntoIterator<Item = MeshRecord>, name: &str, file: &str) -> Result<Option<MeshRecord>, StorageError> {
-    let mut holding = records.into_iter().filter(|r| r.name == name && !r.dead);
+    let mut holding = records.into_iter().filter(|r| r.name == name && !r.is_deleted());
     let first = holding.next();
     if let (Some(a), Some(b)) = (&first, holding.next()) {
         return Err(StorageError::Unrecognised { file: file.to_string(), reason: format!("two live mesh records hold the name {name}: meshes {} and {}", a.mesh_id, b.mesh_id) });
@@ -229,7 +227,7 @@ impl MeshStorage for MemoryMeshStorage {
 }
 
 #[cfg(feature = "file-backend")]
-const MESH_FORMAT: &str = "mesh-record/3";
+const MESH_FORMAT: &str = "mesh-record/4";
 #[cfg(feature = "file-backend")]
 const MESH_KIND: &str = "mesh-record";
 
@@ -901,7 +899,7 @@ mod tests {
         assert_eq!(meshes.take_in_flight("mesh2", &old_attempt).await.unwrap(), Taken::Won);
         // mesh2 is removed: its node Deleted, its record Dead, its attempt's verdict released.
         nodes.put_node(&NodeRow { status: crate::model::NodeStatus::Deleted, ..first.clone() }).await.unwrap();
-        write_mesh(&meshes, Some(&old), &MeshRecord { dead: true, ..old.clone() }).await.unwrap().expect("the Dead record is written");
+        write_mesh(&meshes, Some(&old), &MeshRecord { state: MeshState::Deleted, ..old.clone() }).await.unwrap().expect("the Dead record is written");
         meshes.release_in_flight("mesh2", &old_attempt).await.unwrap();
         // mesh2 created again.
         let new = MeshRecord::new(MeshId::mint(), "mesh2");
@@ -1051,7 +1049,7 @@ mod tests {
         let check = async |m: &dyn MeshStorage, store: &str| {
             let (first, second) = (MeshId::mint(), MeshId::mint());
             let live = |id: &MeshId| MeshRecord::new(id.clone(), "mesh2");
-            let dead = |id: &MeshId| MeshRecord { dead: true, ..live(id) };
+            let dead = |id: &MeshId| MeshRecord { state: MeshState::Deleted, ..live(id) };
             assert_eq!(crate::storage::write_mesh(&*m, None, &live(&first)).await, Ok(Ok(MeshWritten::Written)), "{store}: a free name takes the claim and the record");
             assert_eq!(crate::storage::write_mesh(&*m, Some(&live(&first)), &live(&first)).await, Ok(Ok(MeshWritten::Held)), "{store}: the same mesh re-claiming its name writes nothing");
             assert_eq!(crate::storage::write_mesh(&*m, None, &live(&second)).await, Ok(Err(MeshRefused::NameHeld { name: "mesh2".into(), by: first.clone() })), "{store}: another mesh's live claim holds mesh2");

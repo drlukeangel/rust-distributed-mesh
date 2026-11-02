@@ -60,9 +60,9 @@ fn write_specs<S: serde::Serializer>(specs: &BTreeMap<PathName, NodeSpec>, s: S)
     specs.values().collect::<Vec<_>>().serialize(s)
 }
 
-/// The explicit node-admin storage default and placement written at the Day-0 claim.
-pub fn root_placed() -> (rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta) {
-    (rdm_core::meta::StorageMeta::for_kind(NodeKind::NodeAdmin), Default::default())
+/// The explicit node-admin storage default written at the Day-0 claim.
+pub fn root_storage() -> rdm_core::meta::StorageMeta {
+    rdm_core::meta::StorageMeta::for_kind(NodeKind::NodeAdmin)
 }
 
 impl MeshTopology {
@@ -1125,7 +1125,7 @@ fn properties_owed(topology: &FabricTopology, recorded: &Recorded, steps: &[crat
         if claimed(path, row) {
             continue;
         }
-        let config = row.config.as_ref().is_some_and(|c| *c != spec.config) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
+        let config = row.config.as_ref().is_some_and(|c| *c != spec.config) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence);
         let mut owed = Vec::new();
         if config {
             owed.push(BuildOperation::UpdateConfig { node_id: recorded[&path].node_id.clone(), kind: spec.kind, mesh: spec.mesh.clone(), node: path.clone(), entry: None });
@@ -1165,8 +1165,6 @@ pub struct RecordedRow {
     pub tags: Option<BTreeSet<String>>,
     /// The storage_persistence the row records.
     pub storage_persistence: Option<rdm_core::meta::StorageMeta>,
-    /// The placement the row records.
-    pub placement: Option<rdm_core::meta::PlacementMeta>,
 }
 
 /// [`RecordedRow`] of each path of a topology that a live row is written at.
@@ -1187,7 +1185,7 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, topol
             let own = rows.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))?;
             let config = Some(own.as_ref().map(|o| o.config.clone()).unwrap_or_default());
             let tags = Some(own.map(|o| o.tags).unwrap_or_default());
-            out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config, tags, storage_persistence: row.storage_persistence, placement: row.placement });
+            out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config, tags, storage_persistence: row.storage_persistence });
         }
     }
     Ok(out)
@@ -1372,18 +1370,18 @@ pub fn with_mesh_rows(observed: &Topology, rows: &[crate::storage::MeshRecord]) 
     let mut t = observed.clone();
     // A live row first: of a name the store holds rows of more than one mesh for, the live one is the
     // current mesh, and a Dead row of an earlier mesh of that name is planned only as the one row of it.
-    let (live, dead): (Vec<&crate::storage::MeshRecord>, Vec<&crate::storage::MeshRecord>) = rows.iter().partition(|r| !r.dead);
+    let (live, dead): (Vec<&crate::storage::MeshRecord>, Vec<&crate::storage::MeshRecord>) = rows.iter().partition(|r| !r.is_deleted());
     for r in live.into_iter().chain(dead.into_iter().filter(|d| rows.iter().filter(|r| r.name == d.name).count() == 1)) {
         // A mesh the view holds, by id or by name (a mesh the view names by its name is the current one
         // of that name), is planned as the view holds it.
         if t.meshes.iter().any(|m| m.id.as_ref() == Some(&r.mesh_id) || m.name == r.name) {
             continue;
         }
-        let status = match (r.dead, r.state()) {
-            (true, _) | (_, Some(MeshState::Dead)) => crate::model::ScopeStatus::Dead,
-            (_, Some(MeshState::Leaving)) => crate::model::ScopeStatus::Leaving,
-            (_, Some(MeshState::Ready)) => crate::model::ScopeStatus::Ready,
-            _ => crate::model::ScopeStatus::Pending,
+        let status = match r.state {
+            MeshState::Deleted => crate::model::ScopeStatus::Dead,
+            MeshState::Deleting => crate::model::ScopeStatus::Leaving,
+            MeshState::Ready => crate::model::ScopeStatus::Ready,
+            MeshState::Pending => crate::model::ScopeStatus::Pending,
         };
         t.meshes.push(crate::model::Mesh { id: Some(r.mesh_id.clone()), name: r.name.clone(), status });
     }
@@ -2820,7 +2818,7 @@ mod tests {
         let birth = |name: PathName, o: &Topology| o.node(&name.clone()).map(|n| crate::build::ExitedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }).unwrap();
         let on = |name: PathName, tag: Option<&str>, o: &Topology| {
             let node = o.node(&name.clone()).unwrap();
-            (node.name.clone(), RecordedRow { mesh: node.mesh.clone(), kind: node.kind, config: Some(Default::default()), tags: None, storage_persistence: None, placement: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.kind.name())) })
+            (node.name.clone(), RecordedRow { mesh: node.mesh.clone(), kind: node.kind, config: Some(Default::default()), tags: None, storage_persistence: None, node_id: node.node_id.clone(), sha256: tag.map(|t| format!("{t}-{}", node.kind.name())) })
         };
         // Every member on "a", but mesh1.rpc.1 on "b" already and mesh2.admin.2 a row with no executable.
         let mut recorded: Recorded = [PathName::new("mesh1.admin", "1").unwrap(), PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh2.admin", "1").unwrap(), PathName::new("mesh2.rpc", "1").unwrap()].iter().map(|p| on(p.clone(), Some("a"), &o)).collect();
@@ -2867,7 +2865,7 @@ mod tests {
         let mut live_again = after_delete.clone();
         live_again.nodes.push(successor.clone());
         let mut on_entry = recorded.clone();
-        on_entry.insert(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, config: Some(Default::default()), tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
+        on_entry.insert(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, config: Some(Default::default()), tags: None, storage_persistence: None, node_id: successor.node_id.clone(), sha256: Some("b-node_admin".into()) });
         assert_eq!(replacement_plan(&next, &live_again, &on_entry, receipts.clone()), all[2..].to_vec(), "a live successor on its entry is the member");
         // Its create receipted: never replaced again, whatever its row reads.
         let mut done = receipts;
@@ -2896,7 +2894,7 @@ mod tests {
         let path: PathName = rdm_core::PathName::new("mesh2.rpc", "1").unwrap();
         let node = o.node(&path).unwrap().clone();
         let birth = crate::build::ExitedBirth { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().unwrap() };
-        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, config: Some(Default::default()), tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.kind.name())) })).collect();
+        let mut recorded: Recorded = o.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, config: Some(Default::default()), tags: None, storage_persistence: None, node_id: n.node_id.clone(), sha256: Some(format!("b-{}", n.kind.name())) })).collect();
         let step = |s: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             mesh: None,
             build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
@@ -2919,7 +2917,7 @@ mod tests {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![create.clone()], "the row Deleted: the remaining work is the create");
         }
         // The row still live, naming the birth on its old sha: the delete of that exact birth is finished, then the create.
-        recorded.insert(path.clone(), RecordedRow { mesh: "mesh2".into(), kind: NodeKind::RpcNode, config: Some(Default::default()), tags: None, storage_persistence: None, placement: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
+        recorded.insert(path.clone(), RecordedRow { mesh: "mesh2".into(), kind: NodeKind::RpcNode, config: Some(Default::default()), tags: None, storage_persistence: None, node_id: birth.node_id.clone(), sha256: Some("a-rpc_node".into()) });
         let finish = BuildOperation::DeleteNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh2".into(), node: path.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() };
         for view in [&gone, &leaving] {
             assert_eq!(replacement_plan(&next, view, &recorded, receipts.clone()), vec![finish.clone(), create.clone()], "the row live: the delete is finished, then the create");
@@ -2934,7 +2932,7 @@ mod tests {
     #[test]
     fn the_members_off_their_entries_are_named_until_each_row_records_its_sha() {
         let next = on_entries(&t(&[("mesh1", 2, 1)]), "b");
-        let row = |tag: Option<&str>, kind: &str| RecordedRow { mesh: "mesh1".into(), kind: if kind == "node_admin" { NodeKind::NodeAdmin } else { NodeKind::RpcNode }, config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
+        let row = |tag: Option<&str>, kind: &str| RecordedRow { mesh: "mesh1".into(), kind: if kind == "node_admin" { NodeKind::NodeAdmin } else { NodeKind::RpcNode }, config: None, tags: None, storage_persistence: None, node_id: NodeId::mint(), sha256: tag.map(|t| format!("{t}-{kind}")) };
         let mut recorded: Recorded = [(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), row(Some("b"), "node_admin")), (rdm_core::PathName::new("mesh1.admin", "2").unwrap(), row(None, "node_admin")), (rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), row(Some("a"), "rpc_node"))].into();
         assert_eq!(paths_owed_replacement(&next, &recorded).iter().cloned().collect::<Vec<_>>(), [PathName::new("mesh1.admin", "2").unwrap(), PathName::new("mesh1.rpc", "1").unwrap()]);
         recorded.insert(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), row(Some("b"), "node_admin"));
@@ -2963,7 +2961,7 @@ mod tests {
 
     /// What the rows record: every live member of `o` on `tag`'s executable of its kind.
     fn rows_on(o: &Topology, tag: &str) -> Recorded {
-        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, config: Some(Default::default()), tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.kind.name())) })).collect()
+        o.nodes.iter().map(|n| (n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, config: Some(Default::default()), tags: None, storage_persistence: None, node_id: n.node_id.clone(), sha256: Some(format!("{tag}-{}", n.kind.name())) })).collect()
     }
 
     /// CONTRACT (proposal executable-bindings-at-create.md rule 1: "the complete topology, an array of nodes,
@@ -3063,7 +3061,7 @@ mod tests {
             node_id: node_id.clone(), sha256: None,
             config: Some([("source".into(), "node".into())].into()),
             tags: Some(["node".into()].into()),
-            storage_persistence: Some(persistent), placement: Some(Default::default()),
+            storage_persistence: Some(persistent),
         })].into();
         let config = rdm_core::OperationId::node("node.config.update", &node_id);
         let tag_create = rdm_core::OperationId::node("node.tag.create", &node_id);
@@ -3103,9 +3101,9 @@ mod tests {
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let zone = |z: &str| [("zone".to_string(), z.to_string())].into_iter().collect::<BTreeMap<String, String>>();
         topology.meshes.get_mut("mesh1").unwrap().set_spec(NodeSpec { config: zone("b"), tags: labels(&["x"]), storage_persistence: persistent, ..NodeSpec::default_for(rpc.clone(), "mesh1", NodeKind::RpcNode) }).unwrap();
-        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage), placement: Some(Default::default()) };
+        let row = |config: BTreeMap<String, String>, tags: BTreeSet<String>, storage: StorageMeta| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(tags), storage_persistence: Some(storage) };
         let mut recorded: Recorded = [(rpc.clone(), row(zone("a"), labels(&["y"]), StorageMeta::Ephemeral))].into();
-        recorded.insert(admin.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None, placement: None });
+        recorded.insert(admin.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, node_id: NodeId::mint(), sha256: None, config: Some(BTreeMap::new()), tags: Some(BTreeSet::new()), storage_persistence: None });
         let all = vec![BuildOperation::UpdateConfig { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), entry: None }, BuildOperation::CreateTags { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["x"]) }, BuildOperation::DeleteTags { node_id: recorded[&rpc].node_id.clone(), kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(), node: rpc.clone(), labels: labels(&["y"]) }];
         assert_eq!(properties_owed(&topology, &recorded, &[], &[]), all, "each property that differs, by its own operation");
         assert_eq!(all.iter().map(BuildOperation::key).collect::<Vec<_>>(), [rdm_core::OperationId::node("node.config.update", &recorded[&rpc].node_id), rdm_core::OperationId::node("node.tag.create", &recorded[&rpc].node_id), rdm_core::OperationId::node("node.tag.delete", &recorded[&rpc].node_id)]);
@@ -3146,7 +3144,7 @@ mod tests {
         let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let labels = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
-        let own: Recorded = [(rpc.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) })].into();
+        let own: Recorded = [(rpc.clone(), RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(port.clone()), tags: Some(labels(&["y"])), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral) })].into();
         let create = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
         let claimed = vec![receipt(1, &create, "AllocateIdentity", None), receipt(1, &create, "PrepareStorage", None), receipt(1, &create, "Complete", None)];
         assert_eq!(properties_owed(&cur, &own, &claimed, &[]), vec![], "the create's claim applied the entry: the node's own writes since stand");
@@ -3223,10 +3221,10 @@ mod tests {
         let cur = t(&[("mesh1", 1, 1)]);
         let rpc: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
         let o = observed(vec![n(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, R, true), n(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, R, true)], &["mesh1"]);
-        let row = |config: BTreeMap<String, String>| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral), placement: Some(Default::default()) };
+        let row = |config: BTreeMap<String, String>| RecordedRow { mesh: "mesh1".into(), kind: NodeKind::RpcNode, node_id: NodeId::mint(), sha256: None, config: Some(config), tags: Some(BTreeSet::new()), storage_persistence: Some(rdm_core::meta::StorageMeta::Ephemeral) };
         let port = [("port".to_string(), "7".to_string())].into_iter().collect::<BTreeMap<String, String>>();
         let mut recorded: Recorded = [(rpc.clone(), row(port))].into();
-        recorded.insert(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), RecordedRow { kind: NodeKind::NodeAdmin, storage_persistence: None, placement: None, ..row(BTreeMap::new()) });
+        recorded.insert(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), RecordedRow { kind: NodeKind::NodeAdmin, storage_persistence: None, ..row(BTreeMap::new()) });
         // Each row is the record of the birth the view holds at its path.
         for (p, r) in recorded.iter_mut() { r.node_id = o.node(p).unwrap().node_id.clone(); }
         let create = rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap());
@@ -3371,7 +3369,7 @@ mod tests {
         after.nodes.retain(|x| x.name.clone() != PathName::new("mesh2.gateway", "2").unwrap());
         after.nodes.push(successor.clone());
         let mut on = rows.clone();
-        on.insert(rdm_core::PathName::new("mesh2.gateway", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, config: Some(Default::default()), tags: None, storage_persistence: None, placement: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
+        on.insert(rdm_core::PathName::new("mesh2.gateway", "2").unwrap(), RecordedRow { mesh: successor.mesh.clone(), kind: successor.kind, config: Some(Default::default()), tags: None, storage_persistence: None, node_id: successor.node_id.clone(), sha256: Some("b-gateway".into()) });
         let done = vec![deleted_receipt(1, PathName::new("mesh2.gateway", "2").unwrap(), "mesh2", NodeKind::Gateway, &gone), receipt(1, &rdm_core::OperationId::node("node.delete", &gone.node_id), "Complete", None), receipt(1, &rdm_core::OperationId::location("node.create", &PathName::new("mesh2.gateway", "2").unwrap()), "Complete", None)];
         let left: Vec<BuildOperation> = [PathName::new("mesh1.gateway", "2").unwrap(), PathName::new("mesh1.gateway", "1").unwrap(), PathName::new("mesh2.gateway", "1").unwrap()].iter().flat_map(|p| replace(p.clone())).collect();
         assert_eq!(replacement_plan(&next, &after, &on, done.clone()), left, "the next attempt finishes the rest");
@@ -3434,7 +3432,7 @@ mod tests {
         let old = serde_json::json!({
             "fabric": "fabric1",
             "meshes": {"mesh1": {"name": "mesh1", "mesh_id": "meshd0000001", "nodes": [PathName::new("mesh1.admin", "1").unwrap()], "spec_by_path": [
-                {"path": PathName::new("mesh1.admin", "1").unwrap(), "storage_persistence": {"persistence": "persistent", "disposition": "preserve"}, "placement": {}}
+                {"path": PathName::new("mesh1.admin", "1").unwrap(), "storage_persistence": {"persistence": "persistent", "disposition": "preserve"}}
             ]}}
         });
         let error = serde_json::from_value::<FabricTopology>(old).unwrap_err().to_string();

@@ -251,17 +251,13 @@ impl Declared {
     pub fn fold_records(&mut self, meshes: &[crate::storage::MeshRecord], fabric: Option<&crate::fabric_storage::FabricRecord>, nodes: &[crate::storage::NodeRow], holds: impl Fn(&NodeId, &IncarnationId) -> bool) -> usize {
         let (nodes_before, meshes_before) = (self.nodes.clone(), self.meshes.clone());
         for m in meshes {
-            if let Some(state) = m.state() {
-                let held = self.meshes.entry(m.mesh_id.clone()).or_insert(state);
-                *held = (*held).max(state);
-            }
+            let held = self.meshes.entry(m.mesh_id.clone()).or_insert(m.state);
+            *held = (*held).max(m.state);
         }
         if let Some(f) = fabric {
             let held = self.fabric.entry(f.fabric_id.clone()).or_default();
-            for e in &f.events {
-                if !held.contains(e) {
-                    held.push(e.clone());
-                }
+            if f.state == crate::fabric_storage::FabricState::Ready && !held.iter().any(|e| e == "ready") {
+                held.push("ready".into());
             }
         }
         let mut births = 0;
@@ -369,7 +365,7 @@ impl RoleFold {
             mesh = %self.mesh,
             node_declared_rows = tracing::field::Empty,
             mesh_status_rows = tracing::field::Empty,
-            fabric_event_rows = tracing::field::Empty,
+            fabric_state = tracing::field::Empty,
             error = tracing::field::Empty,
         );
         // A node-admin taking its mesh's role reads no storage (Q227, Q242, Q260): it folds the records its
@@ -385,8 +381,8 @@ impl RoleFold {
                 };
                 let births = declared.lock().unwrap().fold_records(&meshes, fabric.as_ref(), &nodes, holds_birth);
                 span.record("node_declared_rows", births);
-                span.record("mesh_status_rows", meshes.iter().filter(|m| m.state().is_some()).count());
-                span.record("fabric_event_rows", fabric.as_ref().map_or(0, |f| f.events.len()));
+                span.record("mesh_status_rows", meshes.len());
+                span.record("fabric_state", fabric.as_ref().map_or("none", |f| f.state.name()));
                 *self.folded.lock().unwrap() = true;
                 span.in_scope(|| tracing::info!("this admin took its mesh's role: the mesh's status rows are folded into what it applied"));
                 if let Some(digest_view) = digest_view {
@@ -774,22 +770,29 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
 pub(crate) fn event_key(e: &FabricEvent) -> String {
     match e {
         FabricEvent::Ready => "ready".into(),
-        FabricEvent::ShutdownInitiated { initiated_by } => format!("shutdown-initiated:{initiated_by}"),
     }
 }
 
+/// The Fabric state the Fabric event `event` moves the record to: the one event, `ready`, is its move
+/// to ready.
+fn fabric_state_of(event: &str) -> Option<crate::fabric_storage::FabricState> {
+    (event == "ready").then_some(crate::fabric_storage::FabricState::Ready)
+}
+
 /// One commit of a Fabric event by its writer, the fabric-primary (states.md, "Who sets each state"):
-/// the event applied to the Fabric record it holds, the record written whole and acknowledged, then the
-/// event held as applied once and answered (`Applied` the first time, `AlreadyApplied` after). A refused
-/// write answers `NotReady` naming the store and holds nothing, so the same commit again is decided
-/// afresh. The fabric-primary's own ready event, written as it enters ready
-/// (`crate::fabric_status`), and the `ApplyFabricEvent` it sends its own mesh commit here alike.
+/// the record's state moved to the one the event names on the Fabric record it holds, the record
+/// written whole and acknowledged, then the event held as applied once and answered (`Applied` the
+/// first time, `AlreadyApplied` after). A refused write answers `NotReady` naming the store and holds
+/// nothing, so the same commit again is decided afresh. The fabric-primary's own ready event, written
+/// as it enters ready (`crate::fabric_status`), and the `ApplyFabricEvent` it sends its own mesh commit
+/// here alike.
 pub(crate) async fn commit_fabric_event(storage: &dyn crate::fabric_storage::FabricStorage, caches: &crate::record_cache::Caches, declared: &Mutex<Declared>, fabric_id: &FabricId, name: Option<&str>, event: &str) -> StatusReply {
+    let Some(state) = fabric_state_of(event) else {
+        return rdm_core::reply::status::not_ready(format!("the Fabric event {event} names no state of the Fabric record"));
+    };
     let base = name.map(|name| crate::fabric_storage::FabricRecord::new(crate::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: name.to_string() }));
     let written = caches.update_fabric(storage, fabric_id, base, |r| {
-        if !r.events.iter().any(|e| e == event) {
-            r.events.push(event.to_string());
-        }
+        r.state = r.state.max(state);
     });
     match written.await {
         Ok(Some(())) => hold_fabric_event(declared, fabric_id, event),
@@ -803,7 +806,7 @@ pub(crate) async fn commit_fabric_event(storage: &dyn crate::fabric_storage::Fab
 /// the record); until then the answer is `NotReady` naming the store, and nothing is held or written.
 pub(crate) async fn hold_written_fabric_event(storage: &dyn crate::fabric_storage::FabricStorage, declared: &Mutex<Declared>, fabric_id: &FabricId, event: &str) -> StatusReply {
     match storage.fabric().await {
-        Ok(Some(r)) if r.fabric_id == *fabric_id && r.events.iter().any(|e| e == event) => hold_fabric_event(declared, fabric_id, event),
+        Ok(Some(r)) if r.fabric_id == *fabric_id && fabric_state_of(event).is_some_and(|s| r.state >= s) => hold_fabric_event(declared, fabric_id, event),
         Ok(_) => rdm_core::reply::status::not_ready(format!("fabric.storage does not hold the Fabric event {event} its writer, the fabric-primary, writes first")),
         Err(e) => rdm_core::reply::status::not_ready(format!("fabric.storage could not be read for the Fabric event {event}: {e}")),
     }
@@ -832,7 +835,7 @@ pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage,
         return decided;
     }
     let base = crate::storage::MeshRecord::new(mesh_id.clone(), mesh);
-    if let Err(e) = caches.update_mesh(storage, mesh_id, Some(base), |r| { r.states.insert(state); }).await {
+    if let Err(e) = caches.update_mesh(storage, mesh_id, Some(base), |r| { r.state = r.state.max(state); }).await {
         return rdm_core::reply::status::not_ready(format!("{e} (the Mesh status {state:?} of {mesh})"));
     }
     let mut declared = declared.lock().unwrap();
@@ -851,8 +854,8 @@ fn mesh_status_name(state: MeshState) -> &'static str {
     match state {
         MeshState::Pending => "pending",
         MeshState::Ready => "ready",
-        MeshState::Leaving => "leaving",
-        MeshState::Dead => "dead",
+        MeshState::Deleting => "leaving",
+        MeshState::Deleted => "dead",
     }
 }
 
@@ -947,22 +950,22 @@ impl StatusDoor {
     /// `node.config.update` (`UpdateNodeConfig`) of a Build's create spec at this admin, in-process
     /// (build.md §1, "The Build applies the diff"): the one config door, the spec's `storage` and
     /// `placement` written onto the row with the map.
-    pub async fn update_config_from_spec(&self, req: &StatusRequest, storage: rdm_core::meta::StorageMeta, placement: rdm_core::meta::PlacementMeta) -> StatusReply {
+    pub async fn update_config_from_spec(&self, req: &StatusRequest, storage: rdm_core::meta::StorageMeta) -> StatusReply {
         let me = self.held_name().await;
         let view = self.topology.read().await.clone();
         match self.configs.get() {
-            Some(configs) => configs.update_with(&me, &self.node_id, &view, &*self.nodes_storage, req, Some((storage, placement))).await,
+            Some(configs) => configs.update_with(&me, &self.node_id, &view, &*self.nodes_storage, req, Some(storage)).await,
             None => rdm_core::reply::status::not_ready(format!("path {me_path:?}, name {me_name:?} has no node-RPC client yet; {} is refused", req.op(), me_path = &me.path, me_name = &me.name)),
         }
     }
 
     /// A Build's entry follows the same downward route and node writer as caller changes.
-    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, storage: rdm_core::meta::StorageMeta, placement: rdm_core::meta::PlacementMeta) -> Result<(), String> {
+    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, storage: rdm_core::meta::StorageMeta) -> Result<(), String> {
         self.commands.admitted().await;
         let view = self.topology.read().await.clone();
         let me = self.held_name_in(&view);
         self.configs.get().ok_or_else(|| format!("path {me_path:?}, name {me_name:?}: node property client is not bound", me_path = &me.path, me_name = &me.name))?
-            .apply_entry(&me, &self.node_id, &view, &*self.nodes_storage, birth, entry, (storage, placement)).await
+            .apply_entry(&me, &self.node_id, &view, &*self.nodes_storage, birth, entry, storage).await
     }
 
     /// node.mesh.leave of the birth `(node_id, incarnation)` of this admin's mesh, its connections

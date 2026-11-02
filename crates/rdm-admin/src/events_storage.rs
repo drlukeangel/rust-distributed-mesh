@@ -13,7 +13,8 @@
 //! `events.jsonl`, one whole event per line; its reads fold two ordered maps, `(build.id, event.id)`
 //! and `(node.id, event.id)`, and answer a Build's or a node's events as a range of one of them.
 
-use rdm_core::{BuildId, ChangeId, FabricId, IncarnationId, NodeId};
+use rdm_core::status::MeshState;
+use rdm_core::{BuildId, ChangeId, FabricId, IncarnationId, MeshId, NodeId};
 use crate::storage_error::StorageError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -40,8 +41,13 @@ pub const STORAGE_COMMITTED: &str = "rdm.storage.committed";
 /// `rdm.storage.ended`: the fabric-primary ended a storage change. `data` {change_id, topology_storage_provider, state}.
 pub const STORAGE_ENDED: &str = "rdm.storage.ended";
 
+/// `rdm.mesh.state`: a mesh's record moved to a new `state`. `data` {mesh_id, mesh, state}.
+pub const MESH_STATE: &str = "rdm.mesh.state";
+/// `rdm.fabric.state`: the Fabric record moved to a new `state`. `data` {fabric_id, state}.
+pub const FABRIC_STATE: &str = "rdm.fabric.state";
+
 /// The event types this build writes.
-pub const TYPES: [&str; 8] = [BUILD_STARTED, BUILD_DISPATCHED, BUILD_STEP, BUILD_ENDED, NODE_INVESTIGATED, STORAGE_STARTED, STORAGE_COMMITTED, STORAGE_ENDED];
+pub const TYPES: [&str; 10] = [BUILD_STARTED, BUILD_DISPATCHED, BUILD_STEP, BUILD_ENDED, NODE_INVESTIGATED, STORAGE_STARTED, STORAGE_COMMITTED, STORAGE_ENDED, MESH_STATE, FABRIC_STATE];
 
 /// The CloudEvents version every event carries.
 pub const SPEC_VERSION: &str = "1.0";
@@ -323,6 +329,27 @@ impl Event {
         Self::new(source, time_ms, STORAGE_ENDED, None, object(StorageData { build_id: None, change_id, topology_storage_provider, state: Some(state) }))
     }
 
+    /// `rdm.mesh.state` {mesh_id, mesh, state}.
+    pub fn mesh_state(source: &EventSource, time_ms: u64, mesh_id: &MeshId, mesh: &str, state: MeshState) -> Self {
+        #[derive(Serialize)]
+        struct Data<'a> {
+            mesh_id: &'a MeshId,
+            mesh: &'a str,
+            state: MeshState,
+        }
+        Self::new(source, time_ms, MESH_STATE, None, object(Data { mesh_id, mesh, state }))
+    }
+
+    /// `rdm.fabric.state` {fabric_id, state}.
+    pub fn fabric_state(source: &EventSource, time_ms: u64, fabric_id: &FabricId, state: crate::fabric_storage::FabricState) -> Self {
+        #[derive(Serialize)]
+        struct Data<'a> {
+            fabric_id: &'a FabricId,
+            state: crate::fabric_storage::FabricState,
+        }
+        Self::new(source, time_ms, FABRIC_STATE, None, object(Data { fabric_id, state }))
+    }
+
     /// The Build the event is of: its `data.build_id`.
     pub fn build_id(&self) -> Option<BuildId> {
         self.data.get("build_id").and_then(|v| v.as_str()).and_then(|s| BuildId::parse(s).ok())
@@ -338,6 +365,48 @@ struct StorageData<'a> {
     topology_storage_provider: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'a StepState>,
+}
+
+/// What one writer appends its events with: the events store, its exact birth (each event's
+/// `source`) and its rafka-time (each event's `time`).
+#[derive(Clone)]
+pub struct EventsWriter {
+    /// `events.storage`.
+    pub events: std::sync::Arc<dyn EventsStorage>,
+    /// The writer's exact birth: each event's `source`.
+    pub source: EventSource,
+    /// The writer's rafka-time: each event's `time`.
+    pub time: rdm_transport::clock::RafkaTime,
+}
+
+impl std::fmt::Debug for EventsWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventsWriter").field("source", &self.source.uri()).finish()
+    }
+}
+
+impl EventsWriter {
+    /// A writer on an events store held in memory, by the birth `node_id` of `fabric_id`, at
+    /// rafka-time `1`: what a rig with no topology storage writes its events with.
+    pub fn in_memory(fabric_id: &FabricId, node_id: &NodeId) -> Self {
+        Self::on(std::sync::Arc::new(MemoryEventsStorage::new()), fabric_id, node_id)
+    }
+
+    /// A writer on `events`, by the birth `node_id` of `fabric_id`, at rafka-time `1`.
+    pub fn on(events: std::sync::Arc<dyn EventsStorage>, fabric_id: &FabricId, node_id: &NodeId) -> Self {
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(1);
+        Self { events, source: EventSource { fabric_id: fabric_id.clone(), node_id: node_id.clone(), incarnation: IncarnationId::mint() }, time }
+    }
+
+    /// Append the event `make` builds from this writer's birth and rafka-time; its id, or why none
+    /// was written.
+    pub async fn append(&self, make: impl FnOnce(&EventSource, u64) -> Event) -> Result<EventId, String> {
+        let time_ms = self.time.try_now_ms().ok_or_else(|| "this writer holds no rafka-time".to_string())?;
+        let event = make(&self.source, time_ms);
+        self.events.append(&event).await.map_err(|e| e.to_string())?;
+        Ok(event.id)
+    }
 }
 
 /// The events store (build.md §5): append-only, each event its own record, never updated.

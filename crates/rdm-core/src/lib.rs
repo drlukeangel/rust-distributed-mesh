@@ -100,6 +100,7 @@ pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use outcome::{Committed, IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RequestFinished, RpcOutcome};
 pub use outcome::PreCommit;
 pub use path::{NodeKind, PathName, PathNameError};
+pub use meta::NodeType;
 pub use protocol::{DecodeFailure, NodeProtocol};
 pub use publisher::PublisherId;
 pub use role::{Primary, PrimaryRole};

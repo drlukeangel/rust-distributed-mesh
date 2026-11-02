@@ -331,7 +331,7 @@ fn fields(r: &NodeRow) -> Value {
         "incarnation_id": b.map(|b| &b.incarnation_id), "declared": b.map(|b| &b.declared), "operations": b.map(|b| &b.operations),
         "silence": b.and_then(|b| b.silence), "data_dir_lost": b.and_then(|b| b.data_dir_lost.as_ref()), "data_dir_unreadable": b.and_then(|b| b.data_dir_unreadable.as_ref()),
         "cert": b.and_then(|b| b.cert.as_ref()), "signing_cert": b.and_then(|b| b.signing_cert.as_ref()),
-        "executable": r.executable, "storage_persistence": r.storage_persistence, "placement": r.placement, "topology_storage_provider": r.topology_storage_provider,
+        "executable": r.executable, "storage_persistence": r.storage_persistence, "topology_storage_provider": r.topology_storage_provider,
         "allocated": r.allocated, "initial_properties": r.initial_properties, "predecessor": r.predecessor, "renamed_from": r.renamed_from,
         "replacement_from": r.replacement_from, "inherited_by": r.inherited_by,
     })
@@ -395,8 +395,8 @@ fn now_ns() -> u64 {
 }
 
 /// The fields a node's record keeps across a change of its mesh-primary (i150 R12; Q323: the successor
-/// writes the same record at the node id): identity, placement, executable and storage ([`fields`]).
-const KEPT: [&str; 12] =["node_id", "name", "kind", "mesh", "mesh_id", "incarnation_id", "executable", "storage_persistence", "placement", "topology_storage_provider", "initial_properties", "allocated"];
+/// writes the same record at the node id): identity, executable and storage ([`fields`]).
+const KEPT: [&str; 11] =["node_id", "name", "kind", "mesh", "mesh_id", "incarnation_id", "executable", "storage_persistence", "topology_storage_provider", "initial_properties", "allocated"];
 
 // @feature: node-records
 /// CONTRACT (i150 R1, e1; node-identity-and-state.md "A path is a path": "Replacement renames the
@@ -573,7 +573,7 @@ async fn a_deleted_birth_is_read_by_its_id() {
 ///    "Every JoinNode issues a fresh member cert"), its property record is the same record, and its lifecycle record differs
 ///    only by the stop and start it recorded and that fresh cert. 2. Killed: the node recovered at the pair (a new node id
 ///    over the inherited data dir) lists the same pair, kind, mesh, config, tags, executable, storage,
-///    placement, data dir and endpoint key; its own property record holds the config and tags; its
+///    data dir and endpoint key; its own property record holds the config and tags; its
 ///    lifecycle record carries the same identity fields and names its predecessor. Must NOT happen: a
 ///    field reset by a restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -626,14 +626,14 @@ async fn all_node_fields_survive_node_restart() {
     // 2. Forced exit: recovered at the pair as a new node over the inherited data dir.
     estate.kill_node(&subject).await;
     let recovered = estate.until_node(&subject, "a recovered node is ready at the pair", crate::node_recovery_due(), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
-    let changed = differing(&before, &recovered, &["name", "kind", "mesh", "config", "tags", "executable", "storage_persistence", "topology_storage_provider", "placement", "data_dir", "endpoint_id", "properties"]);
+    let changed = differing(&before, &recovered, &["name", "kind", "mesh", "config", "tags", "executable", "storage_persistence", "topology_storage_provider", "data_dir", "endpoint_id", "properties"]);
     assert!(changed.is_empty(), "the recovered node lists every retained field: {changed:#?}");
     assert!(recovered.transport_addr.is_some(), "the recovered node lists the address it bound: {recovered:?}");
     let recovered_properties = wait_for("the recovered node's own property record", Duration::from_secs(30), || async { estate.node_properties(&recovered.node_id) }).await;
     assert_eq!((&recovered_properties.config, &recovered_properties.tags), (&properties.config, &properties.tags), "the recovered node's own record holds the config and tags");
     let recovered_record = latest(&estate, &recovered.node_id).await.expect("the recovered node's record");
     let recovered_lifecycle = fields(&recovered_record);
-    let changed = differing(&lifecycle, &recovered_lifecycle, &["name", "kind", "mesh", "mesh_id", "executable", "storage_persistence", "placement", "topology_storage_provider"]);
+    let changed = differing(&lifecycle, &recovered_lifecycle, &["name", "kind", "mesh", "mesh_id", "executable", "storage_persistence", "topology_storage_provider"]);
     assert!(changed.is_empty(), "the recovered node's record keeps every retained field: {changed:#?}");
     assert_eq!(recovered_record.predecessor.as_ref().map(|p| &p.node_id), Some(&before.node_id), "the recovered record names its predecessor: {recovered_record:?}");
     estate.artifact("all-fields.json", &json!({"before": before, "started": started, "recovered": recovered, "lifecycle": lifecycle, "recovered_lifecycle": recovered_lifecycle}));
@@ -647,7 +647,7 @@ async fn all_node_fields_survive_node_restart() {
 /// primary from that moment ... as mesh-primary it writes status and role flags into its nodes' records
 /// from then on"): mesh2's primary A is killed; B takes the role and is killed in its tenure; a third
 /// admin C takes it. Every surviving mesh2 node's record, its latest line at its node id, keeps each
-/// identity, placement, executable and storage field it held under A; the member's latest line is
+/// identity, executable and storage field it held under A; the member's latest line is
 /// Ready, and node.get lists the member ready as the same birth. The resolver records a read of the
 /// member's record after C took the role. A superseded primary's late write is not put: Q323 builds
 /// nothing against it ("it gets its own ruling the day it shows"). Must NOT happen: a field of a

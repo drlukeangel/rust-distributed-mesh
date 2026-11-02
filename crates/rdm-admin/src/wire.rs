@@ -23,7 +23,7 @@ use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rdm_core::meta::{NodeSpec, PersistentDisposition, PlacementMeta, StorageMeta};
+use rdm_core::meta::{NodeSpec, PersistentDisposition, StorageMeta};
 use rdm_core::LifecycleOp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -140,7 +140,7 @@ struct WireMesh {
     spec_by_path: BTreeMap<PathName, WireSpec>,
 }
 
-/// A create spec as a Build message carries it: storage and placement, positional. The executable, the
+/// A create spec as a Build message carries it: its storage, positional. The executable, the
 /// tags and the config never ride gossip (proposal executable-bindings-at-create.md rule 7; Q166): the
 /// store root's record of the accepted Build carries them.
 #[derive(Serialize, Deserialize)]
@@ -148,7 +148,6 @@ struct WireSpec {
     mesh: String,
     kind: NodeKind,
     storage: WireStorage,
-    placement: PlacementMeta,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -187,7 +186,7 @@ enum WireChange {
     /// ([`TopologyChange::Reserved`]); kept so `Reconcile` keeps its position.
     Reserved7,
     /// The complete topology (proposal executable-bindings-at-create.md rule 1), appended last. Each
-    /// node's create spec travels as the topology's do, by its path and name with its storage and placement,
+    /// node's create spec travels as the topology's do, by its path and name with its storage,
     /// no executable, no tags and no config (rule 7: nothing about executables rides gossip); the stored
     /// accepted Build keeps them.
     Reconcile { based_on: BuildId, nodes: Vec<(PathName, WireSpec)> },
@@ -306,7 +305,7 @@ impl From<&NodeSpec> for WireSpec {
             StorageMeta::Ephemeral => WireStorage::Ephemeral,
             StorageMeta::Persistent { disposition } => WireStorage::Persistent { disposition },
         };
-        Self { mesh: m.mesh.clone(), kind: m.kind, storage, placement: m.placement }
+        Self { mesh: m.mesh.clone(), kind: m.kind, storage }
     }
 }
 impl WireSpec {
@@ -318,7 +317,7 @@ impl WireSpec {
             WireStorage::Ephemeral => StorageMeta::Ephemeral,
             WireStorage::Persistent { disposition } => StorageMeta::Persistent { disposition },
         };
-        NodeSpec { path, mesh: self.mesh, kind: self.kind, storage_persistence, placement: self.placement, executable: None, tags: Default::default(), config: Default::default() }
+        NodeSpec { path, mesh: self.mesh, kind: self.kind, storage_persistence, executable: None, tags: Default::default(), config: Default::default() }
     }
 }
 impl From<&MeshTopology> for WireMesh {

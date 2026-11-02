@@ -712,7 +712,7 @@ mod tests {
     /// A node of `name` as an admin's view holds it: born when `endpoint`, `addr` and `incarnation`
     /// are all given.
     fn view(name: PathName, mesh: &str, kind: rdm_core::NodeKind, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
-        NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+        NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
             kind,
             mesh: mesh.to_owned(),
             name,

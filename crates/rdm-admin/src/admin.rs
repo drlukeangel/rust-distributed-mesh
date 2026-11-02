@@ -945,7 +945,7 @@ mod tests {
         let meshes = crate::storage::MemoryMeshStorage::default();
         let records = Records::default();
         let holder = MeshId::mint();
-        let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false, states: Default::default() };
+        let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), state: rdm_core::status::MeshState::Pending };
         assert_eq!(crate::storage::write_mesh(&meshes, None, &theirs).await, Ok(Ok(crate::storage::MeshWritten::Written)));
         // The ids the two operations carry, minted when each mesh entered the accepted topology.
         let (carried, mesh3_carried) = (MeshId::mint(), MeshId::mint());
@@ -953,7 +953,7 @@ mod tests {
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let minted = create_mesh(&records, &meshes, "100000000000", "mesh2", &carried).await.expect("a free name is claimed");
         assert_eq!(minted, carried, "the claim is made for the id the operation carries");
-        assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false, states: Default::default() }), "the claim wrote mesh2's row under the carried id");
+        assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), state: rdm_core::status::MeshState::Pending }), "the claim wrote mesh2's row under the carried id");
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the won claim's id is what the mesh's launches carry");
         assert_eq!(create_mesh(&records, &meshes, "100000000000", "mesh2", &carried).await, Ok(minted.clone()), "a re-run claims the same id");
         let refused = create_mesh(&records, &meshes, "100000000000", "mesh3", &mesh3_carried).await.expect_err("mesh3's name is held by another mesh's live row");
@@ -1137,7 +1137,7 @@ mod tests {
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let (build_id, op) = build_creating_mesh2(&builds).await;
         let holder = MeshId::mint();
-        crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), dead: false, states: Default::default() }).await.unwrap().unwrap();
+        crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), state: rdm_core::status::MeshState::Pending }).await.unwrap().unwrap();
         let records = Records::default();
         let refused = create_mesh_step(&records, &meshes, &builds, &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect_err("mesh2's name is held by another mesh");
         assert!(refused.contains("create-mesh:mesh2") && refused.contains(&holder.to_string()), "{refused}");
@@ -1349,7 +1349,7 @@ mod tests {
         let records_before = a_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
         aw.sweep(std::slice::from_ref(&a_admin), &writing(&[]), |_| false).await;
         aw.sweep(std::slice::from_ref(&a_admin), &writing(&["mesh2"]), |_| false).await;
-        assert_eq!(crate::storage::MeshStorage::mesh(&*meshes, &removed).await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: removed.clone(), name: "mesh2".into(), dead: true, states: [rdm_core::status::MeshState::Dead].into() }), "the removed mesh's later tenure writes nothing live");
+        assert_eq!(crate::storage::MeshStorage::mesh(&*meshes, &removed).await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: removed.clone(), name: "mesh2".into(), state: rdm_core::status::MeshState::Deleted }), "the removed mesh's later tenure writes nothing live");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap(), None, "its Dead record released the name");
         assert_eq!(a_nodes.1.load(std::sync::atomic::Ordering::SeqCst), records_before, "nor any record");
         // The removed mesh's admin's node.delete wrote its record Deleted; the recreated mesh's admin claimed the name.
@@ -1361,7 +1361,7 @@ mod tests {
         let mut bw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", recreated.clone(), b_nodes.clone(), meshes.clone(), Default::default());
         bw.sweep(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
         let row = crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap();
-        assert_eq!(row, Some(crate::storage::MeshRecord { mesh_id: recreated.clone(), name: "mesh2".into(), dead: false, states: Default::default() }), "the recreated mesh's row holds mesh2 under its new MeshId");
+        assert_eq!(row, Some(crate::storage::MeshRecord { mesh_id: recreated.clone(), name: "mesh2".into(), state: rdm_core::status::MeshState::Pending }), "the recreated mesh's row holds mesh2 under its new MeshId");
         let births: Vec<NodeId> = rows_writer::recorded_births(&*meshes, &*b_nodes, "mesh2").await.unwrap().into_iter().map(|c| c.node_id).collect();
         assert_eq!(births, vec![b_admin.node.node_id.clone()], "the recreated mesh's primary writes its member's address once its claim won, and the removed mesh's Deleted record at the (path, name) names no node");
         let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
@@ -1865,7 +1865,7 @@ mod tests {
         crate::fabric_storage::write_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
         // The exited birth's node record stays in the store, Deleted (a delete appends its status, never removes it).
         let nodes_storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let row = crate::storage::NodeRow { replacement_from: None, kind: NodeKind::RpcNode, mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: NodeKind::RpcNode, mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         crate::node_rows::write_record(&*nodes_storage, &row).await.unwrap().unwrap();
         let recovery = RecoverySubmitter {
             me: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
@@ -2077,16 +2077,16 @@ mod tests {
             assert_eq!(notices[0].trace_id, submits[0].trace_id, "the notice is in the submit's trace");
             assert!(ctx.context.traceparent.as_deref().is_some_and(|tp| tp.contains(&submits[0].trace_id)), "the notice carries the investigation's trace context: {:?}", ctx.context);
             // The verdict read back: one event of the member's node.id, written before the notice was sent.
-            let events = recovery.investigated.events.of_node(&member.node.node_id).await.unwrap();
+            let events = recovery.investigated.events.events.of_node(&member.node.node_id).await.unwrap();
             assert_eq!(events.len(), 1, "{}: one event for the one verdict: {events:#?}", verdict.as_str());
             let e = &events[0];
             assert_eq!((e.specversion.as_str(), e.r#type.as_str(), e.datacontenttype.as_str(), e.subject.as_ref()), ("1.0", crate::events_storage::NODE_INVESTIGATED, "application/json", Some(&member.node.node_id)), "a CloudEvents 1.0 rdm.node.investigated event about the member: {e:?}");
-            assert_eq!(e.source, recovery.investigated.source.uri(), "written by the mesh-primary that investigated, its exact birth");
+            assert_eq!(e.source, recovery.investigated.events.source.uri(), "written by the mesh-primary that investigated, its exact birth");
             let data = serde_json::Value::Object(e.data.clone());
             assert_eq!(data, serde_json::json!({"incarnation": member.node.incarnation, "path": "mesh2.rpc", "name": "1", "verdict": verdict.as_str(), "next": "recreate"}), "the event's data");
             assert!(e.traceparent.as_deref().is_some_and(|tp| tp.contains(&submits[0].trace_id)), "the event carries the investigation's trace context: {e:?}");
             assert_eq!(attr("event_id"), e.id.to_string(), "the notice is sent from the event's write, which its span names");
-            assert_eq!(recovery.investigated.events.event(&e.id).await.unwrap().as_ref(), Some(e), "the event read by its id");
+            assert_eq!(recovery.investigated.events.events.event(&e.id).await.unwrap().as_ref(), Some(e), "the event read by its id");
             eprintln!("span rdm.node_admin.node.update.via-on-node-investigated trace_id={} {a:?}", notices[0].trace_id);
         }
     }
@@ -2941,7 +2941,7 @@ mod tests {
     #[tokio::test]
     async fn mesh_lefts_dead_write_is_already_applied_over_the_mesh_primarys_dead_and_the_acting_primarys_when_none_survived() {
         use crate::storage::MeshStorage;
-        let dead_on = async |meshes: &crate::storage::MemoryMeshStorage, m: &str| meshes.mesh(&mesh_id(m)).await.unwrap().is_some_and(|r| r.dead && r.states.contains(&rdm_core::status::MeshState::Dead));
+        let dead_on = async |meshes: &crate::storage::MemoryMeshStorage, m: &str| meshes.mesh(&mesh_id(m)).await.unwrap().is_some_and(|r| r.is_deleted());
         let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), attempt: 1, operation: crate::mesh_delete::operation(&mesh_id("mesh2")) };
         for case in ["surviving-primary-wrote-dead", "no-survivor"] {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
@@ -2954,7 +2954,7 @@ mod tests {
             if case == "surviving-primary-wrote-dead" {
                 // mesh2's primary committed Dead at mesh.deleted on mesh2's record, the record Dead with
                 // it (R-MD1 item 1; admin/leave.rs, mesh.deleted).
-                crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), dead: true, states: [rdm_core::status::MeshState::Dead].into() }).await.unwrap().unwrap();
+                crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), state: rdm_core::status::MeshState::Deleted }).await.unwrap().unwrap();
             }
             let capture = crate::span_capture::Capture::new(&format!("i143-3068-r-md1-{case}"));
             {
@@ -3522,7 +3522,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         crate::node_rows::move_row(&primary, &Default::default(), &rdm_core::PathName::new("mesh1.admin", "1").unwrap(), &record, &held.node.name, &to).await.unwrap();
         // This admin: the same view, its own store on the same root, no rename of its own.
@@ -3670,7 +3670,7 @@ mod tests {
         use rdm_core::status::MeshState;
         let digest_view = DigestView::default();
         let records = Records::default();
-        for (mesh, state) in [("mesh1", MeshState::Leaving), ("mesh2", MeshState::Dead), ("mesh3", MeshState::Ready)] {
+        for (mesh, state) in [("mesh1", MeshState::Deleting), ("mesh2", MeshState::Deleted), ("mesh3", MeshState::Ready)] {
             assert!(digest_view.record(digest(PathName::new(format!("{mesh}.admin"), "1").unwrap(), mesh, rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready)));
             records.meshes.lock().unwrap().insert(mesh.into(), mesh_id(mesh));
             records.declared.lock().unwrap().meshes.insert(mesh_id(mesh), state);
@@ -3703,8 +3703,8 @@ mod tests {
         assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Ready, "the declaration applied here holds Ready while the gossip view still holds pending");
         let leaving = Frame::MeshStatus { mesh: "mesh2".into(), status: "leaving".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 20 };
         assert!(digest_view.statuses.take(&leaving, &fabric1()));
-        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Leaving, "the furthest state held, from either: a state only moves forward");
-        records.declared.lock().unwrap().meshes.insert(mesh_id("mesh3"), MeshState::Dead);
+        assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh2"), MeshState::Deleting, "the furthest state held, from either: a state only moves forward");
+        records.declared.lock().unwrap().meshes.insert(mesh_id("mesh3"), MeshState::Deleted);
         assert_eq!(runner::held_mesh_state(&digest_view, &records, "mesh3"), MeshState::Pending, "a declaration is read by this mesh's own MeshId only");
     }
 
@@ -3793,7 +3793,7 @@ mod tests {
         wake.seen();
         records.declared.lock().unwrap().hold_node(birth.clone(), NodeState::Ready);
         assert_eq!(due(&mut wake), None, "the same declared state again moves nothing");
-        records.declared.lock().unwrap().hold_mesh(mesh_id("mesh1"), MeshState::Dead);
+        records.declared.lock().unwrap().hold_mesh(mesh_id("mesh1"), MeshState::Deleted);
         assert_eq!(due(&mut wake), Some("declared"), "a Mesh's state held");
         wake.seen();
         records.declared.lock().unwrap().forget_node(&birth);
@@ -3931,7 +3931,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         let (me, base) = (rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
         crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &held.node.name, &base).await.unwrap();
@@ -4463,5 +4463,64 @@ mod tests {
         assert_eq!(read.len(), 3, "each read that holds is spanned, once per tenure: {read:?}");
         assert_eq!((read[0].attributes.get("reader_path").map(String::as_str), read[0].attributes.get("reader_name").map(String::as_str), read[0].attributes.get("mesh").map(String::as_str), read[0].attributes.get("rows").map(String::as_str)), (Some("mesh1.admin"), Some("2"), Some("mesh1"), Some("1")), "{:?}", read[0].attributes);
         eprintln!("span rdm.node_admin.node.resolve.via-runtime-rows-read trace_id={} {:?}", read[0].trace_id, read[0].attributes);
+    }
+
+    /// The events an events store was given, in the order appended: what a cell reads the state
+    /// moves from (they name no Build and no node, so the store's two range reads hold none).
+    #[derive(Default)]
+    struct AppendedEvents(std::sync::Mutex<Vec<crate::events_storage::Event>>);
+
+    #[async_trait::async_trait]
+    impl crate::events_storage::EventsStorage for AppendedEvents {
+        async fn append(&self, event: &crate::events_storage::Event) -> Result<(), crate::storage_error::StorageError> {
+            self.0.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+        async fn event(&self, id: &crate::events_storage::EventId) -> Result<Option<crate::events_storage::Event>, crate::storage_error::StorageError> {
+            Ok(self.0.lock().unwrap().iter().find(|e| &e.id == id).cloned())
+        }
+        async fn of_build(&self, _: &crate::build::BuildId) -> Result<Vec<crate::events_storage::Event>, crate::storage_error::StorageError> {
+            Ok(Vec::new())
+        }
+        async fn of_node(&self, _: &rdm_core::NodeId) -> Result<Vec<crate::events_storage::Event>, crate::storage_error::StorageError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// CONTRACT (node-identity-and-state.md §2.7, the Meshes schema's `state`): a mesh's record holds
+    /// one `state`, and it moves pending (its name claim) -> ready -> deleting -> deleted (its
+    /// removal), each move one `rdm.mesh.state` event, a CloudEvents 1.0 envelope by this admin's
+    /// birth naming the mesh and the state it moved to. A repeat of a state moves nothing and writes
+    /// none. Must NOT happen: a move with no event, two events for one move, or an event for a state
+    /// the record did not move to.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_mesh_state_moves_pending_ready_deleting_deleted_with_one_event_each() {
+        use rdm_core::status::MeshState;
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let records = Records::default();
+        let appended = std::sync::Arc::new(AppendedEvents::default());
+        let (fabric_id, me) = (rdm_core::FabricId::mint(), rdm_core::NodeId::mint());
+        let writer = crate::events_storage::EventsWriter::on(appended.clone(), &fabric_id, &me);
+        let source = writer.source.uri();
+        records.caches.writes_events(writer);
+        let mesh_id = MeshId::mint();
+        create_mesh(&records, &meshes, &me.to_string(), "mesh2", &mesh_id).await.expect("a free name is claimed");
+        create_mesh(&records, &meshes, &me.to_string(), "mesh2", &mesh_id).await.expect("a re-run claims the same id");
+        for state in [MeshState::Ready, MeshState::Ready, MeshState::Deleting, MeshState::Deleting] {
+            let reply = crate::status_rpc::commit_mesh_state(&meshes, &records.caches, &records.declared, "mesh2", &mesh_id, state, 0).await;
+            assert!(matches!(reply, rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied), "{state:?}: {reply:?}");
+        }
+        assert_eq!(crate::mesh_delete::mesh_row_dead(&meshes, &records.caches, "mesh2", &mesh_id).await, Ok("dead-written"));
+        assert_eq!(crate::mesh_delete::mesh_row_dead(&meshes, &records.caches, "mesh2", &mesh_id).await, Ok("already-dead"));
+        let record = crate::storage::MeshStorage::mesh(&meshes, &mesh_id).await.unwrap().expect("mesh2's record");
+        assert_eq!(record.state, MeshState::Deleted, "the record holds one state, the last it moved to: {record:?}");
+        let events = appended.0.lock().unwrap().clone();
+        let moves: Vec<(&str, serde_json::Value, serde_json::Value, serde_json::Value)> = events.iter().map(|e| (e.r#type.as_str(), e.data["mesh_id"].clone(), e.data["mesh"].clone(), e.data["state"].clone())).collect();
+        let (id, mesh) = (serde_json::json!(mesh_id.to_string()), serde_json::json!("mesh2"));
+        assert_eq!(moves, ["pending", "ready", "deleting", "deleted"].map(|s| (crate::events_storage::MESH_STATE, id.clone(), mesh.clone(), serde_json::json!(s))).to_vec(), "one rdm.mesh.state event per move, in order: {events:#?}");
+        for e in &events {
+            assert_eq!((e.specversion.as_str(), e.datacontenttype.as_str(), e.subject.as_ref(), e.source.as_str()), ("1.0", "application/json", None, source.as_str()), "a CloudEvents 1.0 event about no node, by this admin's birth: {e:?}");
+        }
     }
 }

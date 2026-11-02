@@ -212,7 +212,7 @@ mod tests {
                         cert: None,
                         executable: None,
                         storage_persistence: None,
-                        placement: None,
+                       
                         topology_storage_provider: None,
                     };
                     Some(view)

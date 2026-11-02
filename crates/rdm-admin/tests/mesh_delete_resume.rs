@@ -362,7 +362,7 @@ fn writer_view(records: &[Node], primary: Option<&NodeId>, fabric_primary: Optio
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
+        storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         assert!(matches!(rows.claim(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
     }
 }
@@ -792,8 +792,8 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         let exited = rdm_admin::deployment::pipeline::TerminalReceipt { node: last.name.clone(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) , verdict: None, data_dir: None };
         let after = mesh_left_rows(Some(&rows), &status, &Default::default(), &declared, fp.node_id.as_str(), &key, "mesh2", std::slice::from_ref(&exited)).await;
         let row = rdm_admin::storage::NodesStorage::node(storage.as_ref(), &last.node_id).await.unwrap();
-        let statuses = status.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>();
-        let dead_held = status.mesh(&mesh_id.clone()).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead));
+        let statuses = status.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>();
+        let dead_held = status.mesh(&mesh_id.clone()).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted);
         // mesh2 created again: its first admin's claim wins over the Deleted row.
         let again = rows.claim(&last.name, &last.mesh.clone(), last.kind, &NodeId::mint(), &rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), None, None, ClaimFor::Create).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
@@ -812,8 +812,8 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     let row = row.expect("the final primary's row stays, readable by its node id");
     assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &last.node_id), "{row:?}");
     assert!(dead_held, "the mesh's status is Dead on mesh2 (mesh.storage, R-MD1)");
-    assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Dead), "mesh2's one status fact is its Dead, on mesh2: {statuses:?}");
-    assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Dead), "and held as applied");
+    assert_eq!(statuses.get(&mesh_id), Some(&MeshState::Deleted), "mesh2's one status fact is its Dead, on mesh2: {statuses:?}");
+    assert_eq!(declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Deleted), "and held as applied");
     match &again {
         Ok(Claimed::Written { row, seeded_from }) => {
             assert_eq!(seeded_from.as_ref(), None, "a plain create names no seed: the Deleted row's location is not provenance");
@@ -1668,7 +1668,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // Every member's row as its create left it. The created admin's writer holds the rows of the
         // births its view names; the stopped birth's row it never held.
         for n in &all {
-            storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
+            storage.write_record(&NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         }
         for n in &records {
             assert!(matches!(rows.claim(&n.name, &n.mesh.clone(), n.kind, &n.node_id, &rdm_core::OperationId::location("node.create", &n.name), None, None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
@@ -2759,7 +2759,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
             .await
             .expect("mesh row Dead is written");
         let survivor_row = rdm_admin::storage::NodesStorage::node(&*storage, &survivor_node.node_id).await.unwrap().expect("mesh-primary row exists");
-        let mesh_dead = mesh_storage.mesh(&mesh_id).await.unwrap().is_some_and(|r| r.states.contains(&MeshState::Dead));
+        let mesh_dead = mesh_storage.mesh(&mesh_id).await.unwrap().is_some_and(|r| r.state == MeshState::Deleted);
         (
             reached_refusal,
             resumed,

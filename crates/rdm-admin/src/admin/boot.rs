@@ -503,15 +503,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // Each verdict this admin reaches as the primary that investigated a node is one
     // `rdm.node.investigated` event, by this birth, and the application's `on_node_investigated` is sent
     // from that write (build.md §5, node-investigation.md, fabric-node-hooks.md).
-    let investigated = crate::node_investigation::NodeInvestigatedWriter {
+    let events = crate::events_storage::EventsWriter {
         events: topology_storage.events(),
         source: crate::events_storage::EventSource { fabric_id: cfg.fabric_id.clone(), node_id: minted_node_id.clone(), incarnation: incarnation.clone() },
         time: rafka_time.clone(),
-        on_node_investigated: on_node_investigated.clone(),
     };
+    let investigated = crate::node_investigation::NodeInvestigatedWriter { events: events.clone(), on_node_investigated: on_node_investigated.clone() };
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
     // starts from its copy here (storage-whole-records.md, "The rule"), its first writes at boot too.
     let caches = crate::record_cache::Caches::default();
+    // Each move of a mesh's or the Fabric's state this admin writes is also an event, by this birth
+    // (node-identity-and-state.md §2.7).
+    caches.writes_events(events);
     // A name claim this admin writes records the provider it writes on the claimed row (storage.md §2).
     caches.nodes.writes_to(&cfg.topology_storage_provider);
     // Every record this admin writes names its birth as its writer (Q109).
@@ -566,9 +569,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             Some(a)
         }
     };
-    // The adoption launch's own mesh's state, the greatest its Mesh record holds: what it applies to
+    // The adoption launch's own mesh's state, as its Mesh record holds it: what it applies to
     // itself at its own instant and republishes once its checklist completes (Q272).
-    let adopted_mesh_state = adoption.as_ref().map(|a| a.mesh.states.iter().max().copied().unwrap_or(rdm_core::status::MeshState::Pending));
+    let adopted_mesh_state = adoption.as_ref().map(|a| a.mesh.state);
     let inherited = match (&cfg.launch, own_row) {
         _ if adoption.is_some() => adoption.as_ref().map(|a| a.lost.clone()),
         (None, Some(own)) => {
@@ -1329,10 +1332,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let provider = FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?.provider;
                                         // So is its topology_storage_provider, Day 0's `RDM_TOPOLOGY_STORAGE_PROVIDER` (storage.md §2).
                                         let topology_storage_provider = cfg.topology_storage_provider.clone();
+                                        // So are its types, Day 0's `RDM_NODE_TYPES` (the Fabrics schema's `types`, D45).
+                                        let types = cfg.node_types.clone();
                                         caches
                                             .update_fabric(&*fabric_storage, &cfg.fabric_id, None, |r| {
                                                 r.provider = Some(provider);
                                                 r.topology_storage_provider = Some(topology_storage_provider);
+                                                r.types = types;
                                             })
                                             .await
                                             .map_err(|e| format!("refusing to start: {e}"))?;
@@ -1381,7 +1387,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // hydration sync, node.topology.get at node.start's topology step (`AdminFirstStart`).
                             if cfg.launch.is_none() {
                                 if let Some(named) = builds_dyn.current().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.map(|b| b.topology) {
-                                    for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| !m.dead && named.meshes.contains_key(&m.name)) {
+                                    for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| !m.is_deleted() && named.meshes.contains_key(&m.name)) {
                                         records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
                                         records.inputs_moved();
                                     }
@@ -1594,7 +1600,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let base = crate::storage::MeshRecord::new(mesh_id.clone(), mesh.clone());
                                         // Whether this write is the one that put the state on the record: the mesh's entry to it.
                                         let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                                        let written = caches.update_mesh(&*meshes, &mesh_id, Some(base), |r| { entered.store(r.states.insert(state), std::sync::atomic::Ordering::SeqCst); }).await;
+                                        let written = caches.update_mesh(&*meshes, &mesh_id, Some(base), |r| { let moved = state > r.state; if moved { r.state = state; } entered.store(moved, std::sync::atomic::Ordering::SeqCst); }).await;
                                         let outcome = if written.is_ok() { "recorded" } else { "record-refused" };
                                         tracing::info_span!("rdm.node_admin.mesh.update.via-applied", mesh = %mesh, mesh_id = %mesh_id, state = ?state, outcome, error = %written.as_ref().err().cloned().unwrap_or_default(), "otel.kind" = "internal")
                                             .in_scope(|| tracing::info!("the fabric-primary answered the mesh's state: its primary records it on the mesh's own record"));

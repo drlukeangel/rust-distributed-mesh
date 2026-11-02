@@ -893,8 +893,7 @@ pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, cach
         None => meshes.mesh(mesh_id).await.map_err(|e| format!("mesh.storage could not read the record of {mesh} ({mesh_id}): {e}"))?,
     };
     let mut row = held.clone().unwrap_or_else(|| crate::storage::MeshRecord::new(mesh_id.clone(), mesh));
-    row.dead = true;
-    row.states.insert(rdm_core::status::MeshState::Dead);
+    row.state = rdm_core::status::MeshState::Deleted;
     match crate::storage::write_mesh(meshes, held.as_ref(), &row).await {
         Ok(Ok(crate::storage::MeshWritten::Written { .. })) => {
             caches.meshes.hold(mesh_id.clone(), row);
@@ -949,7 +948,7 @@ async fn drop_mesh_left_contacts(rows: Option<&crate::node_rows::NodeRows>, exec
 /// of a mesh with none left and records it as applied. One
 /// `rdm.node_admin.mesh.update.via-dead-row` span names the outcome and who wrote the row.
 async fn ensure_mesh_dead(meshes: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str) -> Result<(), String> {
-    let dead = rdm_core::status::MeshState::Dead;
+    let dead = rdm_core::status::MeshState::Deleted;
     let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation.action, operation_subject = ?key.operation.subject, outcome = tracing::field::Empty, writer = tracing::field::Empty, mesh_row = tracing::field::Empty, error = tracing::field::Empty);
     let refused = |e: String| {
         span.record("outcome", "not-committed");
@@ -964,7 +963,7 @@ async fn ensure_mesh_dead(meshes: &dyn crate::storage::MeshStorage, caches: &cra
         let _one = caches.meshes.lock(&key.mesh_id).await;
         caches.meshes.hold(key.mesh_id.clone(), r.clone());
     }
-    let held = stored.as_ref().is_some_and(|r| r.states.contains(&dead));
+    let held = stored.as_ref().is_some_and(|r| r.state == dead);
     let applied_here = declared.lock().unwrap().meshes.get(&key.mesh_id) == Some(&dead);
     let (outcome, writer) = if held { ("already-applied", if applied_here { "acting-primary" } else { "mesh-primary" }) } else { ("applied", "acting-primary") };
     let mesh_row = mesh_row_dead(meshes, caches, mesh, &key.mesh_id).await.map_err(refused)?;
@@ -1548,7 +1547,7 @@ pub async fn admit_delete_mesh(runs: &MeshDeleteRuns, storage: &dyn crate::stora
     if runs.holds(&key.mesh_id) {
         return DeleteMeshAdmission { leaving_row: None, admission: runs.admit(key, sender) };
     }
-    let committed = crate::status_rpc::commit_mesh_state(storage, caches, declared, mesh, &key.mesh_id, rdm_core::status::MeshState::Leaving, 0).await;
+    let committed = crate::status_rpc::commit_mesh_state(storage, caches, declared, mesh, &key.mesh_id, rdm_core::status::MeshState::Deleting, 0).await;
     let admission = match &committed {
         StatusReply::Applied | StatusReply::AlreadyApplied => runs.admit(key, sender),
         refused => MeshDeleteAdmission::Refused(refused.clone()),
@@ -2140,20 +2139,18 @@ mod tests {
         let caches = crate::record_cache::Caches::default();
         let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: rdm_core::OperationId::unscoped("mesh.delete:m") };
         let mut boot = MeshRecord::new(key.mesh_id.clone(), "mesh2");
-        boot.states.insert(MeshState::Pending);
+        boot.state = MeshState::Pending;
         crate::storage::write_mesh(&meshes, None, &boot).await.unwrap().unwrap();
         // The copy this fabric-primary took before mesh2's primary wrote Ready.
         caches.meshes.hold(key.mesh_id.clone(), boot.clone());
         let mut ready = boot.clone();
-        ready.states.insert(MeshState::Ready);
+        ready.state = MeshState::Ready;
         meshes.put_mesh(&ready).await.unwrap();
 
         let declared = std::sync::Mutex::new(crate::status_rpc::Declared::default());
         ensure_mesh_dead(&meshes, &caches, &declared, "mesh1.admin.1", &key, "mesh2").await.unwrap();
         let stored = meshes.mesh(&key.mesh_id).await.unwrap().expect("mesh2's record stands");
-        assert!(stored.dead, "Dead is written: {stored:?}");
-        assert!(stored.states.contains(&MeshState::Ready), "the mesh-primary's Ready stands beside Dead: {stored:?}");
-        assert!(stored.states.contains(&MeshState::Dead), "{stored:?}");
+        assert_eq!(stored.state, MeshState::Deleted, "deleted is written over the mesh-primary's ready: {stored:?}");
         assert_eq!(caches.meshes.get(&key.mesh_id), Some(stored), "the copy held is the record written");
     }
 }

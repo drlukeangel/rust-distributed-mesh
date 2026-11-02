@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The create spec of one node (build.md §1, Q166): its `(path, name)` and the node's own properties under
 /// the node-properties names (node-rpc-envelope.md "Node properties"), flat. There is no nested
 /// configuration type: `config` is the application's map and nothing else. Field order is the wire's:
-/// a Build request's entry was `(PathName, { storage_persistence, placement, executable, tags })` on the
+/// a Build request's entry is `(path, name, { storage_persistence, executable, tags })` on the
 /// positional codec, and `config` is appended last.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,8 +24,6 @@ pub struct NodeSpec {
     /// births and once it is gone. Not where RDM's records go: that is the fabric's
     /// `topology_storage_provider` (storage.md §2).
     pub storage_persistence: StorageMeta,
-    /// Placement constraints.
-    pub placement: PlacementMeta,
     /// The executable the node runs (path, sha256 and, under the container provider, the image):
     /// named per node by the request that creates it, compiled onto the accepted topology's entry,
     /// recorded on the node's row at the claim and re-hashed at the launch (build-deployment.md §2). An
@@ -183,11 +181,58 @@ pub enum PersistentDisposition {
     Release,
 }
 
-/// Placement constraints of the logical node. None are declared in this build; the type exists
-/// so a constraint, when it comes, is typed Meta and never a tag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// `node`: RDM's base type, the plain node that serves the core protocols only; every type extends it.
+pub const NODE: &str = "node";
+/// `node-admin`: RDM's other type.
+pub const NODE_ADMIN: &str = "node-admin";
+/// RDM's two types, never declared again by an application.
+pub const RDM_TYPES: [&str; 2] = [NODE, NODE_ADMIN];
+
+/// One of the application's node types (the Fabrics schema's `types`, node-rpc-envelope.md "#
+/// Schemas"): it extends `node` and overrides its defaults. Never named `node` or `node-admin`, RDM's
+/// two (refused by name).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlacementMeta {}
+pub struct NodeType {
+    /// The type's name, what a node's `node_type` names.
+    pub name: String,
+    /// The `storage_persistence` a node of the type takes when its create states none.
+    pub storage_persistence: StorageMeta,
+    /// The executable a node of the type runs when its create states none.
+    #[serde(default)]
+    pub executable: Option<crate::binding::Binding>,
+}
+
+impl NodeType {
+    /// The application's declared types from their JSON document (`RDM_NODE_TYPES`), refused by name:
+    /// a document that does not parse, a type named `node` or `node-admin` (RDM's two), an empty name
+    /// or a name declared twice. Echoes none of the document.
+    pub fn parse_declared(document: &str) -> Result<Vec<NodeType>, String> {
+        let types: Vec<NodeType> = serde_json::from_str(document).map_err(|e| format!("not a list of node types {{name, storage_persistence, executable}} (line {}, column {})", e.line(), e.column()))?;
+        Self::check_declared(&types)?;
+        Ok(types)
+    }
+
+    /// Refuse, by name, a declared list naming one of RDM's two types, an empty name or a name twice.
+    pub fn check_declared(types: &[NodeType]) -> Result<(), String> {
+        if !types.is_empty() {
+            return Ok(());
+        }
+        let mut seen = BTreeSet::new();
+        for t in types {
+            if RDM_TYPES.contains(&t.name.as_str()) {
+                return Err(format!("the node type `{}` is RDM's and cannot be declared again", t.name));
+            }
+            if t.name.trim().is_empty() {
+                return Err("a declared node type has an empty name".into());
+            }
+            if !seen.insert(t.name.as_str()) {
+                return Err(format!("the node type `{}` is declared twice", t.name));
+            }
+        }
+        Ok(())
+    }
+}
 
 impl NodeSpec {
     /// The migration default for `path`'s kind: what ingress normalization gives a materialized path
@@ -195,7 +240,7 @@ impl NodeSpec {
     /// delete; gateways, compute and proof rpc nodes are ephemeral), with no executable, tag or
     /// config. Ingress-only: once a Build is accepted its spec is explicit and nothing re-derives it.
     pub fn default_for(path: PathName, mesh: impl Into<String>, kind: NodeKind) -> Self {
-        Self { path, mesh: mesh.into(), kind, storage_persistence: StorageMeta::for_kind(kind), placement: PlacementMeta::default(), executable: None, tags: BTreeSet::new(), config: BTreeMap::new() }
+        Self { path, mesh: mesh.into(), kind, storage_persistence: StorageMeta::for_kind(kind), executable: None, tags: BTreeSet::new(), config: BTreeMap::new() }
     }
 }
 
@@ -220,6 +265,28 @@ mod tests {
         assert!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"ephemeral","disposition":"preserve"}"#).unwrap_err().to_string().contains("carries no `disposition`"), "ephemeral carries no disposition");
         assert!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"persistent"}"#).unwrap_err().to_string().contains("requires `disposition`"), "persistent names its disposition");
         assert_eq!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"ephemeral"}"#).unwrap(), StorageMeta::Ephemeral);
+    }
+
+    /// CONTRACT (node-identity-and-state.md §2, the Fabrics schema's `types`): the application declares
+    /// its own node types, each with the defaults it overrides; neither of RDM's two, `node` and
+    /// `node-admin`, can be declared again, and a name declared twice or a document that does not parse
+    /// is refused by name, echoing none of the document. Must NOT happen: RDM's types overridden, or
+    /// a declared value in a refusal.
+    #[test]
+    fn rdm_types_cannot_be_declared_and_a_declared_type_reads_back_with_its_defaults() {
+        let declared = NodeType::parse_declared(r#"[{"name":"broker","storage_persistence":{"persistence":"persistent","disposition":"preserve"}},{"name":"gateway","storage_persistence":{"persistence":"ephemeral"}}]"#).unwrap();
+        assert_eq!(declared, vec![
+            NodeType { name: "broker".into(), storage_persistence: StorageMeta::Persistent { disposition: PersistentDisposition::Preserve }, executable: None },
+            NodeType { name: "gateway".into(), storage_persistence: StorageMeta::Ephemeral, executable: None },
+        ]);
+        for rdm in RDM_TYPES {
+            let e = NodeType::parse_declared(&format!(r#"[{{"name":"{rdm}","storage_persistence":{{"persistence":"ephemeral"}}}}]"#)).unwrap_err();
+            assert_eq!(e, format!("the node type `{rdm}` is RDM's and cannot be declared again"));
+        }
+        let twice = NodeType::parse_declared(r#"[{"name":"broker","storage_persistence":{"persistence":"ephemeral"}},{"name":"broker","storage_persistence":{"persistence":"ephemeral"}}]"#).unwrap_err();
+        assert_eq!(twice, "the node type `broker` is declared twice");
+        let malformed = NodeType::parse_declared(r#"[{"name":"s3cr3t-value"}]"#).unwrap_err();
+        assert!(malformed.starts_with("not a list of node types") && !malformed.contains("s3cr3t"), "{malformed}");
     }
 
     /// CONTRACT (storage.md §1: `storage_persistence` is `ephemeral` or `persistent { disposition:

@@ -156,7 +156,7 @@ impl OperationRunner for RecordedRuns {
                         config: None,
                         tags: None,
                         storage_persistence: None,
-                        placement: None,
+                       
                         node_id: NodeId::mint(),
                         sha256: sha,
                     },
@@ -244,7 +244,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
                     config: None,
                     tags: None,
                     storage_persistence: None,
-                    placement: None,
+                   
                     node_id: n.node_id.clone(),
                     sha256: Some(sha.into()),
                 },

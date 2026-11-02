@@ -313,7 +313,7 @@ impl Prepared {
             let identity = rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
             rdm_admin::fabric_storage::write_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is free");
             let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
-            rdm_admin::storage::write_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), dead: false, states: Default::default() }).await.unwrap().expect("mesh1's name is free");
+            rdm_admin::storage::write_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), state: rdm_core::status::MeshState::Pending }).await.unwrap().expect("mesh1's name is free");
             let nodes = rdm_admin::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
             let own = rdm_admin::storage::NodeRecord { mesh: "mesh1".into(),
                 node_id: node_id.clone(),
@@ -355,7 +355,7 @@ impl Prepared {
                 predecessor: None,
                 mesh_id: Some(mesh_id.clone()),
                 storage_persistence: None,
-                placement: None,
+               
             };
             nodes.write_record(&row).await.unwrap();
             // The birth's own part of its record, its address included, as its own writer put it (Q333).
@@ -389,7 +389,7 @@ impl Prepared {
                     predecessor: None,
                     mesh_id: Some(mesh_id.clone()),
                     storage_persistence: None,
-                    placement: None,
+                   
                 };
                 nodes.write_record(&row).await.unwrap();
                 launched.push((location, node_id));
@@ -1105,7 +1105,7 @@ impl Prepared {
             if dead {
                 let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
                 let mut m = meshes.mesh_named("mesh1").await.unwrap().expect("mesh1's row");
-                m.dead = true;
+                m.state = rdm_core::status::MeshState::Deleted;
                 meshes.put_mesh(&m).await.unwrap();
             }
         });

@@ -224,12 +224,6 @@ pub struct NodeView {
     /// fact, beside the fabric's intent on the Fabric row. `None` for a row that records none.
     #[serde(default)]
     pub topology_storage_provider: Option<String>,
-    /// The node's `placement` (build.md §1), as its row records it from its create spec: every node
-    /// property is on the row a read answers (node-rpc-envelope.md, OwnRow), so a submitter composes a
-    /// whole Build from it. `None` for a row that records none. Appended last (the reply's frozen
-    /// schema moves by one trailing field).
-    #[serde(default)]
-    pub placement: Option<crate::meta::PlacementMeta>,
     /// Whether the node's own property record was read (query.md §1: "Properties are read separately at
     /// the subject node ID. A missing current-writer record is unavailable"; Q318): a node with no
     /// property record yet is listed with its lifecycle facts and `Unavailable`, its config and tags

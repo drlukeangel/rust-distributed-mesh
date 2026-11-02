@@ -107,7 +107,7 @@ impl crate::build_drive::Gate for RoleGate {
     async fn dead_meshes(&self, observed: &crate::topology::Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
         let mut dead = std::collections::HashSet::new();
         for id in observed.meshes.iter().filter(|m| m.status != crate::model::ScopeStatus::Dead).filter_map(|m| m.id.as_ref()) {
-            if self.meshes.mesh(id).await.map_err(|e| format!("the Mesh record of {id} could not be read: {e}"))?.is_some_and(|r| r.dead) {
+            if self.meshes.mesh(id).await.map_err(|e| format!("the Mesh record of {id} could not be read: {e}"))?.is_some_and(|r| r.is_deleted()) {
                 self.handover.records.hold_mesh_deleted(id);
                 dead.insert(id.clone());
             }
@@ -773,8 +773,8 @@ pub(crate) fn mesh_state_of(status: &str) -> Result<rdm_core::status::MeshState,
     match status {
         "pending" => Ok(MeshState::Pending),
         "ready" => Ok(MeshState::Ready),
-        "leaving" => Ok(MeshState::Leaving),
-        "dead" => Ok(MeshState::Dead),
+        "leaving" => Ok(MeshState::Deleting),
+        "dead" => Ok(MeshState::Deleted),
         other => Err(format!("mesh status {other:?} is no Mesh lifecycle state (pending, ready, leaving, dead)")),
     }
 }

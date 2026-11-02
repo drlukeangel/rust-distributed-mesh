@@ -369,9 +369,7 @@ fn mesh_primary_fires_on_mesh_ready_once_after_mesh_record_commits_ready_and_wit
             .find(|m| m.name == "mesh1")
             .expect("mesh1 record exists");
         assert!(
-            mesh1_record
-                .states
-                .contains(&rdm_core::status::MeshState::Ready),
+            mesh1_record.state == rdm_core::status::MeshState::Ready,
             "Ready is committed on MeshRecord before on_mesh_ready runs: {mesh1_record:?}"
         );
 

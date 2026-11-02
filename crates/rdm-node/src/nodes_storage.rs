@@ -271,9 +271,6 @@ pub struct NodeRow {
     /// recorded it on.
     #[serde(default = "file_provider")]
     pub topology_storage_provider: Option<String>,
-    /// The node's placement as its create spec names it, beside `storage_persistence` and written as it is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub placement: Option<rdm_core::meta::PlacementMeta>,
     /// The birth that wrote this version of the record (Q109: "the row's key names its writer's
     /// birth"), stamped by its writer on every write (`rdm_admin::node_rows::WrittenRows::put`): a reader
     /// ignores a version written by a birth its fold holds deleted (build.md: "a deleted birth whose
@@ -314,7 +311,7 @@ pub struct Allocation {
 impl NodeRow {
     /// A record of `node_id` at `name` with `status`, nothing else on it yet.
     pub fn new(name: PathName, mesh: impl Into<String>, kind: rdm_core::NodeKind, node_id: NodeId, status: crate::model::NodeStatus) -> Self {
-        Self { name, mesh: mesh.into(), kind, node_id, status, allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, topology_storage_provider: None, writer: None }
+        Self { name, mesh: mesh.into(), kind, node_id, status, allocated: None, initial_properties: None, renamed_from: None, replacement_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, topology_storage_provider: None, writer: None }
     }
 
     /// Write `to` as the node's status, set by its mesh-primary at the transition states.md "Who sets

@@ -78,19 +78,45 @@ pub async fn write_identity(storage: &dyn FabricStorage, identity: &FabricIdenti
     Ok(Ok(own))
 }
 
-/// The Fabric record (storage-whole-records.md, "The objects"): the fabric's identity, immutable inside
-/// it, and the fabric events applied (`ready`, `shutdown-initiated:<by>`), each once, in
-/// the order applied. Kept at the fabric's id and written whole by the fabric-primary from the copy it
-/// caches.
+/// The Fabric's state (the Fabrics schema's `state`): `pending` or `ready`, set only by RDM, each move
+/// an `rdm.fabric.state` event in the events store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FabricState {
+    /// Created and not yet ready.
+    #[default]
+    Pending,
+    /// Ready: every mesh of the fabric checked in (states.md).
+    Ready,
+}
+
+impl FabricState {
+    /// The state's name as the page, the events and the spans carry it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+/// The Fabric record (storage-whole-records.md, "The objects"; the Fabrics schema): the fabric's
+/// identity, immutable inside it, and its one `state`, rewritten whole by the fabric-primary from the
+/// copy it caches, each move of the state also an event in the events store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FabricRecord {
     /// The fabric's id: the record's key.
     pub fabric_id: FabricId,
     /// The fabric's name.
     pub name: String,
-    /// The fabric events applied, each once.
+    /// The fabric's state: it only moves forward, pending -> ready.
+    pub state: FabricState,
+    /// The application's node types (the Fabrics schema's `types`), each extending `node` and
+    /// overriding its defaults: fixed by Day 0's `RDM_NODE_TYPES` and written by the bootstrap admin
+    /// with the record; never named `node` or `node-admin` (RDM's two).
     #[serde(default)]
-    pub events: Vec<String>,
+    pub types: Vec<rdm_core::NodeType>,
     /// The deployment provider that runs the fabric's nodes: fabric policy, fixed by Day 0's
     /// `MESH_SPAWN_TYPE` and written by the bootstrap admin with the record. An adoption launch takes
     /// it from here and refuses a differing `MESH_SPAWN_TYPE` by name (Q156). A record written before
@@ -151,9 +177,9 @@ pub(crate) fn file_provider() -> Option<String> {
 }
 
 impl FabricRecord {
-    /// The record of `identity`, no event applied yet.
+    /// The record of `identity`: `pending`, declaring no type.
     pub fn new(identity: FabricIdentity) -> Self {
-        Self { fabric_id: identity.fabric_id, name: identity.name, events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None }
+        Self { fabric_id: identity.fabric_id, name: identity.name, state: FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None }
     }
 
     /// The fabric's identity.
@@ -198,7 +224,7 @@ impl FabricStorage for MemoryFabricStorage {
 
 #[cfg(feature = "file-backend")]
 /// The Fabric record's lines in `fabric.jsonl`, at the fabric's id.
-const RECORD_FORMAT: &str = "fabric-record/2";
+const RECORD_FORMAT: &str = "fabric-record/3";
 
 #[cfg(feature = "file-backend")]
 /// The Fabric record's lines in the root's `fabric.jsonl` (`crate::store_root`).
@@ -267,7 +293,7 @@ mod tests {
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
         assert_eq!(crate::fabric_storage::write_identity(&s, &fabric).await.unwrap(), Ok(FabricWritten::Written));
         let mut ready = FabricRecord::new(fabric.clone());
-        ready.events.push("ready".into());
+        ready.state = FabricState::Ready;
         s.put_fabric(&ready).await.unwrap();
         let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::store_log::LogWriter::mint()).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(ready), "the latest line is the record");

@@ -60,9 +60,48 @@ pub struct Caches {
     pub meshes: Arc<RecordCache<crate::model::MeshId, crate::storage::MeshRecord>>,
     /// The Fabric record, by fabric id.
     pub fabric: Arc<RecordCache<crate::model::FabricId, crate::fabric_storage::FabricRecord>>,
+    /// What this admin writes the moves of these records with: each move of a mesh's or the Fabric's
+    /// `state` is also an event (`rdm.mesh.state`, `rdm.fabric.state`; node-identity-and-state.md
+    /// §2.7). Set once at the boot ([`Caches::writes_events`]).
+    pub events: Arc<std::sync::OnceLock<crate::events_storage::EventsWriter>>,
 }
 
 impl Caches {
+    /// Write the moves of the records this admin writes with `writer`; a second call keeps the first.
+    pub fn writes_events(&self, writer: crate::events_storage::EventsWriter) {
+        let _ = self.events.set(writer);
+    }
+
+    /// The move of a mesh's record from `before` (`None`: the record is new) to `after`, written:
+    /// an `rdm.mesh.state` event when its state moved, under
+    /// `rdm.node_admin.mesh.update.via-state-event`, which names the event or why none was written.
+    pub async fn mesh_moved(&self, before: Option<&crate::storage::MeshRecord>, after: &crate::storage::MeshRecord) {
+        if before.is_some_and(|b| b.state == after.state) {
+            return;
+        }
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-state-event", mesh = %after.name, mesh_id = %after.mesh_id, state = after.state.name(), event_id = tracing::field::Empty, outcome = tracing::field::Empty, "otel.kind" = "internal");
+        let written = match self.events.get() {
+            Some(w) => w.append(|source, time_ms| crate::events_storage::Event::mesh_state(source, time_ms, &after.mesh_id, &after.name, after.state)).await,
+            None => Err("this admin holds no events writer".into()),
+        };
+        state_event_outcome(&span, written, "the mesh's state moved: its rdm.mesh.state event");
+    }
+
+    /// The move of the Fabric record from `before` (`None`: the record is new) to `after`, written:
+    /// an `rdm.fabric.state` event when its state moved, under
+    /// `rdm.node_admin.fabric.update.via-state-event`, which names the event or why none was written.
+    pub async fn fabric_moved(&self, before: Option<&crate::fabric_storage::FabricRecord>, after: &crate::fabric_storage::FabricRecord) {
+        if before.is_some_and(|b| b.state == after.state) {
+            return;
+        }
+        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-state-event", fabric = %after.name, fabric_id = %after.fabric_id, state = after.state.name(), event_id = tracing::field::Empty, outcome = tracing::field::Empty, "otel.kind" = "internal");
+        let written = match self.events.get() {
+            Some(w) => w.append(|source, time_ms| crate::events_storage::Event::fabric_state(source, time_ms, &after.fabric_id, after.state)).await,
+            None => Err("this admin holds no events writer".into()),
+        };
+        state_event_outcome(&span, written, "the Fabric's state moved: its rdm.fabric.state event");
+    }
+
     /// The one mutation of `mesh_id`'s record, under its lock: the copy (filled from storage when none
     /// is held, else `base`), `change` applied, and the whole record written when it changed, the copy
     /// replaced once storage answers. `None`: no record of the mesh is held anywhere and no `base`
@@ -129,4 +168,20 @@ impl Caches {
         }
         Ok(())
     }
+}
+
+/// `span` records a state event's write: its id, or why none was written.
+fn state_event_outcome(span: &tracing::Span, written: Result<crate::events_storage::EventId, String>, message: &str) {
+    match written {
+        Ok(id) => {
+            span.record("event_id", id.as_str());
+            span.record("outcome", "written");
+        }
+        Err(e) => {
+            span.record("outcome", "event-not-written");
+            span.in_scope(|| tracing::info!(cause = %e, "{message} was not written"));
+            return;
+        }
+    }
+    span.in_scope(|| tracing::info!("{message} is written"));
 }

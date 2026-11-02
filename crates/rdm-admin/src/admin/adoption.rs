@@ -58,7 +58,7 @@ fn not_yet_deleted(meshes: &[crate::storage::MeshRecord], delete: &BuildProjecti
         let op = crate::mesh_delete::operation(&m.mesh_id);
         delete.steps.iter().any(|r| r.operation == op && r.step == crate::mesh_delete::STEP_MESH_DELETED)
     };
-    let mut out: Vec<String> = meshes.iter().filter(|m| !m.dead && !deleted(m)).map(|m| m.name.clone()).collect();
+    let mut out: Vec<String> = meshes.iter().filter(|m| !m.is_deleted() && !deleted(m)).map(|m| m.name.clone()).collect();
     out.sort();
     out
 }
@@ -125,7 +125,7 @@ pub async fn read(
     }
     let mesh = meshes.mesh_named(&mesh_name).await.map_err(|e| format!("{of}: mesh.storage could not read mesh {}: {e}", mesh_name))?;
     let mesh = match mesh {
-        Some(m) if !m.dead => m,
+        Some(m) if !m.is_deleted() => m,
         Some(m) => return Err(format!("{of}: mesh {} ({}) is Dead: a dead mesh is never adopted", mesh_name, m.mesh_id)),
         None => return Err(format!("{of}: the store root {} holds no row of mesh {}", root.display(), mesh_name)),
     };

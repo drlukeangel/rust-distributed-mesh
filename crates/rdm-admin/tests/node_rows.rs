@@ -143,7 +143,7 @@ fn once(r: &NodeRow) -> NodeRow {
 
 /// The lifecycle record of `n` as its create left it.
 fn row_of(n: &Node) -> NodeRow {
-    NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }
+    NodeRow { replacement_from: None, kind: n.kind, mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }
 }
 
 /// CONTRACT: `node.delete` leaves the node's row with status `Deleted`, its node id and record kept
@@ -162,7 +162,7 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record() {
         assert_eq!(storage.record_at(&victim.name).await.unwrap(), None, "the Deleted row released the name");
         (storage.node(&victim.node_id).await.unwrap(), victim.node_id)
     });
-    assert_eq!(sans_revision(row), Some(NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }), "the row says Deleted and keeps the record and the config");
+    assert_eq!(sans_revision(row), Some(NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }), "the row says Deleted and keeps the record and the config");
     let spans = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
@@ -191,7 +191,7 @@ fn a_deleted_nodes_row_keeps_its_record_and_a_plain_create_at_its_name_inherits_
         mp.rows.claim(&victim.name, &victim.mesh.clone(), victim.kind, &born, &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap()), None, None, ClaimFor::Create).await.expect("a node created at the Deleted row's path and name claims it");
         (row, storage.record_at(&victim.name).await.unwrap(), victim.node_id, released, born)
     });
-    assert_eq!(sans_revision(row), Some(NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }), "the Deleted row keeps the record");
+    assert_eq!(sans_revision(row), Some(NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }), "the Deleted row keeps the record");
     assert_eq!(released, None, "the Deleted row released the name: nothing resolves at it");
     let born_row = born_row.expect("the new node's row");
     assert_eq!(born_row.initial_properties.map(|p| (p.config, p.tags)), Some((Default::default(), Default::default())), "a plain create carries its create spec's config and tags, none");
@@ -257,7 +257,7 @@ fn a_builds_replacement_at_its_own_path_takes_its_entrys_config_and_tags_not_the
         let (old, old_incarnation) = (NodeId::mint(), IncarnationId::mint());
         let births = vec![rdm_admin::storage::BirthFacts::new(old_incarnation.clone(), name.clone())];
         let replacement = provenance(&old, &old_incarnation, &name);
-        let deleted = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::Gateway, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: name.clone(), node_id: old.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births, predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let deleted = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::Gateway, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: name.clone(), node_id: old.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births, predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         let storage = Arc::new(MemoryNodesStorage::default());
         storage.write_record(&deleted).await.unwrap();
         let born = NodeId::mint();
@@ -343,7 +343,7 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
     let (row, born, held) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
-        let held = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: NodeId::mint(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let held = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: NodeId::mint(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         storage.write_record(&held).await.unwrap();
         let birth = node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false);
         let born = birth.node_id.clone();
@@ -371,7 +371,7 @@ fn a_day0_claim_of_a_name_another_live_nodes_row_holds_is_refused_name_held_and_
     let name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
     let (refused, row, held, written, me) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
-        let held = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let held = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         storage.write_record(&held).await.unwrap();
         let me = NodeId::mint();
         let refused = rdm_admin::node_rows::claim_day0_name(&*storage, &Default::default(), &name, "mesh1", &me, None).await;
@@ -404,14 +404,14 @@ fn a_birth_no_create_claimed_gets_its_own_row_when_the_writers_view_holds_it_nev
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.write_record(&NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
+        storage.write_record(&NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         let mp = mesh_primary(&storage);
         let birth = node(rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, false, false);
         let born = birth.node_id.clone();
         install(&mp.records, &mp.view, move |v| v.nodes.push(birth)).await;
         (storage.record_at(&rdm_core::PathName::new("mesh1.rpc", "2").unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(sans_revision(row), Some(NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: born.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }), "the birth holds its own row, nothing taken from the Deleted row at its location");
+    assert_eq!(sans_revision(row), Some(NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: born.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }), "the birth holds its own row, nothing taken from the Deleted row at its location");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let rpc2: Vec<&Value> = spans.iter().filter(|s| location_matches(&s["attributes"], "subject", "mesh1.rpc", "2")).collect();
     assert_eq!(rpc2.len(), 1, "{spans:#?}");
@@ -437,7 +437,7 @@ fn a_take_over_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         let rpc1 = before.nodes.iter().find(|n| n.name == rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).cloned().unwrap();
-        let written = NodeRow { replacement_from: None, kind: rpc1.kind, mesh: rpc1.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let written = NodeRow { replacement_from: None, kind: rpc1.kind, mesh: rpc1.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         storage.write_record(&written).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -478,7 +478,7 @@ fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_on
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         // The rename its mesh's former primary wrote while the node was stopped: the row moved to its `-old` name.
-        let renamed = NodeRow { kind: rpc1.kind, mesh: rpc1.mesh.clone().to_owned(), replacement_from: None, initial_properties: None, topology_storage_provider: None, name: rpc1.name.renamed().unwrap(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let renamed = NodeRow { kind: rpc1.kind, mesh: rpc1.mesh.clone().to_owned(), replacement_from: None, initial_properties: None, topology_storage_provider: None, name: rpc1.name.renamed().unwrap(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
         storage.write_record(&renamed).await.unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -607,7 +607,7 @@ fn a_node_lets_go_only_of_its_own_row() {
         let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rdm_admin::storage::FileNodesStorage::open(&dir, &rdm_admin::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap())).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
-            let held = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+            let held = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
             store.write_record(&held).await.unwrap();
             assert!(!rdm_admin::node_rows::release_record(&*store, &Default::default(), &held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
             assert_eq!(store.record_at(&held.name).await.unwrap(), Some(once(&held)), "{kind}: a release by another node leaves the row");
@@ -836,7 +836,7 @@ mod writer {
         let cap = capture();
         let (err, spawned, row, held) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
-            let held = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: NodeId::mint(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+            let held = NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap(), node_id: NodeId::mint(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None };
             storage.write_record(&held).await.unwrap();
             let (records, _view) = writer_of(&PathName::new("mesh1.admin", "2").unwrap(), &view(), &storage);
             let provider = Counted::default();
@@ -1008,7 +1008,7 @@ mod writer {
             )
             .await
             .unwrap();
-            storage.write_record(&NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: Some(Default::default()), topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "6").unwrap(), node_id: x.clone(), status: NodeStatus::Pending, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
+            storage.write_record(&NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: Some(Default::default()), topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "6").unwrap(), node_id: x.clone(), status: NodeStatus::Pending, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
             let rerun_after_claim = create_attempt(&records, &provider, &builds, &other, &PathName::new("mesh1.rpc", "6").unwrap(), 2).await;
             (lost_before_receipt, rerun_after_loss, x, rerun_after_claim)
         });
@@ -1689,7 +1689,7 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
         let exited = held(&mp, &PathName::new("mesh1.rpc", "1").unwrap()).await;
     let delete = &rdm_core::OperationId::node("node.delete", &exited.node_id);
     let create = &rdm_core::OperationId::location("node.create", &exited.name);
-        storage.write_record(&NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
+        storage.write_record(&NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         mp.rows.deleted(&exited, delete).await.expect("the recovery's delete writes the Deleted row");
         let born = NodeId::mint();
         mp.rows.claim(&exited.name, &exited.mesh.clone(), exited.kind, &born, &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap()), None, None, ClaimFor::Recovery).await.expect("the re-create claims the name");

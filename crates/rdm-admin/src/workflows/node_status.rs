@@ -123,13 +123,13 @@ mod tests {
 
         let mesh_id = MeshId::mint();
         let mut mesh_rec = MeshRecord::new(mesh_id.clone(), "mesh1");
-        mesh_rec.states.insert(MeshState::Ready);
+        mesh_rec.state = MeshState::Ready;
         let fabric_id = FabricId::mint();
         let mut fabric_rec = FabricRecord::new(FabricIdentity {
             fabric_id: fabric_id.clone(),
             name: "fabric1".to_string(),
         });
-        fabric_rec.events = vec!["ready".to_string(), "ready".to_string()];
+        fabric_rec.state = crate::fabric_storage::FabricState::Ready;
 
         let folded_count = declared.fold_records(
             &[mesh_rec],

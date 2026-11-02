@@ -226,13 +226,13 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_workflow_identity_and_comm
                 .await;
                 // mesh.deleted: the mesh-primary's handoff commits its mesh row Dead before it calls
                 // mesh-deleted; the call is lost, so the owner sends delete-mesh again.
-                { let mut r = storage.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh2")); r.states.insert(MeshState::Dead); storage.put_mesh(&r).await.unwrap(); }
-                declared.lock().unwrap().meshes.insert(mesh_id.clone(), MeshState::Dead);
+                { let mut r = storage.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh2")); r.state = MeshState::Deleted; storage.put_mesh(&r).await.unwrap(); }
+                declared.lock().unwrap().meshes.insert(mesh_id.clone(), MeshState::Deleted);
                 let mut after = Vec::new();
                 for (k, sender) in [(&held, &owner), (&stale, &late), (&next, &owner)] {
                     after.push(admit_delete_mesh(&runs, &storage, &Default::default(), &declared, "mesh2", k, sender).await);
                 }
-                let row = storage.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().get(&mesh_id).copied();
+                let row = storage.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>().get(&mesh_id).copied();
                 (first, end, after, row)
             },
             root,
@@ -253,6 +253,6 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_workflow_identity_and_comm
         ],
         "after mesh.deleted each delete-mesh is decided on its workflow, and none commits the row again"
     );
-    assert_eq!(row, Some(MeshState::Dead), "the mesh row stays Dead");
+    assert_eq!(row, Some(MeshState::Deleted), "the mesh row stays Dead");
     assert_eq!(refusals(&spans, &trace_id, STALE).len(), 1, "the stale workflow is refused by its own span");
 }

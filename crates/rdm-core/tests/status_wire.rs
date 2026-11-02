@@ -36,11 +36,11 @@ fn requests_match_the_frozen_thirty_nine_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
-        (DeclareMeshState { mesh_id: mesh(), state: MeshState::Leaving, changed_at_rafka_ms: 300 }, "010c31313233343536373839616202ac02"),
+        (DeclareMeshState { mesh_id: mesh(), state: MeshState::Deleting, changed_at_rafka_ms: 300 }, "010c31313233343536373839616202ac02"),
         (ApplyNodeState { node_id: node(), incarnation: birth(), state: NodeState::ConnectionsDeleting }, "020c3031323334353637383961620c39776370726667777674687902"),
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c3031323334353637383961620c397763707266677776746879"),
         (ApplyMeshState { mesh_id: mesh(), mesh_name: "mesh1".into(), state: MeshState::Pending, changed_at_rafka_ms: 300 }, "040c313132333435363738396162056d6573683100ac02"),
-        (ApplyFabricEvent { fabric_id: fabric(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } }, "050c323132333435363738396162010d6d657368312e61646d696e2e31"),
+        (ApplyFabricEvent { fabric_id: fabric(), event: FabricEvent::Ready }, "050c32313233343536373839616200"),
         (Reserved6 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.rpc.1") }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31000000"),
         (Reserved7 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.rpc.1") }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31000000"),
         (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.rpc.1") }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31000000"),
@@ -137,7 +137,7 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
         (RejectedStaleFabric { held: fabric() }, "060c323132333435363738396162"),
         (RejectedNotPrimary { why: NotPrimary::SenderNotSubject { sender: "peer-path".into() } }, "070109706565722d70617468"),
         (RejectedInvalidNodeTransition { current: NodeState::Stopped }, "0803"),
-        (RejectedInvalidMeshTransition { current: MeshState::Dead }, "0903"),
+        (RejectedInvalidMeshTransition { current: MeshState::Deleted }, "0903"),
         (PeerUnresolved { reason: "p".into() }, "0a0170"),
         (NotReady { reason: "n".into() }, "0b016e"),
         (Busy { reason: "b".into() }, "0c0162"),
@@ -332,7 +332,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
 /// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
-    NodeView { cert: None, executable: None, storage_persistence: None, placement: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
         kind: rdm_core::NodeKind::RpcNode,
         mesh: "mesh1".into(),
@@ -377,7 +377,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     ] { golden(state, expected); }
     for (state, expected) in [
         (MeshState::Pending, "00"), (MeshState::Ready, "01"),
-        (MeshState::Leaving, "02"), (MeshState::Dead, "03"),
+        (MeshState::Deleting, "02"), (MeshState::Deleted, "03"),
     ] { golden(state, expected); }
     // node.roots.update's phase (fabric-ca-renew.md "fabric.root.update").
     for (phase, expected) in [
@@ -389,7 +389,6 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(op.clone(), "0162020b6e6f64652e73746f703a6d000000");
     golden(Some(op), "010162020b6e6f64652e73746f703a6d000000");
     golden(FabricEvent::Ready, "00");
-    golden(FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() }, "010d6d657368312e61646d696e2e31");
     golden(NotPrimary::ReceiverNotPrimary { needed: "mesh-primary".into() }, "000c6d6573682d7072696d617279");
     golden(NotPrimary::SenderNotSubject { sender: "peer-path".into() }, "0109706565722d70617468");
     golden(NotPrimary::SubjectUnknown, "02");

@@ -1840,7 +1840,7 @@ mod tests {
             let mut next = current.clone();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind, path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: None, tags: Default::default(), config: Default::default() });
+            let mut spec = current.meshes["mesh1"].spec_by_path.get(&p).cloned().unwrap_or(rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind, path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, executable: None, tags: Default::default(), config: Default::default() });
             spec.executable = Some(b);
             m.spec_by_path.insert(p, spec);
             next
@@ -1861,7 +1861,7 @@ mod tests {
         }
         // A held path whose row already records the executable is not hashed again: its file may be gone.
         let gone = rdm_core::binding::Binding { executable: dir.join("gone"), ..admin.clone() };
-        let recorded: crate::accepted::Recorded = [(PathName::new("mesh1.admin", "1").unwrap(), crate::accepted::RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, config: None, tags: None, storage_persistence: None, placement: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
+        let recorded: crate::accepted::Recorded = [(PathName::new("mesh1.admin", "1").unwrap(), crate::accepted::RecordedRow { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin, config: None, tags: None, storage_persistence: None, node_id: crate::model::NodeId::mint(), sha256: Some(gone.sha256.clone()) })].into();
         assert_eq!(named_executable_refusal(&current, &with(PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, gone), &recorded, ProviderKind::Process, &[]).await, None);
         assert_eq!(BuildReject::ExecutableRefused { node: PathName::new("root", "x").unwrap(), detail: "y".into() }.reason(), "executable-refused");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1874,7 +1874,7 @@ mod tests {
         let m = next.meshes.get_mut("mesh1").unwrap();
         for (p, kind, b) in created {
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: *kind, path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: *kind, path: p.clone(), storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, executable: Some(b.clone()), tags: Default::default(), config: Default::default() });
         }
         (current, next)
     }
@@ -1997,7 +1997,7 @@ mod tests {
             let p: PathName = PathName::new("mesh1.rpc", "1").unwrap();
             let m = next.meshes.get_mut("mesh1").unwrap();
             m.nodes.insert(p.clone());
-            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode, path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, placement: Default::default(), executable: Some(b), tags: Default::default(), config: Default::default() });
+            m.spec_by_path.insert(p.clone(), rdm_core::meta::NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode, path: p, storage_persistence: rdm_core::meta::StorageMeta::Ephemeral, executable: Some(b), tags: Default::default(), config: Default::default() });
             next
         };
         let rows = crate::accepted::Recorded::new();

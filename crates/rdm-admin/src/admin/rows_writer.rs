@@ -228,7 +228,7 @@ pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: 
     let (mesh, mesh_id) = (&own.mesh, &own.mesh_id);
     let unread = |e: crate::storage_error::StorageError| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage could not read the record of {mesh}: {e}", own.node_id);
     let held = meshes.mesh(mesh_id).await.map_err(unread)?;
-    if held.as_ref().is_some_and(|row| row.dead) {
+    if held.as_ref().is_some_and(|row| row.is_deleted()) {
         return Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), whose record is Dead: a dead mesh is never restarted", own.node_id));
     }
     if let Some(other) = meshes.mesh_named(mesh).await.map_err(unread)?.filter(|row| row.mesh_id != *mesh_id) {
@@ -269,7 +269,6 @@ pub(crate) async fn write_mesh_row(meshes: &dyn crate::storage::MeshStorage, cac
         };
         let mut record = held.clone().unwrap_or_else(|| crate::storage::MeshRecord::new(mesh_id.clone(), mesh));
         record.name = mesh.to_string();
-        record.dead = false;
         let claimed = crate::storage::write_mesh(&*meshes, held.as_ref(), &record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"))?;
         if claimed.is_ok() {
             caches.meshes.hold(mesh_id.clone(), record);

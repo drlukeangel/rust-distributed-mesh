@@ -14,7 +14,7 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
         return Ok(Some(id.to_string()));
     }
     match mesh_rows.mesh_named(mesh).await {
-        Ok(Some(row)) if !row.dead => Ok(Some(row.mesh_id.to_string())),
+        Ok(Some(row)) if !row.is_deleted() => Ok(Some(row.mesh_id.to_string())),
         Ok(Some(row)) => Err(format!("mesh {mesh}'s row is Dead (mesh id {})", row.mesh_id)),
         Ok(None) => Ok(None),
         Err(e) => Err(format!("neither this admin's records nor its view hold a mesh id for {mesh}, and its row could not be read from mesh.storage: {e}")),
@@ -1546,7 +1546,7 @@ impl AdminRunner {
                 .ok_or_else(|| format!("{key:?}: Build {build_id} names no entry for path {node_path:?}, name {node_name:?}", node_path = &node.path, node_name = &node.name))?;
             let entry = rdm_core::properties::EntryProperties { config: spec.config.clone(), tags: spec.tags.clone() };
             self.observer.status_door.get().ok_or_else(|| format!("{key:?}: node property door is not bound"))?
-                .apply_build_entry(&birth, entry, spec.storage_persistence, spec.placement).await
+                .apply_build_entry(&birth, entry, spec.storage_persistence).await
         };
         pipeline.apply_in_place(build_id, attempt, node, key.clone(), step, put).await.map_err(crate::executor::RunEnd::from)
     }

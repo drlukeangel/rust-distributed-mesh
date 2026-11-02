@@ -654,12 +654,12 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         let refused = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert!(matches!(&refused, StatusReply::NotReady { reason } if reason.contains("mesh.storage refused the record") && reason.contains("the disk refused the put")), "{refused:?}");
         assert!(rig.door.declared.lock().unwrap().meshes.is_empty(), "a refused row holds nothing as applied");
-        assert!(store.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().is_empty());
+        assert!(store.meshes.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>().is_empty());
 
         store.refuse.store(false, Ordering::SeqCst);
         let first = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert_eq!(first, StatusReply::Applied, "the retry of a refused put applies; it is not AlreadyApplied");
-        assert_eq!(store.meshes.meshes().await.unwrap().into_iter().filter_map(|r| Some((r.mesh_id.clone(), r.state()?))).collect::<std::collections::HashMap<_, _>>().get(&mesh2), Some(&MeshState::Pending), "the row was put before the answer");
+        assert_eq!(store.meshes.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>().get(&mesh2), Some(&MeshState::Pending), "the row was put before the answer");
         let again = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert_eq!(again, StatusReply::AlreadyApplied);
 
@@ -671,7 +671,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("fabric.storage does not hold the Fabric event")), "{ev_refused:?}");
         assert!(rig3.door.declared.lock().unwrap().fabric.is_empty());
         // The fabric-primary puts the fact on the fabric, then applies it.
-        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), state: rdm_admin::fabric_storage::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.state = rdm_admin::fabric_storage::FabricState::Ready; store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
 
         // The authority restarts over the same facts: what it folds is what it applied.
@@ -707,7 +707,7 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
     let capture = capture(cell);
     capture.run(async {
         let nodes = [NodeState::Pending, NodeState::Ready, NodeState::ConnectionsDeleting, NodeState::Stopped];
-        let meshes = [MeshState::Pending, MeshState::Ready, MeshState::Leaving, MeshState::Dead];
+        let meshes = [MeshState::Pending, MeshState::Ready, MeshState::Deleting, MeshState::Deleted];
         let me = birth(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh1", true, true);
         let senders: Vec<Birth> = (0..4).map(|i| birth(rdm_core::PathName::new("mesh1.rpc", (i + 1).to_string()).unwrap(), NodeKind::RpcNode, "mesh1", false, false)).collect();
         let fabric_primary = birth(rdm_core::PathName::new("mesh1.admin", "2").unwrap(), NodeKind::NodeAdmin, "mesh1", false, false);
@@ -749,7 +749,7 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
         }
         // A skip forward is a forward move.
         let skip = MeshId::mint();
-        let to_dead = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Dead, changed_at_rafka_ms: 0 };
+        let to_dead = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Deleted, changed_at_rafka_ms: 0 };
         assert_eq!(reply(&call(&mesh_rig, &fp, &to_dead, &CallOptions::default()).await), StatusReply::Applied, "an unseen Mesh may be told Dead: a skip is forward");
         // A birth speaks from its one endpoint: each sender's calls rode one connection, never a fresh
         // endpoint of the same key per call.
@@ -844,9 +844,9 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
 /// role moves. Each event applies once at the mesh primary on its natural key, whoever sends it
 /// (node-rpc.md §14: nothing inside the mesh checks who is calling; the target that stops an old
 /// fabric-primary is its own moved primary record, at the sender): the old authority's repeat of an
-/// applied key and the new authority's are AlreadyApplied, a new event applies once, and a
-/// receiver restarted over its rows still answers both AlreadyApplied. What must NOT happen: an
-/// applied event applied twice, or a refusal naming the caller.
+/// applied key and the new authority's are AlreadyApplied, and a receiver restarted over its rows
+/// still answers AlreadyApplied. What must NOT happen: an applied event applied twice, or a refusal
+/// naming the caller.
 #[test]
 fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_sends_it() {
     let cell = "applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_sends_it";
@@ -862,7 +862,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::Ready };
         // Each event is the fabric-primary's fact on the fabric before it applies it at a mesh-primary.
-        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.events.push("ready".into()); store.fabric.put_fabric(&r).await.unwrap(); }
+        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), state: rdm_admin::fabric_storage::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.state = rdm_admin::fabric_storage::FabricState::Ready; store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
         // The role moves: fp2 holds it, fp1 does not.
         {
@@ -876,13 +876,9 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
                 }
             }
         }
-        let shutdown = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } };
-        { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), events: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.events.push("shutdown-initiated:mesh1.admin.1".into()); store.fabric.put_fabric(&r).await.unwrap(); }
         let old = reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await);
         assert_eq!(old, StatusReply::AlreadyApplied, "the old authority's repeat of an applied key is the same event");
         assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");
-        assert_eq!(reply(&call(&rig, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::Applied, "a new event applies");
-        assert_eq!(reply(&call(&rig, &fp1, &shutdown, &CallOptions::default()).await), StatusReply::AlreadyApplied, "once, whoever sends it");
         // The receiver restarts over the fabric's facts.
         let folded = folded(&rdm_admin::storage::MemoryNodesStorage::default(), &*store, &*store, "mesh2").await;
         let receiver2 = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), NodeKind::NodeAdmin, "mesh2", true, false);
@@ -897,12 +893,11 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
             }
         }
         assert_eq!(reply(&call(&rig2, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "the restarted receiver folded the event");
-        assert_eq!(reply(&call(&rig2, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::AlreadyApplied);
-        let spans = finish(&capture, &dir, json!({"cell": cell, "old_primary": format!("{old:?}"), "events_held": store.fabric().await.unwrap().map_or(0, |r| r.events.len())}));
-        assert_eq!(store.fabric().await.unwrap().map_or(0, |r| r.events.len()), 2, "each event is on the Fabric record once");
-        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "applied")]).len(), 2);
+        let spans = finish(&capture, &dir, json!({"cell": cell, "old_primary": format!("{old:?}"), "fabric_state": store.fabric().await.unwrap().map(|r| r.state.name())}));
+        assert_eq!(store.fabric().await.unwrap().map(|r| r.state), Some(rdm_admin::fabric_storage::FabricState::Ready), "the event is on the Fabric record as its state");
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "applied")]).len(), 1);
         assert!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "rejected-not-primary")]).is_empty(), "no event refused for its caller");
-        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "already-applied")]).len(), 5);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "already-applied")]).len(), 3);
     });
 }
 

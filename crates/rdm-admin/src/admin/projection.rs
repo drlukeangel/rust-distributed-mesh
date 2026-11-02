@@ -616,10 +616,10 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         let row = id.as_ref().and_then(|id| declared_meshes.get(id).copied());
         let authored_here = records.me.get().is_some_and(|me| topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
         let status = match row {
-            Some(rdm_core::status::MeshState::Dead) => ScopeStatus::Dead,
+            Some(rdm_core::status::MeshState::Deleted) => ScopeStatus::Dead,
             _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,
             _ if records.heard_dead(id.as_ref(), authored_here) => ScopeStatus::Dead,
-            Some(rdm_core::status::MeshState::Leaving) => ScopeStatus::Leaving,
+            Some(rdm_core::status::MeshState::Deleting) => ScopeStatus::Leaving,
             _ if ready => ScopeStatus::Ready,
             _ => ScopeStatus::Pending,
         };

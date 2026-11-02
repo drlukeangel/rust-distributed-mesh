@@ -90,7 +90,7 @@ fn own_row() -> rdm_core::views::NodeView {
         cert: None,
         executable: None,
         storage_persistence: None,
-        placement: None,
+       
         properties: Default::default(),
         topology_storage_provider: None,
     }
