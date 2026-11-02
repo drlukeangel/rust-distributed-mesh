@@ -1,26 +1,31 @@
 # Node records: integration
 
-This is the i150 target integration checklist. It is not evidence that the pending runtime and
-process acceptance is complete; consult the [work record](../../plans/i150-node-writes-lifecyle-updates.md).
+1. **Storage.** Register the same topology-storage backend in the admin and in every node
+   executable. Its node-record boundary comes through the storage composition, with no separate
+   file fallback ([provider how-to](../topology-storage-provider/how-to.md)). A backend that keeps
+   its stores inside one process serves a single-process fabric only
+   ([storage.md §2](../../architecture/storage.md)).
+2. **Launch.** Pass the path and the name separately (`RDM_NODE_PATH`, `RDM_NODE_NAME`), and the
+   kind explicitly (`RDM_NODE_KIND`). Keep the launch's node id and incarnation
+   ([generated configuration](../../reference/rdm/config.md)).
+3. **A node's own config.** A node changes its own config with `RunningNode::config_update`. The call
+   answers once the node's record is durable. Nothing travels up through the primaries.
+4. **A caller's config.** A caller's `node.config.update` travels down to the node. The node applies
+   it whether it is running or stopped. A node that does not answer ends the command
+   `ConfigNotApplied` by name, and nothing is recorded for it (Q310).
+5. **Builds.** A Build's entry config and tags are applied with the Build's application identity.
+   A repeated attempt answers `AlreadyApplied` and changes nothing.
+6. **Reads.** `Nodes::get` reads the records:
+   - A `(path, name)` pair resolves through its claim.
+   - An `id` reads that node's record, Deleted included.
+   - A node with no property record is listed with its properties unavailable, and no property pair
+     matches it.
 
-1. Register the same topology-storage backend in the admin and every ordinary node executable.
-   Supply its node-record boundary through the existing storage composition interfaces; do not
-   introduce a separate file fallback. See the [provider how-to](../topology-storage-provider/how-to.md).
-2. Pass path and name separately (`RDM_NODE_PATH`, `RDM_NODE_NAME`) and node kind explicitly
-   (`RDM_NODE_KIND`). Preserve the launch's node ID and incarnation. Names do not encode kind or
-   ownership. Path is immutable; a rename refuses a different path. Replacement changes only
-   the predecessor name to `<name>-old`. See [generated configuration](../../reference/rdm/config.md).
-3. Treat launch properties as initialization of an absent own record. Preserve retained properties
-   and application recognition on startup; publish fresh bound facts through the same property writer.
-4. Use the node's property-update API for local config changes. A caller's command still travels
-   down through the primaries. Completion follows persistence; no config map travels up for copying.
-5. Apply Build config and tags atomically with the Build's semantic application identity. Keep the
-   existing exact-target and workflow receipts. Never treat a timeout, a missing receipt, or generic
-   Ready as proof that an application did or did not occur.
-6. Prepare lifecycle writing before installing a new writing role or admitting its commands. Wait
-   for earlier issued writes of that writer birth to settle, including work retained after caller
-   cancellation. Keep the existing election mechanism and timers.
-
-Before release, the acceptance work must cover lost replies followed by later local updates,
-stopped startup obligation A followed by B, same-writer role regain, provider migration, and the
-full fast gate and exported flame at the final tip. Unit-test names alone do not certify these paths.
+Examples executed by the fast gate, in `crates/rdm-test/tests/node_records.rs`:
+- `a_build_applies_properties_and_a_nodes_later_update_stands`
+- `an_applied_build_update_survives_node_restart`
+- `a_path_move_preserves_the_node_identity`
+- `a_deleted_birth_cannot_hide_its_successor`
+- `a_deleted_birth_is_read_by_its_id`
+- `current_node_reads_survive_fabric_primary_restart`
+- `all_node_fields_survive_node_restart`
