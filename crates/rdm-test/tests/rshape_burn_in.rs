@@ -1451,7 +1451,7 @@ async fn mock_traffic_accounts_for_every_outcome_without_uncertain_replay() {
     let changes_trace: Vec<Value> = changes
         .iter()
         .map(|c| {
-            let node = location(c);
+            let node = node_of(c);
             let node_id = s(&c["node_id"]);
             let bid = s(&c["build_id"]);
             let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == bid.as_str() && at_location(sp, &node)).cloned().unwrap_or_else(|| panic!("{node:?}: no build.update.via-node-rpc for the restart"));
@@ -3183,6 +3183,12 @@ fn op_to(f: &Formed, a: &mut Run, node: &Value, via: Option<&PathName>, tag: &st
 }
 
 /// The connections `primary` (a gateway or compute) holds toward `node_id`, from its own connection snapshot.
+/// The node a cell's own record (a change, a restart, a removal) names in its `node`: the location the
+/// cell recorded, a separate path and name; a node view carries its location in `name` instead ([`location`]).
+fn node_of(rec: &Value) -> PathName {
+    serde_json::from_value(rec["node"].clone()).expect("a cell's record names its node by separate path and name fields")
+}
+
 fn directs_to(estate: &Estate, holder: &PathName, node_id: &str) -> Vec<Value> {
     snapshot(estate, holder)["own_latest_directs"].as_array().into_iter().flatten().filter(|d| d["destination"]["node_id"] == node_id).cloned().collect()
 }
@@ -3467,7 +3473,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
 /// -> steps; the stop's NodeStopped naming the birth, that same birth's own ready span after it, and no
 /// NodeDeleted for the node at any time.
 fn check_restart_chain(spans: &[Value], rec: &Value) -> Value {
-    let node = location(rec);
+    let node = node_of(rec);
     let ev = &rec["restart"];
     let (bid, id, inc) = (s(&ev["build_id"]), s(&rec["node_id"]), s(&rec["incarnation_id"]));
     let accepted = named(spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == bid.as_str() && at_location(sp, &node)).cloned().unwrap_or_else(|| panic!("{node:?}: no build.update.via-node-rpc for the restart"));
@@ -3758,7 +3764,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
 /// removal; and no Ready span of the NodeId at or after its departure. A replace's whole set of steps is
 /// checked too (`step_ops_of`).
 fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
-    let node = location(rec);
+    let node = node_of(rec);
     let (bid, id, old) = (s(&rec["build_id"]), s(&rec["node_id"]), s(&rec["old_incarnation_id"]));
     // A removal is `node.delete:<path>`; a replace is the Build (node-replace.md), whose last step
     // deletes the stopped predecessor at `<path>.old` under node.delete's one key, after the
@@ -3892,7 +3898,7 @@ fn a_stopped_declaration_answered_already_applied_after_the_all_is_decided() {
 /// reply is the stop's completion: no upward call follows), the status declarations its receiver
 /// decided from the node, and the probes it served.
 fn stop_evidence(spans: &[Value], rec: &Value) -> Value {
-    let node = location(rec);
+    let node = node_of(rec);
     let id = s(&rec["node_id"]);
     let served: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| of_node(sp, &node, &id)).collect();
     let all: Vec<&Value> = named(spans, "rdm.node_admin.connection.delete.via-stop").into_iter().filter(|sp| of_node(sp, &node, &id) && sp["attributes"]["operation"] != "signal").collect();
@@ -4539,7 +4545,7 @@ async fn delete_run(cell: &str, shape: Shape) {
     for r in [&rb, &rg] {
         let chain = check_delete_chain(&spans, r);
         let stop = stop_evidence(&spans, r);
-        let node = location(r);
+        let node = node_of(r);
         // The stop the executor commanded and the node's handling of it: its whole node.connection.delete
         // { All } let the eligible work in flight reach zero (an `established` receipt, never a deadline).
         let served = stop["stop_node"].as_array().unwrap();
@@ -5466,7 +5472,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     }
     let after_ops = [originate_op(&f, &mut a, &g1, &nb2, "after-heal"), originate_op(&f, &mut a, &g2, &nb1, "after-heal")];
     assert_eq!(s(&st2.fabric["build_id"]), fabric_build_before, "the fabric's accepted Build is the one it held before the cut");
-    events.push(json!({"event": "healed", "redial": redial, "after_ledger_ops": after_ops, "healed_at_ns": healed_at, "converged": converged, "new_node_ids_at": renewed}));
+    events.push(json!({"event": "healed", "redial": redial, "after_ledger_ops": after_ops, "healed_at_ns": healed_at, "converged": births_by_path(&converged), "new_node_ids_at": renewed}));
     a.events.extend(events.iter().cloned());
     let (adm, wm, renewed_paths) = (admins.clone(), window_ms, renewed_ids.clone());
     let verified_at = now_ns();
@@ -5557,6 +5563,12 @@ async fn one_primary_through(f: &Formed, admins: &[PathName], from_ns: u64, span
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     named_by
+}
+
+/// [`one_live_birth_per_path`]'s answer as a record: one `{name, node_id}` per path.name, the location
+/// as its separate path and name fields (a JSON object's key is a string, and a location is two).
+fn births_by_path(births: &BTreeMap<PathName, String>) -> Value {
+    births.iter().map(|(p, id)| json!({"name": p, "node_id": id})).collect()
 }
 
 /// After a heal (Q4): every path.name of `paths` holds exactly one live Ready birth in every view an
@@ -6000,7 +6012,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     })
     .await;
     let renewed: Vec<PathName> = converged.iter().filter(|(p, id)| **p != added && s(&at(&st, p)["node_id"]) != **id).map(|(p, _)| p.clone()).collect();
-    events.push(json!({"event": "healed", "healed_at_ns": healed_at, "views": views, "converged": converged, "new_node_ids_at": renewed, "build": done}));
+    events.push(json!({"event": "healed", "healed_at_ns": healed_at, "views": views, "converged": births_by_path(&converged), "new_node_ids_at": renewed, "build": done}));
     // The healed fabric takes a topology change from its one writer: the added gateway is deleted and the shape is whole again.
     let delete = a.write(&mut f, &st2, "C10 healed: delete the added gateway", Write::Delete(added.clone())).await;
     a.finish(&mut f, &delete, Until::Gone { node: added.clone() }, "during-delete").await;
@@ -6152,7 +6164,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let verified_at = now_ns();
     let gone: BTreeSet<PathName> = renewed.iter().cloned().collect();
     let (victim_c, vid, near_primary_c) = (victim.clone(), victim_id.clone(), s(&st.primary_of(&near_mesh)["node_id"]));
-    let events = json!({"events": [{"event": "near-fault", "fault": if fault == NearFault::Restart { "restart" } else { "hard-kill" }, "node": victim, "node_id": victim_id, "near_attempt": near_attempt, "views": views, "healed_at_ns": healed_at, "converged": converged, "new_node_ids_at": renewed}]});
+    let events = json!({"events": [{"event": "near-fault", "fault": if fault == NearFault::Restart { "restart" } else { "hard-kill" }, "node": victim, "node_id": victim_id, "near_attempt": near_attempt, "views": views, "healed_at_ns": healed_at, "converged": births_by_path(&converged), "new_node_ids_at": renewed}]});
     close_run_with(f, a, inv, nodes, launches, primaries, connections, &["C9", "C10"], events, gone, move |_f, spans, inv| {
         let since = |name: &str| -> Vec<&Value> { named(spans, name).into_iter().filter(|sp| start_ns(sp) >= cut_at && start_ns(sp) <= verified_at).collect() };
         recovery_follows_the_verdict(spans, cut_at, verified_at);
@@ -6347,7 +6359,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let after0 = now_ns();
     tokio::time::sleep(window * 2).await;
     let after1 = now_ns();
-    events.push(json!({"event": "healed", "healed_at_ns": healed_at, "quiet_after": [after0, after1], "converged": converged, "new_node_ids_at": renewed}));
+    events.push(json!({"event": "healed", "healed_at_ns": healed_at, "quiet_after": [after0, after1], "converged": births_by_path(&converged), "new_node_ids_at": renewed}));
     a.events.extend(events.iter().cloned());
     let final_roles: BTreeSet<String> = st2.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["node_id"])).collect();
     let (mate_n, mate_id, wm) = (location(&mate), s(&mate["node_id"]), window_ms);
