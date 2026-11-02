@@ -124,8 +124,8 @@ mod tests {
         let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
         let floor = rdm_transport::topology::staleness_floor();
         let mut watched = watched_births(&view, &me_id, "mesh1", &[]);
-        let marks = crate::offline::held_marks(&crate::offline::UnreachableMarks::default(), &view, "mesh1", &digest_view, now);
-        crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
+        let marks = crate::offline::held_marks(&crate::offline::UnreachableMarks::default(), &view, &digest_view, now);
+        crate::offline::watch_marked(&mut watched, &marks, &view, "mesh1", &me_id);
         assert!(watched.is_empty() && marks.is_empty(), "a heard node-admin that answers its commands is not watched: {watched:?} {marks:?}");
         let silent = crate::offline::silent_set(view.members().filter(|n| n.node_id == member.node.node_id), &digest_view, now, now_ms, floor);
         assert!(silent.iter().all(|s| s.marked_at_ms.is_none()), "heard within the floor: no mark: {silent:?}");
@@ -2516,7 +2516,8 @@ mod tests {
     /// member heard a moment ago (well within the floor) that a command never reached for a
     /// reachability reason is watched `PendingReconnect` by its mesh-primary's tick, counted silent,
     /// and its silence window starts at the mark, not at the floor. A digest of the birth heard after
-    /// the mark ends it; so does a mark of another mesh's birth or of a birth the view no longer holds.
+    /// the mark ends it; so does the view no longer holding the birth. A mark of another mesh's birth
+    /// stands in the one map and is not this tick's to watch (the primary watch reads it, Q338).
     /// Must NOT happen: a marked member left out of the silent set because its last digest is recent.
     // @feature: node-lifecycle
     #[test]
@@ -2537,13 +2538,14 @@ mod tests {
             marks.lock().unwrap().insert(d.node.node_id.clone(), crate::offline::UnreachableMark { incarnation: d.node.incarnation.clone(), at, at_ms: 1_000, reason: "connect-timed-out" });
         }
         let now = at + std::time::Duration::from_millis(1);
-        let held = crate::offline::held_marks(&marks, &view, "mesh1", &digest_view, now);
-        assert_eq!(held.keys().cloned().collect::<Vec<_>>(), vec![own.node.node_id.clone()], "another mesh's birth is not this mesh-primary's to mark");
+        let held = crate::offline::held_marks(&marks, &view, &digest_view, now);
+        assert_eq!(held.len(), 2, "both marks stand: the map is one, the tick watches its own mesh's");
         let mut watched = watched_births(&view, &me.node.node_id, "mesh1", &[]);
         assert!(watched.is_empty(), "nothing is silent past the floor");
-        crate::offline::watch_marked(&mut watched, &held, &view, &me.node.node_id);
+        crate::offline::watch_marked(&mut watched, &held, &view, "mesh1", &me.node.node_id);
         let n = watched.get(own.node.node_id.as_str()).expect("the marked member is watched");
         assert_eq!(n.status, NodeStatus::PendingReconnect);
+        assert!(!watched.contains_key(peer.node.node_id.as_str()), "another mesh's birth is not this tick's to watch");
         let silent: Vec<_> = crate::offline::silent_set(watched.values(), &digest_view, now, 5_000, floor).into_iter().map(|s| crate::offline::marked_from(s, &held)).collect();
         assert_eq!(silent.iter().map(|s| (s.node_id.clone(), s.marked_at_ms)).collect::<Vec<_>>(), vec![(own.node.node_id.to_string(), Some(1_000))], "silent from the mark, its window from the mark's instant");
         // A digest heard after the mark (the birth's next, a higher digest_seq) ends it.
@@ -2551,8 +2553,9 @@ mod tests {
         next.digest_seq += 1;
         digest_view.record(next);
         let later = std::time::Instant::now() + std::time::Duration::from_millis(5);
-        assert!(crate::offline::held_marks(&marks, &view, "mesh1", &digest_view, later).is_empty(), "heard after the mark: the mark ends");
-        assert!(marks.lock().unwrap().is_empty(), "an ended mark is dropped");
+        let held = crate::offline::held_marks(&marks, &view, &digest_view, later);
+        assert_eq!(held.keys().cloned().collect::<Vec<_>>(), vec![peer.node.node_id.clone()], "heard after the mark: the mark ends; the unheard one stands");
+        assert!(!marks.lock().unwrap().contains_key(&own.node.node_id), "an ended mark is dropped");
     }
 
     /// CONTRACT (i151.s2; node-rpc.md §43, Q311: "a call whose attempts end unanswered starts node
@@ -2604,9 +2607,9 @@ mod tests {
         // The tick: the marked member is watched PendingReconnect, silent from the mark's instant.
         let floor = std::time::Duration::from_secs(30);
         let now = std::time::Instant::now();
-        let held = crate::offline::held_marks(&marks, &view, "mesh1", &digest_view, now);
+        let held = crate::offline::held_marks(&marks, &view, &digest_view, now);
         let mut watched = watched_births(&view, &me.node.node_id, "mesh1", &[]);
-        crate::offline::watch_marked(&mut watched, &held, &view, &me.node.node_id);
+        crate::offline::watch_marked(&mut watched, &held, &view, "mesh1", &me.node.node_id);
         assert_eq!(watched.get(own.node.node_id.as_str()).map(|n| n.status), Some(NodeStatus::PendingReconnect));
         let silent: Vec<_> = crate::offline::silent_set(watched.values(), &digest_view, now, first.at_ms, floor).into_iter().map(|s| crate::offline::marked_from(s, &held)).collect();
         assert_eq!(silent.iter().map(|s| (s.node_id.clone(), s.marked_at_ms)).collect::<Vec<_>>(), vec![(own.node.node_id.to_string(), Some(first.at_ms))]);
@@ -2624,6 +2627,175 @@ mod tests {
             assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), ladders, "at {} ms after the mark", at - first.at_ms);
         }
         ep.close().await;
+    }
+
+    /// CONTRACT (node-investigation.md: "a call whose attempts end unanswered marks its birth at the
+    /// primary above it (the caller itself when it is that primary ...)"; Caller: "the fabric-primary for
+    /// a mesh-primary"; Q338): the fabric-primary's own spent call to a peer mesh-primary marks that
+    /// birth at once; its spent call to a member of that mesh marks nothing here (the member's
+    /// mesh-primary is the primary above it); a mesh-primary's spent call to the fabric-primary marks
+    /// nothing (nothing is above it). Must NOT happen: the fabric-primary marking a peer mesh's member, or
+    /// anyone marking the fabric-primary.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_fabric_primarys_spent_call_to_a_mesh_primary_marks_it_and_nothing_marks_the_fabric_primary() {
+        use MemberStatus::*;
+        let digest_view = DigestView::default();
+        let fp = with_id(digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Ready), "200000000000");
+        let m2p = with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Ready), "300000000000");
+        let m2rpc = with_id(digest(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Ready), "500000000000");
+        for d in [&fp, &m2p, &m2rpc] {
+            digest_view.record((*d).clone());
+        }
+        let mut view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        for n in view.nodes.iter_mut() {
+            n.is_primary = n.node_id == fp.node.node_id || n.node_id == m2p.node.node_id;
+            n.is_fabric_primary = n.node_id == fp.node.node_id;
+        }
+        assert!(view.is_fabric_primary(&fp.node.node_id) && view.is_mesh_primary("mesh2", &m2p.node.node_id));
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
+        let client = rdm_transport::NodeRpcClient::new(ep.clone(), resolver.clone());
+        let decider = |me: &MeshDigest, marks: &crate::offline::UnreachableMarks| crate::offline::MarkOrReport {
+            report: rdm_node::spent_calls::ReportToPrimary::new(resolver.clone(), &client, me.node.node_id.clone(), me.node.incarnation.clone(), me.node.name.clone()),
+            topology: Arc::new(tokio::sync::RwLock::new(view.clone())),
+            marks: marks.clone(),
+            digest_view: digest_view.clone(),
+            me_id: me.node.node_id.clone(),
+        };
+        let spent = |d: &MeshDigest| rdm_node::spent_calls::SpentCall {
+            receiver: rdm_transport::ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: iroh::SecretKey::generate().public(), transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone() },
+            reason: "Indeterminate(Timeout)".into(),
+        };
+        let at_fp: crate::offline::UnreachableMarks = Arc::default();
+        decider(&fp, &at_fp).decide(&spent(&m2rpc)).await;
+        assert!(at_fp.lock().unwrap().is_empty(), "a peer mesh's member is its mesh-primary's, never marked at the fabric-primary");
+        decider(&fp, &at_fp).decide(&spent(&m2p)).await;
+        let mark = at_fp.lock().unwrap().get(&m2p.node.node_id).cloned().expect("the fabric-primary's own spent call marks the mesh-primary at once");
+        assert_eq!((mark.incarnation, mark.reason), (m2p.node.incarnation.clone(), "attempts-spent"));
+        let at_m2p: crate::offline::UnreachableMarks = Arc::default();
+        decider(&m2p, &at_m2p).decide(&spent(&fp)).await;
+        assert!(at_m2p.lock().unwrap().is_empty(), "nothing is above the fabric-primary: nothing marks it");
+        ep.close().await;
+    }
+
+    /// CONTRACT (node-recovery.md step 1, Q340: "a silence mark ends when a digest of the exact birth
+    /// arrives after it or when the birth answers its tickle; a spent-call mark ends only when the
+    /// exact birth answers ..."; node-investigation.md: "A node that does not answer a call is silent,
+    /// whatever it gossips"; Q338): a mesh-primary that gossips every interval and drops every call is
+    /// marked at the fabric-primary for a spent call, keeps the mark through the digests it sends after
+    /// it, and the fabric-primary's primary watch investigates it from that mark. A command-never-sent
+    /// mark of the same birth ends on its next digest, as before. Must NOT happen: a gossiping
+    /// mesh-primary's spent-call mark ended by its digest, so nothing investigates it.
+    // @feature: node-lifecycle
+    #[test]
+    fn a_gossiping_mesh_primarys_spent_call_mark_stands_through_its_digests_and_the_fabric_primary_investigates_it() {
+        use MemberStatus::*;
+        let digest_view = DigestView::default();
+        let fp = with_id(digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Ready), "200000000000");
+        let m2p = with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Ready), "300000000000");
+        for d in [&fp, &m2p] {
+            digest_view.record((*d).clone());
+        }
+        let mut view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        for n in view.nodes.iter_mut() {
+            n.is_primary = true;
+            n.is_fabric_primary = n.node_id == fp.node.node_id;
+        }
+        let node = view.own(&m2p.node.node_id).cloned().expect("the view holds mesh2's primary");
+        assert_eq!(node.status, NodeStatus::Ready, "it gossips: the view holds it ready");
+        let spent: crate::offline::UnreachableMarks = Arc::default();
+        assert_eq!(crate::offline::mark_spent(&spent, Some(&digest_view), &node, "mesh2.rpc.1", "Indeterminate(Timeout)"), "marked");
+        let never_sent: crate::offline::UnreachableMarks = Arc::default();
+        never_sent.lock().unwrap().insert(node.node_id.clone(), crate::offline::UnreachableMark { incarnation: m2p.node.incarnation.clone(), at: std::time::Instant::now(), at_ms: local_now_ms(), reason: "connect-refused" });
+        // Its digests keep arriving after the mark.
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let mut next = digest_view.get(m2p.node.node_id.as_str()).map(|(d, _)| d).expect("held");
+            next.digest_seq += 1;
+            digest_view.record(next);
+        }
+        let now = std::time::Instant::now() + std::time::Duration::from_millis(1);
+        let held = crate::offline::held_marks(&spent, &view, &digest_view, now);
+        assert!(held.contains_key(&node.node_id), "a spent-call mark is never ended by a digest");
+        assert!(crate::offline::held_marks(&never_sent, &view, &digest_view, now).is_empty(), "a silence mark ends on a digest after it, as before");
+        let marked = |n: &crate::model::Node| held.get(&n.node_id).is_some_and(|m| n.incarnation_id.as_ref() == Some(&m.incarnation));
+        let me = (fp.node.node_id.clone(), fp.node.incarnation.clone());
+        let plan = crate::primary_watch::plan(&view, "mesh1", &me, &mut crate::primary_watch::Said::default(), &|_| false, &marked);
+        assert_eq!(plan.investigate.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(), vec![node.node_id.clone()], "the fabric-primary investigates the gossiping mesh-primary from its mark");
+        // The view no longer holds the birth: the mark ends.
+        let gone = Topology { nodes: view.nodes.iter().filter(|n| n.node_id != node.node_id).cloned().collect(), ..view.clone() };
+        assert!(crate::offline::held_marks(&spent, &gone, &digest_view, now).is_empty(), "a birth the view no longer holds ends its mark");
+    }
+
+    /// CONTRACT (node-recovery.md step 1, Q340: "a spent-call mark ends only when the exact birth
+    /// answers, a call of this primary's or the investigation's tickle"; node-rpc.md §43: the client
+    /// tells its observer how each call ends): the fabric-primary holds a spent-call mark of mesh2's
+    /// primary; the birth's digests after it leave it standing; a later call of the fabric-primary's own
+    /// client that the exact birth answers ends it at once. A silence mark (a command never sent) is
+    /// not ended by an answered call. Must NOT happen: the mark ended by a digest, or left standing after
+    /// the marked birth answered this primary's call.
+    // @feature: node-lifecycle
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spent_call_mark_ends_when_the_marked_birth_answers_a_later_call_of_this_primary_and_not_on_its_digests() {
+        use MemberStatus::*;
+        use rdm_core::ping::{Ping, PingReply, PingRequest};
+        let digest_view = DigestView::default();
+        let fp = with_id(digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Ready), "200000000000");
+        let m2p = with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Ready), "300000000000");
+        for d in [&fp, &m2p] {
+            digest_view.record((*d).clone());
+        }
+        let mut view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        for n in view.nodes.iter_mut() {
+            n.is_primary = true;
+            n.is_fabric_primary = n.node_id == fp.node.node_id;
+        }
+        let node = view.own(&m2p.node.node_id).cloned().expect("the view holds mesh2's primary");
+        // mesh2's primary: a birth that answers Ping.
+        let key = iroh::SecretKey::generate();
+        let m2p_ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let served = rdm_transport::ServerBuilder::new()
+            .serve::<Ping, _, _>(rdm_core::catalog::OpOwner::Core, |_peer, req: PingRequest| async move {
+                let PingRequest::Ping { payload } = req;
+                Ok(PingReply::Pong { payload })
+            })
+            .build(rdm_transport::ServedBirth { node_id: m2p.node.node_id.to_string(), incarnation: m2p.node.incarnation.to_string() })
+            .unwrap();
+        let router = iroh::protocol::Router::builder(m2p_ep.clone()).accept(rdm_transport::ALPN, served).spawn();
+        let resolver = Arc::new(rdm_transport::StaticResolver::new());
+        resolver.insert(rdm_transport::ResolvedNode { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin, node_id: m2p.node.node_id.clone(), name: m2p.node.name.clone(), endpoint_id: key.public(), transport_addr: m2p_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(), incarnation: m2p.node.incarnation.clone() });
+        // The fabric-primary's client, its calls' ends told to its MarkOrReport.
+        let fp_ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ends = rdm_transport::CallEndsSlot::default();
+        let client = rdm_transport::NodeRpcClient::new(fp_ep.clone(), resolver.clone()).with_call_ends(ends.clone());
+        let marks: crate::offline::UnreachableMarks = Arc::default();
+        let _ = ends.set(Arc::new(crate::offline::MarkOrReport {
+            report: rdm_node::spent_calls::ReportToPrimary::new(Arc::new(rdm_transport::LiveNodeResolver::default()), &client, fp.node.node_id.clone(), fp.node.incarnation.clone(), fp.node.name.clone()),
+            topology: Arc::new(tokio::sync::RwLock::new(view.clone())),
+            marks: marks.clone(),
+            digest_view: digest_view.clone(),
+            me_id: fp.node.node_id.clone(),
+        }));
+        // The mark, then the birth's digests after it: it stands.
+        assert_eq!(crate::offline::mark_spent(&marks, Some(&digest_view), &node, "mesh2.rpc.1", "Indeterminate(ReplyDeadline)"), "marked");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let mut next = m2p.clone();
+        next.digest_seq += 1;
+        digest_view.record(next);
+        let now = std::time::Instant::now() + std::time::Duration::from_millis(1);
+        assert!(crate::offline::held_marks(&marks, &view, &digest_view, now).contains_key(&node.node_id), "a digest after the mark leaves it standing");
+        // A later call of this primary's, answered by the exact birth: the mark ends.
+        let (out, _) = client.call::<Ping>(&rdm_transport::NodeTarget::ExactNode(m2p.node.node_id.clone()), &PingRequest::Ping { payload: b"p".to_vec() }, &rdm_transport::CallOptions::default()).await;
+        assert_eq!(out.name(), "Reply", "the marked birth answered");
+        assert!(!marks.lock().unwrap().contains_key(&node.node_id), "the birth answered a call of this primary's: its spent-call mark ended");
+        // A silence mark of the same birth is not ended by an answered call.
+        marks.lock().unwrap().insert(node.node_id.clone(), crate::offline::UnreachableMark { incarnation: m2p.node.incarnation.clone(), at: std::time::Instant::now(), at_ms: local_now_ms(), reason: "connect-refused" });
+        let (out, _) = client.call::<Ping>(&rdm_transport::NodeTarget::ExactNode(m2p.node.node_id.clone()), &PingRequest::Ping { payload: b"q".to_vec() }, &rdm_transport::CallOptions::default()).await;
+        assert_eq!(out.name(), "Reply");
+        assert!(marks.lock().unwrap().contains_key(&node.node_id), "a silence mark is not a spent-call mark: an answered call does not end it");
+        router.shutdown().await.ok();
+        fp_ep.close().await;
     }
 
     /// CONTRACT (node-recovery.md, Detection: "The mesh-primary's tick (every gossip interval) reads

@@ -1373,7 +1373,7 @@ impl crate::path_investigation::PathProbe for AdminRunner {
     /// os-stopped, the direct tickle and the same kick through peers (Q273).
     async fn investigate(&self, node: &Node) -> crate::node_investigation::Finding {
         let view = self.topology.read().await.clone();
-        let calls = crate::offline::TickleClient { client: self.node_rpc.client.clone(), me_id: self.node_id.clone(), me: self.node_id.to_string(), connections: self.connections.clone(), commands: None };
+        let calls = crate::offline::TickleClient { client: self.node_rpc.client.clone(), me_id: self.node_id.clone(), me: self.node_id.to_string(), connections: self.connections.clone() };
         // node.runtime.inspect's span is the evidence (node-runtime-inspect.md "Observability contract").
         let inspect = async {
             let (inspected, handle) = crate::node_investigation::inspect_birth_with_handle(&*self.provider, &self.digest_view, self.records.contacts.get().map(|s| &**s as &dyn crate::storage::NodesStorage), node).await;
@@ -2377,7 +2377,6 @@ mod tests {
                 nodes: None,
                 heard_again: Default::default(),
                 connections: None,
-                commands: None,
             },
         });
         let template = LaunchTemplate {

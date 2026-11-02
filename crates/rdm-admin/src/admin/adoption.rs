@@ -598,7 +598,7 @@ impl ProbeAnswers {
     }
 
     fn calls(&self) -> crate::offline::TickleClient {
-        crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me_id.to_string(), connections: None, commands: None }
+        crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me_id.to_string(), connections: None }
     }
 }
 

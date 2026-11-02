@@ -282,7 +282,7 @@ impl NodeHooks {
     /// What this node's Node RPC clients report a spent call to (`fabric-node-hooks.md`
     /// "on_call_failed"), the birth `node_id` at `incarnation` the sender, its name read per call
     /// from `name`; `None` when no `on_call_failed` is registered.
-    pub fn call_failed_observer(&self, node_id: NodeId, incarnation: IncarnationId, name: crate::held_name::HeldName) -> Option<Arc<dyn rdm_transport::CallFailedObserver>> {
+    pub fn call_failed_observer(&self, node_id: NodeId, incarnation: IncarnationId, name: crate::held_name::HeldName) -> Option<Arc<dyn rdm_transport::CallEndObserver>> {
         let hook = self.call_failed.clone()?;
         Some(Arc::new(CallFailedNotice { hook, node_id, incarnation, name }))
     }
@@ -308,8 +308,10 @@ struct CallFailedNotice {
     name: crate::held_name::HeldName,
 }
 
-impl rdm_transport::CallFailedObserver for CallFailedNotice {
-    fn call_failed(&self, receiver: Option<&rdm_transport::ResolvedNode>, reason: CallFailedReason) {
+impl rdm_transport::CallEndObserver for CallFailedNotice {
+    /// The client tells `on_call_failed` a spent call alone; an answered one is never its.
+    fn call_ended(&self, receiver: Option<&rdm_transport::ResolvedNode>, end: rdm_transport::CallEnd) {
+        let rdm_transport::CallEnd::Spent(reason) = end else { return };
         let ctx = CallFailedCtx {
             sender: CallFailedBirth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.name.now() },
             receiver: receiver.map(|r| CallFailedBirth { node_id: r.node_id.clone(), incarnation: r.incarnation.clone(), name: r.name.clone() }),

@@ -137,7 +137,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     // 2. Once, after the call ended, with both births and the call's stored end.
     let told_for_call: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-on-call-failed").into_iter().filter(|sp| s(&sp["parent_span_id"]) == s(&call["span_id"])).collect();
     assert_eq!(told_for_call.len(), 1, "on_call_failed is called once for the spent call: {told_for_call:#?}");
-    // Told from the call's stored end (the client's `tell_call_failed`, inside the call's span): it
+    // Told from the call's stored end (the client's `tell_call_end`, inside the call's span): it
     // starts after the call and before the call's span closes.
     assert!(at(&notice) >= at(&call) && at(&notice) <= end(&call), "on_call_failed is told at the call's end, under its span: call {}..{}, notice {}", at(&call), end(&call), at(&notice));
     assert_eq!((attr(&notice, "node_id"), attr(&notice, "incarnation_id")), (primary_id.clone(), primary.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default()), "the sender is the mesh-primary's birth: {notice}");

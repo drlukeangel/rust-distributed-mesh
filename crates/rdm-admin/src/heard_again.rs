@@ -191,11 +191,7 @@ async fn command_mesh_join(
             operation,
         };
         let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
-        match &out {
-            rdm_core::outcome::RpcOutcome::Indeterminate(_) => status_door.commands.close_unanswered(&command),
-            rdm_core::outcome::RpcOutcome::NotSent(_) => status_door.commands.close(&command),
-            _ => status_door.commands.close_answered(&command),
-        }
+        status_door.commands.close(&command);
         match out.reply() {
             Some(r) => r.value().name().to_string(),
             None => out.name().to_string(),

@@ -1803,9 +1803,11 @@ async fn a_reconnect_after_the_terminal_frame_delivers_no_old_admission() {
 #[derive(Default)]
 struct Told(Mutex<Vec<String>>);
 
-impl rdm_transport::CallFailedObserver for Told {
-    fn call_failed(&self, _receiver: Option<&ResolvedNode>, reason: rdm_transport::CallFailedReason) {
-        self.0.lock().unwrap().push(format!("{reason:?}"));
+impl rdm_transport::CallEndObserver for Told {
+    fn call_ended(&self, _receiver: Option<&ResolvedNode>, end: rdm_transport::CallEnd) {
+        if let rdm_transport::CallEnd::Spent(reason) = end {
+            self.0.lock().unwrap().push(format!("{reason:?}"));
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! A silent primary node-admin is looked at by node investigation (node-recovery.md step 2): an admin
 //! of the primary's mesh (a standby included), any admin looking at the fabric-primary's mesh from
-//! outside it, and the fabric-primary for an unheard mesh-primary, look at the exact silent birth: the
+//! outside it, and the fabric-primary for an unheard mesh-primary or one it marked for a spent call
+//! (node-investigation.md; Q338), look at the exact silent birth: the
 //! one tickle ladder (node-tickle.md: one probe direct, then the same probe through up to two live
 //! members of its mesh at once), and on `unreached` the provider's inspection of the birth's exact
 //! runtime. An answer from the exact birth is `reached`: the fabric-primary commands it back (Q87).
@@ -25,11 +26,10 @@ type Birth = (NodeId, IncarnationId);
 /// What one pass over the view owes.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Plan {
-    /// Exact silent births to investigate from this admin's own view.
+    /// Exact silent births to investigate from this admin's own view: unheard (`PendingReconnect`), or
+    /// marked by this admin for a call whose attempts are spent, whatever they gossip
+    /// (node-investigation.md; Q338).
     pub investigate: Vec<Node>,
-    /// Exact births the view holds ready that left a command unanswered past the floor:
-    /// silent whatever they gossip (node-investigation.md, Q182), investigated on the same terms.
-    pub unanswered: Vec<Node>,
 }
 
 /// Births already investigated during their current silence mark. Hearing the birth again
@@ -72,13 +72,14 @@ fn primary_record(which: &str, record: Option<&Primary>, me: &Birth, lost: &Hash
     }
 }
 
-/// The pass uses only this admin's mesh and exact birth, its view, the silent births already inspected and
+/// The pass uses only this admin's mesh and exact birth, its view, the silent births already inspected,
 /// `was_mesh_primary`: whether this admin's primary view holds a silent node-admin as its mesh's primary
-/// replaced by another birth (the election named a new mesh-primary past the floor).
-pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool, left_unanswered: &dyn Fn(&Node) -> bool) -> Plan {
-    // Silent by its gossip, or ready and silent by the command it left unanswered past the
-    // floor (node-investigation.md, Q182): whatever it gossips, a node that answers no command is silent.
-    let silent_of = |n: &Node| n.kind == NodeKind::NodeAdmin && (n.status == NodeStatus::PendingReconnect || (n.status == NodeStatus::Ready && left_unanswered(n)));
+/// replaced by another birth (the election named a new mesh-primary past the floor), and `marked`:
+/// whether this admin holds a standing mark of the exact birth for a call whose attempts are spent.
+pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_mesh_primary: &dyn Fn(&Node) -> bool, marked: &dyn Fn(&Node) -> bool) -> Plan {
+    // Silent by its gossip, or marked at once for a call whose attempts are spent (node-investigation.md:
+    // "A node that does not answer a call is silent, whatever it gossips"; Q332, Q338).
+    let silent_of = |n: &Node| n.kind == NodeKind::NodeAdmin && (n.status == NodeStatus::PendingReconnect || marked(n));
     let silent: HashSet<Birth> = view.members().filter(|n| silent_of(n)).filter_map(birth).collect();
     said.investigated.retain(|b| silent.contains(b));
     let mut plan = Plan::default();
@@ -101,11 +102,7 @@ pub fn plan(view: &Topology, mesh: &str, me_birth: &Birth, said: &mut Said, was_
         }
         let Some(b) = birth(n) else { continue };
         if said.investigated.insert(b) {
-            if n.status == NodeStatus::PendingReconnect {
-                plan.investigate.push(n.clone());
-            } else {
-                plan.unanswered.push(n.clone());
-            }
+            plan.investigate.push(n.clone());
         }
     }
     plan
@@ -132,10 +129,6 @@ pub struct Looker {
     pub heard_again: crate::heard_again::HeardAgainSlot,
     /// Its connections store: the by-destination index names the leads of a look (Q107 item 1).
     pub connections: Option<Arc<dyn crate::storage::ConnectionsStorage>>,
-    /// The commands this admin sent: a birth that left one unanswered past the floor is investigated as
-    /// a silent one is, and is not reached by an answer (Q182, the primary watch alone: Q335 B); `None`:
-    /// this admin sends none.
-    pub commands: Option<Arc<crate::node_commands::CommandView>>,
 }
 
 impl Looker {
@@ -143,7 +136,7 @@ impl Looker {
     /// tickle ladder and, on `unreached`, the provider's inspection (node-tickle.md "What follows";
     /// node-recovery.md step 2, run by the primary watch: fabric-node-lifecycle-elections.md §4.1).
     pub async fn look(&self, view: &Topology, n: &Node) -> Finding {
-        let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me_id.to_string(), connections: self.connections.clone(), commands: self.commands.clone() };
+        let calls = crate::offline::TickleClient { client: self.client.clone(), me_id: self.me_id.clone(), me: self.me_id.to_string(), connections: self.connections.clone() };
         let finding = crate::node_investigation::investigate(n, view, &calls, self.inspect(n)).await;
         if let Finding::Reached { answer: rdm_core::status::StatusReply::Current { .. }, .. } = &finding {
             // A primary this admin holds off its mesh that answers Current is commanded back
@@ -158,12 +151,6 @@ impl Looker {
             }
         }
         finding
-    }
-
-    /// Whether `n`'s exact birth left a command of this admin unanswered past the staleness floor (Q182).
-    pub fn command_unanswered(&self, n: &Node) -> bool {
-        let (Some(commands), Some(incarnation)) = (&self.commands, &n.incarnation_id) else { return false };
-        commands.unanswered_since(&n.node_id, incarnation, self.topology_view.digest_view.staleness_floor(), std::time::Instant::now()).is_some()
     }
 
     /// The provider's inspection of `n`'s exact runtime (node.runtime.inspect), its span the evidence
@@ -260,9 +247,13 @@ pub async fn run(w: Watch) {
         // heard after it was replaced is one more node-admin of its mesh, its mesh-primary's to investigate.
         let now = std::time::Instant::now();
         let was_mesh_primary = |n: &Node| n.incarnation_id.as_ref().is_some_and(|i| w.topology_view.digest_view.unheard_since_replaced(&n.mesh, n.node_id.as_str(), i, now));
-        let plan = plan(&view, &w.mesh, &me_birth, &mut said, &was_mesh_primary, &|n| w.looker.command_unanswered(n));
-        let triggers = plan.investigate.into_iter().map(|n| (n, "silence")).chain(plan.unanswered.into_iter().map(|n| (n, "command-unanswered")));
-        for (node, trigger) in triggers {
+        // The marks that stand (node-recovery.md step 1): a mesh-primary the fabric-primary marked for a
+        // call whose attempts are spent, its own or one reported to it (Q338), is silent from the mark.
+        let marks = crate::offline::held_marks(&w.records.unreachable, &view, &w.topology_view.digest_view, now);
+        let marked = |n: &Node| marks.get(&n.node_id).is_some_and(|m| n.incarnation_id.as_ref() == Some(&m.incarnation));
+        let plan = plan(&view, &w.mesh, &me_birth, &mut said, &was_mesh_primary, &marked);
+        for node in plan.investigate {
+            let trigger = if marked(&node) { "call-failed" } else { "silence" };
             let span = tracing::info_span!(
                 "rdm.node_admin.primary.update.via-investigation",
                 node_path = %me.path, node_name = %me.name,
@@ -285,6 +276,10 @@ pub async fn run(w: Watch) {
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());
+            // A birth that answered its tickle ends its mark (node-recovery.md step 1).
+            if let (Finding::Reached { .. }, Some(incarnation)) = (&finding, node.incarnation_id.as_ref()) {
+                w.records.unreachable.lock().unwrap().retain(|id, m| !(id == &node.node_id && &m.incarnation == incarnation));
+            }
             // A node-admin of the fabric-primary's mesh unreached and uninspectable is commanded back
             // when heard again; any other finding ends that.
             if let Some(b) = birth(&node) {
@@ -415,31 +410,31 @@ mod tests {
         assert!(plan(&t, &standby.mesh, &me_of(&standby), &mut Said::default(), &|_| false, &|_| false).investigate.is_empty());
     }
 
-    /// CONTRACT (node-investigation.md, Q182): "A node that does not answer a command is silent, whatever
-    /// it gossips": a node-admin the view holds ready that left a command unanswered past the
-    /// floor is investigated like a silent one, once per time it is so, on the same terms of who looks;
-    /// one that answers its commands, and one already listed silent, are not listed twice. Must NOT
-    /// happen: a gossiping node-admin with no command unanswered investigated, or a silent one
-    /// investigated under both triggers.
+    /// CONTRACT (node-investigation.md: "A node that does not answer a call is silent, whatever it
+    /// gossips: a call whose attempts end unanswered marks its birth at the primary above it ..., and
+    /// the primary investigates that birth as it investigates silence"; Caller: "the fabric-primary for
+    /// a mesh-primary"; Q338): the fabric-primary investigates a peer mesh-primary its view holds ready
+    /// (it gossips) once it holds a mark of that exact birth, once per mark, and a later mark again;
+    /// without a mark nothing lists it. An admin that is not the primary above it lists it for no mark.
+    /// Must NOT happen: a gossiping mesh-primary listed with no mark (Q182's clock is gone), or listed
+    /// twice for one mark.
     #[test]
-    fn a_ready_admin_that_left_a_command_unanswered_is_investigated_once_as_a_silent_one_is() {
-        let (mut t, primary, standby, _) = world();
+    fn the_fabric_primary_investigates_a_gossiping_mesh_primary_from_its_mark_and_from_nothing_else() {
+        let (mut t, primary, standby, outsider) = world();
         t.nodes[0].status = NodeStatus::Ready;
-        let fabric_primary_unanswered = |n: &Node| n.node_id == primary.node_id;
+        let mesh2_primary_marked = |n: &Node| n.node_id == outsider.node_id;
         let mut said = Said::default();
-        let none = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false);
-        assert!(none.investigate.is_empty() && none.unanswered.is_empty(), "every command answered: nothing to investigate");
-        let p = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &fabric_primary_unanswered);
-        assert_eq!(p.unanswered.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&primary)], "gossiping, and silent for the command it left unanswered");
-        assert!(p.investigate.is_empty(), "it is not silent by its gossip");
-        let again = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &fabric_primary_unanswered);
-        assert!(again.unanswered.is_empty() && again.investigate.is_empty(), "once per time it is silent");
-        let _ = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &|_| false);
-        let back = plan(&t, &standby.mesh, &me_of(&standby), &mut said, &|_| false, &fabric_primary_unanswered);
-        assert_eq!(back.unanswered.len(), 1, "answering ended it; a later unanswered command is silence again");
-        t.nodes[0].status = NodeStatus::PendingReconnect;
-        let both = plan(&t, &standby.mesh, &me_of(&standby), &mut Said::default(), &|_| false, &fabric_primary_unanswered);
-        assert_eq!((both.investigate.len(), both.unanswered.len()), (1, 0), "a node silent by its gossip is listed once, as silent");
+        let none = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &|_| false);
+        assert!(none.investigate.is_empty(), "a gossiping mesh-primary with no mark: nothing to investigate");
+        let p = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked);
+        assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&outsider)], "gossiping, and silent from the mark");
+        let again = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked);
+        assert!(again.investigate.is_empty(), "once per mark");
+        let _ = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &|_| false);
+        let back = plan(&t, &primary.mesh, &me_of(&primary), &mut said, &|_| false, &mesh2_primary_marked);
+        assert_eq!(back.investigate.len(), 1, "the mark ended; a later mark is silence again");
+        let standby_look = plan(&t, &standby.mesh, &me_of(&standby), &mut Said::default(), &|_| false, &mesh2_primary_marked);
+        assert!(standby_look.investigate.is_empty(), "a peer mesh-primary is the fabric-primary's to investigate");
     }
 
     /// CONTRACT (R-A2 items 4-5): an admin looks at a silent birth of the incumbent mesh once per

@@ -1191,7 +1191,6 @@ mod tests {
                 nodes: None,
                 heard_again: Default::default(),
                 connections: None,
-                commands: None,
             },
         });
         let template = LaunchTemplate {

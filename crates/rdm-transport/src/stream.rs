@@ -598,7 +598,7 @@ impl NodeRpcClient {
                     Some(Attempted::Spent) => {
                         span.record("delivery", "attempts-spent");
                         let out = pre.take().expect("pre-commit").not_sent(last.clone());
-                        span.in_scope(|| self.tell_call_failed(opts, owed.receiver.as_ref(), &out));
+                        span.in_scope(|| self.tell_call_end(opts, owed.receiver.as_ref(), &out));
                         break out;
                     }
                     Some(Attempted::StoppedBeforeComplete) => {

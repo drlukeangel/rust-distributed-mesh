@@ -88,9 +88,6 @@ pub enum Accepted {
 pub struct CommandView {
     /// Each open command: what resolves its completion, and the instant it was first sent.
     open: Mutex<HashMap<CommandKey, (watch::Sender<bool>, Instant)>>,
-    /// Each exact birth a command ended on without its answer (Q182), by the instant the earliest of
-    /// those commands was sent.
-    unanswered: Mutex<HashMap<(NodeId, IncarnationId), Instant>>,
     connections_delete_deadline: Duration,
     /// Whether this admin, as a mesh-primary, replied `blocked` to a storage change's `mesh.block`
     /// (storage.md §2 "Changing it", step 1): it issues no new command until it is unblocked.
@@ -104,22 +101,15 @@ pub struct CommandView {
     row_writes: tokio::sync::Mutex<()>,
 }
 
-/// A tracked command uses the existing unanswered-command clock even if its caller is cancelled.
+/// A tracked command: open from its send until its call ends, its caller's cancellation included.
 pub struct CommandCall<'a> {
     commands: &'a CommandView,
-    key: Option<CommandKey>,
-}
-
-impl CommandCall<'_> {
-    /// A named reply settles the call, whether it admitted or refused the command.
-    pub fn answered(mut self) {
-        self.commands.close_answered(&self.key.take().expect("tracked command is open"));
-    }
+    key: CommandKey,
 }
 
 impl Drop for CommandCall<'_> {
     fn drop(&mut self) {
-        if let Some(key) = self.key.take() { self.commands.close_unanswered(&key); }
+        self.commands.close(&self.key);
     }
 }
 
@@ -133,7 +123,7 @@ impl Default for CommandView {
 impl CommandView {
     /// A view whose commanded births run their `node.connection.delete { All }` under `connections_delete_deadline`.
     pub fn new(connections_delete_deadline: Duration) -> Self {
-        Self { open: Mutex::new(HashMap::new()), unanswered: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, rows_held: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()) }
+        Self { open: Mutex::new(HashMap::new()), connections_delete_deadline, blocked: watch::channel(false).0, rows_held: watch::channel(false).0, row_writes: tokio::sync::Mutex::new(()) }
     }
 
     /// `mesh.block`: from here no new command is issued and no row is written; resolves once every
@@ -190,11 +180,11 @@ impl CommandView {
         self.connections_delete_deadline + Duration::from_secs(10)
     }
 
-    /// Track a call through its named reply or its unanswered end. Cancellation keeps the
-    /// original send instant for the existing silence/investigation timers.
+    /// Track a call: its command is open until the call ends, however it ends, a cancelled caller's
+    /// included.
     pub fn track(&self, key: CommandKey) -> CommandCall<'_> {
         let _ = self.open(key.clone());
-        CommandCall { commands: self, key: Some(key) }
+        CommandCall { commands: self, key }
     }
 
     /// Open `key` before the command is sent (so a completion that races the reply finds it) and
@@ -208,8 +198,6 @@ impl CommandView {
         let open = self.open.lock().unwrap();
         match open.get(key) {
             Some((tx, _)) => {
-                // The birth sent a completion: it answers commands.
-                self.unanswered.lock().unwrap().remove(&(key.node_id.clone(), key.incarnation.clone()));
                 if tx.send_replace(true) {
                     Accepted::Again
                 } else {
@@ -247,45 +235,11 @@ impl CommandView {
         self.open.lock().unwrap().keys().any(|k| &k.node_id == node_id && &k.incarnation == incarnation && k.operation.action == "node.stop")
     }
 
-    /// Forget the command: its step receipt is the record.
+    /// Forget the command, however it ended: its step receipt is the record. A call to the birth that
+    /// ended with its attempts spent is the spent call's mark at the primary above it (node-rpc.md §43;
+    /// Q332, Q338), never this view's.
     pub fn close(&self, key: &CommandKey) {
         self.open.lock().unwrap().remove(key);
-    }
-
-    /// Forget the command, which ended with the birth's answer (a reply, admitted or refused by name):
-    /// the birth answers commands again.
-    pub fn close_answered(&self, key: &CommandKey) {
-        self.close(key);
-        self.unanswered.lock().unwrap().remove(&(key.node_id.clone(), key.incarnation.clone()));
-    }
-
-    /// Forget the command, which ended with no answer from the birth (Q182): the birth has a command
-    /// unanswered since the instant it was sent, the earliest such command's.
-    pub fn close_unanswered(&self, key: &CommandKey) {
-        let sent = self.open.lock().unwrap().remove(key).map_or_else(Instant::now, |(_, sent)| sent);
-        self.unanswered.lock().unwrap().entry((key.node_id.clone(), key.incarnation.clone())).and_modify(|since| *since = (*since).min(sent)).or_insert(sent);
-    }
-
-    /// Forget the command, which ended as `admission`: an `Indeterminate` end is no answer from the
-    /// birth ([`Self::close_unanswered`]); a command never sent says nothing of it (`close`); any
-    /// other end is the birth's own answer ([`Self::close_answered`]).
-    pub fn close_with(&self, key: &CommandKey, admission: &CommandAdmission) {
-        match admission {
-            CommandAdmission::Indeterminate { .. } => self.close_unanswered(key),
-            CommandAdmission::NotSent { .. } => self.close(key),
-            _ => self.close_answered(key),
-        }
-    }
-
-    /// The instant the earliest command the exact birth left unanswered was sent, when that is a
-    /// staleness `floor` or more before `now` (node-investigation.md, Q182); `None` when the birth
-    /// has none, or none that old. Read from this admin's own record of its commands: no timer runs.
-    /// Its one reader is the primary watch (Q335 B): its plan's `command-unanswered` trigger
-    /// ([`crate::primary_watch::Looker::command_unanswered`]) and its look's tickle, whose
-    /// `TickleClient` alone carries the commands. A member is marked by a spent call alone (Q332).
-    pub fn unanswered_since(&self, node_id: &NodeId, incarnation: &IncarnationId, floor: Duration, now: Instant) -> Option<Instant> {
-        let since = *self.unanswered.lock().unwrap().get(&(node_id.clone(), incarnation.clone()))?;
-        (now.saturating_duration_since(since) >= floor).then_some(since)
     }
 }
 
@@ -372,7 +326,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandVie
         let _ = commands.complete(&CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("checked above") });
     }
     // The command is over with its reply, admitted or not: its step receipt is the record.
-    commands.close_with(&key, &admission);
+    commands.close(&key);
     // A command not admitted names why on its span (the reply, or why no reply came), as its step's
     // receipt does: the refusal is read where it happened.
     let detail = match &admission {
@@ -529,70 +483,25 @@ mod tests {
         assert!(matches!(commands.complete(&stranger), Accepted::NoOpenCommand { field, .. } if field == "command"));
     }
 
-    /// CONTRACT (node-investigation.md, Q182): a command that ended with no answer from its birth is
-    /// known by the instant it was sent, once that is a staleness floor old; a command answered
-    /// within the floor, one still open, one answered afterwards, one of another birth, and a
-    /// completion that arrives, leave nothing unanswered. Must NOT happen: an answered command, or
-    /// one unanswered less than a floor, reading as unanswered past the floor.
-    #[test]
-    fn a_command_left_unanswered_is_known_from_its_send_once_a_floor_old_and_an_answer_ends_it() {
-        let floor = Duration::from_secs(30);
-        let commands = CommandView::default();
-        let stop = key("node.stop");
-        let start = CommandKey { operation: rdm_core::OperationId::location("node.start", &rdm_core::PathName::new("mesh1.rpc", "1").unwrap()), ..stop.clone() };
-        let (before, _) = (Instant::now(), commands.open(stop.clone()));
-        let after = Instant::now();
-        assert_eq!(commands.unanswered_since(&stop.node_id, &stop.incarnation, floor, after + floor * 2), None, "an open command has not been left unanswered");
-        commands.close_unanswered(&stop);
-        assert_eq!(commands.unanswered_since(&stop.node_id, &stop.incarnation, floor, before + floor - Duration::from_millis(1)), None, "less than a floor since it was sent");
-        let since = commands.unanswered_since(&stop.node_id, &stop.incarnation, floor, after + floor).expect("a floor since it was sent");
-        assert!(before <= since && since <= after, "the instant the command was sent");
-        assert_eq!(commands.unanswered_since(&NodeId::mint(), &stop.incarnation, floor, after + floor * 2), None, "another node");
-        assert_eq!(commands.unanswered_since(&stop.node_id, &IncarnationId::parse(&rdm_core::fixture_crockford60("j")).unwrap(), floor, after + floor * 2), None, "another birth of the node");
-        let _ = commands.open(start.clone());
-        assert_eq!(commands.complete(&start), Accepted::First);
-        assert_eq!(commands.unanswered_since(&stop.node_id, &stop.incarnation, floor, after + floor * 2), None, "a completion from the birth ends it");
-        // Answered within the floor: nothing is left unanswered.
-        let answered = CommandView::default();
-        let k = key("node.start");
-        let _ = answered.open(k.clone());
-        answered.close_answered(&k);
-        assert_eq!(answered.unanswered_since(&k.node_id, &k.incarnation, floor, Instant::now() + floor * 2), None, "an answered command is no silence");
-        // Unanswered, then a later command is answered: the birth answers again.
-        let _ = answered.open(k.clone());
-        answered.close_unanswered(&k);
-        assert!(answered.unanswered_since(&k.node_id, &k.incarnation, floor, Instant::now() + floor * 2).is_some());
-        let later = CommandKey { operation: rdm_core::OperationId::location("node.stop", &rdm_core::PathName::new("mesh1.rpc", "2").unwrap()), ..k.clone() };
-        let _ = answered.open(later.clone());
-        answered.close_answered(&later);
-        assert_eq!(answered.unanswered_since(&k.node_id, &k.incarnation, floor, Instant::now() + floor * 2), None, "an answer to a later command ends it");
-    }
     // @feature: node-records
-    /// A cancelled storage call enters the existing unanswered clock at its original send.
+    /// CONTRACT: a tracked call's command is open while the call runs and closed when it ends, its
+    /// caller cancelled included. Must NOT happen: a cancelled call holding command admission forever.
     #[tokio::test]
-    async fn a_cancelled_tracked_call_uses_the_existing_investigation_clock() {
+    async fn a_cancelled_tracked_call_closes_its_command() {
         let commands = std::sync::Arc::new(CommandView::default());
         let k = key("storage-block:change");
         let began = std::sync::Arc::new(tokio::sync::Notify::new());
         let (c, request, n) = (commands.clone(), k.clone(), began.clone());
-        let before = Instant::now();
         let task = tokio::spawn(async move {
             let _call = c.track(request);
             n.notify_one();
             std::future::pending::<()>().await;
         });
         began.notified().await;
-        let sent_by = Instant::now();
         assert!(commands.is_open(&k));
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         assert!(!commands.is_open(&k), "a cancelled call cannot hold command admission forever");
-        let floor = Duration::from_secs(30);
-        assert!(commands.unanswered_since(&k.node_id, &k.incarnation, floor, before + floor - Duration::from_millis(1)).is_none());
-        let since = commands.unanswered_since(&k.node_id, &k.incarnation, floor, sent_by + floor).expect("the existing floor makes investigation due");
-        assert!(before <= since && since <= sent_by, "use the original send, never cancellation time");
-        commands.track(k.clone()).answered();
-        assert!(commands.unanswered_since(&k.node_id, &k.incarnation, floor, sent_by + floor * 2).is_none(), "a later named reply ends the existing unanswered mark");
     }
 
 }

@@ -1402,12 +1402,13 @@ impl StatusDoor {
 
 impl StatusDoor {
     /// A caller's `ReportCallFailed` (node-rpc.md §43; Q311, Q322): its call to the exact birth
-    /// `receiver` ended with its attempts spent. This admin, the mesh-primary of that birth's mesh
-    /// (and not the birth itself), marks it as its own spent call marks it ([`crate::offline::mark_spent`])
-    /// and answers `Applied`; a birth it does not hold, or is not the primary above, is refused
-    /// `RejectedNotPrimary { why: SubjectUnknown }`. Nothing is reported on from here.
+    /// `receiver` ended with its attempts spent. This admin, the primary above that birth (its mesh's
+    /// mesh-primary; the fabric-primary for a mesh-primary, Q338), marks it as its own spent call marks
+    /// it ([`crate::offline::mark_spent`]) and answers `Applied`; a birth it does not hold, or is not the
+    /// primary above, is refused `RejectedNotPrimary { why: SubjectUnknown }`. Nothing is reported on
+    /// from here.
     fn report_call_failed(&self, view: &Topology, from: &rdm_core::status::ReportedBirth, receiver: &rdm_core::status::ReportedBirth, reason: &str) -> StatusReply {
-        let above = view.own(&receiver.node_id).filter(|n| n.incarnation_id.as_ref() == Some(&receiver.incarnation) && n.node_id != self.node_id && view.is_mesh_primary(&n.mesh, &self.node_id));
+        let above = view.own(&receiver.node_id).filter(|n| n.incarnation_id.as_ref() == Some(&receiver.incarnation) && view.is_primary_above(&self.node_id, &n.mesh, &n.node_id));
         let Some(node) = above else {
             tracing::info_span!(
                 "rdm.node_admin.node.reject.via-call-failed",
@@ -2160,7 +2161,7 @@ impl StatusDoor {
         // The command is over with its carry, admitted or not: its step receipt is the record
         // (node-recovery.md step 2 reads "open" as from the send to the completion).
         if let Some(incarnation) = node.incarnation_id.clone() {
-            self.commands.close_with(&crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation, build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() }, &admission);
+            self.commands.close(&crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation, build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() });
         }
         (admission, unreachable)
     }
@@ -3734,11 +3735,14 @@ mod tests {
     /// The status authority of the admin born as `me`, deciding over `view`.
     /// CONTRACT (i151.s2; node-rpc.md §43, Q311, Q322: `ReportCallFailed { sender, receiver, reason }`
     /// "answered `Applied`, or `RejectedNotPrimary { why: NotPrimary::SubjectUnknown }` for a birth the
-    /// receiver is not the primary above"): mesh2's primary takes a report of a spent call to its
-    /// member and marks the exact birth at once, as its own spent call marks it; it refuses
-    /// `SubjectUnknown` a report naming a birth of another mesh, another incarnation of its member, a
-    /// birth it holds nothing of, and itself; an admin of mesh2 that is not its primary refuses its
-    /// member's report `SubjectUnknown`. Must NOT happen: a refused report marking anything.
+    /// receiver is not the primary above"; Q338: the fabric-primary is the primary above a
+    /// mesh-primary): mesh2's primary takes a report of a spent call to its member and marks the exact
+    /// birth at once, as its own spent call marks it; it refuses `SubjectUnknown` a report naming a
+    /// birth of another mesh, another incarnation of its member, a birth it holds nothing of, and
+    /// itself; an admin of mesh2 that is not its primary refuses its member's report `SubjectUnknown`.
+    /// The fabric-primary takes a report of a spent call to mesh2's primary and marks it, and refuses a
+    /// report of mesh2's member (its mesh-primary's) and of itself (nothing is above it). Must NOT
+    /// happen: a refused report marking anything.
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_report_of_a_spent_call_is_applied_only_by_the_primary_above_the_birth() {
@@ -3757,7 +3761,7 @@ mod tests {
             n.status = crate::model::NodeStatus::Ready;
             n
         };
-        let m1p = admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", true);
+        let m1p = crate::model::Node { is_fabric_primary: true, ..admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", true) };
         let m2p = admin(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", true);
         let m2a = admin(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", false);
         let own = member(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2");
@@ -3783,6 +3787,15 @@ mod tests {
         assert_eq!(door.apply(None, &report(birth(&own))).await, R::Applied, "the primary above the birth takes it");
         let mark = door.unreachable.lock().unwrap().get(&own.node_id).cloned().expect("the birth is marked at once");
         assert_eq!((mark.incarnation, mark.reason), (own.incarnation_id.clone().unwrap(), "attempts-spent"));
+        // The fabric-primary: the primary above mesh2's primary, and above nothing of mesh2 beside it.
+        let fabric_primary = mesh_primary_of(&m1p, view.clone());
+        for (receiver, what) in [(birth(&own), "a member of a peer mesh, its mesh-primary's"), (birth(&m1p), "itself: nothing is above the fabric-primary")] {
+            assert_eq!(fabric_primary.apply(None, &report(receiver)).await, R::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "{what}");
+        }
+        assert!(fabric_primary.unreachable.lock().unwrap().is_empty(), "a refused report marks nothing");
+        assert_eq!(fabric_primary.apply(None, &report(birth(&m2p))).await, R::Applied, "the fabric-primary takes a report of a spent call to a mesh-primary");
+        let mark = fabric_primary.unreachable.lock().unwrap().get(&m2p.node_id).cloned().expect("the mesh-primary is marked at the fabric-primary at once");
+        assert_eq!((mark.incarnation, mark.reason), (m2p.incarnation_id.clone().unwrap(), "attempts-spent"));
     }
 
     fn mesh_primary_of(me: &crate::model::Node, view: Topology) -> StatusDoor {

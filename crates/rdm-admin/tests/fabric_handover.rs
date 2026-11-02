@@ -255,7 +255,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
         })
     };
     let (provider, nodes) = (Arc::new(Inspected::default()), Arc::new(MemoryNodesStorage::default()));
-    let looker = rdm_admin::primary_watch::Looker { me: path.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default(), connections: None, commands: None };
+    let looker = rdm_admin::primary_watch::Looker { me: path.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()), heard_again: Default::default(), connections: None };
     let door = Arc::new(HandoverDoor {
         fabric: "fabric1".into(),
         me: path.clone(),

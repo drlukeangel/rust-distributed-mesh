@@ -1561,7 +1561,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     status_door_set.notify_waiters();
                                     // A call of this admin's whose attempts are spent (node-rpc.md §43; Q311): a birth of a mesh it
                                     // is the mesh-primary of is marked for its tick, any other reported to the primary above it.
-                                    let _ = node_rpc.client.spent_calls().set(Arc::new(crate::offline::MarkOrReport {
+                                    let _ = node_rpc.client.call_ends().set(Arc::new(crate::offline::MarkOrReport {
                                         report: rdm_node::spent_calls::ReportToPrimary::new(node_rpc_resolver.clone(), &node_rpc.client, node_id.clone(), incarnation.clone(), name.clone()),
                                         topology: control.topology.clone(),
                                         marks: records.unreachable.clone(),
@@ -1690,7 +1690,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 decisions: builds.decisions(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone(), records.clone()),
                                 finish_writes: finish_writes.clone(),
-                                looker: crate::primary_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
+                                looker: crate::primary_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
                             });
                             let _ = handover_slot.set(handover.clone());
                             // The drives of the Builds this admin drives (`build_drive`): its executor ends its own
@@ -2571,7 +2571,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             connections: Some(
                                                                 connections_storage.clone(),
                                                             ),
-                                                            commands: Some(commands.clone()),
                                                         },
                                                         recovery.clone(),
                                                         handover_slot.clone(),
@@ -2654,8 +2653,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // node-tickle.md step 1: a birth a command never reached for a reachability reason, or
                                                 // a call to it whose attempts are spent (the one clock, Q332), is PendingReconnect from
                                                 // that instant, so its ladder runs half a floor after the mark.
-                                                let marks = crate::offline::held_marks(&records.unreachable, &view, &mesh, &recovery.digest_view, now);
-                                                crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
+                                                let marks = crate::offline::held_marks(&records.unreachable, &view, &recovery.digest_view, now);
+                                                crate::offline::watch_marked(&mut watched, &marks, &view, &mesh, &me_id);
                                                 // The topology decides who is tickled (Luke, Q87): a mesh-primary's view comes from the
                                                 // fabric-primary and is current, so a member it holds ready there is not
                                                 // tickled on this admin's own fresh digest view; only a member the view holds off
@@ -2713,9 +2712,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                     me_id,
                                                                     me,
                                                                     connections,
-                                                                    // A member tickle carries no commands: a member is marked by a spent
-                                                                    // call alone, and its answer reaches it (Q332; Q335 B).
-                                                                    commands: None,
                                                                 }).await)
                                                             }
                                                         },
@@ -2962,7 +2958,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             topology_view: topology_view.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),
-                                            looker: crate::primary_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()), commands: Some(commands.clone()) },
+                                            looker: crate::primary_watch::Looker { me: name.clone(), me_id: node_id.clone(), topology_view: topology_view.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone(), connections: Some(connections_storage.clone()) },
                                             recovery: Some(recovery.clone()),
                                             fabric_recovery: fabric_recovery.clone(),
                                         };

@@ -230,6 +230,20 @@ impl Topology {
         self.node_type_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == *node_id)
     }
 
+    /// Whether the node born as `me` is the primary above the node `node_id` of `mesh` in this view
+    /// (node-investigation.md, Caller): the fabric-primary above a mesh-primary, the mesh-primary above
+    /// every other birth of its mesh. Nothing is above the fabric-primary, and no node is above itself.
+    pub fn is_primary_above(&self, me: &NodeId, mesh: &str, node_id: &NodeId) -> bool {
+        if node_id == me || self.is_fabric_primary(node_id) {
+            return false;
+        }
+        if self.is_mesh_primary(mesh, node_id) {
+            self.is_fabric_primary(me)
+        } else {
+            self.is_mesh_primary(mesh, me)
+        }
+    }
+
     /// The control endpoint of `mesh`'s primary (its admin primary's).
     pub(crate) fn mesh_control_endpoint(&self, mesh: &str) -> Option<&str> {
         self.node_type_primary(mesh, NodeKind::NodeAdmin)?.admin_api_base.as_deref()

@@ -69,8 +69,20 @@ pub struct UnreachableMark {
     pub at: std::time::Instant,
     /// The same instant on the local clock, ms since the Unix epoch.
     pub at_ms: u64,
-    /// `connect-refused`, `connect-timed-out`, `connect-failed` or `endpoint-unresolved`.
+    /// `connect-refused`, `connect-timed-out`, `connect-failed` or `endpoint-unresolved` for a command
+    /// never sent; [`ATTEMPTS_SPENT`] for a call whose attempts are spent.
     pub reason: &'static str,
+}
+
+/// The reason of a spent-call mark ([`mark_spent`]): a call to the birth ended with its attempts spent.
+pub const ATTEMPTS_SPENT: &str = "attempts-spent";
+
+impl UnreachableMark {
+    /// Whether this is a spent-call mark (node-recovery.md step 1, Q340): it ends only when the exact
+    /// birth answers or the view no longer holds it, never on a digest.
+    pub fn is_spent_call(&self) -> bool {
+        self.reason == ATTEMPTS_SPENT
+    }
 }
 
 /// Whether a reachability `NotSent` marks a birth whose mesh-primary holds `recorded` for it
@@ -84,13 +96,17 @@ pub(crate) fn marks_over(recorded: Option<rdm_core::MemberStatus>) -> bool {
     }
 }
 
-/// The marks a mesh-primary holds, by node id: written by its executor's observer, read by its tick.
+/// The marks a primary holds, by node id: written by its executor's observer and its spent calls (its
+/// own and those reported to it), read by its tick for the births of its mesh and by its primary watch
+/// for a mesh-primary below the fabric-primary.
 pub type UnreachableMarks = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<crate::model::NodeId, UnreachableMark>>>;
 
-/// A call whose attempts are spent on `node` (node-rpc.md §43; Q311), this admin its mesh-primary:
-/// the birth is marked `PendingReconnect` at once, as a command never sent for a reachability reason
-/// marks it (node-recovery.md step 1), with the same observer rule ([`marks_over`]) and the tick's
-/// clock from the mark (step 2): no timing rule of its own. A birth already marked keeps its mark
+/// A call whose attempts are spent on `node` (node-rpc.md §43; Q311), this admin the primary above it
+/// (node-investigation.md, Caller): the birth is marked `PendingReconnect` at once, as a command never
+/// sent for a reachability reason marks it (node-recovery.md step 1), with the same observer rule
+/// ([`marks_over`]), and investigated from the mark (step 2): a member by the mesh-primary's tick, a
+/// mesh-primary by the fabric-primary's primary watch (Q338). No timing rule of its own. A birth
+/// already marked keeps its mark
 /// (one investigation per silence). `from` names whose call it was: this admin's own, or the birth
 /// that reported it (`ReportCallFailed`). One span, `rdm.node_admin.node.update.via-call-failed`;
 /// the outcome is `marked`, `already-marked` or `kept-lifecycle-status`.
@@ -104,7 +120,7 @@ pub(crate) fn mark_spent(marks: &UnreachableMarks, digest_view: Option<&rdm_tran
         match held.get(&node.node_id) {
             Some(m) if m.incarnation == incarnation => "already-marked",
             _ => {
-                held.insert(node.node_id.clone(), UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: crate::admin::local_now_ms(), reason: "attempts-spent" });
+                held.insert(node.node_id.clone(), UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: crate::admin::local_now_ms(), reason: ATTEMPTS_SPENT });
                 "marked"
             }
         }
@@ -120,18 +136,19 @@ pub(crate) fn mark_spent(marks: &UnreachableMarks, digest_view: Option<&rdm_tran
         outcome,
         "otel.kind" = "internal",
     )
-    .in_scope(|| tracing::info!("a call whose attempts are spent: the mesh-primary marks the birth pending-reconnect at once, as a command never sent marks it, and its tick investigates it from the mark"));
+    .in_scope(|| tracing::info!("a call whose attempts are spent: the primary above the birth marks it pending-reconnect at once, as a command never sent marks it, and investigates it from the mark"));
     outcome
 }
 
-/// What a node-admin does with a call whose attempts are spent (node-rpc.md §43; Q311): a birth of a
-/// mesh it is the mesh-primary of is marked here ([`mark_spent`]); any other is reported to the
-/// primary above it ([`rdm_node::spent_calls::ReportToPrimary`]).
+/// What a node-admin does with a call whose attempts are spent (node-rpc.md §43; Q311, Q338): a birth it
+/// is the primary above (a member of the mesh it is the mesh-primary of; a mesh-primary, when it is
+/// the fabric-primary) is marked here ([`mark_spent`]); any other is reported to the primary above it
+/// ([`rdm_node::spent_calls::ReportToPrimary`]).
 #[derive(Clone)]
 pub struct MarkOrReport {
-    /// The report to the primary above, for a birth of another mesh.
+    /// The report to the primary above, for a birth this admin is not the primary above.
     pub report: rdm_node::spent_calls::ReportToPrimary,
-    /// This admin's view: which births it is the mesh-primary above.
+    /// This admin's view: which births it is the primary above.
     pub topology: std::sync::Arc<tokio::sync::RwLock<crate::topology::Topology>>,
     /// The marks its tick reads.
     pub marks: UnreachableMarks,
@@ -142,13 +159,16 @@ pub struct MarkOrReport {
 }
 
 impl MarkOrReport {
-    /// Mark `call`'s birth when this admin is the mesh-primary of its mesh, else report it.
+    /// Mark `call`'s birth when this admin is the primary above it, else report it.
     pub async fn decide(&self, call: &rdm_node::spent_calls::SpentCall) {
+        if call.receiver.node_id == self.me_id {
+            // A call to itself: nothing is marked or reported.
+            return;
+        }
         let view = self.topology.read().await.clone();
-        if view.is_mesh_primary(&call.receiver.mesh, &self.me_id) {
-            // This admin is the primary above every birth of its mesh but itself: its own call marks, and
-            // nothing is reported to itself.
-            if let Some(node) = view.own(&call.receiver.node_id).filter(|n| n.incarnation_id.as_ref() == Some(&call.receiver.incarnation) && n.node_id != self.me_id) {
+        if view.is_primary_above(&self.me_id, &call.receiver.mesh, &call.receiver.node_id) {
+            // This admin's own call marks, and nothing is reported to itself.
+            if let Some(node) = view.own(&call.receiver.node_id).filter(|n| n.incarnation_id.as_ref() == Some(&call.receiver.incarnation)) {
                 mark_spent(&self.marks, Some(&self.digest_view), node, "own-call", &call.reason);
             }
             return;
@@ -157,33 +177,71 @@ impl MarkOrReport {
     }
 }
 
-impl rdm_transport::CallFailedObserver for MarkOrReport {
-    /// A call that named no birth (an endpoint, a receiver never resolved) starts nothing.
-    fn call_failed(&self, receiver: Option<&rdm_transport::ResolvedNode>, reason: rdm_transport::CallFailedReason) {
+impl rdm_transport::CallEndObserver for MarkOrReport {
+    /// A call that named no birth (an endpoint, a receiver never resolved) starts and ends nothing. A
+    /// spent call is marked or reported on its own task; an answered one ends a spent-call mark this
+    /// admin holds of that exact birth, at once ([`end_spent_mark`]).
+    fn call_ended(&self, receiver: Option<&rdm_transport::ResolvedNode>, end: rdm_transport::CallEnd) {
         let Some(receiver) = receiver else { return };
-        let (me, call) = (self.clone(), rdm_node::spent_calls::SpentCall::of(receiver, &reason));
-        let span = tracing::Span::current();
-        tokio::spawn(tracing::Instrument::instrument(async move { me.decide(&call).await }, span));
+        match end {
+            rdm_transport::CallEnd::Spent(reason) => {
+                let (me, call) = (self.clone(), rdm_node::spent_calls::SpentCall::of(receiver, &reason));
+                let span = tracing::Span::current();
+                tokio::spawn(tracing::Instrument::instrument(async move { me.decide(&call).await }, span));
+            }
+            rdm_transport::CallEnd::Answered => {
+                end_spent_mark(&self.marks, receiver);
+            }
+        }
     }
 }
 
-/// The marks of `mesh`'s births that stand at `now`: a mark ends when the view no longer holds that
-/// exact birth of `mesh`, or when `digest_view` heard the birth after the mark. The ended ones are dropped
-/// from `marks`.
-pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, mesh: &str, digest_view: &rdm_transport::topology::DigestView, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
+/// The exact birth `receiver` answered a call of this admin's (node-recovery.md step 1, Q340: "a
+/// spent-call mark ends only when the exact birth answers, a call of this primary's or the
+/// investigation's tickle"): a spent-call mark this admin holds of it ends. A silence mark, or a mark of
+/// another birth of the node, is not this end's. One span, `rdm.node_admin.node.update.via-call-answered`,
+/// only when a mark ended.
+pub(crate) fn end_spent_mark(marks: &UnreachableMarks, receiver: &rdm_transport::ResolvedNode) -> bool {
+    let ended = {
+        let mut held = marks.lock().unwrap();
+        match held.get(&receiver.node_id) {
+            Some(m) if m.incarnation == receiver.incarnation && m.is_spent_call() => held.remove(&receiver.node_id),
+            _ => None,
+        }
+    };
+    let Some(mark) = ended else { return false };
+    tracing::info_span!(
+        "rdm.node_admin.node.update.via-call-answered",
+        node_path = %receiver.name.path, node_name = %receiver.name.name,
+        node_id = %receiver.node_id,
+        incarnation_id = %receiver.incarnation.as_str(),
+        marked_at_ms = mark.at_ms,
+        outcome = "mark-ended",
+        "otel.kind" = "internal",
+    )
+    .in_scope(|| tracing::info!("the marked birth answered a call of this primary's: its spent-call mark ends"));
+    true
+}
+
+/// The marks that stand at `now`, of every mesh's births (node-recovery.md step 1, Q340): every mark
+/// ends when the view no longer holds that exact birth; a silence mark (a command never sent) also when
+/// `digest_view` heard the birth after the mark; a spent-call mark never on a digest (it ends when the
+/// birth answers, which its investigation's tickle reads and ends). The ended ones are dropped from
+/// `marks`. The tick watches its own mesh's ([`watch_marked`]); the primary watch reads a mesh-primary's.
+pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, digest_view: &rdm_transport::topology::DigestView, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
     let mut marks = marks.lock().unwrap();
     marks.retain(|id, m| {
-        let held = view.births().any(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation) && n.mesh == mesh);
-        let heard_after = digest_view.get_at(id.as_str(), now).is_some_and(|(d, unheard)| d.node.incarnation == m.incarnation && now.saturating_duration_since(m.at) > unheard);
+        let held = view.births().any(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation));
+        let heard_after = !m.is_spent_call() && digest_view.get_at(id.as_str(), now).is_some_and(|(d, unheard)| d.node.incarnation == m.incarnation && now.saturating_duration_since(m.at) > unheard);
         held && !heard_after
     });
     marks.clone()
 }
 
-/// Every marked birth the view holds, other than this admin itself, is watched `PendingReconnect`.
-pub(crate) fn watch_marked(watched: &mut std::collections::BTreeMap<String, crate::model::Node>, marks: &std::collections::HashMap<crate::model::NodeId, UnreachableMark>, view: &crate::topology::Topology, me: &crate::model::NodeId) {
+/// Every marked birth of `mesh` the view holds, other than this admin itself, is watched `PendingReconnect`.
+pub(crate) fn watch_marked(watched: &mut std::collections::BTreeMap<String, crate::model::Node>, marks: &std::collections::HashMap<crate::model::NodeId, UnreachableMark>, view: &crate::topology::Topology, mesh: &str, me: &crate::model::NodeId) {
     for (id, m) in marks {
-        if let Some(n) = view.births().find(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation) && &n.node_id != me) {
+        if let Some(n) = view.births().find(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation) && n.mesh == mesh && &n.node_id != me) {
             watched.entry(id.to_string()).or_insert_with(|| crate::model::Node { status: crate::model::NodeStatus::PendingReconnect, ..n.clone() });
         }
     }
@@ -399,13 +457,6 @@ pub trait TickleCalls: Send + Sync {
     /// ([`crate::node_investigation::leads_of`]), the peers the kick goes through first; never
     /// evidence of reachability. `Err` names why the index could not be read.
     async fn leads(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Result<Vec<crate::model::Node>, String>;
-    /// Whether `node`'s exact birth has left a command of the caller's unanswered past the staleness
-    /// floor (Q182, kept for the primary watch alone, Q335 B): an answer to the probe from such a birth
-    /// is not `reached`. A caller that carries no commands, every member tickle of the mesh-primary's
-    /// tick included, answers `false`: a member's birth is marked by a spent call alone (Q332).
-    fn command_unanswered(&self, _node: &crate::model::Node) -> bool {
-        false
-    }
 }
 
 /// The caller's Node RPC client at the default call budget (`docs/architecture/lifecycles/node-tickle.md`):
@@ -421,10 +472,6 @@ pub struct TickleClient {
     /// The caller's connections store, whose by-destination index names the leads (connections.md
     /// §3.1); `None`: no leads, the kick goes through the carriers alone.
     pub connections: Option<std::sync::Arc<dyn crate::storage::ConnectionsStorage>>,
-    /// The commands the caller sent: the birth that left one unanswered past the floor is not reached
-    /// by an answer (Q182). The primary watch's look alone carries them (Q335 B); `None`: a member
-    /// tickle, or a caller that sends none.
-    pub commands: Option<std::sync::Arc<crate::node_commands::CommandView>>,
 }
 
 #[async_trait::async_trait]
@@ -443,7 +490,7 @@ impl TickleCalls for TickleClient {
         let once = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, ..rdm_transport::Resend::default() }, ..rdm_transport::CallOptions::default() };
         // The investigation's own probe is never a spent call that marks the birth it investigates
         // (node-rpc.md §43): its end is the ladder's, on a client that tells no spent call.
-        let (out, _) = self.client.without_spent_calls().call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), probe, &once).await;
+        let (out, _) = self.client.without_call_ends().call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), probe, &once).await;
         ProbeEnd::of(out)
     }
 
@@ -451,17 +498,12 @@ impl TickleCalls for TickleClient {
         let route = rdm_transport::RouteChoice::ViaPeer { carrier: carrier.node_id.clone() };
         // The same probe, carried (node-tickle.md "Ladder"): one attempt, as the direct probe's.
         let once = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, ..rdm_transport::Resend::default() }, ..rdm_transport::CallOptions::default() };
-        let (out, _, _) = self.client.without_spent_calls().call_routed::<rdm_core::status::Status>(&node.node_id, &route, probe, &once).await;
+        let (out, _, _) = self.client.without_call_ends().call_routed::<rdm_core::status::Status>(&node.node_id, &route, probe, &once).await;
         ProbeEnd::of(out)
     }
 
     fn carriers(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Vec<crate::model::Node> {
         eligible_carriers(view, node, Some(&self.me_id)).cloned().collect()
-    }
-
-    fn command_unanswered(&self, node: &crate::model::Node) -> bool {
-        let (Some(commands), Some(incarnation)) = (&self.commands, &node.incarnation_id) else { return false };
-        commands.unanswered_since(&node.node_id, incarnation, rdm_transport::topology::staleness_floor(), std::time::Instant::now()).is_some()
     }
 
     async fn leads(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Result<Vec<crate::model::Node>, String> {
@@ -532,12 +574,8 @@ pub async fn tickle_with<C: TickleCalls + ?Sized>(node: &crate::model::Node, vie
     said(&span, &direct);
     if let ProbeEnd::Reply(answer) = &direct {
         if birth_answered(Some(answer), &node.node_id, &incarnation) {
-            if calls.command_unanswered(node) {
-                span.in_scope(|| tracing::info!("the birth answered the direct probe but left a command unanswered past the staleness floor: not reached (Q182)"));
-            } else {
-                span.in_scope(|| tracing::info!("the birth answered the direct probe: reached"));
-                return Ok(Tickle::Reached { answer: answer.clone(), carrier: None });
-            }
+            span.in_scope(|| tracing::info!("the birth answered the direct probe: reached"));
+            return Ok(Tickle::Reached { answer: answer.clone(), carrier: None });
         }
     }
     drop(span);
@@ -565,13 +603,9 @@ pub async fn tickle_with<C: TickleCalls + ?Sized>(node: &crate::model::Node, vie
     while let Some((i, carrier, end, span)) = running.next().await {
         if let ProbeEnd::Reply(answer) = &end {
             if birth_answered(Some(answer), node_id, &incarnation) {
-                if calls.command_unanswered(node) {
-                    span.in_scope(|| tracing::info!(carrier = %carrier, "the birth answered through the carrier but left a command unanswered past the staleness floor: not reached (Q182)"));
-                } else {
-                    span.in_scope(|| tracing::info!(carrier = %carrier, "the birth answered through the carrier: reached, the other probes cancelled"));
-                    // Dropping `running` cancels the probes still running (step 4).
-                    return Ok(Tickle::Reached { answer: answer.clone(), carrier: Some(carrier) });
-                }
+                span.in_scope(|| tracing::info!(carrier = %carrier, "the birth answered through the carrier: reached, the other probes cancelled"));
+                // Dropping `running` cancels the probes still running (step 4).
+                return Ok(Tickle::Reached { answer: answer.clone(), carrier: Some(carrier) });
             }
         }
         peers.push((i, PeerProbe { carrier, end }));

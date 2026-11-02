@@ -553,12 +553,12 @@ async fn start_booted(
     };
     // A call of either client whose attempts are spent is marked or reported at the primary above its
     // receiver (node-rpc.md §43; Q311): one slot for the process's clients.
-    let spent_calls = rdm_transport::SpentCallsSlot::default();
-    let client = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_delivery(delivery.clone()).with_spent_calls(spent_calls.clone())));
+    let call_ends = rdm_transport::CallEndsSlot::default();
+    let client = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_delivery(delivery.clone()).with_call_ends(call_ends.clone())));
     // The data plane of RDM standalone: the originate door's own client, whose dials are the
     // connections this node originates for traffic, each a Direct entry of its log.
-    let data_plane = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()).with_spent_calls(spent_calls.clone())));
-    let _ = spent_calls.set(Arc::new(crate::spent_calls::ReportToPrimary::new(resolver.clone(), &client, launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone())));
+    let data_plane = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()).with_call_ends(call_ends.clone())));
+    let _ = call_ends.set(Arc::new(crate::spent_calls::ReportToPrimary::new(resolver.clone(), &client, launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone())));
     // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy delete
     // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own

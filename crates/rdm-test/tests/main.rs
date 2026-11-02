@@ -124,6 +124,8 @@ mod restarted_member_rejoin;
 mod node_heard_again;
 #[path = "node/spent_call_investigation.rs"]
 mod spent_call_investigation;
+#[path = "node/primary_spent_call_report.rs"]
+mod primary_spent_call_report;
 mod resend;
 #[path = "node/node_recovery_backoff.rs"]
 mod node_recovery_backoff;

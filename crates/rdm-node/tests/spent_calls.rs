@@ -1,6 +1,7 @@
-//! `rdm_node::spent_calls`'s cells (i151.s2; node-rpc.md §43, Q311, Q322): a node's call whose
-//! attempts are spent is reported to the mesh-primary of its receiver's mesh as `ReportCallFailed`,
-//! and a report whose own attempts are spent is dropped by name, reporting nothing.
+//! `rdm_node::spent_calls`'s cells (i151.s2; node-rpc.md §43, Q311, Q322, Q338): a node's call whose
+//! attempts are spent is reported to the primary above its receiver as `ReportCallFailed` (its mesh's
+//! mesh-primary, or the fabric-primary for that mesh-primary), and a report whose own attempts are
+//! spent is dropped by name, reporting nothing.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
@@ -9,7 +10,7 @@ use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::status::{ReportedBirth, Status, StatusReply, StatusRequest};
 use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_node::spent_calls::{ReportEnd, ReportToPrimary, SpentCall};
-use rdm_transport::{CallFailedObserver, CallFailedReason, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, Resend, ResolvedNode, ServedBirth, ServerBuilder, SpentCallsSlot, TimeLimit};
+use rdm_transport::{CallEnd, CallEndObserver, CallEndsSlot, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, Resend, ResolvedNode, ServedBirth, ServerBuilder, TimeLimit};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,18 +27,22 @@ fn birth_at(ep: &iroh::Endpoint, name: &str) -> ResolvedNode {
     }
 }
 
-/// Every spent call this process's clients tell, then handed to the report.
+/// Every spent call this process's clients tell, and every birth that answered one, then handed to the
+/// report.
 struct Told {
     calls: Mutex<Vec<SpentCall>>,
+    answered: Mutex<Vec<NodeId>>,
     report: ReportToPrimary,
 }
 
-impl CallFailedObserver for Told {
-    fn call_failed(&self, receiver: Option<&ResolvedNode>, reason: CallFailedReason) {
-        if let Some(r) = receiver {
-            self.calls.lock().unwrap().push(SpentCall::of(r, &reason));
+impl CallEndObserver for Told {
+    fn call_ended(&self, receiver: Option<&ResolvedNode>, end: CallEnd) {
+        match (&end, receiver) {
+            (CallEnd::Spent(reason), Some(r)) => self.calls.lock().unwrap().push(SpentCall::of(r, reason)),
+            (CallEnd::Answered, Some(r)) => self.answered.lock().unwrap().push(r.node_id.clone()),
+            _ => {}
         }
-        self.report.call_failed(receiver, reason);
+        self.report.call_ended(receiver, end);
     }
 }
 
@@ -77,10 +82,10 @@ async fn a_nodes_spent_call_is_reported_to_its_mesh_primary_and_a_spent_report_i
     resolver.set_primary(Some("mesh1".into()), Some(primary.node_id.clone()));
     let me = (NodeId::mint(), IncarnationId::mint(), PathName::new("mesh1.rpc", "3").unwrap());
     let caller_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let slot = SpentCallsSlot::default();
-    let client = NodeRpcClient::new(caller_ep, resolver.clone()).with_spent_calls(slot.clone());
+    let slot = CallEndsSlot::default();
+    let client = NodeRpcClient::new(caller_ep, resolver.clone()).with_call_ends(slot.clone());
     let report = ReportToPrimary::new(resolver.clone(), &client, me.0.clone(), me.1.clone(), me.2.clone());
-    let told = Arc::new(Told { calls: Mutex::default(), report: report.clone() });
+    let told = Arc::new(Told { calls: Mutex::default(), answered: Mutex::default(), report: report.clone() });
     let _ = slot.set(told.clone());
 
     // One attempt, the caller's (Q315): spent at once.
@@ -113,27 +118,61 @@ async fn a_nodes_spent_call_is_reported_to_its_mesh_primary_and_a_spent_report_i
     }
     assert_eq!(told.calls.lock().unwrap().len(), before, "nothing reports a report");
     assert!(heard.try_recv().is_err(), "the mesh-primary that left the role heard nothing more");
+    // A call the mesh-primary's birth answers is told answered, and reports nothing.
+    let (heard_before, spent_before) = (told.answered.lock().unwrap().len(), told.calls.lock().unwrap().len());
+    let out = tokio::time::timeout(bound, client.call::<Status>(&NodeTarget::ExactNode(primary.node_id.clone()), &StatusRequest::GetFabric, &CallOptions::default())).await.expect("the call ends").0;
+    assert_eq!(out.name(), "Reply", "the mesh-primary answered");
+    assert_eq!(told.answered.lock().unwrap()[heard_before..], [primary.node_id.clone()], "an answered call is told once, naming the birth that answered");
+    assert_eq!(told.calls.lock().unwrap().len(), spent_before, "an answered call is no spent call");
 }
 
-/// CONTRACT (i151.s2; node-recovery.md step 2: an unheard mesh-primary is the fabric-primary's,
-/// found by gossip and the election): a spent call to the mesh-primary of the caller's mesh, or to the
-/// fabric-primary, sends no report: `NotSent`, naming why. Must NOT happen: a report to the birth the
-/// call could not reach.
+/// CONTRACT (i151.s2, Q338; node-investigation.md, Caller: "the fabric-primary for a mesh-primary";
+/// node-recovery.md step 3: the fabric-primary "has no primary above it"): a member's spent call to
+/// the mesh-primary of its own mesh is reported to the exact birth its view names the fabric-primary,
+/// naming the calling member and the mesh-primary; a spent call to the fabric-primary is reported to
+/// nobody (`NotSent`, naming why), and so is one to a mesh-primary while the view names no
+/// fabric-primary. Must NOT happen: a report to the birth the call could not reach, or any report of
+/// a spent call to the fabric-primary.
 // @feature: node-lifecycle
-#[tokio::test]
-async fn a_spent_call_to_a_primary_sends_no_report() {
-    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let mesh_primary = birth_at(&ep, "1");
-    let fabric_primary = ResolvedNode { mesh: "mesh0".into(), ..birth_at(&ep, "9") };
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_spent_call_to_a_mesh_primary_is_reported_to_the_fabric_primary_and_one_to_the_fabric_primary_to_nobody() {
+    // The fabric-primary, of mesh0: serves Status, keeps every request, answers `Applied`.
+    let fp_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let fabric_primary = ResolvedNode { mesh: "mesh0".into(), kind: rdm_core::NodeKind::NodeAdmin, name: PathName::new("mesh0.admin", "1").unwrap(), ..birth_at(&fp_ep, "9") };
+    let (heard_tx, mut heard) = tokio::sync::mpsc::unbounded_channel::<StatusRequest>();
+    let served = ServerBuilder::new()
+        .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
+            let heard_tx = heard_tx.clone();
+            async move {
+                let _ = heard_tx.send(req);
+                Ok(StatusReply::Applied)
+            }
+        })
+        .build(ServedBirth { node_id: fabric_primary.node_id.to_string(), incarnation: fabric_primary.incarnation.to_string() })
+        .unwrap();
+    let _router = Router::builder(fp_ep.clone()).accept(rdm_transport::ALPN, served).spawn();
+    // mesh1's mesh-primary: a birth whose key no process at its address holds.
+    let mesh_primary = ResolvedNode { kind: rdm_core::NodeKind::NodeAdmin, name: PathName::new("mesh1.admin", "1").unwrap(), endpoint_id: SecretKey::generate().public(), ..birth_at(&fp_ep, "1") };
     let resolver = Arc::new(LiveNodeResolver::default());
     resolver.apply(mesh_primary.clone(), None);
-    resolver.apply(fabric_primary.clone(), None);
     resolver.set_primary(Some("mesh1".into()), Some(mesh_primary.node_id.clone()));
-    resolver.set_primary(None, Some(fabric_primary.node_id.clone()));
+    let me = (NodeId::mint(), IncarnationId::mint(), PathName::new("mesh1.rpc", "3").unwrap());
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep.clone(), resolver.clone());
-    let report = ReportToPrimary::new(resolver, &client, NodeId::mint(), IncarnationId::mint(), PathName::new("mesh1.rpc", "3").unwrap());
-    for receiver in [mesh_primary, fabric_primary] {
-        let call = SpentCall { receiver: receiver.clone(), reason: "NotSent(Deadline)".into() };
-        assert!(matches!(report.send(&call).await, ReportEnd::NotSent(ref why) if why.contains(receiver.node_id.as_str())), "{}", receiver.node_id);
-    }
+    let report = ReportToPrimary::new(resolver.clone(), &client, me.0.clone(), me.1.clone(), me.2.clone());
+    let to_mesh_primary = SpentCall { receiver: mesh_primary.clone(), reason: "Indeterminate(ReplyDeadline)".into() };
+    assert!(matches!(report.send(&to_mesh_primary).await, ReportEnd::NotSent(ref why) if why.contains("no fabric-primary")), "no fabric-primary named: nobody to report to");
+    resolver.apply(fabric_primary.clone(), None);
+    resolver.set_primary(None, Some(fabric_primary.node_id.clone()));
+    let bound = Duration::from_secs(60);
+    assert_eq!(tokio::time::timeout(bound, report.send(&to_mesh_primary)).await.expect("the report ends"), ReportEnd::Answered(StatusReply::Applied), "the fabric-primary's answer ends the report");
+    let got = tokio::time::timeout(Duration::from_secs(30), heard.recv()).await.expect("the report reaches the fabric-primary").unwrap();
+    let StatusRequest::ReportCallFailed { sender, receiver, reason } = got else { panic!("a report of the spent call: {got:?}") };
+    assert_eq!(sender, ReportedBirth { node_id: me.0.clone(), incarnation: me.1.clone(), name: me.2.clone() }, "the calling member");
+    assert_eq!(receiver, ReportedBirth { node_id: mesh_primary.node_id.clone(), incarnation: mesh_primary.incarnation.clone(), name: mesh_primary.name.clone() }, "the exact mesh-primary");
+    assert_eq!(reason, "Indeterminate(ReplyDeadline)");
+    let to_fabric_primary = SpentCall { receiver: fabric_primary.clone(), reason: "NotSent(Deadline)".into() };
+    assert!(matches!(report.send(&to_fabric_primary).await, ReportEnd::NotSent(ref why) if why.contains(fabric_primary.node_id.as_str())), "nothing is above the fabric-primary");
+    assert!(heard.try_recv().is_err(), "the fabric-primary heard no report of itself");
+    ep.close().await;
 }

@@ -281,7 +281,6 @@ fn node_tickle_probes_direct_then_up_to_two_mesh_peers_via_forward_and_records_u
             me_id: admin.node_id.clone(),
             me: admin.node_id.to_string(),
             connections: None,
-            commands: None,
         };
 
         // 1. Peer 1 fails InnerNotSent while Peer 2 answers CurrentStopped -> Reached via mesh1.rpc.3.

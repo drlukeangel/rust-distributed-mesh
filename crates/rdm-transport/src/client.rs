@@ -190,21 +190,44 @@ impl CallFailedReason {
     }
 }
 
-/// What a node is told of its own calls that end with their attempts spent (fabric-node-hooks.md
-/// `on_call_failed`): the client reports the fact, once per spent call, and decides nothing. A
-/// carried call is the origin's, never the carrier's: it is not reported.
-pub trait CallFailedObserver: Send + Sync {
-    /// A call this client opened ended with its attempts spent, its outcome already its owner's:
-    /// `receiver` is the birth it was addressed to (none for a call that names no birth, or whose
-    /// receiver never resolved), `reason` its stored end.
-    fn call_failed(&self, receiver: Option<&ResolvedNode>, reason: CallFailedReason);
+/// How a call this client opened ended, as its [`CallEndObserver`] is told it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallEnd {
+    /// Its attempts are spent: its stored end (node-rpc.md §43).
+    Spent(CallFailedReason),
+    /// The birth it was addressed to answered it: a typed reply (node-recovery.md step 1, Q340: a
+    /// spent-call mark ends when the exact birth answers a call of the primary that holds it).
+    Answered,
 }
 
-/// Where a client tells a call whose attempts are spent so the primary above its receiver marks or is
-/// reported the birth (node-rpc.md §43; Q311): set once, when the process holds what it decides with,
-/// and shared by every clone of the client and every client handed the same slot. Told at the same
-/// point as the application's `on_call_failed` ([`NodeRpcClient::with_call_failed_observer`]).
-pub type SpentCallsSlot = Arc<std::sync::OnceLock<Arc<dyn CallFailedObserver>>>;
+impl CallEnd {
+    /// The end's name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Spent(r) => r.name(),
+            Self::Answered => "Answered",
+        }
+    }
+}
+
+/// What a node is told of how its own calls end (node-rpc.md §43; fabric-node-hooks.md
+/// `on_call_failed`): the client reports the fact, once per call, and decides nothing. A unary call is
+/// told when its attempts are spent or when its receiver answered it; a stream call when its attempts
+/// are spent. A carried call is the origin's, never the carrier's: it is not reported.
+pub trait CallEndObserver: Send + Sync {
+    /// A call this client opened ended `end`, its outcome already its owner's: `receiver` is the birth
+    /// it was addressed to (none for a call that names no birth, or whose receiver never resolved).
+    /// Told on the call's own task for every answered call: an observer does its `Answered` work at
+    /// once, without a task of its own.
+    fn call_ended(&self, receiver: Option<&ResolvedNode>, end: CallEnd);
+}
+
+/// Where a client tells how its calls end so the primary above a receiver marks or is reported a birth
+/// whose call's attempts are spent, and ends a spent-call mark on a birth that answered (node-rpc.md
+/// §43; Q311, Q340): set once, when the process holds what it decides with, and shared by every clone
+/// of the client and every client handed the same slot. A spent call is told at the same point as the
+/// application's `on_call_failed` ([`NodeRpcClient::with_call_failed_observer`]).
+pub type CallEndsSlot = Arc<std::sync::OnceLock<Arc<dyn CallEndObserver>>>;
 
 /// A connection this process's server accepted from a live node (connections.md section 10,
 /// R-CN1): a recovery trigger for this node's own direct dial toward that exact birth, never
@@ -224,13 +247,13 @@ pub struct NodeRpcClient {
     pool: Pool,
     /// The source-owned connections writer, when the process has one.
     observer: Option<Arc<dyn ConnectionObserver>>,
-    /// Told of each call this client opened that ends with its attempts spent, when the node
-    /// registered `on_call_failed`.
-    call_failed: Option<Arc<dyn CallFailedObserver>>,
-    /// Where a call of this client whose attempts are spent is marked or reported at the primary above
-    /// its receiver (node-rpc.md §43; Q311): empty for a client whose spent calls start nothing
-    /// ([`Self::without_spent_calls`]).
-    spent_calls: SpentCallsSlot,
+    /// Told of each call this client opened that ends with its attempts spent, and of no other end,
+    /// when the node registered `on_call_failed`.
+    call_failed: Option<Arc<dyn CallEndObserver>>,
+    /// Where how a call of this client ends is told, for the primary above its receiver (node-rpc.md
+    /// §43; Q311, Q340): empty for a client whose calls' ends start and end nothing
+    /// ([`Self::without_call_ends`]).
+    call_ends: CallEndsSlot,
     /// The system this process originates calls for (`rdm`, `rafka`); observability only.
     caller_system: Option<String>,
     /// Why this client opens no new connection now, while its source admits none
@@ -371,7 +394,7 @@ impl NodeRpcClient {
             pool: Pool::default(),
             observer: None,
             call_failed: None,
-            spent_calls: SpentCallsSlot::default(),
+            call_ends: CallEndsSlot::default(),
             caller_system: None,
             admission: crate::pool::Admission::default(),
             delivery: Delivery::new(crate::delivery::minted_birth()),
@@ -459,57 +482,57 @@ impl NodeRpcClient {
 
     /// Hand this client what its node is told of a call that ends with its attempts spent
     /// (fabric-node-hooks.md `on_call_failed`): each such call of this client is reported there once.
-    pub fn with_call_failed_observer(mut self, observer: Arc<dyn CallFailedObserver>) -> Self {
+    pub fn with_call_failed_observer(mut self, observer: Arc<dyn CallEndObserver>) -> Self {
         self.call_failed = Some(observer);
         self
     }
 
-    /// Report `out`, the end of a call whose attempts are spent, to the call-failed observer, once:
-    /// `NotSent` and `Indeterminate` only, and never for a carried call (the origin's, not this
-    /// node's).
-    pub(crate) fn tell_call_failed<R>(&self, opts: &CallOptions, receiver: Option<&ResolvedNode>, out: &RpcOutcome<R>) {
+    /// Tell how the call ended, once, never for a carried call (the origin's, not this node's):
+    /// `NotSent` and `Indeterminate` are spent, told to the call-ends slot and to `on_call_failed`; a
+    /// reply is `Answered`, told to the call-ends slot alone. Any other end is told nowhere.
+    pub(crate) fn tell_call_end<R>(&self, opts: &CallOptions, receiver: Option<&ResolvedNode>, out: &RpcOutcome<R>) {
         if opts.carried.is_some() {
             return;
         }
-        let reason = match out {
-            RpcOutcome::NotSent(n) => CallFailedReason::NotSent(n.reason().clone()),
-            RpcOutcome::Indeterminate(i) => CallFailedReason::Indeterminate(i.reason().clone()),
+        let end = match out {
+            RpcOutcome::NotSent(n) => CallEnd::Spent(CallFailedReason::NotSent(n.reason().clone())),
+            RpcOutcome::Indeterminate(i) => CallEnd::Spent(CallFailedReason::Indeterminate(i.reason().clone())),
+            RpcOutcome::Reply(_) => CallEnd::Answered,
             _ => return,
         };
-        // The primary above the receiver marks it or is reported it (node-rpc.md §43; Q311).
-        if let Some(spent) = self.spent_calls.get() {
-            spent.call_failed(receiver, reason.clone());
+        // The primary above the receiver marks it or is reported it, or ends its mark (node-rpc.md §43;
+        // Q311, Q340).
+        if let Some(ends) = self.call_ends.get() {
+            ends.call_ended(receiver, end.clone());
         }
-        if let Some(observer) = self.call_failed.as_ref() {
-            observer.call_failed(receiver, reason);
+        if let (CallEnd::Spent(_), Some(observer)) = (&end, self.call_failed.as_ref()) {
+            observer.call_ended(receiver, end);
         }
     }
 
-    /// Tell a call whose attempts are spent where `slot` tells it: a process whose clients share one
-    /// slot sets it once.
-    pub fn with_spent_calls(mut self, slot: SpentCallsSlot) -> Self {
-        self.spent_calls = slot;
+    /// Tell how a call ends where `slot` tells it: a process whose clients share one slot sets it once.
+    pub fn with_call_ends(mut self, slot: CallEndsSlot) -> Self {
+        self.call_ends = slot;
         self
     }
 
-    /// Where this client tells a call whose attempts are spent; set it once the process holds what it
-    /// decides with.
-    pub fn spent_calls(&self) -> &SpentCallsSlot {
-        &self.spent_calls
+    /// Where this client tells how a call ends; set it once the process holds what it decides with.
+    pub fn call_ends(&self) -> &CallEndsSlot {
+        &self.call_ends
     }
 
-    /// This client, its pool and delivery shared, whose spent calls start nothing at the primary
+    /// This client, its pool and delivery shared, whose calls' ends start and end nothing at the primary
     /// above their receiver: node investigation's own probes, which never mark the birth they
-    /// investigate (node-rpc.md §43).
-    pub fn without_spent_calls(&self) -> Self {
-        Self { spent_calls: SpentCallsSlot::default(), ..self.clone() }
+    /// investigate (node-rpc.md §43); the investigation ends a mark on its own answer.
+    pub fn without_call_ends(&self) -> Self {
+        Self { call_ends: CallEndsSlot::default(), ..self.clone() }
     }
 
-    /// [`Self::without_spent_calls`], telling no `on_call_failed` either: the client a
+    /// [`Self::without_call_ends`], telling no `on_call_failed` either: the client a
     /// `ReportCallFailed` is sent on, since nothing reports a report and RDM's own report is not an
     /// application's call (node-rpc.md §43).
     pub fn for_reports(&self) -> Self {
-        Self { call_failed: None, ..self.without_spent_calls() }
+        Self { call_failed: None, ..self.without_call_ends() }
     }
 
     /// Name the originating system every call of this client carries (`rdm`, `rafka`).
@@ -955,7 +978,7 @@ impl NodeRpcClient {
                     if spent >= allowed {
                         span.record("attempts", spent);
                         let out = PreCommit::begin(op).not_sent(r);
-                        span.in_scope(|| self.tell_call_failed(opts, None, &out));
+                        span.in_scope(|| self.tell_call_end(opts, None, &out));
                         return Err((out, None));
                     }
                     let mut changes = self.resolver.changes();
@@ -1186,8 +1209,8 @@ impl NodeRpcClient {
         span.record("attempts", owed.attempts.load(std::sync::atomic::Ordering::SeqCst));
         let evidence = owed.evidence.lock().unwrap().clone();
         owed.close(out.reply().is_none()).await;
-        if spent {
-            self.tell_call_failed(opts, owed.receiver.as_ref(), &out);
+        if spent || out.reply().is_some() {
+            self.tell_call_end(opts, owed.receiver.as_ref(), &out);
         }
         (out, Some(evidence))
     }

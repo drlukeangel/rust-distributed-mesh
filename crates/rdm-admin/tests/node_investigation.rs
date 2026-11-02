@@ -236,7 +236,6 @@ fn node_investigation_inspects_first_and_tickles_direct_then_through_its_leads_u
             me_id: admin.node_id.clone(),
             me: admin.node_id.to_string(),
             connections: Some(connections),
-            commands: None,
         };
 
         // Case A: the inspect answers running, then the lead carrier reaches the exact birth -> `Reached`.

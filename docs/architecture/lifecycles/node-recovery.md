@@ -41,9 +41,10 @@ doubling from the gossip interval to the staleness floor.
    unresolved), and when a call to it ends with its attempts spent: its own call, or one another
    caller reports with Status `ReportCallFailed` ([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes)).
    The mark is an observer mark: it never replaces a lifecycle state the node reported and
-   the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`), and it ends when a digest
-   of the exact birth arrives after it, when the birth answers its tickle, or when the view no longer
-   holds that birth. A birth heard again runs its `pre_node_ready` hook again before it is
+   the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`), a silence mark ends when a digest
+   of the exact birth arrives after it or when the birth answers its tickle; a spent-call mark ends only
+   when the exact birth answers, a call of this primary's or the investigation's tickle; either ends
+   when the view no longer holds that birth. A birth heard again runs its `pre_node_ready` hook again before it is
    ready ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
 2. **Investigation.** Only the mesh-primary acts. Half a floor after the mark it runs
    [node investigation](node-investigation.md) on the exact birth: the by-destination connections index, node.runtime.inspect (`exited` or `os-stopped` is the verdict, and no tickle is sent), node.tickle direct, the same tickle via up to two eligible live peers of the birth's mesh sent at once. Any answer from the exact birth ends the ladder and cancels the

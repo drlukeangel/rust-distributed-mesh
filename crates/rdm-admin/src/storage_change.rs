@@ -84,13 +84,11 @@ pub async fn command(client: &rdm_transport::NodeRpcClient, commands: &crate::no
         NodeCommandRequest::StorageBlock { build_id, change_id, .. } | NodeCommandRequest::StorageStep { build_id, change_id, .. } => (build_id, change_id),
         _ => return Err("the storage command function accepts only storage commands".into()),
     };
-    let tracked = commands.track(crate::node_commands::CommandKey {
+    let _tracked = commands.track(crate::node_commands::CommandKey {
         build_id: build_id.clone(), attempt: 0, operation: rdm_core::OperationId::new(command.op(), rdm_core::OperationSubject::Named(change_id.to_string())), 
         node_id: node_id.clone(), incarnation: command.subject().1.clone(),
     });
-    let result = command_reply(client, node_id, command).await;
-    if result.is_ok() { tracked.answered(); }
-    result
+    command_reply(client, node_id, command).await
 }
 
 async fn command_reply(client: &rdm_transport::NodeRpcClient, node_id: &NodeId, command: &NodeCommandRequest) -> Result<NodeCommandReply, String> {
