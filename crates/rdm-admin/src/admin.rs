@@ -103,10 +103,9 @@ mod tests {
 
     /// CONTRACT (node-recovery.md step 1: "Each node's pruner marks a member `PendingReconnect` once it is
     /// unheard past the staleness floor", step 2: "Half a floor after the mark it runs node
-    /// investigation"; node-investigation.md (Q182): "an owed command it leaves unanswered past the
-    /// staleness floor starts node investigation on its birth as silence does"; Q181): a node-admin
-    /// member of the mesh-primary's own mesh that is heard within the floor and leaves no command
-    /// unanswered is not silent: the mesh-primary's tick neither watches it, marks it nor lists it
+    /// investigation"; Q332: a spent call is the one clock that marks a birth; Q181): a node-admin
+    /// member of the mesh-primary's own mesh that is heard within the floor and no call to which was
+    /// spent is not silent: the mesh-primary's tick neither watches it, marks it nor lists it
     /// silent, and the primary watch does not investigate it. Must NOT happen: a live, heard node-admin
     /// tickled, investigated or replaced.
     #[test]
@@ -125,7 +124,7 @@ mod tests {
         let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
         let floor = rdm_transport::topology::staleness_floor();
         let mut watched = watched_births(&view, &me_id, "mesh1", &[]);
-        let marks = crate::offline::unanswered_marks(&crate::node_commands::CommandView::default(), &view, "mesh1", floor, now, now_ms);
+        let marks = crate::offline::held_marks(&crate::offline::UnreachableMarks::default(), &view, "mesh1", &digest_view, now);
         crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
         assert!(watched.is_empty() && marks.is_empty(), "a heard node-admin that answers its commands is not watched: {watched:?} {marks:?}");
         let silent = crate::offline::silent_set(view.members().filter(|n| n.node_id == member.node.node_id), &digest_view, now, now_ms, floor);
@@ -2577,49 +2576,6 @@ mod tests {
             assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), ladders, "at {} ms after the mark", at - first.at_ms);
         }
         ep.close().await;
-    }
-
-    /// CONTRACT (node-investigation.md, Q182): a member of the mesh that gossips but left a command
-    /// unanswered past the staleness floor is silent whatever it gossips: the tick watches it
-    /// `PendingReconnect` and lists it in the silent set, marked from the instant its command passed the
-    /// floor. Must NOT happen: a member whose commands were answered within the floor, or whose command
-    /// was left unanswered less than a floor ago, watched or listed silent; another mesh's member marked.
-    // @feature: node-lifecycle
-    #[test]
-    fn a_member_that_gossips_but_left_a_command_unanswered_past_the_floor_is_watched_silent() {
-        use MemberStatus::*;
-        let floor = std::time::Duration::from_millis(50);
-        let me = with_id(digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Ready), "200000000000");
-        let own = with_id(digest(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Ready), "300000000000");
-        let answered = with_id(digest(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Ready), "400000000000");
-        let peer = with_id(digest(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Ready), "500000000000");
-        let commands = crate::node_commands::CommandView::default();
-        let key = |d: &MeshDigest| crate::node_commands::CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() };
-        for d in [&own, &peer] {
-            let _ = commands.open(key(d));
-            commands.close_unanswered(&key(d));
-        }
-        let _ = commands.open(key(&answered));
-        commands.close_answered(&key(&answered));
-        std::thread::sleep(floor + std::time::Duration::from_millis(10));
-        // Every member gossips after its command was sent: none is unheard past the floor.
-        let digest_view = DigestView::default();
-        for d in [&me, &own, &answered, &peer] {
-            digest_view.record((*d).clone());
-        }
-        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
-        let (now, now_ms) = (std::time::Instant::now(), 5_000u64);
-        let marks = crate::offline::unanswered_marks(&commands, &view, "mesh1", floor, now, now_ms);
-        assert_eq!(marks.keys().cloned().collect::<Vec<_>>(), vec![own.node.node_id.clone()], "only this mesh's member that left a command unanswered");
-        let mut watched = watched_births(&view, &me.node.node_id, "mesh1", &[]);
-        assert!(watched.is_empty(), "it gossips: nothing is unheard past the floor");
-        crate::offline::watch_marked(&mut watched, &marks, &view, &me.node.node_id);
-        assert_eq!(watched.get(own.node.node_id.as_str()).map(|n| n.status), Some(NodeStatus::PendingReconnect), "silent whatever it gossips");
-        let silent: Vec<_> = crate::offline::silent_set(watched.values(), &digest_view, now, now_ms, floor).into_iter().map(|s| crate::offline::marked_from(s, &marks)).collect();
-        assert_eq!(silent.iter().map(|s| s.node_id.clone()).collect::<Vec<_>>(), vec![own.node.node_id.to_string()]);
-        let at = silent[0].marked_at_ms.expect("marked");
-        assert!(at <= now_ms && at + 100 >= now_ms, "marked from the instant the command passed the floor, a few ms before now: {at}");
-        assert!(crate::offline::unanswered_marks(&commands, &view, "mesh1", std::time::Duration::from_secs(30), now, now_ms).is_empty(), "a command unanswered less than a floor is no silence");
     }
 
     /// CONTRACT (node-recovery.md, Detection: "The mesh-primary's tick (every gossip interval) reads

@@ -280,6 +280,9 @@ impl CommandView {
     /// The instant the earliest command the exact birth left unanswered was sent, when that is a
     /// staleness `floor` or more before `now` (node-investigation.md, Q182); `None` when the birth
     /// has none, or none that old. Read from this admin's own record of its commands: no timer runs.
+    /// Its one reader is the primary watch (Q335 B): its plan's `command-unanswered` trigger
+    /// ([`crate::primary_watch::Looker::command_unanswered`]) and its look's tickle, whose
+    /// `TickleClient` alone carries the commands. A member is marked by a spent call alone (Q332).
     pub fn unanswered_since(&self, node_id: &NodeId, incarnation: &IncarnationId, floor: Duration, now: Instant) -> Option<Instant> {
         let since = *self.unanswered.lock().unwrap().get(&(node_id.clone(), incarnation.clone()))?;
         (now.saturating_duration_since(since) >= floor).then_some(since)

@@ -133,7 +133,8 @@ pub struct Looker {
     /// Its connections store: the by-destination index names the leads of a look (Q107 item 1).
     pub connections: Option<Arc<dyn crate::storage::ConnectionsStorage>>,
     /// The commands this admin sent: a birth that left one unanswered past the floor is investigated as
-    /// a silent one is, and is not reached by an answer (Q182); `None`: this admin sends none.
+    /// a silent one is, and is not reached by an answer (Q182, the primary watch alone: Q335 B); `None`:
+    /// this admin sends none.
     pub commands: Option<Arc<crate::node_commands::CommandView>>,
 }
 

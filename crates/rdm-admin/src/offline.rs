@@ -197,22 +197,6 @@ pub(crate) fn marked_from(mut s: SilentNode, marks: &std::collections::HashMap<c
     s
 }
 
-/// The births of `mesh` the view holds that have left a command of `commands` unanswered past the
-/// staleness `floor` (node-investigation.md, Q182), each marked as a silent birth is: from the instant
-/// the command passed the floor, on the local clock. A birth that keeps gossiping is marked all the
-/// same: it does not answer commands, so it is silent whatever it gossips.
-pub(crate) fn unanswered_marks(commands: &crate::node_commands::CommandView, view: &crate::topology::Topology, mesh: &str, floor: std::time::Duration, now: std::time::Instant, now_ms: u64) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
-    view.births()
-        .filter(|n| n.mesh == mesh)
-        .filter_map(|n| {
-            let incarnation = n.incarnation_id.clone()?;
-            let passed = commands.unanswered_since(&n.node_id, &incarnation, floor, now)? + floor;
-            let at_ms = now_ms.saturating_sub(now.saturating_duration_since(passed).as_millis() as u64);
-            Some((n.node_id.clone(), UnreachableMark { incarnation, at: passed, at_ms, reason: "command-unanswered" }))
-        })
-        .collect()
-}
-
 /// How many live peers the via-peer step asks (`docs/architecture/lifecycles/node-tickle.md` step 3).
 pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
@@ -416,7 +400,9 @@ pub trait TickleCalls: Send + Sync {
     /// evidence of reachability. `Err` names why the index could not be read.
     async fn leads(&self, view: &crate::topology::Topology, node: &crate::model::Node) -> Result<Vec<crate::model::Node>, String>;
     /// Whether `node`'s exact birth has left a command of the caller's unanswered past the staleness
-    /// floor (node-investigation.md, Q182): an answer to the probe from such a birth is not `reached`.
+    /// floor (Q182, kept for the primary watch alone, Q335 B): an answer to the probe from such a birth
+    /// is not `reached`. A caller that carries no commands, every member tickle of the mesh-primary's
+    /// tick included, answers `false`: a member's birth is marked by a spent call alone (Q332).
     fn command_unanswered(&self, _node: &crate::model::Node) -> bool {
         false
     }
@@ -436,7 +422,8 @@ pub struct TickleClient {
     /// §3.1); `None`: no leads, the kick goes through the carriers alone.
     pub connections: Option<std::sync::Arc<dyn crate::storage::ConnectionsStorage>>,
     /// The commands the caller sent: the birth that left one unanswered past the floor is not reached
-    /// by an answer (Q182); `None`: the caller sends none.
+    /// by an answer (Q182). The primary watch's look alone carries them (Q335 B); `None`: a member
+    /// tickle, or a caller that sends none.
     pub commands: Option<std::sync::Arc<crate::node_commands::CommandView>>,
 }
 

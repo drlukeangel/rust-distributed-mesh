@@ -533,15 +533,15 @@ mod tests {
         assert!(!asked.load(Ordering::SeqCst), "no ladder ran: the provider is not asked");
     }
 
-    /// A caller whose probes answer as `Rig`'s do and whose commands to the birth are unanswered past the
-    /// floor, or not.
-    struct Silent {
+    /// The primary watch's look (Q335 B): a caller whose probes answer as `Rig`'s do and that carries
+    /// its commands, `unanswered` naming whether the birth left one unanswered past the floor.
+    struct PrimaryWatchLook {
         rig: Rig,
         unanswered: bool,
     }
 
     #[async_trait::async_trait]
-    impl TickleCalls for Silent {
+    impl TickleCalls for PrimaryWatchLook {
         fn caller(&self) -> String {
             self.rig.caller()
         }
@@ -565,24 +565,45 @@ mod tests {
         }
     }
 
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:16
-    /// "A node that does not answer a command is silent, whatever it gossips (Q182): an owed command it
-    ///  leaves unanswered past the staleness floor starts node investigation on its birth as silence does,
-    ///  and a tickle answered by a birth that has left a command unanswered past the floor is not `reached`."
+    /// CONTRACT (Q332: a spent call is the one clock that marks a member's birth; Q335 B: the primary
+    /// watch keeps Q182's check): a member tickle, which carries no commands (the mesh-primary's tick
+    /// builds its `TickleClient` with `commands: None`), is reached by the answer of the exact birth, direct
+    /// or through a carrier, whatever that birth left unanswered; the primary watch's look at a node-admin
+    /// primary that left a command unanswered past the floor is not reached by its answer, and the
+    /// provider's inspection is the verdict, as on main. Must NOT happen: a member's answer held unreached
+    /// by an unanswered command, or the primary watch's look reached by such a primary's answer.
+    // @feature: node-investigation
     #[tokio::test]
-    async fn a_birth_with_a_command_unanswered_past_the_floor_is_not_reached_by_its_tickle_answer() {
+    async fn a_member_tickle_is_reached_by_its_answer_and_the_primary_watchs_look_at_a_primary_with_a_command_unanswered_is_not() {
         let (node, view) = world();
-        let silent = |unanswered: bool, direct: Option<StatusReply>, carried: Option<(NodeId, StatusReply)>| Silent { rig: Rig { direct, carried, asked: Mutex::default() }, unanswered };
-        for (direct, carried) in [(Some(current(&node)), None), (None, Some((of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id, current(&node))))] {
+        let carrier = of(&view, rdm_core::PathName::new("mesh1.rpc", "3").unwrap()).node_id;
+        // The member tickle's real client: it carries no commands, so no birth is unanswered to it.
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let member_client = crate::offline::TickleClient {
+            client: std::sync::Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), std::sync::Arc::new(rdm_transport::LiveNodeResolver::default()))),
+            me_id: of(&view, rdm_core::PathName::new("mesh1.admin", "1").unwrap()).node_id,
+            me: "mesh1.admin.1".into(),
+            connections: None,
+            commands: None,
+        };
+        assert!(!member_client.command_unanswered(&node), "a member tickle carries no commands");
+        let primary = Node { kind: rdm_core::NodeKind::NodeAdmin, is_primary: true, ..node.clone() };
+        for (direct, carried) in [(Some(current(&node)), None), (None, Some((carrier.clone(), current(&node))))] {
+            let member = Rig { direct: direct.clone(), carried: carried.clone(), asked: Mutex::default() };
+            assert!(!member.command_unanswered(&node), "a caller that carries no commands answers false");
             let asked = AtomicBool::new(false);
-            let found = investigate(&node, &view, &silent(true, direct.clone(), carried.clone()), provider_says(Finding::Running, &asked)).await;
-            assert_eq!(found, Finding::Running, "the answer of a birth that answers no command is not reached: the provider's verdict");
+            let found = investigate(&node, &view, &member, provider_says(Finding::Running, &asked)).await;
+            assert!(matches!(found, Finding::Reached { .. }), "a member is reached by its answer: {found:?}");
+            let asked = AtomicBool::new(false);
+            let look = PrimaryWatchLook { rig: Rig { direct: direct.clone(), carried: carried.clone(), asked: Mutex::default() }, unanswered: true };
+            let found = investigate(&primary, &view, &look, provider_says(Finding::Running, &asked)).await;
+            assert_eq!(found, Finding::Running, "the primary watch's look at a primary that left a command unanswered is not reached: the provider's verdict");
             assert!(asked.load(Ordering::SeqCst), "the provider is asked");
-            let asked = AtomicBool::new(false);
-            let found = investigate(&node, &view, &silent(false, direct, carried), provider_says(Finding::Running, &asked)).await;
-            assert!(matches!(found, Finding::Reached { .. }), "a birth with no command unanswered is reached by its answer: {found:?}");
-            assert!(asked.load(Ordering::SeqCst), "the provider is asked first (Q273)");
+            let look = PrimaryWatchLook { rig: Rig { direct, carried, asked: Mutex::default() }, unanswered: false };
+            let found = investigate(&primary, &view, &look, provider_says(Finding::Running, &AtomicBool::new(false))).await;
+            assert!(matches!(found, Finding::Reached { .. }), "a primary with every command answered is reached by its answer: {found:?}");
         }
+        ep.close().await;
     }
 
     // @feature: node-investigation

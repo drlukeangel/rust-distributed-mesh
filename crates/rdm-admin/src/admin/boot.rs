@@ -2605,9 +2605,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // The ladder's leads: the by-destination index of the store (Q107 item 1).
                                                     let ladder_connections =
                                                         connections_storage.clone();
-                                                    // The commands this admin sent: a member that left one unanswered past the
-                                                    // floor is silent whatever it gossips (Q182).
-                                                    let ladder_commands = commands.clone();
                                                     // The refused callers' atlas (Q207): a returned birth is decided from it.
                                                     let control_atlas = control.atlas.clone();
                                                     tasks.push(tokio::spawn(async move {
@@ -2647,15 +2644,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 watched.retain(|_, n| !(n.kind == NodeKind::NodeAdmin && n.incarnation_id.as_ref().is_some_and(|i| recovery.digest_view.unheard_since_replaced(&mesh, n.node_id.as_str(), i, read_at))));
                                                 // One reading of the clocks for the tick: each birth's mark is read from the view at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
-                                                // node-tickle.md step 1: a birth a command never reached for a reachability reason is
-                                                // PendingReconnect from that instant, so its ladder runs now.
-                                                let mut marks = crate::offline::held_marks(&records.unreachable, &view, &mesh, &recovery.digest_view, now);
-                                                // node-investigation.md (Q182): a member that left a command unanswered past the floor is
-                                                // silent whatever it gossips, marked from the instant the command passed the floor. The
-                                                // commands' own record decides, each tick: an answer ends the mark.
-                                                for (id, mark) in crate::offline::unanswered_marks(&ladder_commands, &view, &mesh, floor, now, now_ms) {
-                                                    marks.entry(id).or_insert(mark);
-                                                }
+                                                // node-tickle.md step 1: a birth a command never reached for a reachability reason, or
+                                                // a call to it whose attempts are spent (the one clock, Q332), is PendingReconnect from
+                                                // that instant, so its ladder runs half a floor after the mark.
+                                                let marks = crate::offline::held_marks(&records.unreachable, &view, &mesh, &recovery.digest_view, now);
                                                 crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
                                                 // The topology decides who is tickled (Luke, Q87): a mesh-primary's view comes from the
                                                 // fabric-primary and is current, so a member it holds ready there is not
@@ -2697,7 +2689,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             // RPC client, runs no ladder, by name.
                                                             let (client, node, view) = (client.clone(), watched.get(&id).cloned(), ladder_view.clone());
                                                             let (me_id, me, connections) = (me_id.clone(), me_id.to_string(), Some(ladder_connections.clone()));
-                                                            let commands = Some(ladder_commands.clone());
                                                             let inspector = runner.clone();
                                                             async move {
                                                                 use crate::offline::Ladder;
@@ -2710,7 +2701,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                     return Ladder::Gone(crate::node_investigation::Finding::from(inspected).name().to_string());
                                                                 }
                                                                 let Some(client) = client else { return Ladder::Tickled(Err("this admin has no Node RPC client".to_string())) };
-                                                                Ladder::Tickled(crate::offline::tickle(&node, &view, &crate::offline::TickleClient { client, me_id, me, connections, commands }).await)
+                                                                Ladder::Tickled(crate::offline::tickle(&node, &view, &crate::offline::TickleClient {
+                                                                    client,
+                                                                    me_id,
+                                                                    me,
+                                                                    connections,
+                                                                    // A member tickle carries no commands: a member is marked by a spent
+                                                                    // call alone, and its answer reaches it (Q332; Q335 B).
+                                                                    commands: None,
+                                                                }).await)
                                                             }
                                                         },
                                                         |id| {
