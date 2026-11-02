@@ -184,7 +184,7 @@ fn node_replace_refuses_held_name_until_predecessor_renamed_or_deleted_and_takes
             .unwrap()
             .expect("retained .old row stands");
         assert_eq!((retained_old.node_id.clone(), retained_old.inherited_by.clone()), (pred1_id.clone(), Some(succ1_id.clone())));
-        assert_eq!(store.name_claim(&name1).await.unwrap(), Some(succ1_id.clone()), "a current-pair lookup selects the successor's ID");
+        assert_eq!(store.node_at(&name1).await.unwrap().map(|r| r.node_id), Some(succ1_id.clone()), "a current-pair lookup selects the successor's ID");
 
         // 4. A repeated cutover finds the successor's own claim and writes nothing: its snapshot is the
         //    first claim's, never re-taken, and a later node or caller update in its own property record

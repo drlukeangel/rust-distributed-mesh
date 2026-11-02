@@ -1802,23 +1802,16 @@ pub async fn deleted_in_process(
     Ok(left_manifest)
 }
 
-/// Release the fabric's name on `storage` (`FabricStorage::release_name`) and record the
-/// `fabric.delete:<fabric_id>` `Complete` receipt on `builds` (lifecycles/fabric-delete.md step 3:
-/// "The fabric-primary, still alive, releases the fabric name and reports `fabric.deleted`").
+/// Record the `fabric.delete:<fabric_id>` `Complete` receipt on `builds` (lifecycles/fabric-delete.md
+/// step 3: the fabric-primary, still alive, reports `fabric.deleted`).
 pub async fn complete_fabric_delete(
     builds: &dyn BuildStateAdapter,
-    storage: &dyn crate::fabric_storage::FabricStorage,
     build_id: &BuildId,
     attempt: u32,
     fabric_id: &rdm_core::FabricId,
     executor: &str,
 ) -> Result<(), String> {
     let operation = rdm_core::OperationId::new("fabric.delete", rdm_core::OperationSubject::Fabric(fabric_id.clone()));
-    if let Some(identity) = storage.fabric().await.map_err(|e| format!("{operation:?}: fabric.storage could not read the fabric identity: {e}"))?.map(|r| r.identity()) {
-        if identity.fabric_id == *fabric_id {
-            crate::fabric_storage::release_name(&*storage, &identity).await.map_err(|e| format!("{operation:?}: fabric.storage could not release the fabric name {}: {e}", identity.name))?;
-        }
-    }
     builds
         .append_step_receipt(&BuildStepReceipt {
             mesh: None,

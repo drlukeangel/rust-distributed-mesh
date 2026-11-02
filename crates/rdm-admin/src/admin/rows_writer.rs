@@ -256,7 +256,6 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, ca
         moment = "claim",
         outcome = tracing::field::Empty,
         holder = tracing::field::Empty,
-        over = tracing::field::Empty,
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
@@ -279,11 +278,8 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, ca
     }
     .await;
     match &claimed {
-        Ok(Ok(crate::storage::MeshClaim::Written { over })) => {
+        Ok(Ok(crate::storage::MeshClaim::Written)) => {
             span.record("outcome", "row-written");
-            if let Some(over) = over {
-                span.record("over", tracing::field::display(over));
-            }
         }
         Ok(Ok(crate::storage::MeshClaim::Held)) => {
             span.record("outcome", "row-held-by-mesh");
@@ -298,7 +294,7 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, ca
             span.record("outcome", "row-refused").record("detail", e.as_str());
         }
     }
-    span.in_scope(|| tracing::info!("mesh.create: the mesh's name is claimed at its key; nothing else of the mesh is written until the claim wins"));
+    span.in_scope(|| tracing::info!("mesh.create: the mesh's name is checked against the records and its row written; nothing else of the mesh is written until it is"));
     claimed
 }
 

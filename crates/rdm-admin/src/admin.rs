@@ -621,14 +621,8 @@ mod tests {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.put_node(row).await
         }
-        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.0.name_claim(name).await
-        }
-        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
-            self.0.claim_node_name(name, node_id).await
-        }
-        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.release_node_name(name, node_id).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.node_at(name).await
         }
     }
 
@@ -673,14 +667,8 @@ mod tests {
             self.acknowledged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
-        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.inner.name_claim(name).await
-        }
-        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
-            self.inner.claim_node_name(name, node_id).await
-        }
-        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.release_node_name(name, node_id).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_at(name).await
         }
     }
 
@@ -958,7 +946,7 @@ mod tests {
         let records = Records::default();
         let holder = MeshId::mint();
         let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false, states: Default::default() };
-        assert_eq!(crate::storage::claim_mesh(&meshes, None, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written { over: None })));
+        assert_eq!(crate::storage::claim_mesh(&meshes, None, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written)));
         // The ids the two operations carry, minted when each mesh entered the accepted topology.
         let (carried, mesh3_carried) = (MeshId::mint(), MeshId::mint());
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-claim");
@@ -1233,12 +1221,6 @@ mod tests {
         async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: "mesh-records".into(), reason: "the disk did not answer".into() })
         }
-        async fn claim_mesh_name(&self, name: &str, _: &crate::model::MeshId) -> Result<Result<(), crate::model::MeshId>, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: format!("mesh-names/{name}.json"), reason: "the disk did not answer".into() })
-        }
-        async fn release_mesh_name(&self, name: &str, _: &crate::model::MeshId) -> Result<(), crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: format!("mesh-names/{name}.json"), reason: "the disk did not answer".into() })
-        }
         async fn take_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<crate::mesh_claims::Taken, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
         }
@@ -1474,14 +1456,8 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_node(row).await
         }
-        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.0.name_claim(name).await
-        }
-        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
-            self.0.claim_node_name(name, node_id).await
-        }
-        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.release_node_name(name, node_id).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.node_at(name).await
         }
     }
 
@@ -1524,14 +1500,8 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.inner.name_claim(name).await
-        }
-        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
-            self.inner.claim_node_name(name, node_id).await
-        }
-        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.release_node_name(name, node_id).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_at(name).await
         }
     }
 
@@ -3930,14 +3900,8 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.inner.name_claim(name).await
-        }
-        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
-            self.inner.claim_node_name(name, node_id).await
-        }
-        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.release_node_name(name, node_id).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_at(name).await
         }
     }
 
@@ -4446,14 +4410,8 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.inner.name_claim(name).await
-        }
-        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
-            self.inner.claim_node_name(name, node_id).await
-        }
-        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.release_node_name(name, node_id).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_at(name).await
         }
     }
 

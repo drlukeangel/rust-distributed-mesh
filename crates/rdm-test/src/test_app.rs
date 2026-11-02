@@ -129,9 +129,6 @@ impl rdm_node::storage_copy::ProviderLines for ListRefused {
     async fn remove_claim(&self, claim: &rdm_node::storage_copy::Claim) -> Result<bool, rdm_node::storage_error::StorageError> {
         self.inner.remove_claim(claim).await
     }
-    async fn claim(&self, kind: rdm_node::storage_copy::ClaimKind, name: &str) -> Result<Option<Vec<u8>>, rdm_node::storage_error::StorageError> {
-        self.inner.claim(kind, name).await
-    }
 }
 
 /// The topology storage providers the testkit's node-admin registers (storage.md §2): RDM's `file`

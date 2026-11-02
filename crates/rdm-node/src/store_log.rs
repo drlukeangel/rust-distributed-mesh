@@ -1130,36 +1130,25 @@ fn describe(op: &Op) -> String {
 
 // ---------------------------------------------------------------- the locks (R-SR5)
 
-/// Which locks of a store root: the attempt in flight on a mesh name, or the claim of a name.
+/// Which locks of a store root: the attempt in flight on a mesh name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockKind {
     /// `locks/in-flight/<mesh name>`: the one attempt in flight on that mesh name.
     InFlight,
-    /// `locks/name/<name>`: the claim of a mesh name or a node path and name, the lock being the claim.
-    Name,
-    /// `locks/commit/<build_id>.<change_id>`: a storage change's `commit` record (storage.md §2 step 4),
-    /// inserted on the new provider; the insert is the switch.
-    Commit,
 }
 
 impl LockKind {
     fn dir(self) -> &'static str {
         match self {
             Self::InFlight => "in-flight",
-            Self::Name => "name",
-            Self::Commit => "commit",
         }
     }
 }
 
 /// The locks of a store root (R-SR5), `<root>/locks/`: each a create-exclusive file whose content
 /// names its claimant, because an append cannot refuse. A take is the filesystem's own atomic link of
-/// a finished file to the lock's path, which fails when the lock stands. Every removal of a name lock
-/// runs under the name's reclamation mutex, an `flock(LOCK_EX)` on `locks/name/<name>.reclaim` (a file
-/// that is only ever an anchor and is never removed, dropped by the kernel if its holder dies), and
-/// re-reads the lock inside it, removing it only while its content still names the claimant the remover
-/// expects. The persistent claim is the file because it outlives processes; the transient exclusion is
-/// the flock because it must not.
+/// a finished file to the lock's path, which fails when the lock stands; a removal re-reads the lock
+/// and removes it only while its content still names the claimant the remover expects.
 #[derive(Debug, Clone)]
 pub struct StoreLocks {
     dir: PathBuf,
@@ -1188,7 +1177,7 @@ impl StoreLocks {
     }
 
     fn checked(kind: LockKind, name: &str, dir: &Path) -> Result<(), StorageError> {
-        if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) || name.ends_with(".reclaim") {
+        if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) {
             return Err(StorageError::Io { file: dir.join(kind.dir()).display().to_string(), reason: format!("{name:?} is not one path segment, so it names no lock") });
         }
         Ok(())
@@ -1216,7 +1205,7 @@ impl StoreLocks {
     }
 
     /// Every lock `kind` that stands, by name, with its content, in name order: a temp file of a take
-    /// and a name's reclamation anchor are not locks.
+    /// is not a lock.
     pub async fn held(&self, kind: LockKind) -> Result<Vec<(String, Vec<u8>)>, StorageError> {
         let dir = self.dir.join(kind.dir());
         blocking_io(move || {
@@ -1229,7 +1218,7 @@ impl StoreLocks {
             for entry in entries {
                 let entry = entry.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with('.') || name.ends_with(".reclaim") {
+                if name.starts_with('.') {
                     continue;
                 }
                 if let Some(content) = read_lock(&entry.path())? {
@@ -1249,41 +1238,19 @@ impl StoreLocks {
     }
 
     /// Remove the lock `kind` of `name` while `names` says its content still names the claimant the
-    /// remover expects, re-read under the name's reclamation mutex for a name lock (R-SR5). Answers
-    /// whether it was removed; a lock naming another claimant is left as it is.
+    /// remover expects (R-SR5). Answers whether it was removed; a lock naming another claimant is left
+    /// as it is.
     pub async fn release(&self, kind: LockKind, name: &str, names: impl Fn(&[u8]) -> bool + Send + 'static) -> Result<bool, StorageError> {
-        self.release_checked(kind, name, move |bytes| Ok(names(bytes))).await
-    }
-
-    /// The same reclamation operation with validation errors propagated. Invalid or mismatched
-    /// claim content is never removed and never reported as a successful release.
-    pub async fn release_checked(&self, kind: LockKind, name: &str, names: impl Fn(&[u8]) -> Result<bool, StorageError> + Send + 'static) -> Result<bool, StorageError> {
         Self::checked(kind, name, &self.dir)?;
         let path = self.path(kind, name);
-        let anchor = (kind == LockKind::Name).then(|| self.dir.join(kind.dir()).join(format!("{name}.reclaim")));
         blocking_io(move || {
             let dir = path.parent().expect("a lock's directory").to_path_buf();
-            let _mutex = match &anchor {
-                Some(a) => {
-                    std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
-                    Some(NameMutex::lock(a)?)
-                }
-                None => None,
-            };
             match read_lock(&path)? {
-                Some(held) => if names(&held)? { crate::record_store::remove_file(&dir, &path) } else { Ok(false) },
+                Some(held) => if names(&held) { crate::record_store::remove_file(&dir, &path) } else { Ok(false) },
                 _ => Ok(false),
             }
         })
         .await
-    }
-
-    /// The reclamation mutex of `name`, held by this process until the guard drops (a cell's hold of
-    /// it, as another process's reclaimer inside it).
-    #[cfg(test)]
-    pub(crate) fn hold_mutex(&self, name: &str) -> NameMutex {
-        std::fs::create_dir_all(self.dir.join(LockKind::Name.dir())).unwrap();
-        NameMutex::lock(&self.dir.join(LockKind::Name.dir()).join(format!("{name}.reclaim"))).unwrap()
     }
 }
 
@@ -1293,27 +1260,6 @@ fn read_lock(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
-    }
-}
-
-/// A name's reclamation mutex: `flock(LOCK_EX)` on its anchor file, held until dropped (or until its
-/// holder dies: the kernel drops it).
-pub(crate) struct NameMutex(#[allow(dead_code)] std::fs::File);
-
-impl NameMutex {
-    fn lock(anchor: &Path) -> Result<Self, StorageError> {
-        use std::os::fd::AsRawFd as _;
-        let io = |e: std::io::Error| StorageError::Io { file: anchor.display().to_string(), reason: format!("the name's reclamation mutex: {e}") };
-        let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(anchor).map_err(io)?;
-        loop {
-            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0 {
-                return Ok(Self(f));
-            }
-            let e = std::io::Error::last_os_error();
-            if e.kind() != std::io::ErrorKind::Interrupted {
-                return Err(io(e));
-            }
-        }
     }
 }
 

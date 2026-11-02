@@ -458,12 +458,12 @@ impl AdminRunner {
         Ok(Some((found, record)))
     }
 
-    /// Resolve a not-yet-pinned location through its current composite name claim, then use ID.
+    /// Resolve a not-yet-pinned location through the live record standing there, then use ID.
     async fn current_node_at(&self, location: &PathName) -> Result<Option<Node>, String> {
-        let Some(node_id) = self.nodes_storage.name_claim(location).await
-            .map_err(|error| format!("path {:?}, name {:?}: name claim could not be read: {error}", location.path, location.name))? else { return Ok(None) };
+        let Some(node_id) = self.nodes_storage.node_at(location).await
+            .map_err(|error| format!("path {:?}, name {:?}: the record there could not be read: {error}", location.path, location.name))?.map(|r| r.node_id) else { return Ok(None) };
         if let Some(node) = self.topology.read().await.own(&node_id).cloned() { return Ok(Some(node)); }
-        // The claim names `location` for this node: the cached runtime's record at its current pair.
+        // The record at `location` is this node's: the cached runtime's record at its current pair.
         Ok(self.handles.lock().unwrap().get(&node_id).map(|(node, _)| Node { name: location.clone(), ..node.clone() }))
     }
 
@@ -1466,7 +1466,7 @@ impl AdminRunner {
                 self.delete_node(build_id, attempt, node, birth, operation).instrument(span).await.map(|_| ())
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.delete_mesh(build_id, attempt, mesh, mesh_id).await,
-            BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, &*self.fabric_storage, build_id, attempt, fabric_id, &self.template.executor()).await.map_err(Into::into),
+            BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, build_id, attempt, fabric_id, &self.template.executor()).await.map_err(Into::into),
             BuildOperation::Step { step, birth, entry, rename_intent, .. } => return self.step(build_id, lane, attempt, step, birth.as_ref(), entry.as_ref(), operation, rename_intent).await,
             BuildOperation::UpdateConfig { node, .. } | BuildOperation::CreateTags { node, .. } | BuildOperation::DeleteTags { node, .. } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, operation = ?op.key());
@@ -2062,7 +2062,6 @@ mod tests {
         row.birth_mut(&from, &created);
         row.allocated = Some(crate::storage::Allocation { predecessor: None, build_id: crate::build::BuildId::mint(), operation: rdm_core::OperationId::new("node.create", rdm_core::OperationSubject::Location(created.clone())), incarnation: from.clone(), deployment_id: deployment.clone() });
         rows.put_node(&row).await.unwrap();
-        rows.claim_node_name(&created.renamed().unwrap(), &node_id).await.unwrap().unwrap();
         (root, rows, created, node_id, from)
     }
 
@@ -2449,11 +2448,12 @@ mod tests {
         let new_handle = handle();
         runner.handles.lock().unwrap().insert(predecessor.node_id.clone(), (predecessor.clone(), old_handle.clone()));
         runner.handles.lock().unwrap().insert(successor.node_id.clone(), (successor.clone(), new_handle.clone()));
-        assert!(runner.current_node_at(&location).await.unwrap().is_none(), "cached locations alone are not a claim");
-        runner.nodes_storage.claim_node_name(&location, &successor.node_id).await.unwrap().unwrap();
+        assert!(runner.current_node_at(&location).await.unwrap().is_none(), "cached locations alone are not a record");
+        let record = |n: &Node, at: &PathName| crate::storage::NodeRow::new(at.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
+        runner.nodes_storage.put_node(&record(&successor, &location)).await.unwrap();
         assert_eq!(runner.current_node_at(&location).await.unwrap().unwrap().node_id, successor.node_id);
         let renamed = location.renamed().unwrap();
-        runner.nodes_storage.claim_node_name(&renamed, &predecessor.node_id).await.unwrap().unwrap();
+        runner.nodes_storage.put_node(&record(&predecessor, &renamed)).await.unwrap();
         predecessor.name = renamed.clone();
         assert_eq!(runner.current_node_at(&renamed).await.unwrap().unwrap().node_id, predecessor.node_id);
         assert_eq!(runner.handle_for(&predecessor).await.unwrap().1, old_handle);

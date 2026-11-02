@@ -77,12 +77,12 @@ fn spans_of(dir: &std::path::Path, pid: u32) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// The fabric directories under `store`: every directory but the fabrics' name index beside them (R-FN1).
+/// The fabric directories under `store`.
 fn fabric_dirs(store: &std::path::Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(store)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir() && e.file_name() != rdm_admin::store_root::FABRIC_NAMES)
+        .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
     v.sort();
@@ -699,9 +699,7 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     let root = Prepared::recovering("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id");
     let fabric_root = root.store.join(root.fabric_id.to_string());
     let meshes = fabric_root.join(rdm_admin::store_root::MESHES_FILE);
-    let name_claim = fabric_root.join("locks").join("name").join("mesh1");
     let held = rdm_admin::store_log::read_record(&meshes, "mesh-record", Some(&root.mesh_id.to_string())).expect("mesh1's record");
-    let claim: serde_json::Value = serde_json::from_slice(&std::fs::read(&name_claim).unwrap()).unwrap();
     let own_id = root.mesh_id.to_string();
     // A start against the rows `write` puts on the root: refused by name at its storage step, before it
     // writes its own row again.
@@ -722,9 +720,8 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
         }
     };
     let recreated_id = rdm_admin::model::MeshId::mint().to_string();
-    // mesh1 created again: its record at its own id, and the name's claim naming it.
-    append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "dead": false}));
-    let (err, pid) = refused(&|| std::fs::write(&name_claim, serde_json::to_vec(&serde_json::json!({"format": claim["format"], "record": {"name": "mesh1", "mesh_id": recreated_id}, "by": claim["by"]})).unwrap()).unwrap(), "mesh1 created again");
+    // mesh1 created again: its record at its own id, live under the name.
+    let (err, pid) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "dead": false})), "mesh1 created again");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
     let spans = spans_of(&root.dir, pid);
     let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused start left no storage step: {spans:?}"));
@@ -732,7 +729,8 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(root.fabric_id.to_string().as_str()), "{opened}");
     assert_eq!(opened["attributes"]["mesh_id"].as_str(), Some(own_id.as_str()), "the storage step names the mesh id the own row holds: {opened}");
     assert!(opened["attributes"]["error"].as_str().is_some_and(|e| e.contains(&recreated_id)), "the storage step names the refusal and the mesh created again: {opened}");
-    std::fs::write(&name_claim, serde_json::to_vec(&claim).unwrap()).unwrap();
+    // The mesh created again is removed in turn: its record Dead.
+    append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "dead": true, "states": ["Dead"]}));
     let (err, _) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &own_id, serde_json::json!({"mesh_id": own_id, "name": "mesh1", "dead": true, "states": ["Dead"]})), "mesh1 Dead");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains("Dead"), "the refusal names this admin's mesh as Dead: {err}");
 }
@@ -894,8 +892,6 @@ fn an_adoption_launch_whose_store_root_holds_no_such_fabric_is_refused_by_name_n
     assert!(!status.success(), "{status:?} {err}");
     assert!(err.contains("refusing to start") && err.contains(&fabric_id) && err.contains(&d.store.display().to_string()) && err.contains("holds no Fabric record"), "the refusal names the fabric id and the store root: {err}");
     assert!(rdm_admin::store_log::read_record(&d.store.join(&fabric_id).join(rdm_admin::store_root::FABRIC_FILE), "fabric-record", None).is_none(), "a Fabric record was written for the given id");
-    let claims: Vec<std::path::PathBuf> = std::fs::read_dir(d.store.join(rdm_admin::store_root::FABRIC_NAMES)).map(|e| e.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-    assert!(claims.is_empty(), "the fabric's name was claimed: {claims:?}");
 }
 
 /// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "It is given the fabric root and CA, from its

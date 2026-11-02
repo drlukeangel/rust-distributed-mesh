@@ -295,26 +295,6 @@ pub struct StorageChange {
     pub build_id: crate::BuildId,
 }
 
-/// The `commit` record of a storage change (storage.md §2 step 4, "Switch"): inserted for
-/// `(build_id, change_id)` on the new provider with the store's insert-and-fail primitive. The insert
-/// is the switch; whoever resumes the change learns the decision only by reading it: found is
-/// switched, none on a provider that answers is not switched, and a provider that does not answer is
-/// neither.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageCommit {
-    /// The storage change's Build.
-    pub build_id: crate::BuildId,
-    /// The change.
-    pub change_id: crate::ChangeId,
-}
-
-impl StorageCommit {
-    /// The name the record is inserted under: `<build_id>.<change_id>`.
-    pub fn name(&self) -> String {
-        format!("{}.{}", self.build_id, self.change_id)
-    }
-}
-
 /// What `Create` asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildSubmit {

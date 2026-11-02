@@ -35,7 +35,7 @@ pub const NODE_INVESTIGATED: &str = "rdm.node.investigated";
 /// `rdm.storage.started`: the fabric-primary started a storage change. `data` {change_id, topology_storage_provider}.
 pub const STORAGE_STARTED: &str = "rdm.storage.started";
 /// `rdm.storage.committed`: the fabric-primary switched a storage change to its new provider. `data`
-/// {change_id, topology_storage_provider}.
+/// {build_id, change_id, topology_storage_provider}.
 pub const STORAGE_COMMITTED: &str = "rdm.storage.committed";
 /// `rdm.storage.ended`: the fabric-primary ended a storage change. `data` {change_id, topology_storage_provider, state}.
 pub const STORAGE_ENDED: &str = "rdm.storage.ended";
@@ -304,17 +304,23 @@ impl Event {
 
     /// `rdm.storage.started` {change_id, topology_storage_provider}.
     pub fn storage_started(source: &EventSource, time_ms: u64, change_id: &ChangeId, topology_storage_provider: &str) -> Self {
-        Self::new(source, time_ms, STORAGE_STARTED, None, object(StorageData { change_id, topology_storage_provider, state: None }))
+        Self::new(source, time_ms, STORAGE_STARTED, None, object(StorageData { build_id: None, change_id, topology_storage_provider, state: None }))
     }
 
-    /// `rdm.storage.committed` {change_id, topology_storage_provider}.
-    pub fn storage_committed(source: &EventSource, time_ms: u64, change_id: &ChangeId, topology_storage_provider: &str) -> Self {
-        Self::new(source, time_ms, STORAGE_COMMITTED, None, object(StorageData { change_id, topology_storage_provider, state: None }))
+    /// `rdm.storage.committed` {build_id, change_id, topology_storage_provider}: the change's commit,
+    /// appended to the new provider's events store (storage.md §2 step 3).
+    pub fn storage_committed(source: &EventSource, time_ms: u64, build_id: &BuildId, change_id: &ChangeId, topology_storage_provider: &str) -> Self {
+        Self::new(source, time_ms, STORAGE_COMMITTED, None, object(StorageData { build_id: Some(build_id), change_id, topology_storage_provider, state: None }))
+    }
+
+    /// Whether this is the `rdm.storage.committed` event of `(build_id, change_id)`.
+    pub fn commits(&self, build_id: &BuildId, change_id: &ChangeId) -> bool {
+        self.r#type == STORAGE_COMMITTED && self.build_id().as_ref() == Some(build_id) && self.data.get("change_id").and_then(|v| v.as_str()) == Some(change_id.as_str())
     }
 
     /// `rdm.storage.ended` {change_id, topology_storage_provider, state}.
     pub fn storage_ended(source: &EventSource, time_ms: u64, change_id: &ChangeId, topology_storage_provider: &str, state: &StepState) -> Self {
-        Self::new(source, time_ms, STORAGE_ENDED, None, object(StorageData { change_id, topology_storage_provider, state: Some(state) }))
+        Self::new(source, time_ms, STORAGE_ENDED, None, object(StorageData { build_id: None, change_id, topology_storage_provider, state: Some(state) }))
     }
 
     /// The Build the event is of: its `data.build_id`.
@@ -326,6 +332,8 @@ impl Event {
 /// The `data` of the storage change's three events.
 #[derive(Serialize)]
 struct StorageData<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_id: Option<&'a BuildId>,
     change_id: &'a ChangeId,
     topology_storage_provider: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]

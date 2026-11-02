@@ -1,7 +1,7 @@
 //! The copy of a storage change (storage.md §2, "Changing it", step 3): "The fabric-primary, the one
 //! reader of every store, appends every line of every store on the old provider to the new one in
-//! source order, dead births' and deleted nodes' records included, and every name claim and in-flight
-//! row with its exact claimant. A copy resumed after a lost answer recognises the lines already there
+//! source order, dead births' and deleted nodes' records included, and every in-flight row with its
+//! exact claimant. A copy resumed after a lost answer recognises the lines already there
 //! and appends none twice; a new provider holding lines the old one does not is refused by name, and
 //! nothing switches."
 //!
@@ -22,7 +22,7 @@ use crate::storage_error::StorageError;
 use crate::store_log::{Line, LockKind, LockTaken, Op, StoreLocks, StoreLog};
 use async_trait::async_trait;
 use rdm_core::{BuildId, ChangeId};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The span of a copy: the change, both providers, the source position verified and the lines copied
 /// (i149 plan, "OTLP span-assertion bar").
@@ -81,29 +81,17 @@ impl std::fmt::Display for Store {
     }
 }
 
-/// Which claim: the fabric's claim of its name, the claim of a mesh name or a node path and name, or a
-/// mesh's in-flight row.
+/// Which claim: a mesh's in-flight row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClaimKind {
-    /// The fabric's claim of its name (R-FN1).
-    FabricName,
-    /// The claim of a mesh name or a node path and name.
-    Name,
     /// The one attempt in flight on a mesh.
     InFlight,
-    /// A storage change's `commit` record for `(build_id, change_id)` (storage.md §2 step 4), named
-    /// [`rdm_core::build::StorageCommit::name`]: inserted on the new provider by the switch, read by
-    /// whoever resumes the change. Not a claim a copy carries: [`ProviderLines::claims`] lists none.
-    Commit,
 }
 
 impl std::fmt::Display for ClaimKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::FabricName => "fabric name claim",
-            Self::Name => "name claim",
             Self::InFlight => "in-flight row",
-            Self::Commit => "commit record",
         })
     }
 }
@@ -113,7 +101,7 @@ impl std::fmt::Display for ClaimKind {
 pub struct Claim {
     /// Which claim.
     pub kind: ClaimKind,
-    /// The name claimed: the fabric's, a mesh's or a node's name, or the mesh an in-flight row holds.
+    /// The mesh an in-flight row holds.
     pub name: String,
     /// The claim as written, byte for byte.
     pub content: Vec<u8>,
@@ -136,18 +124,13 @@ pub trait ProviderLines: Send + Sync {
     async fn lines(&self, store: Store) -> Result<Vec<Line>, StorageError>;
     /// Append `line` to `store` as its writer wrote it, its op kept.
     async fn append_line(&self, store: Store, line: &Line) -> Result<(), StorageError>;
-    /// Every claim that stands, the fabric's claim of its name included.
+    /// Every claim that stands.
     async fn claims(&self) -> Result<Vec<Claim>, StorageError>;
     /// Insert `claim` as written: `Won` when this insert wrote it, else `Held` with the standing content.
     async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError>;
     /// Let go of `claim` while it stands as written: a claim the new provider holds as the fabric left
     /// it, in place of which the old provider's is taken. `Ok(false)`: nothing as written stood.
     async fn remove_claim(&self, claim: &Claim) -> Result<bool, StorageError>;
-    /// The content of the claim `kind` of `name`, `None` when it does not stand: how a storage change's
-    /// `commit` record is read (storage.md §2 step 4).
-    async fn claim(&self, kind: ClaimKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        Ok(self.claims().await?.into_iter().find(|c| c.kind == kind && c.name == name).map(|c| c.content))
-    }
 }
 
 /// The change a copy is a step of, and the registered names of its two providers.
@@ -300,13 +283,10 @@ async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn Pr
 }
 
 /// RDM's file provider's lines and claims for one fabric, on the store dir it was registered at: the
-/// store files and the `locks/` of its root (`<store_dir>/<fabric_id>/`), and the fabric's claim
-/// of its name in the fabrics' name index beside the roots (`<store_dir>/fabrics/`).
+/// store files and the `locks/` of its root (`<store_dir>/<fabric_id>/`).
 pub struct FileProviderLines {
     stores: Vec<(Store, StoreLog)>,
     locks: StoreLocks,
-    names: PathBuf,
-    fabric_id: crate::model::FabricId,
 }
 
 impl FileProviderLines {
@@ -322,22 +302,12 @@ impl FileProviderLines {
             stores.push((store, StoreLog::open_for(provider, &root.dir().join(store.file()), crate::store_log::Formats::any()).await?));
         }
         let copier = crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &crate::model::IncarnationId::mint());
-        Ok(Self { stores, locks: StoreLocks::at(root.dir(), &copier), names: store_dir.join(crate::store_root::FABRIC_NAMES), fabric_id: fabric_id.clone() })
+        Ok(Self { stores, locks: StoreLocks::at(root.dir(), &copier) })
     }
 
     fn log(&self, store: Store) -> &StoreLog {
         &self.stores.iter().find(|(s, _)| *s == store).expect("every store is opened").1
     }
-
-    fn name_path(&self, name: &str) -> PathBuf {
-        self.names.join(format!("{name}.json"))
-    }
-}
-
-/// The fabric a claim of a fabric's name names: its record's `fabric_id`.
-fn claimed_fabric(path: &Path, content: &[u8]) -> Result<Option<String>, StorageError> {
-    let v: serde_json::Value = serde_json::from_slice(content).map_err(|e| StorageError::Unrecognised { file: path.display().to_string(), reason: format!("a fabric name claim that does not parse: {e}") })?;
-    Ok(v["record"]["fabric_id"].as_str().map(str::to_string))
 }
 
 #[async_trait]
@@ -351,85 +321,18 @@ impl ProviderLines for FileProviderLines {
     }
 
     async fn claims(&self) -> Result<Vec<Claim>, StorageError> {
-        let mut claims = Vec::new();
-        let (names, fabric) = (self.names.clone(), self.fabric_id.to_string());
-        claims.extend(
-            crate::blocking::blocking_io(move || -> Result<Vec<Claim>, StorageError> {
-                let entries = match std::fs::read_dir(&names) {
-                    Ok(e) => e,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-                    Err(e) => return Err(StorageError::Io { file: names.display().to_string(), reason: e.to_string() }),
-                };
-                let mut out = Vec::new();
-                for entry in entries {
-                    let entry = entry.map_err(|e| StorageError::Io { file: names.display().to_string(), reason: e.to_string() })?;
-                    let file = entry.file_name().to_string_lossy().into_owned();
-                    let Some(name) = file.strip_suffix(".json").filter(|_| !file.starts_with('.')) else { continue };
-                    let content = std::fs::read(entry.path()).map_err(|e| StorageError::Io { file: entry.path().display().to_string(), reason: e.to_string() })?;
-                    if claimed_fabric(&entry.path(), &content)?.as_deref() == Some(fabric.as_str()) {
-                        out.push(Claim { kind: ClaimKind::FabricName, name: name.to_string(), content });
-                    }
-                }
-                Ok(out)
-            })
-            .await?,
-        );
-        for (kind, lock) in [(ClaimKind::Name, LockKind::Name), (ClaimKind::InFlight, LockKind::InFlight)] {
-            claims.extend(self.locks.held(lock).await?.into_iter().map(|(name, content)| Claim { kind, name, content }));
-        }
-        claims.sort();
-        Ok(claims)
-    }
-
-    async fn claim(&self, kind: ClaimKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        let lock = match kind {
-            ClaimKind::Name => LockKind::Name,
-            ClaimKind::InFlight => LockKind::InFlight,
-            ClaimKind::Commit => LockKind::Commit,
-            ClaimKind::FabricName => return Ok(self.claims().await?.into_iter().find(|c| c.kind == kind && c.name == name).map(|c| c.content)),
-        };
-        self.locks.read(lock, name).await
+        Ok(self.locks.held(LockKind::InFlight).await?.into_iter().map(|(name, content)| Claim { kind: ClaimKind::InFlight, name, content }).collect())
     }
 
     async fn remove_claim(&self, claim: &Claim) -> Result<bool, StorageError> {
-        let lock = match claim.kind {
-            ClaimKind::Name => LockKind::Name,
-            ClaimKind::InFlight => LockKind::InFlight,
-            ClaimKind::Commit => LockKind::Commit,
-            ClaimKind::FabricName => {
-                let (dir, path, content) = (self.names.clone(), self.name_path(&claim.name), claim.content.clone());
-                return crate::blocking::blocking_io(move || match std::fs::read(&path) {
-                    Ok(held) if held == content => crate::record_store::remove_file(&dir, &path),
-                    Ok(_) => Ok(false),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                    Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
-                })
-                .await;
-            }
-        };
+        let ClaimKind::InFlight = claim.kind;
         let content = claim.content.clone();
-        self.locks.release(lock, &claim.name, move |held| held == content.as_slice()).await
+        self.locks.release(LockKind::InFlight, &claim.name, move |held| held == content.as_slice()).await
     }
 
     async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError> {
-        let lock = match claim.kind {
-            ClaimKind::Name => LockKind::Name,
-            ClaimKind::InFlight => LockKind::InFlight,
-            ClaimKind::Commit => LockKind::Commit,
-            ClaimKind::FabricName => {
-                let (dir, path, content) = (self.names.clone(), self.name_path(&claim.name), claim.content.clone());
-                let tmp = self.names.join(format!(".{}.storage-copy-{}.json.tmp", claim.name, std::process::id()));
-                return crate::blocking::blocking_io(move || {
-                    std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
-                    if crate::record_store::insert_file(&dir, &tmp, &path, &content)? {
-                        return Ok(ClaimTaken::Won);
-                    }
-                    std::fs::read(&path).map(ClaimTaken::Held).map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })
-                })
-                .await;
-            }
-        };
-        Ok(match self.locks.take(lock, &claim.name, &claim.content).await? {
+        let ClaimKind::InFlight = claim.kind;
+        Ok(match self.locks.take(LockKind::InFlight, &claim.name, &claim.content).await? {
             LockTaken::Won => ClaimTaken::Won,
             LockTaken::Held(content) => ClaimTaken::Held(content),
         })

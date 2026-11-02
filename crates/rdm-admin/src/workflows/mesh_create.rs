@@ -760,7 +760,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-            assert_eq!(claim_res, crate::storage::MeshClaim::Written { over: None });
+            assert_eq!(claim_res, crate::storage::MeshClaim::Written);
 
             let _ = router.shutdown().await;
             fp_ep.close().await;

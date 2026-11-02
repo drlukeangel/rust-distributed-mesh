@@ -389,16 +389,9 @@ async fn lone_birth_storage_deleted(cfg: &AdminConfig, providers: &crate::storag
     if others > 0 {
         return Ok(false);
     }
-    let step = tracing::info_span!(parent: boot, "rdm.node_admin.fabric.delete.via-lone-birth", node_path = %own.name.path, node_name = %own.name.name, inherited_node_id = %own.node_id, fabric_id = %own.fabric_id, data_dir = %cfg.data_dir.display(), name_released = tracing::field::Empty, outcome = tracing::field::Empty);
-    // The deleted fabric releases its name (R-FN1: "a deleted fabric releases it"), then its storage goes.
+    let step = tracing::info_span!(parent: boot, "rdm.node_admin.fabric.delete.via-lone-birth", node_path = %own.name.path, node_name = %own.name.name, inherited_node_id = %own.node_id, fabric_id = %own.fabric_id, data_dir = %cfg.data_dir.display(), outcome = tracing::field::Empty);
+    // The fabric's storage goes.
     let deleted = async {
-        let fabric = handle.fabric();
-        if let Some(record) = fabric.fabric().await.map_err(|e| unreadable(&e))? {
-            let identity = crate::fabric_storage::FabricIdentity { fabric_id: record.fabric_id.clone(), name: record.name.clone() };
-            let released = crate::fabric_storage::release_name(&*fabric, &identity).await.map_err(|e| format!("the name {} of Fabric {} could not be released: {e}", record.name, record.fabric_id))?;
-            tracing::Span::current().record("name_released", released);
-        }
-        drop(fabric);
         drop(handle);
         storage.delete_fabric(&cfg.data_dir, &own.fabric_id).await
     }

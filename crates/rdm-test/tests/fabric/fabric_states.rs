@@ -385,15 +385,14 @@ async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follo
 /// node-identity-and-state.md §2.7, The write: "it writes each create and update at once"; R14 item 9).
 ///
 /// Day 0: its one node, the fabric-primary mesh1.admin.1 (mesh1's primary too), up and ready, the fabric's
-/// store root holds every row Day 0 wrote: the Fabric row, the fabric's name claim (R-FN1) beside the
-/// per-fabric roots, mesh1's Mesh row and name claim, mesh1.admin.1's Node record with its name claim (its
+/// store root holds every row Day 0 wrote: the Fabric row, mesh1's Mesh row, mesh1.admin.1's Node record (its
 /// declared states its own Ready alone: the Day-0 root joins nobody, Q97) and the Day-0 Build's
 /// committed facts (Q61); no connections row, since it originated no data-plane connection (connections.md
 /// "The data plane is the connections log", R-CR6).
 ///
 /// After the first ready a growth Build adds mesh2 (its node-admin and an rpc node) and an rpc
-/// node to mesh1, and each of its writers writes straight to the store: mesh2's primary its Mesh record and
-/// name claim, mesh2.rpc.1 the connection it originates to mesh1.rpc.1. `fabric/` has one writer, the
+/// node to mesh1, and each of its writers writes straight to the store: mesh2's primary its Mesh record,
+/// mesh2.rpc.1 the connection it originates to mesh1.rpc.1. `fabric/` has one writer, the
 /// fabric-primary (R14 item 2); the Fabric row carries no pointer to the newest Build (R-BI3): the growth
 /// Build is written once to the builds store after the Day-0 Build and mesh2's primary reads it as the
 /// current Build. The growth is a resize, which puts the fabric back to pending (states.md, Resize and
@@ -432,17 +431,14 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
         assert_eq!(declared, json!(want), "{name}'s record holds the state its ready recorded within 30 s: {record}");
-        assert!(before.iter().any(|r| *r == format!("locks/name/{}", location.physical_index_key())), "{name}'s name claim stands on the root: {before:#?}");
     }
     assert!(holds(&before, "fabric.jsonl#fabric-record/"), "the Fabric row stands on the root: {before:#?}");
-    assert!(before.iter().any(|r| r == "locks/name/mesh1"), "mesh1's name claim stands on the root: {before:#?}");
+    assert!(!before.iter().any(|r| r.starts_with("locks/name/")), "no name is a lock on the root: {before:#?}");
     assert_eq!(before.iter().filter(|r| r.starts_with("meshes.jsonl#mesh-record/")).count(), 1, "mesh1's record stands on the root: {before:#?}");
     assert!(holds(&before, "builds.jsonl#build-record/"), "Q61: the Day-0 Build's committed facts stand on the root: {before:#?}");
     assert!(!holds(&before, "connections.jsonl#"), "the Day-0 root originated no data-plane connection, so no connections row stands on the root: {before:#?}");
-    // R-FN1: the fabric's claim of its name sits beside the per-fabric roots, at `<store_dir>/fabrics/fabric1`.
-    let name_claim = root.parent().expect("the store root sits under the store_dir").join(rdm_admin::store_root::FABRIC_NAMES).join("fabric1.json");
-    let claimed: Value = serde_json::from_slice(&std::fs::read(&name_claim).unwrap_or_else(|e| panic!("the fabric's name claim stands at {}: {e}", name_claim.display()))).unwrap();
-    assert_eq!(claimed["record"]["fabric_id"].as_str(), root.file_name().and_then(|n| n.to_str()), "the name claim names this fabric: {claimed}");
+    // build.md §5.3: nothing beside the per-fabric roots holds the fabric's name.
+    assert!(!root.parent().expect("the store root sits under the store_dir").join("fabrics").exists(), "no fabric name index stands beside the roots");
     let after = rows_on(&root);
     estate.artifact("rows-after-ready.json", &json!(after));
     // Under fabric/ the fabric-primary holds nothing: the Fabric record is fabric.jsonl's, the Build journal
@@ -506,9 +502,7 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     }
     let later = rows_on(&root);
     estate.artifact("rows-after-growth.json", &json!(later));
-    for mesh in ["mesh1", "mesh2"] {
-        assert!(later.iter().any(|r| *r == format!("locks/name/{mesh}")), "{mesh}'s primary's Mesh name claim stands on the root: {later:#?}");
-    }
+    assert!(!later.iter().any(|r| r.starts_with("locks/name/")), "no mesh's name is a lock on the root: {later:#?}");
     assert_eq!(later.iter().filter(|r| r.starts_with("meshes.jsonl#mesh-record/")).count(), 2, "each mesh's record stands on the root: {later:#?}");
     assert!(connection_written(), "mesh2.rpc.1 wrote the connection it originated straight to the store: {later:#?}");
     for node in later_nodes.iter().filter(|n| n.node_id != source.node_id) {

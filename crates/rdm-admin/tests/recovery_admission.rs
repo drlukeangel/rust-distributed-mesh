@@ -9,7 +9,6 @@ use rdm_admin::build_state::{AttemptOutcome, AttemptReason, BuildAttemptClaim, B
 use rdm_admin::control_plane::{ControlPlane, Recovery, Refusal};
 use rdm_admin::model::*;
 use rdm_admin::storage::MeshStorage as _;
-use rdm_admin::storage::NodesStorage as _;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
@@ -1168,11 +1167,10 @@ async fn a_recovery_opened_by_a_deleted_birth_is_refused_by_name_and_writes_noth
     let deleted = cp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
     assert!(matches!(&deleted, Err(Refusal::Conflict(why)) if why.contains("deleted birth") && why.contains(me_id.as_str())), "a birth whose own row is Deleted opens nothing, refused by name: {deleted:?}");
 
-    // Its own row reads live, but a new birth's claim holds its path.name: it was re-created there.
+    // Its own row reads live, but a new birth's live record holds its path.name: it was re-created there.
     let successor = NodeId::mint();
     rows.put_node(&NodeRow::new(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, me_id.clone(), NodeStatus::Ready)).await.unwrap();
     rows.put_node(&NodeRow::new(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, successor.clone(), NodeStatus::Pending)).await.unwrap();
-    rows.claim_node_name(&me, &successor).await.unwrap().unwrap();
     let replaced = cp.open_recovery("fabric-recovery", path.clone(), node_id.clone(), birth.clone()).await;
     assert!(matches!(&replaced, Err(Refusal::Conflict(why)) if why.contains("deleted birth") && why.contains(successor.as_str())), "a birth whose path.name another node's live claim holds opens nothing, refused by name: {replaced:?}");
 
@@ -1183,9 +1181,7 @@ async fn a_recovery_opened_by_a_deleted_birth_is_refused_by_name_and_writes_noth
     assert_eq!((refusals[0].1.get("node_path").map(String::as_str), refusals[0].1.get("node_name").map(String::as_str), refusals[0].1.get("node_id").map(String::as_str)), (Some("mesh1.admin"), Some("1"), Some(me_id.as_str())), "{:?}", refusals[0].1);
 
     // The live birth: its own row live and its name its own.
-    rows.release_node_name(&me, &successor).await.unwrap();
     rows.put_node(&NodeRow::new(me.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, successor.clone(), NodeStatus::Deleted)).await.unwrap();
-    rows.claim_node_name(&me, &me_id).await.unwrap().unwrap();
     let live = cp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
     assert!(matches!(&live, Ok(Recovery::Opened(o)) if o.mesh.as_deref() == Some("mesh1")), "the live birth opens its member's recovery: {live:?}");
     for (trace_id, attrs) in refusals {

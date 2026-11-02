@@ -1984,10 +1984,8 @@ impl StatusDoor {
         if !crate::node_rows::released_its_name(&own) {
             return None;
         }
-        if let Some(by) = storage.name_claim(&own.name).await.ok().flatten().filter(|by| by != node_id) {
-            if storage.node(&by).await.ok().flatten().is_some_and(|row| row.name == own.name && !crate::node_rows::released_its_name(&row)) {
-                return Some(("new-node", by.to_string()));
-            }
+        if let Some(by) = storage.nodes(&own.mesh).await.ok().into_iter().flatten().find(|r| r.name == own.name && r.node_id != *node_id && !crate::node_rows::released_its_name(r)) {
+            return Some(("new-node", by.node_id.to_string()));
         }
         Some(("node-deleted", String::new()))
     }
@@ -3603,14 +3601,8 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             self.inner.put_node(row).await
         }
-        async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
-            self.inner.name_claim(name).await
-        }
-        async fn claim_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
-            self.inner.claim_node_name(name, node_id).await
-        }
-        async fn release_node_name(&self, name: &crate::model::PathName, node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.release_node_name(name, node_id).await
+        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.node_at(name).await
         }
     }
 
@@ -4459,7 +4451,7 @@ mod tests {
         let declare = StatusRequest::DeclareNodeState { node_id: current.node_id.clone(), incarnation: current.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         assert_eq!(door.apply(Some(current.clone()), &declare).await, R::Applied);
         use crate::storage::NodesStorage as _;
-        assert_eq!(status.name_claim(&current.name).await.unwrap(), Some(current.node_id.clone()), "the current birth holds the (path, name)'s claim");
+        assert_eq!(status.node_at(&current.name).await.unwrap().map(|r| r.node_id), Some(current.node_id.clone()), "the current birth's record holds the (path, name)");
         // This admin's view still holds the predecessor's digest (its deletion never applied here), and
         // holds nothing of the current birth yet.
         let digest_view = rdm_transport::topology::DigestView::default();

@@ -150,11 +150,8 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             NodeRow::new(deleted_name.clone(), "mesh1", NodeKind::RpcNode, deleted_id.clone(), NodeStatus::Deleted);
         deleted_row.birth_mut(&deleted_inc, &deleted_name);
         nodes_storage.put_node(&admin_row).await.unwrap();
-        nodes_storage.claim_node_name(&admin_name, &admin_id).await.unwrap().unwrap();
         nodes_storage.put_node(&rpc_row).await.unwrap();
-        nodes_storage.claim_node_name(&rpc_name, &rpc_id).await.unwrap().unwrap();
         nodes_storage.put_node(&deleted_row).await.unwrap();
-        nodes_storage.claim_node_name(&deleted_name, &deleted_id).await.unwrap().unwrap();
         // What fabric.atlas.get reads (query.md §1): each row's lifecycle record at its node id, written by
         // mesh1's mesh-primary, mesh1's Mesh record, and the nodes store bound on the config door.
         let meshes_storage = Arc::new(MemoryMeshStorage::default());

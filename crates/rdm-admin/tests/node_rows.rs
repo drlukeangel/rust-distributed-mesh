@@ -496,53 +496,6 @@ fn a_take_over_on_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_on
     assert_eq!(outcome("mesh1.rpc", "1"), vec!["row-held-by-node"], "{spans:#?}");
 }
 
-/// CONTRACT (proposal node-properties-own-commands.md §2.1 Claim and move: "a row whose
-/// `renamed_from` key still holds the same node id has a pending release, and the writer releases it
-/// ... It runs wherever a writer meets the row: ... a mesh-primary's rebuild from its mesh's rows after
-/// a role change (R13)"; §2.4: "The writer that wrote the put may be gone; the row carries everything
-/// the next one needs"; §7: "the writer lost between the put and the release: a successor
-/// mesh-primary's rebuild finds the row's `renamed_from` still held by the same node id and releases
-/// it"): a lost writer's rename of `mesh1.rpc.1` to `mesh1.rpc.9` put the row at `mesh1.rpc.9` carrying
-/// `renamed_from: mesh1.rpc.1` and never released `mesh1.rpc.1`. An admin taking mesh1's role, whose
-/// view still lists the node at `mesh1.rpc.1`, rebuilds: it reads the node's row through the id index
-/// at `mesh1.rpc.9`, releases `mesh1.rpc.1`, and writes no row at the view's name. One
-/// `rdm.node_admin.name.update.via-pending-release` span says `released` with `moment=rebuild`;
-/// the rebuild's `via-node-row` span for the node says `row-held-by-node`. What must NOT happen: the old
-/// key left held by the node, or a row put back at `mesh1.rpc.1`.
-#[test]
-fn a_take_over_rebuild_finishes_a_lost_writers_pending_release() {
-    let cap = capture();
-    let (old, new) = cap.run(async {
-        let storage = Arc::new(MemoryNodesStorage::default());
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let records = Records::default();
-        let before = view();
-        let topology = Arc::new(RwLock::new(before.clone()));
-        records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
-        let rpc1 = before.nodes.iter().find(|n| n.name == rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).cloned().unwrap();
-        let to: PathName = rdm_core::PathName::new("mesh1.rpc", "9").unwrap();
-        // The lost writer's two writes: the row at its old key, then the put at the new key; no release.
-        storage.write_record(&NodeRow { replacement_from: None, kind: rpc1.kind, mesh: rpc1.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
-        storage.write_record(&NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: to.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: Some(rpc1.name.clone()), inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
-        install(&records, &topology, |t| {
-            for n in t.nodes.iter_mut() {
-                n.is_primary = n.name == rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-            }
-        })
-        .await;
-        (storage.record_at(&rpc1.name).await.unwrap(), storage.record_at(&to).await.unwrap())
-    });
-    assert_eq!(old, None, "the rebuild released the old key the lost writer left held");
-    assert_eq!(new.map(|r| r.renamed_from), Some(Some(rdm_core::PathName::new("mesh1.rpc", "1").unwrap())), "the row at the new key stands as written");
-    let releases = cap.spans_named("rdm.node_admin.name.update.via-pending-release");
-    let seen: Vec<_> = releases.iter().map(|s| (s["attributes"]["from_path"].as_str().unwrap_or("").to_string(), s["attributes"]["from_name"].as_str().unwrap_or("").to_string(), s["attributes"]["moment"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
-    assert_eq!(seen, vec![("mesh1.rpc".to_string(), "1".to_string(), "rebuild".to_string(), "released".to_string())], "{releases:#?}");
-    let rows = cap.spans_named("rdm.node_admin.node.create.via-node-row");
-    let outcome = |path: &str, name: &str| rows.iter().filter(|s| location_matches(&s["attributes"], "subject", path, name)).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
-    assert_eq!(outcome("mesh1.rpc", "1"), vec!["row-held-by-node"], "{rows:#?}");
-    println!("trace {}: rdm.node_admin.name.update.via-pending-release from=mesh1.rpc.1 to=mesh1.rpc.9 moment=rebuild outcome=released", releases[0]["trace_id"].as_str().unwrap_or(""));
-}
-
 type Rebuilt = (BTreeMap<PathName, Option<NodeRow>>, Option<NodeStatus>, NodeId, NodeId, NodeId, NodeId, String);
 
 /// The rebuild cell's story: P's writes, then N's role taken over one shared root.
@@ -599,9 +552,11 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         };
         records.install_projected(&topology, || after.clone()).await;
         let mut rows = BTreeMap::new();
-        for name in [PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh1.rpc", "2-old").unwrap(), PathName::new("mesh1.rpc", "3").unwrap()] {
+        for name in [PathName::new("mesh1.rpc", "1").unwrap(), PathName::new("mesh1.rpc", "2").unwrap(), PathName::new("mesh1.rpc", "3").unwrap()] {
             rows.insert(name.clone(), n_store.record_at(&name).await.unwrap());
         }
+        // A Deleted record frees its pair: the renamed predecessor's row is read by its id.
+        rows.insert(PathName::new("mesh1.rpc", "2-old").unwrap(), n_store.node(&old_pred).await.unwrap());
         let view_status = topology.read().await.node(&rpc1.name).map(|n| n.status);
         let _ = std::fs::remove_dir_all(&d);
         (rows, view_status, succ, fresh_id, old_pred, deleted_pred, trace_id)
@@ -1740,7 +1695,7 @@ fn a_replayed_delete_of_the_lost_birth_writes_nothing_against_its_replacement() 
         mp.rows.claim(&exited.name, &exited.mesh.clone(), exited.kind, &born, &rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "1").unwrap()), None, None, ClaimFor::Recovery).await.expect("the re-create claims the name");
         let replayed = mp.rows.deleted(&exited, delete).await;
         assert!(matches!(replayed, Err(RowRefused::NameHeld(ref h)) if h.by == born), "the replayed delete is refused by the replacement's claim: {replayed:?}");
-        assert_eq!(storage.name_claim(&exited.name).await.unwrap(), Some(born.clone()), "the replacement keeps the name");
+        assert_eq!(storage.node_at(&exited.name).await.unwrap().map(|r| r.node_id), Some(born.clone()), "the replacement keeps the name");
         (storage.record_at(&exited.name).await.unwrap(), exited.node_id, born)
     });
     assert_eq!(row.as_ref().map(|r| (&r.node_id, r.status)), Some((&born, NodeStatus::Starting)), "the replacement's row stands: {row:?}");
@@ -2082,7 +2037,9 @@ fn a_resumed_deleted_births_own_record_write_is_ignored_on_read() {
     let spans = cap.spans_named("rdm.node_admin.node.reject.via-deleted-birth");
     let writer = (Some(x.node_id.as_str()), Some(x.incarnation_id.as_str()));
     let reads: Vec<_> = spans.iter().map(|s| (s["attributes"]["read"].as_str(), (s["attributes"]["subject_path"].as_str(), s["attributes"]["subject_name"].as_str()), (s["attributes"]["writer_node_id"].as_str(), s["attributes"]["writer_incarnation"].as_str()), s["attributes"]["outcome"].as_str())).collect();
-    assert_eq!(reads, vec![(Some("writer-record"), (Some("mesh1.rpc"), Some("1")), writer, Some("ignored")), (Some("mesh-records"), (Some("mesh1.rpc"), Some("1")), writer, Some("ignored"))], "{spans:#?}");
+    // The recovery reads the version twice, each read naming it: at the path and name (the lookup of the
+    // records standing there) and by the predecessor's id; then the mesh's reader.
+    assert_eq!(reads, vec![(Some("writer-record"), (Some("mesh1.rpc"), Some("1")), writer, Some("ignored")), (Some("writer-record"), (Some("mesh1.rpc"), Some("1")), writer, Some("ignored")), (Some("mesh-records"), (Some("mesh1.rpc"), Some("1")), writer, Some("ignored"))], "{spans:#?}");
     for s in &spans {
         eprintln!("trace {}: rdm.node_admin.node.reject.via-deleted-birth read={} writer={writer:?} outcome=ignored", s["trace_id"].as_str().unwrap_or(""), s["attributes"]["read"].as_str().unwrap_or(""));
     }
@@ -2115,16 +2072,19 @@ fn on_the_file_store_a_held_name_is_refused_from_the_records_and_a_rename_is_one
         let other = NodeRow { node_id: NodeId::mint(), ..row_of(&rpc) };
         let refused = rdm_admin::node_rows::write_record(&*storage, &other).await.unwrap().map_err(|h| (h.name, h.by));
         let file = root.dir().join(rdm_admin::store_root::NODES_FILE);
-        let before = std::fs::read_to_string(&file).unwrap().lines().count();
+        let records = |file: &std::path::Path| std::fs::read_to_string(file).unwrap().lines().filter(|l| !l.is_empty()).map(|l| l.chars().take(160).collect::<String>()).collect::<Vec<_>>();
+        let before = records(&file).len();
         let renamed = rows.rename_row(&rpc, &to).await.expect("the rename is written");
-        let lines = std::fs::read_to_string(&file).unwrap().lines().count() - before;
+        let appended: Vec<String> = records(&file).into_iter().skip(before).collect();
+        let lines = appended.len();
         let old_free = storage.record_at(&at).await.unwrap();
         let held_old = rdm_admin::node_rows::write_record(&*storage, &other).await.unwrap().map_err(|h| (h.name, h.by));
-        (dir, root.dir().to_path_buf(), refused, renamed, lines, old_free, held_old)
+        (dir, root.dir().to_path_buf(), refused, renamed, (lines, appended), old_free, held_old)
     });
+    let (lines, appended) = lines;
     assert_eq!(refused, Err((at.clone(), rpc.node_id.clone())), "the held pair is refused NameHeld naming its holder");
     assert_eq!((renamed.name.clone(), renamed.renamed_from.clone()), (to, Some(at)), "the record carries the destination pair and renamed_from");
-    assert_eq!(lines, 1, "the rename is one write of the node's record");
+    assert_eq!(lines, 1, "the rename is one write of the node's record: {appended:#?}");
     assert_eq!(old_free, None, "after the rename no record holds the old pair");
     assert_eq!(held_old, Ok(()), "the old pair is free for another node at once");
     let entries: Vec<String> = std::fs::read_dir(&root_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();

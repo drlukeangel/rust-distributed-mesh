@@ -189,10 +189,9 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
 
 /// crit:e12.s59.1 — `fabric.delete` of a two-mesh fabric runs `mesh.delete` leaf-inward (`mesh2`
 /// first, then the fabric-primary's own mesh `mesh1` last with the fabric-primary role kept on
-/// `mesh1.admin.1`), deletes `mesh2`'s final mesh-primary (`mesh2.admin.1`), releases the fabric
-/// name (`FabricStorage::release_name`), and reports `fabric.deleted` (`Complete` of
-/// `fabric.delete:<fabric_id>`) while `mesh1.admin.1` remains alive for its separate `node.delete`.
-/// Once that separate `node.delete` runs, no live node, mesh or fabric row remains.
+/// `mesh1.admin.1`), deletes `mesh2`'s final mesh-primary (`mesh2.admin.1`), and reports
+/// `fabric.deleted` (`Complete` of `fabric.delete:<fabric_id>`) while `mesh1.admin.1` remains alive for
+/// its separate `node.delete`. Once that separate `node.delete` runs, no live node or mesh row remains.
 #[tokio::test]
 async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awaits_its_own_node_delete() {
     let data_root = std::env::temp_dir().join(format!("fabric-delete-{}", NodeId::mint()));
@@ -396,17 +395,15 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         vec![BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() }],
         "the fabric-primary is NOT deleted inside fabric.delete; only DeleteFabric remains"
     );
-    complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 1, &fabric_id, m1_a1.node_id.as_str()).await.expect("complete_fabric_delete releases the fabric name and records fabric.deleted");
+    complete_fabric_delete(&*builds, &build_id, 1, &fabric_id, m1_a1.node_id.as_str()).await.expect("complete_fabric_delete records fabric.deleted");
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
 
     // At fabric.deleted:
     // - No operations remain on the fabric.delete Build.
-    // - The fabric name is released in fabric.storage (`fabric()` is None).
     // - The fabric-primary `mesh1.admin.1` is STILL ALIVE (`Ready` row in nodes.storage,
     //   runtime not terminated).
     let proj = builds.read_build(&build_id).await.unwrap();
     assert!(plan_for_build(&proj, &*observed.read().await).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
-    assert_eq!(fabric_storage.fabric().await.unwrap(), None, "fabric identity row is released at fabric.deleted");
     assert!(!fleet.terminated.lock().unwrap().contains(&m1_a1.node_id), "fabric-primary is still alive at fabric.deleted");
     assert_eq!(nodes_storage.record_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::Ready, "fabric-primary's node row is still live at fabric.deleted");
 
@@ -432,8 +429,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let left_m1 = mesh_left_manifest(&manifest_m1, &term_m1_a1).unwrap();
     mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, m1_a1.node_id.as_str(), &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
 
-    // Every node row is Deleted, both mesh rows are Dead in status.storage and mesh.storage, and
-    // the fabric name is released.
+    // Every node row is Deleted, and both mesh rows are Dead in status.storage and mesh.storage.
     for n in &all_nodes {
         let row = nodes_storage.node(&n.node_id).await.unwrap().expect("node row exists");
         assert_eq!(row.status, NodeStatus::Deleted, "{:?}'s node row is Deleted", n.name);
@@ -443,7 +439,6 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     }
     let mesh_rows = mesh_storage.meshes().await.unwrap();
     assert!(mesh_rows.iter().all(|m| m.dead), "every mesh row in mesh.storage is Dead: {mesh_rows:?}");
-    assert_eq!(fabric_storage.fabric().await.unwrap(), None, "no fabric identity row remains");
 
     let _ = std::fs::remove_dir_all(&data_root);
 }
@@ -1123,7 +1118,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
 
         // Step 3: On the fabric-primary's own mesh (`mesh1`), `role_move` is `None` (no
         // `node.fabric-primary.update`), `mesh1.rpc.1` is deleted, `MeshDeleted` is recorded, and
-        // `complete_fabric_delete` releases the fabric name and records `Complete` of
+        // `complete_fabric_delete` records `Complete` of
         // `fabric.delete:<fabric_id>` while `mesh1.admin.1` stays alive (`Ready`). Replaying
         // `complete_fabric_delete` on resume is idempotent.
         let shutdown_m1 = BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: id1.clone() };
@@ -1183,13 +1178,12 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             .expect("durable deletion receipt answers AlreadyApplied");
         assert!(matches!(already_deleted, rdm_admin::control_plane::Recovery::AlreadyApplied(_)));
 
-        complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 1, &fabric_id, fp.node_id.as_str())
+        complete_fabric_delete(&*builds, &build_id, 1, &fabric_id, fp.node_id.as_str())
             .await
-            .expect("complete_fabric_delete releases the fabric name and records fabric.deleted");
-        complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 2, &fabric_id, fp.node_id.as_str())
+            .expect("complete_fabric_delete records fabric.deleted");
+        complete_fabric_delete(&*builds, &build_id, 2, &fabric_id, fp.node_id.as_str())
             .await
             .expect("replayed complete_fabric_delete on resume is idempotent");
-        assert_eq!(fabric_storage.fabric().await.unwrap(), None, "fabric name is released");
         assert_eq!(
             nodes_storage.record_at(&fp.name).await.unwrap().unwrap().status,
             NodeStatus::Ready,

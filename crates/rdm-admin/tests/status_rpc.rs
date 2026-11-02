@@ -606,12 +606,6 @@ impl MeshStorage for Refusing {
     async fn meshes(&self) -> Result<Vec<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {
         self.meshes.meshes().await
     }
-    async fn claim_mesh_name(&self, name: &str, mesh_id: &MeshId) -> Result<Result<(), MeshId>, rdm_admin::storage_error::StorageError> {
-        self.meshes.claim_mesh_name(name, mesh_id).await
-    }
-    async fn release_mesh_name(&self, name: &str, mesh_id: &MeshId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.meshes.release_mesh_name(name, mesh_id).await
-    }
     async fn take_in_flight(&self, mesh: &str, claim: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::mesh_claims::Taken, rdm_admin::storage_error::StorageError> {
         self.meshes.take_in_flight(mesh, claim).await
     }
@@ -631,15 +625,6 @@ impl FabricStorage for Refusing {
     async fn put_fabric(&self, record: &rdm_admin::fabric_storage::FabricRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.check("fabric.jsonl")?;
         self.fabric.put_fabric(record).await
-    }
-    async fn name_claim(&self, name: &str) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {
-        self.fabric.name_claim(name).await
-    }
-    async fn insert_name_claim(&self, identity: &rdm_admin::fabric_storage::FabricIdentity) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {
-        self.fabric.insert_name_claim(identity).await
-    }
-    async fn remove_name_claim(&self, name: &str) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.fabric.remove_name_claim(name).await
     }
 }
 

@@ -8,18 +8,16 @@
 //! (`RejectedAdmittingConnections { status, held_connections }`; a stopped node is never renamed and is
 //! refused the same way); the name is within the name grammar and the path is unchanged
 //! (`RejectedName`). Then, one change at a time with every other change
-//! to a node record: the row writer reads the new name's row and claims it (`NameHeld { by }`,
-//! nothing written) and the row moved through the one writer of a row's move
-//! (`crate::node_rows::move_row`): put at the new key carrying `renamed_from`, then the old key
-//! released. A release that fails leaves both keys held and ends the command incomplete naming it
-//! (`NameNotApplied`, `release-pending`); the next writer that meets the row finishes it
-//! (`crate::node_rows::finish_release`). The node is told `ApplyNodeName` (this admin itself
-//! in-process, through its own name decision) and the command completes only on its `Applied` or
-//! `AlreadyApplied` (§2.3). A repeat naming the name the row already holds finishes any pending release
-//! and then resends `ApplyNodeName` (§2.1 Idempotency).
+//! to a node record: the mesh-primary checks the new pair against the records it holds (`NameHeld {
+//! by }`, nothing written) and the row moved through the one writer of a row's move
+//! (`crate::node_rows::move_row`): one write of the record at its node.id carrying the new pair and
+//! `renamed_from`, the name move. The node is told `ApplyNodeName` (this admin itself in-process,
+//! through its own name decision) and the command completes only on its `Applied` or
+//! `AlreadyApplied` (§2.3). A repeat naming the name the row already holds resends `ApplyNodeName`
+//! (§2.1 Idempotency).
 
 use crate::model::{Node, PathName};
-use crate::node_rows::{Moved, RenameRefused};
+use crate::node_rows::RenameRefused;
 use crate::storage::NodesStorage;
 use crate::topology::Topology;
 use rdm_core::ConnectionId;
@@ -241,33 +239,18 @@ async fn rename(
     if from.path != to.path {
         return rdm_core::reply::status::bounded_rejected_name("a node's path is immutable; only its name may change, and nothing is claimed or written");
     }
-    if from == to {
-        // A repeat naming the name the row already holds: any release still pending is finished first.
-        if let Some(row) = &known {
-            if let Err(why) = crate::node_rows::finish_release(storage, door.written(), me, row, "retry").await {
-                return release_pending(me_id, node_id, &to, row.renamed_from.as_ref().unwrap_or(&from), &why, span);
-            }
-        }
-    } else {
+    if from != to {
         let Some(moved) = doors.moved.get() else {
             return rdm_core::reply::status::not_ready(format!("{me_id}: its view does not take a moved row yet; the rename of {} to path={to_path:?} name={to_name:?} is refused and nothing is written", held.node_id));
         };
         let moved_row = crate::node_rows::move_row_with_intent(storage, door.written(), me, &held, &from, &to, intent).await;
-        let pending = match moved_row {
-            Ok((m, _)) => {
-                match m {
-                    Moved::ReleasePending { why } => Some(why),
-                    Moved::Renamed | Moved::AlreadyMoved => None,
-                }
-            }
+        match moved_row {
+            Ok(_) => {}
             Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.name, h.by),
             Err(RenameRefused::Unwritten(why)) => return rdm_core::reply::status::bounded_node_row_refused(&node_id.to_string(), &why),
-        };
+        }
         // The view reads the moved row: the birth is listed at the row's name from now on.
         moved(held.name.clone(), node_id.clone(), incarnation.clone(), to.clone()).await;
-        if let Some(why) = pending {
-            return release_pending(me_id, node_id, &to, &from, &why, span);
-        }
     }
     let done = StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
     // The live birth takes the row's name. This admin itself takes it through its own name
@@ -300,13 +283,6 @@ async fn rename(
 
 /// The command ends incomplete after its put at `to`: the release of `from` is pending, both keys held
 /// (proposal §2.4); the next writer that meets the row finishes it.
-fn release_pending(me_id: &rdm_core::NodeId, node_id: &rdm_core::NodeId, to: &PathName, from: &PathName, why: &str, span: &tracing::Span) -> StatusReply {
-    let (to_path, to_name, from_path, from_name) = (&to.path, &to.name, &from.path, &from.name);
-    let detail = format!("{me_id}: {node_id} holds path={to_path:?} name={to_name:?} (its row carries renamed_from path={from_path:?} name={from_name:?}) and the release of path={from_path:?} name={from_name:?} is pending: {why}; a resubmit releases it and continues to the apply");
-    span.record("answered", "release-pending").record("detail", detail.as_str());
-    rdm_core::reply::status::bounded_name_not_applied(&node_id.to_string(), "release-pending", &detail)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

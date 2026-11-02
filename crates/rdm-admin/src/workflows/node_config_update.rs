@@ -41,14 +41,8 @@ pub(crate) mod tests {
                 reason: "simulated disk refusal".into(),
             })
         }
-        async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, crate::storage_error::StorageError> {
-            self.0.name_claim(name).await
-        }
-        async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), crate::storage::NameHeld>, crate::storage_error::StorageError> {
-            self.0.claim_node_name(name, node_id).await
-        }
-        async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), crate::storage_error::StorageError> {
-            self.0.release_node_name(name, node_id).await
+        async fn node_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.node_at(name).await
         }
     }
 

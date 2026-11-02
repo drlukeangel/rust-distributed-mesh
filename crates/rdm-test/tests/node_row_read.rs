@@ -76,8 +76,7 @@ fn a_node_reads_another_nodes_config_from_the_nodes_storage_with_no_primary_reac
         let writer = rdm_admin::storage::FileNodesStorage::open(&dir, &root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.expect("the mesh-primary's nodes storage opens");
         let broker: PathName = rdm_core::PathName::new("mesh1.broker", "1").unwrap();
         let mut row = NodeRow::new(broker.clone(), "mesh1", rdm_core::NodeKind::Broker, NodeId::mint(), NodeStatus::Ready);
-        // A (path, name) resolves through its name claim (node-identity-and-state.md §2).
-        writer.claim_node_name(&broker, &row.node_id).await.expect("broker1's name is claimed").expect("the name is free");
+        // A (path, name) resolves to the live record standing there (node-identity-and-state.md §2).
         writer.put_node(&row).await.expect("broker1's row is written");
         let written = nodes_folds(&seen).len();
 

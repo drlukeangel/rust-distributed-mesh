@@ -265,14 +265,8 @@ impl crate::nodes_storage::NodesStorage for NodesThroughHandle {
     async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::node_records::NodeProperties>, crate::storage_error::StorageError> {
         self.0.current.read().stores().nodes.properties(node_id).await
     }
-    async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().nodes.name_claim(name).await
-    }
-    async fn claim_node_name(&self, _name: &crate::model::PathName, _node_id: &crate::model::NodeId) -> Result<Result<(), crate::nodes_storage::NameHeld>, crate::storage_error::StorageError> {
-        Err(self.not_the_nodes("a name claim"))
-    }
-    async fn release_node_name(&self, _name: &crate::model::PathName, _node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
-        Err(self.not_the_nodes("a name claim's release"))
+    async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        crate::nodes_storage::NodesStorage::node_at(&*self.0.current.read().stores().nodes, name).await
     }
 }
 

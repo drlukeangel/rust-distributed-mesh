@@ -713,7 +713,7 @@ pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str
     }
     let mut ops = Vec::new();
     for (path, births) in at.into_iter().filter(|(_, b)| b.len() > 1) {
-        let Ok(Some(holder)) = storage.name_claim(&path).await else { continue };
+        let Ok(Some(holder)) = storage.node_at(&path).await.map(|r| r.map(|r| r.node_id)) else { continue };
         if !births.iter().any(|b| b.node_id == holder) {
             continue;
         }
@@ -1041,23 +1041,24 @@ mod superseded_tests {
     ///  mesh-primary, which writes its row deleted ([node.delete](node-delete.md), releasing the name) and
     ///  reports it the same way (Q142)."
     #[tokio::test]
-    async fn a_second_birth_at_a_path_after_a_heal_is_written_deleted_and_the_claims_birth_stands() {
+    async fn a_second_birth_at_a_path_after_a_heal_is_written_deleted_and_the_records_birth_stands() {
         let storage = MemoryNodesStorage::default();
         let written = crate::node_rows::WrittenRows::default();
         let (first, second, alone) = (birth(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), birth(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), birth(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
         for n in [&first, &alone] {
             crate::node_rows::write_record(&storage, &NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), n.status)).await.unwrap().unwrap();
         }
-        storage.put_node(&NodeRow::new(second.name.clone(), second.mesh.clone(), second.kind, second.node_id.clone(), second.status)).await.unwrap();
+        // The second birth's create was refused at the name the first birth's record holds: its own record
+        // stands Withdrawn, and the view holds both births.
+        storage.put_node(&NodeRow::new(second.name.clone(), second.mesh.clone(), second.kind, second.node_id.clone(), NodeStatus::Withdrawn)).await.unwrap();
         let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
         let ops = superseded_births(&me, &view(vec![first.clone(), second.clone(), alone.clone()]), "mesh1", &storage, &written, "b1").await;
         assert_eq!(ops.iter().map(|o| (o.node_id.clone(), o.operation.clone())).collect::<Vec<_>>(), vec![(second.node_id.clone(), rdm_core::OperationId::node("node.delete", &second.node_id))], "only the second birth is answered");
         assert_eq!(storage.node(&second.node_id).await.unwrap().unwrap().status, NodeStatus::Deleted, "the second birth's row is written deleted");
-        assert_eq!(storage.node(&first.node_id).await.unwrap().unwrap().status, NodeStatus::Ready, "the claim's birth stands");
-        assert_eq!(storage.name_claim(&first.name).await.unwrap(), Some(first.node_id.clone()), "the name stays the first birth's");
-        let unclaimed = birth(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
-        let other = birth(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode);
-        storage.put_node(&NodeRow::new(unclaimed.name.clone(), unclaimed.mesh.clone(), unclaimed.kind, unclaimed.node_id.clone(), unclaimed.status)).await.unwrap();
-        assert!(superseded_births(&me, &view(vec![unclaimed, other]), "mesh1", &storage, &written, "b1").await.is_empty(), "a path whose claim names neither birth answers nothing");
+        assert_eq!(storage.node(&first.node_id).await.unwrap().unwrap().status, NodeStatus::Ready, "the record's birth stands");
+        assert_eq!(storage.node_at(&first.name).await.unwrap().map(|r| r.node_id), Some(first.node_id.clone()), "the name stays the first birth's");
+        let (one, other, holder) = (birth(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), birth(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), birth(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
+        storage.put_node(&NodeRow::new(holder.name.clone(), holder.mesh.clone(), holder.kind, holder.node_id.clone(), holder.status)).await.unwrap();
+        assert!(superseded_births(&me, &view(vec![one, other]), "mesh1", &storage, &written, "b1").await.is_empty(), "a path whose live record names neither birth answers nothing");
     }
 }

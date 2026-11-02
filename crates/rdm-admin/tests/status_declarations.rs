@@ -62,18 +62,14 @@ struct Rig {
     mesh_ids: BTreeMap<String, MeshId>,
     /// Inert until a cell arms it.
     withhold: Arc<ReplyWithhold>,
-    /// Armed by a cell: the authority's nodes store refuses the next release of a row's key.
-    refuse_release: Arc<std::sync::atomic::AtomicBool>,
     /// The nodes store the rig's config doors and served nodes write their own parts to
     /// (`crate::bound_configs_on`, [`node_records`]).
     records: Arc<MemoryNodesStorage>,
 }
 
-/// The authority's nodes store: the rig's memory store, whose next release of a row's key is refused
-/// by name while `refuse_release` is armed (a failure between a rename's put and its release).
+/// The authority's nodes store: the rig's memory store.
 struct Rows {
     inner: Arc<MemoryNodesStorage>,
-    refuse_release: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -102,17 +98,8 @@ impl NodesStorage for Rows {
     async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node(row).await
     }
-    async fn name_claim(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::model::NodeId>, rdm_admin::storage_error::StorageError> {
-        self.inner.name_claim(name).await
-    }
-    async fn claim_node_name(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::storage_error::StorageError> {
-        self.inner.claim_node_name(name, node_id).await
-    }
-    async fn release_node_name(&self, name: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        if self.refuse_release.swap(false, Ordering::SeqCst) {
-            return Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/names/{}", name.physical_index_key()), reason: "disk refused the release".into() });
-        }
-        self.inner.release_node_name(name, node_id).await
+    async fn node_at(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_at(name).await
     }
 }
 
@@ -145,7 +132,6 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
     let fabric_id = topology.read().await.fabric.id.clone();
     let nodes = Arc::new(MemoryNodesStorage::default());
     let storage = nodes.clone();
-    let refuse_release = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (m1id, m2id) = (MeshId::mint(), MeshId::mint());
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), m1id.clone()), ("mesh2".to_string(), m2id.clone())].into_iter().collect();
     let rig_mesh_ids = mesh_ids.clone();
@@ -163,7 +149,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
         declared: Arc::new(Mutex::new(Declared::default())),
         meshes_storage: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
         fabric_storage: Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new()),
-        nodes_storage: Arc::new(Rows { inner: nodes.clone(), refuse_release: refuse_release.clone() }),
+        nodes_storage: Arc::new(Rows { inner: nodes.clone() }),
         caches: Default::default(),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         durable: Default::default(),
@@ -216,7 +202,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
         rdm_admin::node_rows::write_record(&*nodes, &row).await.unwrap().unwrap();
     }
     let records = node_records();
-    (Rig { admin, endpoint: ep, server, _router: router, resolved, door, storage, nodes, topology, mesh_ids: rig_mesh_ids, withhold, refuse_release, records }, others)
+    (Rig { admin, endpoint: ep, server, _router: router, resolved, door, storage, nodes, topology, mesh_ids: rig_mesh_ids, withhold, records }, others)
 }
 
 /// The node property records every birth of these cells writes its own record to and every admin
@@ -799,14 +785,8 @@ impl rdm_admin::storage::NodesStorage for RefusingRecords {
     async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Answer<()> {
         self.0.put_node(row).await
     }
-    async fn name_claim(&self, name: &PathName) -> Answer<Option<NodeId>> {
-        self.0.name_claim(name).await
-    }
-    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Answer<Result<(), rdm_admin::storage::NameHeld>> {
-        self.0.claim_node_name(name, node_id).await
-    }
-    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Answer<()> {
-        self.0.release_node_name(name, node_id).await
+    async fn node_at(&self, name: &PathName) -> Answer<Option<rdm_admin::storage::NodeRow>> {
+        self.0.node_at(name).await
     }
     async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), rdm_node::storage_error::StorageError> {
         Err(rdm_node::storage_error::StorageError::Io { file: format!("nodes/properties/{}", record.birth.node_id), reason: "disk refused the write".into() })
@@ -1900,47 +1880,6 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
     eprintln!("trace {}: {NAME_SPAN} name=Two outcome=rejected-name", spans[0].0);
 }
 
-/// CONTRACT (proposal §2.4: "The put succeeded and the release of the old key fails or is
-/// interrupted: the node holds both keys, and the destination row's `renamed_from` names the source.
-/// The command ends incomplete naming the new key as claimed and the old key's release as pending";
-/// §7: "the retry finishes it and continues"): the left `mesh1.rpc.2` (its connections deleted, its
-/// mesh left) renamed to `2.old` while the nodes store refuses the release ends `NameNotApplied { node:
-/// mesh1.rpc.old.2, answered: release-pending }` naming the old key: the row at `mesh1.rpc.old.2` holds
-/// the node with `renamed_from: mesh1.rpc.2`, `mesh1.rpc.2` still holds it, and the birth is told
-/// nothing yet. The same command again releases the old key, tells the birth its name and ends
-/// `NameUpdated` on its `Applied`. What must NOT happen: `NodeRowRefused` (which says nothing was
-/// written) after the put, a second row written, or the put undone.
-#[test]
-fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retry_finishes_the_release() {
-    let cap = capture();
-    cap.run(async {
-        let (rig, b) = rig().await;
-        let stopped = &b["rpc2"];
-        let node = left_with_row(&rig, stopped, &[]).await;
-        let to: PathName = rdm_core::PathName::new("mesh1.rpc", "2-old").unwrap();
-        rig.refuse_release.store(true, Ordering::SeqCst);
-        let incomplete = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2-old")).await);
-        assert!(
-            matches!(&incomplete, StatusReply::NameNotApplied { node, answered, reason } if node == stopped.node.node_id.as_str() && answered == "release-pending" && reason.contains("path=\"mesh1.rpc\" name=\"2\"")),
-            "the command ends incomplete naming the new key and the pending release: {incomplete:?}"
-        );
-        let moved = rig.nodes.record_at(&to).await.unwrap().expect("the put at the new key stands");
-        assert_eq!((moved.node_id.clone(), moved.renamed_from.clone()), (stopped.node.node_id.clone(), Some(stopped.node.name.clone())));
-        assert_eq!((rig.nodes.name_claim(&stopped.node.name).await.unwrap(), rig.nodes.name_claim(&to).await.unwrap()), (Some(stopped.node.node_id.clone()), Some(stopped.node.node_id.clone())), "the node holds both names' claims");
-        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing while the release is pending");
-        let done = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2-old")).await);
-        assert_eq!(done, StatusReply::NameUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() });
-        assert_eq!(rig.nodes.name_claim(&stopped.node.name).await.unwrap(), None, "the retry released the old name's claim");
-        assert_eq!(rig.nodes.record_at(&to).await.unwrap(), Some(moved), "the destination row stands as written");
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![apply_name(stopped, &to)], "the retry told the birth its name");
-    });
-    let spans = cap.spans(NAME_SPAN);
-    assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("name-not-applied".to_string(), "release-pending".to_string()), ("name-updated".to_string(), "applied".to_string())], "{spans:?}");
-    let releases = cap.spans("rdm.node_admin.name.update.via-pending-release");
-    assert_eq!(releases.iter().map(|(_, a)| (a.get("from").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("mesh1.rpc.2".to_string(), "released".to_string())], "{releases:?}");
-    eprintln!("trace {}: {NAME_SPAN} to=mesh1.rpc.old.2 outcome=name-not-applied answered=release-pending; trace {}: rdm.node_admin.name.update.via-pending-release from=mesh1.rpc.2 outcome=released", spans[0].0, releases[0].0);
-}
-
 /// CONTRACT (proposal §2.1 Idempotency: "A repeat naming the name the row already holds ... for a
 /// live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`"; §2.3 "Row
 /// written, apply unresolved ... the resubmit resends `ApplyNodeName`, and completes on `Applied` or
@@ -2440,7 +2379,7 @@ fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_
         assert_eq!((succ_row.node_id.clone(), seeded_from), (succ.node.node_id.clone(), Some(pred.node.node_id.clone())), "the claim's admitted provenance names the predecessor");
         let snapshot = succ_row.initial_properties.clone().expect("the claim retains the launch snapshot");
         assert_eq!((&snapshot.config, &snapshot.tags), (&entry_cfg, &labels(&["rabbit", "red"])), "the successor's snapshot is its entry's, never the predecessor's {{zone: a}}");
-        assert_eq!(rig.nodes.name_claim(&base_name).await.unwrap(), Some(succ.node.node_id.clone()), "a current-pair lookup selects the successor's ID");
+        assert_eq!(rig.nodes.node_at(&base_name).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "a current-pair lookup selects the successor's ID");
         let retained = rig.nodes.record_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.rpc.2-old");
         assert_eq!((retained.node_id.clone(), retained.inherited_by.clone()), (pred.node.node_id.clone(), Some(succ.node.node_id.clone())));
         assert_eq!(props(&rig, &pred.node.node_id).await, (pred_cfg.clone(), labels(&["rabbit", "red"])), "the predecessor's tags remain in its own record");

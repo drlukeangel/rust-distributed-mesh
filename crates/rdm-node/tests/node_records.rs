@@ -304,14 +304,8 @@ impl NodesStorage for LostAcknowledgement {
     async fn put_node(&self, row: &NodeRow) -> Answer<()> {
         self.records.put_node(row).await
     }
-    async fn name_claim(&self, name: &PathName) -> Answer<Option<NodeId>> {
-        self.records.name_claim(name).await
-    }
-    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Answer<Result<(), rdm_node::nodes_storage::NameHeld>> {
-        self.records.claim_node_name(name, node_id).await
-    }
-    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Answer<()> {
-        self.records.release_node_name(name, node_id).await
+    async fn node_at(&self, name: &PathName) -> Answer<Option<NodeRow>> {
+        self.records.node_at(name).await
     }
 
     async fn put_properties(

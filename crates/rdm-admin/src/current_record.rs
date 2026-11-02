@@ -79,14 +79,13 @@ impl CurrentRecords<'_> {
         self.nodes.nodes(mesh).await.map_err(|e| format!("the records of mesh {mesh} could not be read: {e}"))
     }
 
-    /// The current-pair lookup: the record of the node whose name claim holds `name`, while that record
-    /// stands at `name`. `Ok(None)` when no claim holds the name, or its claimant's current record stands
-    /// at another pair or was never written (the claim decides, never a record last written there).
+    /// The current-pair lookup: the live record standing at `name`, read from the node records by their
+    /// path and name (node-identity-and-state.md §2). `Ok(None)` when none does.
     pub async fn row_at(&self, name: &PathName) -> Result<Option<NodeRow>, String> {
-        let Some(node_id) = self.nodes.name_claim(name).await.map_err(|e| format!("the name claim at path {:?}, name {:?} could not be read: {e}", name.path, name.name))? else {
+        let Some(at) = self.nodes.node_at(name).await.map_err(|e| format!("the record at path {:?}, name {:?} could not be read: {e}", name.path, name.name))? else {
             return Ok(None);
         };
-        Ok(self.row(&node_id).await?.filter(|r| r.name == *name))
+        Ok(self.row(&at.node_id).await?.filter(|r| r.name == *name))
     }
 }
 
@@ -96,18 +95,8 @@ pub fn of_birth<'a>(properties: Option<&'a NodeProperties>, node_id: &NodeId, in
     properties.filter(|p| p.birth.node_id == *node_id && p.birth.incarnation_id == *incarnation)
 }
 
-/// The store a reader reads in a unit cell: `rows`' name claims (each live record's name claimed, as its
-/// writer's put claims it).
+/// The store a reader reads in a unit cell: `rows`, each live record found at its path and name.
 #[cfg(test)]
-pub(crate) async fn stores_over(rows: std::sync::Arc<crate::storage::MemoryNodesStorage>, t: &crate::topology::Topology) -> RecordStores {
-    let names: std::collections::BTreeSet<String> = t.nodes.iter().map(|n| n.mesh.clone()).chain(t.meshes.iter().map(|m| m.name.clone())).collect();
-    for mesh in names {
-        for row in rows.nodes(&mesh).await.expect("the nodes store reads") {
-            // A live record holds its name's claim, as its writer's put takes it.
-            if !crate::node_rows::released_its_name(&row) {
-                rows.claim_node_name(&row.name, &row.node_id).await.expect("the nodes store writes").expect("one live record at each name");
-            }
-        }
-    }
+pub(crate) async fn stores_over(rows: std::sync::Arc<crate::storage::MemoryNodesStorage>, _t: &crate::topology::Topology) -> RecordStores {
     RecordStores { nodes: rows }
 }

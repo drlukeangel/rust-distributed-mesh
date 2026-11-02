@@ -316,6 +316,11 @@ pub struct TopologyStorageHandle {
 }
 
 impl TopologyStorageHandle {
+    /// Where the admin's stores open: its fabric, mesh and the writer its lines name.
+    pub fn scope(&self) -> &StorageScope {
+        &self.scope
+    }
+
     /// Open the provider `providers` registers as `provider` on `scope`, else the admin's start is
     /// refused by name.
     pub async fn open(providers: &TopologyStorageProviders, provider: &str, scope: StorageScope) -> Result<Arc<Self>, String> {
@@ -538,17 +543,6 @@ impl FabricStorage for Through {
         let w = self.write();
         w.boundaries.fabric.put_fabric(record).await
     }
-    async fn name_claim(&self, name: &str) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
-        self.read().stores().boundaries.fabric.name_claim(name).await
-    }
-    async fn insert_name_claim(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
-        let w = self.write();
-        w.boundaries.fabric.insert_name_claim(identity).await
-    }
-    async fn remove_name_claim(&self, name: &str) -> Result<(), crate::fabric_storage::FabricStorageError> {
-        let w = self.write();
-        w.boundaries.fabric.remove_name_claim(name).await
-    }
 }
 
 #[async_trait]
@@ -565,14 +559,6 @@ impl MeshStorage for Through {
     }
     async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, StorageError> {
         self.read().stores().boundaries.meshes.meshes().await
-    }
-    async fn claim_mesh_name(&self, name: &str, mesh_id: &crate::model::MeshId) -> Result<Result<(), crate::model::MeshId>, StorageError> {
-        let w = self.write();
-        w.boundaries.meshes.claim_mesh_name(name, mesh_id).await
-    }
-    async fn release_mesh_name(&self, name: &str, mesh_id: &crate::model::MeshId) -> Result<(), StorageError> {
-        let w = self.write();
-        w.boundaries.meshes.release_mesh_name(name, mesh_id).await
     }
     async fn take_in_flight(&self, mesh: &str, claim: &crate::mesh_claims::InFlight) -> Result<crate::mesh_claims::Taken, StorageError> {
         let w = self.write();
@@ -624,17 +610,9 @@ macro_rules! nodes_through {
                 let r = self.0.current.read();
                 $nodes(&r.stores().boundaries)?.properties(node_id).await
             }
-            async fn name_claim(&self, name: &PathName) -> Result<Option<crate::model::NodeId>, StorageError> {
+            async fn node_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, StorageError> {
                 let r = self.0.current.read();
-                $nodes(&r.stores().boundaries)?.name_claim(name).await
-            }
-            async fn claim_node_name(&self, name: &PathName, node_id: &crate::model::NodeId) -> Result<Result<(), crate::storage::NameHeld>, StorageError> {
-                let w = self.0.current.write();
-                $nodes(&w.boundaries)?.claim_node_name(name, node_id).await
-            }
-            async fn release_node_name(&self, name: &PathName, node_id: &crate::model::NodeId) -> Result<(), StorageError> {
-                let w = self.0.current.write();
-                $nodes(&w.boundaries)?.release_node_name(name, node_id).await
+                $nodes(&r.stores().boundaries)?.node_at(name).await
             }
         }
     };
@@ -987,13 +965,10 @@ mod tests {
         assert_eq!(meshes.mesh(&before.mesh_id).await.unwrap(), None, "a read after the change answers the new provider's records, which do not hold the old one's");
         let identity = FabricIdentity { fabric_id: scope.fabric_id.clone(), name: "fabricafter".into() };
         fabric.put_fabric(&FabricRecord::new(identity.clone())).await.unwrap();
-        assert_eq!(fabric.insert_name_claim(&identity).await.unwrap(), None, "the claim is inserted on the new provider");
         let mesh = MeshRecord::new(crate::model::MeshId::mint(), "meshafter");
         meshes.put_mesh(&mesh).await.unwrap();
-        meshes.claim_mesh_name("meshafter", &mesh.mesh_id).await.unwrap().unwrap();
         let row = NodeRow::new(rdm_core::PathName::new("meshafter.rpc", "7").unwrap(), "meshafter", rdm_core::NodeKind::RpcNode, NodeId::mint(), crate::model::NodeStatus::Ready);
         nodes.put_node(&row).await.unwrap();
-        nodes.claim_node_name(&row.name, &row.node_id).await.unwrap().unwrap();
         let runtime = RuntimeRow { kind: rdm_core::NodeKind::RpcNode, mesh: "meshafter".into(), node_id: NodeId::mint(), name: rdm_core::PathName::new("meshafter.rpc", "8").unwrap(), incarnation_id: IncarnationId::mint(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-after")).unwrap(), data_dir: None };
         nodes.put_runtime(&runtime).await.unwrap();
         let build = crate::build_state::BuildAccepted {
@@ -1021,10 +996,9 @@ mod tests {
         events.append(&event).await.unwrap();
 
         assert_eq!(fabric.fabric().await.unwrap().map(|f| f.name), Some("fabricafter".to_string()), "fabric.storage reads the new provider");
-        assert_eq!(fabric.name_claim("fabricafter").await.unwrap(), Some(identity.clone()), "and its name claim");
         assert_eq!(meshes.mesh_named("meshafter").await.unwrap(), Some(mesh.clone()), "mesh.storage reads the new provider");
         assert_eq!(nodes.node(&row.node_id).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "nodes.storage reads the new provider");
-        assert_eq!(nodes.name_claim(&row.name).await.unwrap(), Some(row.node_id.clone()), "and its name claims");
+        assert_eq!(nodes.node_at(&row.name).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "and the record at its path and name");
         assert_eq!(nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "and its runtime rows");
         assert_eq!(builds.read_build(&build.build_id).await.unwrap().build_id, build.build_id, "the Build journal reads the new provider");
         assert!(seen.lock().unwrap().contains(&build.build_id), "the derivation installed before the change runs over the new journal's facts");
@@ -1056,15 +1030,6 @@ mod tests {
             self.arrived.notify_one();
             let _ = self.gate.subscribe().wait_for(|open| *open).await;
             self.inner.put_fabric(record).await
-        }
-        async fn name_claim(&self, name: &str) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
-            self.inner.name_claim(name).await
-        }
-        async fn insert_name_claim(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
-            self.inner.insert_name_claim(identity).await
-        }
-        async fn remove_name_claim(&self, name: &str) -> Result<(), crate::fabric_storage::FabricStorageError> {
-            self.inner.remove_name_claim(name).await
         }
     }
 

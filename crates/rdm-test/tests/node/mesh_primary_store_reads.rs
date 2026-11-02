@@ -94,17 +94,9 @@ impl NodesStorage for Recorded {
         self.calls.push("put_node", row.node_id.to_string());
         self.inner.put_node(row).await
     }
-    async fn name_claim(&self, name: &rdm_core::PathName) -> Result<Option<NodeId>, StorageError> {
-        self.calls.push("name_claim", name);
-        self.inner.name_claim(name).await
-    }
-    async fn claim_node_name(&self, name: &rdm_core::PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> {
-        self.calls.push("claim_node_name", node_id.to_string());
-        self.inner.claim_node_name(name, node_id).await
-    }
-    async fn release_node_name(&self, name: &rdm_core::PathName, node_id: &NodeId) -> Result<(), StorageError> {
-        self.calls.push("release_node_name", node_id.to_string());
-        self.inner.release_node_name(name, node_id).await
+    async fn node_at(&self, name: &rdm_core::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, StorageError> {
+        self.calls.push("node_at", name);
+        self.inner.node_at(name).await
     }
 }
 

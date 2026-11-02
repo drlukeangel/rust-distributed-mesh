@@ -226,7 +226,6 @@ pub async fn write_meshes(t: &rdm_admin::topology::Topology, meshes: &dyn rdm_ad
         if meshes.mesh_named(&mesh).await.expect("the mesh store reads").is_none() {
             let id = t.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone()).unwrap_or_else(rdm_admin::model::MeshId::mint);
             meshes.put_mesh(&rdm_admin::storage::MeshRecord::new(id.clone(), mesh.clone())).await.expect("the Mesh record is written");
-            meshes.claim_mesh_name(&mesh, &id).await.expect("the mesh store writes").expect("the mesh's name is free");
         }
     }
 }

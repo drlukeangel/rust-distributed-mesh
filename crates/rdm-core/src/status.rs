@@ -1574,16 +1574,14 @@ pub enum StatusReply {
         reason: String,
     },
     /// The `UpdateName` ended incomplete after its put at the new key (proposal
-    /// node-properties-own-commands.md §2.3, §2.4): the old key's release is pending
-    /// (`answered: release-pending`), or the live birth did not apply the name (its answer). The row
-    /// holds the new name; a resubmit finishes what is pending and completes on the node's answer.
+    /// node-properties-own-commands.md §2.3, §2.4): the live birth did not apply the name (its
+    /// answer). The row holds the new name; a resubmit completes on the node's answer.
     ///
     /// Position 30 on the wire.
     NameNotApplied {
         /// The globally unique node ID whose row holds the new name.
         node: String,
-        /// `release-pending`, or the birth's reply to `apply-node-name` by name, or the call's end by
-        /// name.
+        /// The birth's reply to `apply-node-name` by name, or the call's end by name.
         answered: String,
         /// Its detail.
         reason: String,

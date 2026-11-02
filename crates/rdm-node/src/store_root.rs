@@ -4,7 +4,6 @@
 //! Layout (R-SR1 to R-SR5, proposal `store-root-one-directory-per-entity.md` §4):
 //!
 //! ```text
-//! <store_dir>/fabrics/<name>          the fabrics' name index (R-FN1): each fabric's claim of its name
 //! <store_dir>/<fabric id>/
 //!   layout                            the layout marker, r-sr1
 //!   fabric.jsonl                      the Fabric record's writes
@@ -14,7 +13,6 @@
 //!   builds.jsonl                      every Build fact
 //!   events.jsonl                      every event of a Build, and each node's investigations
 //!   locks/in-flight/<mesh name>       the one attempt in flight on that mesh name, create-exclusive
-//!   locks/name/<name>                 the claim of a mesh name or a node path and name, create-exclusive
 //! ```
 //!
 //! One append-only JSONL file per storage boundary ([`crate::store_log`]): every write is one line
@@ -35,7 +33,6 @@
 //! attempt claims (Q171).
 
 use crate::model::{FabricId, IncarnationId};
-use crate::record_store::FileRecords;
 use crate::storage_error::StorageError;
 use std::path::{Path, PathBuf};
 
@@ -55,15 +52,11 @@ pub const CONNECTIONS_FILE: &str = "connections.jsonl";
 pub const BUILDS_FILE: &str = "builds.jsonl";
 /// The events' store file: every event (build.md §5).
 pub const EVENTS_FILE: &str = "events.jsonl";
-/// The locks' directory: the attempt in flight on each mesh name and every name claim.
+/// The locks' directory: the attempt in flight on each mesh name.
 pub const LOCKS_DIR: &str = "locks";
 
 /// The kind of the Fabric record's lines.
 pub const FABRIC_RECORD_KIND: &str = "fabric-record";
-
-/// Whether the root `dir`'s fabric file holds a Fabric record's line: the store exists.
-/// The fabrics' name index, `<store_dir>/fabrics/`, beside the per-fabric roots (R-FN1).
-pub const FABRIC_NAMES: &str = "fabrics";
 
 /// The layout marker's file in a root (R-SR1): written once by the root's creator, before any other
 /// entry of the root exists.
@@ -123,10 +116,6 @@ fn create_root(store_dir: &Path, dir: &Path) -> Result<(), StorageError> {
 #[derive(Clone)]
 pub struct StoreRoot {
     dir: PathBuf,
-    /// Where the fabrics' name index lives, `<this>/fabrics/`: the `store_dir` above the per-fabric
-    /// roots for a root opened on one ([`Self::open`]); the root's own directory for a root handed in
-    /// whole ([`Self::at`]), whose caller chose the fabric's directory and owns nothing above it.
-    store_dir: PathBuf,
 }
 
 impl std::fmt::Debug for StoreRoot {
@@ -156,7 +145,7 @@ impl StoreRoot {
             create_root(store_dir, &dir)?;
         }
         check_layout(&dir)?;
-        Ok(Self { dir, store_dir: store_dir.to_path_buf() })
+        Ok(Self { dir })
     }
 
     /// The root at `dir` itself, the fabric's directory already chosen and created by the caller (a
@@ -165,7 +154,7 @@ impl StoreRoot {
     /// The caller is the root's creator: a directory with no layout marker is given this build's.
     pub fn at(dir: &Path) -> Self {
         mark(dir);
-        Self { dir: dir.to_path_buf(), store_dir: dir.to_path_buf() }
+        Self { dir: dir.to_path_buf() }
     }
 
     /// `layout`: the root's layout marker (R-SR1).
@@ -175,8 +164,8 @@ impl StoreRoot {
 
     /// Open the store `dir` under `base` (a directory of this root), written by the process born as
     /// `writer`.
-    pub async fn records(&self, base: &Path, dir: &str, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
-        FileRecords::open(base, dir, writer).await
+    pub async fn records(&self, base: &Path, dir: &str, writer: &IncarnationId) -> Result<crate::record_store::FileRecords, StorageError> {
+        crate::record_store::FileRecords::open(base, dir, writer).await
     }
 
     /// Open the store file `file` of this root, reading `formats`, folded on its first read or append
@@ -199,17 +188,6 @@ impl StoreRoot {
     /// `<store_dir>/<fabric_id>/`.
     pub fn dir(&self) -> &Path {
         &self.dir
-    }
-
-    /// Open `<store_dir>/fabrics/`, the fabrics' name index above the per-fabric roots (R-FN1, Q109: the
-    /// fabric's (path, name) claim sits at the path level, above the per-fabric store roots), written by the process born as `writer`.
-    pub async fn fabric_names(&self, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
-        FileRecords::open(&self.store_dir, FABRIC_NAMES, writer).await
-    }
-
-    /// `locks/name/<name>`: the claim of a mesh name or a node path and name (R-SR5).
-    pub fn lock(&self, name: &str) -> PathBuf {
-        self.dir.join(LOCKS_DIR).join("name").join(name)
     }
 
 }

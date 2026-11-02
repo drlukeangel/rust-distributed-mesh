@@ -377,8 +377,8 @@ fn a_copy_resumes_after_a_lost_answer_without_duplicate_records() {
     let (changes, total) = capture.run(2, async {
         let h = History::write().await;
         let locks = StoreLocks::at(&h.root, &h.fp2);
-        assert_eq!(locks.take(LockKind::Name, "mesh1", br#"{"format":"mesh-name/1","record":"m1","by":["a","b"]}"#).await.unwrap(), LockTaken::Won);
-        assert_eq!(locks.take(LockKind::Name, "mesh1.rpc.2", br#"{"format":"node-name/1","record":"n2","by":["a","b"]}"#).await.unwrap(), LockTaken::Won);
+        assert_eq!(locks.take(LockKind::InFlight, "mesh1", br#"{"format":"mesh-in-flight/2","record":"a1","by":["a","b"]}"#).await.unwrap(), LockTaken::Won);
+        assert_eq!(locks.take(LockKind::InFlight, "mesh2", br#"{"format":"mesh-in-flight/2","record":"a2","by":["a","b"]}"#).await.unwrap(), LockTaken::Won);
         let dest_dir = dir("resume-destination");
         let source = FileProviderLines::open(SOURCE, &h.store_dir, &h.fabric).await.unwrap();
         let destination = LosesAnswers { inner: FileProviderLines::open(DESTINATION, &dest_dir, &h.fabric).await.unwrap(), appended: AtomicUsize::new(0), inserted: AtomicUsize::new(0), lose_append: 3, lose_claim: 1 };
@@ -406,8 +406,8 @@ fn a_copy_resumes_after_a_lost_answer_without_duplicate_records() {
             }
         }
         let dest_locks = StoreLocks::at(&dest_root, &writer());
-        for name in ["mesh1", "mesh1.rpc.2"] {
-            assert_eq!(dest_locks.read(LockKind::Name, name).await.unwrap(), locks.read(LockKind::Name, name).await.unwrap(), "the claim of {name} is the old provider's");
+        for name in ["mesh1", "mesh2"] {
+            assert_eq!(dest_locks.read(LockKind::InFlight, name).await.unwrap(), locks.read(LockKind::InFlight, name).await.unwrap(), "the in-flight row of {name} is the old provider's");
         }
         (changes, h.total())
     });
@@ -419,35 +419,27 @@ fn a_copy_resumes_after_a_lost_answer_without_duplicate_records() {
     assert_eq!(["source_position", "copied"].map(|k| attr(of(&changes[2]), k)), [Some(total.to_string()), Some("0".into())], "the last copy verified every source line and appended none");
 }
 
-/// CONTRACT (storage.md §2 Copy: "every name claim and in-flight row with its exact claimant"; i149
-/// R7 "transferring every held name and in-flight claim before" the switch; storage.md §2 Switch: "The
-/// insert is the switch, of records and claims alike"): after the copy the new provider holds the
-/// old one's mesh name claim, node path.name claim, a mesh's in-flight row and the fabric's claim of
-/// its name, each byte for byte, so a take there by another claimant is held, naming the original
-/// claimant; the attempt's Build facts are copied with its in-flight row; a claim the old provider
-/// released is not on the new one. Must NOT happen: a claim re-taken by the copier, a released claim
-/// revived, or an attempt whose row moved without its facts.
+/// CONTRACT (storage.md §2 Copy: every in-flight row "with its exact claimant"; build.md §5.3: a name is
+/// the records', never a lock): after the copy the new provider holds the old one's in-flight row of a
+/// mesh byte for byte, so a take there by another attempt is held, naming the original attempt; the
+/// attempt's Build facts are copied with its row; a row the old provider released is not on the new
+/// one; and the new provider holds no name lock and no fabric name index. Must NOT happen: a row re-taken
+/// by the copier, a released row revived, an attempt whose row moved without its facts, or a name kept
+/// as a lock on the new provider.
 #[test]
-fn a_provider_change_preserves_held_names_and_attempts() {
+fn a_provider_change_preserves_attempts_and_copies_no_name() {
     let capture = capture("claims");
     let change = capture.run(2, async {
         let h = History::write().await;
         let locks = StoreLocks::at(&h.root, &h.fp2);
         let by = format!(r#""by":["{}","{}"]"#, h.fp2.node_id, h.fp2.incarnation_id);
-        let mesh_name = format!(r#"{{"format":"mesh-name/1","record":"mesh1-id",{by}}}"#).into_bytes();
-        let node_name = format!(r#"{{"format":"node-name/1","record":"node-2-id",{by}}}"#).into_bytes();
         let build = BuildId::mint();
         let in_flight = format!(r#"{{"format":"mesh-in-flight/2","record":{{"build_id":"{build}","attempt":2,"claimant":"mesh1.admin.1","claimant_node":"{}"}},{by}}}"#, h.fp2.node_id).into_bytes();
-        assert_eq!(locks.take(LockKind::Name, "mesh1", &mesh_name).await.unwrap(), LockTaken::Won);
-        assert_eq!(locks.take(LockKind::Name, "mesh1.rpc.2", &node_name).await.unwrap(), LockTaken::Won);
         assert_eq!(locks.take(LockKind::InFlight, "mesh1", &in_flight).await.unwrap(), LockTaken::Won);
-        assert_eq!(locks.take(LockKind::Name, "mesh2", b"released").await.unwrap(), LockTaken::Won);
-        assert!(locks.release(LockKind::Name, "mesh2", |_| true).await.unwrap(), "the old provider releases mesh2's name");
+        assert_eq!(locks.take(LockKind::InFlight, "mesh2", b"released").await.unwrap(), LockTaken::Won);
+        assert!(locks.release(LockKind::InFlight, "mesh2", |_| true).await.unwrap(), "the old provider releases mesh2's row");
         let b = log(&h.root, BUILDS_FILE).await;
         b.append(&h.fp2, "build-record/1", &format!("{build}/claim/2"), &json!({"seq": 9, "fact": "claim", "attempt": 2, "claimant": "mesh1.admin.1"})).await.unwrap();
-        let names = StoreRoot::open(&h.store_dir, &h.fabric).unwrap().fabric_names(&h.fp1.incarnation_id).await.unwrap();
-        names.write("fabric1", "fabric-name/1", &json!({"fabric_id": h.fabric, "name": "fabric1"})).await.unwrap();
-        let fabric_claim = std::fs::read(h.store_dir.join("fabrics").join("fabric1.json")).unwrap();
 
         let dest_dir = dir("claims-destination");
         let source = FileProviderLines::open(SOURCE, &h.store_dir, &h.fabric).await.unwrap();
@@ -457,12 +449,9 @@ fn a_provider_change_preserves_held_names_and_attempts() {
         let dest_root = dest_dir.join(h.fabric.as_str());
 
         let dest_locks = StoreLocks::at(&dest_root, &writer());
-        assert_eq!(dest_locks.read(LockKind::Name, "mesh1").await.unwrap(), Some(mesh_name.clone()), "the mesh name's claim is copied with its exact claimant");
-        assert_eq!(dest_locks.read(LockKind::Name, "mesh1.rpc.2").await.unwrap(), Some(node_name.clone()), "the node path.name's claim is copied with its exact claimant");
         assert_eq!(dest_locks.read(LockKind::InFlight, "mesh1").await.unwrap(), Some(in_flight.clone()), "the mesh's in-flight row is copied with its exact claimant");
-        assert_eq!(std::fs::read(dest_dir.join("fabrics").join("fabric1.json")).ok(), Some(fabric_claim), "the fabric's claim of its name is copied");
-        assert_eq!(dest_locks.read(LockKind::Name, "mesh2").await.unwrap(), None, "a claim the old provider released is not on the new one");
-        assert_eq!(dest_locks.take(LockKind::Name, "mesh1", b"another claimant").await.unwrap(), LockTaken::Held(mesh_name), "a take of the name on the new provider is held by the original claimant");
+        assert_eq!(dest_locks.read(LockKind::InFlight, "mesh2").await.unwrap(), None, "a row the old provider released is not on the new one");
+        assert!(!dest_root.join("locks").join("name").exists() && !dest_dir.join("fabrics").exists(), "the new provider holds no name lock and no fabric name index");
         assert_eq!(dest_locks.take(LockKind::InFlight, "mesh1", b"another attempt").await.unwrap(), LockTaken::Held(in_flight), "a take of the in-flight row on the new provider is held by the original attempt");
         assert_eq!(file_lines(&dest_root, BUILDS_FILE), file_lines(&h.root, BUILDS_FILE), "the attempt's Build facts are copied with its row");
         change

@@ -1011,7 +1011,6 @@ mod tests {
                     current.mesh_ids.insert(row.mesh.clone(), id);
                 }
                 current.put(row).await;
-                current.claims.claim_node_name(&row.name, &row.node_id).await.unwrap().unwrap();
             }
             current
         }
@@ -1047,12 +1046,13 @@ mod tests {
         out
     }
 
-    /// CONTRACT (query.md §1: "A current-pair lookup resolves the path/name claim to a node ID. The reader
-    /// reads the node's record at that node ID: one record per node, append-only, its latest line current";
-    /// Q323): a deleted birth still running (a paused node-admin a recovery deleted, resumed) writes its
-    /// own record after the birth that re-created the path claimed it. The atlas row Build acceptance
-    /// reads at the path is the re-created birth's, live: the claim names it, and its own record is read
-    /// at its own id; the deleted birth read by its id is its own latest line.
+    /// CONTRACT (query.md §1: "A current-pair lookup resolves the path and name to a node ID from the node
+    /// records. The reader reads the node's record at that node ID: one record per node, append-only, its
+    /// latest line current"; Q323; Q109: a version a deleted birth writes after its re-creation is
+    /// ignored by every reader): a deleted birth still running (a paused node-admin a recovery deleted,
+    /// resumed) writes its own record after the birth that re-created the path, which names it its
+    /// predecessor. The atlas row Build acceptance reads at the path is the re-created birth's, live, and
+    /// its own record is read at its own id; the deleted birth read by its id is its own latest line.
     /// Must NOT happen: the path read from the deleted birth's own write and a stop of its live successor
     /// refused `node-not-live` (S2 container seed 1431101 round 40, candidate 187fe558a).
     #[tokio::test]
@@ -1062,6 +1062,8 @@ mod tests {
         let (old, old_inc) = record(path("mesh2.admin", "1"), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Deleted);
         let (mut new, new_inc) = record(path("mesh2.admin", "1"), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready);
         new.birth_mut(&new_inc, &at).declared.insert(rdm_core::status::NodeState::Ready);
+        // The re-creation names the deleted birth its predecessor (node-recovery.md).
+        new.predecessor = Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() });
         let atlas = TestAtlas::new();
         // mesh2's installed mesh-primary is the re-created birth: it writes mesh2's records.
         let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
@@ -1079,8 +1081,7 @@ mod tests {
         late.status = NodeStatus::Ready;
         late.writer = Some(crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() });
         claims.put_node(&late).await.unwrap();
-        // The re-creation's claim holds the path.
-        claims.claim_node_name(&at, &new.node_id).await.unwrap().unwrap();
+        // The re-creation's live record holds the path.
         let reader = crate::current_record::CurrentRecords { nodes: &claims };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let row = atlas.row(&at, &reader, &builds, &observed).await.unwrap().expect("a record is current at the path");
