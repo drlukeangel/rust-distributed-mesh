@@ -77,10 +77,12 @@ async fn broker(
         rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("demo-app")).unwrap();
     fact.write_record(dir).unwrap();
     let key = rdm_node::node::load_or_mint_key(dir).unwrap();
-    let launch = rdm_core::launch::Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+    let launch = rdm_core::launch::Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: config(shared).fabric,
         fabric_id: d.fabric_id.clone(),
-        name: "mesh1.broker.1".parse().unwrap(),
+        mesh: d.node.mesh.clone(),
+        kind: rdm_core::NodeKind::Broker,
+        name: rdm_core::PathName::numbered(&d.node.mesh, rdm_core::NodeKind::Broker, 1),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -89,6 +91,7 @@ async fn broker(
         declared: Vec::new(),
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(rdm_core::launch::Launcher {
+            mesh: d.node.mesh.clone(),
             name: d.node.name.clone(),
             node_id: d.node.node_id.clone(),
             incarnation: d.node.incarnation.clone(),
@@ -100,7 +103,7 @@ async fn broker(
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
-    let _ = root.runner.joins.expect(rdm_admin::join::Deployed { listeners: Vec::new(),
+    let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind, listeners: Vec::new(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),

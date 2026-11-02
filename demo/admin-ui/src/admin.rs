@@ -61,15 +61,18 @@ impl Admin {
     }
 
     /// The topology a request is built from: the current Build `fabric.get` names, and every live
-    /// path the rows hold (`node.get`) with the executable its row records.
+    /// path the rows hold (`node.get`) that the current Build's topology names (`build.get`), with the
+    /// executable its row records. A replaced predecessor renamed `<name>-old` is a row the topology
+    /// does not name (a name ending `-old` does not make a predecessor: lifecycles/node-replace.md).
     async fn current(&self) -> Result<Current, CallEnd> {
         let fabric = self.fabric().await?;
         let unread = |reason: String| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason };
         let based_on = fabric.build_id.as_deref().ok_or_else(|| unread("fabric.get names no current Build".into()))?;
         let based_on = BuildId::parse(based_on).map_err(|e| unread(format!("fabric.get names {based_on}, not a Build id: {e}")))?;
+        let accepted: BTreeSet<PathName> = self.build(&based_on).await?.nodes.into_iter().map(|spec| spec.path).collect();
         let rows = self.rows().await?;
         let mut current = Current { based_on, paths: BTreeMap::new(), primaries: BTreeSet::new(), image: (fabric.provider == ProviderKind::Container).then(|| CONTAINER_IMAGE.to_string()) };
-        for row in rows.into_iter().filter(|n| !n.name.old && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
+        for row in rows.into_iter().filter(|n| accepted.contains(&n.name) && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)) {
             if row.is_primary {
                 current.primaries.insert(row.name.clone());
             }
@@ -79,7 +82,7 @@ impl Admin {
             };
             // The node's own tags and config, as its row holds them: the Build applies every property of
             // the spec that differs from the row (build.md §1), so the request names what the row holds.
-            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(row.name.clone(), executable) };
+            let spec = NodeSpec { tags: row.tags, config: row.config, ..spec(row.name.clone(), &row.mesh, row.kind, executable) };
             current.paths.insert(row.name, spec);
         }
         Ok(current)
@@ -103,28 +106,27 @@ impl Admin {
     }
 
     /// The complete topology with each of `meshes` resized to its counts; a mesh it leaves out is left
-    /// out (its mesh.delete) when `whole`, kept otherwise.
+    /// out (its mesh.delete) when `whole`, kept otherwise. A path's mesh and kind are its spec's.
     fn resized(&self, current: &Current, meshes: &[MeshDesired], whole: bool) -> Result<Vec<NodeSpec>, CallEnd> {
         let mut paths = current.paths.clone();
         if whole {
-            paths.retain(|p, _| meshes.iter().any(|m| m.name == p.mesh));
+            paths.retain(|_, s| meshes.iter().any(|m| m.name == s.mesh));
         }
         for m in meshes {
             for (kind, want) in [(NodeKind::NodeAdmin, m.node_admin), (NodeKind::Broker, m.broker), (NodeKind::Gateway, m.gateway), (NodeKind::Compute, m.compute)] {
-                let mut have: Vec<u32> = paths.keys().filter(|p| p.mesh == m.name && p.kind == kind).map(|p| p.ordinal).collect();
-                have.sort_unstable();
-                let keep = current.primaries.iter().find(|p| p.mesh == m.name && p.kind == kind).map(|p| p.ordinal);
+                let mut have: Vec<PathName> = paths.values().filter(|s| s.mesh == m.name && s.kind == kind).map(|s| s.path.clone()).collect();
+                have.sort();
+                let keep = current.primaries.iter().find(|p| have.contains(p)).cloned();
                 while (have.len() as u32) < want {
-                    let ordinal = (1..).find(|o| !have.contains(o)).expect("a free ordinal");
-                    have.push(ordinal);
-                    have.sort_unstable();
-                    let path = PathName::new(&m.name, kind, ordinal);
-                    paths.insert(path.clone(), spec(path, self.binding(kind, &current.image)?));
+                    let path = (1..).map(|ordinal| PathName::numbered(&m.name, kind, ordinal)).find(|p| !paths.contains_key(p)).expect("a free generated pair");
+                    have.push(path.clone());
+                    have.sort();
+                    paths.insert(path.clone(), spec(path, &m.name, kind, self.binding(kind, &current.image)?));
                 }
                 while (have.len() as u32) > want {
-                    let drop = have.iter().rev().copied().find(|o| Some(*o) != keep).or_else(|| have.last().copied()).expect("a member to drop");
-                    have.retain(|o| *o != drop);
-                    paths.remove(&PathName::new(&m.name, kind, drop));
+                    let drop = have.iter().rev().find(|p| Some(*p) != keep.as_ref()).or_else(|| have.last()).expect("a member to drop").clone();
+                    have.retain(|p| p != &drop);
+                    paths.remove(&drop);
                 }
             }
         }
@@ -133,7 +135,7 @@ impl Admin {
 
     /// The counts `current` holds of `mesh`.
     fn counts_of(current: &Current, mesh: &str) -> MeshDesired {
-        let of = |kind: NodeKind| current.paths.keys().filter(|p| p.mesh == mesh && p.kind == kind).count() as u32;
+        let of = |kind: NodeKind| current.paths.values().filter(|s| s.mesh == mesh && s.kind == kind).count() as u32;
         MeshDesired { name: mesh.into(), node_admin: of(NodeKind::NodeAdmin), rpc_node: 0, broker: of(NodeKind::Broker), gateway: of(NodeKind::Gateway), compute: of(NodeKind::Compute) }
     }
 
@@ -143,7 +145,7 @@ impl Admin {
 
     /// `fabric.get` at the entry admin: the one fabric it holds.
     pub async fn fabric(&self) -> Result<FabricView, CallEnd> {
-        Fabrics::new(self.carrier()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::NotFound, reason: format!("{} answered fabric.get with no fabric", self.entry) })
+        Fabrics::new(self.carrier()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::NotFound, reason: format!("path {:?}, name {:?} answered fabric.get with no fabric", self.entry.path, self.entry.name) })
     }
 
     /// `node.get [mesh: m]` of every mesh the entry admin's view holds.
@@ -161,6 +163,14 @@ impl Admin {
         Ok(out)
     }
 
+    /// The mesh the row at `node` names (a live birth's first), `None` when no row holds it or the rows
+    /// cannot be read: a node's mesh is its row's, never its `(path, name)`'s.
+    pub async fn mesh_of(&self, node: &PathName) -> Option<String> {
+        let rows = self.rows().await.ok()?;
+        let at = || rows.iter().filter(|n| &n.name == node);
+        at().find(|n| !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).or_else(|| at().next()).map(|n| n.mesh.clone())
+    }
+
     /// `node.get` with no pair: every node's row, the executable it records included.
     pub async fn rows(&self) -> Result<Vec<NodeView>, CallEnd> {
         Nodes::new(self.carrier()).get(&Filter::new()).await
@@ -171,7 +181,7 @@ impl Admin {
     /// admitted at any time (Q166).
     pub async fn put_own_config(&self, key: &str, value: &str) -> Result<rdm_core::status::StatusReply, String> {
         let rows = self.rows().await.map_err(|e| format!("node.get: {e:?}"))?;
-        let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds {}", self.entry))?;
+        let own = rows.iter().find(|n| n.name == self.entry && n.incarnation_id.is_some()).ok_or_else(|| format!("no row holds path {:?}, name {:?}", self.entry.path, self.entry.name))?;
         let primary = rows.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_fabric_primary).ok_or_else(|| "no row names the fabric-primary".to_string())?;
         let mut config = own.config.clone();
         config.insert(key.to_string(), value.to_string());
@@ -195,7 +205,7 @@ impl Admin {
     /// node.create of a `kind` node in `mesh`, at the lowest free ordinal of its kind.
     pub async fn spawn(&self, mesh: &str, kind: NodeKind) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
-        if !current.paths.keys().any(|p| p.mesh == mesh) {
+        if !current.paths.values().any(|s| s.mesh == mesh) {
             return Err(CallEnd::Rejected { reason: "unknown-mesh".into(), detail: format!("the fabric holds no mesh {mesh}") });
         }
         let mut grown = Self::counts_of(&current, mesh);
@@ -237,7 +247,7 @@ impl Admin {
     /// build.create of a new mesh with `desired`'s counts.
     pub async fn create_mesh(&self, desired: MeshDesired) -> Result<Accepted, CallEnd> {
         let current = self.current().await?;
-        if current.paths.keys().any(|p| p.mesh == desired.name) {
+        if current.paths.values().any(|s| s.mesh == desired.name) {
             return Err(CallEnd::Rejected { reason: "mesh-already-exists".into(), detail: format!("the fabric holds mesh {} already", desired.name) });
         }
         let nodes = self.resized(&current, std::slice::from_ref(&desired), false)?;
@@ -262,8 +272,8 @@ impl Admin {
         let mut current = self.current().await?;
         let sha256 = sha256_file(&executable).map_err(|e| missing(format!("{} could not be hashed: {e}", executable.display())))?;
         let image = current.image.clone();
-        let spec = current.paths.get_mut(node).ok_or_else(|| CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at {node}") })?;
-        spec.executable = Some(Binding { launch_id: node.kind.name().into(), executable, sha256, image });
+        let spec = current.paths.get_mut(node).ok_or_else(|| CallEnd::Rejected { reason: "unknown-node".into(), detail: format!("the fabric holds no live node at path {:?}, name {:?}", node.path, node.name) })?;
+        spec.executable = Some(Binding { launch_id: spec.kind.name().into(), executable, sha256, image });
         let nodes = current.paths.into_values().collect();
         let s = self.carrier().create(Change::Reconcile { topology_storage_provider: None, based_on: current.based_on, nodes }).await?;
         Ok(Accepted { build_id: s.build_id().clone(), attempt: s.attempt() })
@@ -292,12 +302,13 @@ struct Current {
     image: Option<String>,
 }
 
-/// The create spec of `path` on `executable`: its storage by kind, written out (node-admins and
-/// brokers keep theirs; gateways, compute and rpc nodes are ephemeral), no placement, no tags, no config.
-fn spec(path: PathName, executable: Binding) -> NodeSpec {
-    let storage_persistence = match path.kind {
+/// The create spec of `path` in `mesh`, of `kind`, on `executable`: its storage by kind, written out
+/// (node-admins and brokers keep theirs; gateways, compute and rpc nodes are ephemeral), no placement,
+/// no tags, no config.
+fn spec(path: PathName, mesh: &str, kind: NodeKind, executable: Binding) -> NodeSpec {
+    let storage_persistence = match kind {
         NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { disposition: PersistentDisposition::Preserve },
         NodeKind::Gateway | NodeKind::Compute | NodeKind::RpcNode => StorageMeta::Ephemeral,
     };
-    NodeSpec { path, storage_persistence, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
+    NodeSpec { path, mesh: mesh.into(), kind, storage_persistence, placement: PlacementMeta::default(), executable: Some(executable), tags: Default::default(), config: Default::default() }
 }

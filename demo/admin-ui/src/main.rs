@@ -50,9 +50,10 @@ impl AppState {
 
 struct Submitted(AppState);
 impl BuildEvents for Submitted {
-    fn submitted(&self, what: &str, build_id: &BuildId, node: Option<&str>, mesh: Option<&str>) {
+    fn submitted(&self, what: &str, build_id: &BuildId, node: Option<&rdm_core::PathName>, mesh: Option<&str>) {
         self.0.submitted.lock().unwrap().push(build_id.to_string());
-        self.0.ui_event("ui.build.create.via-node-admin", "ui", format!("{what} node={} mesh={} build_id={build_id}", node.unwrap_or("-"), mesh.unwrap_or("-")));
+        let (path, name) = node.map_or(("-", "-"), |n| (n.path.as_str(), n.name.as_str()));
+        self.0.ui_event("ui.build.create.via-node-admin", "ui", format!("{what} path={path} name={name} mesh={} build_id={build_id}", mesh.unwrap_or("-")));
     }
 }
 

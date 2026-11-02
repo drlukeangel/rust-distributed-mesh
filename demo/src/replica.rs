@@ -267,14 +267,16 @@ pub struct Node {
     pub view: Arc<OnceLock<TopologyView>>,
     /// The node's own node id.
     pub me: NodeId,
-    /// The node's own path.name.
+    /// The node's own `(path, name)`.
     pub name: PathName,
+    /// The node's own mesh, as its launch names it (never read from the `(path, name)`).
+    pub mesh: String,
 }
 
 impl Node {
     /// The node id of its mesh's broker primary, as its topology holds it now.
     fn broker_primary(&self) -> Option<NodeId> {
-        self.view.get()?.primaries().node_type_primary(&self.name.mesh, NodeKind::Broker).map(|p| p.node_id)
+        self.view.get()?.primaries().node_type_primary(&self.mesh, NodeKind::Broker).map(|p| p.node_id)
     }
 }
 
@@ -284,7 +286,7 @@ pub fn register_broker(b: ServerBuilder, broker: Arc<Broker>, node: Node) -> Ser
         let (broker, node) = (broker.clone(), node.clone());
         async move {
             if node.view.get().is_none() {
-                return Ok(Records::not_ready(format!("{} is starting", node.name)));
+                return Ok(Records::not_ready(format!("path {:?}, name {:?} is starting", node.name.path, node.name.name)));
             }
             let faulted = |e: std::io::Error| HandlerFault::invariant_broken(format!("the records log: {e}"));
             match request {
@@ -310,7 +312,7 @@ pub fn register_broker(b: ServerBuilder, broker: Arc<Broker>, node: Node) -> Ser
                             offset
                         }
                     };
-                    tracing::info!(target: "rshape", node = %node.name, %operation, %topic, offset, "a record produced at the broker primary");
+                    tracing::info!(target: "rshape", path = %node.name.path, name = %node.name.name, %operation, %topic, offset, "a record produced at the broker primary");
                     Ok(RecordsReply::Produced { operation, topic, offset })
                 }
             }
@@ -324,7 +326,7 @@ pub fn register_gateway(b: ServerBuilder, client: Arc<NodeRpcClient>, node: Node
         let (client, node) = (client.clone(), node.clone());
         async move {
             if node.view.get().is_none() {
-                return Ok(Records::not_ready(format!("{} is starting", node.name)));
+                return Ok(Records::not_ready(format!("path {:?}, name {:?} is starting", node.name.path, node.name.name)));
             }
             Ok(forward(&client, &node, &request).await)
         }
@@ -345,7 +347,7 @@ async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) 
                     RecordsReply::NotPrimary { primary: held } => format!("{primary} is not the broker primary (it holds {held:?})"),
                     RecordsReply::NotReady { reason } | RecordsReply::Busy { reason } | RecordsReply::ConnectionsDeleting { reason } => format!("{primary}: {reason}"),
                     answered => {
-                        tracing::info!(target: "rshape", node = %node.name, broker = %primary, "a request forwarded to the broker primary answered");
+                        tracing::info!(target: "rshape", path = %node.name.path, name = %node.name.name, broker = %primary, "a request forwarded to the broker primary answered");
                         return answered;
                     }
                 },
@@ -355,7 +357,7 @@ async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) 
             };
         }
         if tokio::time::Instant::now() >= until {
-            return RecordsReply::NoBroker { reason: format!("{}: {last}", node.name) };
+            return RecordsReply::NoBroker { reason: format!("path {:?}, name {:?}: {last}", node.name.path, node.name.name) };
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }

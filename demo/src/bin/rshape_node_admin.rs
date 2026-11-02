@@ -14,7 +14,7 @@
 //! an operation id of the ready Build, so a notice repeated for one Build appends nothing twice; then
 //! it opens a data connection to each Ready broker of its mesh on the shape's data protocol
 //! (`rshape_consumer::data_alpn`), as Rafka's admin talks to its brokers. The admin registers that
-//! protocol and answers every stream a node opens to it (`echo <admin>: <bytes>`), as the role nodes do.
+//! protocol and answers every stream a node opens to it (`echo <admin's node id>: <bytes>`), as the role nodes do.
 use async_trait::async_trait;
 use rdm_admin::model::{IncarnationId, ProviderKind};
 use rdm_admin::storage::NodeRecord;
@@ -61,19 +61,20 @@ struct Started {
     client: Arc<rdm_transport::NodeRpcClient>,
     view: rdm_transport::topology::TopologyView,
     mesh: String,
-    name: String,
+    node_id: String,
     /// Its dialer on the shape's data protocol.
     dialer: rdm_transport::connections::Dialer,
 }
 
-/// Answer every stream a node opens to this admin on the data protocol: `echo <admin>: <bytes>`.
+/// Answer every stream a node opens to this admin on the data protocol: `echo <admin's node id>: <bytes>`.
 async fn answer(mut acceptor: rdm_transport::connections::Acceptor, own: String) {
     while let Some(conn) = acceptor.accept().await {
         let own = own.clone();
         tokio::spawn(async move {
             while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                 let Ok(bytes) = recv.read_to_end(1 << 20).await else { break };
-                tracing::info!(target: "rshape", node = %own, peer = %conn.peer().name, bytes = bytes.len(), "a data-plane stream answered by the node-admin");
+                let peer = conn.peer();
+                tracing::info!(target: "rshape", node = %own, peer_path = %peer.name.path, peer_name = %peer.name.name, bytes = bytes.len(), "a data-plane stream answered by the node-admin");
                 if send.write_all(format!("echo {own}: {}", String::from_utf8_lossy(&bytes)).as_bytes()).await.is_err() || send.finish().is_err() {
                     break;
                 }
@@ -87,19 +88,19 @@ async fn answer(mut acceptor: rdm_transport::connections::Acceptor, own: String)
 async fn talk_to_brokers(started: &Started) {
     let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["broker"]).eq("status", ["ready"]);
     for broker in started.view.nodes_get(&filter).unwrap_or_default() {
-        let to = rdm_transport::connections::Birth { name: broker.node.name.clone(), node_id: broker.node.node_id.clone(), incarnation: broker.node.incarnation.clone() };
+        let to = rdm_transport::connections::Birth { mesh: broker.node.mesh.clone(), kind: broker.node.kind, name: broker.node.name.clone(), node_id: broker.node.node_id.clone(), incarnation: broker.node.incarnation.clone() };
         let answered = async {
             let conn = started.dialer.open(&to).await.map_err(|e| format!("{e:?}"))?;
             let (mut send, mut recv) = conn.open_bi().await.map_err(|e| format!("{e:?}"))?;
-            send.write_all(format!("from {}", started.name).as_bytes()).await.map_err(|e| format!("{e:?}"))?;
+            send.write_all(format!("from {}", started.node_id).as_bytes()).await.map_err(|e| format!("{e:?}"))?;
             send.finish().map_err(|e| format!("{e:?}"))?;
             let bytes = recv.read_to_end(1 << 16).await.map_err(|e| format!("{e:?}"))?;
             Ok::<String, String>(String::from_utf8_lossy(&bytes).into_owned())
         };
         match tokio::time::timeout(Duration::from_secs(10), answered).await {
-            Ok(Ok(answer)) => tracing::info!(target: "rshape", broker = %to.name, %answer, "the node-admin's data connection to a broker answered"),
-            Ok(Err(e)) => tracing::warn!(target: "rshape", broker = %to.name, error = %e, "the node-admin's data connection to a broker failed"),
-            Err(_) => tracing::warn!(target: "rshape", broker = %to.name, "the node-admin's data connection to a broker did not answer within 10 s"),
+            Ok(Ok(answer)) => tracing::info!(target: "rshape", broker_path = %to.name.path, broker_name = %to.name.name, %answer, "the node-admin's data connection to a broker answered"),
+            Ok(Err(e)) => tracing::warn!(target: "rshape", broker_path = %to.name.path, broker_name = %to.name.name, error = %e, "the node-admin's data connection to a broker failed"),
+            Err(_) => tracing::warn!(target: "rshape", broker_path = %to.name.path, broker_name = %to.name.name, "the node-admin's data connection to a broker did not answer within 10 s"),
         }
     }
 }
@@ -117,7 +118,7 @@ async fn day_zero(own: Own, fabric_id: String, build_id: String) {
                 let (outcome, _) = started.client.call::<Records>(&rdm_transport::NodeTarget::ExactNode(gateway.node.node_id.clone()), &request, &rdm_transport::CallOptions::default()).await;
                 if let rdm_core::outcome::RpcOutcome::Reply(reply) = outcome {
                     if let RecordsReply::Produced { offset, .. } = reply.value() {
-                        tracing::info!(target: "rshape", %operation, gateway = %gateway.node.name, offset, "on_fabric_ready: the day-0 record is produced through the gateway");
+                        tracing::info!(target: "rshape", %operation, gateway_path = %gateway.node.name.path, gateway_name = %gateway.node.name.name, offset, "on_fabric_ready: the day-0 record is produced through the gateway");
                         return talk_to_brokers(started).await;
                     }
                 }
@@ -179,8 +180,8 @@ async fn main() {
                 return tracing::error!(target: "rshape", "the node-admin holds no data-protocol handle: it answers no stream and talks to no broker");
             };
             let (dialer, acceptor) = connections.split();
-            tokio::spawn(answer(acceptor, birth.name.to_string()));
-            let _ = started.set(Started { client: running.node_rpc.client.clone(), view: running.topology_view.clone(), mesh: birth.name.mesh.clone(), name: birth.name.to_string(), dialer });
+            tokio::spawn(answer(acceptor, birth.node_id.to_string()));
+            let _ = started.set(Started { client: running.node_rpc.client.clone(), view: running.topology_view.clone(), mesh: birth.mesh.clone(), node_id: birth.node_id.to_string(), dialer });
         },
     )
     .await

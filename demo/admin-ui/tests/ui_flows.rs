@@ -19,7 +19,7 @@ use tower::ServiceExt;
 #[derive(Default)]
 struct Timeline(Mutex<Vec<(String, String)>>);
 impl BuildEvents for Timeline {
-    fn submitted(&self, what: &str, build_id: &BuildId, _: Option<&str>, _: Option<&str>) {
+    fn submitted(&self, what: &str, build_id: &BuildId, _: Option<&rdm_core::PathName>, _: Option<&str>) {
         self.0.lock().unwrap().push((what.to_string(), build_id.to_string()));
     }
 }
@@ -55,7 +55,7 @@ async fn node_admin(dir: &std::path::Path) -> (Running, Arc<Admin>) {
     let until = std::time::Instant::now() + Duration::from_secs(20);
     let day0 = loop {
         match admin.fabric().await {
-            Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::Ready => break f.build_id,
+            Ok(f) if f.fabric_primary.as_ref() == Some(&birth.node_id) && f.status == rdm_client::ScopeStatus::Ready => break f.build_id,
             other => assert!(std::time::Instant::now() < until, "the Day-0 admin never named itself the fabric-primary: {other:?}"),
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -115,11 +115,11 @@ async fn node_admin_refusals_reach_the_ui_with_their_reason() {
     let (_running, admin) = node_admin(&d).await;
     let timeline = Arc::new(Timeline::default());
     let ui = router(Some(admin), timeline.clone());
-    let (s, v) = call(&ui, "POST", "/api/nodes/mesh1.broker.9/stop", None).await;
+    let (s, v) = call(&ui, "POST", "/api/nodes/mesh1.broker/9/stop", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown-node")), "{v}");
-    let (s, v) = call(&ui, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
+    let (s, v) = call(&ui, "DELETE", "/api/nodes/mesh1.admin/1", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("would-leave-mesh-without-admin")), "{v}");
-    let (s, v) = call(&ui, "DELETE", "/api/nodes/not..a..path", None).await;
+    let (s, v) = call(&ui, "DELETE", "/api/nodes/not..a..path/1", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid-request")), "{v}");
     assert!(timeline.0.lock().unwrap().is_empty(), "a refusal submits nothing");
     let _ = std::fs::remove_dir_all(&d);
@@ -266,7 +266,7 @@ impl ConsumerEstate {
         let until = std::time::Instant::now() + Duration::from_secs(60);
         let day0 = loop {
             match admin.fabric().await {
-                Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::Ready => break f.build_id,
+                Ok(f) if f.fabric_primary.as_ref() == Some(&birth.node_id) && f.status == rdm_client::ScopeStatus::Ready => break f.build_id,
                 other => assert!(std::time::Instant::now() < until, "the Day-0 admin never named itself the fabric-primary of a ready fabric: {other:?}"),
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -322,12 +322,12 @@ async fn adding_resubmitting_and_replacing_a_gateway_through_the_ui_each_complet
     until_complete(&admin, "the topology resubmitted", &id).await;
     ready(&admin, "after the topology resubmitted").await;
     let next = estate.another_build("rshape-gateway");
-    let id = accepted(&ui, "/api/nodes/mesh1.gateway.1/replace", Some(json!({"executable": next}))).await;
+    let id = accepted(&ui, "/api/nodes/mesh1.gateway/1/replace", Some(json!({"executable": next}))).await;
     until_complete(&admin, "the gateway's executable replaced", &id).await;
     ready(&admin, "after the gateway's executable replaced").await;
     let sha = rdm_core::binding::sha256_file(&next).unwrap();
     let rows = admin.rows().await.expect("fabric.nodes.get");
-    let gateway = rows.iter().find(|n| n.name.to_string() == "mesh1.gateway.1" && n.status == rdm_client::NodeStatus::Ready).unwrap_or_else(|| panic!("mesh1.gateway.1 is ready: {rows:?}"));
+    let gateway = rows.iter().find(|n| (n.name.path.as_str(), n.name.name.as_str()) == ("mesh1.gateway", "1") && n.status == rdm_client::NodeStatus::Ready).unwrap_or_else(|| panic!("path mesh1.gateway, name 1 is ready: {rows:?}"));
     assert_eq!(gateway.executable.as_ref().map(|b| b.sha256.clone()), Some(sha), "the replaced gateway's row records the executable its request named: {gateway:?}");
     drop(estate);
 }

@@ -36,7 +36,7 @@ fn a_produce_through_the_gateway_is_one_trace_across_the_gateway_and_the_broker_
 
         // The consumer's span, and the produce through the gateway inside it.
         let call = tracing::info_span!(target: "rshape", "rshape.demo.records.create.via-gateway");
-        let reply = common::records(&estate, "mesh1.gateway.1", &RecordsRequest::Produce { operation: "traced-1".into(), topic: "orders".into(), record: "order 1".into() }).instrument(call).await;
+        let reply = common::records(&estate, &rdm_core::PathName::numbered("mesh1", NodeKind::Gateway, 1), &RecordsRequest::Produce { operation: "traced-1".into(), topic: "orders".into(), record: "order 1".into() }).instrument(call).await;
         assert!(matches!(reply, RecordsReply::Produced { .. }), "the gateway's produce is acknowledged: {reply:?}");
         provider.force_flush().unwrap();
 

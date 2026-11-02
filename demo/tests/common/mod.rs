@@ -5,7 +5,7 @@
 use rdm_client::binding::{sha256_file, Binding, BindingSet, Candidate};
 use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::{NodeId, NodeKind};
+use rdm_core::{NodeId, NodeKind, PathName};
 use rdm_test::estate::{Estate, Owner};
 use rdm_transport::{Budget, CallOptions, NodeTarget};
 use rshape_consumer::replica::{Records, RecordsReply, RecordsRequest};
@@ -48,38 +48,38 @@ pub async fn estate(feature: &str, test: &str, shape: &[(NodeKind, u32)]) -> Est
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", shape.iter().copied())] }).await;
     for (kind, count) in shape {
         for ordinal in 1..=*count {
-            ready(&estate, &format!("mesh1.{}.{ordinal}", kind.segment())).await;
+            ready(&estate, &PathName::numbered("mesh1", *kind, ordinal)).await;
         }
     }
     estate
 }
 
 /// `node` Ready, awaited.
-pub async fn ready(estate: &Estate, node: &str) {
-    estate.until_node(node, &format!("{node} ready"), SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
+pub async fn ready(estate: &Estate, node: &PathName) {
+    estate.until_node(node, &format!("{node:?} ready"), SETTLE, |n| n.filter(|n| n.status == NodeStatus::Ready).map(|_| ())).await;
 }
 
 /// The node id of `node`'s current birth.
-pub async fn node_id(estate: &Estate, node: &str) -> NodeId {
+pub async fn node_id(estate: &Estate, node: &PathName) -> NodeId {
     serde_json::from_value(estate.node_value(node).await["node_id"].clone()).expect("a node id")
 }
 
 /// `request` at `node`'s replica op ([`Records`]), answered within 40 s.
-pub async fn records(estate: &Estate, node: &str, request: &RecordsRequest) -> RecordsReply {
+pub async fn records(estate: &Estate, node: &PathName, request: &RecordsRequest) -> RecordsReply {
     let options = CallOptions { budget: Budget::Overall(Duration::from_secs(40)), ..CallOptions::default() };
     let target = NodeTarget::ExactNode(node_id(estate, node).await);
     let (outcome, _) = estate.carrier().await.client().call::<Records>(&target, request, &options).await;
     match outcome {
         RpcOutcome::Reply(reply) => reply.into_value(),
-        other => panic!("{node}'s records op answered {other:?} to {request:?}"),
+        other => panic!("{node:?}'s records op answered {other:?} to {request:?}"),
     }
 }
 
 /// `topic`'s records as `node` answers a fetch from offset 0.
-pub async fn fetch(estate: &Estate, node: &str, topic: &str) -> Vec<(u64, String)> {
+pub async fn fetch(estate: &Estate, node: &PathName, topic: &str) -> Vec<(u64, String)> {
     match records(estate, node, &RecordsRequest::Fetch { topic: topic.into(), from: 0, max: 1000 }).await {
         RecordsReply::Fetched { records, .. } => records,
-        other => panic!("{node}'s fetch of {topic} was not answered: {other:?}"),
+        other => panic!("{node:?}'s fetch of {topic} was not answered: {other:?}"),
     }
 }
 

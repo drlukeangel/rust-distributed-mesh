@@ -6,9 +6,9 @@
 //!
 //! ```text
 //! POST   /api/nodes/spawn          {mesh, kind}  -> Reconcile: the topology with the next path of that kind
-//! POST   /api/nodes/{name}/stop                  -> Stop (a restart is a stop, then a start: Q183)
-//! POST   /api/nodes/{name}/start                 -> Start
-//! DELETE /api/nodes/{name}                       -> RemoveNode
+//! POST   /api/nodes/{path}/{name}/stop           -> Stop (a restart is a stop, then a start: Q183)
+//! POST   /api/nodes/{path}/{name}/start          -> Start
+//! DELETE /api/nodes/{path}/{name}                -> RemoveNode
 //! POST   /api/bootstrap   [{meshes: [{name, node_admin, gateway?, compute?, broker?}]}] -> one Build to that
 //!                                                   shape (no body: the MN shape), Reconcile
 //! POST   /api/meshes      {name, node_admin, gateway?, compute?, broker?} -> Reconcile: the topology
@@ -16,7 +16,7 @@
 //! DELETE /api/meshes/{name}                      -> RemoveMesh
 //! POST   /api/builds/resubmit                    -> Reconcile: the current topology as it stands, each
 //!                                                   node on the executable its row records
-//! POST   /api/nodes/{name}/replace {executable}  -> Reconcile: the current topology with that node on the
+//! POST   /api/nodes/{path}/{name}/replace {executable} -> Reconcile: the current topology with that node on the
 //!                                                   executable at that file (its replacement)
 //! ```
 //!
@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 /// Told about every Build the UI submitted (the UI's event timeline).
 pub trait BuildEvents: Send + Sync {
-    fn submitted(&self, what: &str, build_id: &BuildId, node: Option<&str>, mesh: Option<&str>);
+    fn submitted(&self, what: &str, build_id: &BuildId, node: Option<&PathName>, mesh: Option<&str>);
 }
 
 #[derive(Clone)]
@@ -90,11 +90,11 @@ struct SpawnRequest {
 pub fn router(admin: Option<Arc<Admin>>, events: Arc<dyn BuildEvents>) -> Router {
     Router::new()
         .route("/api/nodes/spawn", post(spawn))
-        .route("/api/nodes/{node_name}/stop", post(stop))
-        .route("/api/nodes/{node_name}/start", post(start))
-        .route("/api/nodes/{node_name}/replace", post(replace))
+        .route("/api/nodes/{node_path}/{node_name}/stop", post(stop))
+        .route("/api/nodes/{node_path}/{node_name}/start", post(start))
+        .route("/api/nodes/{node_path}/{node_name}/replace", post(replace))
         .route("/api/builds/resubmit", post(resubmit))
-        .route("/api/nodes/{node_name}", delete(remove))
+        .route("/api/nodes/{node_path}/{node_name}", delete(remove))
         .route("/api/bootstrap", post(bootstrap))
         .route("/api/meshes", post(create_mesh))
         .route("/api/meshes/{mesh_name}", delete(remove_mesh))
@@ -114,7 +114,7 @@ fn client(c: &Control) -> Result<&Admin, Response> {
     })
 }
 
-fn answer(c: &Control, what: &str, r: Result<Accepted, CallEnd>, node: Option<&str>, mesh: Option<&str>) -> Response {
+fn answer(c: &Control, what: &str, r: Result<Accepted, CallEnd>, node: Option<&PathName>, mesh: Option<&str>) -> Response {
     match r {
         Ok(Accepted { build_id, attempt }) => {
             c.events.submitted(what, &build_id, node, mesh);
@@ -127,8 +127,8 @@ fn answer(c: &Control, what: &str, r: Result<Accepted, CallEnd>, node: Option<&s
     }
 }
 
-fn parse_node(name: &str) -> Result<PathName, Response> {
-    name.parse::<PathName>()
+fn parse_node((path, name): (String, String)) -> Result<PathName, Response> {
+    PathName::new(path, name)
         .map_err(|e| (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid-request", "detail": e.to_string() }))).into_response())
 }
 
@@ -141,31 +141,34 @@ async fn spawn(State(c): State<Control>, Json(body): Json<SpawnRequest>) -> Resp
     answer(&c, "add node", r, None, Some(&body.mesh))
 }
 
-async fn stop(State(c): State<Control>, Path(name): Path<String>) -> Response {
-    let (admin, node) = match (client(&c), parse_node(&name)) {
+async fn stop(State(c): State<Control>, Path(name): Path<(String, String)>) -> Response {
+    let (admin, node) = match (client(&c), parse_node(name)) {
         (Ok(a), Ok(n)) => (a, n),
         (Err(r), _) | (_, Err(r)) => return r,
     };
+    let mesh = admin.mesh_of(&node).await;
     let r = admin.stop(&node).await;
-    answer(&c, "stop node", r, Some(&name), Some(&node.mesh))
+    answer(&c, "stop node", r, Some(&node), mesh.as_deref())
 }
 
-async fn start(State(c): State<Control>, Path(name): Path<String>) -> Response {
-    let (admin, node) = match (client(&c), parse_node(&name)) {
+async fn start(State(c): State<Control>, Path(name): Path<(String, String)>) -> Response {
+    let (admin, node) = match (client(&c), parse_node(name)) {
         (Ok(a), Ok(n)) => (a, n),
         (Err(r), _) | (_, Err(r)) => return r,
     };
+    let mesh = admin.mesh_of(&node).await;
     let r = admin.start(&node).await;
-    answer(&c, "start node", r, Some(&name), Some(&node.mesh))
+    answer(&c, "start node", r, Some(&node), mesh.as_deref())
 }
 
-async fn replace(State(c): State<Control>, Path(name): Path<String>, Json(body): Json<ReplaceRequest>) -> Response {
-    let (admin, node) = match (client(&c), parse_node(&name)) {
+async fn replace(State(c): State<Control>, Path(name): Path<(String, String)>, Json(body): Json<ReplaceRequest>) -> Response {
+    let (admin, node) = match (client(&c), parse_node(name)) {
         (Ok(a), Ok(n)) => (a, n),
         (Err(r), _) | (_, Err(r)) => return r,
     };
+    let mesh = admin.mesh_of(&node).await;
     let r = admin.replace(&node, body.executable).await;
-    answer(&c, "replace executable", r, Some(&name), Some(&node.mesh))
+    answer(&c, "replace executable", r, Some(&node), mesh.as_deref())
 }
 
 /// The current topology submitted again as it stands: one Build with nothing to execute.
@@ -178,13 +181,14 @@ async fn resubmit(State(c): State<Control>) -> Response {
     answer(&c, "resubmit topology", r, None, None)
 }
 
-async fn remove(State(c): State<Control>, Path(name): Path<String>) -> Response {
-    let (admin, node) = match (client(&c), parse_node(&name)) {
+async fn remove(State(c): State<Control>, Path(name): Path<(String, String)>) -> Response {
+    let (admin, node) = match (client(&c), parse_node(name)) {
         (Ok(a), Ok(n)) => (a, n),
         (Err(r), _) | (_, Err(r)) => return r,
     };
+    let mesh = admin.mesh_of(&node).await;
     let r = admin.remove(&node).await;
-    answer(&c, "remove node", r, Some(&name), Some(&node.mesh))
+    answer(&c, "remove node", r, Some(&node), mesh.as_deref())
 }
 
 /// One Build to the shape the body names; with no body, the MN proof shape (PRD §1.13): `mesh1`

@@ -108,10 +108,10 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
     for n in views.iter() {
         match admin.connections(n).await {
             Some(Ok(c)) => {
-                let by = n.name.to_string();
+                let by = json!(n.name);
                 for e in serde_json::to_value(&c).unwrap_or(Value::Null)["connections"].as_array().into_iter().flatten() {
                     let mut e = e.clone();
-                    e["reported_by"] = json!(by);
+                    e["reported_by"] = by.clone();
                     // One fact per (source, destination, kind): the latest any admin reports.
                     let same = |x: &Value| x["source"] == e["source"] && x["destination"] == e["destination"] && x["kind"] == e["kind"];
                     match connections.iter().position(|x| same(x)) {
@@ -121,7 +121,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
                     }
                 }
             }
-            Some(Err(e)) => errors.push(format!("{}: {e}", n.name)),
+            Some(Err(e)) => errors.push(format!("path {:?}, name {:?}: {e}", n.name.path, n.name.name)),
             None => {}
         }
     }

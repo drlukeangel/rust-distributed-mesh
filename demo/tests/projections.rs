@@ -7,7 +7,7 @@
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
-use rdm_core::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
 use rdm_node::node_hooks::{PreNodeReady, NodeReadyCtx, NodeHooks, HookOutcome};
 use rdm_node::gossip::{Channel, Event};
 use rdm_test::pre_node_ready_probe::{PreNodeReadyPull, PullReply, PullRequest, Row};
@@ -106,7 +106,7 @@ impl PreNodeReady for Hydrate {
                         installed += 1;
                     }
                 }
-                tracing::info_span!(target: "rshape", "rafka.mesh.entry.update.via-projection-pulled", node = %ctx.birth.name, accepting_primary = %accepting_primary.name, entity_rows = rows.len() as u64, raw_applied = installed)
+                tracing::info_span!(target: "rshape", "rafka.mesh.entry.update.via-projection-pulled", path = %ctx.birth.name.path, name = %ctx.birth.name.name, accepting_primary = %accepting_primary.node_id, entity_rows = rows.len() as u64, raw_applied = installed)
                     .in_scope(|| tracing::info!("hydrated from node-admin's cache before ready"));
                 HookOutcome::Ok
             }
@@ -116,17 +116,20 @@ impl PreNodeReady for Hydrate {
     }
 }
 
-/// A member launched by the root admin, declaring `kinds`, hydrating through `hook`.
-async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path, name: &str, kinds: &[&str], hook: NodeHooks) -> rdm_node::node::RunningNode {
+/// A member of `kind` at `ordinal` in the root admin's mesh, launched by the root admin, declaring
+/// `kinds`, hydrating through `hook`.
+async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path, kind: NodeKind, ordinal: u32, kinds: &[&str], hook: NodeHooks) -> rdm_node::node::RunningNode {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
     let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("demo-proj")).unwrap();
     fact.write_record(dir).unwrap();
     let key = rdm_node::node::load_or_mint_key(dir).unwrap();
-    let launch = rdm_core::launch::Launch { topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
+    let launch = rdm_core::launch::Launch { initial_properties: Default::default(), topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
         fabric: config(shared).fabric,
         fabric_id: d.fabric_id.clone(),
-        name: name.parse().unwrap(),
+        mesh: d.node.mesh.clone(),
+        kind,
+        name: PathName::numbered(&d.node.mesh, kind, ordinal),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -135,6 +138,7 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
         declared: Vec::new(),
         seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
         launcher: Some(rdm_core::launch::Launcher {
+            mesh: d.node.mesh.clone(),
             name: d.node.name.clone(),
             node_id: d.node.node_id.clone(),
             incarnation: d.node.incarnation.clone(),
@@ -146,7 +150,7 @@ async fn member(root: &Running, dir: &std::path::Path, shared: &std::path::Path,
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
-    let _ = root.runner.joins.expect(rdm_admin::join::Deployed { listeners: Vec::new(),
+    let _ = root.runner.joins.expect(rdm_admin::join::Deployed { mesh: launch.mesh.clone(), kind: launch.kind, listeners: Vec::new(),
         name: launch.name.clone(),
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
@@ -220,8 +224,8 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         // The first gateway and compute: born into an empty cache, they publish.
         let g1_held: Cache = Default::default();
         let c1_held: Cache = Default::default();
-        let g1 = member(&root, &dir.join("gateway.1"), &root_dir, "mesh1.gateway.1", &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g1_held.clone() }))).await;
-        let c1 = member(&root, &dir.join("compute.1"), &root_dir, "mesh1.compute.1", &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c1_held.clone() }))).await;
+        let g1 = member(&root, &dir.join("gateway.1"), &root_dir, NodeKind::Gateway, 1, &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g1_held.clone() }))).await;
+        let c1 = member(&root, &dir.join("compute.1"), &root_dir, NodeKind::Compute, 1, &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c1_held.clone() }))).await;
         assert!(g1_held.lock().unwrap().is_empty() && c1_held.lock().unwrap().is_empty(), "nothing was published yet");
         assert_eq!(g1.topology_view.held_types(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect());
         assert_eq!(c1.topology_view.held_types(), COMPUTE_KINDS.iter().map(|k| k.to_string()).collect());
@@ -287,8 +291,8 @@ fn node_admin_caches_every_kind_and_a_node_born_later_hydrates_its_own_kinds_bef
         // A gateway and a compute born now hydrate their own kinds from the cache, before ready.
         let g2_held: Cache = Default::default();
         let c2_held: Cache = Default::default();
-        let g2 = member(&root, &dir.join("gateway.2"), &root_dir, "mesh1.gateway.2", &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g2_held.clone() }))).await;
-        let c2 = member(&root, &dir.join("compute.2"), &root_dir, "mesh1.compute.2", &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c2_held.clone() }))).await;
+        let g2 = member(&root, &dir.join("gateway.2"), &root_dir, NodeKind::Gateway, 2, &GATEWAY_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: GATEWAY_KINDS.to_vec(), held: g2_held.clone() }))).await;
+        let c2 = member(&root, &dir.join("compute.2"), &root_dir, NodeKind::Compute, 2, &COMPUTE_KINDS, NodeHooks::new(Arc::new(Hydrate { kinds: COMPUTE_KINDS.to_vec(), held: c2_held.clone() }))).await;
         let g2_rows = g2_held.lock().unwrap().clone();
         let c2_rows = c2_held.lock().unwrap().clone();
         assert_eq!(g2_rows.keys().map(|s| kind_of(s).to_string()).collect::<std::collections::BTreeSet<_>>(), GATEWAY_KINDS.iter().map(|k| k.to_string()).collect(), "the gateway hydrated exactly its three kinds");

@@ -528,7 +528,7 @@ impl PreNodeReady for Resume {
     async fn pre_node_ready(&self, ctx: &NodeReadyCtx) -> HookOutcome {
         match self.0.resume().await {
             Ok(resumed) => {
-                tracing::info!(target: "rshape", node = %ctx.birth.name, start_kind = ?ctx.start_kind, inherited = ctx.inherited, resumed, "the operations record is read; its pending operations' work is resumed");
+                tracing::info!(target: "rshape", path = %ctx.birth.name.path, name = %ctx.birth.name.name, start_kind = ?ctx.start_kind, inherited = ctx.inherited, resumed, "the operations record is read; its pending operations' work is resumed");
                 HookOutcome::Ok
             }
             Err(e) => HookOutcome::Failed { reason: format!("the operations record could not be read: {e}") },
@@ -555,6 +555,8 @@ enum Owed {
 pub struct Caller {
     /// Where its copies of the serving nodes' records are kept.
     pub dir: PathBuf,
+    /// The node's own mesh, as its launch names it: the serving nodes are chosen in it.
+    pub mesh: String,
 }
 
 #[async_trait::async_trait]
@@ -565,7 +567,7 @@ impl OnNodeReady for Caller {
         }
         // The calls are the application's own task, ended by the birth's stop, and outside the
         // hook's span: each call is the root of its own trace, not a child of the node's boot.
-        let (caller, ctx) = (Caller { dir: self.dir.clone() }, ctx.clone());
+        let (caller, ctx) = (Caller { dir: self.dir.clone(), mesh: self.mesh.clone() }, ctx.clone());
         tokio::spawn(
             async move {
                 tokio::select! {
@@ -589,10 +591,11 @@ impl Caller {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         for n in 1u64.. {
             tick.tick().await;
-            owed.insert(format!("{}-{}-{n:06}", ctx.birth.name, ctx.birth.incarnation.as_str()), (format!("operation {n} of {}", ctx.birth.name), Owed::ToSend));
+            let (path, name) = (&ctx.birth.name.path, &ctx.birth.name.name);
+            owed.insert(format!("{path}-{name}-{}-{n:06}", ctx.birth.incarnation.as_str()), (format!("operation {n} of path {path:?}, name {name:?}"), Owed::ToSend));
             // Target selection: the serving kind's ready nodes in this node's mesh, as the topology
             // this node holds names them; a node that answered Unserved is passed over.
-            let serving: Vec<_> = match ctx.topology_view.nodes_get(&Filter::new().eq("mesh", [ctx.birth.name.mesh.clone()]).eq("kind", [SERVING_KIND.segment()]).eq("status", ["ready"])) {
+            let serving: Vec<_> = match ctx.topology_view.nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("kind", [SERVING_KIND.segment()]).eq("status", ["ready"])) {
                 Ok(nodes) => nodes.into_iter().filter(|d| !unserved.contains(&d.node.node_id)).collect(),
                 Err(refused) => {
                     tracing::error!(target: "rshape", %refused, "the topology query was refused");
@@ -600,7 +603,7 @@ impl Caller {
                 }
             };
             let chosen = (!serving.is_empty()).then(|| serving[(n as usize) % serving.len()].node.clone());
-            tracing::info!(target: "rshape", candidates = serving.len(), chosen = ?chosen.as_ref().map(|c| c.name.to_string()), owed = owed.len(), "serving nodes selected from the topology");
+            tracing::info!(target: "rshape", candidates = serving.len(), chosen = ?chosen.as_ref().map(|c| &c.name), owed = owed.len(), "serving nodes selected from the topology");
             for (operation, (input, state)) in owed.iter_mut() {
                 match state {
                     Owed::ToSend => {
@@ -658,7 +661,7 @@ impl Caller {
     /// Copy the record of the node at `path` from where this copy ends, through [`ExampleRecords`]:
     /// each entry is appended to the copy and synced before it is acknowledged.
     async fn copy(&self, client: &NodeRpcClient, node: NodeId, path: &PathName, copied: &mut BTreeMap<PathName, u64>, unserved: &mut BTreeSet<NodeId>) {
-        let file = self.dir.join(format!("copy-of-{path}.jsonl"));
+        let file = self.dir.join(format!("copy-of-{}-{}.jsonl", path.path, path.name));
         let from = *copied.entry(path.clone()).or_insert_with(|| std::fs::read_to_string(&file).map(|t| t.lines().count() as u64).unwrap_or(0));
         let options = CallOptions { budget: Budget::Overall(Duration::from_secs(10)), ..Default::default() };
         match client.call_stream::<ExampleRecords>(&NodeTarget::ExactNode(node.clone()), &RecordsRequest::Read { from, max: 256 }, &options).await {
@@ -683,22 +686,22 @@ impl Caller {
                 // The node does not serve the op: chosen no more, as an open that ends Unserved.
                 if let Err(ReadFailure::Unserved) = ended {
                     unserved.insert(node);
-                    return tracing::info!(target: "rshape", node = %path, outcome = "Unserved", detail = "unserved-op", "the record copy's stream opened and its first item is Unserved: the node does not serve the op");
+                    return tracing::info!(target: "rshape", path = %path.path, name = %path.name, outcome = "Unserved", detail = "unserved-op", "the record copy's stream opened and its first item is Unserved: the node does not serve the op");
                 }
-                tracing::info!(target: "rshape", node = %path, from, next, ended = ?ended, "a serving node's record copied");
+                tracing::info!(target: "rshape", path = %path.path, name = %path.name, from, next, ended = ?ended, "a serving node's record copied");
             }
             Err((outcome, _)) => {
                 if let RpcOutcome::Unserved(_) = outcome {
                     unserved.insert(node);
                 }
-                tracing::info!(target: "rshape", node = %path, outcome = outcome.name(), detail = outcome.detail_name(), "the record copy did not open");
+                tracing::info!(target: "rshape", path = %path.path, name = %path.name, outcome = outcome.name(), detail = outcome.detail_name(), "the record copy did not open");
             }
         }
     }
 }
 
 fn log_outcome<R>(call: &str, operation: &str, node: &PathName, outcome: &RpcOutcome<R>) {
-    tracing::info!(target: "rshape", call, %operation, %node, outcome = outcome.name(), detail = outcome.detail_name(), code = ?outcome.code(), "an example call answered");
+    tracing::info!(target: "rshape", call, %operation, path = %node.path, name = %node.name, outcome = outcome.name(), detail = outcome.detail_name(), code = ?outcome.code(), "an example call answered");
 }
 
 /// The `rshape-example` node: its role is the kind its launch names; it serves the two ops over the
@@ -708,7 +711,7 @@ pub async fn run() -> anyhow::Result<()> {
     let launch = rdm_node::read_launch()?;
     let dir = launch.data_dir.join(DATA_SUBDIR);
     let service = ExampleService::open(&dir, WORK_TIME).map_err(|e| anyhow::anyhow!("refusing to start: the operations record: {e}"))?;
-    let hooks = NodeHooks::new(Arc::new(Resume(service.clone()))).with_on_node_ready(Arc::new(Caller { dir }));
+    let hooks = NodeHooks::new(Arc::new(Resume(service.clone()))).with_on_node_ready(Arc::new(Caller { dir, mesh: launch.mesh.clone() }));
     let gate = hooks.gate();
     rdm_node::run_with(Role::of(&launch), &[], hooks, move |b| register(b, service, gate)).await
 }

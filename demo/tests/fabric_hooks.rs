@@ -12,7 +12,9 @@ mod common;
 
 use rdm_core::NodeKind;
 
-const GATEWAY: &str = "mesh1.gateway.1";
+fn gateway() -> rdm_core::PathName {
+    rdm_core::PathName::numbered("mesh1", NodeKind::Gateway, 1)
+}
 
 /// A Build id's characters, whatever separators its rendering uses.
 fn bare(id: &str) -> String {
@@ -27,7 +29,7 @@ fn on_fabric_ready_produces_the_day_zero_record_through_the_gateway_once() {
         let ready_build = bare(&estate.accepted_build_id().await);
         let until = std::time::Instant::now() + common::SETTLE;
         let records = loop {
-            let records = common::fetch(&estate, GATEWAY, "system").await;
+            let records = common::fetch(&estate, &gateway(), "system").await;
             if records.iter().any(|(_, r)| bare(r).contains(&ready_build)) {
                 break records;
             }

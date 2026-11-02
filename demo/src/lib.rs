@@ -24,7 +24,7 @@ pub const CARRIER_POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: N
 
 /// The shape's one data-plane protocol (connections.md §5), an `Alpn` value handed to the start seam
 /// (never an ALPN constant of its own): every role registers it, proxied through a gateway, and
-/// answers each stream with `echo <its path.name>: <the bytes it read>`.
+/// answers each stream with `echo <its node id>: <the bytes it read>`.
 pub fn data_alpn() -> Alpn {
     Alpn { name: b"demo/echo".to_vec(), proxy: true, carriers: vec![NodeKind::Gateway] }
 }
@@ -44,7 +44,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
-        node = %launch.name,
+        node_path = %launch.name.path, node_name = %launch.name.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
         kind = role.name(),
@@ -57,7 +57,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     // The replica (Q296): the broker's records log, opened before the node serves; the gateway
     // forwards to the broker primary its topology names, the view handed over once the node is up.
     let view = std::sync::Arc::new(std::sync::OnceLock::new());
-    let replica_node = replica::Node { view: view.clone(), me: launch.node_id.clone(), name: launch.name.clone() };
+    let replica_node = replica::Node { view: view.clone(), me: launch.node_id.clone(), name: launch.name.clone(), mesh: launch.mesh.clone() };
     let broker = match role.kind {
         NodeKind::Broker => Some(replica::Broker::open(&launch.data_dir.join("replica")).await.map_err(|e| anyhow!("refusing to start: the records log: {e}"))?),
         _ => None,
@@ -85,7 +85,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     let _ = oracles.declare_client.set(running.node_rpc.clone());
     let _ = view.set(running.topology_view.clone());
     // The data plane's answering side: every admitted connection's streams are echoed, named.
-    let own = launch.name.to_string();
+    let own = launch.node_id.to_string();
     tokio::spawn(async move {
         while let Some(conn) = acceptor.accept().await {
             let own = own.clone();
@@ -95,7 +95,8 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
                     let answer = format!("echo {own}: {}", String::from_utf8_lossy(&bytes));
                     // The connection itself is RDM's record (`rdm.node.connection.serve.via-admitted`,
                     // `rdm.node.connection.create.via-dial`); the role's answer is its own log line, no span of the app's.
-                    tracing::info!(target: "rshape", node = %own, peer = %conn.peer().name, kind = ?conn.kind(), bytes = bytes.len(), "a data-plane stream answered");
+                    let peer = conn.peer();
+                    tracing::info!(target: "rshape", node = %own, peer_path = %peer.name.path, peer_name = %peer.name.name, kind = ?conn.kind(), bytes = bytes.len(), "a data-plane stream answered");
                     if send.write_all(answer.as_bytes()).await.is_err() || send.finish().is_err() {
                         break;
                     }
@@ -108,7 +109,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal(binary).await;
-    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node_path = %launch.name.path, node_name = %launch.name.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
     running.stop().await;
     Ok(())
 }
