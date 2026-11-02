@@ -251,7 +251,7 @@ The provider is driven by the DeploymentPipeline, whose steps are the Build's re
 
 ```text
 AllocateIdentity
-ClaimName                 the mesh-primary reads the row at path.name and claims it; NameHeld launches nothing
+CheckName                 the mesh-primary checks the path and name against its records; NameHeld launches nothing
 AllocateEndpoints
 PrepareStorage            a fresh data_dir, or an inherited one inspected (gone / broken, §4)
 PrepareNetwork

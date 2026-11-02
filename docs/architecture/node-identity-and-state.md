@@ -48,7 +48,7 @@ the mesh-primary's whole row line and the node's own line, the reader folding th
 The node writes its own properties in it: config, tags, bound addresses and
 application declarations. Its mesh-primary writes the status and role flags in the same record,
 beside identity, explicit mesh/kind, certificates, executable and placement facts.
-A current-pair lookup uses the ordinary name claim; it never uses the last writer at a path.
+A current-pair lookup reads the node records by their path and name; it never uses the last writer at a path.
 Gossip is a projection, not persistence or evidence that a lifecycle operation completed.
 
 **A node has one identity on the fabric, a name that says where it sits, and one ID — its
@@ -62,7 +62,7 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 | id | what it is | uniqueness | who sees it |
 |---|---|---|---|
 | **`endpoint_id`** | the node's iroh key (ed25519 public key, hex) — its identity on the FABRIC, the thing a dial resolves to. A FIELD of the node record | globally unique across every mesh | **THE TRANSPORT ONLY.** Never on a public interface — not a REST body, not a wire response, not an audit row, not a log line or span attribute NAMING a node (§9 rule 4). The one exception is a span whose SUBJECT is the routing key itself — a dial's target, the handshake, the identity load/mint before an id exists to log — never a narrative "which node did this" field. Exposing the routing id outside those is a security breach |
-| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<kind>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `node_type` (§2), never read from the path | unique per (path, name), by the ordinary name claim | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
+| **`path`, `name`** | path is the node location in the tree and name is its name; they are separate stored fields, never concatenated or parsed as one identifier; the name has no dot, and both are free text the caller chooses at node.create (`<mesh>.<kind>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `node_type` (§2), never read from the path | unique per (path, name), checked against the node records by their writer | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
 | **`id` — the node's minted id** | the node row's own id — minted once, 60 bits, 12 Crockford characters, bare internally | globally unique, by the same property every minted id in the platform has | **the PUBLIC, STORED and AUDIT identity.** It names one node instance: what the audit log names a node by (§2.4) and what REST and the wire render for a node. Its external form renders the type prefix from `node_type`; a client only ever names a BROKER, so **`brk_<crockford>` is the only form a client sees** |
 
 - **One minter, no second form.** The id is `mint_id()` like every other entity's — no short form,
@@ -145,7 +145,7 @@ follows the `path.name` (§2.2), so nothing stored changes when a node is replac
   renames means two nodes never hold one `path.name`.
 - **Node certs:** [fabric-certs.md](fabric-certs.md).
 - **node.delete releases the node's identity and name; its row stays.** The node's mesh-primary
-  writes Deleted lifecycle state and releases the pair claim. The predecessor's own properties
+  writes Deleted lifecycle state, which frees the pair. The predecessor's own properties
   remain at its ID. True recovery inherits its acknowledged properties; replacement uses the new
   Build entry, including an empty config or tag set. The workflow is [node delete](lifecycles/node-delete.md).
 
@@ -159,7 +159,7 @@ came down with it.
 
 No node.create launches the bootstrap admin: the bootstrap's first step mints its node id, before
 anything else of its boot, its telemetry included, so its telemetry's resource carries it, and its
-Day-0 claim keeps it on its own row. A node-admin started with no launcher over an inherited data dir, and an
+Day-0 row write keeps it on its own row. A node-admin started with no launcher over an inherited data dir, and an
 adoption launch, are new nodes: the first step mints a new id, never the inherited row's (Q208).
 
 ### 2.5 ONE system org, one projection, one writer per mesh
@@ -184,8 +184,8 @@ a mesh's own nodes arrive only through node.create calls for that mesh.
 
 1. A node.create reaches the node's mesh-primary as a Build step the fabric-primary dispatches; a
    node.update goes caller → the node's mesh-primary.
-2. The mesh-primary claims the name where it changes and writes the row from the record it holds,
-   a blind put.
+2. The mesh-primary checks a changed name against the records it holds and writes the row from the
+   record it holds, a blind put.
 3. **Only once that write is acked** does it update the topology projection and tell the node (row
    first, mesh second).
 
@@ -200,8 +200,8 @@ events, and at no other time.
 It does not know whether its mesh is the first or the 101st, and it does not care. There is no
 "am I first" question anywhere in its boot, because nothing it does depends on the answer.
 
-Its day zero does NOT read `ops.nodes`. At Day 0 the bootstrap admin, as mesh1's primary, claims its
-own name and writes its own row through the create path, the first write of its create. That write is a row write only: it is never permission to originate a rename of its own row. Every later
+Its day zero does NOT read `ops.nodes`. At Day 0 the bootstrap admin, as mesh1's primary, writes its
+own row through the create path, the first write of its create. That write is a row write only: it is never permission to originate a rename of its own row. Every later
 node-admin's row is written by its mesh's primary. From there the topology grows by two inputs: the
 backbone mesh topology of each peer mesh, and node.create calls for its own mesh.
 
@@ -281,7 +281,7 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
   takes `RDM_MESH` (`mesh1` when unset), and a mesh a Build creates takes the Build's `mesh_name`. The name is never derived from the mesh's
   channel. It is the first segment of every member's path.name (`mesh1.broker.1`, §2.2). The mesh's
   own path is opaque (§2).
-- **The mesh's primary node-admin claims the mesh's name and writes its row at creation.** The
+- **The mesh's primary node-admin writes its row at creation.** The
   mesh's first node-admin is its primary (the only candidate of its election),
   and the mesh-primary keeps that mesh's row in the mesh store: it claims the mesh's name at the key
   `(path, name)`, unique within its path, the path opaque (a deployment may name it after the
@@ -308,8 +308,7 @@ records the role and does not grant it.
 
 - **Who mints it.** The Build that creates a mesh's first node-admin mints the mesh id, never
   reissued; the fabric-primary drives that node.create and decides from the accepted topology whether
-  the mesh exists. The mesh-primary, elected like every primary, claims the mesh's name and writes its
-  row. A node-admin that joins a mesh adopts its id. Assignment and recovery are owned by the
+  the mesh exists. The mesh-primary, elected like every primary, writes its row. A node-admin that joins a mesh adopts its id. Assignment and recovery are owned by the
   [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm).
 - **The row's author is the current mesh-primary, as the election names it.**
   [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) is the only specification of how that primary is elected. A node-admin that is not the mesh-primary may adopt the row but does not author it. When the mesh-primary changes, row ownership follows it; this document does not define a second overlap, comparator, or successor rule.
@@ -350,8 +349,7 @@ node in one mesh is a fabric of one mesh.
 - **The first node-admin creates it.** The node-admin that is both mesh-primary and fabric-primary, `is_primary` and `is_fabric_primary` (the
   first node of the first mesh), mints the fabric and its mesh together and holds both in memory; the sequence is
   [fabric.create](lifecycles/fabric-create.md).
-- **It is written at Day 0.** The fabric-primary claims the fabric's name at its `(path, name)`, the
-  path opaque, idempotent for the same FabricId and `NameHeld` naming a different one, and writes the
+- **It is written at Day 0.** The fabric-primary writes the
   fabric's row to the fabric store at Day 0. See [States](lifecycles/states.md#states). The identity
   is never written again; the record is rewritten whole with each fabric event, by the fabric-primary.
 - **Every node holds it through gossip.** The fabric row lives in `topology-nodes` (§2.6), filled from gossip only;
@@ -451,7 +449,7 @@ A node has no catch-up status. What an application copies to a returning node of
 grants no readiness of its own (Q69). Its admission is the [Join schema](node-rpc-envelope.md#join-op-0x1d-rdm).
 
 - **The mesh-primary is the one writer of its mesh's node rows**, its own
-  included. A create's name claim and row are written by it when the Build reaches it, before
+  included. A create's row is written by it when the Build reaches it, before
   anything is launched; an update goes caller → the node's mesh-primary (Forward `0x1A` when not
   directly reachable). The fabric-primary writes a row only as acting primary of a mesh with no
   primary. No other process writes a `Node` row.

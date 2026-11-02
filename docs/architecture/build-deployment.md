@@ -22,7 +22,7 @@ life. A new executable is a new birth at the same `path.name` (Q157).
    Every created path's entry in the accepted topology holds its executable, and the request is never
    re-read, as counts are never re-read (build.md §1). The accepted topology is the one durable answer
    to "what should this node run", beside the shape.
-3. **Recorded at the claim.** The create's name claim records the executable on the node's row, the
+3. **Recorded at the create.** The create's row write records the executable on the node's row, the
    bootstrap admin's own included: it hashes the executable it is running. The row is the record of
    what this birth runs.
 4. **Re-hashed at the launch.** The launching admin hashes the file before `DeployRuntime` and

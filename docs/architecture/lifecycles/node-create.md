@@ -15,7 +15,7 @@ RDM's create owns identity, launch and admission; Rafka supplies its application
 | Identity | New node.id and incarnation; immutable path and claimed name |
 | Endpoint key | Mint into a new data dir, or load the key from an inherited data dir |
 | Port | Bind port 0; advertise the actual OS-assigned transport_addr |
-| Spec | The create spec: the node's properties, flat (Q166): its executable (path, sha256, image), storage, placement, tags and config, and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the claim, re-hashed at the launch, never changed for the birth ([build-deployment.md](../build-deployment.md)) |
+| Spec | The create spec: the node's properties, flat (Q166): its executable (path, sha256, image), storage, placement, tags and config, and whether the data dir is inherited; the one description of a node to create, never a fault-injection mechanism. The executable is the create's input and nothing else's: recorded on the row at the create, re-hashed at the launch, never changed for the birth ([build-deployment.md](../build-deployment.md)) |
 | Progress | Every event of the complete `node.start`, then `node.created` |
 | Hooks | The composed [node.start](node-start.md)'s: [`pre_node_ready`](../fabric-node-hooks.md#pre_node_ready), blocking, with `start_kind = FirstStart`, and [`on_node_ready`](../fabric-node-hooks.md#on_node_ready), a notice after `node.started` |
 | Completion | The composed [node.start](node-start.md) ends with `node.started`; `node.created` follows it |
@@ -37,7 +37,7 @@ topology, never by looking whether a channel exists and then creating it.
 1. Record the exact deployment, prepare its identity/data dir and launch its executable.
    The executor never picks, reserves or predicts a transport port. Before this step the
    node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh)
-   claims the separate path/name pair for the allocated node ID. The lifecycle claim retains the
+   writes the node's row with its path, name and allocated node ID. The row retains the
    exact entry-owned launch snapshot; the node writes
    its own properties before readiness. A replacement uses its entry, true recovery the
    predecessor's acknowledged properties. No raw last-written-path lookup supplies a birth;
@@ -101,7 +101,7 @@ sequenceDiagram
     participant M as Mesh-primary (executor)
     C->>F: build.create(node.create spec)
     F->>M: build.attempt.run
-    Note over M: claim name, mint, launch; compose whole node.start with FirstStart (pre_node_ready, then on_node_ready)
+    Note over M: write the row, mint, launch; compose whole node.start with FirstStart (pre_node_ready, then on_node_ready)
     M-->>F: start events, node.started, node.created
     F-->>C: step frames, Complete
 ```

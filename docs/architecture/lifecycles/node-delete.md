@@ -30,7 +30,7 @@ removal is separate work.
    runtime identity; a recycled pid or a reusable container name is not the runtime.
 3. The node's [row writer](../node-identity-and-state.md#25-one-system-org-one-projection-one-writer-per-mesh)
    writes the node's row with status deleted; the record and its config stay. Release node.id
-   and the name claim. Retain the data dir, node-identity.json and endpoint key.
+   and the name. Retain the data dir, node-identity.json and endpoint key.
 4. The surviving executor emits node.deleted on the caller stream from the provider's
    `Exited` and records the complete delete receipt. The exited node cannot publish
    its own end or serve that stream.

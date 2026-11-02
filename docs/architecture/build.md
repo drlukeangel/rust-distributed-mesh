@@ -485,7 +485,7 @@ and step receipts for operations it executes. Each mesh-primary
 writes its Mesh record and the status and role flags in its members' node records (Q323).
 Each node writes its own config, tags, bound addresses and declarations through its property
 writer, and its connection facts through the connection writer. The launching admin records the
-birth's runtime and immutable claim snapshot. A node has one record, keyed by its node.id,
+birth's runtime and immutable launch snapshot. A node has one record, keyed by its node.id,
 append-only, its latest line current; it has no revision or tenure counter (Q323).
 
 While the fabric-primary is unavailable, the existing fabric-recovery executor writes only the
@@ -496,7 +496,7 @@ The Build journal retains one fact at its semantic identity: the Build ID, an at
 mesh, a claim for that attempt, and each step receipt.
 The generic code uses these interfaces; the application supplies the backend.
 
-`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once; the fabric's name is claimed at `<store_dir>/fabrics/<name>` above the per-fabric roots, and a deleted fabric releases it. It carries no pointer to a Build (RDM's `FabricRecord` in `rdm-admin`).
+`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once. It carries no pointer to a Build (RDM's `FabricRecord` in `rdm-admin`).
 
 Restarting every node-admin at once must not erase the facts needed to reconstruct the Fabric and continue an active Build; gossip or another live admin is never the only persistence.
 

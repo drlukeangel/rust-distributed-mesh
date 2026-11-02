@@ -13,7 +13,7 @@ serves its own scope or forwards to the fabric-primary. The fabric-primary's own
 topology and in-flight facts remain its control state. Node rows and property maps are not copied
 into an atlas to serve `node.get` or acceptance.
 
-A current-pair lookup resolves the path/name claim to a node ID. The reader reads the node's record
+A current-pair lookup resolves the path and name to a node ID from the node records. The reader reads the node's record
 at that node ID: one record per node, append-only, its latest line current, the node's own properties
 and the status and role flags its mesh-primary writes in the same record (Q323). A node that has not
 written yet has no properties yet. A raw last-written-path index supplies no fallback. Record read

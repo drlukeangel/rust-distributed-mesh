@@ -192,10 +192,10 @@ No node-admin is alive, the fabric's other nodes alive or not. Nothing inside th
   no mesh-primary run in process at the fabric-primary
   ([Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm)), so each other mesh gets its
   node-admin there, on the same accepted Build and that mesh's own MeshId.
-- The fabric id re-claims the fabric's name
+- The fabric id keeps the fabric's name
   ([a fabric is an entity](../node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it))
-  and each MeshId re-claims its mesh's name
+  and each MeshId keeps its mesh's name
   ([a mesh is an entity](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)).
-  A same-id re-claim is idempotent, so there is no NameHeld and no mass delete. A node's name is released by node
+  The names are read from the records. A node's name is released by node
   recovery's node.delete and taken by its node.create, which carries a new node.id. The lost birth's name is taken by the node re-created at it; a lost birth
   that comes back is refused at admission and its runtime terminated (Q110).

@@ -23,7 +23,7 @@ executor, deletes it afterwards.
 | Terminal event | `mesh.deleted`, reported by the mesh-primary, still alive, from its members' node.delete receipts |
 | Rows | Each member's row deleted (its node.delete); the mesh row deleted at mesh.deleted, written by the mesh-primary |
 | After | The mesh-primary keeps publishing its mesh topology until a separate node.delete, with the fabric-primary as executor, deletes it; its final mesh topology, the mesh deleted and itself deleting, is its last gossip, and the fabric-primary publishes nothing for the mesh or that admin (R-RX4) |
-| Identity | A mesh's deleted and a node's deleted release names as [States](states.md) states; a mesh created again under the same name claims its names over the deleted mesh and node rows |
+| Identity | A mesh's deleted and a node's deleted release names as [States](states.md) states; a mesh created again under the same name takes its names over the deleted mesh and node rows |
 | Build step key | `mesh.delete:<mesh_id>`; each member's step is its own `node.delete:<path.name>` |
 | Forbidden evidence | Silence, a closed endpoint, a failed call or a timeout never shows a member exited |
 

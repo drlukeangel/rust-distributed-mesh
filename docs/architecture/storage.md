@@ -111,12 +111,12 @@ It is four steps:
    gossips the current topology of its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
 2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of
    all six stores on the old provider to the new one in source order, including both node-record
-   kinds, immutable claim snapshots and unresolved property obligations;
+   kinds, immutable launch snapshots and unresolved property obligations.
    every name claim and in-flight row
    with its exact claimant. A copy resumed after a lost answer appends nothing twice; a new provider
    holding lines the old one does not is refused by name, and nothing switches.
-3. **Switch.** The fabric-primary inserts `commit` for `(build_id, change_id)` on the new provider
-   with the store's insert-and-fail primitive, then appends the Fabric row's line naming the new
+3. **Switch.** The fabric-primary appends the change's `rdm.storage.committed` event for
+   `(build_id, change_id)` to the new provider's events store, then appends the Fabric row's line naming the new
    provider current and the old in `previous_topology_storage_providers`. Whoever resumes the change
    learns the decision only from that record.
 4. **Unblock.** The fabric-primary sends `mesh.unblock` to every mesh-primary. Each mesh-primary moves
@@ -136,7 +136,7 @@ the switch the Build completes once every mesh-primary has replied `unblocked`; 
 No Build is admitted while a change is in progress, a change of `topology_storage_provider`
 included; `fabric.delete` alone is admitted, and it interrupts the change as it interrupts any Build,
 the records on both providers kept. A step that fails before the switch fails the Build only once the
-fabric-primary has read that no `commit` exists for `(build_id, change_id)`; the fabric-primary then
+fabric-primary has read that no `rdm.storage.committed` event exists for `(build_id, change_id)`; the fabric-primary then
 sends `mesh.unblock` on the old provider, the new provider closed and the Fabric row unchanged. No timer ends a block. The previous provider is kept as it was at the switch, named on
 the Fabric row, written no more and never deleted by RDM. A later Build naming it again copies into
 it only the lines it lacks.

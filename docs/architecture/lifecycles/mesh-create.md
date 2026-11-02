@@ -50,7 +50,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    [`on_node_ready`](../fabric-node-hooks.md#on_node_ready) notice. The fabric-primary, as writer of a mesh with no primary, sets the node-admin's
    Ready.
 7. The [election](../fabric-node-lifecycle-elections.md#42-mesh-primary) names the node-admin
-   `mesh2`'s mesh-primary: the only candidate. As mesh-primary it claims the mesh's name,
+   `mesh2`'s mesh-primary: the only candidate. As mesh-primary it
    writes the mesh row and records `is_primary` on its own row, which its `Digest` carries, publishes its mesh's status
    `pending` as `MeshStatus`, and becomes the writer of `mesh2`'s rows. `node.created` ends the
    step.
@@ -156,7 +156,7 @@ sequenceDiagram
     F->>A: 5. ApplyMeshState(Pending)
     A-->>F: Applied
     Note over A: 6. pre_node_ready, topology read, node.started, on_node_ready; fabric-primary sets Ready
-    Note over A: 7. election names it mesh-primary, claims mesh name, writes mesh row
+    Note over A: 7. election names it mesh-primary, writes mesh row
     A->>G: 7. Digest (is_primary), MeshStatus pending, first mesh topology
     G-->>R: install mesh2 into external topology
     F-->>C: node.created
@@ -168,7 +168,7 @@ sequenceDiagram
 ```
 
 Checked against the numbered sequence: acceptance mints the id before anything is launched; the
-join precedes the channel; Pending follows the Ping; the primary, the name claim and the first frames
+join precedes the channel; Pending follows the Ping; the primary, the mesh row and the first frames
 come after Ready; nothing about `mesh2` is on gossip before step 7.
 
 ## Failure and receipts
@@ -188,5 +188,5 @@ stream certainty follow the [caller execution contract](../node-rpc-envelope.md#
 | Create | fabric-primary | [node.create](node-create.md)'s spans as maker and executor | Build, attempt, `node.create:mesh2.admin.1` |
 | Join | node-admin, fabric-primary | [node.mesh.join](node-mesh-join.md#observability-contract) | same operation |
 | Mesh Pending | fabric-primary | the Ping, then `ApplyMeshState(Pending)`'s call span | mesh id, mesh name |
-| Primary and name | node-admin | `rdm.mesh.election.resolve.via-recompute`; the name claim; the mesh row write | mesh id, revision |
+| Primary and name | node-admin | `rdm.mesh.election.resolve.via-recompute`; the mesh row write | mesh id, revision |
 | Mesh Ready | node-admin, fabric-primary | `DeclareMeshState(Ready)` answered `Applied`; `MeshStatus` publish | mesh id |

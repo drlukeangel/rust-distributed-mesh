@@ -15,7 +15,7 @@ step. A node's other properties have their own commands ([node properties](../no
 | Entry | The exact `(node.id, incarnation)` and unchanged registered path and new name as separate fields. A different path is refused; mesh, kind and tags do not change |
 | Precondition | The node is live and admits no connection: this mesh-primary holds the birth's `node.connection.deleted` of an `All`, then its `node.mesh.left` ([node.mesh.leave](node-mesh-leave.md)), and it holds zero connections. A stopped node is never renamed; a ready node, or one still holding a connection, is refused. No new connection is admitted from the row write through `ApplyNodeName`, retries after an interruption included |
 | Validation | The exact birth matches the held record, else `RejectedStaleIncarnation { held }`; the receiver is the node's writer, else `ReceiverNotPrimary { needed }` (R-RX5); the precondition holds, else `RejectedAdmittingConnections { status, held_connections }`; the path/name pair is valid and the name has no dot, else `RejectedName { reason }`. The supplied path must equal the registered immutable path; a different path is refused by name. Replacement renames the predecessor to `<name>-old` at that same path; rollback restores its name |
-| Claim and move | The destination pair is claimed for the exact node ID; there is no raw `path.name` index lookup; a held name answers `NameHeld { by: node.id }` and nothing is written. The rename claims the new name at the unchanged path (`NameHeld { by: node.id }` names the node it is for), then one write of the node's record at its node.id (Q323) carrying the destination pair and `renamed_from: <old pair>`, then the old claim's release. The step is resumed from its receipts like every Build step: a retry, or a successor writer resuming it, finds the new name claimed by this node and continues from the record write; a claim held by this node whose record does not carry the name is that unfinished step, never `NameHeld` against itself. A name claim is abandoned only by the step's named failure, which releases it. Between them the node holds both keys, and the destination row says which is which: **a row whose `renamed_from` key still holds the same node id has a pending release, and the writer releases it.** The rule needs no clearing: once the source no longer holds the id it is false. It runs wherever a writer meets the row: a retry of the command, the Build attempt's resume of a replace or recovery step, and a mesh-primary's rebuild from its mesh's rows after a primary change (R13), which already reads every row of the mesh |
+| Check and move | The mesh-primary checks the destination pair against the records it holds; held by another node it refuses `NameHeld { by: node.id }` and nothing is written. Then one write of the node's record at its node.id (Q323) carrying the destination pair and `renamed_from: <old pair>`: the name move is that one write. A retry, or a successor writer resuming the command, reads the record: one that already carries the destination pair is the move done, and it continues to the apply |
 | Order | Row first, node second |
 | Completion | [By case](#completion-by-case) |
 | Idempotency | Row-held and node-applied are two facts. A repeat naming the name the row already holds finishes any pending release and then, for a live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`. A repeat with a different name is a new rename |
@@ -26,9 +26,9 @@ step. A node's other properties have their own commands ([node properties](../no
 1. The caller sends `node.name.update` to the node's mesh-primary; an admin that is not the fabric-primary carries it to the fabric-primary (Forward `0x1A` when not directly reachable) and carries the answer back. The fabric-primary sends the command to the node's mesh-primary (Forward `0x1A` when not directly reachable) and returns its completion without installing a copied node row.
 2. The mesh-primary validates from the record it holds: exact birth, its own writer role, the
    precondition from the node's status and its `node.connection.deleted` and `node.mesh.left` receipts, the name grammar.
-3. The lifecycle writer claims the destination pair; a held pair refuses
-   `NameHeld { by }` with nothing written.
-4. The mesh-primary writes the row with the new name. The old name's key is released. This is the
+3. The mesh-primary checks the destination pair against its records; a pair held by another node
+   refuses `NameHeld { by }` with nothing written.
+4. The mesh-primary writes the row with the new name and `renamed_from`. This one write is the
    durable name move.
 5. The left node is sent `ApplyNodeName`. It holds the new name and, off its mesh, publishes nothing
    ([node.mesh.leave](node-mesh-leave.md)): its stop or its next join carries the name. It answers
@@ -53,7 +53,7 @@ row's name. A node never renames itself.
 
 ```text
 node.name.update
-  → validate → claim new name (the row writer reads its row) → put the node's record at its node.id with the new pair (renamed_from) → release the old key
+  → validate → check the new pair against the records → put the node's record at its node.id with the new pair (renamed_from)
   → ApplyNodeName (the live node that has left its mesh)
   ← node.name.updated
 ```
@@ -66,7 +66,7 @@ sequenceDiagram
     participant M as Mesh-primary
     participant N as Node
     C->>M: node.name.update (exact birth, name)
-    Note over M: validate from held record, claim name, put row (renamed_from), release old key
+    Note over M: validate from held record, check the pair, put row (renamed_from)
     M->>N: ApplyNodeName (live, left its mesh, no connection held)
     N-->>M: Applied (name held; nothing published off its mesh)
     M-->>C: node.name.updated
@@ -77,16 +77,10 @@ sequenceDiagram
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).
 
-- **Refused before the claim** (stale birth, wrong receiver, admitting connections, bad name):
+- **Refused before the write** (stale birth, wrong receiver, admitting connections, bad name, `NameHeld`):
   nothing written, nothing changed.
-- **Claim refused** (`NameHeld`): nothing written.
-- **The record write after the claim fails**: a named storage error; the claim stands, named by this node, and the record stands under the old name; the resumed step writes the record, or the step's named failure releases the claim.
-- **The record is written and the release of the old claim fails or is interrupted**: the node holds both
-  keys, and the destination row's `renamed_from` names the source. The command ends incomplete naming
-  the new key as claimed and the old key's release as pending; the release is finished by whichever
-  writer next meets the row (a retry, the next attempt, or a successor mesh-primary's rebuild) and
-  the move continues to the apply. Nothing is rolled back and no second row is written. The writer
-  that wrote the put may be gone; the row carries everything the next one needs.
+- **The record write fails**: a named storage error; the record stands under the old name, and a retry
+  writes it.
 - **Apply fails or is interrupted after the row**: the incomplete case [above](#completion-by-case).
   The admission block stays in force on the node until the apply resolves, so no connection is
   opened under the old name while the row carries the new one; a retry of the same command resends
