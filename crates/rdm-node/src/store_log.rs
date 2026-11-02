@@ -740,11 +740,18 @@ impl StoreLog {
         blocking_io(move || {
             let mut guard = guard;
             #[cfg(feature = "testkit-store")]
-            if let Some(door) = write_door::take(&inner.path, &key) {
+            let door = write_door::take(&inner.path, &key);
+            #[cfg(feature = "testkit-store")]
+            if let Some(door) = door.as_ref().filter(|d| !d.after()) {
                 tracing::dispatcher::with_default(&dispatch, || door.hold());
             }
             tracing::dispatcher::with_default(&dispatch, || inner.fold_before_append(caller, &parent))?;
-            inner.append_line(&mut *guard, &writer, &format, &key, &bytes)
+            let appended = inner.append_line(&mut *guard, &writer, &format, &key, &bytes);
+            #[cfg(feature = "testkit-store")]
+            if let Some(door) = door.as_ref().filter(|d| d.after() && appended.is_ok()) {
+                tracing::dispatcher::with_default(&dispatch, || door.hold());
+            }
+            appended
         })
         .await
     }
@@ -1379,8 +1386,10 @@ pub mod read_door {
     }
 }
 
-/// A test-only hold before a store append, after its ordering lock is owned by the disk job.
-/// Dropping the caller does not release this hold or the append lock.
+/// A test-only hold of one store append, while its ordering lock is owned by the disk job: before
+/// the line is written ([`write_door::arm`], a provider completion delayed), or after it is written
+/// and fsynced and before its caller is answered ([`write_door::arm_after`], the persistence boundary
+/// a process is terminated at). Dropping the caller does not release this hold or the append lock.
 #[cfg(feature = "testkit-store")]
 pub mod write_door {
     use std::path::{Path, PathBuf};
@@ -1389,6 +1398,8 @@ pub mod write_door {
     struct Held {
         file: PathBuf,
         key: String,
+        /// Held after the durable append, not before it.
+        after: bool,
         released: Mutex<bool>,
         changed: Condvar,
         entered: tokio::sync::watch::Sender<bool>,
@@ -1402,10 +1413,22 @@ pub mod write_door {
         ARMED.get_or_init(Default::default)
     }
 
-    /// Hold the first append to this exact file and key. Other files and keys are unaffected.
+    /// Hold the first append to this exact file and key before it is written. Other files and keys
+    /// are unaffected.
     pub fn arm(file: &Path, key: &str) -> Door {
+        armed_at(file, key, false)
+    }
+
+    /// Hold the first append to this exact file and key once it is written and fsynced, before its
+    /// caller is answered: a process terminated while it is held has persisted the line and answered
+    /// nothing.
+    pub fn arm_after(file: &Path, key: &str) -> Door {
+        armed_at(file, key, true)
+    }
+
+    fn armed_at(file: &Path, key: &str, after: bool) -> Door {
         let held = Arc::new(Held {
-            file: file.to_path_buf(), key: key.into(), released: Mutex::new(false),
+            file: file.to_path_buf(), key: key.into(), after, released: Mutex::new(false),
             changed: Condvar::new(), entered: tokio::sync::watch::Sender::new(false),
         });
         armed().lock().unwrap().push(held.clone());
@@ -1419,14 +1442,24 @@ pub mod write_door {
     }
 
     impl Door {
+        pub(super) fn after(&self) -> bool {
+            self.0.after
+        }
+
         pub(super) fn hold(&self) {
-            tracing::info_span!("rdm.testkit.fault.update.via-hold", cut = "store-append", file = %self.0.file.display(), key = %self.0.key)
+            let cut = if self.0.after { "store-appended" } else { "store-append" };
+            tracing::info_span!("rdm.testkit.fault.update.via-hold", cut, file = %self.0.file.display(), key = %self.0.key)
                 .in_scope(|| tracing::info!("the append owns its ordering lock before the caller can be cancelled"));
             self.0.entered.send_replace(true);
             let mut released = self.0.released.lock().unwrap();
             while !*released {
                 released = self.0.changed.wait(released).unwrap();
             }
+        }
+
+        /// Whether the disk job holds the append now: entered and not released.
+        pub fn holds(&self) -> bool {
+            *self.0.entered.borrow() && !*self.0.released.lock().unwrap()
         }
 
         /// Wait until the disk job holds the append. Tests must supply their own wait deadline.

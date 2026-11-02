@@ -147,6 +147,27 @@ pub enum CutSpec {
     /// A storage change's copy and switch, about to run on this admin as the fabric-primary: held until
     /// the release, every mesh-primary having replied `blocked`.
     StorageSwitch,
+    /// The first append this admin makes to the store file `file` (its path) at `key`, held in the
+    /// disk job that owns the file's append lock (`rdm_node::store_log::write_door`): before the line is
+    /// written (a provider completion delayed: every later append to the file, and every wait for the
+    /// writes this birth issued, waits behind it), or, `after`, once the line is written and fsynced and
+    /// before its caller is answered (the persistence boundary a process is terminated at). A lifecycle
+    /// record's key, like a property record's, is its node id (Q323).
+    StoreAppend {
+        /// The store file's path, as the admin opens it.
+        file: String,
+        /// The record's key.
+        key: String,
+        /// Held after the durable write, not before it.
+        #[serde(default)] after: bool,
+    },
+    /// The reply of `node_id` to a Build entry's apply (`ApplyNodeProperties`), as this admin, its
+    /// mesh-primary, receives it: held until the release and then lost, the call ending with no answer
+    /// the admin can read, so the node holds the applied entry and its mesh-primary never heard it.
+    PropertiesReply {
+        /// The replying node; every node when absent.
+        #[serde(default)] node_id: Option<rdm_core::NodeId>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -251,6 +272,13 @@ pub enum Probe {
         /// The change.
         change_id: String,
     },
+    /// A node's reply to a Build entry's apply, received.
+    PropertiesReply {
+        /// The node that replied.
+        node_id: rdm_core::NodeId,
+        /// The Build whose entry it applied.
+        build_id: String,
+    },
 }
 
 impl CutSpec {
@@ -276,6 +304,7 @@ impl CutSpec {
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
             (CutSpec::StorageStep { node }, Probe::StorageStep { node: n, .. }) => node.as_ref().is_none_or(|wanted| wanted == n),
             (CutSpec::StorageSwitch, Probe::StorageSwitch { .. }) => true,
+            (CutSpec::PropertiesReply { node_id }, Probe::PropertiesReply { node_id: n, .. }) => node_id.as_ref().is_none_or(|wanted| wanted == n),
             _ => false,
         }
     }
@@ -299,6 +328,7 @@ impl Probe {
             Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
             Probe::StorageStep { node, change_id } => Hit::StorageStep { node: node.clone(), change_id: change_id.clone() },
             Probe::StorageSwitch { change_id } => Hit::StorageSwitch { change_id: change_id.clone() },
+            Probe::PropertiesReply { node_id, build_id } => Hit::PropertiesReply { node_id: node_id.clone(), build_id: build_id.clone() },
         }
     }
 }
@@ -319,6 +349,8 @@ struct Armed {
     seen_while_held: u64,
     /// For a condition (nothing holds): its hold span, open from the first consultation until the release.
     condition_span: Option<tracing::Span>,
+    /// For a store append ([`CutSpec::StoreAppend`]): the store's own hold, which its disk job enters.
+    store: Option<rdm_node::store_log::write_door::Door>,
 }
 
 /// The armed cuts of one node-admin process.
@@ -344,7 +376,12 @@ impl AdminFaults {
         }
         let span = tracing::info_span!("rdm.testkit.fault.update.via-arm", node = %self.node_id, cut = id, spec = %serde_json::to_string(&spec).unwrap_or_default());
         span.in_scope(|| tracing::info!("cut armed"));
-        cuts.insert(id.to_string(), Armed { spec, hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, held_calls: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
+        let store = match &spec {
+            CutSpec::StoreAppend { file, key, after: false } => Some(rdm_node::store_log::write_door::arm(std::path::Path::new(file), key)),
+            CutSpec::StoreAppend { file, key, after: true } => Some(rdm_node::store_log::write_door::arm_after(std::path::Path::new(file), key)),
+            _ => None,
+        };
+        cuts.insert(id.to_string(), Armed { spec, hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, held_calls: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None, store });
         Ok(())
     }
 
@@ -353,7 +390,13 @@ impl AdminFaults {
     pub fn release(&self, id: &str) -> Result<(bool, Option<u64>), String> {
         let mut cuts = self.cuts.lock().unwrap();
         let c = cuts.get_mut(id).ok_or_else(|| format!("{}: no cut `{id}` is armed", self.node_id))?;
+        Self::observe_store(c);
         let was_held = c.held;
+        if let Some(door) = &c.store {
+            door.release();
+            c.held = false;
+            c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
+        }
         let held_so_far = c.held_since.map(|t| t.elapsed().as_millis() as u64);
         c.release.send_replace(true);
         // A cut that held nothing is spent by its release too: it can no longer hold.
@@ -371,9 +414,21 @@ impl AdminFaults {
         Ok((was_held, held_ms))
     }
 
+    /// A store append cut as its disk job stands now: held while the append is held there, its hit
+    /// recorded the first time it is seen held.
+    fn observe_store(c: &mut Armed) {
+        let (Some(door), CutSpec::StoreAppend { file, key, after }) = (&c.store, &c.spec) else { return };
+        if !c.released && door.holds() {
+            c.held = true;
+            c.held_since.get_or_insert_with(Instant::now);
+            c.hit.get_or_insert_with(|| Hit::StoreAppend { file: file.clone(), key: key.clone(), after: *after });
+        }
+    }
+
     /// Every cut and what it held, and the consequence counters.
     pub fn state(&self) -> FaultState {
-        let cuts = self.cuts.lock().unwrap();
+        let mut cuts = self.cuts.lock().unwrap();
+        cuts.values_mut().for_each(Self::observe_store);
         let rows = cuts
             .iter()
             .map(|(id, c)| {
@@ -705,6 +760,13 @@ impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
 
     async fn before_storage_switch(&self, change_id: &rdm_core::ChangeId) {
         self.0.hold(Probe::StorageSwitch { change_id: change_id.to_string() }).await;
+    }
+
+    fn hold_properties_reply(&self, node_id: &rdm_core::NodeId, build_id: &str) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
+        let probe = Probe::PropertiesReply { node_id: node_id.clone(), build_id: build_id.to_string() };
+        let (id, release) = self.0.hold_at_cut(&probe)?;
+        let faults = self.0.clone();
+        Some(Box::pin(async move { faults.wait_release(&id, &probe, release).await }))
     }
 }
 

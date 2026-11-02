@@ -44,6 +44,8 @@ enum CutWire {
     DriftPass { node: Option<String> },
     StorageStep { node: Option<PathName> },
     StorageSwitch,
+    StoreAppend { file: String, key: String, after: bool },
+    PropertiesReply { node_id: Option<rdm_core::NodeId> },
 }
 
 /// A fault door call.
@@ -223,6 +225,26 @@ pub enum Hit {
         /// The change.
         change_id: String,
     },
+    /// A store append held in the admin's disk job, before or after its durable write.
+    ///
+    /// Position 14 on the wire.
+    StoreAppend {
+        /// The store file.
+        file: String,
+        /// The record's key.
+        key: String,
+        /// Held after the line was written and fsynced.
+        after: bool,
+    },
+    /// A node's reply to a Build entry's apply, held at its mesh-primary and then lost.
+    ///
+    /// Position 15 on the wire.
+    PropertiesReply {
+        /// The node that replied.
+        node_id: rdm_core::NodeId,
+        /// The Build whose entry it applied.
+        build_id: String,
+    },
 }
 
 impl Hit {
@@ -244,6 +266,8 @@ impl Hit {
             Hit::DriftPass { node } => json!({"node": node}),
             Hit::StorageStep { node, change_id } => json!({"node": node, "change_id": change_id}),
             Hit::StorageSwitch { change_id } => json!({"change_id": change_id}),
+            Hit::StoreAppend { file, key, after } => json!({"file": file, "key": key, "after": after}),
+            Hit::PropertiesReply { node_id, build_id } => json!({"node_id": node_id, "build_id": build_id}),
         }
     }
 }

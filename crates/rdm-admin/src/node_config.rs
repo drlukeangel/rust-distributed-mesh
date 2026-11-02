@@ -182,7 +182,8 @@ impl NodeConfigs {
 
     /// Carry a Build entry from its mesh-primary to the pinned node, then finish the
     /// lifecycle metadata owed by that entry. Recognition at the node never skips this write.
-    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, placed: (rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)) -> Result<(), String> {
+    /// `seam`, the testkit's (the product passes none), may hold the node's reply and lose it.
+    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, placed: (rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta), seam: Option<&dyn crate::wiring::CommandFrameSeam>) -> Result<(), String> {
         let subject = view.own(&birth.node_id).ok_or_else(|| format!("{me_id}: property target {} is not held", birth.node_id))?;
         if !birth.is(subject) {
             return Err(format!("{me_id}: property target {} has a different incarnation", birth.node_id));
@@ -203,7 +204,13 @@ impl NodeConfigs {
                     .map_err(|error| error.to_string())?
             } else {
                 let exact = ExactBirth { target: NodeTarget::ExactNode(birth.node_id.clone()), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() };
-                NodeRpc::new(&self.client).properties_apply(&exact, entry, &CallOptions::default()).await.map_err(|error| error.to_string())?
+                let build_id = entry.application.build_id.clone();
+                let reply = NodeRpc::new(&self.client).properties_apply(&exact, entry, &CallOptions::default()).await.map_err(|error| error.to_string())?;
+                if let Some(lost) = seam.and_then(|s| s.hold_properties_reply(&birth.node_id, &build_id)) {
+                    lost.await;
+                    return Err(format!("{me_id}: property target {}'s reply to Build {build_id}'s entry was lost on its way back", birth.node_id));
+                }
+                reply
             };
             if !matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
                 return Err(format!("{me_id}: property target {} answered {}", birth.node_id, reply.name()));
@@ -735,9 +742,9 @@ mod tests {
         let entry = EntryProperties { application, config: [("source".into(), "entry".into())].into(), tags: ["entry".into()].into() };
         let placed = (StorageMeta::Persistent { disposition: PersistentDisposition::Preserve }, PlacementMeta::default());
         let refusing = crate::workflows::node_config_update::tests::RefusingNodesStorage(MemoryNodesStorage::default());
-        let error = door.apply_entry(&admin.name, &admin.node_id, &view, &refusing, &birth, entry.clone(), placed).await.unwrap_err();
+        let error = door.apply_entry(&admin.name, &admin.node_id, &view, &refusing, &birth, entry.clone(), placed, None).await.unwrap_err();
         assert!(error.contains("simulated disk refusal"), "{error}");
-        door.apply_entry(&admin.name, &admin.node_id, &view, &storage, &birth, entry, placed).await.unwrap();
+        door.apply_entry(&admin.name, &admin.node_id, &view, &storage, &birth, entry, placed, None).await.unwrap();
         assert_eq!(written.row_of(&node.node_id).unwrap().storage_persistence, Some(placed.0));
         assert_eq!(records.properties(&node.node_id).await.unwrap(), Some(own));
         endpoint.close().await;
