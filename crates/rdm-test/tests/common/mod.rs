@@ -113,9 +113,10 @@ use tracing_subscriber::layer::SubscriberExt;
 /// Every span: name, parent name, and its recorded fields, keyed by the sequence number of its
 /// creation; the third part ticks whenever a span is created or a field recorded, so a cell awaits a
 /// span fact instead of looking again and again; the fourth holds, per span key, the sequence number
-/// of its close, from the same counter, so a cell reads whether one span closed before another began.
+/// of its close, from the same counter, so a cell reads whether one span closed before another began;
+/// the fifth holds, per span key, the key of its parent span, so a cell reads which span a span ran in.
 #[derive(Clone, Default)]
-pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>, Arc<Mutex<(u64, HashMap<u64, u64>)>>, Arc<tokio::sync::watch::Sender<u64>>, pub Arc<Mutex<HashMap<u64, u64>>>);
+pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>, Arc<Mutex<(u64, HashMap<u64, u64>)>>, Arc<tokio::sync::watch::Sender<u64>>, pub Arc<Mutex<HashMap<u64, u64>>>, pub Arc<Mutex<HashMap<u64, u64>>>);
 
 impl Spans {
     /// Resolves once a span named `name` holds fields `wanted` says yes to.
@@ -155,15 +156,19 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
         let mut fields = BTreeMap::new();
         attrs.record(&mut Fields(&mut fields));
         let parent = ctx.span(id).and_then(|s| s.parent().map(|p| p.name().to_string()));
+        let parent_id = ctx.span(id).and_then(|s| s.parent().map(|p| p.id().into_u64()));
         // The registry recycles a closed span's id: a span is kept under its own sequence number,
         // never under an id a later span may take.
-        let key = {
+        let (key, parent_key) = {
             let mut live = self.1.lock().unwrap();
             live.0 += 1;
             let key = live.0;
             live.1.insert(id.into_u64(), key);
-            key
+            (key, parent_id.and_then(|p| live.1.get(&p).copied()))
         };
+        if let Some(parent_key) = parent_key {
+            self.4.lock().unwrap().insert(key, parent_key);
+        }
         self.0.lock().unwrap().insert(key, (attrs.metadata().name().into(), parent, fields));
         self.2.send_modify(|t| *t += 1);
     }

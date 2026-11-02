@@ -2,26 +2,30 @@
 //! create composes the whole node.start with FirstStart, a start after a stop runs it with AfterStop).
 //!
 //! The design (node-start.md steps 2-5): join the accepting authority and consume its cert and
-//! rafka-time answer, join the mesh channel, then node.joined; run `pre_node_ready` (the app
-//! "reads no topology snapshot as a prerequisite"); obtain complete topology through
-//! node.topology.get; fetch Build facts only when the node is below the authority's floor, "after
-//! the hook and before node.started"; "Refresh rafka-time **last**, so it is current when the node
-//! re-enters"; emit node.started.
+//! rafka-time answer, join the mesh channel, then node.joined; run `pre_node_ready` (topology follows
+//! the hook); "Satisfy the required Build floor after the hook ... Then obtain topology once through
+//! node.topology.get, as the final startup read. Request it without a conditional source version and
+//! install only complete snapshots. The same reply supplies the recorded primaries, startup context
+//! and current Rafka-time; adopt the time after installing topology and before reporting started.
+//! ... Do not fetch topology before the Build-floor check and do not issue a second topology request
+//! just to refresh time"; emit node.started.
 //!
-//! CONTRACT: the four start paths run the same seven start steps in that order, each a child of its
+//! CONTRACT: the four start paths run the same six start steps in that order, each a child of its
 //! start's root span (`rdm.mesh.node.create.via-boot` for a first start,
 //! `rdm.mesh.node.update.via-start` for a start after a stop), and each step begins only after the
 //! step before it has closed: a node-admin's first start (launched by another admin), the same
 //! node-admin's start after its stop, an rpc node's first start and the same rpc node's start after
 //! its stop. The steps are the join (`via-join-admitted`), the mesh channel, node.joined
-//! (`via-topology-joined`), the `pre_node_ready` attempt (`via-pre-node-ready-attempt`), the
-//! topology (`via-topology-taken`), the Build floor (`via-build-floor`, run on every start: an rpc
-//! node holds no Build log and owes none), the rafka-time refresh (`via-rafka-time-refreshed`) and
-//! the report (`via-ready`). What must NOT happen: a topology read before the hook returned, a
-//! rafka-time adopted after the topology and before the floor and never again, a start with no
-//! floor step, or a start path that steps the sequence on its own, so that a step is missing from
-//! its trace, runs outside its start's root, overlaps the step before it, or comes in another order
-//! than in the other paths.
+//! (`via-topology-joined`), the `pre_node_ready` attempt (`via-pre-node-ready-attempt`), the Build
+//! floor (`via-build-floor`, run on every start: an rpc node holds no Build log and owes none), the
+//! topology (`via-topology-taken`, its reply's rafka-time adopted in it) and the report
+//! (`via-ready`). Each start makes exactly one `GetTopology` (op 0x1E), inside its topology step, and
+//! adopts the rafka-time of that one reply; every topology read the authority serves these nodes is
+//! answered whole, never `Unchanged`, as a read with no conditional source version is. What must NOT
+//! happen: a topology read before the Build floor, a second `GetTopology` to refresh rafka-time, a
+//! read naming a source version, a start with no floor step, or a start path that steps the sequence
+//! on its own, so that a step is missing from its trace, runs outside its start's root, overlaps the
+//! step before it, or comes in another order than in the other paths.
 //!
 //! The authority is a real Day-0 node-admin in this process; it launches the second admin and the rpc
 //! node, and commands their stops and starts over Node RPC, so each start after a stop joins it back
@@ -47,15 +51,24 @@ use std::time::Duration;
 const WRONG: Duration = Duration::from_secs(60);
 
 /// The start steps, in the order every start path runs them (node-start.md steps 2-5).
-const STEPS: [&str; 7] = [
+const STEPS: [&str; 6] = [
     "rdm.mesh.node.update.via-join-admitted",
     "rdm.mesh.node.update.via-topology-joined",
     "rdm.mesh.node.update.via-pre-node-ready-attempt",
-    "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-build-floor",
-    "rdm.mesh.node.update.via-rafka-time-refreshed",
+    "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-ready",
 ];
+/// The start step that makes the start's one `GetTopology`.
+const TOPOLOGY_STEP: &str = "rdm.mesh.node.update.via-topology-taken";
+/// The caller's span of one Node RPC call, with its `op`.
+const CALL: &str = "rdm.node_rpc.request.update.via-call";
+/// The server's span of one streamed Node RPC call, with its `op` and the caller's endpoint (`peer`).
+const STREAM_SERVED: &str = "rdm.node_rpc.stream.serve.via-direct";
+/// The topology door's span of one `GetTopology` it served, with how many meshes it answered `Unchanged`.
+const TOPOLOGY_SERVED: &str = "rdm.mesh.topology.serve.via-read";
+/// `GetTopology`'s op, as a call span records it.
+const GET_TOPOLOGY_OP: &str = "30";
 const FIRST_START: &str = "rdm.mesh.node.create.via-boot";
 const AFTER_STOP: &str = "rdm.mesh.node.update.via-start";
 
@@ -166,6 +179,38 @@ fn steps_under(spans: &crate::common::Spans, node: &str, root: &str) -> Vec<(Str
     found.into_iter().map(|(seq, n)| (n, seq, closed.get(&seq).copied())).collect()
 }
 
+/// The `GetTopology` calls a start whose steps are `steps` made inside one of its steps: each with
+/// the name of the step it ran in and that step's fields.
+fn topology_calls_in(spans: &crate::common::Spans, steps: &[(String, u64, Option<u64>)]) -> Vec<(String, std::collections::BTreeMap<String, String>)> {
+    let held = spans.0.lock().unwrap();
+    let parents = spans.4.lock().unwrap();
+    let mut calls: Vec<(u64, String, std::collections::BTreeMap<String, String>)> = held
+        .iter()
+        .filter(|(_, (name, _, fields))| name == CALL && fields.get("op").map(String::as_str) == Some(GET_TOPOLOGY_OP))
+        .filter_map(|(seq, _)| {
+            let parent = parents.get(seq)?;
+            let (step, _, _) = steps.iter().find(|(_, s, _)| s == parent)?;
+            Some((*seq, step.clone(), held.get(parent).map(|(_, _, f)| f.clone()).unwrap_or_default()))
+        })
+        .collect();
+    calls.sort_by_key(|(seq, _, _)| *seq);
+    calls.into_iter().map(|(_, step, fields)| (step, fields)).collect()
+}
+
+/// Every `GetTopology` the cell's nodes served to the caller whose endpoint is `endpoint`: each
+/// serve's fields (its `unchanged` count among them).
+fn topology_served_to(spans: &crate::common::Spans, endpoint: &str) -> Vec<std::collections::BTreeMap<String, String>> {
+    let held = spans.0.lock().unwrap();
+    let parents = spans.4.lock().unwrap();
+    held.iter()
+        .filter(|(_, (name, _, _))| name == TOPOLOGY_SERVED)
+        .filter(|(seq, _)| {
+            parents.get(seq).and_then(|p| held.get(p)).is_some_and(|(name, _, fields)| name == STREAM_SERVED && fields.get("peer").map(String::as_str) == Some(endpoint))
+        })
+        .map(|(_, (_, _, fields))| fields.clone())
+        .collect()
+}
+
 /// Where `steps` breaks the sequence: a step that began before the step ahead of it closed.
 fn overlaps(steps: &[(String, u64, Option<u64>)]) -> Vec<String> {
     steps
@@ -236,6 +281,21 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
             let names: Vec<String> = steps.iter().map(|(n, _, _)| n.clone()).collect();
             assert_eq!(names, STEPS.map(String::from).to_vec(), "{path} runs the start steps of every start path, in their order, under its start's root; all four:\n{}", report.join("\n"));
             assert_eq!(overlaps(steps), Vec::<String>::new(), "{path} begins each start step only after the step before it closed; all four:\n{}", report.join("\n"));
+            // One GetTopology, in the topology step (after the Build floor closed), and the rafka-time
+            // of that one reply adopted there.
+            let calls = topology_calls_in(&spans, steps);
+            let in_steps: Vec<&str> = calls.iter().map(|(step, _)| step.as_str()).collect();
+            assert_eq!(in_steps, vec![TOPOLOGY_STEP], "{path} makes exactly one GetTopology, in its topology step after its Build floor; it made: {calls:?}");
+            let (_, step) = &calls[0];
+            assert_eq!(step.get("rafka_time").map(String::as_str), Some("adopted"), "{path} adopts the rafka-time of its one topology reply in its topology step: {step:?}");
+        }
+        // No read these nodes made named a source version: every one was answered whole.
+        for (who, launch) in [("mesh1.admin.2", &admin_launch), ("mesh1.rpc.1", &rpc_launch)] {
+            let endpoint = rdm_test::node::load_or_mint_key(&launch.data_dir).unwrap().public().to_string();
+            let served = topology_served_to(&spans, &endpoint);
+            assert!(!served.is_empty(), "{who}: the authority served its topology reads");
+            let conditional: Vec<_> = served.iter().filter(|f| f.get("unchanged").is_some_and(|u| u != "0")).collect();
+            assert!(conditional.is_empty(), "{who}: no topology read of a start names a source version, so none is answered Unchanged: {conditional:?}");
         }
 
         drop(rpc);
