@@ -316,7 +316,9 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert!(swept_old.is_empty(), "the recreated mesh's first admin holds no birth of the removed mesh: {swept_old:?}");
     // A create whose view holds a removed birth at its path investigates it (admin.rs create -> path_investigation.rs
     // `via-path-investigation`, the incarnation it investigated): no create of the recreated mesh investigates one.
+    // The recreated mesh's creates are the ones after the removed mesh2 left (its MeshLeft receipt); a create
+    // the removed mesh2 ran over its own live birth while it stood is no create of the recreated mesh.
     let old_births: BTreeSet<_> = regrown.iter().filter(|n| n["mesh"] == "mesh2").map(|n| (s(&n["node_id"]), s(&n["incarnation_id"]))).collect();
-    let targeted_old: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| old_births.contains(&(s(&sp["attributes"]["node_id"]), s(&sp["attributes"]["incarnation"])))).collect();
+    let targeted_old: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= left_at && old_births.contains(&(s(&sp["attributes"]["node_id"]), s(&sp["attributes"]["incarnation"])))).collect();
     assert!(targeted_old.is_empty(), "no member of the recreated mesh is created over a removed birth: {targeted_old:?}");
 }
