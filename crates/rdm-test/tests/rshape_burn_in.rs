@@ -3817,7 +3817,7 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
             assert!(!names.iter().any(|x| x == never), "{node:?}: the delete of the stopped {target:?} runs no `{never}` step: {names:?}");
         }
     }
-    let step_ops = replace.then(|| step_ops_of(spans, &node, &bid));
+    let step_ops = replace.then(|| step_ops_of(spans, &node, &id, &bid));
     let removed = named(spans, "rdm.mesh.topology.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
     let ready = named(spans, "rdm.mesh.node.update.via-ready");
     let after: Vec<&&Value> = ready.iter().filter(|r| r["attributes"]["node_id"] == id.as_str() && start_ns(r) > start_ns(deleted[0])).collect();
@@ -3828,10 +3828,11 @@ fn check_delete_chain(spans: &[Value], rec: &Value) -> Value {
 
 /// The replace steps of `node` in `build_id` (node-replace.md "Numbered end-to-end sequence"): its
 /// reconciles executed the Build's six operations, each under its op's own key, in order, and no
-/// other operation of the node or its predecessor.
-fn step_ops_of(spans: &[Value], node: &PathName, build_id: &str) -> Vec<String> {
-    let old = node.renamed().unwrap();
-    let on = |item: &str, at: &PathName| item.contains(&format!("subject: {:?}", Some(rdm_core::OperationSubject::Location(at.clone()))));
+/// other operation of the node or its predecessor. Each operation on the predecessor names it by its
+/// node id (`old_id`); the create names the location its successor is born at.
+fn step_ops_of(spans: &[Value], node: &PathName, old_id: &str, build_id: &str) -> Vec<String> {
+    let at = format!("subject: {:?}", Some(rdm_core::OperationSubject::Location(node.clone())));
+    let on_old = format!("subject: Some(Node(NodeId({old_id:?})))");
     // The steps are an attempt of the accepted Build (its via-steps span names the attempt it opened):
     // the reconciles from that attempt on in the fabric lane are the steps'. The formation's earlier
     // attempts of the same Build created the node at its path and are not the steps'.
@@ -3845,13 +3846,13 @@ fn step_ops_of(spans: &[Value], node: &PathName, build_id: &str) -> Vec<String> 
     for sp in reconciles {
         for item in rdm_test::estate::planned_operations(sp) {
             let Some(action) = item.split("action: \"").nth(1).and_then(|r| r.split('"').next()) else { continue };
-            let op = if on(&item, node) { format!("{action}:{node:?}") } else if on(&item, &old) { format!("{action}:{old:?}") } else { continue };
+            let op = if item.contains(&at) { format!("{action}:{node:?}") } else if item.contains(&on_old) { format!("{action}:{old_id}") } else { continue };
             if !ops.iter().any(|x| *x == op) {
                 ops.push(op);
             }
         }
     }
-    let want = [format!("node.connection.delete:{node:?}"), format!("node.mesh.leave:{node:?}"), format!("node.update:{node:?}"), format!("node.stop:{old:?}"), format!("node.create:{node:?}"), format!("node.delete:{old:?}")];
+    let want = [format!("node.connection.delete:{old_id}"), format!("node.mesh.leave:{old_id}"), format!("node.update:{old_id}"), format!("node.stop:{old_id}"), format!("node.create:{node:?}"), format!("node.delete:{old_id}")];
     assert_eq!(ops, want.to_vec(), "{node:?}: the Build's operations, in order");
     ops
 }
