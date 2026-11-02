@@ -26,8 +26,8 @@ executed increment controls. Planned acceptance tests and fields are not complet
 
 The location and identity contract is [R-NR1](proposal/node-record.md#requirements):
 `path` is where a node is; `name` is its name, unique within that path. They remain separate in
-storage, wire objects, launch inputs, references, queries and diagnostic fields. A structured
-argument or composite `(path, name)` index may contain both. Neither field supplies identity,
+storage, wire objects, launch inputs, references, queries and diagnostic fields. Only the
+composite `(path, name)` lookup index holds both (Luke, 2026-11-02). Neither field supplies identity,
 mesh, type or ordinal; code selects `node.id` first and reads explicit metadata. Replacement
 keeps the predecessor's path unchanged, changes its name to `<name>-old`, and creates the
 successor with the original name at that same path. Architect 1's review includes all these surfaces.
@@ -636,7 +636,7 @@ compile has not supplied passing evidence. Rename replay ABA and the broader ini
 Luke clarified during CLI continuation that `path` is where the node is in the tree and `name`
 is the node's name. They are two properties, never a joined `path.name` identifier, display
 format, serialized string or string to split. This applies to storage, wire objects, launch
-inputs, references, queries and diagnostic fields. A structured argument may contain both.
+inputs, references, queries and diagnostic fields. Only the composite lookup index holds both.
 Names are unique within a path, so a composite `(path, name)` lookup index and name claims remain
 valid. `node.id` is globally unique and is the first choice for code references and lookups;
 a caller-supplied location is resolved through the composite index, then operations carry the ID.
@@ -717,6 +717,13 @@ exhaustion. Architect 1 reviewed these source changes; their regression tests ha
 - **State/evidence:** BUILD; owner unassigned; RED SHA/test revision, GREEN SHA/count/duration, artifacts and Jaeger URL pending. No story is complete until its requirement rows and evidence are updated.
 
 ### e1 — Consumers address separate path and name
+
+**State (2026-11-02): open.** The joined parser and formatter are gone, but 66 public fields are still typed
+`PathName` and carry both values under one field (`NodeSpec.path`, every `BuildChange` variant's `node`,
+`nodes_storage`, `join`, `build`, `launch`, `model`, `views` among them), and 8 page lines show the same.
+R-NR1 keeps the two separate in wire objects and records; its "structured argument" clause, the opening
+the migration used, is withdrawn. e1.s2 reopens: every such field becomes `path: String, name: String`;
+`PathName` stays only as the lookup index key. Removal debt D16 (i143-prd.md).
 
 - **Goal → gap:** deliver R1; source/design anchor: `crates/rdm-core/src/path.rs:91 and :228`.
 - **Detailed requirements / stories:**

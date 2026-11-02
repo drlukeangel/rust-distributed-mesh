@@ -65,8 +65,9 @@ There is no combined `path.name` identifier, display format or string to split. 
 dot; a path may hold dots. Neither field encodes the node's mesh, type, ordinal or predecessor:
 `mesh` and `node_type` remain explicit metadata.
 
-The existing `PathName` Rust type may carry the two fields as a structured argument. That does
-not turn them into one property. `node.id` is globally unique and is the first choice for code
+The existing `PathName` Rust type is the composite `(path, name)` lookup index key and nothing
+else: no wire object, record, launch input, reference or diagnostic field is typed `PathName`;
+each carries `path` and `name` as two fields (Luke, 2026-11-02). `node.id` is globally unique and is the first choice for code
 references, commands and lookups. A caller-supplied location is resolved using the composite
 `(path, name)` index; subsequent references carry the ID. Wherever location is carried, storage,
 wire objects, launch inputs, references, queries and diagnostics keep the two fields separate.
