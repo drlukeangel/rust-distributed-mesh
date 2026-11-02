@@ -228,14 +228,15 @@ impl NodeInvestigatedWriter {
 
 /// The verdict `verdict` of the investigation of `node`'s birth at `incarnation`, and what RDM does
 /// with it, `next`: written by this primary, the one that investigated, as one `rdm.node.investigated`
-/// event (node-investigation.md, build.md §5), and from that write the application's
-/// `on_node_investigated` is sent, once (fabric-node-hooks.md, Q312). Both run on a task of their own,
-/// under `rdm.node_admin.node.update.via-on-node-investigated`, a child of the span current here, whose
-/// trace context the event and the notice carry. `ids` are the fabric's and the birth's mesh's
-/// ([`fabric_and_mesh_of`]). It gates nothing and orders nothing: an event not written sends no notice,
-/// named on the span.
-pub(crate) fn notify_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, next: crate::wiring::NodeInvestigatedNext) {
+/// event (node-investigation.md, build.md §5), before anything acts on it; from that write the
+/// application's `on_node_investigated` is sent, once, on a task of its own (fabric-node-hooks.md,
+/// Q312). Both under `rdm.node_admin.node.update.via-on-node-investigated`, a child of the span current
+/// here, which names the event; the event and the notice carry the current span's trace context.
+/// `ids` are the fabric's and the birth's mesh's ([`fabric_and_mesh_of`]). The notice gates nothing
+/// and orders nothing; an event not written sends none, named on the span.
+pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, next: crate::wiring::NodeInvestigatedNext) {
     use tracing::Instrument as _;
+    let context = crate::build_claim::current_context();
     let (fabric_id, mesh_id) = ids;
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-on-node-investigated",
@@ -254,34 +255,42 @@ pub(crate) fn notify_node_investigated(writer: &NodeInvestigatedWriter, ids: (rd
         span.in_scope(|| tracing::info!("this admin holds no rafka-time: the verdict is not written and the notice is not sent"));
         return;
     };
-    let (event, context) = span.in_scope(|| (crate::events_storage::Event::node_investigated(&writer.source, time_ms, &node.node_id, incarnation, &node.name.path, &node.name.name, verdict.as_str(), next.as_str()), crate::build_claim::current_context()));
+    let event = crate::events_storage::Event::node_investigated(&writer.source, time_ms, &node.node_id, incarnation, &node.name.path, &node.name.name, verdict.as_str(), next.as_str());
     span.record("event_id", event.id.as_str());
-    let (events, hook) = (writer.events.clone(), writer.on_node_investigated.clone());
-    let (node_id, incarnation, path, name) = (node.node_id.clone(), incarnation.clone(), node.name.path.clone(), node.name.name.clone());
-    let ctx = move |mesh_id| crate::wiring::NodeInvestigatedCtx { fabric_id, mesh_id, node_id, incarnation, path, name, verdict, next, context };
-    let task_span = span.clone();
+    if let Err(e) = writer.events.append(&event).instrument(span.clone()).await {
+        span.record("outcome", "event-not-written");
+        span.in_scope(|| tracing::info!(cause = %e, "the verdict's rdm.node.investigated event was not written: the notice is not sent"));
+        return;
+    }
+    let (hook, mesh_id) = match (writer.on_node_investigated.clone(), mesh_id) {
+        (Some(hook), Some(mesh_id)) => (hook, mesh_id),
+        (None, _) => {
+            span.record("outcome", "no-hook");
+            span.in_scope(|| tracing::info!("the verdict is written; no on_node_investigated hook is registered"));
+            return;
+        }
+        (Some(_), None) => {
+            span.record("outcome", "no-mesh-id");
+            span.in_scope(|| tracing::info!("the verdict is written; this admin's view holds no id for the birth's mesh: the notice is not sent"));
+            return;
+        }
+    };
+    span.record("outcome", "sent");
+    let ctx = crate::wiring::NodeInvestigatedCtx {
+        fabric_id,
+        mesh_id,
+        node_id: node.node_id.clone(),
+        incarnation: incarnation.clone(),
+        path: node.name.path.clone(),
+        name: node.name.name.clone(),
+        verdict,
+        next,
+        context,
+    };
     tokio::spawn(
         async move {
-            if let Err(e) = Ok::<(), crate::storage_error::StorageError>({ let _ = (&events, &event); }) {
-                task_span.record("outcome", "event-not-written");
-                tracing::info!(cause = %e, "the verdict's rdm.node.investigated event was not written: the notice is not sent");
-                return;
-            }
-            match (hook, mesh_id) {
-                (None, _) => {
-                    task_span.record("outcome", "no-hook");
-                    tracing::info!("the verdict is written; no on_node_investigated hook is registered");
-                }
-                (Some(_), None) => {
-                    task_span.record("outcome", "no-mesh-id");
-                    tracing::info!("the verdict is written; this admin's view holds no id for the birth's mesh: the notice is not sent");
-                }
-                (Some(hook), Some(mesh_id)) => {
-                    task_span.record("outcome", "sent");
-                    hook(ctx(mesh_id)).await;
-                    tracing::info!("the verdict is written and the application was told it");
-                }
-            }
+            hook(ctx).await;
+            tracing::info!("the application was told the node investigation's verdict");
         }
         .instrument(span),
     );

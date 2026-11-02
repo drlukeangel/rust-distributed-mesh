@@ -348,7 +348,13 @@ struct EventsFold {
 
 impl EventsFold {
     fn insert(&mut self, event: Event) {
-        let _ = event;
+        if let Some(build_id) = event.build_id() {
+            self.by_build.insert((build_id, event.id.clone()), event.clone());
+        }
+        if let Some(node_id) = event.subject.clone() {
+            self.by_node.insert((node_id, event.id.clone()), event.clone());
+        }
+        self.by_id.insert(event.id.clone(), event);
     }
 
     fn of_build(&self, build_id: &BuildId) -> Vec<Event> {

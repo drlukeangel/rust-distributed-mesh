@@ -181,7 +181,7 @@ async fn command_mesh_join(
         let command = crate::node_commands::CommandKey { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         let _ = status_door.commands.open(command.clone());
         if let Some(ids) = notice {
-            crate::node_investigation::notify_node_investigated(investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedVerdict::Reached, crate::wiring::NodeInvestigatedNext::Rejoin);
+            crate::node_investigation::write_node_investigated(investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedVerdict::Reached, crate::wiring::NodeInvestigatedNext::Rejoin).await;
         }
         let req = StatusRequest::JoinMesh {
             node_id: node.node_id.clone(),

@@ -214,7 +214,7 @@ impl RecoverySubmitter {
             // The verdict opens the re-create: it is written as its event, and the application is told
             // once from that write, under the submit's span (fabric-node-hooks.md "on_node_investigated").
             let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
-            span.in_scope(|| crate::node_investigation::notify_node_investigated(&self.investigated, ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate));
+            crate::node_investigation::write_node_investigated(&self.investigated, ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate).instrument(span.clone()).await;
         }
         let end = self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await;
         let ended = settled(&span, end);

@@ -23,7 +23,7 @@ unanswered marks its birth at the primary above it (the caller itself when it is
 other caller reports the birth to it with Status `ReportCallFailed`), and the primary investigates
 that birth as it investigates silence ([node recovery](node-recovery.md) step 2).
 
-The verdict is the one decision (Q111). Reached: the node is commanded back through
+The verdict is the one decision (Q111). The primary that investigated writes it as one `rdm.node.investigated` event, `subject` the node.id, with the incarnation, path, name, verdict and what follows ([build.md §5](../build.md#5-buildstateadapter)); an investigation is never an entity of its own. Reached: the node is commanded back through
 [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path.name with a
 new node.id (Q110). Fabric recovery's backbone arm excepts `running`
 ([fabric recovery](fabric-recovery.md) step 3). A wrong verdict is fixed in the investigation.

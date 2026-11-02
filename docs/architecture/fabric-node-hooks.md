@@ -150,7 +150,7 @@ When a call this node opened ends with its attempts spent ([node-rpc.md §43](no
 
 ## on_node_investigated
 
-Once it records a node investigation's verdict on a node of its mesh ([node investigation](lifecycles/node-investigation.md)), the mesh-primary calls `on_node_investigated` once, with `NodeInvestigatedCtx { fabric_id, mesh_id, node_id, incarnation, path, name, verdict, next, context }`, on a task of its own. `verdict` is the investigation's; `next` is what RDM does with the birth: `rejoin` (commanded back through node.mesh.join) or `recreate` (re-created at the same path and name with a new node.id). The notice gates nothing in RDM and orders nothing: a re-create may be under way when the application's hook runs.
+Once it writes a node investigation's verdict on a node of its mesh as its `rdm.node.investigated` event ([build.md §5](build.md#5-buildstateadapter); [node investigation](lifecycles/node-investigation.md)), the mesh-primary calls `on_node_investigated` once, with `NodeInvestigatedCtx { fabric_id, mesh_id, node_id, incarnation, path, name, verdict, next, context }`, on a task of its own. `verdict` is the investigation's; `next` is what RDM does with the birth: `rejoin` (commanded back through node.mesh.join) or `recreate` (re-created at the same path and name with a new node.id). The notice gates nothing in RDM and orders nothing: a re-create may be under way when the application's hook runs.
 
 ## rafka-time
 
