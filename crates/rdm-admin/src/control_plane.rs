@@ -246,7 +246,7 @@ impl ControlPlane {
         let mut fabric_lost = false;
         if holding(&current, Some(mesh)).is_some() {
             match self.end_deleted_attempt(&current, mesh).await? {
-                Freed::LaneEnded => current = read().await?,
+                Freed::DriftAttemptEnded => current = read().await?,
                 Freed::FabricRowReleased => fabric_lost = true,
                 Freed::Nothing => {}
             }
@@ -254,7 +254,7 @@ impl ControlPlane {
         if let Some(attempt) = open_unclaimed(&current, mesh, action, fabric_lost) {
             return Ok((admission, current, Some(attempt)));
         }
-        let held = if fabric_lost { lane_holding(&current, mesh) } else { holding(&current, Some(mesh)) };
+        let held = if fabric_lost { drift_attempt_holding(&current, mesh) } else { holding(&current, Some(mesh)) };
         if let Some(mut held) = held {
             // An attempt opened and claimed by no one has no claimant in the fold: the holder is the
             // admin whose in-flight row of the mesh names it, the one that opened it.
@@ -344,7 +344,7 @@ impl ControlPlane {
             span.record("outcome", "row-released");
             span.in_scope(|| tracing::info!("the fabric lane's attempt lost with its executor gets no verdict: the Build stays in progress, its in-flight row is released, and the fabric-primary's drive claims the next attempt"));
         }
-        Ok(if ends { Freed::LaneEnded } else { Freed::FabricRowReleased })
+        Ok(if ends { Freed::DriftAttemptEnded } else { Freed::FabricRowReleased })
     }
 
     /// Compile `change` once against the current Build's topology into the next complete Build and
@@ -1528,13 +1528,13 @@ fn holding(p: &crate::build_state::BuildProjection, mesh: Option<&str>) -> Optio
             if fabric_mesh.as_deref() == Some(mesh) {
                 return Some(InProgress { current_build_id: p.build_id.clone(), mesh: Some(mesh.to_string()), held_by: p.claimant.clone() });
             }
-            lane_holding(p, mesh)
+            drift_attempt_holding(p, mesh)
         }
     }
 }
 
 /// `mesh`'s own drift lane's open attempt of `p`, which holds the mesh whatever the fabric lane holds.
-fn lane_holding(p: &crate::build_state::BuildProjection, mesh: &str) -> Option<InProgress> {
+fn drift_attempt_holding(p: &crate::build_state::BuildProjection, mesh: &str) -> Option<InProgress> {
     p.lanes.get(mesh).filter(|l| l.is_open()).map(|l| InProgress { current_build_id: p.build_id.clone(), mesh: Some(mesh.to_string()), held_by: l.claimant.clone() })
 }
 
@@ -1544,7 +1544,7 @@ enum Freed {
     /// No attempt: none holds the mesh unfinished with its executor's exit proven.
     Nothing,
     /// The mesh's drift-lane attempt, ended `Failed` naming the departure, its row released.
-    LaneEnded,
+    DriftAttemptEnded,
     /// The fabric lane's attempt lost with its executor: no verdict, the Build in progress, its row released.
     FabricRowReleased,
 }
