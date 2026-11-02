@@ -24,10 +24,19 @@ lane=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); cd "$lane"; out=$lane/tar
 basef=${RDM_LANE_STATE_ROOT:-$HOME/lane-queue/rdm}/$(basename "$lane")/base
 base_moved=0
 # Another cells.sh run in this lane: a rebase now would move the tree under its build or its cells.
+# A run is a bash process whose script argument is cells.sh: never this run, a subshell of it (its
+# parent is a run), or a `bash -c "... cells.sh ..."` wrapper that only names it.
+is_run() {
+  local a; a=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | sed -n 2p)
+  case "$a" in *scripts/cells.sh|scripts/cells.sh|cells.sh) return 0 ;; esac
+  return 1
+}
 other_run() {
   local p cwd
   for p in $(pgrep -f "scripts/cells.sh"); do
     [ "$p" = "$$" ] && continue
+    is_run "$p" || continue
+    is_run "$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)" && continue
     cwd=$(readlink "/proc/$p/cwd" 2>/dev/null) || continue
     case "$cwd/" in "$lane"/*) return 0 ;; esac
   done
