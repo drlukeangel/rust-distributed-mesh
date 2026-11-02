@@ -224,8 +224,9 @@ fn mark(dir: &Path) {
 
 /// Providers qualified for the shared store namespace (R14 item 6): the process provider
 /// supplies a host directory; the container provider bind-mounts that directory at the same
-/// absolute path in every runtime. `container_proof` proves hard-link insertion, atomic
-/// replacement, file and directory fsync, and coherent cross-container reads and listings.
+/// absolute path in every runtime. `container_proof` proves item 5's guarantees across two
+/// containers: serialized `O_APPEND` lines with checked writes and file fsync, create-exclusive
+/// insertion under `locks/` with its directory fsync, and coherent reads and `locks/` listings.
 pub fn qualify(provider: crate::model::ProviderKind) -> Result<(), String> {
     match provider {
         crate::model::ProviderKind::Process | crate::model::ProviderKind::Container => Ok(()),

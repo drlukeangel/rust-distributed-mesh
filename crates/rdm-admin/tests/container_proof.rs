@@ -254,11 +254,19 @@ async fn an_admin_in_another_docker_domain_refuses_the_locator_by_name_and_touch
     assert_eq!(p.inspect(&launched, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Running);
 }
 
-/// R14 item 6: two independent runtimes see one mounted namespace. Hard-link insertion
-/// excludes an existing key; replacements are whole; file and directory fsync succeed;
-/// writes, removals and listings are coherent in both directions.
+/// CONTRACT (R14 item 6: a provider other than the process provider qualifies by a functional cell
+/// that proves item 5's guarantees on its actual backing store; item 5 as amended by R-SR3: serialized
+/// O_APPEND writes, checked write results and file fsync, create-exclusive insertion under locks/ with
+/// its directory fsync, and coherent reads on one backing namespace; storage.md §2: one append-only
+/// JSONL file per store, the `locks/` of the name claims, every name claim copied by its listing): two
+/// independent containers see one mounted store root. A create-exclusive insert under `locks/name/`
+/// is refused by name in the other container and leaves the lock unchanged; both containers append
+/// whole lines to one store file at once, each write's count checked and fsynced, and every fold reads
+/// only whole lines in each writer's order; inserts, reads and the `locks/` listing are coherent in
+/// both directions. Must NOT happen: a torn or interleaved line, a short append taken as written, a
+/// second winner of one lock, or a listing that misses the other container's lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacements_and_synced_files_and_directories() {
+async fn containers_share_a_store_root_with_exclusive_inserts_serialized_appends_and_synced_files_and_directories() {
     let fabric = fabric_name("store-root");
     let Some(p) = provider(&fabric).await else { return };
     let _cleanup = Fabric(fabric.clone());
@@ -280,15 +288,18 @@ async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacement
     let b = b.expect("reader container");
     let actors = [&a, &b];
     store_phase(&actors, &control, "native participants ready", None, &["writer-ready", "reader-ready"]).await;
-    store_phase(&actors, &control, "hard-link insert and sync", Some("start"), &["inserted"]).await;
-    store_phase(&actors, &control, "collision and shared listing", None, &["collision-complete"]).await;
-    store_phase(&actors, &control, "atomic replacements and concurrent reads", Some("atomic"), &["writer-atomic", "reader-complete"]).await;
-    store_phase(&actors, &control, "reverse read and listing", Some("reverse"), &["writer-complete"]).await;
-    let reads: usize = std::fs::read_to_string(control.join("reads")).unwrap().parse().unwrap();
-    assert!(reads > 0, "the reader observed concurrent whole-file replacements");
-    println!("3 atomic 128 KiB replacements, file/directory fsync, {reads} published whole-file reads, coherent insert/refusal/read/listing in both directions");
-    assert_eq!(std::fs::read(store.join("created")).unwrap(), b"first");
-    assert_eq!(std::fs::read(store.join("atomic")).unwrap(), vec![b'B'; 131072]);
+    store_phase(&actors, &control, "create-exclusive insert under locks/ and sync", Some("start"), &["inserted"]).await;
+    store_phase(&actors, &control, "insert refused and the locks listing", None, &["collision-complete"]).await;
+    store_phase(&actors, &control, "concurrent O_APPEND lines and folds", Some("append"), &["writer-folded", "reader-folded"]).await;
+    store_phase(&actors, &control, "reverse insert and listing", Some("reverse"), &["writer-complete"]).await;
+    let folds: usize = ["writer-appended", "reader-appended"].iter().map(|f| std::fs::read_to_string(control.join(f)).unwrap().parse::<usize>().unwrap()).sum();
+    assert!(folds > 0, "each container folded the store file while the other appended");
+    let lines = std::fs::read(store.join("nodes.jsonl")).unwrap().split(|b| *b == b'\n').filter(|l| !l.is_empty()).count();
+    assert_eq!(lines, 64, "the store file holds every line both containers appended");
+    let names = store.join("locks").join("name");
+    assert_eq!(std::fs::read(names.join("mesh1.rpc.1")).unwrap(), b"writer");
+    assert_eq!(std::fs::read(names.join("mesh1.rpc.2")).unwrap(), b"reader");
+    println!("{lines} O_APPEND lines from two containers, {folds} folds of whole lines, create-exclusive locks coherent in both directions");
     assert!(rdm_admin::store_root::qualify(rdm_admin::model::ProviderKind::Container).is_ok(), "the proven container provider is admitted at boot");
     println!("R14 item 6 qualified: store={}, containers={} and {}", store.display(), container_id(&a), container_id(&b));
 }
