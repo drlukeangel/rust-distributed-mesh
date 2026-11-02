@@ -1,15 +1,16 @@
 //! Exact targets and the resolver contract (node-rpc.md §5–§6).
 //!
 //! The domain chooses one exact semantic target; the resolver answers where
-//! it is now. It never chooses a role, a fallback or a retry.
+//! it is now. It never chooses a fallback or a retry; for a primary-addressed call it answers the
+//! birth its view names for the role (Q313).
 
 use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_core::outcome::ResolveFailure;
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
-/// The exact node a call is for. The domain chooses it; the resolver never chooses a role, fallback
-/// or retry.
+/// The exact node a call is for. The domain chooses it; the resolver never chooses a fallback or a
+/// retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeTarget {
     /// Whoever holds this separate path/name pair at the dial cut.
@@ -26,6 +27,13 @@ pub enum NodeTarget {
         endpoint_id: iroh::PublicKey,
         /// The address the call came in on.
         addr: std::net::SocketAddr,
+    },
+    /// Whoever the view names for a primary role: the mesh-primary of `mesh`, or the fabric-primary
+    /// when `mesh` is `None` (Q313). The call counts its attempts per birth the view names for the
+    /// role, and ends receiver-gone when the role has no birth.
+    Primary {
+        /// The mesh whose mesh-primary is meant; `None`: the fabric-primary.
+        mesh: Option<String>,
     },
 }
 
@@ -87,6 +95,8 @@ struct StaticState {
     nodes: HashMap<NodeId, ResolvedNode>,
     locations: HashMap<PathName, NodeId>,
     gone: HashSet<NodeId>,
+    /// The node each primary role names (`None`: the fabric-primary).
+    primaries: HashMap<Option<String>, NodeId>,
 }
 
 impl Default for StaticResolver {
@@ -121,6 +131,18 @@ impl StaticResolver {
         self.state.read().unwrap().locations.get(location).cloned()
     }
 
+    /// Name `node` for the primary role of `mesh` (`None`: the fabric-primary), or no birth for it
+    /// when `node` is `None`.
+    pub fn set_primary(&self, mesh: Option<String>, node: Option<NodeId>) {
+        let mut state = self.state.write().unwrap();
+        match node {
+            Some(n) => state.primaries.insert(mesh, n),
+            None => state.primaries.remove(&mesh),
+        };
+        drop(state);
+        self.changed.send_modify(|v| *v += 1);
+    }
+
     /// Remove the node `id` and answer `Gone` for it from now on.
     pub fn remove_gone(&self, id: &NodeId) {
         let mut state = self.state.write().unwrap();
@@ -147,6 +169,7 @@ impl NodeResolver for StaticResolver {
                 }
             }),
             NodeTarget::CurrentPath(p) => state.locations.get(p).and_then(|id| state.nodes.get(id)).cloned().ok_or(ResolveFailure::Unknown),
+            NodeTarget::Primary { mesh } => state.primaries.get(mesh).and_then(|id| state.nodes.get(id)).cloned().ok_or(ResolveFailure::Unknown),
             // An endpoint target names a process no record holds: the client dials it as named.
             NodeTarget::Endpoint { .. } => Err(ResolveFailure::Unknown),
         }

@@ -146,10 +146,7 @@ pub fn tickle_ladder(per_call: std::time::Duration) -> std::time::Duration {
 /// [`tickle_ladder`] at the default call budget (`docs/architecture/lifecycles/node-tickle.md`), the
 /// one every call of the tickle spends.
 pub fn tickle_ladder_at_default_budget() -> std::time::Duration {
-    match rdm_transport::CallOptions::default().budget {
-        rdm_transport::Budget::Overall(d) => tickle_ladder(d),
-        other => panic!("the default call budget is not one overall deadline: {other:?}"),
-    }
+    tickle_ladder(rdm_transport::CallOptions::default().resend.time_limit.0)
 }
 
 /// The mesh-primary's recovery tick (node-recovery.md "Detection and proof": "The mesh-primary runs
@@ -370,16 +367,13 @@ impl TickleCalls for TickleClient {
     }
 
     fn deadline(&self) -> std::time::Duration {
-        match rdm_transport::CallOptions::default().budget {
-            rdm_transport::Budget::Overall(d) => d,
-            other => panic!("the default call budget is not one overall deadline: {other:?}"),
-        }
+        rdm_transport::CallOptions::default().resend.time_limit.0
     }
 
     async fn direct(&self, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd {
-        // One connect, direct (node-recovery.md step 2): asked once, never resent; the ladder, not
+        // One connect, direct (node-recovery.md step 2): one attempt, never resent; the ladder, not
         // this call, goes on to the peers.
-        let once = rdm_transport::CallOptions { once: true, ..rdm_transport::CallOptions::default() };
+        let once = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, ..rdm_transport::Resend::default() }, ..rdm_transport::CallOptions::default() };
         let (out, _) = self.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), probe, &once).await;
         ProbeEnd::of(out)
     }

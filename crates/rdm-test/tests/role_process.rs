@@ -7,7 +7,7 @@ use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use rdm_test::{compose, Role, LEGACY_ADAPTERS};
-use rdm_transport::{Budget, CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServerStats, StaticResolver};
+use rdm_transport::{Resend, CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServerStats, StaticResolver};
 use rdm_core::catalog::{EntryKind, OpOwner};
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -174,7 +174,7 @@ fn a_blocked_direct_node_rpc_dial_ends_not_sent_and_a_carrier_of_the_sources_mes
         carrier.running.node_rpc.resolver.apply(b.clone(), None);
         let client = source.running.node_rpc.client.clone();
         let target = NodeTarget::ExactNode(b.node_id.clone());
-        let once = CallOptions { once: true, ..Default::default() };
+        let once = CallOptions { resend: Resend { attempts: 1, ..Resend::default() }, ..Default::default() };
         let served_by = b.node_id.to_string();
         let append = |key: &str| BrokerDataRequest::Append { key: key.into(), value: b"v".to_vec() };
         let to_broker = |c: &NodeRpcClient| c.pooled().iter().filter(|k| k.peer == b.endpoint_id).count();
@@ -356,7 +356,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     assert_eq!(ServerStats::get(&stats.dropped_unfinished), 1, "the broker dropped the unfinished request");
 
     // 2. Reply lost after commit: Indeterminate on the reply deadline; the request did cross.
-    let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(300) }, ..Default::default() };
+    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(300) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
     let (out, ev) = client.call::<BrokerData>(&target, &append(PROOF_HANG), &opts).await;
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut");

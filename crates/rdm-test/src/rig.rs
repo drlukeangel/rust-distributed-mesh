@@ -47,7 +47,7 @@ impl LiveMesh {
     /// budget bounds a dial to an endpoint that is gone.
     pub async fn echo(&self, target: &NodeTarget) -> RpcOutcome<PingReply> {
         let opts = CallOptions {
-            budget: rdm_transport::Budget::Overall(Duration::from_millis(500)),
+            resend: rdm_transport::Resend::with_time_limit(Duration::from_millis(500)),
             ..CallOptions::default()
         };
         let req = PingRequest::Ping { payload: b"ready?".to_vec() };

@@ -15,7 +15,7 @@ use crate::calls::ended;
 use crate::{BuildId, CallEnd};
 use rdm_core::PathName;
 use rdm_transport::stream::{ReplyStream, StreamFailure, StreamItem};
-use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::build::{Build as BuildFamily, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
 use rdm_core::filter::Filter;
 use rdm_core::streaming::StreamingProtocol as _;
@@ -264,7 +264,7 @@ pub struct Reattached {
 }
 
 /// Follow `stream` to its terminal (build.md: "a live run is reattached, never re-claimed"; i146 Q22:
-/// the reattach after a `Budget::Stream` connection closes is the owner's). A stream that breaks
+/// the reattach after a stream op's connection closes is the owner's). A stream that breaks
 /// before its terminal (its connection closed: `Indeterminate`), ends without one, or ends
 /// `FabricPrimaryMoved` is reattached through `reattach` by its `build_id` from the attempt it carried: the
 /// receipts it reads are kept as step frames, each completed step once, then the stream it opens again
@@ -362,7 +362,7 @@ impl BuildCarrier {
         let mut asked: BTreeSet<rdm_core::NodeId> = BTreeSet::new();
         let mut target = self.target.clone();
         loop {
-            let opts = CallOptions { budget: Budget::Stream { send: SEND }, ..CallOptions::default() };
+            let opts = CallOptions { resend: Resend::with_time_limit(SEND), ..CallOptions::default() };
             // The first reply of the call: an early refusal of the receiving node, or the first frame
             // of the stream (`Started`, or the handler's own refusal).
             // The frames are the executor's receipts, recorded before they are sent; this client records

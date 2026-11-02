@@ -97,6 +97,9 @@ struct Live {
     /// path; each stays reachable by its exact node id (its authority's `start`, `update`, `delete`)
     /// until it rejoins as itself or departs.
     stopped: HashSet<(NodeId, IncarnationId)>,
+    /// The node each primary role names, as the process's view holds it (`None`: the
+    /// fabric-primary): what a primary-addressed call resolves (Q313).
+    primaries: HashMap<Option<String>, NodeId>,
 }
 
 impl Live {
@@ -260,6 +263,20 @@ impl LiveNodeResolver {
         self.tick();
     }
 
+    /// Name `node` for the primary role of `mesh` (`None`: the fabric-primary), or no birth for it
+    /// when `node` is `None`: what a [`NodeTarget::Primary`] call resolves to (Q313).
+    pub fn set_primary(&self, mesh: Option<String>, node: Option<NodeId>) {
+        let mut live = self.live.write().unwrap();
+        let changed = match node {
+            Some(n) => live.primaries.insert(mesh, n.clone()).as_ref() != Some(&n),
+            None => live.primaries.remove(&mesh).is_some(),
+        };
+        drop(live);
+        if changed {
+            self.tick();
+        }
+    }
+
     /// The live node whose Iroh key is `endpoint`: the peer of an accepted connection. A key
     /// this process holds no live node for (a probe's ephemeral key, a deleted birth) is `None`.
     pub(crate) fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
@@ -280,6 +297,10 @@ impl LiveNodeResolver {
                 }),
             },
             NodeTarget::CurrentPath(p) => match live.by_path.get(p).and_then(|id| live.nodes.get(id)) {
+                Some(n) => current(n),
+                None => Err(ResolveFailure::Unknown),
+            },
+            NodeTarget::Primary { mesh } => match live.primaries.get(mesh).and_then(|id| live.nodes.get(id)) {
                 Some(n) => current(n),
                 None => Err(ResolveFailure::Unknown),
             },

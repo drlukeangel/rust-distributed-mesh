@@ -27,7 +27,7 @@ use crate::topology::Topology;
 use rdm_transport::topology::TopologyView;
 use crate::offline::{tickle, PeerProbe, ProbeEnd, Tickle, TickleCalls, Unreached, VIA_PEER_TICKLE_FANOUT};
 use rdm_core::status::{Status, StatusReply, StatusRequest};
-use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, Resend, TimeLimit};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -358,15 +358,9 @@ pub(crate) fn direct_budget(interval: Duration) -> Duration {
 
 /// The carried probe outlasts the carrier's one inner call (made with `CallOptions::default`) by two
 /// intervals, so the carrier's answer, connection-lost included, reaches the origin before it gives
-/// up: an inner dial to a dead node-admin runs to the inner call's whole budget.
-pub(crate) fn carried_budget(interval: Duration) -> Budget {
-    match CallOptions::default().budget {
-        Budget::Overall(inner) => Budget::Overall(inner + interval * 2),
-        Budget::Split { send, reply } => Budget::Split { send: send + interval * 2, reply },
-        Budget::Stream { send } => Budget::Stream { send: send + interval * 2 },
-        // Owed is never a default (node-rpc.md §34): it has no bound to outlast.
-        Budget::Owed => Budget::Owed,
-    }
+/// up: an inner dial to a dead node-admin runs to the inner call's whole time limit.
+pub(crate) fn carried_budget(interval: Duration) -> Duration {
+    CallOptions::default().resend.time_limit.0 + interval * 2
 }
 
 /// What the driver needs of its admin.
@@ -811,20 +805,17 @@ impl TickleCalls for WatchCalls<'_> {
     }
 
     async fn direct(&self, admin: &Node, req: &StatusRequest) -> ProbeEnd {
-        let opts = CallOptions { budget: Budget::Overall(direct_budget(self.0.interval)), ..CallOptions::default() };
+        // One connect, direct (node-recovery.md step 2): one attempt; the ladder, not this call, goes
+        // on to the peers.
+        let opts = CallOptions { resend: Resend { attempts: 1, time_limit: TimeLimit(direct_budget(self.0.interval)) }, ..CallOptions::default() };
         let (out, _) = self.0.client.call::<Status>(&NodeTarget::ExactNode(admin.node_id.clone()), req, &opts).await;
         ProbeEnd::of(out)
     }
 
     async fn via_peer(&self, carrier: &Node, admin: &Node, req: &StatusRequest) -> ProbeEnd {
-        // A carrier this admin cannot reach ends the kick within one direct probe's budget (the
-        // connect and send), as the probe's member Ping did; a carrier that took the kick has the whole
-        // carried budget for its answer, connection-lost included (mesh-investigation.md steps 1, 3).
-        let budget = match carried_budget(self.0.interval) {
-            Budget::Overall(reply) => Budget::Split { send: direct_budget(self.0.interval), reply },
-            other => other,
-        };
-        let opts = CallOptions { budget, ..CallOptions::default() };
+        // A carrier that took the kick has the whole carried time for its answer, connection-lost
+        // included (mesh-investigation.md steps 1, 3), plus the transport's share.
+        let opts = CallOptions { resend: Resend::with_time_limit(carried_budget(self.0.interval) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let (out, _) = self.0.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, req, &opts).await;
         ProbeEnd::of(out)
     }

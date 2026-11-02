@@ -89,7 +89,7 @@ pub(crate) async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 /// The `StopNode` `root` sends the birth `launch` names, over Node RPC as its mesh's primary sends it.
 async fn stop(root: &Running, launch: &Launch) -> StatusReply {
     let req = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "q4rbx1n7c2wd".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &launch.node_id) };
-    let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: WRONG }, ..Default::default() };
+    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(WRONG + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
     if let Some(reply) = crate::common::root_lifecycle_reply(root, launch, &req).await {
         return reply;
     }

@@ -16,7 +16,7 @@ use iroh::SecretKey;
 use rdm_core::{NodeKind, PathName};
 use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, Meshes, NodeEvent, NodeStatus, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
 use rdm_admin::build_state::{BuildFact, StepOutcome};
-use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
 use rdm_core::context::CallContext;
 use rdm_core::outcome::RpcOutcome;
@@ -328,9 +328,7 @@ async fn attempt_run(
         mesh: None,
     };
     let opts = CallOptions {
-        budget: Budget::Stream {
-            send: Duration::from_secs(10),
-        },
+        resend: Resend::with_time_limit(Duration::from_secs(10)),
         ..CallOptions::default()
     };
     match caller

@@ -8,7 +8,7 @@ use rdm_core::reconnect::reconnect_plan;
 use rdm_core::{IncarnationId, NodeId, NodeKind};
 use rdm_admin::connections_writer::ConnectionsWriter;
 use rdm_admin::storage::{ConnectionsStorage, FileConnectionsStorage};
-use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
 use serde_json::{json, Value};
@@ -69,7 +69,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         resolver.insert(destination.clone());
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
-        let opts = CallOptions { budget: Budget::Overall(Duration::from_millis(300)), ..Default::default() };
+        let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(300)), ..Default::default() };
 
         // ATTEMPTS completed NotSent dials, each one's completion paired with the rows it left.
         let mut attempts = Vec::new();

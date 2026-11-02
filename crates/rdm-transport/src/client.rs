@@ -1,9 +1,10 @@
 //! The Node RPC client (node-rpc.md §20–§24, §43; ownership amendment §6).
 //!
-//! One call is one owed request to one exact target (node-rpc.md §43): its identity is minted once,
-//! and the runtime resends it with that identity on the schedule until it is acked, its receiver's
-//! exit is proven, or its owner ends it. A call's budget is its owner's bound: when it lapses the
-//! call ends and its request is owed no longer. Each attempt is resolve, the ordinary dial,
+//! One call is one request to one exact target (node-rpc.md §43): its identity is minted once, and
+//! the runtime resends it with that identity on the schedule until it is acked, its receiver's exit
+//! is proven, its owner ends it, or its attempts are spent. A call's `Resend` is its owner's bound:
+//! when its attempts are spent the call ends `NotSent` with the last reason if no attempt crossed
+//! the commit cut, `Indeterminate` otherwise (Q311). Each attempt is resolve, the ordinary dial,
 //! `open_bi` and the request frame; pre-commit work can only end `NotSent`. The commit cut is the
 //! complete request frame written: the frame is self-delimited, and the request direction stays
 //! open for the caller's acks of the response. An unfinished request is reset with
@@ -28,38 +29,47 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{timeout_at, Instant};
 
-/// The budget shapes (node-rpc.md §34).
-#[derive(Debug, Clone, Copy)]
-pub enum Budget {
-    /// One deadline over resolve, dial, send and reply; never reset between phases.
-    Overall(Duration),
-    /// A connect + complete-send bound, then a reply budget that starts at the commit cut.
-    /// A connect and complete-send bound, then a reply budget that starts at the commit cut.
-    Split {
-        /// The bound on connecting and sending the complete request.
-        send: Duration,
-        /// The bound on the reply, counted from the commit cut.
-        reply: Duration,
-    },
-    /// A connect + complete-send bound, then no reply bound: the stream lives as long as the
-    /// transport does (idle and keepalive are the endpoint's liveness, R-T8). Only a server stream
-    /// has a reply direction that outlasts any one budget; a unary reply is read unbounded too.
-    Stream {
-        /// The bound on connecting and sending the complete request.
-        send: Duration,
-    },
-    /// No send or reply deadline (i146 Q44): the call ends only on its reply, on the runtime's proof
-    /// that the receiver is gone (exited, removed or superseded), or when its owner drops it; the
-    /// resend schedule runs unchanged underneath it. For a report or completion its owner owes with
-    /// no bound of its own; never a default.
-    Owed,
+/// How long one attempt of a call may take (node-rpc.md §34; Q311): its resolve, dial and complete
+/// send, at most [`TRANSPORT_LIMIT`] of it, and once the request is acked its reply, counted from the
+/// ack. Ten seconds for a call its receiver answers at once; the receiver's own bound plus ten seconds
+/// where it has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeLimit(pub Duration);
+
+/// How a call is resent (node-rpc.md §34, §43; Q311, Q315): how many attempts it makes in all, the
+/// first send included, and how long one attempt may take. Set by whoever opens the call;
+/// [`Resend::default`] is RDM's values, three attempts and ten seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resend {
+    /// Attempts in all, the first send included (a call addressed to a primary: per birth the view
+    /// names for the role, Q313).
+    pub attempts: u8,
+    /// How long one attempt may take.
+    pub time_limit: TimeLimit,
 }
 
-/// How one call is made: its budget, its scope, its observability context and its failpoints.
+impl Default for Resend {
+    fn default() -> Self {
+        Self { attempts: 3, time_limit: TimeLimit(Duration::from_secs(10)) }
+    }
+}
+
+impl Resend {
+    /// The default attempts with the time limit `d`.
+    pub fn with_time_limit(d: Duration) -> Self {
+        Self { time_limit: TimeLimit(d), ..Self::default() }
+    }
+}
+
+/// The transport's share of an attempt (Q311, "plus 10 s for the transport"): the most an attempt's
+/// resolve, dial and complete send take, whatever its time limit. A limit under it bounds them too.
+pub const TRANSPORT_LIMIT: Duration = Duration::from_secs(10);
+
+/// How one call is made: its resend, its scope, its observability context and its failpoints.
 #[derive(Debug, Clone)]
 pub struct CallOptions {
-    /// The time bound of the call.
-    pub budget: Budget,
+    /// How the call is resent: its attempts and the time limit of one attempt.
+    pub resend: Resend,
     /// Failpoint: write part of the request, then reset it with 499.
     pub cut_before_finish: bool,
     /// The caller's execution scope: part of the pool identity, so two
@@ -74,22 +84,18 @@ pub struct CallOptions {
     /// A carried call's origin identity: the carrier's inner call keeps it, so the final target's
     /// duplicate window is the origin's, never the carrier's. `None`: this client mints the identity.
     pub carried: Option<CarriedIdentity>,
-    /// The owner asks once (a reachability probe: node-recovery.md step 2, "one QUIC connect"): the
-    /// request is never resent; the call ends when its one connect fails or its stream is lost, and
-    /// otherwise waits for its answer within its budget. Its owner retargets, never this runtime.
-    pub once: bool,
     /// The owner answers from its first unsent attempt (a carrier's one inner call: node-rpc.md
     /// §36.1, and the envelope's Forward, "ConnectionLost directly from its failed dial"): a dial
     /// or reach that fails before the commit cut ends the call `NotSent`, never resent. Once
-    /// committed the request is owed as any other.
+    /// committed the request is resent as any other.
     pub unsent_is_final: bool,
-    /// The route an Owed call's resends take once an attempt sent nothing (node-rpc.md §43, §45; i146
+    /// The route a call's resends take once an attempt sent nothing (node-rpc.md §43, §45; i146
     /// Q52): its owner's carrier policy, answered per attempt by the route projection. `None`: every
     /// attempt is direct.
     pub route: Option<RoutePolicy>,
 }
 
-/// An owner's carrier policy for an Owed call (node-rpc.md §43, §45; i146 Q52): given the attempt
+/// An owner's carrier policy for a call (node-rpc.md §43, §45; i146 Q52): given the attempt
 /// number, the route the projection answers now for the call's one receiver. The receiver is the same
 /// on every leg; only the leg changes.
 #[derive(Clone)]
@@ -113,21 +119,20 @@ pub struct CarriedIdentity {
 impl Default for CallOptions {
     fn default() -> Self {
         Self {
-            budget: Budget::Overall(Duration::from_secs(10)),
+            resend: Resend::default(),
             cut_before_finish: false,
             scope: None,
             after_connect: None,
             context: None,
             carried: None,
-            once: false,
             unsent_is_final: false,
             route: None,
         }
     }
 }
 
-/// The request bytes of one call: encoded up front, or built at the write from the caller's
-/// remaining budget.
+/// The request bytes of one call: encoded up front, or built at the write from what remains of the
+/// attempt's time limit.
 pub(crate) enum Payload {
     Ready(Vec<u8>),
     AtWrite(Box<dyn FnOnce(Duration) -> Result<Vec<u8>, String> + Send>),
@@ -250,14 +255,14 @@ pub(crate) enum Attempted {
     StoppedBeforeComplete,
     /// The stream was reset with this code after the request: definitive, no resend.
     Reset(u64),
-    /// The receiving birth's exit or removal is proven: the owed request ends.
+    /// The receiving birth's exit or removal is proven, or the primary role the call is addressed
+    /// to has no birth: the request is resent no longer.
     ReceiverGone(String),
-    /// No attempt committed within the send budget: the latest attempt's reason. The attempt task
-    /// alone bounds every pre-commit step by the send budget, so the outcome of a dial cut by it is
-    /// recorded before the call ends.
-    SendDeadline(NotSentReason),
-    /// A `Budget::Stream` call, committed, lost its connection to the responder and no fresh dial
-    /// connected within its send bound: the transport's liveness, its only reply bound, ended.
+    /// The call's attempts are spent with no answer (Q311): it ends `NotSent` with the last reason
+    /// when no attempt committed, `Indeterminate` otherwise.
+    Spent,
+    /// A stream op, committed, lost the connection (or the stream) its request committed on: a
+    /// stream request is never resent after its commit (node-rpc.md §34).
     TransportLost(String),
     /// The attempt task's last word: the path it ended on, after any outcome above (i146 Q38). The
     /// call names it when its attempts end with no reply delivered.
@@ -269,14 +274,14 @@ pub(crate) enum Attempted {
 pub(crate) enum AttemptEnd {
     /// The invocation was complete when the task looked, at the top of its turn.
     CompleteAtTurn,
-    /// No attempt committed within the send budget (`Attempted::SendDeadline`).
-    SendDeadline,
-    /// The connection a `Budget::Stream` request committed on closed (`Attempted::TransportLost`).
+    /// The call's attempts are spent with no answer (`Attempted::Spent`).
+    AttemptsSpent,
+    /// The connection a stream op's request committed on closed (`Attempted::TransportLost`).
     CommittedConnectionClosed,
     /// The receiving birth's exit or removal is proven (`Attempted::ReceiverGone`).
     ReceiverGone,
-    /// Acked, its stream lost, and no resent response is waited for: asked once, or a
-    /// `Budget::Stream` call whose connection closed (`Attempted::TransportLost`).
+    /// Acked, its stream lost, and no resent response is waited for: a stream op whose connection
+    /// closed (`Attempted::TransportLost`).
     HoldLost,
     /// The target did not resolve and an unsent attempt ends the call (`Attempted::EndedPreCommit`).
     UnreachedFinal,
@@ -290,8 +295,6 @@ pub(crate) enum AttemptEnd {
     StreamViolation,
     /// The stream was reset with a code that ends the request (`Attempted::Reset`).
     Reset,
-    /// A request asked once lost its stream before an answer (`Attempted::TransportLost`).
-    LostAskedOnce,
 }
 
 impl AttemptEnd {
@@ -299,7 +302,7 @@ impl AttemptEnd {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::CompleteAtTurn => "complete-at-turn",
-            Self::SendDeadline => "send-deadline",
+            Self::AttemptsSpent => "attempts-spent",
             Self::CommittedConnectionClosed => "committed-connection-closed",
             Self::ReceiverGone => "receiver-gone",
             Self::HoldLost => "hold-lost",
@@ -309,7 +312,6 @@ impl AttemptEnd {
             Self::StreamComplete => "stream-complete",
             Self::StreamViolation => "stream-violation",
             Self::Reset => "reset",
-            Self::LostAskedOnce => "lost-asked-once",
         }
     }
 }
@@ -501,8 +503,13 @@ impl NodeRpcClient {
         .await
     }
 
-    /// The exact receiving incarnation ended; an endpoint-slot change alone is not that proof.
+    /// The exact receiving incarnation ended; an endpoint-slot change alone is not that proof. For a
+    /// call addressed to a primary the role's next birth is no end (Q313): only a role the view
+    /// names no birth for is.
     fn receiver_gone(&self, target: &NodeTarget, held: &rdm_core::IncarnationId) -> Option<String> {
+        if let NodeTarget::Primary { mesh } = target {
+            return self.resolver.resolve(target).err().map(|f| role_has_no_birth(mesh.as_deref(), &f));
+        }
         match self.resolver.resolve(target) {
             Ok(n) if &n.incarnation == held => None,
             Ok(n) => Some(format!("incarnation {} superseded by {}", held.as_str(), n.incarnation.as_str())),
@@ -538,8 +545,9 @@ impl NodeRpcClient {
     }
 
     /// One attempt up to the commit cut: the ordinary dial, open_bi and the complete request frame
-    /// `header | sections`. Ends `Done` with a pre-commit outcome, or `Committed` holding both
-    /// directions of the stream; the request direction is not finished.
+    /// `header | sections`, bounded by `send_deadline`. Ends `Done` with a pre-commit outcome, or
+    /// `Committed` holding both directions of the stream; the request direction is not finished. A
+    /// request built at its write is told what remains until `limit_at`, the attempt's time limit.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn attempt(
         &self,
@@ -550,6 +558,7 @@ impl NodeRpcClient {
         payload: &mut Payload,
         opts: &CallOptions,
         send_deadline: Instant,
+        limit_at: Instant,
         evidence: &Mutex<CallEvidence>,
     ) -> Phase<()> {
         let pre = PreCommit::begin(op);
@@ -593,23 +602,19 @@ impl NodeRpcClient {
                     Some(n) => format!("incarnation {} superseded by {}", key.birth(), n.incarnation.as_str()),
                     None => format!("incarnation {} no longer resolves", key.birth()),
                 };
-                // The pool also invalidates a dial when its receiving birth ends. For an Owed
-                // call that proof ends the obligation as receiver-gone; a moved slot of a living
-                // birth is neither the holder's answer nor its exited verdict (i146 Q52), so the
-                // attempt sent nothing and the next one dials the slot the view names then.
-                if matches!(opts.budget, Budget::Owed) {
-                    if let Some(why) = node.observed.as_ref().and_then(|n| self.receiver_gone(target, &n.incarnation)) {
-                        return Phase::ReceiverGone(why);
-                    }
-                    tracing::info!(step = "dial-superseded", moved = %moved, "the dial's slot moved under a living birth: the owed request is resent");
-                    return Phase::Done(pre.not_sent(NotSentReason::Connection(format!("the dial was superseded: {moved}"))));
+                // The pool also invalidates a dial when its receiving birth ends: that proof ends the
+                // call as receiver-gone. A moved slot of a living birth (or, for a call addressed to
+                // a primary, the role's next birth) is neither the receiver's answer nor its exited
+                // verdict (i146 Q52, Q313), so the attempt sent nothing and the next one dials what
+                // the view names then.
+                if let Some(why) = node.observed.as_ref().and_then(|n| self.receiver_gone(target, &n.incarnation)) {
+                    return Phase::ReceiverGone(why);
                 }
-                // A pinned endpoint slot on a living birth remains stale.
-                stale_span(&request_target, &moved);
-                return Phase::Done(pre.stale_before_finish(&request_target));
+                tracing::info!(step = "dial-superseded", moved = %moved, "the dial's slot moved under a living birth: the request is resent");
+                return Phase::Done(pre.not_sent(NotSentReason::Connection(format!("the dial was superseded: {moved}"))));
             }
             Err(DialError::Deadline) => {
-                tracing::info!(step = "dial-deadline", waited_ms = dial_started.elapsed().as_millis() as u64, "no connection to the target within the send budget");
+                tracing::info!(step = "dial-deadline", waited_ms = dial_started.elapsed().as_millis() as u64, "no connection to the target within the attempt's send bound");
                 evidence.lock().unwrap().dial_failure = Some("dial deadline".to_string());
                 if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
                     o.direct_failed(n, "dial deadline");
@@ -659,21 +664,17 @@ impl NodeRpcClient {
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(e.to_string())));
             }
             Err(_) => {
-                tracing::info!(step = "stream-open-deadline", waited_ms = opened_at.elapsed().as_millis() as u64, "no request stream opened within the send budget");
+                tracing::info!(step = "stream-open-deadline", waited_ms = opened_at.elapsed().as_millis() as u64, "no request stream opened within the attempt's send bound");
                 return Phase::Done(pre.not_sent(NotSentReason::Deadline));
             }
         };
         if let Payload::AtWrite(_) = payload {
             let Payload::AtWrite(build) = std::mem::replace(payload, Payload::Ready(Vec::new())) else { unreachable!("matched above") };
-            // The remaining budget is measured here, after resolve, dial and stream open,
-            // immediately before the request is first written; a resend carries the same bytes.
-            let remaining = match opts.budget {
-                // An Owed call's attempt is bounded by the floor: it stamps what remains of that.
-                Budget::Overall(_) | Budget::Owed => send_deadline.saturating_duration_since(Instant::now()),
-                Budget::Split { reply, .. } => reply,
-                Budget::Stream { send } => send,
-            };
-            tracing::info!(step = "remaining-measured", remaining_ms = remaining.as_millis() as u64, "the remaining budget at the request write");
+            // What remains of the attempt's time limit is measured here, after resolve, dial and
+            // stream open, immediately before the request is first written; a resend carries the
+            // same bytes.
+            let remaining = limit_at.saturating_duration_since(Instant::now());
+            tracing::info!(step = "remaining-measured", remaining_ms = remaining.as_millis() as u64, "what remains of the attempt's time limit at the request write");
             match build(remaining) {
                 Ok(bytes) => *payload = Payload::Ready(bytes),
                 Err(e) => {
@@ -806,10 +807,13 @@ impl NodeRpcClient {
         (out, evidence)
     }
 
-    /// Open one owed request (node-rpc.md §43): resolve once, mint its identity, open its invocation
-    /// and start the task that sends and resends it. `Err` is an outcome before anything was owed.
+    /// Open one request (node-rpc.md §43): resolve its receiver, mint its identity, open its
+    /// invocation and start the task that sends and resends it. A receiver this view does not hold
+    /// yet spends an attempt, never a wait (Q311): it is resolved again at the next attempt's
+    /// instant, or sooner when the view changes. `Err` is an outcome before anything was sent: the
+    /// attempts spent unresolved, a receiver proven gone, or a primary role with no birth.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn owe(
+    pub(crate) async fn owe(
         &self,
         target: &NodeTarget,
         final_target: Option<&NodeId>,
@@ -818,12 +822,46 @@ impl NodeRpcClient {
         max_reply: usize,
         opts: &CallOptions,
         unary: bool,
-        deadlines: (Option<Instant>, Option<Instant>),
         span: &tracing::Span,
-    ) -> Result<OwedCall, (RpcOutcome<()>, Option<CallEvidence>)> {
-        let node = match self.reach(target) {
-            Ok(n) => n,
-            Err(r) => return Err((PreCommit::begin(op).not_sent(r), None)),
+    ) -> Result<ResendCall, (RpcOutcome<()>, Option<CallEvidence>)> {
+        let allowed = u32::from(opts.resend.attempts.max(1));
+        let pacing = self.delivery.pacing();
+        let mut spent = 0u32;
+        let node = loop {
+            let started = Instant::now();
+            match self.reach(target) {
+                Ok(n) => break n,
+                // A call addressed to a primary whose role names no birth ends receiver-gone (Q313).
+                Err(NotSentReason::Resolve(f)) if matches!(target, NodeTarget::Primary { .. }) => {
+                    let NodeTarget::Primary { mesh } = target else { unreachable!("matched above") };
+                    let why = role_has_no_birth(mesh.as_deref(), &f);
+                    span.in_scope(|| tracing::info_span!("rdm.node_rpc.delivery.remove.via-receiver-gone", attempts = spent, reason = %why).in_scope(|| tracing::info!("the primary role names no birth: the request is not sent")));
+                    span.record("delivery", "receiver-gone");
+                    return Err((PreCommit::begin(op).not_sent(NotSentReason::Resolve(ResolveFailure::Gone)), None));
+                }
+                Err(r @ NotSentReason::Resolve(ResolveFailure::Unknown)) => {
+                    spent += 1;
+                    span.in_scope(|| tracing::info!(step = "unresolved", attempt = spent, "the receiver is not in this caller's view: the attempt sent nothing"));
+                    if spent >= allowed {
+                        span.record("attempts", spent);
+                        return Err((PreCommit::begin(op).not_sent(r), None));
+                    }
+                    let mut changes = self.resolver.changes();
+                    let moved = async {
+                        match changes.as_mut() {
+                            Some(c) => {
+                                let _ = c.changed().await;
+                            }
+                            None => std::future::pending::<()>().await,
+                        }
+                    };
+                    tokio::select! {
+                        () = tokio::time::sleep_until(started + pacing.after(spent)) => {}
+                        () = moved => {}
+                    }
+                }
+                Err(r) => return Err((PreCommit::begin(op).not_sent(r), None)),
+            }
         };
         let mut receivers = vec![node.peer];
         if let Some(f) = final_target {
@@ -846,18 +884,20 @@ impl NodeRpcClient {
             dial_failure: None,
         }));
         let (tx, attempted) = mpsc::unbounded_channel();
-        let attempts = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let attempts = Arc::new(std::sync::atomic::AtomicU32::new(spent));
         let task = Attempts {
             client: self.clone(),
             target: target.clone(),
             birth: node.observed.as_ref().filter(|_| node.node.is_some()).map(|n| n.incarnation.clone()),
+            receiver: node.node.as_ref().map(|n| n.node_id.clone()),
             op,
             id: id.clone(),
             receivers,
             carried_floor,
             payload,
             opts: opts.clone(),
-            deadlines,
+            unary,
+            spent,
             evidence: evidence.clone(),
             tx,
             state: state.clone(),
@@ -871,44 +911,7 @@ impl NodeRpcClient {
             Some(d) => tokio::spawn(UnderDispatch { fut: Some(Box::pin(run)), dispatch: d }),
             None => tokio::spawn(run),
         };
-        Ok(OwedCall { guard, frames, attempted, evidence, attempts, _task: AbortOnDrop(Some(handle)) })
-    }
-
-    /// [`Self::owe_steps`]'s wait for an Owed request's receiver this caller's view does not hold yet
-    /// (`Unknown`, node-rpc.md §43: "never on absence from a view"): read again at the resend pacing
-    /// (first at the publish cadence, then backoff to the floor) and on every change of the view.
-    /// Returns once the receiver resolves, or once the view holds it proven gone or exited, which ends
-    /// the request as before.
-    async fn until_resolved(&self, target: &NodeTarget, span: &tracing::Span) {
-        let pacing = self.delivery.pacing();
-        let mut changes = self.resolver.changes();
-        let mut waits = 0u32;
-        loop {
-            if let Some(c) = changes.as_mut() {
-                c.borrow_and_update();
-            }
-            if !matches!(self.reach(target), Err(NotSentReason::Resolve(ResolveFailure::Unknown))) {
-                return;
-            }
-            if waits == 0 {
-                span.in_scope(|| tracing::info!(step = "unresolved", "the owed request's receiver is not in this caller's view yet: it stays owed and is opened once it resolves"));
-            }
-            waits += 1;
-            let moved = async {
-                // A view that no longer reports changes leaves the pacing alone to read it again.
-                let changed = match changes.as_mut() {
-                    Some(c) => c.changed().await.is_ok(),
-                    None => false,
-                };
-                if !changed {
-                    std::future::pending::<()>().await;
-                }
-            };
-            tokio::select! {
-                () = tokio::time::sleep(pacing.after(waits)) => {}
-                () = moved => {}
-            }
-        }
+        Ok(ResendCall { guard, frames, attempted, state, evidence, attempts, _task: AbortOnDrop(Some(handle)) })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -926,31 +929,19 @@ impl NodeRpcClient {
     where
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
-        let start = Instant::now();
-        let (send_deadline, overall) = deadlines_of(opts.budget, start);
-        let after_commit = |at: Instant| match (opts.budget, overall) {
-            (_, Some(d)) => Some(d),
-            (Budget::Split { reply, .. }, None) => Some(at + reply),
-            (Budget::Stream { .. } | Budget::Owed, None) => None,
-            (Budget::Overall(_), None) => unreachable!(),
-        };
-        // node-rpc.md §43: an Owed request is never ended by its receiver's absence from this caller's
-        // view. Its delivery identity is minted against the receiver's endpoint, so a receiver the view
-        // does not hold yet is waited for before anything is minted; only the owner's drop ends the wait.
-        if matches!(opts.budget, Budget::Owed) {
-            self.until_resolved(target, span).await;
-        }
-        let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, true, (send_deadline, overall), span) {
+        let limit = opts.resend.time_limit.0;
+        let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, true, span).await {
             Ok(o) => o,
-            Err((out, ev)) => return (out.retyped().expect("no reply before anything is owed"), ev),
+            Err((out, ev)) => return (out.retyped().expect("no reply before anything is sent"), ev),
         };
         let mut pre = Some(PreCommit::begin(op));
         let mut committed: Option<rdm_core::outcome::Committed> = None;
         let mut stopped: Option<EarlyRefusal> = None;
         let mut last = NotSentReason::Deadline;
-        // Before the commit the attempt task bounds every step by the send budget and says when it
-        // lapsed; after it, the reply budget is this owner's.
+        // Once the request is acked its reply is bounded by the time limit, counted from the ack
+        // (node-rpc.md §34): an acked request is never resent.
         let mut deadline: Option<Instant> = None;
+        let mut state_closed = false;
         // The path the attempt task ended on, and whether the invocation's frame channel closed with no
         // frame: named when the attempts end (i146 Q38).
         let mut attempt_end: Option<AttemptEnd> = None;
@@ -989,11 +980,17 @@ impl NodeRpcClient {
                         continue;
                     }
                 },
+                changed = owed.state.changed(), if deadline.is_none() && !state_closed => {
+                    if changed.is_err() {
+                        state_closed = true;
+                    } else if owed.state.borrow().acked {
+                        deadline = Some(Instant::now() + limit);
+                    }
+                }
                 ev = owed.attempted.recv() => match ev {
                     Some(Attempted::Committed { frame_len }) => {
                         if let Some(p) = pre.take() {
                             committed = Some(p.commit(RequestFinished::after_complete_write(frame_len, frame_len).expect("a complete write")));
-                            deadline = after_commit(Instant::now());
                         }
                     }
                     Some(Attempted::NotSent(r)) => last = r,
@@ -1004,12 +1001,12 @@ impl NodeRpcClient {
                             (None, None) => PreCommit::begin(op).not_sent(NotSentReason::Connection(why)),
                         };
                     }
-                    Some(Attempted::SendDeadline(r)) => {
-                        span.record("delivery", "cancelled");
+                    Some(Attempted::Spent) => {
+                        span.record("delivery", "attempts-spent");
                         break match (committed.take(), stopped.take(), pre.take()) {
                             (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyDeadline),
                             (None, Some(e), _) => decode(Decode::Early(e, None)),
-                            (None, None, Some(p)) => p.not_sent(r),
+                            (None, None, Some(p)) => p.not_sent(last.clone()),
                             (None, None, None) => unreachable!("a call is committed, stopped or pre-commit"),
                         };
                     }
@@ -1058,7 +1055,8 @@ impl NodeRpcClient {
                     }
                 },
                 () = wait => {
-                    // The owner's budget lapsed: the call ends, and its request is owed no longer.
+                    // Acked and no reply within the time limit from the ack: the call ends, and its
+                    // request is resent no longer.
                     span.record("delivery", "cancelled");
                     break match (committed.take(), stopped.take(), pre.take()) {
                         (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyDeadline),
@@ -1076,22 +1074,22 @@ impl NodeRpcClient {
     }
 }
 
-/// The send deadline (`None` for an Owed call) and the overall deadline of a call made at `start`
-/// under `budget`.
-pub(crate) fn deadlines_of(budget: Budget, start: Instant) -> (Option<Instant>, Option<Instant>) {
-    match budget {
-        Budget::Overall(d) => (Some(start + d), Some(start + d)),
-        Budget::Split { send, .. } | Budget::Stream { send } => (Some(start + send), None),
-        Budget::Owed => (None, None),
+/// Why a call addressed to a primary is not sent: the role names no birth in this caller's view.
+fn role_has_no_birth(mesh: Option<&str>, f: &ResolveFailure) -> String {
+    match mesh {
+        Some(m) => format!("the mesh-primary of {m} names no birth in this caller's view ({f:?})"),
+        None => format!("the fabric-primary names no birth in this caller's view ({f:?})"),
     }
 }
 
-/// One owed request, held by its owner: dropped, the invocation ends and its request is owed no
+/// One request, held by its owner: dropped, the invocation ends and its request is resent no
 /// longer (the owner's cancellation).
-pub(crate) struct OwedCall {
+pub(crate) struct ResendCall {
     pub(crate) guard: CallGuard,
     pub(crate) frames: mpsc::UnboundedReceiver<SlotEvent>,
     pub(crate) attempted: mpsc::UnboundedReceiver<Attempted>,
+    /// The invocation's state: acked, complete.
+    pub(crate) state: watch::Receiver<SlotState>,
     pub(crate) evidence: Arc<Mutex<CallEvidence>>,
     pub(crate) attempts: Arc<std::sync::atomic::AtomicU32>,
     /// The attempt task: aborted with the owner's hold.
@@ -1179,7 +1177,7 @@ impl Drop for AbortOnDrop {
     }
 }
 
-impl OwedCall {
+impl ResendCall {
     /// End the owner's hold and wait for the attempt task to end, so nothing of the call (its span
     /// above all) outlives it: aborted when the owner ends it early, else it ends on its own once
     /// the invocation is complete (its last ack written, its request direction finished).
@@ -1213,27 +1211,34 @@ enum StreamEnd {
     CarrierFailed(String),
 }
 
-/// The task that sends one owed request and resends it, with the same identity, until it is acked,
-/// its receiver's exit is proven, or its owner drops it.
+/// The task that sends one request and resends it, with the same identity, until it is acked, its
+/// receiver's exit is proven, its owner drops it, or its attempts are spent (node-rpc.md §43; Q311,
+/// Q313).
 struct Attempts {
     client: NodeRpcClient,
     target: NodeTarget,
-    /// The receiving birth the identity was minted toward: a resolver naming another incarnation
-    /// proves this one ended. `None` for a call to an endpoint no record names.
+    /// The receiving birth the call is sent to now: a resolver naming another incarnation proves
+    /// this one ended, or for a call addressed to a primary names the role's next birth. `None` for
+    /// a call to an endpoint no record names.
     birth: Option<rdm_core::IncarnationId>,
+    /// The node the call is sent to now, as its resolver named it: the receiver a carried attempt
+    /// names. `None` for a call to an endpoint no record names.
+    receiver: Option<NodeId>,
     op: u8,
     id: DeliveryId,
     receivers: Vec<iroh::PublicKey>,
     carried_floor: Option<u64>,
     payload: Payload,
     opts: CallOptions,
-    /// The send deadline (`None`: an Owed call has none) and the overall one.
-    deadlines: (Option<Instant>, Option<Instant>),
+    /// The op answers with one frame; a stream op is never resent after its commit (node-rpc.md §34).
+    unary: bool,
+    /// The attempts spent before the task started: a receiver the view did not hold yet.
+    spent: u32,
     evidence: Arc<Mutex<CallEvidence>>,
     tx: mpsc::UnboundedSender<Attempted>,
     state: watch::Receiver<SlotState>,
     attempts: Arc<std::sync::atomic::AtomicU32>,
-    /// The connection a `Budget::Stream` request committed on: the call lives as long as it does.
+    /// The connection a stream op's request committed on: the stream lives as long as it does.
     committed_on: Option<iroh::endpoint::Connection>,
 }
 
@@ -1251,46 +1256,115 @@ impl Attempts {
         self.client.receiver_gone(&self.target, self.birth.as_ref()?)
     }
 
+    /// For a call addressed to a primary: the birth the view names for the role now, when it is not
+    /// the one the call is sent to (Q313). The call takes it as its receiver: the same message under
+    /// the same delivery identity, toward that birth's endpoint too.
+    fn next_birth(&mut self) -> Option<ResolvedNode> {
+        if !matches!(self.target, NodeTarget::Primary { .. }) {
+            return None;
+        }
+        let n = self.client.resolver.resolve(&self.target).ok()?;
+        if self.birth.as_ref() == Some(&n.incarnation) {
+            return None;
+        }
+        self.birth = Some(n.incarnation.clone());
+        self.receiver = Some(n.node_id.clone());
+        if !self.receivers.contains(&n.endpoint_id) {
+            self.receivers.push(n.endpoint_id);
+        }
+        Some(n)
+    }
+
     /// The request as one carrier's Forward to the call's receiver, `remaining` the bound its inner
     /// call is told, the inner call keeping the request's own identity (i146 Q52). A request built at
-    /// its write, or a target that names no exact receiver, is not carried.
+    /// its write, or a target that names no node, is not carried.
     fn forward_payload(&self, remaining: Duration) -> Result<Payload, String> {
-        let NodeTarget::ExactNode(receiver) = &self.target else { return Err("a carried attempt needs an exact receiver".into()) };
+        let receiver = match (&self.target, &self.receiver) {
+            (NodeTarget::ExactNode(r), _) | (NodeTarget::Primary { .. }, Some(r)) => r,
+            _ => return Err("a carried attempt needs an exact receiver".into()),
+        };
         let Payload::Ready(inner) = &self.payload else { return Err("the request is built at its write".into()) };
-        let owed = rdm_core::forward::OwedDelivery { delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
+        let owed = rdm_core::forward::ResendDelivery { delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
         let forward = rdm_core::forward::ForwardRequest::Forward { target: receiver.clone(), inner_op: self.op, inner: inner.clone(), remaining_ms: remaining.as_millis() as u64, owed: Some(owed) };
         <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::encode_request(&forward).map(Payload::Ready).map_err(|e| e.0)
     }
 
     fn end_receiver_gone(&self, why: String, attempts: u32) -> AttemptEnd {
         tracing::info_span!("rdm.node_rpc.delivery.remove.via-receiver-gone", delivery_id = %self.id, attempts, reason = %why)
-            .in_scope(|| tracing::info!("the receiving birth ended: the request is owed no longer"));
+            .in_scope(|| tracing::info!("the receiving birth ended: the request is resent no longer"));
         let _ = self.tx.send(Attempted::ReceiverGone(why));
         AttemptEnd::ReceiverGone
     }
 
+    fn end_spent(&self, attempts: u32) -> AttemptEnd {
+        tracing::info_span!("rdm.node_rpc.delivery.update.via-attempts-spent", delivery_id = %self.id, attempts, allowed = self.opts.resend.attempts)
+            .in_scope(|| tracing::info!("the call's attempts are spent with no answer: it ends to its owner"));
+        let _ = self.tx.send(Attempted::Spent);
+        AttemptEnd::AttemptsSpent
+    }
+
     fn lowest_unacked(&self) -> u64 {
-        let own = self.client.delivery.lowest_unacked(&self.receivers);
+        // Never above the request's own identity: a receiver the call took on after it was minted
+        // (a primary's next birth) holds nothing of this sender below it.
+        let own = self.client.delivery.lowest_unacked(&self.receivers).min(self.id.delivery_seq);
         match self.carried_floor {
             Some(r) => r,
             None => own,
         }
     }
 
+    /// Wait until `until`, or sooner when the resolver's answer for this call's target changes or
+    /// the invocation's state does. A change of the view that leaves this target's answer as it was
+    /// wakes nothing: each wake may start an attempt.
     async fn pause(&mut self, until: Instant) {
         let mut changes = self.client.resolver.changes();
+        let (resolver, target) = (self.client.resolver.clone(), self.target.clone());
         let resolver_moved = async {
-            match changes.as_mut() {
-                Some(c) => {
-                    let _ = c.changed().await;
+            let Some(c) = changes.as_mut() else { return std::future::pending::<()>().await };
+            let before = resolver.resolve(&target);
+            loop {
+                if c.changed().await.is_err() {
+                    return std::future::pending::<()>().await;
                 }
-                None => std::future::pending::<()>().await,
+                if resolver.resolve(&target) != before {
+                    return;
+                }
             }
         };
         tokio::select! {
             () = tokio::time::sleep_until(until) => {}
             () = resolver_moved => {}
             _ = self.state.changed() => {}
+        }
+    }
+
+    /// A call addressed to a primary whose attempts on the birth the view names are spent waits
+    /// for the view to name another birth for the role (Q313): `Some` ends the call (the role names
+    /// no birth, or the owner's end), `None` takes the next birth.
+    async fn until_next_birth(&mut self, attempts: u32) -> Option<AttemptEnd> {
+        tracing::info_span!("rdm.node_rpc.delivery.update.via-attempts-spent", delivery_id = %self.id, attempts, allowed = self.opts.resend.attempts, birth = %self.birth.as_ref().map(|b| b.as_str().to_string()).unwrap_or_default())
+            .in_scope(|| tracing::info!("the attempts on this birth are spent: the call waits for the view to name the role's next birth"));
+        let mut changes = self.client.resolver.changes();
+        loop {
+            if self.state.borrow().complete {
+                return Some(AttemptEnd::CompleteAtTurn);
+            }
+            if let Some(why) = self.receiver_gone() {
+                return Some(self.end_receiver_gone(why, attempts));
+            }
+            let held = self.birth.clone();
+            if self.client.resolver.resolve(&self.target).ok().map(|n| n.incarnation) != held {
+                return None;
+            }
+            match changes.as_mut() {
+                Some(c) => tokio::select! {
+                    r = c.changed() => if r.is_err() { changes = None },
+                    _ = self.state.changed() => {}
+                },
+                None => {
+                    let _ = self.state.changed().await;
+                }
+            }
         }
     }
 
@@ -1304,9 +1378,23 @@ impl Attempts {
         let _ = self.tx.send(Attempted::Ended(end));
     }
 
+    /// The attempts (node-rpc.md §43; Q311, Q313): each one sends the request with its identity,
+    /// its resolve, dial and complete send bounded by its time limit (at most [`TRANSPORT_LIMIT`]);
+    /// an unacked request is sent again at the schedule's next delay from the attempt's start, and
+    /// the last attempt waits for its ack until its time limit. An acked request is never resent and
+    /// spends no attempt. A call addressed to a primary counts its attempts per birth the view
+    /// names for the role; any other keeps its count across every attempt.
     async fn until_end(&mut self) -> AttemptEnd {
         let pacing = self.client.delivery.pacing();
-        let mut attempt = 0u32;
+        let limit = self.opts.resend.time_limit.0;
+        let allowed = u32::from(self.opts.resend.attempts.max(1));
+        // Attempts in all, and on the birth the call is sent to now (the same, but for a call
+        // addressed to a primary, whose count restarts on each birth the view names).
+        let mut attempt = self.spent;
+        let mut on_birth = self.spent;
+        let mut held = 0u32;
+        // The last attempt on a birth committed: its wait for the ack runs to its time limit.
+        let mut last_until: Option<Instant> = None;
         let mut committed = false;
         let mut last = NotSentReason::Deadline;
         // The last attempt sent nothing to the receiver: the next one asks the owner's carrier policy
@@ -1316,12 +1404,7 @@ impl Attempts {
             if self.state.borrow().complete {
                 return AttemptEnd::CompleteAtTurn;
             }
-            if !committed && self.deadlines.0.is_some_and(|d| Instant::now() >= d) {
-                let _ = self.tx.send(Attempted::SendDeadline(last));
-                return AttemptEnd::SendDeadline;
-            }
-            // A stream budget's only reply bound is the transport: the call lives as long as the
-            // connection its request committed on.
+            // A stream op's only bound after its commit is the connection the request committed on.
             if let Some(why) = self.committed_on.as_ref().and_then(|c| c.close_reason()) {
                 let _ = self.tx.send(Attempted::TransportLost(format!("the connection the request committed on closed ({why})")));
                 return AttemptEnd::CommittedConnectionClosed;
@@ -1329,39 +1412,51 @@ impl Attempts {
             if let Some(why) = self.receiver_gone() {
                 return self.end_receiver_gone(why, attempt);
             }
+            if let Some(n) = self.next_birth() {
+                tracing::info_span!("rdm.node_rpc.delivery.update.via-next-birth", delivery_id = %self.id, attempts = attempt, node_id = %n.node_id, incarnation = %n.incarnation.as_str())
+                    .in_scope(|| tracing::info!("the view names another birth for the primary role: its attempts count from one"));
+                on_birth = 0;
+                last_until = None;
+            }
             if self.state.borrow().acked {
-                // Acked, its response not complete: hold a connection the responder can resend on.
-                if let Err(why) = self.hold_connection(attempt).await {
+                // Acked, its response not complete: hold a connection the responder can resend on,
+                // within the reply's time limit, which its owner keeps.
+                held += 1;
+                if let Err(why) = self.hold_connection(held).await {
                     let _ = self.tx.send(Attempted::TransportLost(why));
                     return AttemptEnd::HoldLost;
                 }
-                attempt += 1;
                 continue;
             }
+            if on_birth >= allowed {
+                // The last attempt waits for its ack until its time limit, waking on the
+                // receiver's end and on the invocation's state.
+                if let Some(until) = last_until.filter(|u| Instant::now() < *u) {
+                    self.pause(until).await;
+                    continue;
+                }
+                if matches!(self.target, NodeTarget::Primary { .. }) {
+                    match self.until_next_birth(attempt).await {
+                        Some(end) => return end,
+                        None => continue,
+                    }
+                }
+                return self.end_spent(attempt);
+            }
             attempt += 1;
+            on_birth += 1;
+            let last_on_birth = on_birth >= allowed;
             self.attempts.store(attempt, std::sync::atomic::Ordering::SeqCst);
             let started = Instant::now();
-            let next_at = started + pacing.after(attempt);
-            // Before the commit no pause outlasts the send budget.
-            let resume_at = match self.deadlines.0 {
-                Some(d) if !committed => next_at.min(d),
-                _ => next_at,
-            };
+            let next_at = started + pacing.after(on_birth);
+            // The attempt's resolve, dial and complete send: its time limit, at most the transport's
+            // share of it.
+            let send_deadline = started + limit.min(TRANSPORT_LIMIT);
             if attempt > 1 {
                 self.client.delivery.stats().resends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                tracing::info_span!("rdm.node_rpc.delivery.update.via-resend", delivery_id = %self.id, attempt, backoff_ms = pacing.after(attempt - 1).as_millis() as u64)
+                tracing::info_span!("rdm.node_rpc.delivery.update.via-resend", delivery_id = %self.id, attempt, backoff_ms = pacing.after(on_birth.saturating_sub(1).max(1)).as_millis() as u64)
                     .in_scope(|| tracing::info!("no ack: the request is resent with the same identity"));
             }
-            let stream_send = match self.opts.budget {
-                Budget::Stream { send } => Some(send),
-                _ => None,
-            };
-            // One attempt of an Owed call, as one after the commit, is bounded by the floor.
-            let deadline = match (committed, self.deadlines) {
-                (false, (Some(send), _)) => send,
-                (true, (_, Some(overall))) => overall,
-                _ => started + pacing.floor,
-            };
             // The leg of this attempt (node-rpc.md §43, §45; i146 Q52): direct first; once an attempt sent
             // nothing, the owner's carrier policy answers per attempt, every leg aimed at the same receiver
             // under the same delivery identity.
@@ -1383,7 +1478,9 @@ impl Attempts {
                     last = NotSentReason::NoActiveRoute;
                     let _ = self.tx.send(Attempted::NotSent(last.clone()));
                     sent_nothing = true;
-                    self.pause(resume_at).await;
+                    if !last_on_birth {
+                        self.pause(next_at).await;
+                    }
                     continue;
                 }
             };
@@ -1394,11 +1491,14 @@ impl Attempts {
                     let _ = self.tx.send(Attempted::EndedPreCommit(PreCommit::begin(self.op).not_sent(r)));
                     return AttemptEnd::UnreachedFinal;
                 }
+                // A receiver this view does not hold spends the attempt, never a wait (Q311).
                 Err(r) => {
                     last = r.clone();
                     let _ = self.tx.send(Attempted::NotSent(r));
                     sent_nothing = true;
-                    self.pause(resume_at).await;
+                    if !last_on_birth {
+                        self.pause(next_at).await;
+                    }
                     continue;
                 }
             };
@@ -1412,20 +1512,19 @@ impl Attempts {
             let phase = match carried.as_mut() {
                 Some((carrier_target, carrier, payload)) => {
                     tracing::info_span!("rdm.node_rpc.delivery.update.via-carried-attempt", delivery_id = %self.id, attempt, carrier = %carrier, forward_id = %header.delivery_id())
-                        .in_scope(|| tracing::info!("the owed request is carried to its receiver through a live peer"));
-                    self.client.attempt(carrier_target, &node, <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::OP, &header, payload, &self.opts, deadline, &self.evidence).await
+                        .in_scope(|| tracing::info!("the request is carried to its receiver through a live peer"));
+                    self.client.attempt(carrier_target, &node, <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::OP, &header, payload, &self.opts, send_deadline, started + limit, &self.evidence).await
                 }
-                None => self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, deadline, &self.evidence).await,
+                None => self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, send_deadline, started + limit, &self.evidence).await,
             };
             match phase {
                 Phase::ReceiverGone(why) => return self.end_receiver_gone(why, attempt),
                 Phase::Done(out) => {
                     // The owner's cut, a source that admits no new connection (nothing was sent, and
-                    // nothing is owed for a request this source refuses to originate), a request
-                    // asked once and an owner that answers from its first unsent attempt end the
-                    // call; any other unsent attempt is resent.
-                    let resend = !self.opts.once
-                        && !(self.opts.unsent_is_final && !committed)
+                    // nothing is resent for a request this source refuses to originate) and an owner
+                    // that answers from its first unsent attempt end the call; any other unsent
+                    // attempt is resent while the call has attempts left.
+                    let resend = !(self.opts.unsent_is_final && !committed)
                         && matches!(&out, RpcOutcome::NotSent(n) if !matches!(n.reason(), NotSentReason::FrameNotSent | NotSentReason::AdmissionBlocked(_)));
                     if resend {
                         if let RpcOutcome::NotSent(n) = out {
@@ -1433,7 +1532,9 @@ impl Attempts {
                             let _ = self.tx.send(Attempted::NotSent(last.clone()));
                         }
                         sent_nothing = true;
-                        self.pause(resume_at).await;
+                        if !last_on_birth {
+                            self.pause(next_at).await;
+                        }
                         continue;
                     }
                     let _ = self.tx.send(Attempted::EndedPreCommit(out));
@@ -1449,16 +1550,25 @@ impl Attempts {
                         committed = true;
                         let _ = self.tx.send(Attempted::Committed { frame_len });
                     }
-                    if stream_send.is_some() {
+                    if !self.unary {
                         self.committed_on = Some(opened.conn.clone());
                     }
-                    // The wait for the ack runs from the write: a slow dial spends none of it. A
-                    // request asked once is never resent: it waits on its stream for its answer.
-                    // A carried attempt waits for its carrier's answer, which the carrier gives inside
-                    // the `remaining_ms` it was told.
+                    // The wait for the ack runs from the write: a slow dial spends none of it. An
+                    // unacked request is sent again at the schedule's next delay; the last attempt
+                    // waits for its ack until its time limit. A carried attempt waits for its
+                    // carrier's answer, which the carrier gives inside the `remaining_ms` it was
+                    // told. A stream op is never resent after its commit (node-rpc.md §34): its
+                    // stream lives as long as the connection it committed on.
                     let ack_by = match &outer {
                         Some(_) => Some(Instant::now() + pacing.floor),
-                        None => (!self.state.borrow().acked && !self.opts.once).then(|| Instant::now() + pacing.after(attempt)),
+                        None if !self.unary => None,
+                        None if self.state.borrow().acked => None,
+                        None if last_on_birth => {
+                            let until = (started + limit).max(Instant::now());
+                            last_until = Some(until);
+                            Some((Instant::now() + pacing.after(on_birth)).min(until))
+                        }
+                        None => Some(Instant::now() + pacing.after(on_birth)),
                     };
                     let resend_at = ack_by.unwrap_or(next_at);
                     sent_nothing = false;
@@ -1470,12 +1580,13 @@ impl Attempts {
                             return AttemptEnd::Reset;
                         }
                         StreamEnd::NoAck => continue,
-                        StreamEnd::Lost if self.opts.once => {
-                            let _ = self.tx.send(Attempted::TransportLost("asked once: its stream was lost before an answer".into()));
-                            return AttemptEnd::LostAskedOnce;
+                        // A stream op's request is never resent after its commit.
+                        StreamEnd::Lost if !self.unary && !self.state.borrow().acked => {
+                            let _ = self.tx.send(Attempted::TransportLost("the stream the request committed on was lost before its first frame".into()));
+                            return AttemptEnd::CommittedConnectionClosed;
                         }
                         StreamEnd::Lost => {
-                            if !self.state.borrow().acked {
+                            if !self.state.borrow().acked && !last_on_birth {
                                 self.pause(resend_at).await;
                             }
                         }
@@ -1485,7 +1596,9 @@ impl Attempts {
                             tracing::info_span!("rdm.node_rpc.delivery.update.via-carrier-failed", delivery_id = %self.id, attempt, reason = %why)
                                 .in_scope(|| tracing::info!("the carrier did not reach the receiver: the request is resent"));
                             sent_nothing = true;
-                            self.pause(resend_at).await;
+                            if !last_on_birth {
+                                self.pause(resend_at).await;
+                            }
                         }
                     }
                 }
@@ -1494,14 +1607,12 @@ impl Attempts {
     }
 
     /// Acked, response not complete, its stream gone: keep a pooled connection to the responder,
-    /// on the schedule, until the response completes there.
-    /// `Err` for a call asked once, or a `Budget::Stream` call, whose stream was lost: neither waits
-    /// for a resent response (the transport's liveness is a stream budget's reply bound).
-    async fn hold_connection(&mut self, attempt: u32) -> Result<(), String> {
+    /// on the schedule, until the response completes there. The owner's reply limit, counted from
+    /// the ack, ends it.
+    /// `Err` for a stream op whose connection closed: it waits for no resent response (the
+    /// connection it committed on is its only bound).
+    async fn hold_connection(&mut self, turn: u32) -> Result<(), String> {
         let pacing = self.client.delivery.pacing();
-        if self.opts.once {
-            return Err("asked once: its stream was lost before an answer".into());
-        }
         if let Some(why) = self.committed_on.as_ref().and_then(|c| c.close_reason()) {
             return Err(format!("the connection the request committed on closed ({why})"));
         }
@@ -1525,7 +1636,7 @@ impl Attempts {
                 _ = self.state.changed() => {}
             }
         }
-        let until = Instant::now() + pacing.after(attempt.max(1));
+        let until = Instant::now() + pacing.after(turn.max(1));
         self.pause(until).await;
         Ok(())
     }
@@ -1702,20 +1813,6 @@ impl Attempts {
         }
         StreamEnd::Lost
     }
-}
-
-/// The caller's stale-target refusal: its resolver no longer names the birth the call was dialled
-/// to. Only a caller decides it; no receiver refuses a call for the node id it names (R-UC1a).
-/// `current` is what the resolver holds instead, in its own words.
-fn stale_span(asked: &Target, current: &str) {
-    tracing::info_span!(
-        "rdm.node_rpc.connection.reject.via-stale-target",
-        decided_by = "caller",
-        node_id = %asked.node_id,
-        op = asked.op,
-        current,
-    )
-    .in_scope(|| tracing::info!("the target is stale: RejectedStale, never dispatched"));
 }
 
 /// Records the caller's typed cancellation when its future is dropped before an outcome exists.

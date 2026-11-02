@@ -21,7 +21,7 @@ use rdm_core::protocol::NodeProtocol;
 use rdm_core::{NodeId, NodeKind, PathName};
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded};
 use rdm_transport::topology::TopologyView;
-use rdm_transport::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
+use rdm_transport::{Resend, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -337,7 +337,7 @@ pub fn register_gateway(b: ServerBuilder, client: Arc<NodeRpcClient>, node: Node
 /// broker answers it or [`FORWARD_FOR`] passed.
 async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) -> RecordsReply {
     let until = tokio::time::Instant::now() + FORWARD_FOR;
-    let options = CallOptions { budget: Budget::Overall(Duration::from_secs(5)), ..CallOptions::default() };
+    let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() };
     let mut last = String::from("no broker primary is held");
     loop {
         if let Some(primary) = node.broker_primary() {

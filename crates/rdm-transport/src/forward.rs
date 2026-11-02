@@ -8,7 +8,7 @@
 //! The origin side: [`NodeRpcClient::call_via`] executes a route's `ViaPeer` choice. It never
 //! selects a carrier; the connections route projection does.
 
-use crate::client::{Budget, CallEvidence, CallOptions, CarriedIdentity, Decode, NodeRpcClient, Payload};
+use crate::client::{CallEvidence, CallOptions, CarriedIdentity, Decode, NodeRpcClient, Payload, Resend};
 use crate::resolve::NodeTarget;
 use crate::server::{PeerContext, ServerBuilder};
 use rdm_core::NodeId;
@@ -171,7 +171,7 @@ async fn carry_once(
         (_, outer) => outer,
     };
     let opts = CallOptions {
-        budget: Budget::Overall(std::time::Duration::from_millis(inner_ms)),
+        resend: Resend::with_time_limit(std::time::Duration::from_millis(inner_ms)),
         context: Some(peer.context.clone()),
         carried,
         unsent_is_final: true,

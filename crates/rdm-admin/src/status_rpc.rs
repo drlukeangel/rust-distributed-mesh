@@ -1995,7 +1995,7 @@ impl StatusDoor {
             CarriedFrames::InProcess(rx)
         } else {
             let Some(configs) = self.configs.get() else { return A::NotSent { reason: "this mesh-primary holds no Node RPC client".into(), code: Code::Unavailable }; };
-            let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: std::time::Duration::from_secs(5), reply: if start { std::time::Duration::from_secs(60) } else { self.commands.connections_delete_reply() } }, ..Default::default() };
+            let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(if start { std::time::Duration::from_secs(60) } else { self.commands.connections_delete_reply() } + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
             match configs.client().call_stream::<NodeCommand>(&rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), &request, &opts).await {
                 Ok((frames, _)) => CarriedFrames::Dialled(frames),
                 Err((out, _)) => return match out {
@@ -2211,7 +2211,7 @@ impl StatusDoor {
                 };
                 tracing::Span::current().record("carried", "dialled");
                 let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
-                let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: std::time::Duration::from_secs(5), reply: self.commands.connections_delete_reply() }, ..Default::default() };
+                let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(self.commands.connections_delete_reply() + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
                 match configs.client().call_stream::<NodeCommand>(&target, &command, &opts).await {
                     Ok((stream, _)) => CarriedFrames::Dialled(stream),
                     Err((out, _)) => {

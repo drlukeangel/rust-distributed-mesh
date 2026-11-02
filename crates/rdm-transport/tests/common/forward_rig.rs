@@ -224,5 +224,5 @@ pub fn carrier_of(r: &Rig) -> NodeTarget {
 
 /// A call bounded by `d` as its whole budget.
 pub fn overall(d: Duration) -> CallOptions {
-    CallOptions { budget: rdm_transport::Budget::Overall(d), ..CallOptions::default() }
+    CallOptions { resend: rdm_transport::Resend::with_time_limit(d), ..CallOptions::default() }
 }

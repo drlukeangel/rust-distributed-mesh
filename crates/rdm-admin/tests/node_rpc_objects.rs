@@ -6,7 +6,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_client::{CallEnd, ExactBirth, NodeRpc};
-use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 use rdm_core::topology::{Topology, TopologyReply, TopologyRequest};
@@ -148,7 +148,7 @@ fn a_status_object_distinguishes_a_refusal_from_not_sent_and_indeterminate() {
         assert!(matches!(not_sent, CallEnd::NotSent { .. }), "{not_sent:?}");
 
         let slow = serve(StatusReply::Applied, Duration::from_secs(3)).await;
-        let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(200) }, ..CallOptions::default() };
+        let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(200) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let indeterminate = NodeRpc::new(&slow.client).get(&slow.birth, &opts).await.unwrap_err();
         assert!(matches!(indeterminate, CallEnd::Indeterminate { .. }), "{indeterminate:?}");
     });

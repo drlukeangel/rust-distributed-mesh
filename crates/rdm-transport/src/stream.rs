@@ -16,7 +16,7 @@
 //! `Indeterminate`. Dropping the stream ends the invocation: the server's next write sees the caller
 //! gone.
 
-use crate::client::{AttemptEnd, Attempted, Budget, CallEvidence, CallOptions, NodeRpcClient, OwedCall, Payload};
+use crate::client::{AttemptEnd, Attempted, CallEvidence, CallOptions, NodeRpcClient, Payload, ResendCall};
 use crate::delivery::{AckOnRecovery, FrameOut, Settled, SlotEvent, Written};
 use crate::resolve::NodeTarget;
 use crate::server::{Accepting, BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
@@ -395,8 +395,11 @@ pub enum StreamItem<R> {
 pub struct ReplyStream<P: StreamingProtocol> {
     span: tracing::Span,
     started: Instant,
-    owed: OwedCall,
+    owed: ResendCall,
     order: FrameOrder,
+    /// Until the request is acked (its first frame, or the responder's ack): the call's time limit
+    /// from the commit (node-rpc.md §34). After it the stream lives as long as the connection the
+    /// request committed on.
     deadline: Option<Instant>,
     done: bool,
     /// The acks of the frames handed over and not yet recovered by the owner, in order.
@@ -438,6 +441,7 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                 biased;
                 f = self.owed.frames.recv() => match f {
                     Some(SlotEvent::Frame(bytes, ack)) => {
+                        self.deadline = None;
                         let frame = match P::decode_reply(&bytes) {
                             Ok(f) => f,
                             Err(e) => return Some(self.fail(StreamFailure::Violation(format!("a frame does not decode: {e:?}")))),
@@ -473,6 +477,11 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                     Some(SlotEvent::Violation(why)) => return Some(self.fail(StreamFailure::Violation(why))),
                     None => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into())))),
                 },
+                changed = self.owed.state.changed(), if self.deadline.is_some() => {
+                    if changed.is_err() || self.owed.state.borrow().acked {
+                        self.deadline = None;
+                    }
+                }
                 ev = self.owed.attempted.recv() => match ev {
                     Some(Attempted::Reset(c)) => {
                         let failure = StreamFailure::of_reset(self.committed.take(), c);
@@ -558,10 +567,8 @@ impl NodeRpcClient {
             reused = tracing::field::Empty,
         );
         let started = Instant::now();
-        let start = started;
-        let (send_deadline, overall) = crate::client::deadlines_of(opts.budget, start);
         let mut opening = crate::client::CallSpanGuard::new(&span);
-        let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, false, (send_deadline, overall), &span);
+        let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, false, &span).await;
         let finish = |outcome: &str| {
             span.record("outcome", outcome);
             span.record("elapsed_ms", started.elapsed().as_millis() as u64);
@@ -574,7 +581,7 @@ impl NodeRpcClient {
                 span.record("code", out.code().name());
                 span.record("detail", out.detail_name());
                 span.in_scope(|| tracing::info!("node rpc stream call finished"));
-                return Err((out.retyped().expect("no reply before anything is owed"), ev));
+                return Err((out.retyped().expect("no reply before anything is sent"), ev));
             }
         };
         let mut last = NotSentReason::Deadline;
@@ -587,27 +594,22 @@ impl NodeRpcClient {
                         opening.complete();
                         finish("stream-open");
                         span.in_scope(|| tracing::info!("node rpc stream call opened"));
-                        let deadline = match (opts.budget, overall) {
-                            (_, Some(d)) => Some(d),
-                            (Budget::Split { reply, .. }, None) => Some(Instant::now() + reply),
-                            _ => None,
-                        };
+                        // Its first frame (or the responder's ack) within the call's time limit; its later
+                        // frames as long as the connection the request committed on (node-rpc.md §34).
+                        let deadline = (!owed.state.borrow().acked).then(|| Instant::now() + opts.resend.time_limit.0);
                         let evidence = owed.evidence.lock().unwrap().clone();
                         span.record("reused", evidence.reused);
                         return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: Some(committed), _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
-                    Some(Attempted::SendDeadline(r)) => {
-                        span.record("delivery", "cancelled");
-                        break pre.take().expect("pre-commit").not_sent(r);
+                    Some(Attempted::Spent) => {
+                        span.record("delivery", "attempts-spent");
+                        break pre.take().expect("pre-commit").not_sent(last.clone());
                     }
                     Some(Attempted::StoppedBeforeComplete) => {
                         // Refused before the request was complete: the refusal is the stream's one frame.
                         let early = pre.take().expect("stopped once").stopped_before_finish();
-                        let frame = match send_deadline {
-                            Some(d) => tokio::time::timeout_at(d, owed.frames.recv()).await.ok().flatten(),
-                            None => owed.frames.recv().await,
-                        };
+                        let frame = tokio::time::timeout(opts.resend.time_limit.0, owed.frames.recv()).await.ok().flatten();
                         let bytes = match frame {
                             Some(SlotEvent::Frame(b, ack)) => {
                                 if let Some(ack) = ack {
@@ -662,8 +664,9 @@ mod tests {
         let (guard, _, _) = delivery.open_call(id, NodeCommand::MAX_REPLY_FRAME_BYTES, false);
         let (tx, frames) = tokio::sync::mpsc::unbounded_channel();
         let (_attempts_tx, attempted) = tokio::sync::mpsc::unbounded_channel();
-        let owed = OwedCall {
-            guard, frames, attempted,
+        let (_state_tx, state) = tokio::sync::watch::channel(crate::delivery::SlotState::default());
+        let owed = ResendCall {
+            guard, frames, attempted, state,
             evidence: Arc::new(std::sync::Mutex::new(CallEvidence { node_id: None, addr: "127.0.0.1:0".parse().unwrap(), committed: true, connection: None, reused: false, dial_failure: None })),
             attempts: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             _task: crate::client::AbortOnDrop(None),

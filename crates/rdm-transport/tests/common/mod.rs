@@ -184,7 +184,7 @@ pub fn served_by(out: &RpcOutcome<ProbeReply>) -> Option<(String, String)> {
 }
 
 pub async fn routed(rig: &Rig, target: &Node, route: RouteChoice, payload: &[u8]) -> (RpcOutcome<ProbeReply>, Option<rdm_transport::CallEvidence>, RouteLeg) {
-    rig.origin.call_routed::<Probe>(&target.resolved.node_id, &route, &probe(payload), &CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_millis(1500)), ..Default::default() }).await
+    rig.origin.call_routed::<Probe>(&target.resolved.node_id, &route, &probe(payload), &CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_millis(1500)), ..Default::default() }).await
 }
 
 

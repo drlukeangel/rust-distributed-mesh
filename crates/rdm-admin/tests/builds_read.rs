@@ -149,7 +149,7 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
             Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-filter" && detail.contains("the pair (zone, [eu])"), "refused naming the pair: {reason}: {detail}"),
             other => panic!("an unknown property is refused by name, not {other:?}"),
         }
-        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(10)), ..Default::default() };
+        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(10)), ..Default::default() };
         let refused = client.call_stream::<Build>(&NodeTarget::CurrentPath(fp.name.clone()), &BuildRequest::GetBuilds { filter: Filter::new().eq("zone", ["eu"]) }, &opts).await;
         let first = match refused {
             Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => r.into_value(),

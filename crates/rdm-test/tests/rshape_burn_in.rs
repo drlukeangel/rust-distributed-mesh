@@ -24,7 +24,7 @@ use rdm_test::estate::{at_location, location, names_location, of_node};
 use rdm_core::NodeId;
 use rdm_client::{BuildId, FabricDesired, LaunchKind, MeshDesired, PathName};
 use rdm_transport::stream::StreamItem;
-use rdm_transport::{Budget, CallOptions, NodeTarget};
+use rdm_transport::{Resend, CallOptions, NodeTarget};
 use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit};
 use rdm_core::outcome::RpcOutcome;
 use rdm_test::container_faults;
@@ -1565,7 +1565,7 @@ async fn created(e: &Estate, admin: &PathName, mesh: &str, kind: LaunchKind) -> 
 async fn ask(e: &Estate, admin: &PathName, change: BuildChange) -> Value {
     let carrier = e.carrier_at(admin).await;
     let req = BuildRequest::Create { submit: BuildSubmit::Change(change) };
-    let opts = CallOptions { budget: Budget::Stream { send: SEND }, ..CallOptions::default() };
+    let opts = CallOptions { resend: Resend::with_time_limit(SEND), ..CallOptions::default() };
     let first = match carrier.client().call_stream::<Build>(&NodeTarget::CurrentPath(admin.clone()), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
         Err((RpcOutcome::Reply(r), _)) => Ok(r.into_value()),
         Err((other, _)) => Err(format!("{other:?}")),

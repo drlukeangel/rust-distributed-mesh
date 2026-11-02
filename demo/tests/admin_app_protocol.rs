@@ -12,7 +12,7 @@ mod common;
 
 use rdm_core::{NodeKind, PathName};
 use rdm_test::originate::{Originate, OriginateReply, OriginateRequest};
-use rdm_transport::{Budget, CallOptions, NodeTarget};
+use rdm_transport::{Resend, CallOptions, NodeTarget};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ fn the_consumers_day0_admin_answers_a_gateway_and_reaches_the_broker_on_the_data
         estate.until_fabric_ready(common::SETTLE).await;
 
         // The gateway's data connection to the admin: admitted, answered by the admin's app.
-        let options = CallOptions { budget: Budget::Overall(Duration::from_secs(30)), ..CallOptions::default() };
+        let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(30)), ..CallOptions::default() };
         let gateway = NodeTarget::ExactNode(common::node_id(&estate, &gateway()).await);
         let admin_id = common::node_id(&estate, &admin()).await;
         let (outcome, _) = estate.carrier().await.client().call::<Originate>(&gateway, &OriginateRequest::Stream { destination: admin_id.clone(), payload: b"from the gateway".to_vec() }, &options).await;

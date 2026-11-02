@@ -28,7 +28,7 @@ use rdm_core::PrimaryRole;
 use rdm_core::catalog::OpOwner;
 use rdm_node::member_handover::{call_successor, entries_named, install, Answered, Entry, STEP};
 use rdm_transport::topology::{Backbone, DigestView, TopologyView};
-use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
+use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use tracing::Instrument as _;
@@ -516,7 +516,7 @@ impl HandoverDoor {
             };
         }
         let req = Request::UpdatePrimary { node_type: primary.kind.node_type().to_string(), build_id: build_id.to_string(), run, operation: operation.clone(), successor: None };
-        match self.call_once(&to.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
+        match self.call_once(&to.node_id, &req, &CallOptions { resend: Resend::with_time_limit(COMMAND_SEND), ..CallOptions::default() }).await {
             Ok(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => {
                 self.take(&revisions).await;
                 Ok(revisions)
@@ -663,7 +663,7 @@ impl HandoverDoor {
             return Err(rdm_core::reply::handover::bounded_failed(STEP, &text, rdm_core::outcome::Code::FailedPrecondition));
         };
         let req = Request::UpdatePrimary { node_type: primary.kind.node_type().to_string(), build_id: build_id.to_string(), run, operation: operation.clone(), successor: Some(exact(&named)) };
-        match self.call_once(&primary.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
+        match self.call_once(&primary.node_id, &req, &CallOptions { resend: Resend::with_time_limit(COMMAND_SEND), ..CallOptions::default() }).await {
             Ok(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => {
                 self.take(&revisions).await;
                 Ok(revisions)

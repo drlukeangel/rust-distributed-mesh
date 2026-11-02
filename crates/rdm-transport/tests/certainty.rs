@@ -8,7 +8,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::admission::Limits;
-use rdm_transport::{ServedBirth, Budget, CallOptions, Decode, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
+use rdm_transport::{ServedBirth, Resend, CallOptions, Decode, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rdm_core::outcome::{IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RpcOutcome};
@@ -115,7 +115,7 @@ async fn an_unfinished_send_resets_with_499_is_not_sent_and_is_never_dispatched(
 #[tokio::test]
 async fn reply_loss_after_a_complete_send_is_indeterminate() {
     let r = rig(None).await;
-    let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(300) }, ..Default::default() };
+    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(300) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
     let (out, ev) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut");
@@ -164,7 +164,7 @@ async fn admission_full_is_an_immediate_typed_busy_and_the_handler_never_runs() 
     let c = Arc::new(r);
     let c2 = c.clone();
     let hang = tokio::spawn(async move {
-        let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(2) }, ..Default::default() };
+        let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(2) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
         c2.client.call::<Ping>(&c2.target, &echo(b"hang"), &opts).await.0
     });
     eventually("the first call holds the only permit", || c.handled.load(Ordering::SeqCst) == 1).await;

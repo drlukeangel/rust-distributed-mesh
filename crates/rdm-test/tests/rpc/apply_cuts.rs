@@ -13,7 +13,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
+use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use rdm_test::proof_store::{self, ApplyCuts, FileProofStore, ProofOp, ProofReply, ProofRequest, ProofStore, Provenance};
 use serde_json::{json, Value};
@@ -274,7 +274,7 @@ async fn eventually(what: &str, f: impl Fn() -> bool) {
 }
 
 fn split(reply: Duration) -> CallOptions {
-    CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply }, ..Default::default() }
+    CallOptions { resend: Resend::with_time_limit(reply + rdm_transport::TRANSPORT_LIMIT), ..Default::default() }
 }
 
 /// The trace holds only the cell's own story: every span is a product span (`rdm.*`), none of the

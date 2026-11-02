@@ -50,7 +50,7 @@ async fn a_non_forwardable_family_is_refused_by_type_at_the_origin_and_at_the_ca
 async fn a_carrier_that_is_gone_before_commit_is_not_sent() {
     let r = rig().await;
     r.carrier.router.shutdown().await.unwrap();
-    let opts = CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(2)), ..CallOptions::default() };
+    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(2)), ..CallOptions::default() };
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &opts).await;
     assert!(out.proves_not_dispatched(), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
@@ -216,7 +216,7 @@ async fn a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_dis
 async fn an_unreachable_target_under_the_origins_default_budget_is_connection_lost_never_indeterminate() {
     let r = rig_with(Some(Arc::new(ConnectionFact(Some("Direct Failed (dial failed)".into())))), false).await;
     r.target.router.shutdown().await.unwrap();
-    let opts = CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(10)), ..CallOptions::default() };
+    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(10)), ..CallOptions::default() };
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &opts).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::ConnectionLost("Direct Failed (dial failed)".into())), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
@@ -330,20 +330,19 @@ async fn spy_carrier() -> (NodeRpcClient, NodeTarget, Arc<std::sync::Mutex<Vec<u
     (origin, target, seen, node)
 }
 
-/// CONTRACT: the frame carries what the origin has left, never the default: an overall budget
-/// forwards deadline minus now, a split budget forwards its reply budget.
+/// CONTRACT (node-rpc.md §34; Q311): the frame carries what remains of the attempt's time limit at
+/// its write, never the default: a 2 s limit forwards about 2 s, a 700 ms limit about 700 ms.
 #[tokio::test]
-async fn the_forward_frame_carries_the_budget_that_remains_never_the_default() {
+async fn the_forward_frame_carries_the_time_limit_that_remains_never_the_default() {
     let (origin, carrier, seen, _node) = spy_carrier().await;
     let stranger = NodeId::mint();
-    let split = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(10), reply: Duration::from_millis(700) }, ..CallOptions::default() };
-    for opts in [overall(Duration::from_millis(2000)), split] {
+    for opts in [overall(Duration::from_millis(2000)), overall(Duration::from_millis(700))] {
         let _ = origin.call_via::<Probe>(&carrier, &stranger, &probe(b"x"), &opts).await;
     }
     let seen = seen.lock().unwrap().clone();
     assert_eq!(seen.len(), 2, "{seen:?}");
-    assert!((1_800..=2_000).contains(&seen[0]), "overall: deadline minus now: {seen:?}");
-    assert_eq!(seen[1], 700, "split: the reply budget, not the 10 s send bound or the default: {seen:?}");
+    assert!((1_800..=2_000).contains(&seen[0]), "the 2 s limit, less the resolve and dial: {seen:?}");
+    assert!((500..=700).contains(&seen[1]), "the 700 ms limit, less the resolve and dial, not the default: {seen:?}");
 }
 
 /// CONTRACT: a forward naming Forward is refused `NotForwardable` and a connections-deleting carrier refuses

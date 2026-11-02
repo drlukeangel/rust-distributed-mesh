@@ -24,7 +24,7 @@ use crate::topology::Topology;
 use rdm_core::IncarnationId;
 use rdm_transport::topology::PrimaryView;
 use rdm_transport::stream::{NotStarted, ReplySink, StreamItem};
-use rdm_transport::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
+use rdm_transport::{Resend, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
 use rdm_core::catalog::OpOwner;
 use rdm_core::context::CallContext;
@@ -1021,9 +1021,7 @@ impl RpcDispatcher {
             mesh: lane.map(str::to_string),
         };
         let opts = CallOptions {
-            budget: Budget::Stream {
-                send: DISPATCH_SEND,
-            },
+            resend: Resend::with_time_limit(DISPATCH_SEND),
             context: Some(context),
             ..CallOptions::default()
         };

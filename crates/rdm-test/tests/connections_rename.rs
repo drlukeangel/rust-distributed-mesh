@@ -121,7 +121,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         // taken live, then stopped, then started under the name it holds.
         let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
             let (client, target, opts, digest_view) = (&admin.observer.client, &target, &opts, &admin.observer.topology_view.digest_view);
@@ -338,7 +338,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         // Every connection deleted, off its mesh, the name taken live, then stopped.
         let (d, _) = digest_view.get(launch.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let call = |req: StatusRequest| {
             let (client, target, opts, digest_view) = (&admin.observer.client, &target, &opts, &admin.observer.topology_view.digest_view);

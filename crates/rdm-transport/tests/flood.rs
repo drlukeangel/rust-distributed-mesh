@@ -152,7 +152,7 @@ async fn a_flood_over_the_in_flight_limit_is_refused_busy_and_the_handler_never_
     for _ in 0..CALLERS {
         let r = r.clone();
         calls.push(tokio::spawn(async move {
-            let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(10), reply: Duration::from_secs(10) }, ..Default::default() };
+            let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(10) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
             r.client.call::<Ping>(&r.target, &ping(b"hold"), &opts).await.0
         }));
     }

@@ -34,10 +34,7 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 pub fn node_recovery_due() -> std::time::Duration {
     let floor = rdm_core::cadence::staleness_floor();
     let gossip = rdm_core::cadence::gossip_interval();
-    let call = match rdm_transport::CallOptions::default().budget {
-        rdm_transport::Budget::Overall(d) => d,
-        other => panic!("the default call budget is not one overall deadline: {other:?}"),
-    };
+    let call = rdm_transport::CallOptions::default().resend.time_limit.0;
     let state_key = rdm_admin::offline::tickle_ladder(call);
     floor + gossip + floor / 2 + gossip + state_key + floor + state_key + gossip + call
 }

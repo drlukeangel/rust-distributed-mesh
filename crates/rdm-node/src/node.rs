@@ -1551,7 +1551,7 @@ fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, topol
     }
 }
 
-/// One owed declaration (node-rpc.md §34, §43; i146 Q39, Q52; Q210): one `Budget::Owed` call to this
+/// One owed declaration (node-rpc.md §34, §43; i146 Q39, Q52; Q210): one call on `Resend::default()` to this
 /// birth's mesh-primary, resolved from the primary record this birth holds, never to an admin it
 /// merely hears. The call goes direct first; once an attempt sends nothing, its resends take the route
 /// [`declaration_route`] answers, a live peer of the mesh on Forward. It ends on the mesh-primary's
@@ -1577,7 +1577,7 @@ async fn declare_once(me: &MeshNode, topology_view: &TopologyView, client: &rdm_
         let (held, topology_view, me_id, primary_id, mesh) = (held.clone(), topology_view.clone(), me.node_id.clone(), primary.node_id.clone(), me.mesh.clone());
         rdm_transport::RoutePolicy(Arc::new(move |attempt| declaration_route(&held, &topology_view, &me_id, &primary_id, &mesh, attempt)))
     };
-    let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, route: Some(policy), ..rdm_transport::CallOptions::default() };
+    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::default(), route: Some(policy), ..rdm_transport::CallOptions::default() };
     let (out, _) = client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &req, &opts).await;
     let (outcome, definitive) = match &out {
         RpcOutcome::Reply(r) => {

@@ -145,7 +145,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
 
         let (d, _) = digest_view.get(cut.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(cut.node_id.clone());
         let call = |req: StatusRequest| {
             let (client, target, opts) = (&admin.observer.client, &target, &opts);

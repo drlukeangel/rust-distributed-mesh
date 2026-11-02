@@ -19,8 +19,8 @@ use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::stream::{StreamFailure, StreamItem};
 use rdm_transport::{
-    Budget, CallOptions, CarriedIdentity, Delivery, DeliveryStats, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, PeerContext, ReplyWithhold, ResolvedNode, ServedBirth,
-    ServerBuilder, ServerStats, StaticResolver,
+    CallOptions, CarriedIdentity, Delivery, DeliveryStats, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, PeerContext, ReplyWithhold, ResolvedNode, ServedBirth,
+    Resend, ServerBuilder, ServerStats, StaticResolver, TimeLimit,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -322,7 +322,7 @@ fn run(tag: u32, mode: Mode) -> CommandRequest {
 }
 
 fn budget(d: Duration) -> CallOptions {
-    CallOptions { budget: Budget::Overall(d), ..CallOptions::default() }
+    CallOptions { resend: Resend::with_time_limit(d), ..CallOptions::default() }
 }
 
 async fn eventually(what: &str, within: Duration, f: impl Fn() -> bool) {
@@ -612,8 +612,9 @@ async fn a_named_refusal_ends_the_retry_and_is_delivered_until_acked() {
     assert_eq!(get(&s.stats.dispatched), 0);
 }
 
-/// Cell 6. CONTRACT: an owed request to a silent receiver (it takes the request and never acks) keeps
-/// being resent; the receiver's exited verdict (the view's removal) ends it, by name.
+/// Cell 6. CONTRACT: a request to a silent receiver (it takes the request and never acks) keeps
+/// being resent while it has attempts; the receiver's exited verdict (the view's removal) ends it, by
+/// name.
 #[tokio::test]
 async fn the_receivers_removal_from_the_view_ends_the_owed_request_and_silence_does_not() {
     let r = raw().await;
@@ -621,7 +622,7 @@ async fn the_receivers_removal_from_the_view_ends_the_owed_request_and_silence_d
     let cd = client.delivery().clone();
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
     let started = Instant::now();
-    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(6, Mode::Apply), &budget(Duration::from_secs(20))).await.0 });
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(6, Mode::Apply), &many_attempts()).await.0 });
     eventually("silence keeps the request owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 3).await;
     assert!(!call.is_finished(), "silence ends nothing");
     resolver.remove_gone(&r.node.node_id);
@@ -637,7 +638,7 @@ async fn the_owners_cancellation_ends_the_owed_request() {
     let s = served().await;
     let (client, _) = client_of(&[&s.node]).await;
     let target = s.target();
-    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(7, Mode::Hold), &budget(Duration::from_secs(30))).await });
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(7, Mode::Hold), &many_attempts()).await });
     eventually("the unacked request is being resent", Duration::from_secs(3), || get(&s.delivery.stats().duplicates_pending) >= 2).await;
     call.abort();
     let _ = call.await;
@@ -656,7 +657,8 @@ async fn resends_arrive_at_the_cadence_then_doubling_capped_at_the_floor() {
     let (client, _) = client_of(&[&r.node]).await;
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
     let called_at = Instant::now();
-    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(8, Mode::Apply), &budget(Duration::from_secs(4))).await });
+    let six = CallOptions { resend: Resend { attempts: 6, time_limit: TimeLimit(Duration::from_secs(4)) }, ..CallOptions::default() };
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(8, Mode::Apply), &six).await });
     let conn = r.conns.recv().await.unwrap();
     let mut arrivals = Vec::new();
     let mut ids = Vec::new();
@@ -880,7 +882,7 @@ async fn tick_stream(r: &mut Raw, client: &NodeRpcClient) -> (rdm_transport::str
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
     let opening = {
         let client = client.clone();
-        tokio::spawn(async move { client.call_stream::<Tick>(&target, &TickRequest::Tick, &CallOptions { budget: Budget::Stream { send: Duration::from_secs(5) }, ..CallOptions::default() }).await })
+        tokio::spawn(async move { client.call_stream::<Tick>(&target, &TickRequest::Tick, &CallOptions { resend: Resend::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() }).await })
     };
     let conn = r.conns.recv().await.unwrap();
     let (mut send, mut recv) = conn.accept_bi().await.unwrap();
@@ -1033,7 +1035,7 @@ async fn a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_ori
     }
     let (origin, _) = client_of(&[&target.node, &carriers[0].1, &carriers[1].1]).await;
     let identity = CarriedIdentity { id: DeliveryId { sender: origin.delivery().me().clone(), delivery_seq: 7 }, forget_below: 7 };
-    let opts = |d: Duration| CallOptions { budget: Budget::Overall(d), carried: Some(identity.clone()), ..CallOptions::default() };
+    let opts = |d: Duration| CallOptions { resend: Resend::with_time_limit(d), carried: Some(identity.clone()), ..CallOptions::default() };
     let via = |i: usize| NodeTarget::ExactNode(carriers[i].1.node_id.clone());
     let (first, _) = origin.call_via::<Command>(&via(0), &target.node.node_id, &run(17, Mode::Apply), &opts(Duration::from_secs(2))).await;
     assert_eq!(ran(&first), Some((17, 1)), "{first:?}");
@@ -1173,12 +1175,14 @@ async fn a_new_sender_birth_starts_at_one_and_the_old_window_stays_until_its_end
     assert_eq!(s.delivery.window_of(&new).0, 1, "the live birth's window stays");
 }
 
-/// Cell 22. CONTRACT (node-rpc.md §31, §43): a response frame its consumer has read but not yet
-/// recovered is not acked: the responder still owes it, and after a reconnect it is resent. The
-/// consumer, which holds it, is not handed it again; its acceptance acks it on the stream it now
-/// arrives on, and the responder settles.
+/// Cell 22 (i151.s1; Q311, the stream op's rule in node-rpc.md §34 as the i151 proposal states it).
+/// CONTRACT: a stream op lives as long as the connection its request committed on: once acked, its
+/// frames are bounded by that connection, never by its time limit, and the connection's closure
+/// ends the stream `Indeterminate`/`ReplyLost` by name, its request never resent; the owner
+/// reattaches by its own rule. Must NOT happen: the stream ended by its time limit while its
+/// connection lives, a resend of its request, or a stream that outlives its connection.
 #[tokio::test]
-async fn a_frame_its_consumer_has_not_recovered_is_not_acked_and_is_resent_after_a_reconnect() {
+async fn a_stream_lives_as_long_as_the_connection_its_request_committed_on() {
     let hold = Arc::new(Semaphore::new(0));
     let h = hold.clone();
     let s = served_with(move |b| {
@@ -1196,24 +1200,20 @@ async fn a_frame_its_consumer_has_not_recovered_is_not_acked_and_is_resent_after
     })
     .await;
     let (client, _) = client_of(&[&s.node]).await;
-    let (mut stream, _) = client.call_stream::<Tick>(&s.target(), &TickRequest::Tick, &budget(Duration::from_secs(8))).await.map_err(|(o, _)| o).expect("the stream opens");
+    let cd = client.delivery().clone();
+    let (mut stream, _) = client.call_stream::<Tick>(&s.target(), &TickRequest::Tick, &budget(CADENCE * 2)).await.map_err(|(o, _)| o).expect("the stream opens");
     assert!(matches!(stream.next().await, Some(StreamItem::Frame(FrameKind::Started, TickFrame::Started))));
+    stream.accepted().await;
     assert!(matches!(stream.next().await, Some(StreamItem::Frame(FrameKind::Data, TickFrame::Item { i: 1 }))));
-    tokio::time::sleep(CADENCE * 3).await;
-    assert_eq!(s.delivery.owed_frames(), 2, "read, not yet recovered: neither frame is acked");
+    stream.accepted().await;
+    // Past its time limit, its connection alive: the stream stands.
+    let next = tokio::time::timeout(CADENCE * 6, stream.next()).await;
+    assert!(next.is_err(), "the stream outlives its time limit while its connection lives: {next:?}");
     assert!(s.server.close_connections_except(&[], "the cell cuts the connection") >= 1);
-    eventually("the frames still owed are resent after the reconnect", Duration::from_secs(3), || get(&s.delivery.stats().responses_resent) >= 1).await;
-    tokio::time::sleep(CADENCE * 3).await;
-    assert_eq!(s.delivery.owed_frames(), 2, "resent and still owed: the consumer has not recovered them");
-    stream.accepted().await;
-    eventually("the consumer's recovery acks both, on the stream the copies came on", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
+    let next = tokio::time::timeout(Duration::from_secs(3), stream.next()).await.expect("the connection's closure ends the stream");
+    assert!(matches!(&next, Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(_))))), "{next:?}");
+    assert_eq!(get(&cd.stats().resends), 0, "a stream request is never resent after its commit");
     hold.add_permits(1);
-    // The consumer holds both frames: the resent copies are never handed to it again.
-    let next = stream.next().await;
-    assert!(matches!(next, Some(StreamItem::Frame(FrameKind::Terminal, TickFrame::Done))), "the next frame is the terminal: {next:?}");
-    stream.accepted().await;
-    assert!(stream.next().await.is_none());
-    eventually("the terminal is recovered and acked", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
 }
 
 /// Cell 23. CONTRACT (i146 Q38): every return of a request's attempt task names its path, spanned
@@ -1290,8 +1290,10 @@ fn every_return_of_a_requests_attempt_task_is_spanned_with_its_path() {
     println!("delivery flame (every attempt task's end, named by its path): {}", flame(&trace));
 }
 
-fn owed() -> CallOptions {
-    CallOptions { budget: Budget::Owed, ..CallOptions::default() }
+/// Many attempts, each with a long time limit: a cell that watches a request resent and ends it
+/// by another cause (the receiver's removal, the owner's drop) before its attempts are spent.
+fn many_attempts() -> CallOptions {
+    CallOptions { resend: Resend { attempts: 20, time_limit: TimeLimit(Duration::from_secs(20)) }, ..CallOptions::default() }
 }
 
 /// A birth, its endpoint key and an address nothing listens on: the endpoint that held it is closed.
@@ -1304,92 +1306,255 @@ async fn unreachable() -> (Birth, SecretKey, ResolvedNode) {
     (me, key, node)
 }
 
-/// Cell 24. CONTRACT (i146 Q44; node-rpc.md §34): an Owed call has no send or reply deadline. To a
-/// receiver that cannot be reached it is resent past the bound at which an Overall call to the same
-/// receiver ends `NotSent`/`Deadline`, and it is delivered, its handler run once, when the receiver
-/// comes up. Must NOT happen: the Owed call ending while nothing ended it.
-#[tokio::test]
-async fn an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_comes() {
+/// A live endpoint that serves another protocol and no Node RPC: every dial to it is refused at its
+/// handshake, at once. `index` names the birth's path (`mesh1.rpc/<index>`).
+async fn refusing(index: &str) -> (Router, ResolvedNode) {
     let (me, key) = (birth(), SecretKey::generate());
-    // Keep the OS-assigned socket while the receiver is not serving Node RPC. Releasing a
-    // chosen port and rebinding it later lets another concurrent rig take it in between.
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    ep.set_alpns(vec![]);
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let node = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: me.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
-    let (client, _) = client_of(&[&node]).await;
-    let cd = client.delivery().clone();
-    let target = NodeTarget::ExactNode(node.node_id.clone());
-    let (c, t) = (client.clone(), target.clone());
-    let owed_call = tokio::spawn(async move { c.call::<Command>(&t, &run(24, Mode::Apply), &owed()).await.0 });
-    let (bounded, _) = client.call::<Command>(&target, &run(240, Mode::Apply), &budget(FLOOR * 2)).await;
-    assert!(matches!(&bounded, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Deadline)), "the Overall call ends at its bound: {bounded:?}");
-    tokio::time::sleep(FLOOR * 2).await;
-    assert!(!owed_call.is_finished(), "the Owed call outlives the bound the Overall call ended at");
-    let resent = get(&cd.stats().resends);
-    assert!(resent >= 3, "the Owed call is resent on the schedule: {resent}");
-    let s = served_on(me, key, ep, |b| b).await;
-    let out = tokio::time::timeout(FLOOR * 4, owed_call).await.expect("delivered once the receiver came").unwrap();
-    assert_eq!(ran(&out), Some((24, 1)), "{out:?}");
-    assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
+    let (tx, _conns) = mpsc::unbounded_channel();
+    let router = Router::builder(ep).accept(b"rdm-test/not-node-rpc".to_vec(), Accepted(tx)).spawn();
+    let node = ResolvedNode { mesh: "mesh1".into(), kind: rdm_core::NodeKind::RpcNode, node_id: me.node_id.clone(), name: rdm_core::PathName::new("mesh1.rpc", index).unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
+    (router, node)
 }
 
-/// Cell 24b (Q10 = a). CONTRACT (node-rpc.md §43: retry stops "on the ack, on the receiver's exited verdict
-/// or accepted removal, or on explicit cancellation or retargeting by the owning workflow; never on a
-/// timer, never on absence from a view"): an Owed call to a receiver this caller's view does not hold yet
-/// stays owed. It is opened once the receiver resolves (read again at the resend pacing and on every
-/// change of the view), delivered, and its handler runs once. Controls: an Overall call to the same
-/// absent receiver still ends `NotSent` at once, and an Owed call to a receiver the view holds proven
-/// gone ends `NotSent`/`Resolve(Gone)` at once. Must NOT happen: the Owed call ending
-/// `NotSent`/`Resolve(Unknown)` because the view did not hold its receiver yet (the re-born admin cell:
-/// a member resumed after its mesh's primary was re-born declared Ready to it, the call ended
-/// so, and nothing sent it again; kept/e6s7-i144-e4-re-born-admin-owed-declaration, trace
-/// 704617ac4b3ac6bbd29b0c8707af019b).
+/// The instant of every dial that ended with no connection, by the node it was to.
+#[derive(Default)]
+struct Dials {
+    failed: Mutex<Vec<(NodeId, Instant)>>,
+}
+
+impl rdm_transport::ConnectionObserver for Dials {
+    fn direct_connected(&self, _: &ResolvedNode) {}
+    fn direct_failed(&self, node: &ResolvedNode, _: &str) {
+        self.failed.lock().unwrap().push((node.node_id.clone(), Instant::now()));
+    }
+    fn direct_broken(&self, _: &ResolvedNode, _: &str) {}
+}
+
+impl Dials {
+    fn to(&self, node: &NodeId) -> Vec<Instant> {
+        self.failed.lock().unwrap().iter().filter(|(n, _)| n == node).map(|(_, at)| *at).collect()
+    }
+}
+
+/// A client over `resolver` whose failed dials `dials` records.
+async fn observed_client(resolver: Arc<StaticResolver>, dials: Arc<Dials>) -> NodeRpcClient {
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    NodeRpcClient::new(ep, resolver).with_delivery(Delivery::with_pacing(birth(), pacing())).with_connection_observer(dials)
+}
+
+/// Cell 24 (i151.s1; Q311). CONTRACT: a call whose connect is refused makes its three attempts at
+/// 0, c and 3c (the schedule: the publish cadence, then doubling), and ends `NotSent` with the last
+/// attempt's reason once the third is refused, with no wait after it. Must NOT happen: a fourth
+/// attempt, a wait past the third, or an end other than `NotSent`.
 #[tokio::test]
-async fn an_owed_call_to_a_receiver_its_view_holds_only_later_is_delivered_once_it_resolves() {
+async fn a_refused_connect_ends_not_sent_after_three_attempts_at_0_c_and_3c() {
+    let (_router, node) = refusing("1").await;
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(node.clone());
+    let dials = Arc::new(Dials::default());
+    let client = observed_client(resolver, dials.clone()).await;
+    let started = Instant::now();
+    let (out, evidence) = client.call::<Command>(&NodeTarget::ExactNode(node.node_id.clone()), &run(24, Mode::Apply), &CallOptions::default()).await;
+    let ended = started.elapsed();
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Connection(_))), "{out:?}");
+    assert!(!evidence.is_some_and(|e| e.committed), "nothing crossed the commit cut");
+    let at: Vec<u128> = dials.to(&node.node_id).iter().map(|t| (*t - started).as_millis()).collect();
+    assert_eq!(at.len(), 3, "three attempts in all: {at:?}");
+    for (refused, from) in at.iter().zip([0u128, 100, 300]) {
+        assert!(*refused >= from && *refused <= from + 150, "attempts refused at {at:?} ms, sent at 0, c and 3c (c = 100 ms)");
+    }
+    assert!(ended.as_millis() <= at[2] + 100, "the call ended once its third attempt was refused: {ended:?}, refused at {at:?}");
+    tokio::time::sleep(CADENCE * 4).await;
+    assert_eq!(dials.to(&node.node_id).len(), 3, "no attempt after the call ended");
+}
+
+/// Cell 24b (i151.s1; Q311). CONTRACT: a request that crosses the commit cut on each of its three
+/// attempts and is never acked ends `Indeterminate`, once the last attempt's time limit passes: the
+/// receiver read the one identity three times, and nothing more. Must NOT happen: `NotSent` (the
+/// request crossed the cut), a fourth send, or an end before the third send.
+#[tokio::test]
+async fn a_call_committed_and_never_acked_ends_indeterminate_after_three_attempts() {
+    let mut r = raw().await;
+    let (client, _) = client_of(&[&r.node]).await;
+    let target = NodeTarget::ExactNode(r.node.node_id.clone());
+    let started = Instant::now();
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(241, Mode::Apply), &CallOptions { resend: Resend::with_time_limit(FLOOR), ..CallOptions::default() }).await });
+    let conn = r.conns.recv().await.unwrap();
+    let arrivals = Arc::new(Mutex::new(Vec::new()));
+    let reading = {
+        let arrivals = arrivals.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((send, mut recv)) = conn.accept_bi().await else { return };
+                let (h, _) = read_request(&mut recv).await;
+                arrivals.lock().unwrap().push((h.delivery_id(), Instant::now()));
+                // Held open, never acked.
+                std::mem::forget((send, recv));
+            }
+        })
+    };
+    let (out, evidence) = tokio::time::timeout(Duration::from_secs(5), call).await.expect("the call ends once its attempts are spent").unwrap();
+    let ended = started.elapsed();
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
+    assert!(evidence.is_some_and(|e| e.committed), "the request crossed the commit cut");
+    tokio::time::sleep(CADENCE * 4).await;
+    reading.abort();
+    let arrivals = arrivals.lock().unwrap().clone();
+    assert_eq!(arrivals.len(), 3, "three sends in all: {arrivals:?}");
+    assert!(arrivals.windows(2).all(|w| w[0].0 == w[1].0), "every send carries the one identity: {arrivals:?}");
+    let third = (arrivals[2].1 - started).as_millis();
+    assert!(ended.as_millis() >= third + FLOOR.as_millis() - 50, "the last attempt waited its time limit for the ack: ended {ended:?}, third send at {third} ms");
+}
+
+/// Cell 24c (i151.s1; Q313). CONTRACT: a call addressed to a primary counts its attempts per birth
+/// the view names for the role: three on the first birth, then it waits; when the view names the
+/// role's next birth its count starts again there, three more; when the view names a third birth
+/// that serves, the request (its one identity) is answered there and its handler runs once. Must
+/// NOT happen: a fourth attempt on a birth, the call ending while the role names a birth, or a
+/// second identity minted.
+#[tokio::test]
+async fn a_primary_addressed_call_restarts_its_count_on_each_birth_the_view_names() {
+    let (_ra, a) = refusing("1").await;
+    let (_rb, b) = refusing("2").await;
+    let s = served().await;
+    let resolver = Arc::new(StaticResolver::new());
+    for n in [&a, &b, &s.node] {
+        resolver.insert(n.clone());
+    }
+    resolver.set_primary(Some("mesh1".into()), Some(a.node_id.clone()));
+    let dials = Arc::new(Dials::default());
+    let client = observed_client(resolver.clone(), dials.clone()).await;
+    let cd = client.delivery().clone();
+    let target = NodeTarget::Primary { mesh: Some("mesh1".into()) };
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(242, Mode::Apply), &CallOptions::default()).await.0 });
+    eventually("three attempts on the first birth", Duration::from_secs(3), || dials.to(&a.node_id).len() >= 3).await;
+    tokio::time::sleep(CADENCE * 6).await;
+    assert_eq!(dials.to(&a.node_id).len(), 3, "three attempts on the first birth, then none");
+    assert!(!call.is_finished(), "the role names a birth: the call waits for the next one");
+    resolver.set_primary(Some("mesh1".into()), Some(b.node_id.clone()));
+    eventually("three attempts on the next birth", Duration::from_secs(3), || dials.to(&b.node_id).len() >= 3).await;
+    tokio::time::sleep(CADENCE * 6).await;
+    assert_eq!(dials.to(&b.node_id).len(), 3, "the count started again on the next birth: three, then none");
+    assert!(!call.is_finished(), "the role names a birth: the call waits for the next one");
+    resolver.set_primary(Some("mesh1".into()), Some(s.node.node_id.clone()));
+    let out = tokio::time::timeout(Duration::from_secs(3), call).await.expect("answered by the birth the view names next").unwrap();
+    assert_eq!(ran(&out), Some((242, 1)), "{out:?}");
+    assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
+    assert_eq!(cd.minted(), 1, "one identity, on every birth");
+    assert_eq!(dials.to(&a.node_id).len(), 3, "nothing more to the first birth");
+}
+
+/// Cell 24d (i151.s1; Q313). CONTRACT: a call addressed to a primary whose attempts on the birth
+/// the view names are spent ends receiver-gone (`NotSent`, `Resolve(Gone)`, code `UNAVAILABLE`)
+/// when the role has no birth; a call opened while the role has none ends so at once. Must NOT
+/// happen: the call waiting on with no birth to send to, or an end by any other name.
+#[tokio::test]
+async fn a_primary_addressed_call_ends_receiver_gone_when_the_role_has_no_birth() {
+    let (_ra, a) = refusing("1").await;
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(a.clone());
+    resolver.set_primary(Some("mesh1".into()), Some(a.node_id.clone()));
+    let dials = Arc::new(Dials::default());
+    let client = observed_client(resolver.clone(), dials.clone()).await;
+    let target = NodeTarget::Primary { mesh: Some("mesh1".into()) };
+    let (c, t) = (client.clone(), target.clone());
+    let call = tokio::spawn(async move { c.call::<Command>(&t, &run(243, Mode::Apply), &CallOptions::default()).await.0 });
+    eventually("three attempts on the birth the role names", Duration::from_secs(3), || dials.to(&a.node_id).len() >= 3).await;
+    assert!(!call.is_finished(), "the role names a birth: the call waits");
+    resolver.set_primary(Some("mesh1".into()), None);
+    let out = tokio::time::timeout(Duration::from_secs(1), call).await.expect("the role with no birth ends the call").unwrap();
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == rdm_core::outcome::NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Gone)), "{out:?}");
+    assert_eq!(out.code(), rdm_core::outcome::Code::Unavailable, "{out:?}");
+    assert_eq!(out.detail_name(), "receiver-gone");
+    let started = Instant::now();
+    let (out, _) = client.call::<Command>(&target, &run(244, Mode::Apply), &CallOptions::default()).await;
+    assert_eq!(out.detail_name(), "receiver-gone", "{out:?}");
+    assert!(started.elapsed() < CADENCE, "at once: {:?}", started.elapsed());
+    assert_eq!(dials.to(&a.node_id).len(), 3, "nothing more was sent");
+}
+
+/// Cell 24e (i151.s1; Q313). CONTRACT: a call to an exact birth keeps three attempts in all: the
+/// view moving that birth to another endpoint slot between attempts starts no new count, and the
+/// call ends `NotSent` after its third. Must NOT happen: a count that starts again on the moved
+/// slot.
+#[tokio::test]
+async fn an_exact_birth_call_keeps_three_attempts_in_all() {
+    let (_ra, a) = refusing("1").await;
+    let (_rm, moved) = refusing("1").await;
+    // The same birth at another slot: its node id and incarnation, another endpoint.
+    let moved = ResolvedNode { node_id: a.node_id.clone(), incarnation: a.incarnation.clone(), ..moved };
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(a.clone());
+    let dials = Arc::new(Dials::default());
+    let client = observed_client(resolver.clone(), dials.clone()).await;
+    let target = NodeTarget::ExactNode(a.node_id.clone());
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(245, Mode::Apply), &CallOptions::default()).await.0 });
+    eventually("the first attempt is refused", Duration::from_secs(3), || !dials.to(&a.node_id).is_empty()).await;
+    resolver.insert(moved);
+    let out = tokio::time::timeout(Duration::from_secs(3), call).await.expect("the call ends after its third attempt").unwrap();
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Connection(_))), "{out:?}");
+    tokio::time::sleep(CADENCE * 4).await;
+    assert_eq!(dials.to(&a.node_id).len(), 3, "three attempts in all, across both slots");
+}
+
+/// Cell 24f (i151.s1; Q311: "an unresolved receiver spends an attempt"). CONTRACT: a receiver this
+/// caller's view does not hold spends an attempt, never a wait: held by no view, the call ends
+/// `NotSent`/`Resolve(Unknown)` after its three attempts; held from its second attempt on, the call
+/// is delivered and its handler runs once. A receiver the view holds proven gone ends the call at
+/// once. Must NOT happen: a call that waits with no attempt left, or one that ends while it has
+/// attempts left.
+#[tokio::test]
+async fn an_unresolved_receiver_spends_an_attempt_never_a_wait() {
     let s = served().await;
     let (client, resolver) = client_of(&[]).await;
     let target = s.target();
-    let (bounded, _) = client.call::<Command>(&target, &run(241, Mode::Apply), &budget(FLOOR)).await;
-    assert!(matches!(&bounded, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Unknown))), "an Overall call ends at once: {bounded:?}");
+    let started = Instant::now();
+    let (out, _) = client.call::<Command>(&target, &run(246, Mode::Apply), &CallOptions::default()).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Unknown))), "{out:?}");
+    let ended = started.elapsed();
+    assert!(ended >= CADENCE * 3 && ended < CADENCE * 3 + FLOOR, "three attempts at 0, c and 3c: ended at {ended:?}");
     let (c, t) = (client.clone(), target.clone());
-    let call = tokio::spawn(async move { c.call::<Command>(&t, &run(242, Mode::Apply), &owed()).await.0 });
-    tokio::time::sleep(FLOOR * 2).await;
-    assert!(!call.is_finished(), "absence from the view ends nothing: {:?}", if call.is_finished() { Some(call.await.unwrap()) } else { None });
+    let call = tokio::spawn(async move { c.call::<Command>(&t, &run(247, Mode::Apply), &CallOptions::default()).await.0 });
+    tokio::time::sleep(CADENCE / 2).await;
     resolver.insert(s.node.clone());
-    let out = tokio::time::timeout(FLOOR * 4, call).await.expect("delivered once the receiver resolved").unwrap();
-    assert_eq!(ran(&out), Some((242, 1)), "{out:?}");
+    let out = tokio::time::timeout(FLOOR * 2, call).await.expect("delivered once the receiver resolved").unwrap();
+    assert_eq!(ran(&out), Some((247, 1)), "{out:?}");
     assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
     let gone = NodeId::mint();
     resolver.remove_gone(&gone);
     let started = Instant::now();
-    let (out, _) = client.call::<Command>(&NodeTarget::ExactNode(gone), &run(243, Mode::Apply), &owed()).await;
+    let (out, _) = client.call::<Command>(&NodeTarget::ExactNode(gone), &run(248, Mode::Apply), &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Gone))), "a receiver proven gone ends it: {out:?}");
-    assert!(started.elapsed() < FLOOR, "at once: {:?}", started.elapsed());
+    assert!(started.elapsed() < CADENCE, "at once: {:?}", started.elapsed());
 }
 
-/// Cell 25 (control, i146 Q44). CONTRACT: an Overall call and a Split call still lapse as before: to a
-/// receiver that cannot be reached, each ends `NotSent`/`Deadline` at its send bound; to a receiver
-/// that holds the request unanswered, each ends `Indeterminate`/`ReplyDeadline` at its bound.
+/// Cell 25 (Q311). CONTRACT: one attempt's resolve, dial and send are bounded by its time limit,
+/// and once acked its reply is: to a receiver that cannot be reached a call ends
+/// `NotSent`/`Deadline` after its three attempts, each cut at its limit; to a receiver that accepts
+/// the request and holds its reply, the call ends `Indeterminate`/`ReplyDeadline` at the limit
+/// counted from the ack, never resent.
 #[tokio::test]
-async fn an_overall_and_a_split_call_still_lapse_at_their_bounds() {
-    let split = || CallOptions { budget: Budget::Split { send: FLOOR, reply: FLOOR }, ..CallOptions::default() };
+async fn an_attempt_is_bounded_by_its_time_limit() {
+    let limit = || CallOptions { resend: Resend::with_time_limit(FLOOR / 2), ..CallOptions::default() };
     let (_, _, node) = unreachable().await;
     let (client, _) = client_of(&[&node]).await;
-    let target = NodeTarget::ExactNode(node.node_id.clone());
-    for (what, opts) in [("overall", budget(FLOOR)), ("split", split())] {
-        let started = Instant::now();
-        let (out, _) = client.call::<Command>(&target, &run(25, Mode::Apply), &opts).await;
-        assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Deadline)), "{what}: {out:?}");
-        assert!(started.elapsed() < FLOOR * 3, "{what}: ended at its send bound, {:?}", started.elapsed());
-    }
+    let started = Instant::now();
+    let (out, _) = client.call::<Command>(&NodeTarget::ExactNode(node.node_id.clone()), &run(25, Mode::Apply), &limit()).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Deadline)), "{out:?}");
+    let ended = started.elapsed();
+    assert!(ended >= FLOOR / 2 * 3 && ended < FLOOR * 3, "three attempts, each cut at its limit: {ended:?}");
     let s = served().await;
     let (client, _) = client_of(&[&s.node]).await;
-    for (what, opts) in [("overall", budget(FLOOR)), ("split", split())] {
-        let (out, _) = client.call::<Command>(&s.target(), &run(26, Mode::Hold), &opts).await;
-        assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReplyDeadline)), "{what}: {out:?}");
-        s.release();
-    }
+    let cd = client.delivery().clone();
+    let started = Instant::now();
+    let (out, _) = client.call::<Command>(&s.target(), &run(26, Mode::AcceptThenHold), &limit()).await;
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReplyDeadline)), "{out:?}");
+    let ended = started.elapsed();
+    assert!(ended >= FLOOR / 2 && ended < FLOOR, "the reply's limit, counted from the ack: {ended:?}");
+    assert_eq!(get(&cd.stats().resends), 0, "an acked request is never resent");
+    s.release();
 }
 
 /// Cell 26 (i146 Q44). CONTRACT: an owner dropping its Owed call ends the resend: no further resend
@@ -1399,7 +1564,7 @@ async fn an_owner_dropping_its_owed_call_ends_the_resend() {
     let s = served().await;
     let (client, _) = client_of(&[&s.node]).await;
     let target = s.target();
-    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(27, Mode::Hold), &owed()).await });
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(27, Mode::Hold), &many_attempts()).await });
     eventually("the unacked request is being resent", Duration::from_secs(3), || get(&s.delivery.stats().duplicates_pending) >= 2).await;
     call.abort();
     let _ = call.await;
@@ -1418,7 +1583,7 @@ async fn an_owed_call_ends_on_its_receivers_removal_from_the_view_unavailable() 
     let (client, resolver) = client_of(&[&r.node]).await;
     let cd = client.delivery().clone();
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
-    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(28, Mode::Apply), &owed()).await.0 });
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(28, Mode::Apply), &many_attempts()).await.0 });
     eventually("silence keeps the request owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 3).await;
     assert!(!call.is_finished(), "silence ends nothing");
     resolver.remove_gone(&r.node.node_id);
@@ -1440,7 +1605,7 @@ async fn an_owed_call_ends_when_its_receivers_exit_is_proven_unavailable() {
     let client = NodeRpcClient::new(ep, resolver.clone()).with_delivery(Delivery::with_pacing(birth(), pacing()));
     let cd = client.delivery().clone();
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
-    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(29, Mode::Apply), &owed()).await.0 });
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(29, Mode::Apply), &many_attempts()).await.0 });
     eventually("silence keeps the request owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 3).await;
     assert!(!call.is_finished(), "silence ends nothing");
     resolver.mark_exited(&r.node.node_id, &r.node.incarnation);
@@ -1460,7 +1625,7 @@ async fn owed_dial_superseded(ended_birth: bool) {
     let cd = client.delivery().clone();
     let target = s.target();
     let point = Arc::new(rdm_transport::pool::Failpoint::default());
-    let opts = CallOptions { budget: Budget::Owed, after_connect: Some(point.clone()), ..Default::default() };
+    let opts = CallOptions { after_connect: Some(point.clone()), ..many_attempts() };
     let call = tokio::spawn(async move { client.call::<Command>(&target, &run(30, Mode::Apply), &opts).await.0 });
     tokio::time::timeout(Duration::from_secs(3), point.reached.notified()).await.expect("the dial connected before its slot is pooled");
     let mut current = s.node.clone();
@@ -1507,7 +1672,7 @@ async fn node_command_stream(r: &mut Raw, client: &NodeRpcClient) -> (rdm_transp
     let request = NodeCommandRequest::DeleteConnections { node_id: r.me.node_id.clone(), incarnation: r.me.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
     let opening = {
         let client = client.clone();
-        tokio::spawn(async move { client.call_stream::<NodeCommand>(&target, &request, &CallOptions { budget: Budget::Stream { send: Duration::from_secs(5) }, ..CallOptions::default() }).await })
+        tokio::spawn(async move { client.call_stream::<NodeCommand>(&target, &request, &CallOptions { resend: Resend::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() }).await })
     };
     let (conn, mut send, recv, h) = tokio::time::timeout(Duration::from_secs(5), async {
         let conn = r.conns.recv().await.unwrap();

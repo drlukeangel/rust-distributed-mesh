@@ -21,7 +21,7 @@ use rdm_test::originate::Seams;
 use std::time::Duration;
 
 async fn call_on(admin: &AdminSide, target: &NodeTarget, req: &StatusRequest, scope: Option<&str>) -> StatusReply {
-    let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, scope: scope.map(str::to_string), ..CallOptions::default() };
+    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), scope: scope.map(str::to_string), ..CallOptions::default() };
     if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, None).await { return reply; }
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
@@ -171,7 +171,7 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
         assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry");
         // A further call on a pool connection of its own: a new dial from the commander, a new accept at the node.
         let birth = rdm_client::ExactBirth { target: target.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, scope: Some("after-all".into()), ..CallOptions::default() };
+        let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), scope: Some("after-all".into()), ..CallOptions::default() };
         let read = rdm_client::NodeRpc::new(&admin.observer.client).connections_get(&birth, &rdm_core::filter::Filter::new(), &opts).await;
         assert!(read.is_ok(), "the further call is answered: {read:?}");
         let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
@@ -451,7 +451,7 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
         .await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let all = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
-        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         pull.hold();
         let held_call = async { admin.observer.client.call::<PreNodeReadyPull>(&target, &PullRequest::Pull, &opts).await.0 };
         let steps = async {

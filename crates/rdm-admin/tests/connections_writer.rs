@@ -479,7 +479,7 @@ async fn a_refused_observation_write_is_held_only_once_its_retry_lands() {
 /// the call ends `NotSent` and the failed dial is recorded as this node's Direct Failed fact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct_failed() {
-    use rdm_transport::{Budget, CallOptions, NodeRpcClient, StaticResolver};
+    use rdm_transport::{Resend, CallOptions, NodeRpcClient, StaticResolver};
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::ping::{Ping, PingRequest};
     let dir = data_dir("dead-cold");
@@ -491,7 +491,7 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     resolver.insert(resolved(&dest));
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
-    let opts = CallOptions { budget: Budget::Overall(std::time::Duration::from_millis(300)), ..Default::default() };
+    let opts = CallOptions { resend: Resend::with_time_limit(std::time::Duration::from_millis(300)), ..Default::default() };
     let resolution = resolve(&held.lock().unwrap(), &me.node_id, &dest.node_id, POLICY);
     let call = client.call_resolved::<Ping>(resolution, &me.node_id, &dest.name, &dest.node_id, &PingRequest::Ping { payload: vec![1] }, &opts).await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });

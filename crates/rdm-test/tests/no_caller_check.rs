@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 async fn call(client: &NodeRpcClient, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
-    let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
     if let Some(reply) = crate::common::lifecycle_reply(client, target, req, &opts, None).await { return reply; }
     match client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),

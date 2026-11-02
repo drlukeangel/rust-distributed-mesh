@@ -41,24 +41,23 @@ pub enum ForwardRequest {
         inner_op: u8,
         /// The inner call's request frame, as encoded for `inner_op`.
         inner: Vec<u8>,
-        /// The origin's remaining time budget for this call, in whole milliseconds, measured
-        /// immediately before this frame is written to the carrier (after the carrier was
-        /// resolved and dialed). For an overall budget it is deadline minus now; for a split
-        /// budget it is the reply budget, which starts at the commit that follows the write. The
-        /// carrier bounds its one inner call by this minus [`FORWARD_REPLY_RESERVE`].
+        /// What remains of the origin's time limit for this attempt, in whole milliseconds,
+        /// measured immediately before this frame is written to the carrier (after the carrier
+        /// was resolved and dialed). The carrier's one inner call takes this minus
+        /// [`FORWARD_REPLY_RESERVE`] as its time limit.
         remaining_ms: u64,
-        /// An Owed request's own delivery identity, which its carried attempt keeps toward the
+        /// A resent request's own delivery identity, which its carried attempt keeps toward the
         /// target under this frame's sender (node-rpc.md §43; i146 Q52). `None`: the inner call
         /// keeps this frame's identity.
-        owed: Option<OwedDelivery>,
+        owed: Option<ResendDelivery>,
     },
 }
 
-/// The delivery identity an Owed request keeps on every leg: each carried attempt is a Forward
+/// The delivery identity a resent request keeps on every leg: each carried attempt is a Forward
 /// invocation of its own toward the carrier, and the inner call is the request's, so a carrier that
 /// answered one attempt carries the next and the target's duplicate window suppresses any repeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OwedDelivery {
+pub struct ResendDelivery {
     /// The request's `delivery_seq` in its origin birth's window.
     pub delivery_seq: u64,
     /// The origin's `forget_below` toward the target.

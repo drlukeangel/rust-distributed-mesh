@@ -472,7 +472,7 @@ async fn read_with(
     mut take: impl FnMut(Chunk) -> Taken,
 ) -> Result<TopologyRead, TopologyFailure> {
     let req = TopologyRequest::GetTopology { mesh: mesh.map(String::from), since };
-    let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(10)), ..Default::default() };
+    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(10)), ..Default::default() };
     let target_name = match target {
         NodeTarget::ExactNode(id) => id.to_string(),
         other => format!("{other:?}"),

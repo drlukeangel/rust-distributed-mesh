@@ -825,7 +825,7 @@ impl RecoverySubmitter {
             return TerminateTurn::Refused(format!("{}: no node-RPC client to report {node_id} to {fp_id}", self.me_id));
         };
         let req = BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Terminate { node: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) };
-        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Stream { send: std::time::Duration::from_secs(10) }, ..rdm_transport::CallOptions::default() };
+        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(std::time::Duration::from_secs(10)), ..rdm_transport::CallOptions::default() };
         *sends += 1;
         match client.call_stream::<Build>(&rdm_transport::NodeTarget::ExactNode(fp_id.clone()), &req, &opts).await {
             Ok((stream, _)) => {
@@ -896,9 +896,7 @@ impl RecoverySubmitter {
             }),
         };
         let opts = rdm_transport::CallOptions {
-            budget: rdm_transport::Budget::Stream {
-                send: crate::build_op::DISPATCH_SEND,
-            },
+            resend: rdm_transport::Resend::with_time_limit(crate::build_op::DISPATCH_SEND),
             ..rdm_transport::CallOptions::default()
         };
         let mut stream = match client.call_stream::<Build>(&target, &req, &opts).await {
