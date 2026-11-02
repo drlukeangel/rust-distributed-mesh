@@ -510,6 +510,13 @@ async fn fabric_recovery_with_no_running_node_adopts_the_fabric_primarys_own_clo
 /// node's runtime exited with the fault: the completed stop's receipt is not taken into any view after
 /// the restart (no NodeStopped of it), and it is recovered (node-recovery.md step 3): node.delete of the
 /// exited birth, then node.create at its path.name under a new node id, and the view settles.
+/// The restarted fabric-primary's reconcile passes are held until its door has answered a member's
+/// recovery over the Build's lost attempt, so the door meets that attempt before the drive does, in
+/// every run. build.md §4: "An attempt lost with its executor ... leaves the Build in progress
+/// (`Running`) ...; only an attempt that ends with a named terminal failure (`Failed { step, reason }`)
+/// makes the Build failed". The door releases the lost attempt's row and writes no verdict
+/// (`via-claimant-departure` `row-released`). Must NOT happen: the attempt ended `Failed` at the door,
+/// so no pass drives the Build and `mesh1.rpc.3` is never created (rdm#262).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped() {
     let cell = "a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_recorded_stopped";
@@ -541,8 +548,21 @@ async fn a_node_stopped_inside_a_build_the_fabric_lost_is_recovered_never_record
     assert!(estate.live_runtimes().is_empty(), "no runtime of the fabric is left: {:?}", estate.live_runtimes());
 
     let fp_dir = estate.bootstrap_data_dir("mesh1");
+    // The restarted fabric-primary's passes are held from its first: its drive claims nothing until the
+    // door has answered a recovery over the lost attempt.
+    let cuts = rdm_test::admin_faults::boot_cuts_file(&estate.root, &fp);
+    std::fs::create_dir_all(cuts.parent().expect("the boot cuts file is in the faults directory")).unwrap();
+    std::fs::write(&cuts, serde_json::to_vec(&json!([{"id": "drift-pass", "kind": "drift-pass"}])).unwrap()).unwrap();
     let restarted = estate.restart_admin_with(&fp_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
     estate.enter(&restarted).await;
+    let passes = rdm_test::faults::Door::at(&estate, &fp).await;
+    passes.wait_held("drift-pass").await;
+    let answered = wait_for("the restarted fabric-primary's door answers a recovery over the Build's lost fabric-lane attempt", Duration::from_secs(90), || async {
+        named(&estate.spans(), "rdm.node_admin.build.update.via-claimant-departure").into_iter().find(|sp| rdm_test::estate::at_location(sp, &fp) && s(&sp["attributes"]["lane"]) == "fabric").cloned()
+    })
+    .await;
+    passes.release("drift-pass").await;
+    assert_eq!(s(&answered["attributes"]["outcome"]), "row-released", "the door releases the lost attempt's row and writes no verdict: the Build stays in progress (build.md §4): {answered}");
     let after = values(&estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(240)).await);
     let back = after.iter().find(|n| location(n) == Estate::path("mesh1.rpc", "1")).cloned().unwrap_or_else(|| panic!("mesh1.rpc.1 is in the settled view: {after:#?}"));
     assert_ne!(s(&back["node_id"]), stopped_id, "mesh1.rpc.1 is re-created by recovery under a new node id: {back}");
