@@ -21,21 +21,17 @@
 //!    status frames the join answered. The kind then brings up what it serves while its hook runs.
 //! 3. `rdm.mesh.node.update.via-pre-node-ready-attempt` (step 3): the `pre_node_ready` hook, with the
 //!    start kind, the accepting authority (or why there is none), the joined channel, the member cert
-//!    and rafka-time. No topology has been read: the hook reads none as a prerequisite.
+//!    and rafka-time. No topology has been read: topology follows the hook.
 //! 4. Once the hook passed (step 4), in the start itself, or in the task a blocked or spawned hook runs
 //!    on in:
-//!    - `rdm.mesh.node.update.via-topology-taken`: `GetTopology` from the authority that answered the
-//!      join, installed per mesh only from a complete snapshot;
 //!    - `rdm.mesh.node.update.via-build-floor`: the kind's Build floor, on every start (a node-admin
-//!      reads the Build's committed records it is missing from storage, Q292; an rpc node owes none);
-//!    - `rdm.mesh.node.update.via-rafka-time-refreshed`: rafka-time read again from the authority, last,
-//!      so it is current when the node re-enters.
+//!      reads the Build's committed records it is missing from storage, Q292; an rpc node owes none).
+//!      It reads no topology;
+//!    - `rdm.mesh.node.update.via-topology-taken`: then one `GetTopology` from the authority that
+//!      answered the join, the final startup read, with no conditional source version (`since: None`):
+//!      installed per mesh only from a complete snapshot, and the rafka-time of the same reply adopted
+//!      after the install. No second topology request is made to refresh rafka-time.
 //! 5. `rdm.mesh.node.update.via-ready` (step 5): the kind's node.started report.
-//!
-//! The rafka-time refresh reads the authority's `GetTopology` naming a mesh the topology step installed
-//! at the version it installed (an `Unchanged` answer carrying `RafkaTime`; an authority that answered
-//! no snapshot is read whole again), and installs nothing: op `0x1E` is the read that carries
-//! rafka-time to a started node (`rafka_time.rs`, the pull when the fabric-primary moved reads it the same way).
 
 use crate::node_hooks::{AcceptingPrimary, AcceptingPrimarySource, Birth, End, Events, HookDriver, NodeReadyCtx, NodeHooks, PreNodeReadyHandle, NoAcceptingPrimary, StartKind, Step};
 use crate::model::{NodeId, PathName};
@@ -45,7 +41,6 @@ use crate::wire::JoinAnswer;
 use rdm_core::MeshDigest;
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{CancelToken, NodeRpcClient, NodeTarget};
-use rdm_core::topology::SourceVersion;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -67,10 +62,10 @@ pub struct Starting {
     pub path: PathName,
     /// The birth's node id.
     pub node_id: NodeId,
-    /// The process's one Node RPC client: the join, the topology read and the rafka-time refresh go
+    /// The process's one Node RPC client: the join and the topology read go
     /// through it.
     pub client: Arc<NodeRpcClient>,
-    /// The process's rafka-time, adopted from the join answer and refreshed last.
+    /// The process's rafka-time, adopted from the join answer and again from the topology read, last.
     pub rafka_time: rdm_transport::clock::RafkaTime,
 }
 
@@ -89,7 +84,7 @@ pub enum Joining {
 /// the start goes.
 #[derive(Clone, Debug)]
 pub struct JoinThrough {
-    /// Where the join went and the topology read and the rafka-time refresh go: the launcher's birth
+    /// Where the join went and the topology read goes: the launcher's birth
     /// at a first start; after a stop, the endpoint and path of the call whose join was answered.
     pub target: NodeTarget,
     /// The admin's endpoint key.
@@ -389,8 +384,8 @@ struct AfterTheHook {
     topology_view: TopologyView,
     /// The authority the join reached, and what the step spans name it; `None` with no authority.
     through: Option<(JoinThrough, String)>,
-    /// After a stop, the endpoint of the call that commanded the start last: the topology read and
-    /// the rafka-time refresh go to that admin, as the join did (node-start.md step 2; the reads are
+    /// After a stop, the endpoint of the call that commanded the start last: the topology read goes
+    /// to that admin, as the join did (node-start.md step 2; the reads are
     /// the mesh-primary's, node-topology-get.md).
     commander: Option<tokio::sync::watch::Receiver<iroh::PublicKey>>,
     after: Box<dyn AfterHook>,
@@ -422,65 +417,39 @@ impl AfterTheHook {
 
     async fn steps(self, driver: Option<Arc<HookDriver>>) -> Result<(), (StartFailed, Box<dyn AfterHook>)> {
         let Self { root, name, path, node_id, client, rafka_time, topology_view, through, mut commander, mut after } = self;
-        // 4. The topology, from the authority that answered the join.
-        // A mesh the topology step installed, at the version it installed: what the rafka-time refresh
-        // names, so the authority answers it `Unchanged`.
-        let mut held: Option<(String, SourceVersion)> = None;
-        if let Some((t, label)) = &through {
-            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label);
-            after.before_topology_read(&t.node_id).instrument(step.clone()).await;
-            let read = match at_commander(&name, &client, t, commander.as_mut(), |target| {
-                let (client, topology_view, mesh) = (&client, &topology_view, topology_view.mesh_name());
-                async move { crate::topology_read::get_topology(client, &target, mesh, topology_view, None, None).await }
-            }).instrument(step.clone()).await {
-                Ok((read, _)) => read,
-                Err((e, who)) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {who}: {e}") }, after)),
-            };
-            after.topology_installed(&topology_view, &read).instrument(step.clone()).await;
-            held = read.installed.first().map(|m| (m.mesh.clone(), SourceVersion { publisher: m.publisher.clone(), topology_version: m.topology_version }));
-            drop(step);
-        }
-        // The Build facts the authority's floor requires, on every start.
+        // 4. The Build facts the authority's floor requires, on every start: before any topology read.
         let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-build-floor", node_path = %path.path, node_name = %name, node_id = %node_id, owed = tracing::field::Empty, blockers = tracing::field::Empty, outcome = tracing::field::Empty);
         after.floor(&step).instrument(step.clone()).await;
         drop(step);
-        // rafka-time, last, from the same authority.
-        let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-rafka-time-refreshed", node_path = %path.path, node_name = %name, node_id = %node_id, served_by = tracing::field::Empty, unchanged = tracing::field::Empty, outcome = tracing::field::Empty);
-        match &through {
-            Some((t, _)) => {
-                // The read names the mesh the topology step installed and its version; an authority that
-                // answered no snapshot is read whole again, as the topology step read it.
-                let (mesh, since) = match held {
-                    Some((mesh, since)) => (Some(mesh), Some(since)),
-                    None => (None, None),
-                };
-                let (read, who) = match at_commander(&name, &client, t, commander.as_mut(), |target| {
-                    let (client, node, mesh, since) = (&client, node_id.as_str(), mesh.as_deref(), since.clone());
-                    async move { crate::topology_read::read_topology(client, &target, node, mesh, since).await }
-                }).instrument(step.clone()).await {
-                    Ok(read) => read,
-                    Err((e, who)) => return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not read rafka-time from {who}: {e}") }, after)),
-                };
-                step.record("served_by", tracing::field::display(&who));
-                step.record("unchanged", !read.unchanged.is_empty());
-                match step.in_scope(|| read.adopt_rafka_time(&rafka_time, &topology_view, node_id.as_str(), topology_view.mesh_name(), &node_id, &who)) {
-                    Ok(_) => {
-                        step.record("outcome", "adopted");
-                    }
-                    // A primary takes rafka-time only from the fabric-primary (node-identity-and-state.md
-                    // §2.5): any other answer is refused by name and the primary keeps the rafka-time it
-                    // holds (`crate::rafka_time`). A re-entering fabric-primary holds the fabric's time.
-                    Err(crate::topology_read::TimeNotAdopted::Refused(refusal)) => {
-                        step.record("outcome", format!("kept: {refusal}").as_str());
-                    }
-                    Err(e) => return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not adopt rafka-time from {who}: {e}") }, after)),
+        // Then the topology, once, from the authority that answered the join: the final startup read,
+        // with no conditional source version, and the rafka-time of the same reply adopted after its
+        // install. With no authority, the rafka-time this start adopted is kept.
+        if let Some((t, label)) = &through {
+            let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node_path = %path.path, node_name = %name, node_id = %node_id, launcher = %label, served_by = tracing::field::Empty, rafka_time = tracing::field::Empty);
+            after.before_topology_read(&t.node_id).instrument(step.clone()).await;
+            let (read, who) = match at_commander(&name, &client, t, commander.as_mut(), |target| {
+                let (client, topology_view, mesh) = (&client, &topology_view, topology_view.mesh_name());
+                async move { crate::topology_read::get_topology(client, &target, mesh, topology_view, None, None).await }
+            }).instrument(step.clone()).await {
+                Ok(read) => read,
+                Err((e, who)) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {who}: {e}") }, after)),
+            };
+            step.record("served_by", tracing::field::display(&who));
+            after.topology_installed(&topology_view, &read).instrument(step.clone()).await;
+            match step.in_scope(|| read.adopt_rafka_time(&rafka_time, &topology_view, node_id.as_str(), topology_view.mesh_name(), &node_id, &who)) {
+                Ok(_) => {
+                    step.record("rafka_time", "adopted");
                 }
+                // A primary takes rafka-time only from the fabric-primary (node-identity-and-state.md
+                // §2.5): any other answer is refused by name and the primary keeps the rafka-time it
+                // holds (`crate::rafka_time`). A re-entering fabric-primary holds the fabric's time.
+                Err(crate::topology_read::TimeNotAdopted::Refused(refusal)) => {
+                    step.record("rafka_time", format!("kept: {refusal}").as_str());
+                }
+                Err(e) => return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not adopt rafka-time from {who}: {e}") }, after)),
             }
-            None => {
-                step.record("outcome", "no authority: the rafka-time this start adopted is kept");
-            }
+            drop(step);
         }
-        drop(step);
         // 5. node.started.
         after.report().await;
         if let Some(driver) = driver {
@@ -760,17 +729,22 @@ mod tests {
         }
     }
 
-    /// CONTRACT (docs/architecture/lifecycles/node-start.md:20, 22-23, 45-66, 121-122, 126-127):
+    /// CONTRACT (docs/architecture/lifecycles/node-start.md, "End-to-end sequence"):
     /// "1. A stopped process remains the same exact runtime and keeps its endpoint/port; it does not start
     /// a new process or load a new executable.
     /// 2. Run node.mesh.join... 3. Run pre_node_ready with the start kind and inherited-data-dir
     /// indication...
-    /// 4. Obtain complete topology through node.topology.get. Install only complete source snapshots;
-    /// partial snapshots never complete start. The read is the node's hydration sync (Q234): with the
-    /// topology it carries the node's own whole row, the recorded primaries the mesh-primary holds (a lost
-    /// birth's marked gone) and each mesh's id, and a node-admin started by a launch reads none of them
-    /// from the store (Q227). Fetch Build facts only when the node is below the primary's floor, after the
-    /// hook and before node.started... Refresh rafka-time **last**, so it is current when the node re-enters.
+    /// 4. Satisfy the required Build floor after the hook. Read committed facts from Build storage
+    /// only when the node is below the primary's floor: the current Build when no pointer is known,
+    /// otherwise the named Build. Absorb the facts through the existing Build log and Ready check;
+    /// a successful storage read alone does not satisfy the floor. This check must not depend on
+    /// fetching topology early.
+    /// Then obtain topology once through node.topology.get, as the final
+    /// startup read. Request it without a conditional source version and install only complete
+    /// snapshots. The same reply supplies the recorded primaries, startup context and current
+    /// Rafka-time; adopt the time after installing topology and before reporting started.
+    /// Preserve retained own properties and application recognition. Do not fetch topology before
+    /// the Build-floor check and do not issue a second topology request just to refresh time.
     /// 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot
     /// nor a Blocked hook permits it. That frame is the node's report: the mesh-primary sets Ready on that
     /// exact birth through the node status apply, not a caller op. The node also declares Ready to its
@@ -780,7 +754,7 @@ mod tests {
     /// "Failures and stream certainty follow the caller execution contract."
     /// "Trace propagation, step spans and correlation follow the runtime spans."
     #[test]
-    fn node_start_executes_join_hook_floor_rafka_time_report_and_on_node_ready_in_order() {
+    fn node_start_executes_join_hook_floor_report_and_on_node_ready_in_order() {
         let dir = std::env::temp_dir().join(format!("rdm-node-start-unit-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-node-start-unit")
@@ -887,7 +861,6 @@ mod tests {
             "rdm.mesh.node.update.via-topology-joined",
             "rdm.mesh.node.update.via-pre-node-ready-attempt",
             "rdm.mesh.node.update.via-build-floor",
-            "rdm.mesh.node.update.via-rafka-time-refreshed",
             "rdm.mesh.node.update.via-on-node-ready",
         ] {
             assert!(

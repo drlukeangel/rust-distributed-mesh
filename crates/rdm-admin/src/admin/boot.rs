@@ -2137,7 +2137,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // Pending.
                             // `pre_node_ready` (the app's hook): `node.start` runs it once the join is accepted and the
                             // mesh channel joined, before any topology is read, in a task behind this admin's gate, and then
-                            // its topology, Build-floor and rafka-time steps in the same task; the Ready check below names
+                            // its Build-floor and topology steps in the same task; the Ready check below names
                             // the hook's blocker and the step the start is at. A birth with no launcher has no authority to
                             // pull from, and says why.
                             let pre_node_ready_cancel = rdm_transport::BirthCancel::new();

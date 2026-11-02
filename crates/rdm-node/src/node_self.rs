@@ -964,8 +964,8 @@ impl NodeSelf {
 
     /// `node.mesh.join` commanded on this live birth (`JoinMesh` on 0x1B; node-mesh-join.md step 10,
     /// node-tickle.md "What follows"; Q87): the whole start sequence runs again on it, from the join
-    /// back over the commanding call to its hook, its topology, its Build floor and rafka-time
-    /// refreshed last (node-start.md steps 2 to 5), the way a start after a stop does. The birth leaves
+    /// back over the commanding call to its hook, its Build floor, then its one topology read and the
+    /// rafka-time of that read (node-start.md steps 2 to 5), the way a start after a stop does. The birth leaves
     /// its channels first and says Pending; the command is answered `MeshJoined` once the join is
     /// accepted and the channel entered (node.mesh.joined), while the rest of the start runs on, and a
     /// start that ends before that answers how it ended. A stopped birth is started by `node.start`,

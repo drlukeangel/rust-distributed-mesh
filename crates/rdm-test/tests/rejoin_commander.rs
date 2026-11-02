@@ -430,9 +430,9 @@ fn a_hook_blocked_on_its_primarys_word_runs_again_when_a_commander_no_record_nam
 /// reads topology from its mesh-primary, the admin commanding it; node-topology-get.md): a stopped
 /// node's start is commanded by an admin that answers its join and is lost while the start's hook
 /// runs (its endpoint closes before the topology read). A later admin commands the start while it is
-/// under way. The start's topology read and rafka-time refresh go to the later commander, reached back
-/// over its own call, and the start is answered `Started`: the node is Ready, its rafka-time
-/// refresh served by the later commander. Must NOT happen: the read held on the lost commander's
+/// under way. The start's one topology read goes to the later commander, reached back over its own
+/// call, and the start is answered `Started`: the node is Ready, the rafka-time of that read, served
+/// by the later commander, adopted. Must NOT happen: the read held on the lost commander's
 /// endpoint until its deadline and the start failed at `node.topology`.
 #[test]
 fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_later_commander() {
@@ -494,10 +494,10 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
             .await
             .expect("the started node never answered Ready");
             let successor_short = successor_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
-            let refreshed = spans_of(&spans, "rdm.mesh.node.update.via-rafka-time-refreshed", node_id.as_str());
+            let taken = spans_of(&spans, "rdm.mesh.node.update.via-topology-taken", node_id.as_str());
             assert!(
-                refreshed.iter().any(|f| f.get("outcome").map(String::as_str) == Some("adopted") && f.get("served_by").is_some_and(|s| s.contains(&successor_short))),
-                "the start's rafka-time refresh is served by the later commander {successor_short}: {refreshed:?}"
+                taken.iter().any(|f| f.get("rafka_time").map(String::as_str) == Some("adopted") && f.get("served_by").is_some_and(|s| s.contains(&successor_short))),
+                "the start's topology read, and the rafka-time adopted from it, is served by the later commander {successor_short}: {taken:?}"
             );
         };
         // The cell ends with the later commander's start: the lost commander's call, on its closed

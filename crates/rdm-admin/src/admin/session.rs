@@ -676,7 +676,7 @@ impl AdminFloor {
 pub(crate) struct StartProgress(pub(crate) Arc<Mutex<Option<String>>>);
 impl StartProgress {
     pub(crate) fn begun(me: &PathName) -> Self {
-        Self(Arc::new(Mutex::new(Some(format!("path {:?}, name {:?}: node.start has not run its topology, Build-floor and rafka-time steps", me.path, me.name)))))
+        Self(Arc::new(Mutex::new(Some(format!("path {:?}, name {:?}: node.start has not run its Build-floor and topology steps", me.path, me.name)))))
     }
 
     pub(crate) fn at(&self, what: String) {
@@ -720,7 +720,6 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
     }
 
     async fn topology_installed(&mut self, topology_view: &TopologyView, read: &crate::topology_read::TopologyRead) {
-        self.progress.at(format!("{}: node.start is at its topology step", self.me_id));
         let mut mesh_peers = Vec::new();
         let mut admins = Vec::new();
         for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.me_id) {
@@ -778,7 +777,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
 
     async fn floor(&mut self, step: &tracing::Span) {
         self.floor.until_held(step).await;
-        self.progress.at(format!("{}: node.start is at its rafka-time step", self.me_id));
+        self.progress.at(format!("{}: node.start is at its topology step", self.me_id));
     }
 
     async fn report(self: Box<Self>) {

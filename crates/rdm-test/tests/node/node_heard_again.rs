@@ -30,13 +30,12 @@ use std::path::Path;
 use std::time::Duration;
 
 /// The start steps, in the order every start path runs them (node-start.md steps 2-5).
-const STEPS: [&str; 7] = [
+const STEPS: [&str; 6] = [
     "rdm.mesh.node.update.via-join-admitted",
     "rdm.mesh.node.update.via-topology-joined",
     "rdm.mesh.node.update.via-pre-node-ready-attempt",
-    "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-build-floor",
-    "rdm.mesh.node.update.via-rafka-time-refreshed",
+    "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-ready",
 ];
 const START_ROOT: &str = "rdm.mesh.node.update.via-start";
@@ -165,7 +164,7 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         let (first_roots, first) = start_steps_after(&spans, FIRST_ROOT, node, 0);
         assert_eq!(first_roots.len(), 1, "{node:?}: one first start ({FIRST_ROOT})");
         let first_names: Vec<&str> = first.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert!(first_names.len() >= 6 && first_names.iter().all(|n| STEPS.contains(n)), "{node:?}: the first start ran the start steps: {first_names:?}");
+        assert!(first_names.len() >= 5 && first_names.iter().all(|n| STEPS.contains(n)), "{node:?}: the first start ran the start steps: {first_names:?}");
         let (roots, steps) = start_steps_after(&spans, START_ROOT, node, since);
         assert_eq!(roots.len(), 1, "{node:?}: one start root ({START_ROOT}) after the release: {}", roots.len());
         let names: Vec<&str> = steps.iter().map(|(n, _, _)| n.as_str()).collect();

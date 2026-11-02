@@ -1,4 +1,4 @@
-//! A node-admin's start runs its steps after the hook (topology, Build floor, rafka-time) in a task
+//! A node-admin's start runs its steps after the hook (Build floor, then topology) in a task
 //! its stop gate holds wherever it stands (`boot.rs`, `HookRuns::Spawned` through `StopGate::spawn`),
 //! and a stop waits for every turn in progress at it (`StopGate::quiesce`). The gate's own rule
 //! (stop_gate.rs): a task it can hold takes no lock another task needs. The start's Build-floor step

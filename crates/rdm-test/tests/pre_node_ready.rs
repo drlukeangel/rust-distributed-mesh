@@ -250,7 +250,7 @@ fn a_retry_armed_after_the_mesh_primary_was_already_ready_still_completes() {
         let settled = tokio::time::timeout(WRONG, running.pre_node_ready().expect("handle").settled()).await.expect("the retry completes");
         assert_eq!(settled, PreNodeReadyState::Passed);
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "primary-ready".to_string()), ("ok".to_string(), String::new())]);
-        // node.started follows the hook's pass by the start's topology, Build-floor and rafka-time steps
+        // node.started follows the hook's pass by the start's Build-floor and topology steps
         // (node-start.md steps 4-5): the node is Ready once its authority hears it so.
         until(&b.admin.observer.topology_view.digest_view, "the authority heard the node Ready", |digest_view| digest_view.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Ready)).await;
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::Ready);
