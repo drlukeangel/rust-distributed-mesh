@@ -3765,9 +3765,9 @@ mod tests {
         let birth = |n: &crate::model::Node| rdm_core::status::ReportedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), name: n.name.clone() };
         let report = |n: rdm_core::status::ReportedBirth| StatusRequest::report_call_failed(birth(&m1p), n, "not-sent: Connection(\"connect refused\")");
         let door = mesh_primary_of(&m2p, view.clone());
-        let mut reborn = birth(&own);
-        reborn.incarnation = crate::model::IncarnationId::mint();
-        for (receiver, what) in [(birth(&other), "a birth of another mesh"), (reborn, "another incarnation of its member"), (birth(&stranger), "a birth it holds nothing of"), (birth(&m2p), "itself")] {
+        let mut later_birth = birth(&own);
+        later_birth.incarnation = crate::model::IncarnationId::mint();
+        for (receiver, what) in [(birth(&other), "a birth of another mesh"), (later_birth, "another incarnation of its member"), (birth(&stranger), "a birth it holds nothing of"), (birth(&m2p), "itself")] {
             assert_eq!(door.apply(None, &report(receiver)).await, R::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "{what}");
         }
         assert!(door.unreachable.lock().unwrap().is_empty(), "a refused report marks nothing");
