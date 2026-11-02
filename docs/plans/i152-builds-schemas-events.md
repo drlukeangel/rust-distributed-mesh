@@ -148,4 +148,4 @@ or cancelled as their rows say; Q276's read is superseded by Q292 as its row say
 
 ## State
 
-s1 drafted (2026-11-02), awaiting Luke's yes; the lead's mechanics decisions D38–D47 (lead-decisions-2026-11-02.md).
+s1: Luke's yes on the page text of s2–s4, s6 and s7 (2026-11-02, "ret looks good"); s5 rewritten to state what is, never what was ("we don't add text to arch documents about was things"), awaiting his look; the lead's mechanics decisions D38–D47 (lead-decisions-2026-11-02.md).
