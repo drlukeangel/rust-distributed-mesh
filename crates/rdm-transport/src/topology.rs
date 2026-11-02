@@ -2811,23 +2811,23 @@ pub struct TopologyView {
 /// A birth's own config as its topology view holds it.
 #[derive(Debug, Default)]
 struct OwnConfig {
-    /// The newest row map installed, at its revision.
-    row: Option<(std::collections::BTreeMap<String, String>, u64)>,
+    /// The row's map, once one was published or installed.
+    row: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl OwnConfig {
     /// The map shown: the row's.
     fn shown(&self) -> Option<&std::collections::BTreeMap<String, String>> {
-        self.row.as_ref().map(|(c, _)| c)
+        self.row.as_ref()
     }
 
-    /// The row's `config` at `revision`, taken over an older revision only; whether it was.
-    fn install(&mut self, config: std::collections::BTreeMap<String, String>, revision: u64) -> bool {
-        let newer = self.row.as_ref().is_none_or(|(_, r)| revision > *r);
-        if newer {
-            self.row = Some((config, revision));
+    /// The hydration sync's `config`, taken only while no map is held; whether it was.
+    fn install(&mut self, config: std::collections::BTreeMap<String, String>) -> bool {
+        let first = self.row.is_none();
+        if first {
+            self.row = Some(config);
         }
-        newer
+        first
     }
 }
 
@@ -2840,15 +2840,14 @@ mod own_config_tests {
         [("k".to_string(), v.to_string())].into()
     }
 
-    /// CONTRACT: a map at an older or the same revision is dropped. Must NOT happen: a delayed
-    /// hydration sync overwriting a newer map.
+    /// CONTRACT: a hydration sync's map is installed only while no map is held. Must NOT happen: a
+    /// delayed hydration sync overwriting the map already held.
     #[test]
-    fn a_map_at_the_same_or_an_older_revision_installs_nothing() {
+    fn a_sync_map_installs_only_while_no_map_is_held() {
         let mut held = OwnConfig::default();
-        assert!(held.install(map("joined"), 1));
-        assert!(held.install(map("caller"), 3), "a newer revision installs");
-        assert!(!held.install(map("caller"), 3) && !held.install(map("old"), 2), "the same or an older revision installs nothing");
-        assert_eq!(held.shown(), Some(&map("caller")));
+        assert!(held.install(map("joined")), "the first map installs");
+        assert!(!held.install(map("old")), "a later sync's map installs nothing");
+        assert_eq!(held.shown(), Some(&map("joined")));
     }
 }
 
@@ -3241,13 +3240,11 @@ impl TopologyView {
         self.mesh.broadcast(&Frame::Digest { digest: d }).await
     }
 
-    /// Hold `config`, the map its property writer published, as the row's map at the revision this
-    /// birth holds: the map the application reads from now on ([`Self::config`]). No digest carries
-    /// it (Q203).
+    /// Hold `config`, the map its property writer published, as the row's map: the map the
+    /// application reads from now on ([`Self::config`]). No digest carries it (Q203).
     pub fn set_config(&self, config: std::collections::BTreeMap<String, String>) {
         let mut held = self.config.lock().unwrap();
-        let revision = held.row.as_ref().map_or(0, |(_, r)| *r);
-        held.row = Some((config, revision));
+        held.row = Some(config);
         self.show_config(&held);
     }
 
@@ -3255,11 +3252,6 @@ impl TopologyView {
     /// on gossip; the property writer serializes this publication with every property command.
     pub fn set_tags(&self, tags: std::collections::BTreeSet<String>) {
         if let Some(row) = self.own_row.lock().unwrap().as_mut() { row.tags = tags; }
-    }
-
-    /// The revision of the row's map this birth holds; 0 before any was installed.
-    pub fn config_revision(&self) -> u64 {
-        self.config.lock().unwrap().row.as_ref().map_or(0, |(_, r)| *r)
     }
 
     /// The map shown, written to the own entry too.
@@ -3270,12 +3262,12 @@ impl TopologyView {
     }
 
     /// Hold `row` as this birth's own whole row, the one its mesh-primary's hydration sync carried
-    /// (Q234); a node record carries no revision, so its config is installed at 0.
+    /// (Q234); its config is installed only while this birth holds no map yet.
     pub fn set_own_row(&self, row: rdm_core::views::NodeView) {
         let config = row.config.clone();
         *self.own_row.lock().unwrap() = Some(row);
         let mut held = self.config.lock().unwrap();
-        held.install(config, 0);
+        held.install(config);
         self.show_config(&held);
     }
 

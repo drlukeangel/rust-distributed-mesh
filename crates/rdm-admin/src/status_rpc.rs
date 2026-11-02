@@ -956,13 +956,13 @@ impl StatusDoor {
         }
     }
 
-    /// Build `build_id`'s entry follows the same downward route and node writer as caller changes.
-    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, build_id: &crate::build::BuildId, entry: rdm_core::properties::EntryProperties, storage: rdm_core::meta::StorageMeta, placement: rdm_core::meta::PlacementMeta) -> Result<(), String> {
+    /// A Build's entry follows the same downward route and node writer as caller changes.
+    pub async fn apply_build_entry(&self, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, storage: rdm_core::meta::StorageMeta, placement: rdm_core::meta::PlacementMeta) -> Result<(), String> {
         self.commands.admitted().await;
         let view = self.topology.read().await.clone();
         let me = self.held_name_in(&view);
         self.configs.get().ok_or_else(|| format!("path {me_path:?}, name {me_name:?}: node property client is not bound", me_path = &me.path, me_name = &me.name))?
-            .apply_entry(&me, &self.node_id, &view, &*self.nodes_storage, birth, build_id, entry, (storage, placement), self.command_frame_seam.as_deref()).await
+            .apply_entry(&me, &self.node_id, &view, &*self.nodes_storage, birth, entry, (storage, placement)).await
     }
 
     /// node.mesh.leave of the birth `(node_id, incarnation)` of this admin's mesh, its connections

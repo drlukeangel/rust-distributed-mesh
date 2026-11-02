@@ -1053,7 +1053,7 @@ pub fn plan_for_build_created(build: &crate::build_state::BuildProjection, obser
     // the path's replacement follows it as the next attempt's (proposal executable-bindings-at-create.md
     // rule 5: "never in the same attempt").
     let topology_steps: Vec<crate::build_state::BuildStepReceipt> = build.steps.iter().filter(|s| !build.attempt_actions.contains_key(&s.attempt)).cloned().collect();
-    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &BTreeSet::new(), &build.steps, replacing.map(|r| (&build.build_id, r, topology_steps.as_slice())), atlas, created)
+    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &BTreeSet::new(), &build.steps, replacing.map(|r| (r, topology_steps.as_slice())), atlas, created)
 }
 
 /// The replacements `topology` owes against `observed` and `recorded` before any attempt ran: what a
@@ -1417,7 +1417,7 @@ fn plan_with(
     open_deletes: &BTreeSet<String>,
     held: &BTreeSet<String>,
     steps: &[crate::build_state::BuildStepReceipt],
-    replacements: Option<(&crate::build::BuildId, &Recorded, &[crate::build_state::BuildStepReceipt])>,
+    replacements: Option<(&Recorded, &[crate::build_state::BuildStepReceipt])>,
     atlas: Option<&AtlasBirth>,
     created: &BTreeSet<PathName>,
 ) -> BuildPlan {
@@ -1584,7 +1584,7 @@ fn plan_with(
     // replacement, over that predecessor's data dir, never by the generic create below. Every create
     // launches the path's entry's executable.
     let replacements = replacements.filter(|_| action.is_none());
-    let creates_owed = replacements.map(|(_, recorded, steps)| replacement_creates_owed(topology, steps, recorded)).unwrap_or_default();
+    let creates_owed = replacements.map(|(recorded, steps)| replacement_creates_owed(topology, steps, recorded)).unwrap_or_default();
     for (name, m) in &topology.meshes {
         if !mesh_exists(name) {
             ops.push(BuildOperation::CreateMesh { mesh: name.clone(), mesh_id: m.mesh_id.clone() });
@@ -1613,7 +1613,7 @@ fn plan_with(
             }
         }
     }
-    if let Some((_, recorded, steps)) = replacements {
+    if let Some((recorded, steps)) = replacements {
         ops.extend(replacements_owed(topology, observed, recorded, steps));
         let owed = properties_owed(topology, recorded, steps, &ops);
         ops.extend(owed);

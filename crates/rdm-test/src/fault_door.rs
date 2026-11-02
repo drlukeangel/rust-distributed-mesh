@@ -45,7 +45,6 @@ enum CutWire {
     StorageStep { node: Option<PathName> },
     StorageSwitch,
     StoreAppend { file: String, key: String, after: bool },
-    PropertiesReply { node_id: Option<rdm_core::NodeId> },
     PathTarget { node: Option<PathName> },
 }
 
@@ -237,18 +236,9 @@ pub enum Hit {
         /// Held after the line was written and fsynced.
         after: bool,
     },
-    /// A node's reply to a Build entry's apply, held at its mesh-primary and then lost.
-    ///
-    /// Position 15 on the wire.
-    PropertiesReply {
-        /// The node that replied.
-        node_id: rdm_core::NodeId,
-        /// The Build whose entry it applied.
-        build_id: String,
-    },
     /// A create held before it acts on its target's verdict on the unreached birth at a path.
     ///
-    /// Position 16 on the wire.
+    /// Position 15 on the wire.
     PathTarget {
         /// The path's separate path and name.
         node: PathName,
@@ -277,7 +267,6 @@ impl Hit {
             Hit::StorageStep { node, change_id } => json!({"node": node, "change_id": change_id}),
             Hit::StorageSwitch { change_id } => json!({"change_id": change_id}),
             Hit::StoreAppend { file, key, after } => json!({"file": file, "key": key, "after": after}),
-            Hit::PropertiesReply { node_id, build_id } => json!({"node_id": node_id, "build_id": build_id}),
             Hit::PathTarget { node, node_id } => json!({"node": node, "node_id": node_id}),
         }
     }

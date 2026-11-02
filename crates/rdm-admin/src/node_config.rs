@@ -188,10 +188,9 @@ impl NodeConfigs {
             move |record| channels.set_tags(record.tags.clone())).await)
     }
 
-    /// Carry Build `build_id`'s entry from its mesh-primary to the pinned node, then finish the
+    /// Carry a Build's entry from its mesh-primary to the pinned node, then finish the
     /// lifecycle metadata owed by that entry.
-    /// `seam`, the testkit's (the product passes none), may hold the node's reply and lose it.
-    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, birth: &crate::build::PinnedBirth, build_id: &crate::build::BuildId, entry: rdm_core::properties::EntryProperties, placed: (rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta), seam: Option<&dyn crate::wiring::CommandFrameSeam>) -> Result<(), String> {
+    pub async fn apply_entry(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, birth: &crate::build::PinnedBirth, entry: rdm_core::properties::EntryProperties, placed: (rdm_core::meta::StorageMeta, rdm_core::meta::PlacementMeta)) -> Result<(), String> {
         let subject = view.own(&birth.node_id).ok_or_else(|| format!("{me_id}: property target {} is not held", birth.node_id))?;
         if !birth.is(subject) {
             return Err(format!("{me_id}: property target {} has a different incarnation", birth.node_id));
@@ -204,12 +203,7 @@ impl NodeConfigs {
                 .map_err(|error| error.to_string())?
         } else {
             let exact = ExactBirth { target: NodeTarget::ExactNode(birth.node_id.clone()), node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone() };
-            let reply = NodeRpc::new(&self.client).properties_apply(&exact, entry, &CallOptions::default()).await.map_err(|error| error.to_string())?;
-            if let Some(lost) = seam.and_then(|s| s.hold_properties_reply(&birth.node_id, &build_id.to_string())) {
-                lost.await;
-                return Err(format!("{me_id}: property target {}'s reply to Build {build_id}'s entry was lost on its way back", birth.node_id));
-            }
-            reply
+            NodeRpc::new(&self.client).properties_apply(&exact, entry, &CallOptions::default()).await.map_err(|error| error.to_string())?
         };
         if !matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
             return Err(format!("{me_id}: property target {} answered {}", birth.node_id, reply.name()));

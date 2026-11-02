@@ -161,13 +161,6 @@ pub enum CutSpec {
         /// Held after the durable write, not before it.
         #[serde(default)] after: bool,
     },
-    /// The reply of `node_id` to a Build entry's apply (`ApplyNodeProperties`), as this admin, its
-    /// mesh-primary, receives it: held until the release and then lost, the call ending with no answer
-    /// the admin can read, so the node holds the applied entry and its mesh-primary never heard it.
-    PropertiesReply {
-        /// The replying node; every node when absent.
-        #[serde(default)] node_id: Option<rdm_core::NodeId>,
-    },
     /// A create's target found the birth at `node` unreached (its node investigation's verdict is any but
     /// `reached`) and the create has not acted on that verdict: held there until the release, so nothing of
     /// the birth is deleted, terminated or written meanwhile. `node` narrows the cut to one path.
@@ -279,13 +272,6 @@ pub enum Probe {
         /// The change.
         change_id: String,
     },
-    /// A node's reply to a Build entry's apply, received.
-    PropertiesReply {
-        /// The node that replied.
-        node_id: rdm_core::NodeId,
-        /// The Build whose entry it applied.
-        build_id: String,
-    },
     /// A create about to act on its target's verdict on the unreached birth at a path.
     PathTarget {
         /// The path's separate path and name.
@@ -318,7 +304,6 @@ impl CutSpec {
             (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
             (CutSpec::StorageStep { node }, Probe::StorageStep { node: n, .. }) => node.as_ref().is_none_or(|wanted| wanted == n),
             (CutSpec::StorageSwitch, Probe::StorageSwitch { .. }) => true,
-            (CutSpec::PropertiesReply { node_id }, Probe::PropertiesReply { node_id: n, .. }) => node_id.as_ref().is_none_or(|wanted| wanted == n),
             (CutSpec::PathTarget { node }, Probe::PathTarget { node: n, .. }) => node.as_ref().is_none_or(|wanted| wanted == n),
             _ => false,
         }
@@ -343,7 +328,6 @@ impl Probe {
             Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
             Probe::StorageStep { node, change_id } => Hit::StorageStep { node: node.clone(), change_id: change_id.clone() },
             Probe::StorageSwitch { change_id } => Hit::StorageSwitch { change_id: change_id.clone() },
-            Probe::PropertiesReply { node_id, build_id } => Hit::PropertiesReply { node_id: node_id.clone(), build_id: build_id.clone() },
             Probe::PathTarget { node, node_id } => Hit::PathTarget { node: node.clone(), node_id: node_id.clone() },
         }
     }
@@ -787,13 +771,6 @@ impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
 
     async fn before_storage_switch(&self, change_id: &rdm_core::ChangeId) {
         self.0.hold(Probe::StorageSwitch { change_id: change_id.to_string() }).await;
-    }
-
-    fn hold_properties_reply(&self, node_id: &rdm_core::NodeId, build_id: &str) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
-        let probe = Probe::PropertiesReply { node_id: node_id.clone(), build_id: build_id.to_string() };
-        let (id, release) = self.0.hold_at_cut(&probe)?;
-        let faults = self.0.clone();
-        Some(Box::pin(async move { faults.wait_release(&id, &probe, release).await }))
     }
 }
 

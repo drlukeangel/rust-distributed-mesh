@@ -277,12 +277,6 @@ pub trait CommandFrameSeam: Send + Sync {
     }
     /// The fabric-primary is about to run the storage change `change_id`'s copy and switch.
     async fn before_storage_switch(&self, _change_id: &rdm_core::ChangeId) {}
-    /// The mesh-primary received `node_id`'s reply to Build `build_id`'s entry apply: a decoration
-    /// that holds it answers the release it waits for, and the reply is then lost (the call ends with
-    /// no answer the mesh-primary reads, as a reply lost on its way back does).
-    fn hold_properties_reply(&self, _node_id: &rdm_core::NodeId, _build_id: &str) -> Option<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>> {
-        None
-    }
 }
 
 /// `on_fabric_ready`: the notice the fabric-primary calls once the fabric is ready

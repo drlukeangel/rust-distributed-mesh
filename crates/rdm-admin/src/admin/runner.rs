@@ -1570,7 +1570,7 @@ impl AdminRunner {
                 .ok_or_else(|| format!("{key:?}: Build {build_id} names no entry for path {node_path:?}, name {node_name:?}", node_path = &node.path, node_name = &node.name))?;
             let entry = rdm_core::properties::EntryProperties { config: spec.config.clone(), tags: spec.tags.clone() };
             self.observer.status_door.get().ok_or_else(|| format!("{key:?}: node property door is not bound"))?
-                .apply_build_entry(&birth, build_id, entry, spec.storage_persistence, spec.placement).await
+                .apply_build_entry(&birth, entry, spec.storage_persistence, spec.placement).await
         };
         pipeline.apply_in_place(build_id, attempt, node, key.clone(), step, put).await.map_err(crate::executor::RunEnd::from)
     }
