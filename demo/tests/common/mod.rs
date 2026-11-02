@@ -64,7 +64,7 @@ pub async fn node_id(estate: &Estate, node: &PathName) -> NodeId {
     serde_json::from_value(estate.node_value(node).await["node_id"].clone()).expect("a node id")
 }
 
-/// `request` at `node`'s replica op ([`Records`]), answered within 40 s.
+/// `request` at `node`'s replica op ([`Records`]): three attempts, each answered within 40 s.
 pub async fn records(estate: &Estate, node: &PathName, request: &RecordsRequest) -> RecordsReply {
     let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(40)), ..CallOptions::default() };
     let target = NodeTarget::ExactNode(node_id(estate, node).await);

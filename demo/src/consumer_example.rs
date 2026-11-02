@@ -457,7 +457,7 @@ pub fn register(b: ServerBuilder, service: Arc<ExampleService>, gate: PreNodeRea
                 for (index, entry) in entries {
                     match sink.data(RecordsFrame::Entry { index, entry }).await {
                         Ok(()) => next = index + 1,
-                        // The caller ended the invocation: nothing it was not handed is owed.
+                        // The caller ended the invocation: an entry it was not handed is not sent.
                         Err(SinkError::CallerGone(_)) => break,
                         Err(e) => return Err(HandlerFault::invariant_broken(format!("entry {index}: {e:?}"))),
                     }
@@ -536,8 +536,8 @@ impl PreNodeReady for Resume {
     }
 }
 
-/// Where one operation stands for its caller.
-enum Owed {
+/// Where one operation stands for its caller: its progress.
+enum Progress {
     /// Not delivered to any node yet (or provably never dispatched): sent with the next `Submit`.
     ToSend,
     /// Accepted by the node at this path: asked `Get` until it is done.
@@ -550,7 +550,7 @@ enum Owed {
 }
 
 /// The calling node's `on_node_ready`: every [`CALL_EVERY`] it submits a new operation to a serving
-/// node chosen from the topology, follows every operation it owes to its result, and copies the
+/// node chosen from the topology, follows every operation it submitted to its result, and copies the
 /// chosen node's record. It ends when the birth is stopped.
 pub struct Caller {
     /// Where its copies of the serving nodes' records are kept.
@@ -583,16 +583,16 @@ impl OnNodeReady for Caller {
 impl Caller {
     async fn calls(&self, ctx: &NodeReadyCtx) {
         let client = ctx.client.clone();
-        let mut owed: BTreeMap<String, (String, Owed)> = BTreeMap::new();
+        let mut pending: BTreeMap<String, (String, Progress)> = BTreeMap::new();
         let mut unserved: BTreeSet<NodeId> = BTreeSet::new();
         let mut copied: BTreeMap<PathName, u64> = BTreeMap::new();
         let mut tick = tokio::time::interval(CALL_EVERY);
-        // A tick missed while a call waited out its budget is not made up in a burst.
+        // A tick missed while a call made its attempts is not made up in a burst.
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         for n in 1u64.. {
             tick.tick().await;
             let (path, name) = (&ctx.birth.name.path, &ctx.birth.name.name);
-            owed.insert(format!("{path}-{name}-{}-{n:06}", ctx.birth.incarnation.as_str()), (format!("operation {n} of path {path:?}, name {name:?}"), Owed::ToSend));
+            pending.insert(format!("{path}-{name}-{}-{n:06}", ctx.birth.incarnation.as_str()), (format!("operation {n} of path {path:?}, name {name:?}"), Progress::ToSend));
             // Target selection: the serving kind's ready nodes in this node's mesh, as the topology
             // this node holds names them; a node that answered Unserved is passed over.
             let serving: Vec<_> = match ctx.topology_view.nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("kind", [SERVING_KIND.segment()]).eq("status", ["ready"])) {
@@ -603,35 +603,35 @@ impl Caller {
                 }
             };
             let chosen = (!serving.is_empty()).then(|| serving[(n as usize) % serving.len()].node.clone());
-            tracing::info!(target: "rshape", candidates = serving.len(), chosen = ?chosen.as_ref().map(|c| &c.name), owed = owed.len(), "serving nodes selected from the topology");
-            for (operation, (input, state)) in owed.iter_mut() {
+            tracing::info!(target: "rshape", candidates = serving.len(), chosen = ?chosen.as_ref().map(|c| &c.name), pending = pending.len(), "serving nodes selected from the topology");
+            for (operation, (input, state)) in pending.iter_mut() {
                 match state {
-                    Owed::ToSend => {
+                    Progress::ToSend => {
                         let Some(target) = &chosen else { continue };
                         let request = WorkRequest::Submit { operation: operation.clone(), input: input.clone() };
                         let (outcome, _) = client.call::<ExampleWork>(&NodeTarget::ExactNode(target.node_id.clone()), &request, &CallOptions::default()).await;
                         log_outcome("submit", operation, &target.name, &outcome);
                         *state = match outcome {
                             RpcOutcome::Reply(reply) => match reply.into_value() {
-                                WorkReply::Accepted { .. } | WorkReply::Pending { .. } => Owed::Accepted(target.name.clone()),
-                                WorkReply::Done { .. } | WorkReply::Conflict { .. } => Owed::Done,
+                                WorkReply::Accepted { .. } | WorkReply::Pending { .. } => Progress::Accepted(target.name.clone()),
+                                WorkReply::Done { .. } | WorkReply::Conflict { .. } => Progress::Done,
                                 // not_ready, busy, connections_deleting, malformed: the node did not
                                 // take it; it is sent again with the next Submit.
-                                _ => Owed::ToSend,
+                                _ => Progress::ToSend,
                             },
                             // Provably never dispatched: safe to send again.
-                            RpcOutcome::NotSent(_) | RpcOutcome::RejectedStale(_) => Owed::ToSend,
+                            RpcOutcome::NotSent(_) | RpcOutcome::RejectedStale(_) => Progress::ToSend,
                             // The node does not serve the op: chosen no more.
                             RpcOutcome::Unserved(_) => {
                                 unserved.insert(target.node_id.clone());
-                                Owed::ToSend
+                                Progress::ToSend
                             }
                             // Sent, its answer unknown: asked by id, never submitted blindly.
-                            RpcOutcome::Indeterminate(_) => Owed::Uncertain(target.name.clone()),
+                            RpcOutcome::Indeterminate(_) => Progress::Uncertain(target.name.clone()),
                         };
                     }
-                    Owed::Done => {}
-                    Owed::Accepted(path) | Owed::Uncertain(path) => {
+                    Progress::Done => {}
+                    Progress::Accepted(path) | Progress::Uncertain(path) => {
                         // A point lookup: the node now at the path that holds the operation (a
                         // recovered node there is a new node id with the same record).
                         let Some((digest, _)) = ctx.topology_view.digest_view.get_by_path_name(path) else { continue };
@@ -640,10 +640,10 @@ impl Caller {
                         log_outcome("get", operation, path, &outcome);
                         if let RpcOutcome::Reply(reply) = outcome {
                             match reply.into_value() {
-                                WorkReply::Done { .. } => *state = Owed::Done,
+                                WorkReply::Done { .. } => *state = Progress::Done,
                                 // The node holds no such operation: it never recorded it, so it is
                                 // submitted again under the same id.
-                                WorkReply::Unknown { .. } => *state = Owed::ToSend,
+                                WorkReply::Unknown { .. } => *state = Progress::ToSend,
                                 _ => {}
                             }
                         }
@@ -651,7 +651,7 @@ impl Caller {
                     }
                 }
             }
-            owed.retain(|_, (_, state)| !matches!(state, Owed::Done));
+            pending.retain(|_, (_, state)| !matches!(state, Progress::Done));
             if let Some(target) = chosen.as_ref().filter(|t| !unserved.contains(&t.node_id)) {
                 self.copy(&client, target.node_id.clone(), &target.name, &mut copied, &mut unserved).await;
             }

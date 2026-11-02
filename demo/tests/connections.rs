@@ -78,7 +78,7 @@ async fn estate(test: &str) -> Estate {
     estate
 }
 
-/// Ask `from`'s originate door (op `0x73`) for `request`, answered within 30 s.
+/// Ask `from`'s originate door (op `0x73`) for `request`: three attempts, each answered within 30 s.
 async fn originate(estate: &Estate, from: &PathName, request: &OriginateRequest) -> OriginateReply {
     let node_id = id_at(estate, from).await;
     let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(30)), ..CallOptions::default() };
