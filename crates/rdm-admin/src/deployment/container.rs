@@ -1233,8 +1233,14 @@ esac
 "#
             );
             let bin = dir.join("docker");
-            std::fs::write(&bin, script).unwrap();
-            std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            // The script is written by a child process, never through a write fd of this one: a fork by
+            // another test's thread inherits every fd this process holds open until its exec, and an
+            // executable with a write fd open anywhere refuses exec (ETXTBSY).
+            let wrote = std::process::Command::new("sh")
+                .args(["-c", "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"", "write-fake-docker", &script, &bin.display().to_string()])
+                .status()
+                .unwrap();
+            assert!(wrote.success(), "the fake docker's script is written");
             Self { dir }
         }
         fn set(&self, state: &str) {
