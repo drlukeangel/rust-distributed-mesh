@@ -770,8 +770,11 @@ async fn a_container_fabrics_launched_admins_mount_the_executable_dirs_and_an_ex
         b.image = Some(rdm_test::estate::RUNTIME_IMAGE.into());
     }
     let bin = set.bindings[0].executable.parent().expect("the binaries' directory").to_path_buf();
+    // A clean host path: docker mounts a bind at its cleaned path, so a `..` the container cannot
+    // walk (here `crates/rdm-test`, never mounted) leaves the named directory absent inside it.
     let added = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/i150").join(format!("executable-dirs-{}-{}", std::process::id(), rdm_core::NodeId::mint()));
     std::fs::create_dir_all(&added).unwrap();
+    let added = std::fs::canonicalize(&added).unwrap();
     let dirs = format!("{},{}", bin.display(), added.display());
     let estate = Estate::bootstrap_on_with_env(Owner { provider: "container".into(), ..owner(test) }, "fabric1", "mesh1", &set, &sha, &["rpc_node"], &[("RDM_EXECUTABLE_DIRS", dirs.as_str())]).await.expect("the container set is accepted");
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 0)];
