@@ -8,7 +8,7 @@
 
 PRD: [i151-resend-and-call-failed.md](i151-resend-and-call-failed.md) (approved by Luke 2026-11-01; cut to five stories on Q322, only what the rulings say). Ruled Q311 to Q316 (Luke, 2026-11-01: one `Resend` the caller owns, attempts per resolved birth for a primary-addressed call, `on_call_failed` at the caller and `on_node_investigated` at the primary, no application exception in RDM). Nothing is broken today; built after i150 lands. Proposal: [151-consolidate-event-callers-add-investigation-hook.md](proposal/151-consolidate-event-callers-add-investigation-hook.md). No i151 code in i150.
 
-### i152 (Q342): only adds and deletes are Builds; one schema per entity; one events store — [the initiative and its implementation plan](i152-builds-schemas-events.md), built by the lead in lane 5, no agents. State: s1 (`q342-pages`, lane 5; packet `rust-distributed-mesh-deploy/reports/q342-packet.md`): yes for s2–s4, s6, s7; s5 rewritten to final state, awaiting Luke's look.
+### i152 (Q342): only adds and deletes are Builds; one schema per entity; one events store — [the initiative and its implementation plan](i152-builds-schemas-events.md), built by the lead in lane 5, no agents. State: s1 (`q342-pages`, lane 5; packet `rust-distributed-mesh-deploy/reports/q342-packet.md`): yes on every story's page text (s5 after its rewrite); s2 building (rdm#296).
 
 ### i150 removal debt (Luke, 2026-11-01: each item found no longer needed is listed here and removed at the end)
 
