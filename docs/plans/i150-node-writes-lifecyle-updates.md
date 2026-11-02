@@ -800,9 +800,9 @@ exhaustion. Architect 1 reviewed these source changes; their regression tests ha
 
 ### e6 — Rafka on the RDM tip (after i151; the i141 lead, in rafka-v2)
 
-Order (Luke, 2026-11-02): this epic runs **after i151 lands**. Rafka's pin moves whenever a landed RDM
-SHA is worth taking (Q336 A, 2026-11-02: at Q331's SHA, then at the i151 tip), each a pin bump and a
-rebirth; "moves once" was the e6.s1 audit's preference, never Luke's. Source of every
+Order (Luke, 2026-11-02): this epic runs **after i151 lands**, and Rafka's pin does not move before
+that (Q336 B, Luke: "I just didn't want to keep changing it until our work was completed"). Until the
+i151 tip Rafka stays pinned at `21272b3db`; then it moves once. Source of every
 file named below: [the e6.s1 audit](i150-e6-rafka-audit.md) (a source read; the compile at the bumped
 pin is the complete inventory). One Rafka owner per story, in sequence: they share
 `node-admin/src/storage.rs` and `day0_storage.rs`.

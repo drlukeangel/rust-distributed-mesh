@@ -2,7 +2,7 @@
 
 ## i150 dependency — node-owned properties (2026-10-31)
 
-### i150 e6: Rafka on the RDM tip (after i151; the i141 lead, in rafka-v2): two stories, [i150 PRD e6](i150-node-writes-lifecyle-updates.md) — Rafka's pin moves at Q331's SHA and again at the i151 tip (Q336 A); the story itself runs after i151
+### i150 e6: Rafka on the RDM tip (after i151; the i141 lead, in rafka-v2): two stories, [i150 PRD e6](i150-node-writes-lifecyle-updates.md) — Rafka stays pinned at `21272b3db` until i151's last landing, then moves once (Q336 B)
 
 ### i151 (queued: starts after i150 lands) — one `Resend` for every Node RPC call, `on_node_investigated`
 
