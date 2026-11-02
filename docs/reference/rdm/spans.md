@@ -85,7 +85,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-test/src/bin/rdm_rpc_node.rs` | 110 |
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-test/src/lib.rs` | 368 |
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-test/src/lib.rs` | 391 |
-| `rdm.mesh.node.delete.via-signal` | `demo/src/lib.rs` | 112 |
+| `rdm.mesh.node.delete.via-signal` | `demo/src/lib.rs` | 118 |
 | `rdm.mesh.node.delete.via-transport-stopped` | `crates/rdm-admin/src/entry.rs` | 131 |
 | `rdm.mesh.node.delete.via-transport-stopped` | `crates/rdm-node/src/node.rs` | 362 |
 | `rdm.mesh.node.reject.via-mesh-join-start-failed` | `crates/rdm-admin/src/admin/session.rs` | 549 |
