@@ -54,7 +54,13 @@ pub use rdm_core::properties::PropertyApplication;
 pub struct NodePropertyWriter {
     records: std::sync::Arc<dyn NodeRecordsStorage>,
     current: std::sync::Arc<tokio::sync::Mutex<Option<NodeProperties>>>,
+    /// The writing node's current path and name, once its topology view holds them
+    /// ([`Self::named_by`]): what each write's span names it by. Unset: the span names none.
+    name: std::sync::Arc<std::sync::OnceLock<NameOf>>,
 }
+
+/// Where a writer reads its node's current path and name from.
+type NameOf = std::sync::Arc<dyn Fn() -> Option<rdm_core::PathName> + Send + Sync>;
 
 /// The existing property writer's admission lock retained through a provider copy and move.
 /// Releasing it invalidates the cached record while still excluding subsequent mutations.
@@ -89,7 +95,14 @@ impl NodePropertyWriter {
         Self {
             records,
             current: Default::default(),
+            name: Default::default(),
         }
+    }
+
+    /// Name each write's span by `name`, the writing node's current path and name (a rename moves
+    /// it), `None` while it holds none. The first call stands.
+    pub fn named_by(&self, name: impl Fn() -> Option<rdm_core::PathName> + Send + Sync + 'static) {
+        let _ = self.name.set(std::sync::Arc::new(name));
     }
 
     /// Close property admission and finish every earlier admitted put. The storage transition
@@ -245,6 +258,13 @@ impl NodePropertyWriter {
 
     /// Validate and apply a property command against the same serialized current record.
     /// A refused edit writes nothing and leaves both the durable and local value unchanged.
+    ///
+    /// One span per command, a child of the caller's (i150 § OTLP span-assertion bar): a write is
+    /// `rdm.node.record.update.via-properties` (the node's birth, path and name, the Build operation
+    /// when the command carries one, the backend, and the outcome: `durable`, `unchanged`, `refused`
+    /// or `failed`); a Build operation the record already holds is
+    /// `rdm.node.record.update.via-already-applied` (the exact target and the original operation),
+    /// and nothing is written. Neither carries the config map, a tag or any other value.
     pub async fn update_checked(
         &self,
         initial: NodeProperties,
@@ -254,33 +274,49 @@ impl NodePropertyWriter {
     ) -> Result<PropertyWritten, StorageError> {
         use tracing::Instrument;
         let (records, current) = (self.records.clone(), self.current.clone());
+        let at = self.name.get().and_then(|name| name());
+        let (path, name) = at.map(|at| (at.path, at.name)).unwrap_or_default();
+        let (build_id, entry_path, entry_name) = application.as_ref().map(|a| (a.build_id.clone(), a.location.path.clone(), a.location.name.clone())).unwrap_or_default();
+        let (node_id, incarnation_id) = (initial.birth.node_id.clone(), initial.birth.incarnation_id.clone());
+        let write = move |records: &dyn NodeRecordsStorage| tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, build_id = %build_id, entry_path = %entry_path, entry_name = %entry_name, backend = %records.provider(), outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal");
+        let repeat = |a: &PropertyApplication, birth: &RecordBirth| tracing::info_span!("rdm.node.record.update.via-already-applied", node_id = %birth.node_id, incarnation_id = %birth.incarnation_id, build_id = %a.build_id, entry_path = %a.location.path, entry_name = %a.location.name, outcome = "already-applied", "otel.kind" = "internal");
         // Dropping JoinHandle detaches the admitted write; it does not cancel it. In
         // particular no timeout may allow a second command to overtake the first call.
         tokio::spawn(
             async move {
                 let mut held = current.lock().await;
                 if held.is_none() {
-                    *held = records.properties(&initial.birth.node_id).await?;
+                    *held = records.properties(&initial.birth.node_id).await.inspect_err(|e| {
+                        write(&*records).record("outcome", "failed").record("cause", e.to_string());
+                    })?;
                 }
                 let mut next = held.as_ref().cloned().unwrap_or(initial);
-                let already_applied = application
-                    .as_ref()
-                    .is_some_and(|a| next.applied.contains(a));
-                if !already_applied {
-                    change(&mut next)?;
-                    if let Some(application) = application {
-                        next.applied.insert(application);
-                    }
-                    if held.as_ref() != Some(&next) {
-                        if let Err(error) = records.put_properties(&next).await {
+                let repeated = application.as_ref().filter(|a| next.applied.contains(a)).cloned();
+                let already_applied = repeated.is_some();
+                match repeated {
+                    Some(a) => repeat(&a, &next.birth).in_scope(|| tracing::info!("the record holds this Build operation already: its effect is not repeated")),
+                    None => {
+                        let write = write(&*records);
+                        change(&mut next).inspect_err(|e| {
+                            write.record("outcome", "refused").record("cause", e.to_string());
+                        })?;
+                        if let Some(application) = application {
+                            next.applied.insert(application);
+                        }
+                        if held.as_ref() == Some(&next) {
+                            write.record("outcome", "unchanged");
+                        } else if let Err(error) = records.put_properties(&next).instrument(write.clone()).await {
                             // An error may be a lost acknowledgement. The next admitted command must
                             // resolve the exact durable record, including application identities,
                             // before it can change anything. Never reuse a pre-write cached value.
                             *held = None;
+                            write.record("outcome", "failed").record("cause", error.to_string());
                             return Err(error);
+                        } else {
+                            write.record("outcome", "durable");
                         }
+                        *held = Some(next.clone());
                     }
-                    *held = Some(next.clone());
                 }
                 publish(&next);
                 Ok(PropertyWritten {
@@ -372,6 +408,9 @@ pub struct NodeLifecycle {
 /// Callers retain the future through cancellation; adapters retain any lower-level operation.
 #[async_trait]
 pub trait NodeRecordsStorage: Send + Sync {
+    /// The registered name of the topology storage provider these records are persisted to
+    /// (storage.md §2), as a write's span names its backend.
+    fn provider(&self) -> String;
     /// Persist the node's complete property record at its node ID.
     async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError>;
     /// Read the property record at an exact node ID.
@@ -395,6 +434,9 @@ pub struct MemoryNodeRecords {
 
 #[async_trait]
 impl NodeRecordsStorage for MemoryNodeRecords {
+    fn provider(&self) -> String {
+        "memory".into()
+    }
     async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError> {
         self.properties
             .lock()
@@ -464,6 +506,9 @@ impl FileNodeRecords {
 #[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodeRecordsStorage for FileNodeRecords {
+    fn provider(&self) -> String {
+        "file".into()
+    }
     async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError> {
         let writer =
             crate::store_log::LogWriter::new(&record.birth.node_id, &record.birth.incarnation_id);

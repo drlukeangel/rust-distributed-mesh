@@ -43,7 +43,30 @@ pub type RecordStoresSource = std::sync::Arc<dyn Fn() -> Option<RecordStores> + 
 impl CurrentRecords<'_> {
     /// The latest lifecycle record of `node_id`, with its mesh's name. `Ok(None)`: the node has no
     /// record yet. `Err`: a read failed, named.
+    ///
+    /// The shared resolver (i150 § OTLP span-assertion bar): one
+    /// `rdm.node_admin.node.resolve.via-lifecycle-record` span per read, naming the reading node
+    /// (`node_id`, this process's own), the subject, its mesh and the outcome: `read` (the node's
+    /// latest record is read), `none` (the node has no record yet) or `unavailable` (the reason named).
+    /// No value of the record is logged.
     pub async fn lifecycle(&self, node_id: &NodeId) -> Result<Option<(NodeLifecycle, String)>, String> {
+        use tracing::Instrument as _;
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.resolve.via-lifecycle-record",
+            node_id = rdm_transport::service_instance_id().unwrap_or_default(), subject_id = %node_id,
+            mesh = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal",
+        );
+        let read = self.resolve(node_id).instrument(span.clone()).await;
+        match &read {
+            Ok(Some((_, mesh))) => span.record("mesh", mesh.as_str()).record("outcome", "read"),
+            Ok(None) => span.record("outcome", "none").record("reason", "the node has no record yet"),
+            Err(why) => span.record("outcome", "unavailable").record("reason", why.as_str()),
+        };
+        read
+    }
+
+    /// [`Self::lifecycle`]'s read.
+    async fn resolve(&self, node_id: &NodeId) -> Result<Option<(NodeLifecycle, String)>, String> {
         let Some(record) = self.records.lifecycle(node_id).await.map_err(|e| format!("the lifecycle record of node {node_id} could not be read: {e}"))? else { return Ok(None) };
         let mesh_id = record.mesh_id.clone();
         let mesh = self

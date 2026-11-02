@@ -622,8 +622,18 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
 /// it): the resource carries `instance_id` as `service.instance.id` (the OpenTelemetry resource
 /// convention), on every span and log record from the first.
 pub fn init_evidence_telemetry_for_instance(service_name: &str, instance_id: &str) -> Option<TelemetryGuard> {
+    let _ = INSTANCE_ID.set(instance_id.to_string());
     init_evidence(service_name, true, vec![opentelemetry::KeyValue::new(SERVICE_INSTANCE_ID, instance_id.to_string())])
 }
+
+/// The `service.instance.id` this process's telemetry resource carries (a node-admin's node id,
+/// [`init_evidence_telemetry_for_instance`]): what a span names its own node by when the code that
+/// opens it holds no identity of its own. `None` in a process whose telemetry names no instance.
+pub fn service_instance_id() -> Option<&'static str> {
+    INSTANCE_ID.get().map(String::as_str)
+}
+
+static INSTANCE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// The OpenTelemetry resource attribute naming one instance of a service: a node's id.
 pub const SERVICE_INSTANCE_ID: &str = "service.instance.id";

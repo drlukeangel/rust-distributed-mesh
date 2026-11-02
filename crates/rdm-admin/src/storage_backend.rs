@@ -528,6 +528,9 @@ impl Through {
 
 #[async_trait]
 impl rdm_node::node_records::NodeRecordsStorage for Through {
+    fn provider(&self) -> String {
+        self.0.current.read().provider().to_string()
+    }
     async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
         let w = self.0.current.write();
         w.boundaries.node_records.put_properties(record).await

@@ -770,6 +770,9 @@ struct RefusingRecords(rdm_node::node_records::MemoryNodeRecords);
 
 #[async_trait::async_trait]
 impl rdm_node::node_records::NodeRecordsStorage for RefusingRecords {
+    fn provider(&self) -> String {
+        self.0.provider()
+    }
     async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), rdm_node::storage_error::StorageError> {
         Err(rdm_node::storage_error::StorageError::Io { file: format!("nodes/properties/{}", record.birth.node_id), reason: "disk refused the write".into() })
     }

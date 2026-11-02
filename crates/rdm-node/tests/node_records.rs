@@ -383,6 +383,9 @@ struct LostAcknowledgement {
 
 #[async_trait::async_trait]
 impl NodeRecordsStorage for LostAcknowledgement {
+    fn provider(&self) -> String {
+        self.records.provider()
+    }
 
     async fn put_properties(
         &self,

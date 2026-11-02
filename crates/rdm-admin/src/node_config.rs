@@ -101,8 +101,11 @@ impl NodeConfigs {
 
     /// Bind the configured provider's node records. Every access follows provider migration.
     pub fn uses_records(&self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>, channels: rdm_transport::topology::TopologyView) {
+        let writer = rdm_node::node_records::NodePropertyWriter::new(records.clone());
+        let held = channels.clone();
+        writer.named_by(move || held.own_row().map(|row| row.name));
         let _ = self.own_channels.set(channels);
-        let _ = self.own_properties.set(rdm_node::node_records::NodePropertyWriter::new(records.clone()));
+        let _ = self.own_properties.set(writer);
         let _ = self.records.set(records);
     }
 
@@ -188,7 +191,13 @@ impl NodeConfigs {
             return Err(format!("{me_id}: property target {} is not in its mesh-primary's view", birth.node_id));
         }
         let applied = self.entry_applied(&birth.node_id, &entry.application).await?;
-        if !applied {
+        if applied {
+            // The duplicate apply recognized here, before any call: the node is not asked again
+            // (i150 § OTLP span-assertion bar). The node's own writer records one it recognizes.
+            let a = &entry.application;
+            tracing::info_span!("rdm.node.record.update.via-already-applied", node_id = %birth.node_id, incarnation_id = %birth.incarnation, build_id = %a.build_id, entry_path = %a.location.path, entry_name = %a.location.name, recognized_by = %me_id, outcome = "already-applied", "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the node's property record holds this Build operation already: it is not applied again"));
+        } else {
             let reply = if birth.node_id == *me_id {
                 self.own_entry(subject, entry).await.ok_or_else(|| format!("{me_id}: own property writer is not bound"))?
                     .map_err(|error| error.to_string())?

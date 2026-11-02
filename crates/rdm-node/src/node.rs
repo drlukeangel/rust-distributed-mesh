@@ -681,6 +681,8 @@ async fn start_booted(
                 connections.follow_held_name(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
                 let (held, birth) = (topology_view.clone(), launch.name.clone());
                 held_name.follow(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
+                let (held, birth) = (topology_view.clone(), launch.name.clone());
+                property_writer.named_by(move || Some(held.held_name(&birth)));
             }
             // The row's name and config the join answer handed are held before this node publishes
             // anything or declares readiness: every digest from its first carries them (R-JN1).
@@ -1354,17 +1356,14 @@ pub struct OwnConfig {
 
 impl OwnConfig {
     /// [`RunningNode::config_update`].
+    /// The writer's one span records the write (`rdm.node.record.update.via-properties`).
     pub async fn update(&self, config: std::collections::BTreeMap<String, String>) -> std::result::Result<rdm_core::status::StatusReply, rdm_client::CallEnd> {
-        use tracing::Instrument;
         let record = property_snapshot(&self.topology_view, &self.digest, config.clone());
-        let span = tracing::info_span!("rdm.node.record.update.via-properties", node_id = %record.birth.node_id, incarnation_id = %record.birth.incarnation_id, node = %self.topology_view.node_name(), outcome = tracing::field::Empty);
         let (changed, topology) = (config.clone(), self.topology_view.clone());
         if let Err(e) = self.writer.update(record, None, move |record| record.config = changed,
-            move |record| topology.set_config(record.config.clone())).instrument(span.clone()).await {
-            span.record("outcome", "failed");
+            move |record| topology.set_config(record.config.clone())).await {
             return Err(rdm_client::CallEnd::Rejected { reason: "properties-unwritten".into(), detail: e.to_string() });
         }
-        span.record("outcome", "durable");
         Ok(rdm_core::status::StatusReply::ConfigUpdated {
             node_id: self.digest.node.node_id.clone(), incarnation: self.digest.node.incarnation.clone(), config,
         })

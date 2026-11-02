@@ -155,6 +155,28 @@ pub struct WrittenRows {
 /// carries none of its own.
 pub type MeshIds = Arc<dyn Fn(&str) -> Option<MeshId> + Send + Sync>;
 
+/// The serialized lifecycle writer's one put of `record` (its subject's own lock held by the caller),
+/// appended by `writer`, the writing admin's birth (the store log's line names it; the record does
+/// not, Q323). One `rdm.node_admin.node.update.via-lifecycle-record` span, a child of the caller's,
+/// spans the put: the subject, the writer birth, the backend and the completion (`durable` or
+/// `failed`, its cause named), so a delayed put is read from its start and end (i150 § OTLP
+/// span-assertion bar). No status, config or other value of the record is logged.
+pub(crate) async fn put_lifecycle_record(records: &dyn rdm_node::node_records::NodeRecordsStorage, record: &rdm_node::node_records::NodeLifecycle, writer: &rdm_node::node_records::RecordBirth) -> Result<(), crate::storage_error::StorageError> {
+    use tracing::Instrument as _;
+    let span = tracing::info_span!(
+        "rdm.node_admin.node.update.via-lifecycle-record",
+        subject_path = %record.path, subject_name = %record.name, node_id = %record.node_id, mesh_id = %record.mesh_id,
+        writer_node_id = %writer.node_id, writer_incarnation_id = %writer.incarnation_id.as_str(),
+        backend = %records.provider(), outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal",
+    );
+    let put = records.put_lifecycle(record, writer).instrument(span.clone()).await;
+    match &put {
+        Ok(()) => span.record("outcome", "durable"),
+        Err(e) => span.record("outcome", "failed").record("cause", e.to_string()),
+    };
+    put
+}
+
 /// Where a writer's lifecycle records are persisted, and the election result their boolean role flags
 /// are recorded from (node-primary-update.md step 5: "The lifecycle writer records the election result
 /// as boolean role flags under its own writer birth").
@@ -221,7 +243,7 @@ impl WrittenRows {
         let mesh_id = (target.meshes)(&row.mesh);
         let node_type = self.node_type_of(&row.node_id).unwrap_or_else(|| row.node_type().to_string());
         match lifecycle_record(row, &target.fabric_id, mesh_id.as_ref(), node_type, target.flags(row)) {
-            Some(record) => target.records.put_lifecycle(&record, &rdm_node::node_records::RecordBirth { node_id: writer.node_id.clone(), incarnation_id: writer.incarnation_id.clone() }).await,
+            Some(record) => put_lifecycle_record(&*target.records, &record, &rdm_node::node_records::RecordBirth { node_id: writer.node_id.clone(), incarnation_id: writer.incarnation_id.clone() }).await,
             None => {
                 tracing::info_span!("rdm.node_admin.node.update.via-lifecycle-record", subject_path = %row.name.path, subject_name = %row.name.name, node_id = %row.node_id, mesh = %row.mesh, writer_node_id = %writer.node_id, writer_incarnation_id = %writer.incarnation_id.as_str(), outcome = "unkeyed", "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the record names no birth or no mesh id is known for it: no lifecycle record is keyed for it"));

@@ -226,6 +226,9 @@ struct NodeRecordsThroughHandle(Arc<NodeStorageHandle>);
 
 #[async_trait]
 impl crate::node_records::NodeRecordsStorage for NodeRecordsThroughHandle {
+    fn provider(&self) -> String {
+        self.0.provider()
+    }
     async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
         let w = self.0.current.write();
         w.node_records.put_properties(record).await
