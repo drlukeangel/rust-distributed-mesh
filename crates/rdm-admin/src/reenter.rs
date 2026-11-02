@@ -215,7 +215,9 @@ async fn ping(ctx: &EntryCtx, n: &MapNode) -> Result<(), String> {
         ctx.resolver.apply(r, None);
     }
     let req = rdm_core::ping::PingRequest::Ping { payload: b"entry-sweep".to_vec() };
-    let opts = CallOptions { resend: Resend::with_time_limit(SWEEP_DEADLINE), ..CallOptions::default() };
+    // One attempt: the sweep gives each node its one fixed deadline and goes on to the next (Q315: the
+    // caller owns its attempts).
+    let opts = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(SWEEP_DEADLINE) }, ..CallOptions::default() };
     let (out, _) = ctx.client.call::<rdm_core::ping::Ping>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &opts).await;
     if out.reply().is_some() {
         Ok(())

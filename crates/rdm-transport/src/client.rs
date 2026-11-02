@@ -276,6 +276,9 @@ pub(crate) enum AttemptEnd {
     CompleteAtTurn,
     /// The call's attempts are spent with no answer (`Attempted::Spent`).
     AttemptsSpent,
+    /// The connection a stream's request committed on closed, its protocol bounding it by that
+    /// connection (`Attempted::TransportLost`).
+    CommittedConnectionClosed,
     /// The receiving birth's exit or removal is proven (`Attempted::ReceiverGone`).
     ReceiverGone,
     /// Acked, its stream lost, and the invocation not complete within the call's time limit from the
@@ -301,6 +304,7 @@ impl AttemptEnd {
         match self {
             Self::CompleteAtTurn => "complete-at-turn",
             Self::AttemptsSpent => "attempts-spent",
+            Self::CommittedConnectionClosed => "committed-connection-closed",
             Self::ReceiverGone => "receiver-gone",
             Self::HoldLost => "hold-lost",
             Self::UnreachedFinal => "unreached-final",
@@ -819,9 +823,10 @@ impl NodeRpcClient {
         payload: Payload,
         max_reply: usize,
         opts: &CallOptions,
-        unary: bool,
+        shape: ReplyShape,
         span: &tracing::Span,
     ) -> Result<ResendCall, (RpcOutcome<()>, Option<CallEvidence>)> {
+        let unary = shape == ReplyShape::Unary;
         let allowed = u32::from(opts.resend.attempts.max(1));
         let pacing = self.delivery.pacing();
         let mut spent = 0u32;
@@ -895,6 +900,8 @@ impl NodeRpcClient {
             payload,
             opts: opts.clone(),
             unary,
+            ends_with_its_connection: matches!(shape, ReplyShape::Stream { ends_with_its_connection: true }),
+            committed_on: None,
             spent,
             evidence: evidence.clone(),
             tx,
@@ -927,7 +934,7 @@ impl NodeRpcClient {
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
         let limit = opts.resend.time_limit.0;
-        let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, true, span).await {
+        let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, ReplyShape::Unary, span).await {
             Ok(o) => o,
             Err((out, ev)) => return (out.retyped().expect("no reply before anything is sent"), ev),
         };
@@ -1077,6 +1084,19 @@ fn role_has_no_birth(mesh: Option<&str>, f: &ResolveFailure) -> String {
         Some(m) => format!("the mesh-primary of {m} names no birth in this caller's view ({f:?})"),
         None => format!("the fabric-primary names no birth in this caller's view ({f:?})"),
     }
+}
+
+/// What the op answers with: one frame, or a stream (node-rpc.md §34).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplyShape {
+    /// One reply frame.
+    Unary,
+    /// A stream of frames; `ends_with_its_connection` as its protocol declares
+    /// (`StreamingProtocol::ENDS_WITH_ITS_CONNECTION`).
+    Stream {
+        /// The connection its request committed on is its bound.
+        ends_with_its_connection: bool,
+    },
 }
 
 /// One request, held by its owner: dropped, the invocation ends and its request is resent no
@@ -1230,6 +1250,10 @@ struct Attempts {
     /// The op answers with one frame; a stream op's frames have no time limit while its stream
     /// lives, and once its stream is lost it is held for its time limit at most.
     unary: bool,
+    /// A stream whose protocol ends it with the connection its request committed on.
+    ends_with_its_connection: bool,
+    /// That connection, once committed.
+    committed_on: Option<iroh::endpoint::Connection>,
     /// The attempts spent before the task started: a receiver the view did not hold yet.
     spent: u32,
     evidence: Arc<Mutex<CallEvidence>>,
@@ -1402,6 +1426,11 @@ impl Attempts {
             if self.state.borrow().complete {
                 return AttemptEnd::CompleteAtTurn;
             }
+            // A stream its protocol bounds by its connection lives as long as that connection.
+            if let Some(why) = self.committed_on.as_ref().and_then(|c| c.close_reason()) {
+                let _ = self.tx.send(Attempted::TransportLost(format!("the connection the request committed on closed ({why})")));
+                return AttemptEnd::CommittedConnectionClosed;
+            }
             if let Some(why) = self.receiver_gone() {
                 return self.end_receiver_gone(why, attempt);
             }
@@ -1542,6 +1571,9 @@ impl Attempts {
                     if !committed {
                         committed = true;
                         let _ = self.tx.send(Attempted::Committed { frame_len });
+                    }
+                    if self.ends_with_its_connection {
+                        self.committed_on = Some(opened.conn.clone());
                     }
                     // The wait for the ack runs from the write: a slow dial spends none of it. An
                     // unacked request is sent again at the schedule's next delay; the last attempt

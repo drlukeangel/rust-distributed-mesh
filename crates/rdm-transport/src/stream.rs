@@ -16,7 +16,7 @@
 //! `Indeterminate`. Dropping the stream ends the invocation: the server's next write sees the caller
 //! gone.
 
-use crate::client::{AttemptEnd, Attempted, CallEvidence, CallOptions, NodeRpcClient, Payload, ResendCall};
+use crate::client::{AttemptEnd, Attempted, CallEvidence, CallOptions, NodeRpcClient, Payload, ReplyShape, ResendCall};
 use crate::delivery::{AckOnRecovery, FrameOut, Settled, SlotEvent, Written};
 use crate::resolve::NodeTarget;
 use crate::server::{Accepting, BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
@@ -562,7 +562,7 @@ impl NodeRpcClient {
         );
         let started = Instant::now();
         let mut opening = crate::client::CallSpanGuard::new(&span);
-        let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, false, &span).await;
+        let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, ReplyShape::Stream { ends_with_its_connection: P::ENDS_WITH_ITS_CONNECTION }, &span).await;
         let finish = |outcome: &str| {
             span.record("outcome", outcome);
             span.record("elapsed_ms", started.elapsed().as_millis() as u64);

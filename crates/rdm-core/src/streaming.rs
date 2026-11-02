@@ -22,6 +22,12 @@ pub enum FrameKind {
 
 /// A server-streaming protocol: its reply frames are `Self::Reply`.
 pub trait StreamingProtocol: NodeProtocol {
+    /// The stream lives as long as the connection its request committed on (node-rpc.md §34): that
+    /// connection's closure ends it `Indeterminate`, and its owner reattaches by its own rule (the
+    /// Build family: build.md "a live run is reattached, never re-claimed"). `false`: a stream that
+    /// loses its stream is held for its call's time limit while its responder resends its frames.
+    const ENDS_WITH_ITS_CONNECTION: bool = false;
+
     /// The kind of reply frame `frame` is.
     fn frame_kind(frame: &Self::Reply) -> FrameKind;
 }

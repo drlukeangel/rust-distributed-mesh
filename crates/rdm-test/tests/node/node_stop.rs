@@ -1660,19 +1660,22 @@ async fn signal_stop_with_primary_held(test: &str, bound_ms: &str, release_after
 /// outcome span"; node-connections-delete.md): an rpc node holds owed declarations to its mesh-primary (its
 /// mesh-primary is held, answering nothing) when it receives SIGTERM. Its stop waits for them: its process is
 /// still alive after the signal and for as long as the mesh-primary stays silent, inside
-/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS`. The mesh-primary continued, the queue empties in the order owed and the
-/// stop ends on its outcome span `rdm.node_admin.node.update.via-stop-declarations`, outcome `ended`, naming what
-/// was delivered (`ConnectionsDeleting,Stopped`) and leaving nothing. Must NOT happen: the process ending
-/// before its declarations are answered, or an outcome span that names neither what was delivered nor
-/// what was left.
+/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS`. The mesh-primary continued inside the declaration call's attempts
+/// (Q311: three, at 0, c and 3c; a mesh-primary silent past them spends the call), the queue empties in the
+/// order owed and the stop ends on its outcome span `rdm.node_admin.node.update.via-stop-declarations`,
+/// outcome `ended`, naming what was delivered (`ConnectionsDeleting,Stopped`) and leaving nothing. Must NOT
+/// happen: the process ending before its declarations are answered, or an outcome span that names neither
+/// what was delivered nor what was left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_signal_stop_waits_for_its_owed_declarations_delivered_within_the_bound_and_names_them() {
-    let (outcome, _, _) = signal_stop_with_primary_held("a_signal_stop_waits_for_its_owed_declarations_delivered_within_the_bound_and_names_them", "30000", Some(Duration::from_secs(3))).await;
+    // Held for two publish cadences: inside the call's three attempts (0, c, 3c), its connection alive.
+    let held = rdm_core::cadence::gossip_interval() * 2;
+    let (outcome, _, _) = signal_stop_with_primary_held("a_signal_stop_waits_for_its_owed_declarations_delivered_within_the_bound_and_names_them", "30000", Some(held)).await;
     assert_eq!(attr(&outcome, "outcome"), "ended", "the queue was delivered inside the bound: {outcome}");
     assert_eq!(attr(&outcome, "delivered"), "ConnectionsDeleting,Stopped", "the outcome span names what was delivered, in the order owed: {outcome}");
     assert_eq!(attr(&outcome, "left"), "", "nothing was left: {outcome}");
     let elapsed: u64 = attr(&outcome, "elapsed_ms").parse().unwrap_or(0);
-    assert!(elapsed >= 1_500, "the stop waited for the held mesh-primary's answers ({elapsed} ms): {outcome}");
+    assert!(elapsed >= held.as_millis() as u64 * 3 / 4, "the stop waited for the held mesh-primary's answers ({elapsed} ms): {outcome}");
 }
 
 /// CONTRACT (Q210, Q206): the same node, its mesh-primary held and never continued within the bound

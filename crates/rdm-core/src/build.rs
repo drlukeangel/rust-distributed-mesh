@@ -1037,6 +1037,8 @@ impl NodeProtocol for Build {
 }
 
 impl StreamingProtocol for Build {
+    const ENDS_WITH_ITS_CONNECTION: bool = true;
+
     fn frame_kind(frame: &BuildReply) -> FrameKind {
         match frame {
             BuildReply::Started { .. } => FrameKind::Started,
