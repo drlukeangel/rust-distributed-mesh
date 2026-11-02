@@ -34,14 +34,13 @@ replace tags. A map is not logged in a span or error message.
 ## Build application
 
 A Build applies its entry to new and existing nodes. An existing node's `ApplyNodeProperties`
-command persists config, tags and `PropertyApplication(build_id, semantic entry operation)` in
-one durable put. Attempt number is not part of that identity. The existing target receipt fixes
+command persists config and tags in
+one durable put. The existing target receipt fixes
 the exact birth; workflow receipts track completion of the operation and its metadata changes.
 
-A lost reply does not erase application recognition. A later attempt of the same Build recognizes
-the application and preserves subsequent node or caller changes. A later Build has a new ID and
-can override those changes. True recovery inherits the predecessor's acknowledged properties and
-application recognition. Replacement initializes from its own Build entry, including an empty map.
+A later Build has a new ID and
+can override node or caller changes. True recovery inherits the predecessor's acknowledged properties.
+Replacement initializes from its own Build entry, including an empty map.
 
 ## Deferred application and startup
 
@@ -49,8 +48,7 @@ A stopped process remains alive with its Node RPC endpoint bound and applies an 
 node does. A node that does not answer ends the command `ConfigNotApplied` by name; nothing is
 recorded for it.
 
-Launch properties initialize an absent own record. Existing durable properties and application
-recognition survive startup; an older environment must not overwrite them. The own-property
+Launch properties initialize an absent own record. Existing durable properties survive startup; an older environment must not overwrite them. The own-property
 writer may read its retained state. Startup operations supply the lifecycle/topology context that
 an ordinary node needs, without requiring it to reconstruct another node's lifecycle records.
 

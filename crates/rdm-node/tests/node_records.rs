@@ -24,7 +24,6 @@ fn properties() -> NodeProperties {
         listeners: vec![("data".into(), "127.0.0.1:45001".parse().unwrap())],
         app_types: None,
         held: ["example.record".into()].into(),
-        applied: BTreeSet::new(),
     }
 }
 fn lifecycle(node_id: NodeId, mesh_id: MeshId) -> NodeLifecycle {
@@ -226,84 +225,6 @@ async fn an_unrecognised_record_is_not_answered_as_absent() {
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R8): apply identity and effect survive restart together. Repeating the same
-/// Build after a later own update preserves that update; a different Build still overrides it.
-#[tokio::test]
-async fn a_build_apply_is_recognised_after_restart_without_repeating_its_effect() {
-    use rdm_node::node_records::{NodePropertyWriter, PropertyApplication};
-    use std::sync::Arc;
-    let dir = root("apply-restart");
-    let store = Arc::new(FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap());
-    let writer = NodePropertyWriter::new(store.clone());
-    let initial = properties();
-    let apply = PropertyApplication {
-        build_id: "build-a".into(),
-        location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
-    };
-    let written = writer
-        .update(
-            initial.clone(),
-            Some(apply.clone()),
-            |r| {
-                r.config = [("source".into(), "build-a".into())].into();
-                r.tags.insert("build-a".into());
-            },
-            |_| {},
-        )
-        .await
-        .unwrap();
-    assert!(!written.already_applied);
-    let updated = writer
-        .update(
-            initial.clone(),
-            None,
-            |r| {
-                r.config = [("source".into(), "node".into())].into();
-                r.tags.insert("node".into());
-            },
-            |_| {},
-        )
-        .await
-        .unwrap()
-        .record;
-    drop(writer);
-    drop(store);
-    let store = Arc::new(FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap());
-    let writer = NodePropertyWriter::new(store.clone());
-    let repeated = writer
-        .update(
-            initial.clone(),
-            Some(apply),
-            |_| panic!("a duplicate must not execute"),
-            |_| {},
-        )
-        .await
-        .unwrap();
-    assert!(repeated.already_applied);
-    assert_eq!(repeated.record, updated);
-    let next = PropertyApplication {
-        build_id: "build-b".into(),
-        location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
-    };
-    let later = writer
-        .update(
-            initial,
-            Some(next),
-            |r| r.config = [("source".into(), "build-b".into())].into(),
-            |_| {},
-        )
-        .await
-        .unwrap();
-    assert!(!later.already_applied);
-    assert_eq!(later.record.config["source"], "build-b");
-    assert!(later.record.tags.contains("node"));
-    assert_eq!(later.record.applied.len(), 2);
-    drop(writer);
-    drop(store);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-// @feature: node-records
 /// CONTRACT (i150 R3/R6): cancelling the caller retains ordering through the actual file put,
 /// including publication to the local view. A later update preserves all untouched fields.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -324,7 +245,6 @@ async fn a_cancelled_property_caller_cannot_release_an_unresolved_write() {
         first
             .update(
                 seed,
-                None,
                 |r| {
                     r.config.insert("first".into(), "durable".into());
                 },
@@ -339,7 +259,6 @@ async fn a_cancelled_property_caller_cannot_release_an_unresolved_write() {
     let later = tokio::spawn(async move {
         next.update(
             seed,
-            None,
             |r| {
                 r.tags.insert("later".into());
             },
@@ -423,10 +342,10 @@ impl NodeRecordsStorage for LostAcknowledgement {
 
 // @feature: node-records
 /// CONTRACT (i150 R8): an uncertain put invalidates the pre-write snapshot. The next command
-/// resolves the durable effect and its apply identity before changing any property.
+/// resolves the durable record before changing any property.
 #[tokio::test]
-async fn a_lost_storage_acknowledgement_does_not_lose_apply_recognition() {
-    use rdm_node::node_records::{NodePropertyWriter, PropertyApplication};
+async fn a_lost_storage_acknowledgement_is_resolved_before_the_next_change() {
+    use rdm_node::node_records::NodePropertyWriter;
     use std::sync::Arc;
     let store = Arc::new(LostAcknowledgement {
         records: Default::default(),
@@ -434,14 +353,9 @@ async fn a_lost_storage_acknowledgement_does_not_lose_apply_recognition() {
     });
     let writer = NodePropertyWriter::new(store.clone());
     let initial = properties();
-    let apply = PropertyApplication {
-        build_id: "build-a".into(),
-        location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
-    };
     assert!(writer
         .update(
             initial.clone(),
-            Some(apply.clone()),
             |r| {
                 r.config = [("source".into(), "build-a".into())].into();
             },
@@ -451,8 +365,7 @@ async fn a_lost_storage_acknowledgement_does_not_lose_apply_recognition() {
         .is_err());
     let own = writer
         .update(
-            initial.clone(),
-            None,
+            initial,
             |r| {
                 assert_eq!(
                     r.config["source"], "build-a",
@@ -464,65 +377,45 @@ async fn a_lost_storage_acknowledgement_does_not_lose_apply_recognition() {
         )
         .await
         .unwrap();
-    let repeated = writer
-        .update(
-            initial,
-            Some(apply),
-            |_| panic!("the old effect cannot repeat"),
-            |_| {},
-        )
-        .await
-        .unwrap();
-    assert!(repeated.already_applied);
-    assert_eq!(repeated.record, own.record);
+    assert_eq!(own.record.config["source"], "node");
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R8): an entire entry and its recognition are atomic even when the
-/// storage acknowledgement is lost. Later local config and tags survive that Build's repeat;
-/// the following Build replaces both whole fields, including empty values.
+/// CONTRACT (i150 R8): an entire entry is one put even when the storage acknowledgement is
+/// lost: the next command reads both its fields. A later Build's entry replaces both whole
+/// fields, including empty values.
 #[tokio::test]
-async fn a_complete_entry_survives_a_lost_reply_and_later_local_changes() {
-    use rdm_core::properties::{EntryProperties, PropertyApplication};
+async fn a_complete_entry_is_one_put_and_a_later_entry_replaces_both_fields_whole() {
+    use rdm_core::properties::EntryProperties;
     use rdm_node::node_records::NodePropertyWriter;
     use std::sync::Arc;
     let store = Arc::new(LostAcknowledgement { records: Default::default(), lose: true.into() });
     let writer = NodePropertyWriter::new(store.clone());
     let initial = properties();
     let entry = EntryProperties {
-        application: PropertyApplication { build_id: "build-a".into(), location: rdm_core::PathName::new("test.properties", "entry").unwrap() },
         config: [("source".into(), "build".into())].into(),
         tags: ["build".into()].into(),
     };
-    assert!(writer.entry(initial.clone(), entry.clone(), |_| panic!("unacknowledged write")).await.is_err());
-    let local = writer.update(initial.clone(), None, |record| {
+    assert!(writer.entry(initial.clone(), entry, |_| panic!("unacknowledged write")).await.is_err());
+    writer.update(initial.clone(), |record| {
         assert_eq!(record.config["source"], "build");
         assert_eq!(record.tags, ["build".into()].into());
         record.config = [("source".into(), "node".into())].into();
         record.tags = ["node".into()].into();
     }, |_| {}).await.unwrap();
-    // A new writer also has to recognize the durable effect, independently of its cache.
     let restarted = NodePropertyWriter::new(store.clone());
-    let repeated = restarted.entry(initial.clone(), entry, |_| {}).await.unwrap();
-    assert!(repeated.already_applied);
-    assert_eq!(repeated.record, local.record);
-    let empty = EntryProperties {
-        application: PropertyApplication { build_id: "build-b".into(), location: rdm_core::PathName::new("test.properties", "entry").unwrap() },
-        config: Default::default(), tags: Default::default(),
-    };
+    let empty = EntryProperties { config: Default::default(), tags: Default::default() };
     let next = restarted.entry(initial, empty, |_| {}).await.unwrap();
-    assert!(!next.already_applied);
     assert!(next.record.config.is_empty());
     assert!(next.record.tags.is_empty());
-    assert_eq!(next.record.applied.len(), 2);
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R13): migration copies complete properties, apply recognition and both
-/// lifecycle ownership keys. A fresh provider instance returns every value unchanged.
+/// CONTRACT (i150 R13): migration copies complete properties and both lifecycle ownership
+/// keys. A fresh provider instance returns every value unchanged.
 #[tokio::test]
-async fn a_provider_copy_preserves_both_record_kinds_and_applied_operations() {
-    use rdm_node::node_records::{NodePropertyWriter, PropertyApplication};
+async fn a_provider_copy_preserves_both_record_kinds() {
+    use rdm_node::node_records::NodePropertyWriter;
     use rdm_node::storage_copy::{copy, CopyRun, FileProviderLines};
     use std::sync::Arc;
     let (source_dir, destination_dir) = (root("copy-source"), root("copy-destination"));
@@ -534,10 +427,6 @@ async fn a_provider_copy_preserves_both_record_kinds_and_applied_operations() {
     let written = writer
         .update(
             initial.clone(),
-            Some(PropertyApplication {
-                build_id: "build-a".into(),
-                location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
-            }),
             |r| {
                 r.config.insert("migrated".into(), "complete".into());
             },
@@ -586,10 +475,10 @@ async fn a_provider_copy_preserves_both_record_kinds_and_applied_operations() {
 
 // @feature: node-records
 /// CONTRACT (i150 R12): a same-ID start refreshes bound metadata and declarations while the
-/// acknowledged properties and apply recognition survive. Actual new addresses replace old ones.
+/// acknowledged properties survive. Actual new addresses replace old ones.
 #[tokio::test]
 async fn a_same_id_start_refreshes_bound_facts_and_preserves_applied_properties() {
-    use rdm_node::node_records::{NodePropertyWriter, PropertyApplication};
+    use rdm_node::node_records::NodePropertyWriter;
     use std::sync::Arc;
     let dir = root("same-id-bind");
     let store = Arc::new(FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap());
@@ -598,10 +487,6 @@ async fn a_same_id_start_refreshes_bound_facts_and_preserves_applied_properties(
     let before = writer
         .update(
             initial.clone(),
-            Some(PropertyApplication {
-                build_id: "build-a".into(),
-                location: rdm_core::PathName::new("test.properties", "entry").unwrap(),
-            }),
             |r| {
                 r.config.insert("own".into(), "retained".into());
                 r.tags.insert("retained".into());
@@ -621,7 +506,6 @@ async fn a_same_id_start_refreshes_bound_facts_and_preserves_applied_properties(
     assert_eq!(after.birth, before.birth);
     assert_eq!(after.config, before.config);
     assert_eq!(after.tags, before.tags);
-    assert_eq!(after.applied, before.applied);
     assert_eq!(after.endpoint_id, bound.endpoint_id);
     assert_eq!(after.transport_addr, bound.transport_addr);
     assert_eq!(after.listeners, bound.listeners);
@@ -684,7 +568,6 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
     let caller = tokio::spawn(async move {
         w.update(
             seed,
-            None,
             |r| {
                 r.tags.insert("before-move".into());
             },
@@ -722,7 +605,6 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
     let later = writer
         .update(
             initial.clone(),
-            None,
             |r| {
                 r.tags.insert("after-move".into());
             },
@@ -763,21 +645,21 @@ async fn tag_deltas_preserve_properties_and_refusals_change_nothing() {
     let mut initial = properties();
     initial.tags = (0..MAX_NODE_TAGS).map(|n| format!("tag-{n}")).collect();
     writer.bound(initial.clone(), |_| {}).await.unwrap();
-    let refused = writer.tags(initial.clone(), TagChange::Create(["extra".into()].into()), None, |_| panic!("a refused set is never published")).await.unwrap();
+    let refused = writer.tags(initial.clone(), TagChange::Create(["extra".into()].into()), |_| panic!("a refused set is never published")).await.unwrap();
     assert!(matches!(refused, StatusReply::RejectedTags { .. }), "{refused:?}");
     assert_eq!(records.properties(&initial.birth.node_id).await.unwrap(), Some(initial.clone()));
-    let removed = writer.tags(initial.clone(), TagChange::Delete(TagScope::Labels(["tag-0".into(), "absent".into()].into())), None, |_| {}).await.unwrap();
+    let removed = writer.tags(initial.clone(), TagChange::Delete(TagScope::Labels(["tag-0".into(), "absent".into()].into())), |_| {}).await.unwrap();
     assert!(matches!(removed, StatusReply::TagsDeleted { not_carried, .. } if not_carried == ["absent".into()].into()));
-    let added = writer.tags(initial.clone(), TagChange::Create(["extra".into(), "tag-1".into()].into()), None, |_| {}).await.unwrap();
+    let added = writer.tags(initial.clone(), TagChange::Create(["extra".into(), "tag-1".into()].into()), |_| {}).await.unwrap();
     assert!(matches!(added, StatusReply::TagsCreated { already_carried, .. } if already_carried == ["tag-1".into()].into()));
     let mut expected = initial.clone();
     expected.tags.remove("tag-0");
     expected.tags.insert("extra".into());
     assert_eq!(records.properties(&initial.birth.node_id).await.unwrap(), Some(expected.clone()));
-    let invalid = writer.tags(initial.clone(), TagChange::Create(["bad label".into()].into()), None, |_| panic!("invalid label was published")).await.unwrap();
+    let invalid = writer.tags(initial.clone(), TagChange::Create(["bad label".into()].into()), |_| panic!("invalid label was published")).await.unwrap();
     assert!(matches!(invalid, StatusReply::RejectedTags { .. }));
     assert_eq!(records.properties(&initial.birth.node_id).await.unwrap(), Some(expected));
-    writer.tags(initial.clone(), TagChange::Delete(TagScope::All), None, |_| {}).await.unwrap();
+    writer.tags(initial.clone(), TagChange::Delete(TagScope::All), |_| {}).await.unwrap();
     initial.tags.clear();
     assert_eq!(records.properties(&initial.birth.node_id).await.unwrap(), Some(initial));
 }

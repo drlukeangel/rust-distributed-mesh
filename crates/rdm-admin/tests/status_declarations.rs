@@ -564,15 +564,15 @@ async fn written_by_the_node(writer: &rdm_node::node_records::NodePropertyWriter
     };
     let initial = NodeProperties {
         birth: RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
-        config: Default::default(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+        config: Default::default(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
     };
     let written = match req {
         StatusRequest::ApplyNodeConfig { config, .. } => {
             let config = config.clone();
-            writer.update(initial, None, move |record| record.config = config, |_| {}).await.map(|_| StatusReply::Applied)
+            writer.update(initial, move |record| record.config = config, |_| {}).await.map(|_| StatusReply::Applied)
         }
-        StatusRequest::CreateTags { labels, .. } => writer.tags(initial, TagChange::Create(labels.clone()), None, |_| {}).await,
-        StatusRequest::DeleteTags { scope, .. } => writer.tags(initial, TagChange::Delete(scope.clone()), None, |_| {}).await,
+        StatusRequest::CreateTags { labels, .. } => writer.tags(initial, TagChange::Create(labels.clone()), |_| {}).await,
+        StatusRequest::DeleteTags { scope, .. } => writer.tags(initial, TagChange::Delete(scope.clone()), |_| {}).await,
         _ => unreachable!("property commands only"),
     };
     Some(written.unwrap_or_else(|e| panic!("the node's own put: {e}")))
@@ -1478,7 +1478,7 @@ async fn own_tags(b: &Birth, tags: &[&str]) {
     node_records()
         .put_properties(&rdm_node::node_records::NodeProperties {
             birth: rdm_node::node_records::RecordBirth { node_id: b.node.node_id.clone(), incarnation_id: b.node.incarnation_id.clone().unwrap() },
-            config: Default::default(), tags: labels(tags), endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+            config: Default::default(), tags: labels(tags), endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
         })
         .await
         .unwrap();

@@ -24,7 +24,7 @@ During a change the two differ; that difference is the change's progress. Cell:
 The six stores are `fabric.storage`, `mesh.storage`, `nodes.storage`, `connections.storage`,
 `builds.storage` and the `node-records` boundary (`NodeRecordsStorage`). The last contains
 node-owned properties and lifecycle records addressed by the writing primary's birth. Both kinds,
-including application-recognition and claim snapshots, belong to the same migration inventory.
+including claim snapshots, belong to the same migration inventory.
 On the file backend they share `node-records.jsonl`. An application's own rows, events and data dirs
 are not among these stores. [i150](../../plans/i150-node-writes-lifecyle-updates.md) tracks removal
 of the old combined node rows and full application-provider acceptance; the six-store copy

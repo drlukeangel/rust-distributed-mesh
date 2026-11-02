@@ -1408,20 +1408,16 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, propertie
         }
         None => None,
     };
-    let mut applied = std::collections::BTreeSet::new();
     // The config and the tags of a Build's create, a replace's successor and a reconcile's replacement
     // included, are its entry's (`own`, `created_with`; Q305): a Build provides the whole map of a node it
     // replaces, never the predecessor's, and an empty one is empty; an arrival names none. A recovery
     // inherits the predecessor's acknowledged properties from that node's own property record at its
-    // exact ID, with its application knowledge (node-config-update.md "Build application": "True recovery
-    // inherits the predecessor's acknowledged properties and application recognition"): a lifecycle
-    // record never stands in for it, and a predecessor that wrote none acknowledged none.
+    // exact ID (node-config-update.md "Build application": "True recovery inherits the predecessor's
+    // acknowledged properties."): a lifecycle record never stands in for it, and a predecessor that
+    // wrote none acknowledged none.
     let (config, tags) = match (of, properties, seed.as_ref()) {
         (ClaimFor::Recovery, Some(properties), Some(seed)) => match properties.properties(&seed.node_id).await.map_err(|error| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: predecessor {} properties could not be read: {error}", seed.node_id, me_path = &me.path, me_name = &me.name)))? {
-            Some(record) => {
-                applied = record.applied;
-                (record.config, record.tags)
-            }
+            Some(record) => (record.config, record.tags),
             None => Default::default(),
         },
         (ClaimFor::Recovery, _, _) => Default::default(),
@@ -1436,12 +1432,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, propertie
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
     // The storage and placement the claim is handed (its create spec's), else the seed's.
     let (storage_meta, placement) = placed.map_or_else(|| (seed.as_ref().and_then(|p| p.storage_persistence), seed.as_ref().and_then(|p| p.placement)), |(s, p)| (Some(s), Some(p)));
-    if matches!(of, ClaimFor::Create | ClaimFor::Successor | ClaimFor::Replacement) {
-        if let Some(allocation) = allocated {
-            applied.insert(rdm_core::properties::PropertyApplication::entry(&allocation.build_id, name));
-        }
-    }
-    let initial_properties = Some(rdm_core::launch::InitialProperties { config: config.clone(), tags: tags.clone(), applied });
+    let initial_properties = Some(rdm_core::launch::InitialProperties { config: config.clone(), tags: tags.clone() });
     let row = NodeRow { initial_properties, allocated: allocated.cloned(), executable, predecessor, storage_persistence: storage_meta, placement, topology_storage_provider: written.topology_storage_provider(), ..NodeRow::new(name.clone(), mesh, kind, node_id.clone(), status) };
     span.record("awaiting", "put-node-row");
     let claimed = take_name(storage, name, node_id).await;
@@ -1998,8 +1989,8 @@ mod tests {
     }
 
     // @feature: node-records
-    /// CONTRACT (i150 R8): recovery captures config, tags and apply knowledge at the claim;
-    /// repeating that claim after the predecessor changes hands on the original snapshot.
+    /// CONTRACT (i150 R8): recovery captures config and tags at the claim; repeating that claim
+    /// after the predecessor changes hands on the original snapshot.
     #[tokio::test]
     async fn a_recovery_claim_preserves_its_complete_property_snapshot() {
         use rdm_node::node_records::{MemoryNodeRecords, NodeProperties, NodeRecordsStorage, RecordBirth};
@@ -2012,12 +2003,11 @@ mod tests {
         exited.birth_mut(&old_incarnation, &name);
         storage.write_record(&exited).await.unwrap();
         let build_id = crate::build::BuildId::mint();
-        let application = rdm_core::properties::PropertyApplication::entry(&build_id, &name);
         let mut own = NodeProperties {
             birth: RecordBirth { node_id: old.clone(), incarnation_id: old_incarnation.clone() },
             config: [("source".into(), "node".into())].into(), tags: ["node".into()].into(),
             endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None,
-            held: Default::default(), applied: [application].into(),
+            held: Default::default(),
         };
         properties.put_properties(&own).await.unwrap();
         let new = NodeId::mint();
@@ -2031,8 +2021,7 @@ mod tests {
         let snapshot = first.initial_properties.clone().unwrap();
         assert_eq!(snapshot.config, own.config);
         assert_eq!(snapshot.tags, own.tags);
-        assert_eq!(snapshot.applied, own.applied, "recovery mints no entry application");
-        own.config.clear(); own.tags.clear(); own.applied.clear();
+        own.config.clear(); own.tags.clear();
         properties.put_properties(&own).await.unwrap();
         let second = claim().await.unwrap();
         let second = match second { Claimed::HeldByNode(row) => row, _ => panic!("same exact claim is held") };

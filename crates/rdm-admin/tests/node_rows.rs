@@ -281,28 +281,25 @@ fn a_builds_replacement_at_its_own_path_takes_its_entrys_config_and_tags_not_the
 
 // @feature: node-records
 /// CONTRACT (node-config-update.md "Build application": "True recovery inherits the predecessor's
-/// acknowledged properties and application recognition. Replacement initializes from its own Build
-/// entry, including an empty map."; node-create.md step 1: the claim retains the exact entry-owned
-/// launch snapshot): over the same Deleted row, whose node's own property record holds two ports,
-/// a tag and Build A's application, a Build B replacement's claim hands its launch an empty map, no
-/// tags and only B's own application, while a recovery's claim hands on the predecessor's map, tags
-/// and A's application and mints none of its own. Must NOT happen: a replacement launched with the
-/// dead node's ports or recognition, or a recovery that forgets what its predecessor acknowledged.
+/// acknowledged properties. Replacement initializes from its own Build entry, including an empty
+/// map."; node-create.md step 1: the claim retains the exact entry-owned launch snapshot): over the
+/// same Deleted row, whose node's own property record holds two ports and a tag, a Build B
+/// replacement's claim hands its launch an empty map and no tags, while a recovery's claim hands on
+/// the predecessor's map and tags. Must NOT happen: a replacement launched with the dead node's
+/// ports, or a recovery that forgets what its predecessor acknowledged.
 #[test]
 fn a_replacement_launches_from_its_entry_and_a_recovery_from_its_predecessors_acknowledged_properties() {
     use rdm_node::node_records::{MemoryNodeRecords, NodeProperties, NodeRecordsStorage as _, RecordBirth};
-    use rdm_core::properties::PropertyApplication;
     let cap = capture();
     cap.run(async {
         let name: PathName = rdm_core::PathName::new("mesh1.gateway", "1").unwrap();
         let old = NodeId::mint();
         let ports: BTreeMap<String, String> = [("kafka_port".to_string(), "127.0.0.1:34003".to_string()), ("admin_port".to_string(), "127.0.0.1:38823".to_string())].into();
-        let build_a = PropertyApplication::entry(&BuildId::mint(), &name);
         let acknowledged = NodeProperties {
             birth: RecordBirth { node_id: old.clone(), incarnation_id: IncarnationId::mint() },
             config: ports.clone(), tags: ["red".to_string()].into(),
             endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None,
-            held: Default::default(), applied: [build_a.clone()].into(),
+            held: Default::default(),
         };
         let mut claimed = Vec::new();
         for of in [ClaimFor::Replacement, ClaimFor::Recovery] {
@@ -329,94 +326,15 @@ fn a_replacement_launches_from_its_entry_and_a_recovery_from_its_predecessors_ac
                 rdm_admin::node_rows::Claimed::Written { row, .. } => row,
                 other => panic!("the first claim writes: {other:?}"),
             };
-            claimed.push((row.initial_properties.expect("the claim retains its launch snapshot"), PropertyApplication::entry(&build_b, &name)));
+            claimed.push(row.initial_properties.expect("the claim retains its launch snapshot"));
         }
-        let (replacement, build_b) = &claimed[0];
+        let replacement = &claimed[0];
         assert_eq!((&replacement.config, &replacement.tags), (&BTreeMap::new(), &Default::default()), "a replacement launches from its empty entry, never the dead node's ports or tag");
-        assert_eq!(replacement.applied, [build_b.clone()].into(), "a replacement carries only its own Build's application, never its predecessor's");
-        let (recovery, _) = &claimed[1];
+        let recovery = &claimed[1];
         assert_eq!((&recovery.config, &recovery.tags), (&ports, &acknowledged.tags), "a recovery launches from its predecessor's acknowledged properties");
-        assert_eq!(recovery.applied, acknowledged.applied, "a recovery inherits its predecessor's application recognition and mints none");
     });
 }
 
-// @feature: node-records
-/// CONTRACT (node-config-update.md "Build application": "A lost reply does not erase application
-/// recognition. A later attempt of the same Build recognizes the application and preserves
-/// subsequent node or caller changes. A later Build has a new ID and can override those changes.
-/// True recovery inherits the predecessor's acknowledged properties and application recognition."),
-/// one chain through the production claim and writer: Build A's entry is applied at the node and its
-/// reply is lost; the node then writes its own map and tag; the node is lost and recovered under a new
-/// node ID, its claim's launch snapshot read from the predecessor's own record and its start binding
-/// that snapshot through its writer; Build A's next attempt reaches the recovered node and repeats
-/// nothing (`AlreadyApplied`), the own map and tag standing; Build B then replaces both whole.
-/// Must NOT happen: Build A's retry writing its entry back over the later own update, on the old node
-/// or on its recovered successor.
-#[test]
-fn an_applied_entry_whose_reply_was_lost_survives_a_later_own_update_and_recovery_and_a_later_build_overrides_it() {
-    use rdm_core::properties::{EntryProperties, PropertyApplication};
-    use rdm_node::node_records::{MemoryNodeRecords, NodeProperties, NodePropertyWriter, NodeRecordsStorage as _, RecordBirth};
-    let cap = capture();
-    cap.run(async {
-        let name: PathName = rdm_core::PathName::new("mesh1.gateway", "1").unwrap();
-        let records = Arc::new(MemoryNodeRecords::default());
-        let snapshot = |node_id: &NodeId, initial: &rdm_core::launch::InitialProperties| NodeProperties {
-            birth: RecordBirth { node_id: node_id.clone(), incarnation_id: IncarnationId::mint() },
-            config: initial.config.clone(), tags: initial.tags.clone(),
-            endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None,
-            held: Default::default(), applied: initial.applied.clone(),
-        };
-        let entry = |build: &BuildId, value: &str| EntryProperties {
-            application: PropertyApplication::entry(build, &name),
-            config: [("entry".to_string(), value.to_string())].into(), tags: [value.to_string()].into(),
-        };
-        let (build_a, build_b) = (BuildId::mint(), BuildId::mint());
-        // The predecessor, created by an earlier Build with an empty entry.
-        let old = NodeId::mint();
-        let old_writer = NodePropertyWriter::new(records.clone());
-        old_writer.bound(snapshot(&old, &Default::default()), |_| {}).await.unwrap();
-        // Build A's entry is applied at the node; the reply never reaches its mesh-primary.
-        let _lost = old_writer.entry(snapshot(&old, &Default::default()), entry(&build_a, "build-a"), |_| {}).await.unwrap();
-        let own: BTreeMap<String, String> = [("listener.data".to_string(), "127.0.0.1:45005".to_string())].into();
-        let changed = own.clone();
-        old_writer.update(snapshot(&old, &Default::default()), None, move |record| { record.config = changed; record.tags.insert("own".to_string()); }, |_| {}).await.unwrap();
-        let acknowledged = records.properties(&old).await.unwrap().expect("the node's own record");
-        assert_eq!((&acknowledged.config, acknowledged.applied.contains(&PropertyApplication::entry(&build_a, &name))), (&own, true));
-        drop(old_writer);
-        // The node is lost; recovery claims the name over its Deleted row under a new node ID.
-        let storage = Arc::new(MemoryNodesStorage::default());
-        let mut deleted = NodeRow::new(name.clone(), "mesh1", rdm_core::NodeKind::Gateway, old.clone(), NodeStatus::Deleted);
-        deleted.births.push(rdm_admin::storage::BirthFacts::new(acknowledged.birth.incarnation_id.clone(), name.clone()));
-        storage.write_record(&deleted).await.unwrap();
-        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
-        let configs = crate::bound_configs_on(records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await;
-        let t = view();
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
-        let me_id = t.node(&me).expect("the mesh primary is in the view").node_id.clone();
-        let rows = NodeRows::new(me, me_id, Arc::new(RwLock::new(t)), storage.clone()).with_configs(Arc::new(std::sync::OnceLock::from(Arc::new(configs))));
-        let recovered = NodeId::mint();
-        let predecessor = rdm_admin::storage::BirthRef { node_id: old.clone(), incarnation_id: acknowledged.birth.incarnation_id.clone() };
-        let allocated = rdm_admin::storage::Allocation { predecessor: Some(predecessor), build_id: BuildId::mint(), operation: rdm_core::OperationId::location("node.create", &name), incarnation: IncarnationId::mint(), deployment_id: DeploymentId::mint() };
-        let initial = match rows.claim_spec(&name, "mesh1", rdm_core::NodeKind::Gateway, &recovered, &rdm_core::OperationId::location("node.create", &name), Some(&allocated), None, &Default::default(), &BTreeMap::new(), None, ClaimFor::Recovery).await.expect("the Deleted row holds no name") {
-            rdm_admin::node_rows::Claimed::Written { row, .. } => row.initial_properties.expect("the claim retains its launch snapshot"),
-            other => panic!("the recovery claim writes: {other:?}"),
-        };
-        // The recovered node's start binds its launch snapshot through its own writer.
-        let writer = NodePropertyWriter::new(records.clone());
-        let started = writer.bound(snapshot(&recovered, &initial), |_| {}).await.unwrap().record;
-        assert_eq!((&started.config, &started.tags, &started.applied), (&acknowledged.config, &acknowledged.tags, &acknowledged.applied), "recovery inherits the acknowledged properties and their recognition");
-        // Build A's next attempt reaches the recovered node: nothing repeats.
-        let retried = writer.entry(snapshot(&recovered, &initial), entry(&build_a, "build-a"), |_| {}).await.unwrap();
-        assert!(retried.already_applied, "the same Build recognizes its application through recovery");
-        assert_eq!((&retried.record.config, &retried.record.tags), (&own, &acknowledged.tags), "the later own update stands");
-        // A later Build overrides it.
-        let later = writer.entry(snapshot(&recovered, &initial), entry(&build_b, "build-b"), |_| {}).await.unwrap();
-        assert!(!later.already_applied);
-        assert_eq!((later.record.config, later.record.tags), ([("entry".to_string(), "build-b".to_string())].into(), ["build-b".to_string()].into()), "a later Build replaces both whole");
-        assert_eq!(records.properties(&old).await.unwrap(), Some(acknowledged), "the predecessor's own record is not written by its successor");
-    });
-}
 
 #[test]
 fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothing_is_written() {
@@ -1885,7 +1803,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         };
         let own = |n: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>| rdm_node::node_records::NodeProperties {
             birth: rdm_node::node_records::RecordBirth { node_id: n.node_id.clone(), incarnation_id: n.incarnation_id.clone().unwrap() },
-            config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+            config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
         };
         let provenance = |pred: &Node, at: &PathName| rdm_admin::storage::Allocation {
             predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.node_id.clone(), incarnation_id: pred.incarnation_id.clone().unwrap() }),

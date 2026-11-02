@@ -1534,7 +1534,7 @@ impl AdminRunner {
     }
 
     /// Apply the accepted entry through the node's own writer. Config and tag diff steps
-    /// share one durable entry identity and exact target; metadata completion remains owed.
+    /// share one exact target; metadata completion remains owed.
     async fn apply_in_place(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         let key = op.key();
         let (node_id, mesh, kind) = match op {
@@ -1568,12 +1568,9 @@ impl AdminRunner {
             let held = self.builds.read_build(build_id).await.map_err(|error| format!("{key:?}: Build {build_id} could not be read: {error}"))?;
             let spec = held.topology.node_spec(node)
                 .ok_or_else(|| format!("{key:?}: Build {build_id} names no entry for path {node_path:?}, name {node_name:?}", node_path = &node.path, node_name = &node.name))?;
-            let entry = rdm_core::properties::EntryProperties {
-                application: rdm_core::properties::PropertyApplication::entry(build_id, node),
-                config: spec.config.clone(), tags: spec.tags.clone(),
-            };
+            let entry = rdm_core::properties::EntryProperties { config: spec.config.clone(), tags: spec.tags.clone() };
             self.observer.status_door.get().ok_or_else(|| format!("{key:?}: node property door is not bound"))?
-                .apply_build_entry(&birth, entry, spec.storage_persistence, spec.placement).await
+                .apply_build_entry(&birth, build_id, entry, spec.storage_persistence, spec.placement).await
         };
         pipeline.apply_in_place(build_id, attempt, node, key.clone(), step, put).await.map_err(crate::executor::RunEnd::from)
     }

@@ -10,7 +10,7 @@ For this repair it requests the affected mesh with `since: None`: no publisher o
 sent. It installs a complete snapshot from the reply, then resumes applicable differentials. The answer also carries the node's own
 node record at its node.id (Q323), read from
 the shared backend. This startup context is not a second property owner; the node's writer
-preserves retained properties and application recognition (Q234).
+preserves retained properties (Q234).
 JoinNode is only a join and is
 never a topology re-read. Gossip gap detection schedules the read; it does not create a
 Build or change the target's meta.

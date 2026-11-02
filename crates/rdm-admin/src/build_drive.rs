@@ -409,10 +409,6 @@ pub struct Drive {
     /// fabric run they were sent in (`BuildProjection::opened`): done in that run only, as a reported
     /// fabric-lane run's are ([`left`]); a later run (a recovery of the same Build) plans from the world.
     section_done: Mutex<HashSet<(u32, rdm_core::OperationId)>>,
-    /// The duplicate applies a plan of this drive recognized ([`crate::build::BuildPlan::already_applied`]),
-    /// each by the attempt it was planned in and its node: recorded once per attempt ([`left`]), never
-    /// at each planning pass.
-    repeats_recorded: Mutex<HashSet<(u32, crate::model::NodeId)>>,
 }
 
 /// Replay identity retains each operation field without string encoding or parsing.
@@ -438,25 +434,8 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 }
 
 impl Drive {
-    /// Record each duplicate apply a plan of `attempt` recognized ([`crate::build::BuildPlan::already_applied`])
-    /// once per attempt and node (i150 § OTLP span-assertion bar): one
-    /// `rdm.node.record.update.via-already-applied` span the first time a pass of the attempt plans it,
-    /// none at its later passes. Answers how many it recorded now.
-    fn record_repeats(&self, attempt: u32, repeats: &[(crate::model::NodeId, PathName)]) -> usize {
-        let mut recorded = self.repeats_recorded.lock().unwrap();
-        let mut now = 0;
-        for (node_id, path) in repeats {
-            if recorded.insert((attempt, node_id.clone())) {
-                now += 1;
-                tracing::info_span!("rdm.node.record.update.via-already-applied", node_id = %node_id, build_id = %self.build_id, attempt, entry_path = %path.path, entry_name = %path.name, recognized_by = rdm_transport::service_instance_id().unwrap_or_default(), outcome = "already-applied", "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the node's property record holds this Build's application: its entry is not planned again"));
-            }
-        }
-        now
-    }
-
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), created: Mutex::new(Default::default()), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()), repeats_recorded: Mutex::new(HashSet::new()) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), created: Mutex::new(Default::default()), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -1083,7 +1062,6 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     let atlas = drive.atlas.lock().unwrap().clone();
     let created = drive.created.lock().unwrap().clone();
     let plan = crate::accepted::plan_for_build_created(p, t, drive.recorded.lock().unwrap().as_ref(), atlas.as_ref(), &created);
-    drive.record_repeats(p.attempt, &plan.already_applied);
     let sections: HashSet<rdm_core::OperationId> = drive.section_done.lock().unwrap().iter().filter(|(run, _)| *run == p.opened).map(|(_, key)| key.clone()).collect();
     plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a)) && !sections.contains(&op.key())).collect()
 }
@@ -2658,20 +2636,6 @@ mod tests {
         assert!(!drive.completed_in(&other, |_| true));
     }
 
-
-    /// CONTRACT (i150 § OTLP span-assertion bar, `rdm.node.record.update.via-already-applied`): a
-    /// duplicate apply the plan recognizes is recorded once per Build attempt and node, whatever the
-    /// number of passes that plan it; the next attempt records it again. Must NOT happen: one span per
-    /// planning pass for one repeat.
-    // @feature: node-records
-    #[test]
-    fn a_recognized_repeat_is_recorded_once_per_attempt() {
-        let drive = Drive::detached(BuildId::mint());
-        let repeat = vec![(crate::model::NodeId::mint(), PathName::new("mesh1.rpc", "2").unwrap())];
-        assert_eq!(drive.record_repeats(3, &repeat), 1, "the attempt's first pass records the repeat");
-        assert_eq!(drive.record_repeats(3, &repeat), 0, "a later pass of the same attempt records nothing");
-        assert_eq!(drive.record_repeats(4, &repeat), 1, "the next attempt records it again");
-    }
 
     /// CONTRACT: a section without a failed operation retries by reason; an actual operation
     /// with no subject remains an operation, and opaque non-node names are not parsed.

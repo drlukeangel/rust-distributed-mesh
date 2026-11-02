@@ -248,7 +248,7 @@ mod tests {
         let snapshot = view.read().await.clone();
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         door.uses_records(records.clone(), channels.clone());
-        door.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default(), applied: Default::default() }).await.unwrap();
+        door.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default() }).await.unwrap();
 
         // 3. Create {"gold", "ssd"} persists both labels in node-owned properties.
         assert_eq!(

@@ -35,7 +35,7 @@ async fn own(node_id: &NodeId, config: BTreeMap<String, String>, tags: std::coll
     use rdm_node::node_records::NodeRecordsStorage as _;
     properties().put_properties(&rdm_node::node_records::NodeProperties {
         birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: IncarnationId::mint() },
-        config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+        config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
     }).await.unwrap();
 }
 

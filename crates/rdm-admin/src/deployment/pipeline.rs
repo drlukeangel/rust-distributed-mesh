@@ -1790,7 +1790,7 @@ impl DeploymentPipeline<'_> {
                 .ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("path {:?}, name {:?}: exact claim {} has no initial properties; nothing is launched", &req.node.path, &req.node.name, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?;
             claimed.initial_properties.ok_or_else(|| PipelineError { step: CreateStep::PrepareStorage.name(), reason: format!("path {:?}, name {:?}: exact claim {} has no launch snapshot", &req.node.path, &req.node.name, id.node_id), code: rdm_core::outcome::Code::FailedPrecondition })?
         } else {
-            req.entry.as_ref().map(|entry| rdm_core::launch::InitialProperties { config: entry.config.clone(), tags: entry.tags.clone(), applied: [rdm_core::properties::PropertyApplication::entry(&req.build_id, &req.node)].into() }).unwrap_or_default()
+            req.entry.as_ref().map(|entry| rdm_core::launch::InitialProperties { config: entry.config.clone(), tags: entry.tags.clone() }).unwrap_or_default()
         };
         let launch = Launch {
             initial_properties,

@@ -153,7 +153,6 @@ impl OperationRunner for RecordedRuns {
                 self.recorded.lock().unwrap().insert(
                     node.clone(),
                     RecordedRow { mesh: op.mesh().unwrap().to_owned(), kind: op.kind().unwrap(),
-                        applied: Default::default(),
                         config: None,
                         tags: None,
                         storage_persistence: None,
@@ -242,7 +241,6 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             recorded.insert(
                 n.name.clone(),
                 RecordedRow { mesh: n.mesh.clone(), kind: n.kind,
-                        applied: Default::default(),
                     config: None,
                     tags: None,
                     storage_persistence: None,

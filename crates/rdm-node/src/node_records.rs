@@ -37,15 +37,7 @@ pub struct NodeProperties {
     pub app_types: Option<crate::nodes_storage::AppTypes>,
     /// The entities the node declared it holds at join.
     pub held: BTreeSet<String>,
-    /// Build operations already applied to this node. Persisted with their effect so a lost
-    /// reply cannot repeat an old Build over a later node or caller update. Attempts are not
-    /// part of this identity: another attempt is a repeat of the same operation.
-    #[serde(default)]
-    pub applied: BTreeSet<PropertyApplication>,
 }
-
-// Re-export the protocol identity so storage and command callers use the same type.
-pub use rdm_core::properties::PropertyApplication;
 
 /// One running node's serialized property write path. All its property commands use this
 /// instance. The task owning the lock also owns the provider call: cancelling a caller never
@@ -70,13 +62,11 @@ impl Drop for PropertyFreeze {
     fn drop(&mut self) { *self.0 = None; }
 }
 
-/// A durable property effect, or recognition of an earlier durable application.
+/// A durable property effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyWritten {
     /// The complete durable record, including fields untouched by this command.
     pub record: NodeProperties,
-    /// The Build operation was already applied and its effect was not repeated.
-    pub already_applied: bool,
 }
 
 /// A tag command applied at the node, alongside its other property changes.
@@ -112,7 +102,7 @@ impl NodePropertyWriter {
     }
 
     /// Publish the actual bound addresses and join declaration at this start, preserving
-    /// retained config, tags and application recognition for the same node ID.
+    /// retained config and tags for the same node ID.
     pub async fn bound(
         &self,
         initial: NodeProperties,
@@ -120,7 +110,6 @@ impl NodePropertyWriter {
     ) -> Result<PropertyWritten, StorageError> {
         self.update(
             initial.clone(),
-            None,
             move |record| {
                 record.birth = initial.birth;
                 record.endpoint_id = initial.endpoint_id;
@@ -135,14 +124,14 @@ impl NodePropertyWriter {
     }
 
     /// Apply the whole Build entry through the same serialized writer as local changes.
-    /// Its recognition and both property fields are one durable effect.
+    /// Both property fields are one durable effect.
     pub async fn entry(
         &self,
         initial: NodeProperties,
         entry: rdm_core::properties::EntryProperties,
         publish: impl FnOnce(&NodeProperties) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
-        self.update_checked(initial, Some(entry.application), move |record| {
+        self.update_checked(initial, move |record| {
             if let Some(reason) = rdm_core::status::tags_refusal(&entry.tags) {
                 return Err(StorageError::Refused { file: "node.tags".into(), reason });
             }
@@ -158,7 +147,6 @@ impl NodePropertyWriter {
         &self,
         initial: NodeProperties,
         change: TagChange,
-        application: Option<PropertyApplication>,
         publish: impl FnOnce(&NodeProperties) + Send + 'static,
     ) -> Result<rdm_core::status::StatusReply, StorageError> {
         use rdm_core::status::{StatusReply, TagScope};
@@ -174,7 +162,6 @@ impl NodePropertyWriter {
         let written = self
             .update_checked(
                 initial,
-                application,
                 move |record| {
                     let node_id = record.birth.node_id.clone();
                     let incarnation = record.birth.incarnation_id.clone();
@@ -221,7 +208,6 @@ impl NodePropertyWriter {
             )
             .await;
         match written {
-            Ok(written) if written.already_applied => Ok(rdm_core::reply::already_applied()),
             Ok(_) => Ok(answer
                 .lock()
                 .unwrap()
@@ -240,13 +226,11 @@ impl NodePropertyWriter {
     pub async fn update(
         &self,
         initial: NodeProperties,
-        application: Option<PropertyApplication>,
         change: impl FnOnce(&mut NodeProperties) + Send + 'static,
         publish: impl FnOnce(&NodeProperties) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
         self.update_checked(
             initial,
-            application,
             move |record| {
                 change(record);
                 Ok(())
@@ -260,15 +244,12 @@ impl NodePropertyWriter {
     /// A refused edit writes nothing and leaves both the durable and local value unchanged.
     ///
     /// One span per command, a child of the caller's (i150 § OTLP span-assertion bar): a write is
-    /// `rdm.node.record.update.via-properties` (the node's birth, path and name, the Build operation
-    /// when the command carries one, the backend, and the outcome: `durable`, `unchanged`, `refused`
-    /// or `failed`); a Build operation the record already holds is
-    /// `rdm.node.record.update.via-already-applied` (the exact target and the original operation),
-    /// and nothing is written. Neither carries the config map, a tag or any other value.
+    /// `rdm.node.record.update.via-properties` (the node's birth, path and name, the backend, and
+    /// the outcome: `durable`, `unchanged`, `refused` or `failed`). It never carries the config map,
+    /// a tag or any other value.
     pub async fn update_checked(
         &self,
         initial: NodeProperties,
-        application: Option<PropertyApplication>,
         change: impl FnOnce(&mut NodeProperties) -> Result<(), StorageError> + Send + 'static,
         publish: impl FnOnce(&NodeProperties) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
@@ -276,10 +257,8 @@ impl NodePropertyWriter {
         let (records, current) = (self.records.clone(), self.current.clone());
         let at = self.name.get().and_then(|name| name());
         let (path, name) = at.map(|at| (at.path, at.name)).unwrap_or_default();
-        let (build_id, entry_path, entry_name) = application.as_ref().map(|a| (a.build_id.clone(), a.location.path.clone(), a.location.name.clone())).unwrap_or_default();
         let (node_id, incarnation_id) = (initial.birth.node_id.clone(), initial.birth.incarnation_id.clone());
-        let write = move |records: &dyn NodeRecordsStorage| tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, build_id = %build_id, entry_path = %entry_path, entry_name = %entry_name, backend = %records.provider(), outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal");
-        let repeat = |a: &PropertyApplication, birth: &RecordBirth| tracing::info_span!("rdm.node.record.update.via-already-applied", node_id = %birth.node_id, incarnation_id = %birth.incarnation_id, build_id = %a.build_id, entry_path = %a.location.path, entry_name = %a.location.name, outcome = "already-applied", "otel.kind" = "internal");
+        let write = move |records: &dyn NodeRecordsStorage| tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, backend = %records.provider(), outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal");
         // Dropping JoinHandle detaches the admitted write; it does not cancel it. In
         // particular no timeout may allow a second command to overtake the first call.
         tokio::spawn(
@@ -291,38 +270,25 @@ impl NodePropertyWriter {
                     })?;
                 }
                 let mut next = held.as_ref().cloned().unwrap_or(initial);
-                let repeated = application.as_ref().filter(|a| next.applied.contains(a)).cloned();
-                let already_applied = repeated.is_some();
-                match repeated {
-                    Some(a) => repeat(&a, &next.birth).in_scope(|| tracing::info!("the record holds this Build operation already: its effect is not repeated")),
-                    None => {
-                        let write = write(&*records);
-                        change(&mut next).inspect_err(|e| {
-                            write.record("outcome", "refused").record("cause", e.to_string());
-                        })?;
-                        if let Some(application) = application {
-                            next.applied.insert(application);
-                        }
-                        if held.as_ref() == Some(&next) {
-                            write.record("outcome", "unchanged");
-                        } else if let Err(error) = records.put_properties(&next).instrument(write.clone()).await {
-                            // An error may be a lost acknowledgement. The next admitted command must
-                            // resolve the exact durable record, including application identities,
-                            // before it can change anything. Never reuse a pre-write cached value.
-                            *held = None;
-                            write.record("outcome", "failed").record("cause", error.to_string());
-                            return Err(error);
-                        } else {
-                            write.record("outcome", "durable");
-                        }
-                        *held = Some(next.clone());
-                    }
+                let write = write(&*records);
+                change(&mut next).inspect_err(|e| {
+                    write.record("outcome", "refused").record("cause", e.to_string());
+                })?;
+                if held.as_ref() == Some(&next) {
+                    write.record("outcome", "unchanged");
+                } else if let Err(error) = records.put_properties(&next).instrument(write.clone()).await {
+                    // An error may be a lost acknowledgement. The next admitted command must
+                    // resolve the exact durable record before it can change anything. Never
+                    // reuse a pre-write cached value.
+                    *held = None;
+                    write.record("outcome", "failed").record("cause", error.to_string());
+                    return Err(error);
+                } else {
+                    write.record("outcome", "durable");
                 }
+                *held = Some(next.clone());
                 publish(&next);
-                Ok(PropertyWritten {
-                    record: next,
-                    already_applied,
-                })
+                Ok(PropertyWritten { record: next })
             }
             .instrument(tracing::Span::current()),
         )

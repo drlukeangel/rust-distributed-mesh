@@ -472,8 +472,7 @@ attempt facts and the node-record status its operations require for a mesh with 
 mesh-primary. That exception grants no primary role (Q122).
 
 The Build journal retains one fact at its semantic identity: the Build ID, an attempt under its
-mesh, a claim for that attempt, and each step receipt. Property application recognition is written
-with the property effect at the node, not inferred from a missing or present completion reply.
+mesh, a claim for that attempt, and each step receipt.
 The generic code uses these interfaces; the application supplies the backend.
 
 `fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once; the fabric's name is claimed at `<store_dir>/fabrics/<name>` above the per-fabric roots, and a deleted fabric releases it. It carries no pointer to a Build (RDM's `FabricRecord` in `rdm-admin`).

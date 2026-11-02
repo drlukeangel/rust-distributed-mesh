@@ -796,7 +796,6 @@ async fn start_booted(
                             let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.kind, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
                             let mut initial = property_snapshot(&topology_view, &digest, launch.initial_properties.config.clone());
                             initial.tags = launch.initial_properties.tags.clone();
-                            initial.applied = launch.initial_properties.applied.clone();
                             initial.listeners = listener_addrs.clone();
                             let properties_view = topology_view.clone();
                             property_writer.bound(initial, move |record| { properties_view.set_config(record.config.clone()); properties_view.set_tags(record.tags.clone()); }).await
@@ -1354,7 +1353,7 @@ impl OwnConfig {
     pub async fn update(&self, config: std::collections::BTreeMap<String, String>) -> std::result::Result<rdm_core::status::StatusReply, rdm_client::CallEnd> {
         let record = property_snapshot(&self.topology_view, &self.digest, config.clone());
         let (changed, topology) = (config.clone(), self.topology_view.clone());
-        if let Err(e) = self.writer.update(record, None, move |record| record.config = changed,
+        if let Err(e) = self.writer.update(record, move |record| record.config = changed,
             move |record| topology.set_config(record.config.clone())).await {
             return Err(rdm_client::CallEnd::Rejected { reason: "properties-unwritten".into(), detail: e.to_string() });
         }
@@ -1370,7 +1369,7 @@ fn property_snapshot(topology: &TopologyView, digest: &MeshDigest, config: std::
     let own_row = topology.own_row();
     crate::node_records::NodeProperties {
         birth: crate::node_records::RecordBirth { node_id: digest.node.node_id.clone(), incarnation_id: digest.node.incarnation.clone() },
-        applied: Default::default(), config,
+        config,
         tags: own_row.as_ref().map(|r| r.tags.clone()).unwrap_or_default(),
         endpoint_id: Some(digest.node.endpoint_id.clone()), transport_addr: Some(digest.node.transport_addr),
         listeners: own_row.as_ref().map(|r| r.listeners.clone()).unwrap_or_default(),
@@ -1924,7 +1923,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         topology.set_config(record.config.clone());
                         topology.set_tags(record.tags.clone());
                     }).await {
-                        Ok(written) => Ok(if written.already_applied { rdm_core::reply::already_applied() } else { rdm_core::reply::applied() }),
+                        Ok(_) => Ok(rdm_core::reply::applied()),
                         Err(error) => Ok(rdm_core::reply::status::bounded_node_row_refused(
                             &me.topology_view.node_name().to_string(), &error.to_string())),
                     }
@@ -1935,7 +1934,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // (`TopologyView::config`); no digest carries it (Q203).
                     let initial = property_snapshot(&me.topology_view, &me.digest, config.clone());
                     let (changed, topology) = (config.clone(), me.topology_view.clone());
-                    if let Err(error) = me.property_writer.update(initial, None,
+                    if let Err(error) = me.property_writer.update(initial,
                         move |record| record.config = changed,
                         move |record| topology.set_config(record.config.clone())).await {
                         return Ok(rdm_core::reply::status::bounded_config_row_refused(
@@ -1953,7 +1952,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     };
                     let initial = property_snapshot(&me.topology_view, &me.digest, me.topology_view.config().unwrap_or_default());
                     let topology = me.topology_view.clone();
-                    match me.property_writer.tags(initial, change, None, move |record| topology.set_tags(record.tags.clone())).await {
+                    match me.property_writer.tags(initial, change, move |record| topology.set_tags(record.tags.clone())).await {
                         Ok(reply) => Ok(reply),
                         Err(error) => Ok(rdm_core::reply::status::bounded_node_row_refused(&me.topology_view.node_name().to_string(), &error.to_string())),
                     }

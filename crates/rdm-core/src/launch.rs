@@ -190,9 +190,6 @@ pub struct InitialProperties {
     pub config: BTreeMap<String, String>,
     /// The complete tag set supplied with that map.
     pub tags: std::collections::BTreeSet<String>,
-    /// Application knowledge captured with the map and tags at the exact birth's claim.
-    #[serde(default)]
-    pub applied: std::collections::BTreeSet<crate::properties::PropertyApplication>,
 }
 
 /// Everything a node needs to come up as the exact node node-admin allocated.
@@ -494,7 +491,6 @@ mod tests {
         let initial = InitialProperties {
             config: [("listener.data".into(), "a,b=c\nwith spaces".into()), ("empty".into(), "".into())].into(),
             tags: ["zone-a".into(), "v1.2~rc".into()].into(),
-            applied: [crate::properties::PropertyApplication { build_id: "build-a".into(), location: crate::PathName::new("test.properties", "entry").unwrap() }].into(),
         };
         env.insert(ENV_NODE_PROPERTIES.into(), serde_json::to_string(&initial).unwrap());
         let launch = Launch::from_env(|k| env.get(k).cloned()).unwrap();

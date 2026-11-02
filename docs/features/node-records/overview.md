@@ -17,8 +17,7 @@ node, so a deleted node answers Deleted. The path is fixed for a node's life, an
 changes. A replacement renames the predecessor to `<name>-old` at the same path and creates the
 successor under the original name ([node-replace.md](../../architecture/lifecycles/node-replace.md)).
 
-**Builds.** A Build applies its entry's config and tags to new and existing nodes. The node's record
-keeps which Build applied which entry. A later attempt of the same Build recognizes that and repeats
+**Builds.** A Build applies its entry's config and tags to new and existing nodes. A later attempt of the same Build repeats
 nothing, so an update the node or a caller makes afterwards stands until the next Build. A node with
 no record yet has no properties, so its entry is applied. A recovery takes its predecessor's
 acknowledged properties. A replacement takes its entry's.

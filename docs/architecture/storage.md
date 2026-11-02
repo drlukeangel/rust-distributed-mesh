@@ -111,7 +111,7 @@ It is four steps:
    gossips the current topology of its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
 2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of
    all six stores on the old provider to the new one in source order, including both node-record
-   kinds, application recognition, immutable claim snapshots and unresolved property obligations;
+   kinds, immutable claim snapshots and unresolved property obligations;
    every name claim and in-flight row
    with its exact claimant. A copy resumed after a lost answer appends nothing twice; a new provider
    holding lines the old one does not is refused by name, and nothing switches.

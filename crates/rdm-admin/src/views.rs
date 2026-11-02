@@ -592,7 +592,7 @@ mod tests {
             let properties = rdm_node::node_records::MemoryNodeRecords::default();
             let own = |node_id: &NodeId, incarnation: &IncarnationId, config: BTreeMap<String, String>, tags: BTreeSet<String>| rdm_node::node_records::NodeProperties {
                 birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
-                config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+                config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
             };
             use rdm_node::node_records::NodeRecordsStorage as _;
             properties.put_properties(&own(&admin_id, &admin_inc, BTreeMap::new(), BTreeSet::new())).await.unwrap();

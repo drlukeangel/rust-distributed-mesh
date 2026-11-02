@@ -359,7 +359,7 @@ impl Prepared {
                 birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
                 config: INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
                 tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
-                endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(), applied: Default::default(),
+                endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
             }).await.unwrap();
             let mut launched = Vec::new();
             for (path, name, kind) in launched_names {

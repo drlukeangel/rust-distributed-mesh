@@ -203,7 +203,7 @@ impl OperationRunner for Runs {
             BuildOperation::CreateNode { node, .. } => {
                 let topology = self.builds.read_build(build).await.map_err(|e| e.to_string())?.topology;
                 let sha = rdm_admin::accepted::target_executable(&topology, node).map(|b| b.sha256.clone());
-                self.recorded.lock().unwrap().insert(node.clone(), RecordedRow { mesh: op.mesh().unwrap().to_owned(), kind: op.kind().unwrap(), applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: sha });
+                self.recorded.lock().unwrap().insert(node.clone(), RecordedRow { mesh: op.mesh().unwrap().to_owned(), kind: op.kind().unwrap(), config: None, tags: None, storage_persistence: None, placement: None, node_id: NodeId::mint(), sha256: sha });
             }
             BuildOperation::DeleteNode { node, .. } | BuildOperation::DeleteLiveNode { node, .. } => {
                 self.recorded.lock().unwrap().remove(node);
@@ -271,7 +271,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
         let mut row = rdm_admin::storage::NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
         row.executable = Some(recorded_binding(n.kind, sha));
         store.write_record(&row).await.unwrap();
-        recorded.insert(n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, applied: Default::default(), config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
+        recorded.insert(n.name.clone(), RecordedRow { mesh: n.mesh.clone(), kind: n.kind, config: None, tags: None, storage_persistence: None, placement: None, node_id: n.node_id.clone(), sha256: Some(sha.into()) });
     }
     let mut cp = crate::control_plane(builds.clone(), accepted.clone(), path("mesh1.admin", "1"), t.clone(), crate::adopted_time());
     cp.topology = topology.clone();

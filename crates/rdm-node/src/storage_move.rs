@@ -148,7 +148,7 @@ mod tests {
     use rdm_core::IncarnationId;
 
     fn properties() -> NodeProperties {
-        NodeProperties { birth: RecordBirth { node_id: NodeId::mint(), incarnation_id: IncarnationId::mint() }, config: [("source".into(), "initial".into())].into(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None, held: Default::default(), applied: Default::default() }
+        NodeProperties { birth: RecordBirth { node_id: NodeId::mint(), incarnation_id: IncarnationId::mint() }, config: [("source".into(), "initial".into())].into(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None, held: Default::default() }
     }
 
     // @feature: node-records
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(moves.block(&build, &a).await, NodeCommandReply::StorageBlocked);
         assert_eq!(moves.block(&build, &a).await, NodeCommandReply::StorageBlocked);
         let (w, seed) = (writer.clone(), initial.clone());
-        let mut queued = Box::pin(w.update(seed, None, |r| r.config = [("source".into(), "queued".into())].into(), |_| {}));
+        let mut queued = Box::pin(w.update(seed, |r| r.config = [("source".into(), "queued".into())].into(), |_| {}));
         assert!(futures_util::poll!(&mut queued).is_pending());
         assert_eq!(store.properties(&initial.birth.node_id).await.unwrap(), Some(initial.clone()));
         assert_eq!(moves.serve(&build, &a, "file").await, NodeCommandReply::StorageStepped { provider: "file".into() });
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(moves.block(&build, &b).await, NodeCommandReply::StorageBlocked);
         assert!(matches!(moves.serve(&build, &a, "file").await, NodeCommandReply::RejectedStaleChange { held } if held == b));
         let (w, seed) = (writer.clone(), initial.clone());
-        let mut next = Box::pin(w.update(seed, None, |r| { r.tags.insert("after-b".into()); }, |_| {}));
+        let mut next = Box::pin(w.update(seed, |r| { r.tags.insert("after-b".into()); }, |_| {}));
         assert!(futures_util::poll!(&mut next).is_pending());
         assert_eq!(moves.serve(&build, &b, "file").await, NodeCommandReply::StorageStepped { provider: "file".into() });
         let final_record = next.await.unwrap().record;
@@ -206,7 +206,7 @@ mod tests {
         entered.notified().await;
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
-        let mut pending = Box::pin(writer.update(initial, None, |r| { r.tags.insert("after-move".into()); }, |_| {}));
+        let mut pending = Box::pin(writer.update(initial, |r| { r.tags.insert("after-move".into()); }, |_| {}));
         assert!(futures_util::poll!(&mut pending).is_pending());
         release.notify_one();
         let written = tokio::time::timeout(std::time::Duration::from_secs(5), pending).await.expect("the retained move releases the writer").unwrap();

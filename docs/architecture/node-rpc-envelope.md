@@ -390,7 +390,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `path`, `mesh`, `node_type` | the create spec | path, mesh and node_type are immutable; node.name.update changes only name and refuses a supplied path different from the registered path | — | — |
 | `name` | the create spec | **`node.name.update { node_id, incarnation, path, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1) | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim); on replace the successor applies its Build entry through its own property writer | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. The node's property writer applies the label change to its own current tag set and persists it with its other owned fields | none | `node.tag.created` / `node.tag.deleted` |
-| `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own is a local durable property write; a Build applies config and tags together through ApplyNodeProperties with durable semantic entry recognition; the same Build preserves later updates, and a later Build can supersede them (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
+| `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own is a local durable property write; a Build applies config and tags together through ApplyNodeProperties; the same Build preserves later updates, and a later Build can supersede them (build.md §1, Q236) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
 | `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
 | `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its nodes' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `node.get` answers `held` whole | — | — |
 | `is_primary` | the election's result, recorded by the mesh-primary | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
@@ -406,13 +406,12 @@ Config is a map of name to value; duplicate keys take the last value, including 
 The node persists it in its own property record. Neither primary holds a copy in its atlas and the
 map is never carried in the digest. RDM stores application values without interpreting them.
 The initial entry is retained with the claim and applied by the node; recovery inherits acknowledged
-properties and application recognition, replacement uses its Build entry, and a retained own record
+properties, replacement uses its Build entry, and a retained own record
 survives startup. The [config update sequence](lifecycles/node-config-update.md) owns application.
 
 A node record and its completion replies have no record revision (Q323). The node
 serializes local config, caller config, tags and Build entry effects through its property writer.
-A Build's config, tags and application identity are one durable put, so a lost reply cannot make
-its retry overwrite a later update. The exact target and workflow completion remain receipted.
+A Build's config and tags are one durable put. The exact target and workflow completion remain receipted.
 `NodeConfigUpdated` is not an upward delivery route. The existing election `Primary.revision`
 is independent of property/lifecycle records and remains part of the election result.
 
@@ -1262,7 +1261,7 @@ OwnRow is reply position 14. A read by a node of its own mesh-primary answers it
 lifecycle/topology context before End; this is not a mesh and End.meshes does not count it.
 The serving primary reads the node's record (Q323) rather than an atlas-held
 row. There is no row revision to compare. The node's property writer preserves its retained own
-properties and application recognition; a startup snapshot cannot overwrite later local changes.
+properties; a startup snapshot cannot overwrite later local changes.
 A reply beyond the existing frame bound is not silently truncated: the read span records
 `own_row=too-large` and the read ends without installing partial context.
 Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and

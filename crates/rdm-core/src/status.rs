@@ -676,8 +676,8 @@ pub enum StatusRequest {
         /// The new root's secret.
         secret: RootSecretHex,
     },
-    /// Apply one complete Build entry at the exact birth. Recognition and properties are
-    /// persisted together by the node. Repeating this application preserves later changes.
+    /// Apply one complete Build entry at the exact birth: its config and tags are persisted
+    /// together by the node.
     ///
     /// Position 37 on the wire.
     ApplyNodeProperties {
@@ -685,7 +685,7 @@ pub enum StatusRequest {
         node_id: NodeId,
         /// The addressed runtime incarnation.
         incarnation: IncarnationId,
-        /// The complete entry and its existing Build identity.
+        /// The complete entry.
         entry: crate::properties::EntryProperties,
     },
 }
@@ -2500,7 +2500,6 @@ mod tests {
             StatusRequest::UpdateRoots { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), roots: vec!["ab".into()], phase: RootsPhase::Distributed, secret: Some(RootSecretHex("cd".into())) },
             StatusRequest::UpdateRoot { secret: RootSecretHex("ab".into()) },
             StatusRequest::ApplyNodeProperties { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), entry: crate::properties::EntryProperties {
-                application: crate::properties::PropertyApplication { build_id: "build-a".into(), location: crate::PathName::new("test.properties", "entry").unwrap() },
                 config: Default::default(), tags: Default::default(),
             } },
         ];

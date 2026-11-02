@@ -13,8 +13,7 @@
 4. **A caller's config.** A caller's `node.config.update` travels down to the node. The node applies
    it whether it is running or stopped. A node that does not answer ends the command
    `ConfigNotApplied` by name, and nothing is recorded for it (Q310).
-5. **Builds.** A Build's entry config and tags are applied with the Build's application identity.
-   A repeated attempt answers `AlreadyApplied` and changes nothing.
+5. **Builds.** A Build's entry config and tags are applied by the Build.
 6. **Reads.** `Nodes::get` reads the records:
    - A `(path, name)` pair resolves through its claim.
    - An `id` reads that node's record, Deleted included.
@@ -23,7 +22,6 @@
 
 Examples executed by the fast gate, in `crates/rdm-test/tests/node_records.rs`:
 - `a_build_applies_properties_and_a_nodes_later_update_stands`
-- `an_applied_build_update_survives_node_restart`
 - `a_path_move_preserves_the_node_identity`
 - `a_deleted_birth_cannot_hide_its_successor`
 - `a_deleted_birth_is_read_by_its_id`

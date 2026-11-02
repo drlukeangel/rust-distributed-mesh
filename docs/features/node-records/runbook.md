@@ -2,7 +2,7 @@
 
 | Symptom | What to read |
 |---|---|
-| Wrong properties after a Build retry | The node's property record (its `applied` set), the Build's step receipts, and `rdm.node.record.update.via-already-applied`. |
+| Wrong properties after a Build retry | The node's property record and the Build's step receipts. |
 | A successor shows its predecessor's ports | The `(path, name)` claim, and the successor's entry: a replacement takes its entry, a recovery its predecessor's acknowledged properties. |
 | A stopped node's status reads live | The node's latest lifecycle line. A superseded primary that resumes can write one line after its successor; the record stands corrected at its successor's next write (Q323; lead-decisions-2026-11-02 D7). |
 | `node.get` lists a node with properties unavailable | The node has written no property record yet, or its backend keeps its stores in another process. |
@@ -11,7 +11,6 @@
 
 The spans to read:
 - `rdm.node.record.update.via-properties`: the node's own write.
-- `rdm.node.record.update.via-already-applied`: a repeat recognized.
 - `rdm.node_admin.node.update.via-lifecycle-record`: the mesh-primary's write.
 - `rdm.node_admin.node.resolve.via-lifecycle-record`: a read.
 

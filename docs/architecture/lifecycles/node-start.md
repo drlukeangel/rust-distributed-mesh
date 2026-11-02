@@ -51,7 +51,7 @@ runtime. Create composes it with FirstStart; a start of a stopped node runs it w
    startup read. Request it without a conditional source version and install only complete
    snapshots. The same reply supplies the recorded primaries, startup context and current
    Rafka-time; adopt the time after installing topology and before reporting started.
-   Preserve retained own properties and application recognition. Do not fetch topology before
+   Preserve retained own properties. Do not fetch topology before
    the Build-floor check and do not issue a second topology request just to refresh time.
 5. Emit `NodeStarted` (Terminal): its hook passed, with nothing pending. Neither a partial snapshot nor a
    Blocked hook permits it. That frame is the node's report: the mesh-primary sets
