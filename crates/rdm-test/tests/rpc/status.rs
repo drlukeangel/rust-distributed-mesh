@@ -226,13 +226,13 @@ async fn a_node_declares_to_its_mesh_primary_and_a_secondary_admin_answers_its_o
         .filter(|sp| sp["attributes"]["node_id"] == rpc1v["node_id"] && sp["attributes"]["incarnation_id"] == rpc1v["incarnation_id"] && sp["attributes"]["frame"] == "node-started" && sp["attributes"]["operation"] == "node.start" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
         .collect();
     assert!(!started.is_empty(), "the primary records the start's terminal: {started:#?}");
-    assert!(started.iter().all(|sp| sp["attributes"]["recorder_node_id"] == primary_id), "only the primary records it: {started:#?}; holder {primary_id}");
+    assert!(started.iter().all(|sp| sp["attributes"]["recorder_node_id"] == primary_id), "only the primary records it: {started:#?}; primary {primary_id}");
     let declared_own: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == rpc1v["node_id"] && sp["attributes"]["operation"] == "node.start" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
         .collect();
     assert!(!declared_own.is_empty(), "the start declares its Ready naming the start: {declared_own:#?}");
-    assert!(declared_own.iter().all(|sp| sp["attributes"]["to"] == primary_id), "the start's declaration goes to the role's primary and to no other admin: {declared_own:#?}; holder {primary_id}");
+    assert!(declared_own.iter().all(|sp| sp["attributes"]["to"] == primary_id), "the start's declaration goes to the role's primary and to no other admin: {declared_own:#?}; primary {primary_id}");
     assert!(declared_own.iter().any(|sp| sp["attributes"]["definitive"] == "true" && ["applied", "already-applied"].contains(&sp["attributes"]["outcome"].as_str().unwrap_or_default())), "the primary takes it, applied or already applied beside the frame: {declared_own:#?}");
     let trace = r["traceparent"].as_str().and_then(|tp| tp.split('-').nth(1)).unwrap_or_default().to_string();
     println!("a declaration at the admin holding no primary role: http://192.168.68.99:16687/trace/{trace}");
