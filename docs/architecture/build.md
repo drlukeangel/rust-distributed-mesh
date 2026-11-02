@@ -53,7 +53,7 @@ customer composition model.
 
 Allowed customer seams are:
 
-- implementations of the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6);
+- implementations of the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build and events stores (`builds.storage`, `BuildStateAdapter`; `events.storage`, `EventsStorage`; on the fabric's shared store root per R-BI6);
 - product Build-input/shape normalization and each node's explicit desired properties;
 - deployment-provider bindings, resolved launch/listener configuration, and mapping of customer
   runtime-management metadata into the imported current-runtime projection;
@@ -99,7 +99,7 @@ Rafka imports these RDM packages at one exact revision:
 | `rdm-core` | the generic Mesh entity: exact-node identity, process incarnation, topology, endpoint freshness, RuntimeFact and connection projections |
 | `rdm-transport` | the gossip substrate on Iroh: the topology digest view, versioned cross-mesh topology snapshots and deltas, and the gossip frame codec |
 | `rdm-transport` | the Node RPC runtime over Iroh: exact-target client and server, pool, commit cut and admission |
-| `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, the leadership election, the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
+| `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, the leadership election, the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build and events stores (`builds.storage`, `BuildStateAdapter`; `events.storage`, `EventsStorage`; on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
 | `rdm-client` | the typed client and DTOs for the node-admin control API |
 | `rdm-test-scenario` | provider-neutral scenario, evidence and replay contracts |
 | `rdm-test` | the generic RPC test node, test protocols and probes |
@@ -368,6 +368,14 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
 }
+
+#[async_trait]
+pub trait EventsStorage: Send + Sync {
+    async fn append(&self, event: &Event) -> Result<(), StorageError>;
+    async fn event(&self, id: &EventId) -> Result<Option<Event>, StorageError>;
+    async fn of_build(&self, build_id: &BuildId) -> Result<Vec<Event>, StorageError>;
+    async fn of_node(&self, node_id: &NodeId) -> Result<Vec<Event>, StorageError>;
+}
 ```
 
 The exported semantic vocabulary (`BuildFact` variants) is append/fold friendly:
@@ -381,6 +389,19 @@ BuildAttemptReceipt
 ```
 
 These facts describe reconciliation execution. The current Build is read from them newest first (§4, `current_build()` over the acceptance-order index, with `newest_accepted_at_ms()` as the acceptance high-water mark of every state and `recovery_of` answering the point read by exited birth); they also record what happened while executing it. They are not a second topology writer and not the current-runtime store. Completed Build records remain valid history for recovery, API views, diagnostics, audit and chaos evidence.
+
+What happened while executing a Build is also the events store's: one append-only record per event, a CloudEvents 1.0 envelope ([gossip.md §3.4](gossip.md#34-the-envelope)'s attributes, `id` a time-ordered UUIDv7, `datacontenttype` `application/json`), never gossiped:
+
+| `type` | Writer | `subject` | `data` |
+|---|---|---|---|
+| `rdm.build.started` | the fabric-primary | none | `build_id` |
+| `rdm.build.dispatched` | the fabric-primary | none | `build_id`, `mesh` |
+| `rdm.build.step` | the mesh's mesh-primary | the node acted on | `build_id`, `mesh`, `step`, `op`, `state` (`complete` or `failed { reason, code }`) |
+| `rdm.build.ended` | the fabric-primary | none | `build_id`, `state` (`complete` or `failed { step, reason, code }`) |
+| `rdm.node.investigated` | the primary above the node | node.id | `incarnation`, `path`, `name`, `verdict`, `next` |
+| `rdm.storage.started`, `rdm.storage.committed`, `rdm.storage.ended` | the fabric-primary | none | `change_id`, `topology_storage_provider`, and for the ending its `state` |
+
+The store answers three reads: by event.id, the events of one Build (by `data.build_id`, in event.id order) and the events of one node (by `subject`, in event.id order).
 
 ### 5.1 RDM adapters
 
@@ -453,10 +474,10 @@ No Build is current before it is recoverably durable.
 
 ### 5.3 Node-admin storage boundaries
 
-Control-plane state has five boundaries on the fabric's shared store root: fabric, meshes, nodes,
-connections and Builds. On the file backend these live under
+Control-plane state has six boundaries on the fabric's shared store root: fabric, meshes, nodes,
+connections, Builds and events. On the file backend these live under
 `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl,
-builds.jsonl, locks/}`. Copy every boundary, current values and history, in source
+builds.jsonl, events.jsonl, locks/}`. Copy every boundary, current values and history, in source
 order together with held claims and in-flight operations.
 
 The fabric-primary writes the Fabric record, accepted Build definitions, Build-attempt records,
@@ -481,7 +502,7 @@ Restarting every node-admin at once must not erase the facts needed to reconstru
 
 ```text
 node-admin starts
-    -> open the fabric's store root and this admin's Build journal
+    -> open the fabric's store root: its Build and events stores
     -> reconstruct local control-plane state
     -> the leadership election: mesh primaries and current fabric-primary
 new fabric-primary
