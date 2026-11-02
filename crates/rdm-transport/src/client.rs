@@ -170,6 +170,36 @@ pub trait ConnectionObserver: Send + Sync {
     fn direct_broken(&self, node: &ResolvedNode, reason: &str);
 }
 
+/// Why a call this client opened ended with its attempts spent (fabric-node-hooks.md
+/// `on_call_failed`; Q314): the end its span stores, and nothing more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallFailedReason {
+    /// Nothing reached the receiver: the last attempt's reason.
+    NotSent(NotSentReason),
+    /// The request crossed the commit cut and no answer came.
+    Indeterminate(IndeterminateReason),
+}
+
+impl CallFailedReason {
+    /// The end's name, as the call's span carries it: `NotSent` or `Indeterminate`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::NotSent(_) => "NotSent",
+            Self::Indeterminate(_) => "Indeterminate",
+        }
+    }
+}
+
+/// What a node is told of its own calls that end with their attempts spent (fabric-node-hooks.md
+/// `on_call_failed`): the client reports the fact, once per spent call, and decides nothing. A
+/// carried call is the origin's, never the carrier's: it is not reported.
+pub trait CallFailedObserver: Send + Sync {
+    /// A call this client opened ended with its attempts spent, its outcome already its owner's:
+    /// `receiver` is the birth it was addressed to (none for a call that names no birth, or whose
+    /// receiver never resolved), `reason` its stored end.
+    fn call_failed(&self, receiver: Option<&ResolvedNode>, reason: CallFailedReason);
+}
+
 /// A connection this process's server accepted from a live node (connections.md section 10,
 /// R-CN1): a recovery trigger for this node's own direct dial toward that exact birth, never
 /// Direct evidence. The acceptor writes nothing to its connections log.
@@ -188,6 +218,9 @@ pub struct NodeRpcClient {
     pool: Pool,
     /// The source-owned connections writer, when the process has one.
     observer: Option<Arc<dyn ConnectionObserver>>,
+    /// Told of each call this client opened that ends with its attempts spent, when the node
+    /// registered `on_call_failed`.
+    call_failed: Option<Arc<dyn CallFailedObserver>>,
     /// The system this process originates calls for (`rdm`, `rafka`); observability only.
     caller_system: Option<String>,
     /// Why this client opens no new connection now, while its source admits none
@@ -327,6 +360,7 @@ impl NodeRpcClient {
             resolver,
             pool: Pool::default(),
             observer: None,
+            call_failed: None,
             caller_system: None,
             admission: crate::pool::Admission::default(),
             delivery: Delivery::new(crate::delivery::minted_birth()),
@@ -410,6 +444,26 @@ impl NodeRpcClient {
     pub fn with_connection_observer(mut self, observer: Arc<dyn ConnectionObserver>) -> Self {
         self.observer = Some(observer);
         self
+    }
+
+    /// Hand this client what its node is told of a call that ends with its attempts spent
+    /// (fabric-node-hooks.md `on_call_failed`): each such call of this client is reported there once.
+    pub fn with_call_failed_observer(mut self, observer: Arc<dyn CallFailedObserver>) -> Self {
+        self.call_failed = Some(observer);
+        self
+    }
+
+    /// Report `out`, the end of a call whose attempts are spent, to the call-failed observer, once:
+    /// `NotSent` and `Indeterminate` only, and never for a carried call (the origin's, not this
+    /// node's).
+    pub(crate) fn tell_call_failed<R>(&self, opts: &CallOptions, receiver: Option<&ResolvedNode>, out: &RpcOutcome<R>) {
+        let Some(observer) = self.call_failed.as_ref().filter(|_| opts.carried.is_none()) else { return };
+        let reason = match out {
+            RpcOutcome::NotSent(n) => CallFailedReason::NotSent(n.reason().clone()),
+            RpcOutcome::Indeterminate(i) => CallFailedReason::Indeterminate(i.reason().clone()),
+            _ => return,
+        };
+        observer.call_failed(receiver, reason);
     }
 
     /// Name the originating system every call of this client carries (`rdm`, `rafka`).
@@ -847,7 +901,9 @@ impl NodeRpcClient {
                     span.in_scope(|| tracing::info!(step = "unresolved", attempt = spent, "the receiver is not in this caller's view: the attempt sent nothing"));
                     if spent >= allowed {
                         span.record("attempts", spent);
-                        return Err((PreCommit::begin(op).not_sent(r), None));
+                        let out = PreCommit::begin(op).not_sent(r);
+                        span.in_scope(|| self.tell_call_failed(opts, None, &out));
+                        return Err((out, None));
                     }
                     let mut changes = self.resolver.changes();
                     let moved = async {
@@ -915,7 +971,7 @@ impl NodeRpcClient {
             Some(d) => tokio::spawn(UnderDispatch { fut: Some(Box::pin(run)), dispatch: d }),
             None => tokio::spawn(run),
         };
-        Ok(ResendCall { guard, frames, attempted, state, evidence, attempts, _task: AbortOnDrop(Some(handle)) })
+        Ok(ResendCall { guard, frames, attempted, state, evidence, attempts, receiver: node.node.clone(), _task: AbortOnDrop(Some(handle)) })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -950,6 +1006,8 @@ impl NodeRpcClient {
         // frame: named when the attempts end (i146 Q38).
         let mut attempt_end: Option<AttemptEnd> = None;
         let mut slot_closed = false;
+        // The call ended because its attempts are spent: its node is told once it has ended.
+        let mut spent = false;
         let out = loop {
             let wait = async {
                 match deadline {
@@ -1007,6 +1065,7 @@ impl NodeRpcClient {
                     }
                     Some(Attempted::Spent) => {
                         span.record("delivery", "attempts-spent");
+                        spent = true;
                         break match (committed.take(), stopped.take(), pre.take()) {
                             (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyDeadline),
                             (None, Some(e), _) => decode(Decode::Early(e, None)),
@@ -1074,6 +1133,9 @@ impl NodeRpcClient {
         span.record("attempts", owed.attempts.load(std::sync::atomic::Ordering::SeqCst));
         let evidence = owed.evidence.lock().unwrap().clone();
         owed.close(out.reply().is_none()).await;
+        if spent {
+            self.tell_call_failed(opts, owed.receiver.as_ref(), &out);
+        }
         (out, Some(evidence))
     }
 }
@@ -1109,6 +1171,9 @@ pub(crate) struct ResendCall {
     pub(crate) state: watch::Receiver<SlotState>,
     pub(crate) evidence: Arc<Mutex<CallEvidence>>,
     pub(crate) attempts: Arc<std::sync::atomic::AtomicU32>,
+    /// The birth the call is addressed to, as its resolver named it at the open; `None` for a call
+    /// to an endpoint no record names.
+    pub(crate) receiver: Option<ResolvedNode>,
     /// The attempt task: aborted with the owner's hold.
     pub(crate) _task: AbortOnDrop,
 }

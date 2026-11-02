@@ -52,6 +52,14 @@ impl ProcessNodeRpc {
         Self { resolver: self.resolver, client: Arc::new(client) }
     }
 
+    /// Report each of this process's calls whose attempts are spent to `observer`, when the node
+    /// registered `on_call_failed` (fabric-node-hooks.md "on_call_failed").
+    pub fn with_call_failed_observer(self, observer: Option<Arc<dyn rdm_transport::CallFailedObserver>>) -> Self {
+        let Some(observer) = observer else { return self };
+        let client = (*self.client).clone().with_call_failed_observer(observer);
+        Self { resolver: self.resolver, client: Arc::new(client) }
+    }
+
     /// Feed this process's resolver from `digest_view` for as long as the returned task runs.
     pub fn feed(&self, digest_view: &DigestView, node: &str) -> tokio::task::JoinHandle<()> {
         spawn_feed(digest_view.clone(), self.resolver.clone(), node.to_string())

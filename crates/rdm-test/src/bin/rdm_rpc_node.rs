@@ -52,7 +52,8 @@ async fn main() {
         let pre_node_ready = match launch.data_dir.parent().map(|root| rdm_test::pre_node_ready_probe::KnobPreNodeReady::always(root, &launch.name)) {
             Some(hook) => rdm_test::node_hooks::NodeHooks::new(hook),
             None => rdm_test::node_hooks::NodeHooks::none(),
-        };
+        }
+        .with_on_call_failed(Arc::new(rdm_test::test_app::CallFailed));
         let register = |b, seams: rdm_test::originate::Seams| {
             let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch, &seams.name), seams.resolver.clone(), &launch, &seams.name), declare_client.clone(), &launch);
             rdm_test::originate::serve(b, seams, &launch)

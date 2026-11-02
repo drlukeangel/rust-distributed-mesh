@@ -1624,6 +1624,7 @@ mod tests {
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
             resubmits: Arc::default(),
+            on_node_investigated: None,
         };
         (recovery, nodes_storage, member)
     }
@@ -1867,6 +1868,7 @@ mod tests {
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
             resubmits: Arc::default(),
+            on_node_investigated: None,
         };
         assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the role");
         assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");
@@ -1991,6 +1993,72 @@ mod tests {
             assert_eq!(a.get("announced").map(String::as_str), Some(announced), "{status}: {a:?}");
             assert!(a.get("operation").is_some_and(|o| o == "mesh.delete") && a.get("operation_subject").is_some_and(|s| s.contains("Mesh(")), "{status}: the mesh.delete is named: {a:?}");
             eprintln!("span rdm.node_admin.build.reject.via-removal-announced trace_id={} {a:?}", rejects[0].trace_id);
+        }
+    }
+
+    /// CONTRACT (fabric-node-hooks.md "on_node_investigated", Q312: "Once it records a node
+    /// investigation's verdict on a node of its mesh, the mesh-primary calls `on_node_investigated`
+    /// once, with `NodeInvestigatedCtx { fabric_id, mesh_id, node_id, incarnation, path, name, verdict,
+    /// next, context }`, on a task of its own"): the mesh-primary's investigation of an unreached
+    /// member ends in the provider's verdict (`running`, `exited`), which opens the re-create, and the
+    /// application is told once, naming the exact birth, its mesh and fabric, the verdict and `next`
+    /// = `recreate`, under one `rdm.node_admin.node.update.via-on-node-investigated` span, a child of
+    /// the submit's span, whose trace context the notice carries. Must NOT happen: no notice, a second
+    /// notice for the one verdict, or a notice naming another birth or `rejoin`.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn an_investigation_whose_verdict_opens_a_recreate_tells_on_node_investigated_once_with_its_verdict_and_next() {
+        use crate::wiring::{NodeInvestigatedCtx, NodeInvestigatedNext, NodeInvestigatedVerdict};
+        use crate::deployment::provider::DeploymentStatus;
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-on-investigated")).unwrap();
+        for (status, verdict) in [(DeploymentStatus::Running, NodeInvestigatedVerdict::Running), (DeploymentStatus::Exited { code: Some(137) }, NodeInvestigatedVerdict::Exited)] {
+            let mut member = digest(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Ready);
+            member.node.runtime = Some(fact.clone());
+            let digest_view = DigestView::default();
+            for d in [digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready), member.clone()] {
+                digest_view.record(d);
+            }
+            let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+            let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
+            crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { kind: member.node.kind, mesh: member.node.mesh.clone(), node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
+            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: status.clone(), inspected: Default::default() });
+            let (mut recovery, _, node) = recovery_of(&view, digest_view, provider, nodes);
+            let told: Arc<Mutex<Vec<NodeInvestigatedCtx>>> = Arc::default();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            recovery.on_node_investigated = Some({
+                let told = told.clone();
+                Arc::new(move |ctx: NodeInvestigatedCtx| {
+                    told.lock().unwrap().push(ctx);
+                    let _ = tx.send(());
+                    Box::pin(async {})
+                })
+            });
+            let capture = crate::span_capture::Capture::new(&format!("i151-on-node-investigated-{}", verdict.as_str()));
+            {
+                // Held until the notice's task has run on this thread: its span, a child of the submit's,
+                // releases the submit's span through this thread's dispatcher when it closes.
+                let _g = tracing::dispatcher::set_default(&capture.dispatch);
+                recovery.recover(&node).await;
+                tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.expect("on_node_investigated is called on its own task").expect("told");
+                // Anything a second notice would have sent is in by now: the verdict's one recover has returned.
+                tokio::task::yield_now().await;
+            }
+            let told = told.lock().unwrap().clone();
+            assert_eq!(told.len(), 1, "{}: one notice for the one verdict: {told:?}", verdict.as_str());
+            let ctx = &told[0];
+            assert_eq!((ctx.verdict, ctx.next), (verdict, NodeInvestigatedNext::Recreate), "the verdict recorded and the re-create it opens");
+            assert_eq!((&ctx.node_id, &ctx.incarnation, ctx.path.as_str(), ctx.name.as_str()), (&member.node.node_id, &member.node.incarnation, "mesh2.rpc", "1"), "the exact birth investigated");
+            assert_eq!((&ctx.fabric_id, &ctx.mesh_id), (&fabric1(), &mesh_id("mesh2")), "its fabric and mesh");
+            let notices = capture.named("rdm.node_admin.node.update.via-on-node-investigated");
+            assert_eq!(notices.len(), 1, "one notice span: {notices:?}");
+            let a = &notices[0].attributes;
+            let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+            assert_eq!((attr("verdict"), attr("next"), attr("outcome"), attr("node_id")), (verdict.as_str().to_string(), "recreate".to_string(), "sent".to_string(), member.node.node_id.to_string()), "{a:?}");
+            let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+            assert_eq!(submits.len(), 1, "the verdict's one submit: {submits:?}");
+            assert_eq!(notices[0].trace_id, submits[0].trace_id, "the notice is in the submit's trace");
+            assert!(ctx.context.traceparent.as_deref().is_some_and(|tp| tp.contains(&submits[0].trace_id)), "the notice carries the investigation's trace context: {:?}", ctx.context);
+            eprintln!("span rdm.node_admin.node.update.via-on-node-investigated trace_id={} {a:?}", notices[0].trace_id);
         }
     }
 

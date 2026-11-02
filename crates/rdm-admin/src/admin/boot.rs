@@ -431,6 +431,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let listener_names = crate::deployment::endpoint::ListenerNames::read(&wiring.listeners)?;
     let fabric_hooks = wiring.fabric_hooks.clone();
     let build_notices = crate::build_drive::BuildNotices::of(cfg.fabric_id.clone(), &fabric_hooks);
+    // The application's `on_node_investigated`: told by this admin, as its mesh's primary, of each
+    // verdict it records on a node of its mesh (fabric-node-hooks.md, Q312).
+    let on_node_investigated = fabric_hooks.on_node_investigated.clone();
     // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
     // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
     // reads this one reader.
@@ -791,7 +794,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
     // and its client and its server share the windows and the open invocations.
     let delivery = rdm_transport::Delivery::new(rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() });
-    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone()).with_delivery(delivery.clone());
+    // The name this admin holds, read per call: its boot name until its topology view holds it. Each
+    // call of this admin whose attempts are spent is told to its `on_call_failed`, when the app
+    // registered one (fabric-node-hooks.md "on_call_failed").
+    let held_name = rdm_node::held_name::HeldName::of_birth(name.clone());
+    let call_failed = wiring.node_hooks.call_failed_observer(node_id.clone(), incarnation.clone(), held_name.clone());
+    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone()).with_delivery(delivery.clone()).with_call_failed_observer(call_failed);
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1384,6 +1392,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     .insert(cfg.mesh.clone(), mesh_id.clone());
                                 let digest_view = topology_view.digest_view.clone();
                                 let node_rpc_feed = node_rpc.feed(&digest_view, &node_id.to_string());
+                                {
+                                    let (held, boot_name) = (digest_view.clone(), name.clone());
+                                    let _ = held_name.follow(move || held.held_path_name().unwrap_or_else(|| boot_name.clone()));
+                                }
                                 let control = Arc::new(
                                     ControlPlane::new(
                                         builds_dyn.clone(),
@@ -1716,7 +1728,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 issuer: issuer.clone(),
                             });
                             let _ = runner_slot.set(runner.clone());
-                            let _ = heard_again_slot.set(Arc::new(crate::heard_again::HeardAgain { client: node_rpc.client.clone(), status_door: status_door.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone(), digest_view: topology_view.digest_view.clone() }));
+                            let _ = heard_again_slot.set(Arc::new(crate::heard_again::HeardAgain { client: node_rpc.client.clone(), status_door: status_door.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone(), digest_view: topology_view.digest_view.clone(), on_node_investigated: on_node_investigated.clone() }));
                             // What the provider holds recorded at a path: the proof of a node the accepted topology names
                             // that no view and no durable runtime row holds a birth of (mesh-investigation.md step 5).
                             records.set_path_probe(runner.clone());
@@ -2508,6 +2520,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         .unwrap_or_else(|| cfg.data_dir.clone()),
                                                     gone_dirs: Arc::default(),
                                                     resubmits: Arc::default(),
+                                                    on_node_investigated: on_node_investigated.clone(),
                                                 };
                                                 // A refused caller (Q207) is decided by its path and name and this admin's atlas, and acts
                                                 // through this recovery submitter's terminate report and the heard-again door.

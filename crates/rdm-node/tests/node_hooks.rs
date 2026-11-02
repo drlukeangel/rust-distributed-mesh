@@ -1,4 +1,5 @@
-//! Functional cells for `pre-node-ready` (`docs/architecture/fabric-node-hooks.md:29`).
+//! Functional cells for `pre-node-ready` (`docs/architecture/fabric-node-hooks.md:29`), `on_node_ready`
+//! and `on_call_failed`.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
@@ -9,14 +10,16 @@ use rdm_core::{
     EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId,
     NodeKind, PathName,
 };
+use rdm_node::held_name::HeldName;
 use rdm_node::node_hooks::{
-    AcceptingPrimarySource, Addressed, Birth, End, Events, HookOutcome, NoAcceptingPrimary,
-    NodeHooks, NodeReadyCtx, OnNodeReady, PreNodeReady, RetryOn, StartKind, Step,
+    AcceptingPrimarySource, Addressed, Birth, CallFailedBirth, CallFailedCtx, CallFailedReason, End,
+    Events, HookOutcome, NoAcceptingPrimary, NodeHooks, NodeReadyCtx, OnCallFailed, OnNodeReady,
+    PreNodeReady, RetryOn, StartKind, Step,
 };
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{
-    CallOptions, CancelToken, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder,
-    StaticResolver, ALPN,
+    CallOptions, CancelToken, NodeRpcClient, NodeTarget, Resend, ResolvedNode, ServedBirth,
+    ServerBuilder, StaticResolver, TimeLimit, ALPN,
 };
 use std::sync::{Arc, Mutex};
 
@@ -515,4 +518,118 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
         }),
         "expected rdm.mesh.node.update.via-on-node-ready span: {spans:?}"
     );
+}
+
+/// The application's `on_call_failed` in the cells: every notice it is told, and a signal per notice.
+struct RecordCallFailed {
+    told: Mutex<Vec<CallFailedCtx>>,
+    tx: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+#[async_trait::async_trait]
+impl OnCallFailed for RecordCallFailed {
+    async fn on_call_failed(&self, ctx: &CallFailedCtx) {
+        self.told.lock().unwrap().push(ctx.clone());
+        let _ = self.tx.send(());
+    }
+}
+
+// @feature: on-call-failed
+/// CONTRACT: docs/architecture/fabric-node-hooks.md "on_call_failed" (Q314, Q322)
+/// "When a call this node opened ends with its attempts spent, RDM calls `on_call_failed` once, with
+///  `CallFailedCtx { sender, receiver, reason }`, on a task of its own, after the call has ended to its
+///  owner. `sender` and `receiver` are each the birth's `(node_id, incarnation, path, name)`; `reason` is
+///  the call's stored end, `NotSent` with its reason (nothing reached the receiver) or `Indeterminate`
+///  with its reason"
+/// A call to a birth whose endpoint is gone spends its two attempts and ends `NotSent` to its owner;
+/// the node's hook is then told once, naming this node's birth, the receiver's birth and the very
+/// reason the owner holds, under one `rdm.mesh.node.update.via-on-call-failed` span. A call its
+/// receiver answers is never told. Must NOT happen: no notice for the spent call, a second notice for
+/// it, a notice for the answered call, or a notice naming another birth or reason.
+#[test]
+fn a_spent_call_calls_on_call_failed_once_with_both_births_and_its_reason_and_an_answered_call_never_does() {
+    let dir = std::env::temp_dir().join(format!("rdm-on-call-failed-func-{}", NodeId::mint()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-on-call-failed-functional")
+        .expect("evidence capture starts");
+
+    let (told, sender, gone) = capture.run(2, async {
+        // The receiver that answers: Ping served.
+        let live_id = NodeId::mint();
+        let live_inc = IncarnationId::mint();
+        let live_key = SecretKey::generate();
+        let live_ep = rdm_transport::endpoint::bind(live_key.clone(), "127.0.0.1:0".parse().expect("addr")).await.expect("bind live ep");
+        let live_addr = live_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4");
+        let server = ServerBuilder::new()
+            .serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
+                let PingRequest::Ping { payload } = req;
+                Ok(PingReply::Pong { payload })
+            })
+            .build(ServedBirth { node_id: live_id.to_string(), incarnation: live_inc.to_string() })
+            .expect("build server");
+        let router = Router::builder(live_ep.clone()).accept(ALPN, server).spawn();
+        // The receiver whose endpoint is gone: bound, then closed, so nothing answers at its address.
+        let gone_key = SecretKey::generate();
+        let gone_ep = rdm_transport::endpoint::bind(gone_key.clone(), "127.0.0.1:0".parse().expect("addr")).await.expect("bind gone ep");
+        let gone_addr = gone_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("ipv4");
+        gone_ep.close().await;
+        let gone = ResolvedNode { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+            node_id: NodeId::mint(),
+            name: PathName::numbered("mesh1", NodeKind::RpcNode, 2),
+            endpoint_id: gone_key.public(),
+            transport_addr: gone_addr,
+            incarnation: IncarnationId::mint(),
+        };
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode { kind: NodeKind::RpcNode, mesh: "mesh1".to_owned(),
+            node_id: live_id.clone(),
+            name: PathName::numbered("mesh1", NodeKind::RpcNode, 1),
+            endpoint_id: live_key.public(),
+            transport_addr: live_addr,
+            incarnation: live_inc.clone(),
+        });
+        resolver.insert(gone.clone());
+
+        // The calling node: its hook registered as every node's is, through its NodeHooks.
+        let sender = CallFailedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: PathName::numbered("mesh1", NodeKind::Gateway, 1) };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let hook = Arc::new(RecordCallFailed { told: Mutex::new(Vec::new()), tx });
+        let hooks = NodeHooks::none().with_on_call_failed(hook.clone());
+        let observer = hooks.call_failed_observer(sender.node_id.clone(), sender.incarnation.clone(), HeldName::of_birth(sender.name.clone())).expect("on_call_failed is registered");
+        let caller_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().expect("addr")).await.expect("bind caller ep");
+        let client = NodeRpcClient::new(caller_ep.clone(), resolver).with_call_failed_observer(observer);
+
+        // 1. The answered call ends `Reply`: nothing is told.
+        let (answered, _) = client.call::<Ping>(&NodeTarget::ExactNode(live_id.clone()), &PingRequest::Ping { payload: b"answered".to_vec() }, &CallOptions::default()).await;
+        assert!(matches!(answered, RpcOutcome::Reply(_)), "the live receiver answers: {answered:?}");
+
+        // 2. The spent call: two attempts, each bounded at 500 ms, to the gone endpoint.
+        let opts = CallOptions { resend: Resend { attempts: 2, time_limit: TimeLimit(std::time::Duration::from_millis(500)) }, ..CallOptions::default() };
+        let (spent, _) = client.call::<Ping>(&NodeTarget::ExactNode(gone.node_id.clone()), &PingRequest::Ping { payload: b"spent".to_vec() }, &opts).await;
+        let reason = match &spent {
+            RpcOutcome::NotSent(n) => CallFailedReason::NotSent(n.reason().clone()),
+            other => panic!("a call to a gone endpoint ends NotSent once its attempts are spent: {other:?}"),
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await.expect("on_call_failed is called on its own task").expect("told");
+        // A second notice, or one for the answered call, would be on its own task by now: the two
+        // calls have ended and their reports were made before each returned.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let told = hook.told.lock().unwrap().clone();
+        assert_eq!(told.len(), 1, "one notice, for the spent call only: {told:?}");
+        assert_eq!(told[0].reason, reason, "the reason the owner holds");
+        router.shutdown().await.ok();
+        caller_ep.close().await;
+        (told, sender, gone)
+    });
+
+    let ctx = &told[0];
+    assert_eq!(ctx.sender, sender, "this node's birth");
+    assert_eq!(ctx.receiver, Some(CallFailedBirth { node_id: gone.node_id.clone(), incarnation: gone.incarnation.clone(), name: gone.name.clone() }), "the birth the call was addressed to");
+    let spans = capture.spans().expect("captured spans");
+    let _ = std::fs::remove_dir_all(&dir);
+    let notices: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-on-call-failed").collect();
+    assert_eq!(notices.len(), 1, "one notice span: {notices:?}");
+    let a = &notices[0]["attributes"];
+    assert_eq!((a["node_id"].as_str(), a["receiver_node_id"].as_str(), a["outcome"].as_str()), (Some(sender.node_id.as_str()), Some(gone.node_id.as_str()), Some("NotSent")), "{a:?}");
+    eprintln!("span rdm.mesh.node.update.via-on-call-failed {}", notices[0]);
 }

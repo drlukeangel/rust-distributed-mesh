@@ -6,7 +6,8 @@
 //! a node-admin (a consumer's own, or a testkit's) wrap each of them once before the admin runs. The
 //! product passes [`Wiring::default`]: nothing is wrapped. Application work enters a lifecycle only
 //! through the [Fabric and node hooks](../../../guide/architecture/fabric-node-hooks.html)
-//! (`pre_node_ready`, `on_node_ready`, `on_mesh_ready`, `on_fabric_ready`, `on_build_started`, `on_build_ended`; build.md §9): the
+//! (`pre_node_ready`, `on_node_ready`, `on_call_failed`, `on_mesh_ready`, `on_fabric_ready`, `on_build_started`, `on_build_ended`,
+//! `on_node_investigated`; build.md §9): the
 //! admin's transition pipeline registers no application hook. The core carries no fault code; a
 //! decorator that delays, refuses or records lives in the executable that passes it.
 
@@ -178,6 +179,79 @@ pub struct BuildEndedCtx {
     pub context: CallContext,
 }
 
+/// A node investigation's verdict as `on_node_investigated` carries it (node-investigation.md:
+/// `reached`, `running`, `os-stopped`, `exited` or `unproven`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeInvestigatedVerdict {
+    /// The exact birth answered, or was heard again by its digest.
+    Reached,
+    /// The provider inspected its exact runtime and it still runs.
+    Running,
+    /// The provider inspected its exact runtime and the operating system holds it suspended.
+    OsStopped,
+    /// The provider inspected its exact runtime and it exited.
+    Exited,
+    /// Nothing tells the birth gone or alive.
+    Unproven,
+}
+
+impl NodeInvestigatedVerdict {
+    /// The verdict's name, as node-investigation.md and the notice's span carry it.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Reached => "reached",
+            Self::Running => "running",
+            Self::OsStopped => "os-stopped",
+            Self::Exited => "exited",
+            Self::Unproven => "unproven",
+        }
+    }
+}
+
+/// What RDM does with an investigated birth (node-investigation.md "What follows").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeInvestigatedNext {
+    /// Commanded back through node.mesh.join.
+    Rejoin,
+    /// Re-created at the same path and name with a new node.id.
+    Recreate,
+}
+
+impl NodeInvestigatedNext {
+    /// The name, as the notice's span carries it: `rejoin` or `recreate`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rejoin => "rejoin",
+            Self::Recreate => "recreate",
+        }
+    }
+}
+
+/// What `on_node_investigated` is told (Q312): the investigated birth, the verdict its mesh-primary
+/// recorded, what RDM does with the birth next, and the investigation's observability context
+/// (`docs/architecture/fabric-node-hooks.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeInvestigatedCtx {
+    /// The fabric.
+    pub fabric_id: rdm_core::FabricId,
+    /// The birth's mesh.
+    pub mesh_id: rdm_core::MeshId,
+    /// The birth's node id.
+    pub node_id: rdm_core::NodeId,
+    /// The birth's incarnation.
+    pub incarnation: rdm_core::IncarnationId,
+    /// The birth's path.
+    pub path: String,
+    /// The birth's name.
+    pub name: String,
+    /// The investigation's verdict.
+    pub verdict: NodeInvestigatedVerdict,
+    /// What RDM does with the birth: `rejoin` or `recreate`.
+    pub next: NodeInvestigatedNext,
+    /// The investigation's observability context.
+    pub context: CallContext,
+}
+
 /// What `on_mesh_ready` is told: the fabric and the mesh that is ready
 /// (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +302,11 @@ pub type BuildStartedNotice = Arc<dyn Fn(BuildStartedCtx) -> Pin<Box<dyn Future<
 /// recorded (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type BuildEndedNotice = Arc<dyn Fn(BuildEndedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+/// `on_node_investigated`: the notice a mesh-primary calls once it records a node investigation's
+/// verdict on a node of its mesh (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it
+/// gates nothing.
+pub type NodeInvestigatedNotice = Arc<dyn Fn(NodeInvestigatedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
 /// The application's notices a node-admin calls
 /// ([fabric and node hooks](../../../guide/architecture/fabric-node-hooks.html),
 /// `docs/architecture/fabric-node-hooks.md`).
@@ -241,12 +320,14 @@ pub struct FabricHooks {
     pub on_build_started: Option<BuildStartedNotice>,
     /// `on_build_ended`: optional, because it gates nothing.
     pub on_build_ended: Option<BuildEndedNotice>,
+    /// `on_node_investigated`: optional, because it gates nothing.
+    pub on_node_investigated: Option<NodeInvestigatedNotice>,
 }
 
 impl FabricHooks {
     /// The hooks of an embedding with no application work: no notice.
     pub fn no_app_work() -> Self {
-        Self { on_mesh_ready: None, on_fabric_ready: None, on_build_started: None, on_build_ended: None }
+        Self { on_mesh_ready: None, on_fabric_ready: None, on_build_started: None, on_build_ended: None, on_node_investigated: None }
     }
 }
 

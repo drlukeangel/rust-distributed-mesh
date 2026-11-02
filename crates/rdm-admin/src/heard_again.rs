@@ -40,6 +40,9 @@ pub struct HeardAgain {
     pub runner: Arc<OnceLock<Arc<crate::admin::runner::AdminRunner>>>,
     /// This admin's digest view: whether the birth has been heard ready since.
     pub digest_view: DigestView,
+    /// The application's `on_node_investigated`, told when this admin, its mesh's primary, commands a
+    /// reached birth of its mesh back (Q312).
+    pub on_node_investigated: Option<crate::wiring::NodeInvestigatedNotice>,
 }
 
 /// The handle, once this admin's runner is built.
@@ -50,7 +53,7 @@ impl HeardAgain {
     pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
         let outcome = match self.runner.get() {
             None => "no-runner".to_string(),
-            Some(runner) => command_mesh_join(&self.client, &self.status_door, &self.builds, runner, &self.digest_view, node, incarnation).await,
+            Some(runner) => command_mesh_join(&self.client, &self.status_door, &self.builds, runner, &self.digest_view, self.on_node_investigated.as_ref(), node, incarnation).await,
         };
         // A command not sent is spanned too, with why: the flame of a birth left off its mesh reads it.
         if !outcome.starts_with("mesh-joined") && !outcome.starts_with("commanded") {
@@ -70,6 +73,7 @@ async fn command_mesh_join(
     builds: &Arc<dyn crate::build_state::BuildStateAdapter>,
     runner: &crate::admin::runner::AdminRunner,
     digest_view: &DigestView,
+    on_node_investigated: Option<&crate::wiring::NodeInvestigatedNotice>,
     node: &Node,
     incarnation: &IncarnationId,
 ) -> String {
@@ -152,9 +156,16 @@ async fn command_mesh_join(
         }
         // Commands go down (node-mesh-join.md, Commander): read in the view as it stands at the send, not
         // the one the look began in, where this admin may since have stopped being the mesh's primary.
-        if let Err(why) = commands_join(&*status_door.topology.read().await, &status_door.node_id, node) {
+        let view = status_door.topology.read().await;
+        if let Err(why) = commands_join(&view, &status_door.node_id, node) {
             return format!("not-commander: {why}");
         }
+        // The mesh-primary of the birth's mesh tells the application the verdict it records, reached,
+        // and that the birth is commanded back (fabric-node-hooks.md "on_node_investigated"); the
+        // fabric-primary commanding a mesh-primary back is not a mesh-primary's investigation.
+        let own_mesh = view.is_mesh_primary(&node.mesh, &status_door.node_id);
+        let notice = own_mesh.then(|| crate::node_investigation::fabric_and_mesh_of(&view, node));
+        drop(view);
         // The join the command makes the birth report is verified against the deployment this admin
         // holds of it (node-mesh-join.md step 4): the live birth is registered as a start after a
         // stop registers a stopped one, from its runtime handle and its admitted digest.
@@ -169,6 +180,9 @@ async fn command_mesh_join(
         // as every command of the authority is: the birth's lifecycle is the command's until then.
         let command = crate::node_commands::CommandKey { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         let _ = status_door.commands.open(command.clone());
+        if let Some(ids) = notice {
+            crate::node_investigation::notify_node_investigated(on_node_investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedVerdict::Reached, crate::wiring::NodeInvestigatedNext::Rejoin);
+        }
         let req = StatusRequest::JoinMesh {
             node_id: node.node_id.clone(),
             incarnation: incarnation.clone(),

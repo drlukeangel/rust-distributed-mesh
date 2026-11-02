@@ -542,10 +542,19 @@ async fn start_booted(
     // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
     // and its clients and its server share the windows and the open invocations.
     let delivery = rdm_transport::Delivery::new(rdm_core::framing::Birth { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() });
-    let client = Arc::new(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_delivery(delivery.clone()));
+    // The name this birth holds, read per call by every door that names it: its launch's until it joins.
+    let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());
+    // Each call of this node whose attempts are spent is told to its `on_call_failed`, when the app
+    // registered one (fabric-node-hooks.md "on_call_failed"), from either of its clients.
+    let call_failed = node_hooks.call_failed_observer(launch.node_id.clone(), launch.incarnation.clone(), held_name.clone());
+    let told = |c: rdm_transport::NodeRpcClient| match &call_failed {
+        Some(o) => c.with_call_failed_observer(o.clone()),
+        None => c,
+    };
+    let client = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_delivery(delivery.clone())));
     // The data plane of RDM standalone: the originate door's own client, whose dials are the
     // connections this node originates for traffic, each a Direct entry of its log.
-    let data_plane = Arc::new(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()));
+    let data_plane = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone())));
     // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy delete
     // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
@@ -569,8 +578,6 @@ async fn start_booted(
     let reconciler = crate::connection_reconnect::spawn_alpn_reconciler(&connections, crate::connection_reconnect::RECONCILER_TICK, alpn_dial);
     // The status kick (node-identity-and-state.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
-    // The name this birth holds, read per call by every door that names it: its launch's until it joins.
-    let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());
     let seams = NodeSeams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), name: held_name.clone() };
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // node.primary.update (op 0x21) on a node that is not a node-admin (lifecycles/node-primary-update.md):

@@ -19,6 +19,10 @@
 //! One span per attempt (`rdm.mesh.node.update.via-pre-node-ready-attempt`) under the boot span carries
 //! the outcome and the blocker or reason; `via-ready` follows the successful attempt.
 //! [`OnNodeReady`] is for optional work only: nothing required may live there.
+//!
+//! [`OnCallFailed`] is a notice on every node: once per call it opened whose attempts are spent, on a
+//! task of its own under `rdm.mesh.node.update.via-on-call-failed`, after the call has ended to its
+//! owner (`fabric-node-hooks.md` "on_call_failed"). It gates nothing.
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rdm_core::{MemberStatus, MeshDigest};
@@ -188,11 +192,48 @@ pub trait OnNodeReady: Send + Sync {
     async fn on_node_ready(&self, ctx: &NodeReadyCtx);
 }
 
+/// One birth as `on_call_failed` names it: `(node_id, incarnation, path, name)` (Q314).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallFailedBirth {
+    /// Its node id.
+    pub node_id: NodeId,
+    /// Its incarnation.
+    pub incarnation: IncarnationId,
+    /// Its `(path, name)`, the name the birth holds at the call's end.
+    pub name: PathName,
+}
+
+/// Why the call ended: `NotSent` with its reason or `Indeterminate` with its reason, the end the
+/// call's span stores.
+pub use rdm_transport::CallFailedReason;
+
+/// What `on_call_failed` is told (Q314, Q322): the calling birth, the birth the call was addressed
+/// to, and the call's stored end, and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallFailedCtx {
+    /// This node's birth: the call's sender.
+    pub sender: CallFailedBirth,
+    /// The birth the call was addressed to; `None` for a call that names no birth (an endpoint no
+    /// record names) or whose receiver never resolved in this node's view.
+    pub receiver: Option<CallFailedBirth>,
+    /// The call's stored end.
+    pub reason: CallFailedReason,
+}
+
+/// A notice on every node: one of its calls ended with its attempts spent (`fabric-node-hooks.md`
+/// "on_call_failed"). It gates nothing: the call's owner already has its outcome by name.
+#[async_trait::async_trait]
+pub trait OnCallFailed: Send + Sync {
+    /// Run once per spent call, on a task of its own, after the call has ended to its owner.
+    async fn on_call_failed(&self, ctx: &CallFailedCtx);
+}
+
 /// What an embedding app registers, before RDM starts.
 #[derive(Clone, Default)]
 pub struct NodeHooks {
     before: Option<Arc<dyn PreNodeReady>>,
     after: Option<Arc<dyn OnNodeReady>>,
+    call_failed: Option<Arc<dyn OnCallFailed>>,
     gate: PreNodeReadyGate,
 }
 
@@ -232,6 +273,20 @@ impl NodeHooks {
         self
     }
 
+    /// Also tell `on_call_failed` of each of this node's calls whose attempts are spent.
+    pub fn with_on_call_failed(mut self, hook: Arc<dyn OnCallFailed>) -> Self {
+        self.call_failed = Some(hook);
+        self
+    }
+
+    /// What this node's Node RPC clients report a spent call to (`fabric-node-hooks.md`
+    /// "on_call_failed"), the birth `node_id` at `incarnation` the sender, its name read per call
+    /// from `name`; `None` when no `on_call_failed` is registered.
+    pub fn call_failed_observer(&self, node_id: NodeId, incarnation: IncarnationId, name: crate::held_name::HeldName) -> Option<Arc<dyn rdm_transport::CallFailedObserver>> {
+        let hook = self.call_failed.clone()?;
+        Some(Arc::new(CallFailedNotice { hook, node_id, incarnation, name }))
+    }
+
     /// The gate RDM opens when the hook passes. The app clones it into its own server-side ops
     /// (`ServerBuilder::serve_gated`) before RDM starts.
     pub fn gate(&self) -> PreNodeReadyGate {
@@ -241,6 +296,47 @@ impl NodeHooks {
     /// Whether a hook is registered.
     pub fn is_registered(&self) -> bool {
         self.before.is_some()
+    }
+}
+
+/// The client's report of a spent call, turned into the `on_call_failed` notice: one task per call,
+/// under `rdm.mesh.node.update.via-on-call-failed`, a child of the call's span.
+struct CallFailedNotice {
+    hook: Arc<dyn OnCallFailed>,
+    node_id: NodeId,
+    incarnation: IncarnationId,
+    name: crate::held_name::HeldName,
+}
+
+impl rdm_transport::CallFailedObserver for CallFailedNotice {
+    fn call_failed(&self, receiver: Option<&rdm_transport::ResolvedNode>, reason: CallFailedReason) {
+        let ctx = CallFailedCtx {
+            sender: CallFailedBirth { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.name.now() },
+            receiver: receiver.map(|r| CallFailedBirth { node_id: r.node_id.clone(), incarnation: r.incarnation.clone(), name: r.name.clone() }),
+            reason,
+        };
+        let span = tracing::info_span!(
+            "rdm.mesh.node.update.via-on-call-failed",
+            node_path = %ctx.sender.name.path,
+            node_name = %ctx.sender.name.name,
+            node_id = %ctx.sender.node_id,
+            incarnation_id = %ctx.sender.incarnation.as_str(),
+            receiver_path = %ctx.receiver.as_ref().map(|r| r.name.path.as_str()).unwrap_or_default(),
+            receiver_name = %ctx.receiver.as_ref().map(|r| r.name.name.as_str()).unwrap_or_default(),
+            receiver_node_id = %ctx.receiver.as_ref().map(|r| r.node_id.to_string()).unwrap_or_default(),
+            receiver_incarnation_id = %ctx.receiver.as_ref().map(|r| r.incarnation.as_str().to_string()).unwrap_or_default(),
+            outcome = ctx.reason.name(),
+            reason = ?ctx.reason,
+            "otel.kind" = "internal",
+        );
+        let hook = self.hook.clone();
+        tokio::spawn(
+            async move {
+                hook.on_call_failed(&ctx).await;
+                tracing::info!("the application was told the call's attempts are spent");
+            }
+            .instrument(span),
+        );
     }
 }
 

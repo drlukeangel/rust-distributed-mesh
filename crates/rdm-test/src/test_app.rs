@@ -1,6 +1,7 @@
 //! The testkit's application: it takes the fabric's notices the way an embedding does.
 //!
-//! `on_mesh_ready` and `on_fabric_ready` (Q175), `on_build_started` and `on_build_ended` (Q256) each only record a span. A scenario that holds a fabric
+//! `on_mesh_ready` and `on_fabric_ready` (Q175), `on_build_started` and `on_build_ended` (Q256), `on_node_investigated` (Q312)
+//! and every node's `on_call_failed` (Q314, [`CallFailed`]) each only record a span. A scenario that holds a fabric
 //! short of ready holds a node's `pre_node_ready` (`crate::write_pre_node_ready_knob`), as an
 //! application holds its own node.
 //!
@@ -18,7 +19,7 @@
 //! application's backend that answers its list with a named error), its claims answered; and a fourth,
 //! [`TOPOLOGY_STORAGE_MEMORY`], RDM's memory backend, whose boundaries open and whose lines do not.
 
-use rdm_admin::wiring::{BuildEndedCtx, BuildStartedCtx, FabricHooks, FabricReadyCtx, MeshReadyCtx};
+use rdm_admin::wiring::{BuildEndedCtx, BuildStartedCtx, FabricHooks, FabricReadyCtx, MeshReadyCtx, NodeInvestigatedCtx};
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -177,5 +178,28 @@ pub fn hooks() -> FabricHooks {
         let span = tracing::info_span!("rdm.testkit.app.update.via-on-build-ended", fabric_id = %ended.fabric_id, build_id = %ended.build_id, attempt = ended.attempt, reason = ended.reason.as_str(), state = ended.state.as_str(), "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application was told the Build ended") }.instrument(span))
     });
-    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended) }
+    let on_node_investigated: rdm_admin::wiring::NodeInvestigatedNotice = Arc::new(|told: NodeInvestigatedCtx| {
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-node-investigated", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, incarnation_id = %told.incarnation.as_str(), node_path = %told.path, node_name = %told.name, verdict = told.verdict.as_str(), next = told.next.as_str(), "otel.kind" = "internal");
+        Box::pin(async move { tracing::info!("the application was told a node investigation's verdict") }.instrument(span))
+    });
+    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended), on_node_investigated: Some(on_node_investigated) }
+}
+
+/// The testkit application's `on_call_failed`, on every node it runs: it records a span.
+pub struct CallFailed;
+
+#[async_trait::async_trait]
+impl rdm_node::node_hooks::OnCallFailed for CallFailed {
+    async fn on_call_failed(&self, ctx: &rdm_node::node_hooks::CallFailedCtx) {
+        let receiver = ctx.receiver.as_ref();
+        tracing::info_span!(
+            "rdm.testkit.app.update.via-on-call-failed",
+            node_id = %ctx.sender.node_id,
+            receiver_node_id = %receiver.map(|r| r.node_id.to_string()).unwrap_or_default(),
+            receiver_incarnation_id = %receiver.map(|r| r.incarnation.as_str().to_string()).unwrap_or_default(),
+            outcome = ctx.reason.name(),
+            "otel.kind" = "internal",
+        )
+        .in_scope(|| tracing::info!("the application was told one of its calls' attempts are spent"));
+    }
 }

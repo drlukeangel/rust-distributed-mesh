@@ -190,6 +190,67 @@ pub async fn inspect_birth_with_handle(provider: &dyn crate::deployment::provide
     }
 }
 
+/// The fabric and the mesh `node` is in, as `view` holds them: what `on_node_investigated` names
+/// besides the birth. The mesh's id is `None` while the view holds none for it.
+pub(crate) fn fabric_and_mesh_of(view: &Topology, node: &Node) -> (rdm_core::FabricId, Option<rdm_core::MeshId>) {
+    (view.fabric.id.clone(), view.meshes.iter().find(|m| m.name == node.mesh).and_then(|m| m.id.clone()))
+}
+
+/// `on_node_investigated` (fabric-node-hooks.md, Q312): once the mesh-primary records a node
+/// investigation's `verdict` on `node`'s birth at `incarnation`, and RDM does `next` with it, the
+/// application is told, once, on a task of its own, under
+/// `rdm.node_admin.node.update.via-on-node-investigated`, a child of the span current here, whose
+/// trace context the notice carries. `ids` are the fabric's and the birth's mesh's
+/// ([`fabric_and_mesh_of`]). It gates nothing and orders nothing.
+pub(crate) fn notify_node_investigated(hook: Option<&crate::wiring::NodeInvestigatedNotice>, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, next: crate::wiring::NodeInvestigatedNext) {
+    use tracing::Instrument as _;
+    let context = crate::build_claim::current_context();
+    let (fabric_id, mesh_id) = ids;
+    let span = tracing::info_span!(
+        "rdm.node_admin.node.update.via-on-node-investigated",
+        node_path = %node.name.path, node_name = %node.name.name,
+        node_id = %node.node_id,
+        incarnation_id = %incarnation.as_str(),
+        mesh = %node.mesh,
+        verdict = verdict.as_str(),
+        next = next.as_str(),
+        outcome = tracing::field::Empty,
+        "otel.kind" = "internal",
+    );
+    let (hook, mesh_id) = match (hook.cloned(), mesh_id) {
+        (Some(hook), Some(mesh_id)) => (hook, mesh_id),
+        (None, _) => {
+            span.record("outcome", "no-hook");
+            span.in_scope(|| tracing::info!("no on_node_investigated hook is registered"));
+            return;
+        }
+        (Some(_), None) => {
+            span.record("outcome", "no-mesh-id");
+            span.in_scope(|| tracing::info!("this admin's view holds no id for the birth's mesh: the notice is not sent"));
+            return;
+        }
+    };
+    span.record("outcome", "sent");
+    let ctx = crate::wiring::NodeInvestigatedCtx {
+        fabric_id,
+        mesh_id,
+        node_id: node.node_id.clone(),
+        incarnation: incarnation.clone(),
+        path: node.name.path.clone(),
+        name: node.name.name.clone(),
+        verdict,
+        next,
+        context,
+    };
+    tokio::spawn(
+        async move {
+            hook(ctx).await;
+            tracing::info!("the application was told the node investigation's verdict");
+        }
+        .instrument(span),
+    );
+}
+
 /// node.runtime.inspect's span (node-runtime-inspect.md "Observability contract"), the one every
 /// caller's inspection emits: `inspector` the caller's node ID, `handle` the exact runtime handle the
 /// provider was asked about (empty when nothing was asked), `verdict` the provider's answer and `why`

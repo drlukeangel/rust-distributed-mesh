@@ -597,7 +597,9 @@ impl NodeRpcClient {
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::Spent) => {
                         span.record("delivery", "attempts-spent");
-                        break pre.take().expect("pre-commit").not_sent(last.clone());
+                        let out = pre.take().expect("pre-commit").not_sent(last.clone());
+                        span.in_scope(|| self.tell_call_failed(opts, owed.receiver.as_ref(), &out));
+                        break out;
                     }
                     Some(Attempted::StoppedBeforeComplete) => {
                         // Refused before the request was complete: the refusal is the stream's one frame.
@@ -662,6 +664,7 @@ mod tests {
             guard, frames, attempted, state,
             evidence: Arc::new(std::sync::Mutex::new(CallEvidence { node_id: None, addr: "127.0.0.1:0".parse().unwrap(), committed: true, connection: None, reused: false, dial_failure: None })),
             attempts: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+            receiver: None,
             _task: crate::client::AbortOnDrop(None),
         };
         let mut stream = ReplyStream::<NodeCommand> { span: tracing::Span::none(), started: Instant::now(), owed, order: FrameOrder::new(), deadline: None, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, committed: None, _p: PhantomData };
