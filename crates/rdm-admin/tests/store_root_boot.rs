@@ -721,7 +721,7 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     };
     let recreated_id = rdm_admin::model::MeshId::mint().to_string();
     // mesh1 created again: its record at its own id, live under the name.
-    let (err, pid) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "dead": false})), "mesh1 created again");
+    let (err, pid) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "state": "pending"})), "mesh1 created again");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
     let spans = spans_of(&root.dir, pid);
     let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused start left no storage step: {spans:?}"));
@@ -729,10 +729,10 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(root.fabric_id.to_string().as_str()), "{opened}");
     assert_eq!(opened["attributes"]["mesh_id"].as_str(), Some(own_id.as_str()), "the storage step names the mesh id the own row holds: {opened}");
     assert!(opened["attributes"]["error"].as_str().is_some_and(|e| e.contains(&recreated_id)), "the storage step names the refusal and the mesh created again: {opened}");
-    // The mesh created again is removed in turn: its record Dead.
-    append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "dead": true, "states": ["Dead"]}));
-    let (err, _) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &own_id, serde_json::json!({"mesh_id": own_id, "name": "mesh1", "dead": true, "states": ["Dead"]})), "mesh1 Dead");
-    assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains("Dead"), "the refusal names this admin's mesh as Dead: {err}");
+    // The mesh created again is removed in turn: its record deleted.
+    append_record(&meshes, held["format"].as_str().unwrap(), &recreated_id, serde_json::json!({"mesh_id": recreated_id, "name": "mesh1", "state": "deleted"}));
+    let (err, _) = refused(&|| append_record(&meshes, held["format"].as_str().unwrap(), &own_id, serde_json::json!({"mesh_id": own_id, "name": "mesh1", "state": "deleted"})), "mesh1 deleted");
+    assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains("whose record is deleted"), "the refusal names this admin's mesh as deleted: {err}");
 }
 
 /// Append `record` as one line of the store file `file`, as another writer would.

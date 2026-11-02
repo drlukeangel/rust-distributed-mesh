@@ -71,19 +71,19 @@ pub enum NodeState {
 pub enum MeshState {
     /// Created and not yet ready.
     ///
-    /// Position 0 on the wire; serialized as `pending`.
+    /// Position 0 on the wire; serialized as `pending`; `name()` is `pending`.
     Pending,
     /// Ready: it takes traffic.
     ///
-    /// Position 1 on the wire; serialized as `ready`.
+    /// Position 1 on the wire; serialized as `ready`; `name()` is `ready`.
     Ready,
     /// Deleting: its delete is under way.
     ///
-    /// Position 2 on the wire; serialized as `deleting`.
+    /// Position 2 on the wire; serialized as `deleting`; `name()` is `deleting`.
     Deleting,
     /// Deleted: every node of it is gone; final, its id never written live again.
     ///
-    /// Position 3 on the wire; serialized as `deleted`.
+    /// Position 3 on the wire; serialized as `deleted`; `name()` is `deleted`.
     Deleted,
 }
 

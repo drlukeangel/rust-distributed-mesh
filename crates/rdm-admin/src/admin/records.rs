@@ -204,7 +204,7 @@ impl AdminConfig {
             None => rdm_core::launch::decode_topology_storage_provider(get(rdm_core::launch::ENV_TOPOLOGY_STORAGE_PROVIDER))?,
         };
         let node_types = match (&launch, get(rdm_core::launch::ENV_NODE_TYPES).filter(|v| !v.trim().is_empty())) {
-            (None, Some(document)) => rdm_core::NodeType::parse_declared(&document).map_err(|e| format!("refusing to start: {}: {e}", rdm_core::launch::ENV_NODE_TYPES))?,
+            (None, Some(document)) => rdm_core::launch::decode_node_types(&document).map_err(|e| format!("refusing to start: {}: {e}", rdm_core::launch::ENV_NODE_TYPES))?,
             _ => Vec::new(),
         };
         Ok(Self {

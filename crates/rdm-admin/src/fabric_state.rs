@@ -10,12 +10,12 @@
 pub enum FabricState {
     /// Created; a mesh the accepted Build names is not yet ready.
     ///
-    /// `as_str()` is `pending`.
+    /// Serialized as `pending`; `as_str()` is `pending`.
     #[default]
     Pending,
     /// Every mesh the accepted Build names is ready.
     ///
-    /// `as_str()` is `ready`.
+    /// Serialized as `ready`; `as_str()` is `ready`.
     Ready,
 }
 

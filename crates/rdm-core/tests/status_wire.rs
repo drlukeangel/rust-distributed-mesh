@@ -178,8 +178,6 @@ fn replies_match_the_frozen_sixty_three_variant_wire_schema() {
                 "00",
                 // storage_persistence None and topology_storage_provider None (storage.md §1, §2), appended last
                 "00", "00",
-                // placement None (build.md §1; every node property on the row a read answers), appended last
-                "00",
                 // properties Read (Q318: a node's property record read, or Unavailable), appended last
                 "00",
             ),

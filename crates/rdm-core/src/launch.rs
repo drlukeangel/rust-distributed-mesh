@@ -365,6 +365,15 @@ pub fn decode_launcher(s: &str) -> Result<Launcher> {
     serde_json::from_str(s).map_err(|e| format!("{ENV_LAUNCHER}: invalid launcher: {e}"))
 }
 
+/// [`ENV_NODE_TYPES`] as given: the application's declared types, a JSON list of
+/// [`crate::NodeType`], refused by name: a document that does not parse, a type named `node` or
+/// `node-admin` (RDM's two), an empty name or a name declared twice. Echoes none of the document.
+pub fn decode_node_types(document: &str) -> Result<Vec<crate::NodeType>> {
+    let types: Vec<crate::NodeType> = serde_json::from_str(document).map_err(|e| format!("not a list of node types {{name, storage_persistence, executable}} (line {}, column {})", e.line(), e.column()))?;
+    crate::NodeType::check_declared(&types)?;
+    Ok(types)
+}
+
 /// [`ENV_EXECUTABLE_DIRS`] as given: comma-separated directories, each absolute (a container mounts
 /// it at its host path), in the order given, each once; an empty entry is skipped. A relative entry is
 /// refused by name.

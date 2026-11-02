@@ -204,15 +204,6 @@ pub struct NodeType {
 }
 
 impl NodeType {
-    /// The application's declared types from their JSON document (`RDM_NODE_TYPES`), refused by name:
-    /// a document that does not parse, a type named `node` or `node-admin` (RDM's two), an empty name
-    /// or a name declared twice. Echoes none of the document.
-    pub fn parse_declared(document: &str) -> Result<Vec<NodeType>, String> {
-        let types: Vec<NodeType> = serde_json::from_str(document).map_err(|e| format!("not a list of node types {{name, storage_persistence, executable}} (line {}, column {})", e.line(), e.column()))?;
-        Self::check_declared(&types)?;
-        Ok(types)
-    }
-
     /// Refuse, by name, a declared list naming one of RDM's two types, an empty name or a name twice.
     pub fn check_declared(types: &[NodeType]) -> Result<(), String> {
         let mut seen = BTreeSet::new();
@@ -271,18 +262,18 @@ mod tests {
     /// a declared value in a refusal.
     #[test]
     fn rdm_types_cannot_be_declared_and_a_declared_type_reads_back_with_its_defaults() {
-        let declared = NodeType::parse_declared(r#"[{"name":"broker","storage_persistence":{"persistence":"persistent","disposition":"preserve"}},{"name":"gateway","storage_persistence":{"persistence":"ephemeral"}}]"#).unwrap();
+        let declared = crate::launch::decode_node_types(r#"[{"name":"broker","storage_persistence":{"persistence":"persistent","disposition":"preserve"}},{"name":"gateway","storage_persistence":{"persistence":"ephemeral"}}]"#).unwrap();
         assert_eq!(declared, vec![
             NodeType { name: "broker".into(), storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Preserve }, executable: None },
             NodeType { name: "gateway".into(), storage_persistence: StoragePersistence::Ephemeral, executable: None },
         ]);
         for rdm in RDM_TYPES {
-            let e = NodeType::parse_declared(&format!(r#"[{{"name":"{rdm}","storage_persistence":{{"persistence":"ephemeral"}}}}]"#)).unwrap_err();
+            let e = crate::launch::decode_node_types(&format!(r#"[{{"name":"{rdm}","storage_persistence":{{"persistence":"ephemeral"}}}}]"#)).unwrap_err();
             assert_eq!(e, format!("the node type `{rdm}` is RDM's and cannot be declared again"));
         }
-        let twice = NodeType::parse_declared(r#"[{"name":"broker","storage_persistence":{"persistence":"ephemeral"}},{"name":"broker","storage_persistence":{"persistence":"ephemeral"}}]"#).unwrap_err();
+        let twice = crate::launch::decode_node_types(r#"[{"name":"broker","storage_persistence":{"persistence":"ephemeral"}},{"name":"broker","storage_persistence":{"persistence":"ephemeral"}}]"#).unwrap_err();
         assert_eq!(twice, "the node type `broker` is declared twice");
-        let malformed = NodeType::parse_declared(r#"[{"name":"s3cr3t-value"}]"#).unwrap_err();
+        let malformed = crate::launch::decode_node_types(r#"[{"name":"s3cr3t-value"}]"#).unwrap_err();
         assert!(malformed.starts_with("not a list of node types") && !malformed.contains("s3cr3t"), "{malformed}");
     }
 

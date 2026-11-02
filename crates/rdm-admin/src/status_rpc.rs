@@ -834,9 +834,13 @@ pub(crate) async fn commit_mesh_state(storage: &dyn crate::storage::MeshStorage,
     if effect.is_none() {
         return decided;
     }
-    let base = crate::storage::MeshRecord::new(mesh_id.clone(), mesh);
-    if let Err(e) = caches.update_mesh(storage, mesh_id, Some(base), |r| { r.state = r.state.max(state); }).await {
-        return rdm_core::reply::status::not_ready(format!("{e} (the Mesh status {state:?} of {mesh})"));
+    // The record's move to deleted is its removal, written by `mesh_delete::mesh_row_deleted` alone,
+    // which releases the mesh's name (R-MN1 item 2); every other state is written here.
+    if state != MeshState::Deleted {
+        let base = crate::storage::MeshRecord::new(mesh_id.clone(), mesh);
+        if let Err(e) = caches.update_mesh(storage, mesh_id, Some(base), |r| { r.state = r.state.max(state); }).await {
+            return rdm_core::reply::status::not_ready(format!("{e} (the Mesh status {state:?} of {mesh})"));
+        }
     }
     let mut declared = declared.lock().unwrap();
     match apply_mesh(&declared, mesh_id, state, at) {
