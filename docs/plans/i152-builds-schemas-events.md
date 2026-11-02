@@ -148,4 +148,4 @@ or cancelled as their rows say; Q276's read is superseded by Q292 as its row say
 
 ## State
 
-s1: Luke's yes on the page text of s2–s4, s6 and s7 (2026-11-02, "ret looks good"); s5 rewritten to state what is, never what was ("we don't add text to arch documents about was things"), then yes ("a"); s2 building; the lead's mechanics decisions D38–D47 (lead-decisions-2026-11-02.md).
+s1: Luke's yes on the page text of s2–s4, s6 and s7 (2026-11-02, "ret looks good"); s5 rewritten to state what is, never what was ("we don't add text to arch documents about was things"), then yes ("a"); building (2026-11-02 16:41, agents on opus by Luke's "a"): s2 lane 6 (the lead's RED cells, then agent i143-296), s3 lane 7 (i143-297), s7 lane 4 (i143-301) running; s4 lane 2 (i143-298), s5 lane 3 (i143-299) and s6 lane 5 (i143-300) dispatched, each launching when the story it depends on lands; the lead's mechanics decisions D38–D47 (lead-decisions-2026-11-02.md).
