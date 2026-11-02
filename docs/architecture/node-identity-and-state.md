@@ -287,9 +287,9 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
   `(path, name)`, unique within its path, the path opaque (a deployment may name it after the
   fabric, as it names a node's after its mesh; that is its choice, not the key's shape), writes
   the row to the store when the mesh is created and writes every status from then on. Held means held by a different MeshId: `NameHeld` names
-  that holder. The same MeshId re-claiming its own name, on a retry or from a replaced primary, is
-  idempotent and accepted. The fabric-primary does the same for the fabric's row on its own
-  `(path, name)`, at Day 0, idempotent for the same FabricId. At Day 0 the fabric-primary is its mesh's mesh-primary too and creates the fabric row and its own mesh's row, the latter as that mesh's primary; every other mesh's row is created by that mesh's primary. It writes its own members' `Node` rows; no other
+  that holder. The same MeshId writing its own row again, on a retry or from a replaced primary, is
+  idempotent and accepted. The fabric-primary writes the fabric's row at Day 0, idempotent for the
+  same FabricId. At Day 0 the fabric-primary is its mesh's mesh-primary too and creates the fabric row and its own mesh's row, the latter as that mesh's primary; every other mesh's row is created by that mesh's primary. It writes its own members' `Node` rows; no other
   node-admin writes them (a secondary writes none, a WAL reset's rewrite included).
 - **A mesh outage moves no row.** The fabric-primary observes it
   ([node investigation](lifecycles/node-investigation.md) of its mesh-primary, Q335) and never writes the
