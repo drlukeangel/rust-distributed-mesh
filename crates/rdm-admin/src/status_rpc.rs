@@ -1765,17 +1765,14 @@ impl StatusDoor {
         };
         let base = crate::storage::NodeRow::new(row.name.clone(), row.mesh.clone(), row.kind, row.node_id.clone(), crate::model::NodeStatus::Pending);
         let status = node_status_of(row.state);
-        let written = self.caches.nodes.update(&*self.nodes_storage, &row.node_id, Some(base), |r| {
+        let written = self.caches.nodes.update_spanned(&*self.nodes_storage, &row.node_id, Some(base), |r| {
             let birth = r.birth_mut(&row.incarnation_id, &row.name);
             birth.declared.insert(row.state);
             if let Some(o) = operation {
                 birth.apply_operation(&o.operation, o.state);
             }
             moves && r.set_status(&row.incarnation_id, status)
-        }).await;
-        if moves {
-            row_status_span(&self.me, &row.name, &row.node_id, &row.incarnation_id, status, &written);
-        }
+        }, |written| if moves { row_status_span(&self.me, &row.name, &row.node_id, &row.incarnation_id, status, written) }).await;
         written.map(|_| ())
     }
 
@@ -1783,8 +1780,7 @@ impl StatusDoor {
     /// states.md "Who sets each state" names ([`crate::storage::NodeRow::set_status`]); a node with no
     /// record held anywhere is written nothing. One `rdm.node_admin.node.update.via-row-status` span.
     pub(crate) async fn put_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &crate::model::PathName, status: crate::model::NodeStatus) -> Result<(), String> {
-        let written = self.caches.nodes.update(&*self.nodes_storage, node_id, None, |r| r.set_status(incarnation, status)).await;
-        row_status_span(&self.me, name, node_id, incarnation, status, &written);
+        let written = self.caches.nodes.update_spanned(&*self.nodes_storage, node_id, None, |r| r.set_status(incarnation, status), |written| row_status_span(&self.me, name, node_id, incarnation, status, written)).await;
         written.map(|_| ())
     }
 
@@ -2509,7 +2505,9 @@ pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName, NodeId, rdm_core
 /// The `rdm.node_admin.node.update.via-row-status` span of a status write: `written` when the record
 /// moved, `unchanged` when it already stood there, `no-record` when no record of the node is held,
 /// `refused` naming the store's error. The record carries no revision (node-identity-and-state.md
-/// §2.5): its writes are made one at a time under the node's lock, in the order the spans follow.
+/// §2.5): its writes are made one at a time under the node's lock, and each write's span is opened
+/// under that same lock ([`crate::node_rows::WrittenRows::update_spanned`]), so the spans follow the
+/// order of the writes.
 pub(crate) fn row_status_span(me: &crate::model::PathName, subject: &crate::model::PathName, node_id: &NodeId, incarnation: &IncarnationId, status: crate::model::NodeStatus, written: &Result<Option<bool>, String>) {
     let outcome = match written {
         Ok(Some(true)) => "written",

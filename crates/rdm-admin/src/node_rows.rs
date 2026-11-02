@@ -435,7 +435,21 @@ impl WrittenRows {
     /// the whole record written when it changed. `None`: no record of
     /// the node is held anywhere and no `base` was given; nothing is written.
     pub async fn update<R>(&self, storage: &dyn NodesStorage, node_id: &NodeId, base: Option<NodeRow>, change: impl FnOnce(&mut NodeRow) -> R) -> Result<Option<R>, String> {
+        self.update_spanned(storage, node_id, base, change, |_| {}).await
+    }
+
+    /// [`Self::update`], its span opened by `span` from the outcome while the node's lock is still
+    /// held: the record carries no revision (node-identity-and-state.md §2.5), so its spans are the
+    /// order of its writes only when each is opened before the next write of the node begins.
+    pub async fn update_spanned<R>(&self, storage: &dyn NodesStorage, node_id: &NodeId, base: Option<NodeRow>, change: impl FnOnce(&mut NodeRow) -> R, span: impl FnOnce(&Result<Option<R>, String>)) -> Result<Option<R>, String> {
         let _one = self.lock(node_id).await;
+        let written = self.update_held(storage, node_id, base, change).await;
+        span(&written);
+        written
+    }
+
+    /// The body of [`Self::update`], `node_id`'s lock held by the caller.
+    async fn update_held<R>(&self, storage: &dyn NodesStorage, node_id: &NodeId, base: Option<NodeRow>, change: impl FnOnce(&mut NodeRow) -> R) -> Result<Option<R>, String> {
         let (held, new) = match self.known_row(storage, node_id).await? {
             Some(row) => (Some(row), false),
             None => (base, true),
@@ -897,8 +911,7 @@ impl NodeRows {
                 return Err(refused);
             }
         };
-        let written = self.written.update(&*self.storage, &record.node_id, None, |r| r.set_status(incarnation, status)).await;
-        crate::status_rpc::row_status_span(&me, &record.name, &record.node_id, incarnation, status, &written);
+        let written = self.written.update_spanned(&*self.storage, &record.node_id, None, |r| r.set_status(incarnation, status), |written| crate::status_rpc::row_status_span(&me, &record.name, &record.node_id, incarnation, status, written)).await;
         written.map(|_| ()).map_err(|e| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: the {status:?} status of node {} is not written: {e}", record.node_id, me_path = &me.path, me_name = &me.name)))
     }
 
