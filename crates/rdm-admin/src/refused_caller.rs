@@ -265,7 +265,7 @@ mod tests {
             data_root: Default::default(),
             gone_dirs: Default::default(),
             resubmits: Default::default(),
-            on_node_investigated: None,
+            investigated: crate::node_investigation::NodeInvestigatedWriter::in_memory(&rdm_core::FabricId::mint(), &admin.node_id),
         };
         // The records the decision reads (query.md §1): mesh1's rows under its writer in the view.
         let stores = crate::current_record::stores_over(rows.clone(), &*topology.read().await).await;

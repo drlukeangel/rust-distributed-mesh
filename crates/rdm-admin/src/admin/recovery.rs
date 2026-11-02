@@ -33,8 +33,9 @@ pub(crate) struct RecoverySubmitter {
     /// Per birth whose last submit ended without the recovery: when its next submit is due, under the
     /// one backoff rule ([`RecoverySubmitter::submit_ended`]). A birth with none is due at once.
     pub resubmits: Arc<Mutex<HashMap<(NodeId, IncarnationId), Resubmit>>>,
-    /// The application's `on_node_investigated`, told once a verdict opens a re-create (Q312).
-    pub on_node_investigated: Option<crate::wiring::NodeInvestigatedNotice>,
+    /// Where a verdict that opens a re-create is written as its `rdm.node.investigated` event, and the
+    /// application's `on_node_investigated`, sent from that write (Q312).
+    pub investigated: crate::node_investigation::NodeInvestigatedWriter,
 }
 
 /// The next submit owed to one birth whose submits ended without the recovery: the one backoff rule
@@ -210,10 +211,10 @@ impl RecoverySubmitter {
         if let Some(attempt) = after_failed_attempt {
             span.record("after_failed_attempt", attempt);
         } else {
-            // The verdict is recorded on the submit's span and opens the re-create: the application is
-            // told once, under that span (fabric-node-hooks.md "on_node_investigated").
+            // The verdict opens the re-create: it is written as its event, and the application is told
+            // once from that write, under the submit's span (fabric-node-hooks.md "on_node_investigated").
             let ids = crate::node_investigation::fabric_and_mesh_of(&*self.topology.read().await, node);
-            span.in_scope(|| crate::node_investigation::notify_node_investigated(self.on_node_investigated.as_ref(), ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate));
+            span.in_scope(|| crate::node_investigation::notify_node_investigated(&self.investigated, ids, node, incarnation, investigated_verdict(verdict), crate::wiring::NodeInvestigatedNext::Recreate));
         }
         let end = self.submit_in(&span, node, incarnation, "node-recovery").instrument(span.clone()).await;
         let ended = settled(&span, end);

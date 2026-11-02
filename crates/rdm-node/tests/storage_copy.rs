@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rdm_core::{BuildId, ChangeId, FabricId, IncarnationId, NodeId};
 use rdm_node::storage_error::StorageError;
 use rdm_node::store_log::{self, Formats, Line, LockKind, LockTaken, LogWriter, Op, StoreLocks, StoreLog};
-use rdm_node::store_root::{StoreRoot, BUILDS_FILE, CONNECTIONS_FILE, FABRIC_FILE, MESHES_FILE, NODES_FILE};
+use rdm_node::store_root::{StoreRoot, BUILDS_FILE, CONNECTIONS_FILE, EVENTS_FILE, FABRIC_FILE, MESHES_FILE, NODES_FILE};
 use serde_json::json;
 
 use rdm_node::storage_copy::{copy, Claim, ClaimTaken, CopyError, CopyRun, FileProviderLines, ProviderLines, Store};
@@ -44,7 +44,7 @@ const DESTINATION: &str = "target";
 /// An application setting a node record carries: never in a refusal or a span.
 const APP_SETTING: &str = "app-setting-0f3a9c";
 
-const FILES: [(Store, &str); 5] = [(Store::Fabric, FABRIC_FILE), (Store::Meshes, MESHES_FILE), (Store::Nodes, NODES_FILE), (Store::Connections, CONNECTIONS_FILE), (Store::Builds, BUILDS_FILE)];
+const FILES: [(Store, &str); 6] = [(Store::Fabric, FABRIC_FILE), (Store::Meshes, MESHES_FILE), (Store::Nodes, NODES_FILE), (Store::Connections, CONNECTIONS_FILE), (Store::Builds, BUILDS_FILE), (Store::Events, EVENTS_FILE)];
 
 fn dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("rdm-storage-copy-{tag}-{}", NodeId::mint()));
@@ -170,6 +170,11 @@ impl History {
         b.append(&fp1, "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 2, "fact": "opened", "attempt": 1})).await.unwrap();
         b.append(&fp2, "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 3, "fact": "opened", "attempt": 1})).await.unwrap();
         b.append(&fp2, "build-record/1", &format!("{build}/opened/2"), &json!({"seq": 4, "fact": "opened", "attempt": 2})).await.unwrap();
+
+        // Each event is its own line at its event.id, by its one writer (build.md §5).
+        let e = log(&root, EVENTS_FILE).await;
+        e.append(&fp1, "event/1", "019a4b2c-0001-7000-8000-000000000001", &json!({"specversion": "1.0", "type": "rdm.build.started", "data": {"build_id": build}})).await.unwrap();
+        e.append(&mp1, "event/1", "019a4b2c-0002-7000-8000-000000000002", &json!({"specversion": "1.0", "type": "rdm.node.investigated", "subject": first, "data": {"verdict": "exited", "next": "recreate"}})).await.unwrap();
 
         // The nodes' own parts of their records are history too, each at its node id in the nodes store (Q333).
         let records = log(&root, NODES_FILE).await;

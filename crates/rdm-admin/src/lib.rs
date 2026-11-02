@@ -75,6 +75,7 @@ pub mod fabric_builds;
 pub mod fabric_status;
 pub mod fabric_state;
 pub mod fabric_storage;
+pub mod events_storage;
 pub mod control_plane;
 /// The control plane module (`control_plane`).
 pub use control_plane as control;

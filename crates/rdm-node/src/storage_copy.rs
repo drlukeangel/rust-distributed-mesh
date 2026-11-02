@@ -41,11 +41,13 @@ pub enum Store {
     Connections,
     /// `builds.storage`.
     Builds,
+    /// `events.storage`.
+    Events,
 }
 
 impl Store {
     /// The stores, in the order a copy takes them.
-    pub const ALL: [Store; 5] = [Store::Fabric, Store::Meshes, Store::Nodes, Store::Connections, Store::Builds];
+    pub const ALL: [Store; 6] = [Store::Fabric, Store::Meshes, Store::Nodes, Store::Connections, Store::Builds, Store::Events];
 
     /// The store's name.
     pub fn name(self) -> &'static str {
@@ -55,18 +57,20 @@ impl Store {
             Self::Nodes => "nodes",
             Self::Connections => "connections",
             Self::Builds => "builds",
+            Self::Events => "events",
         }
     }
 
     /// The store's file under a file provider's root.
     pub fn file(self) -> &'static str {
-        use crate::store_root::{BUILDS_FILE, CONNECTIONS_FILE, FABRIC_FILE, MESHES_FILE, NODES_FILE};
+        use crate::store_root::{BUILDS_FILE, CONNECTIONS_FILE, EVENTS_FILE, FABRIC_FILE, MESHES_FILE, NODES_FILE};
         match self {
             Self::Fabric => FABRIC_FILE,
             Self::Meshes => MESHES_FILE,
             Self::Nodes => NODES_FILE,
             Self::Connections => CONNECTIONS_FILE,
             Self::Builds => BUILDS_FILE,
+            Self::Events => EVENTS_FILE,
         }
     }
 }

@@ -12,6 +12,7 @@
 //!   nodes.jsonl                       every node record's writes, every runtime row, every tag change
 //!   connections.jsonl                 every connection fact of every source
 //!   builds.jsonl                      every Build fact
+//!   events.jsonl                      every event of a Build, and each node's investigations
 //!   locks/in-flight/<mesh name>       the one attempt in flight on that mesh name, create-exclusive
 //!   locks/name/<name>                 the claim of a mesh name or a node path and name, create-exclusive
 //! ```
@@ -52,6 +53,8 @@ pub const NODES_FILE: &str = "nodes.jsonl";
 pub const CONNECTIONS_FILE: &str = "connections.jsonl";
 /// The builds' store file: every Build fact.
 pub const BUILDS_FILE: &str = "builds.jsonl";
+/// The events' store file: every event (build.md §5).
+pub const EVENTS_FILE: &str = "events.jsonl";
 /// The locks' directory: the attempt in flight on each mesh name and every name claim.
 pub const LOCKS_DIR: &str = "locks";
 

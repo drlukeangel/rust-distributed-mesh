@@ -1,13 +1,15 @@
 //! The storage backend a node-admin runs on (build.md: "production backends for the imported storage
-//! interfaces"). It opens the five storage boundaries, `fabric.storage` ([`FabricStorage`]),
+//! interfaces"). It opens the six storage boundaries, `fabric.storage` ([`FabricStorage`]),
 //! `mesh.storage` ([`MeshStorage`]), `nodes.storage` ([`NodesStorage`]), `connections.storage`
-//! ([`ConnectionsStorage`]) and the Build journal ([`LocalBuildLog`]), and every durable read and
+//! ([`ConnectionsStorage`]), the Build journal ([`LocalBuildLog`]) and `events.storage`
+//! ([`EventsStorage`]), and every durable read and
 //! write of the admin goes through them. A fact lives in the store of the object it describes. The admin's
 //! boot takes its backend beside its `Wiring` (`admin::start_on`); RDM standalone's is
 //! [`FileBackend`] (the `file-backend` feature, the default), the boundaries as files on the fabric's
 //! store root and the admin's data dir. [`MemoryBackend`] holds one process's rows.
 
 use crate::build_state::LocalBuildLog;
+use crate::events_storage::EventsStorage;
 use crate::fabric_handover::FinishWrites;
 use crate::fabric_storage::FabricStorage;
 use crate::model::{FabricId, IncarnationId, NodeId, PathName, ProviderKind};
@@ -49,7 +51,7 @@ impl StorageScope {
 pub type OpenConnections = Arc<dyn Fn(NodeId) -> BoxFuture<'static, Result<Arc<dyn ConnectionsStorage>, StorageError>> + Send + Sync>;
 
 /// The storage a node-admin runs on, opened by its backend (`docs/architecture/storage.md` §2): the
-/// five boundaries and how it finishes the writes it has issued.
+/// six boundaries and how it finishes the writes it has issued.
 pub struct StorageBoundaries {
     /// `fabric.storage`: the Fabric record, its name's claim and its events.
     pub fabric: Arc<dyn FabricStorage>,
@@ -68,6 +70,9 @@ pub struct StorageBoundaries {
     pub connections: OpenConnections,
     /// The Build journal: the Build facts, and each attempt's context.
     pub builds: Arc<dyn LocalBuildLog>,
+    /// `events.storage`: what happened while executing each Build, and each node's investigations
+    /// (build.md §5).
+    pub events: Arc<dyn EventsStorage>,
     /// Finishes every write the boundaries have issued: a primary runs it before it calls its successor
     /// (node-primary-update.md step 3).
     pub finish_writes: FinishWrites,
@@ -89,16 +94,16 @@ pub trait StorageBackend: Send + Sync {
     /// restart on this data dir is the same logical node in the same Fabric and Mesh (R-FI1). Its
     /// address and primaries are on its node's record, written by its mesh-primary.
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError>;
-    /// Opens the five boundaries of `scope`.
+    /// Opens the six boundaries of `scope`.
     async fn open(&self, scope: &StorageScope) -> Result<StorageBoundaries, String>;
-    /// Delete the topology storage of the Fabric `fabric_id`: its five stores and the admin's own row and
+    /// Delete the topology storage of the Fabric `fabric_id`: its six stores and the admin's own row and
     /// Build attempt contexts in `data_dir`. Persistence only: the admin's boot decides when (Q200). A
     /// backend that deletes nothing refuses by name.
     async fn delete_fabric(&self, data_dir: &Path, fabric_id: &FabricId) -> Result<(), String> {
         let _ = (data_dir, fabric_id);
         Err("this topology storage provider deletes no fabric's storage".into())
     }
-    /// This backend's five stores as their lines and its claims for the fabric `fabric_id`, registered
+    /// This backend's six stores as their lines and its claims for the fabric `fabric_id`, registered
     /// as `provider`: what a storage change's copy reads from the old provider and appends to the new
     /// one (storage.md §2 Copy, [`rdm_node::storage_copy`]). A backend that answers none refuses by name
     /// ([`StorageError::Refused`]).
@@ -176,14 +181,16 @@ impl StorageBackend for FileBackend {
         // Every runtime row is a line of the root's nodes.jsonl: the root's rows are the nodes store's.
         let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(nodes.clone() as Arc<dyn NodesStorage>);
         let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.log_writer()).await.map_err(|e| e.to_string())?);
+        let events = Arc::new(crate::events_storage::FileEventsStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
         let finish_writes: FinishWrites = {
-            let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
+            let (meshes, nodes, fabric, events) = (meshes.clone(), nodes.clone(), fabric.clone(), events.clone());
             Arc::new(move || {
-                let (meshes, nodes, fabric) = (meshes.clone(), nodes.clone(), fabric.clone());
+                let (meshes, nodes, fabric, events) = (meshes.clone(), nodes.clone(), fabric.clone(), events.clone());
                 Box::pin(async move {
                     meshes.finish_issued_writes().await;
                     nodes.finish_issued_writes().await;
                     fabric.finish_issued_writes().await;
+                    events.finish_issued_writes().await;
                 })
             })
         };
@@ -194,7 +201,7 @@ impl StorageBackend for FileBackend {
                 Box::pin(async move { if node_id != writer.node_id { return Err(StorageError::Refused { file: "connections.storage".into(), reason: "connection store node ID differs from its writer".into() }); } Ok(Arc::new(crate::storage::FileConnectionsStorage::open(&root, &writer).await?) as Arc<dyn ConnectionsStorage>) })
             })
         };
-        Ok(StorageBoundaries { fabric, meshes, nodes, root_runtimes, connections, builds, finish_writes, writes_to })
+        Ok(StorageBoundaries { fabric, meshes, nodes, root_runtimes, connections, builds, events, finish_writes, writes_to })
     }
 }
 
@@ -207,7 +214,7 @@ pub fn file_backend(store_dir: impl Into<PathBuf>) -> Arc<dyn StorageBackend> {
 }
 
 /// The topology storage providers a node-admin executable registers in its wiring, by name
-/// (`docs/architecture/storage.md` §2): each a backend of the five record stores, its name bound to
+/// (`docs/architecture/storage.md` §2): each a backend of the six record stores, its name bound to
 /// its place at registration. The admin opens the one its `topology_storage_provider` names
 /// (`RDM_TOPOLOGY_STORAGE_PROVIDER` on Day 0, its launch's when launched, its own row's on a start
 /// with no launcher); as the fabric-primary it refuses at acceptance a Build naming one this registry
@@ -279,7 +286,7 @@ impl AdminStores {
 }
 
 /// A node-admin's one access point to its topology storage (storage.md §2): every reader and writer
-/// on the admin reaches the five stores through it, never through a store held from its boot, so a
+/// on the admin reaches the six stores through it, never through a store held from its boot, so a
 /// provider change replaces the provider beneath all of them ("Each node moves to the new provider").
 /// The writers' own copies of their records (`crate::record_cache::Caches`) are theirs, outside it,
 /// and a replacement leaves them as they are.
@@ -359,6 +366,11 @@ impl TopologyStorageHandle {
 
     /// The Build journal, through this handle.
     pub fn builds(self: &Arc<Self>) -> Arc<dyn LocalBuildLog> {
+        Arc::new(Through(self.clone()))
+    }
+
+    /// `events.storage`, through this handle.
+    pub fn events(self: &Arc<Self>) -> Arc<dyn EventsStorage> {
         Arc::new(Through(self.clone()))
     }
 
@@ -504,7 +516,7 @@ impl TopologyStorageHandle {
     }
 }
 
-/// One of the five stores through a node-admin's [`TopologyStorageHandle`]: every read goes to the
+/// One of the six stores through a node-admin's [`TopologyStorageHandle`]: every read goes to the
 /// provider the admin writes at that call, and every write is admitted to it.
 struct Through(Arc<TopologyStorageHandle>);
 
@@ -761,6 +773,23 @@ impl LocalBuildLog for Through {
     }
 }
 
+#[async_trait]
+impl EventsStorage for Through {
+    async fn append(&self, event: &crate::events_storage::Event) -> Result<(), StorageError> {
+        let w = self.write();
+        w.boundaries.events.append(event).await
+    }
+    async fn event(&self, id: &crate::events_storage::EventId) -> Result<Option<crate::events_storage::Event>, StorageError> {
+        self.read().stores().boundaries.events.event(id).await
+    }
+    async fn of_build(&self, build_id: &crate::build::BuildId) -> Result<Vec<crate::events_storage::Event>, StorageError> {
+        self.read().stores().boundaries.events.of_build(build_id).await
+    }
+    async fn of_node(&self, node_id: &NodeId) -> Result<Vec<crate::events_storage::Event>, StorageError> {
+        self.read().stores().boundaries.events.of_node(node_id).await
+    }
+}
+
 /// The admin's own connections rows by node ID through its [`TopologyStorageHandle`].
 struct ConnectionsThrough {
     handle: Arc<TopologyStorageHandle>,
@@ -830,6 +859,7 @@ impl StorageBackend for MemoryBackend {
             root_runtimes: None,
             connections,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
+            events: Arc::new(crate::events_storage::MemoryEventsStorage::new()),
             finish_writes,
             writes_to: "memory".into(),
         })
@@ -926,7 +956,7 @@ mod tests {
 
     /// CONTRACT (storage.md §2, "Changing it", Unblock: "Each node moves to the new provider"; i149 R4:
     /// "Every active reader and writer uses the same replaceable provider handle on its node"): what a
-    /// node-admin's boot took from its handle, each of the five stores and its own connections rows,
+    /// node-admin's boot took from its handle, each of the six stores and its own connections rows,
     /// goes to the new provider for every call once the provider is replaced: every write lands under
     /// the new provider's store dir and none under the old one's, every read answers the new
     /// provider's records, and the derivation installed on the Build journal before the change runs
@@ -942,7 +972,7 @@ mod tests {
         let scope = scope_in(crate::test_support::tempdir("handle-data"));
         let handle = TopologyStorageHandle::open(&providers, "file", scope.clone()).await.unwrap_or_else(|e| panic!("the admin opens its provider: {e}"));
         // What the boot hands its owners: taken once, before the change.
-        let (fabric, meshes, nodes, builds) = (handle.fabric(), handle.meshes(), handle.nodes(), handle.builds());
+        let (fabric, meshes, nodes, builds, events) = (handle.fabric(), handle.meshes(), handle.nodes(), handle.builds(), handle.events());
         let name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let connections = handle.connections(scope.node_id.clone()).await.unwrap();
         let before = MeshRecord::new(crate::model::MeshId::mint(), "meshbefore");
@@ -986,6 +1016,9 @@ mod tests {
             logged_at_ms: 1,
         };
         connections.put_connection(&fact).await.unwrap();
+        let source = crate::events_storage::EventSource { fabric_id: scope.fabric_id.clone(), node_id: scope.node_id.clone(), incarnation: scope.writer.clone() };
+        let event = crate::events_storage::Event::build_started(&source, 1, &build.build_id);
+        events.append(&event).await.unwrap();
 
         assert_eq!(fabric.fabric().await.unwrap().map(|f| f.name), Some("fabricafter".to_string()), "fabric.storage reads the new provider");
         assert_eq!(fabric.name_claim("fabricafter").await.unwrap(), Some(identity.clone()), "and its name claim");
@@ -996,7 +1029,8 @@ mod tests {
         assert_eq!(builds.read_build(&build.build_id).await.unwrap().build_id, build.build_id, "the Build journal reads the new provider");
         assert!(seen.lock().unwrap().contains(&build.build_id), "the derivation installed before the change runs over the new journal's facts");
         assert_eq!(connections.connections().await.unwrap(), vec![fact.clone()], "connections.storage reads the new provider");
-        for (store, needle) in [("fabric", "fabricafter".to_string()), ("mesh", mesh.mesh_id.to_string()), ("mesh name", "meshafter".to_string()), ("nodes", row.node_id.to_string()), ("runtime", runtime.node_id.to_string()), ("builds", build.build_id.to_string()), ("connections", fact.id.to_string())] {
+        assert_eq!(events.of_build(&build.build_id).await.unwrap(), vec![event.clone()], "events.storage reads the new provider");
+        for (store, needle) in [("events", event.id.to_string()), ("fabric", "fabricafter".to_string()), ("mesh", mesh.mesh_id.to_string()), ("mesh name", "meshafter".to_string()), ("nodes", row.node_id.to_string()), ("runtime", runtime.node_id.to_string()), ("builds", build.build_id.to_string()), ("connections", fact.id.to_string())] {
             assert!(holds(&new, &needle), "the {store} write after the change lands on the new provider");
             assert!(!holds(&old, &needle), "and nothing of the {store} write after the change on the old one");
         }

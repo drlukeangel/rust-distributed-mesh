@@ -296,9 +296,9 @@ pub type BuildStartedNotice = Arc<dyn Fn(BuildStartedCtx) -> Pin<Box<dyn Future<
 /// recorded (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type BuildEndedNotice = Arc<dyn Fn(BuildEndedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// `on_node_investigated`: the notice a mesh-primary calls once it records a node investigation's
-/// verdict on a node of its mesh (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it
-/// gates nothing.
+/// `on_node_investigated`: the notice a mesh-primary calls once it writes a node investigation's
+/// verdict on a node of its mesh as its `rdm.node.investigated` event
+/// (`docs/architecture/fabric-node-hooks.md`). Fire and forget: it gates nothing.
 pub type NodeInvestigatedNotice = Arc<dyn Fn(NodeInvestigatedCtx) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// The application's notices a node-admin calls

@@ -21,7 +21,9 @@
 //!    `rdm.testkit.app.update.via-on-node-investigated`), under the span that records the verdict and
 //!    opens the re-create: "a re-create may be under way when the application's hook runs"
 //!    (fabric-node-hooks.md "on_node_investigated"), so the notice follows the investigation and the
-//!    submit, and orders nothing against the re-create's end.
+//!    submit, and orders nothing against the re-create's end; sent from the write of the verdict's one
+//!    `rdm.node.investigated` event of the birth's node.id on the fabric's store root, by the mesh-primary
+//!    (node-investigation.md, build.md §5).
 //!
 //! Must NOT happen: a call to the hung birth that ends before its third attempt, a second
 //! `on_call_failed` for the one call, `on_call_failed` before the call ended, an investigation started
@@ -176,6 +178,16 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     let app_investigated: Vec<&Value> = named(&spans, "rdm.testkit.app.update.via-on-node-investigated").into_iter().filter(|sp| attr(sp, "node_id") == node_id && attr(sp, "incarnation_id") == incarnation.as_str()).collect();
     assert_eq!(app_investigated.len(), 1, "the application's on_node_investigated ran once: {app_investigated:#?}");
     assert_eq!((attr(app_investigated[0], "verdict"), attr(app_investigated[0], "next")), ("running".to_string(), "recreate".to_string()), "{}", app_investigated[0]);
+    // The verdict is one `rdm.node.investigated` event of the hung birth's node.id on the fabric's store
+    // root, by its mesh-primary, the event the notice's span names (node-investigation.md, build.md §5).
+    let events = rdm_admin::events_storage::FileEventsStorage::open(&rdm_node::store_root::StoreRoot::at(&estate.fabric_store_root()), &rdm_node::store_log::LogWriter::mint()).await.expect("the fabric's events store opens");
+    let of_node = rdm_admin::events_storage::EventsStorage::of_node(&events, &node.node_id).await.expect("the hung birth's events read");
+    let verdicts: Vec<_> = of_node.iter().filter(|e| e.r#type == rdm_admin::events_storage::NODE_INVESTIGATED && e.data.get("incarnation").and_then(Value::as_str) == Some(incarnation.as_str())).collect();
+    assert_eq!(verdicts.len(), 1, "one rdm.node.investigated event for the birth: {of_node:#?}");
+    let event = verdicts[0];
+    assert_eq!((event.data.get("verdict").and_then(Value::as_str), event.data.get("next").and_then(Value::as_str)), (Some("running"), Some("recreate")), "{event:?}");
+    assert!(event.source.contains(&primary_id), "written by the member's mesh-primary, its exact birth: {event:?}");
+    assert_eq!(attr(told, "event_id"), event.id.to_string(), "the notice is sent from the event's write: {told}");
 
     eprintln!(
         "resend: hang at 0 | call op {} attempts {} delivery {} outcome {} ended +{} ms (trace {}) | on_call_failed +{} ms reason {} | mark +{} ms | investigation +{} ms | recovery submit +{} ms (trace {}) | on_node_investigated +{} ms verdict {} next {} | new birth {} at {path:?}",

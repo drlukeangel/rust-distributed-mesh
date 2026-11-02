@@ -40,9 +40,9 @@ pub struct HeardAgain {
     pub runner: Arc<OnceLock<Arc<crate::admin::runner::AdminRunner>>>,
     /// This admin's digest view: whether the birth has been heard ready since.
     pub digest_view: DigestView,
-    /// The application's `on_node_investigated`, told when this admin, its mesh's primary, commands a
-    /// reached birth of its mesh back (Q312).
-    pub on_node_investigated: Option<crate::wiring::NodeInvestigatedNotice>,
+    /// Where this admin, its mesh's primary, writes the verdict `reached` on a birth of its mesh it
+    /// commands back, and the application's `on_node_investigated`, sent from that write (Q312).
+    pub investigated: crate::node_investigation::NodeInvestigatedWriter,
 }
 
 /// The handle, once this admin's runner is built.
@@ -53,7 +53,7 @@ impl HeardAgain {
     pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
         let outcome = match self.runner.get() {
             None => "no-runner".to_string(),
-            Some(runner) => command_mesh_join(&self.client, &self.status_door, &self.builds, runner, &self.digest_view, self.on_node_investigated.as_ref(), node, incarnation).await,
+            Some(runner) => command_mesh_join(&self.client, &self.status_door, &self.builds, runner, &self.digest_view, &self.investigated, node, incarnation).await,
         };
         // A command not sent is spanned too, with why: the flame of a birth left off its mesh reads it.
         if !outcome.starts_with("mesh-joined") && !outcome.starts_with("commanded") {
@@ -73,7 +73,7 @@ async fn command_mesh_join(
     builds: &Arc<dyn crate::build_state::BuildStateAdapter>,
     runner: &crate::admin::runner::AdminRunner,
     digest_view: &DigestView,
-    on_node_investigated: Option<&crate::wiring::NodeInvestigatedNotice>,
+    investigated: &crate::node_investigation::NodeInvestigatedWriter,
     node: &Node,
     incarnation: &IncarnationId,
 ) -> String {
@@ -181,7 +181,7 @@ async fn command_mesh_join(
         let command = crate::node_commands::CommandKey { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         let _ = status_door.commands.open(command.clone());
         if let Some(ids) = notice {
-            crate::node_investigation::notify_node_investigated(on_node_investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedVerdict::Reached, crate::wiring::NodeInvestigatedNext::Rejoin);
+            crate::node_investigation::notify_node_investigated(investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedVerdict::Reached, crate::wiring::NodeInvestigatedNext::Rejoin);
         }
         let req = StatusRequest::JoinMesh {
             node_id: node.node_id.clone(),

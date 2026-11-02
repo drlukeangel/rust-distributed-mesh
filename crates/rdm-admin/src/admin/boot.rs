@@ -432,7 +432,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let fabric_hooks = wiring.fabric_hooks.clone();
     let build_notices = crate::build_drive::BuildNotices::of(cfg.fabric_id.clone(), &fabric_hooks);
     // The application's `on_node_investigated`: told by this admin, as its mesh's primary, of each
-    // verdict it records on a node of its mesh (fabric-node-hooks.md, Q312).
+    // verdict it writes on a node of its mesh (fabric-node-hooks.md, Q312).
     let on_node_investigated = fabric_hooks.on_node_investigated.clone();
     // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
     // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
@@ -507,6 +507,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let topology_storage = crate::storage_backend::TopologyStorageHandle::open(&providers, &cfg.topology_storage_provider, scope).await?;
     let (fabric_backed, mesh_storage, nodes_storage, root_runtimes, journal, finish_writes) = (topology_storage.fabric(), topology_storage.meshes(), topology_storage.nodes(), topology_storage.root_runtimes(), topology_storage.builds(), topology_storage.finish_writes());
     storage_step.record("writes_to", topology_storage.writes_to().as_str());
+    // Each verdict this admin reaches as the primary that investigated a node is one
+    // `rdm.node.investigated` event, by this birth, and the application's `on_node_investigated` is sent
+    // from that write (build.md §5, node-investigation.md, fabric-node-hooks.md).
+    let investigated = crate::node_investigation::NodeInvestigatedWriter {
+        events: topology_storage.events(),
+        source: crate::events_storage::EventSource { fabric_id: cfg.fabric_id.clone(), node_id: minted_node_id.clone(), incarnation: incarnation.clone() },
+        time: rafka_time.clone(),
+        on_node_investigated: on_node_investigated.clone(),
+    };
     // The records this admin writes, as it holds them: every write of a node, mesh or Fabric record
     // starts from its copy here (storage-whole-records.md, "The rule"), its first writes at boot too.
     let caches = crate::record_cache::Caches::default();
@@ -1738,7 +1747,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 issuer: issuer.clone(),
                             });
                             let _ = runner_slot.set(runner.clone());
-                            let _ = heard_again_slot.set(Arc::new(crate::heard_again::HeardAgain { client: node_rpc.client.clone(), status_door: status_door.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone(), digest_view: topology_view.digest_view.clone(), on_node_investigated: on_node_investigated.clone() }));
+                            let _ = heard_again_slot.set(Arc::new(crate::heard_again::HeardAgain { client: node_rpc.client.clone(), status_door: status_door.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone(), digest_view: topology_view.digest_view.clone(), investigated: investigated.clone() }));
                             // What the provider holds recorded at a path: the proof of a node the accepted topology names
                             // that no view and no durable runtime row holds a birth of (node-recovery.md step 2, Q335).
                             records.set_path_probe(runner.clone());
@@ -2536,7 +2545,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         .unwrap_or_else(|| cfg.data_dir.clone()),
                                                     gone_dirs: Arc::default(),
                                                     resubmits: Arc::default(),
-                                                    on_node_investigated: on_node_investigated.clone(),
+                                                    investigated: investigated.clone(),
                                                 };
                                                 // A refused caller (Q207) is decided by its path and name and this admin's atlas, and acts
                                                 // through this recovery submitter's terminate report and the heard-again door.
