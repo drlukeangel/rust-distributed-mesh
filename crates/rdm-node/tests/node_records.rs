@@ -27,11 +27,10 @@ fn properties() -> NodeProperties {
         applied: BTreeSet::new(),
     }
 }
-fn lifecycle(node_id: NodeId, writer: RecordBirth, mesh_id: MeshId) -> NodeLifecycle {
+fn lifecycle(node_id: NodeId, mesh_id: MeshId) -> NodeLifecycle {
     NodeLifecycle { replacement_from: None,
         initial_properties: None,
         node_id,
-        writer,
         path: "mesh1.rpc".into(),
         name: "north".into(),
         kind: NodeKind::RpcNode,
@@ -65,51 +64,33 @@ fn root(tag: &str) -> std::path::PathBuf {
     root
 }
 
-async fn late_writer_contract(store: &dyn NodeRecordsStorage) {
+async fn latest_line_contract(store: &dyn NodeRecordsStorage) {
     let node = NodeId::mint();
     let mesh = MeshId::mint();
-    let old = lifecycle(node.clone(), birth(), mesh.clone());
-    let mut current = old.clone();
-    current.writer = RecordBirth {
-        node_id: old.writer.node_id.clone(),
-        incarnation_id: IncarnationId::mint(),
-    };
-    store.put_lifecycle(&old).await.unwrap();
-    store.put_lifecycle(&current).await.unwrap();
-    let mut late = old.clone();
-    late.status = rdm_node::model::NodeStatus::Deleted;
-    store.put_lifecycle(&late).await.unwrap();
-    let unrelated = lifecycle(NodeId::mint(), birth(), MeshId::mint());
-    store.put_lifecycle(&unrelated).await.unwrap();
-    assert_eq!(
-        store.lifecycle(&node, &current.writer).await.unwrap(),
-        Some(current)
-    );
-    assert_eq!(
-        store.lifecycle(&node, &old.writer).await.unwrap(),
-        Some(late)
-    );
-    assert_eq!(
-        store.lifecycle(&node, &birth()).await.unwrap(),
-        None,
-        "a missing current writer never falls back to another writer"
-    );
-    assert_eq!(store.lifecycles(&mesh).await.unwrap().len(), 2);
-    let subjects = store.lifecycles_of(&node).await.unwrap();
-    assert_eq!(subjects.len(), 2, "an exact subject read needs no inferred mesh or writer");
-    assert!(subjects.iter().all(|record| record.node_id == node));
-    assert!(store.lifecycles_of(&NodeId::mint()).await.unwrap().is_empty());
+    let first = lifecycle(node.clone(), mesh.clone());
+    let mut later = first.clone();
+    later.status = rdm_node::model::NodeStatus::Stopped;
+    // Two writers append the node's record: its id is the key, the latest line is current.
+    store.put_lifecycle(&first, &birth()).await.unwrap();
+    store.put_lifecycle(&later, &birth()).await.unwrap();
+    let unrelated = lifecycle(NodeId::mint(), MeshId::mint());
+    store.put_lifecycle(&unrelated, &birth()).await.unwrap();
+    assert_eq!(store.lifecycle(&node).await.unwrap(), Some(later), "the latest line is the node's record");
+    assert_eq!(store.lifecycle(&NodeId::mint()).await.unwrap(), None, "a node with no record has none yet");
+    assert_eq!(store.lifecycles(&mesh).await.unwrap().len(), 1, "one record per node");
     assert!(store.lifecycles(&MeshId::mint()).await.unwrap().is_empty());
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R4): a predecessor's late write cannot overwrite the successor writer's record.
+/// CONTRACT (i150 R4, Q323): one node record keyed by node id, append-only, the latest line current;
+/// no writer is in its key. Must NOT happen: a read selecting a record by its writer, or two records of
+/// one node.
 #[tokio::test]
-async fn a_late_primary_write_changes_only_its_own_record() {
-    late_writer_contract(&MemoryNodeRecords::default()).await;
-    let dir = root("late-writer");
+async fn a_nodes_record_is_its_latest_line_at_its_node_id() {
+    latest_line_contract(&MemoryNodeRecords::default()).await;
+    let dir = root("latest-line");
     let store = FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap();
-    late_writer_contract(&store).await;
+    latest_line_contract(&store).await;
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -423,21 +404,11 @@ impl NodeRecordsStorage for LostAcknowledgement {
     ) -> Result<Option<NodeProperties>, rdm_node::storage_error::StorageError> {
         self.records.properties(node).await
     }
-    async fn put_lifecycle(
-        &self,
-        record: &NodeLifecycle,
-    ) -> Result<(), rdm_node::storage_error::StorageError> {
-        self.records.put_lifecycle(record).await
+    async fn put_lifecycle(&self, record: &NodeLifecycle, writer: &RecordBirth) -> Result<(), rdm_node::storage_error::StorageError> {
+        self.records.put_lifecycle(record, writer).await
     }
-    async fn lifecycle(
-        &self,
-        node: &NodeId,
-        writer: &RecordBirth,
-    ) -> Result<Option<NodeLifecycle>, rdm_node::storage_error::StorageError> {
-        self.records.lifecycle(node, writer).await
-    }
-    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<NodeLifecycle>, rdm_node::storage_error::StorageError> {
-        self.records.lifecycles_of(node).await
+    async fn lifecycle(&self, node: &NodeId) -> Result<Option<NodeLifecycle>, rdm_node::storage_error::StorageError> {
+        self.records.lifecycle(node).await
     }
     async fn lifecycles(
         &self,
@@ -573,11 +544,11 @@ async fn a_provider_copy_preserves_both_record_kinds_and_applied_operations() {
         .unwrap()
         .record;
     let mesh = MeshId::mint();
-    let previous = lifecycle(initial.birth.node_id.clone(), birth(), mesh.clone());
+    let previous = lifecycle(initial.birth.node_id.clone(), mesh.clone());
     let mut current = previous.clone();
-    current.writer = birth();
-    records.put_lifecycle(&previous).await.unwrap();
-    records.put_lifecycle(&current).await.unwrap();
+    current.status = rdm_node::model::NodeStatus::Stopped;
+    records.put_lifecycle(&previous, &birth()).await.unwrap();
+    records.put_lifecycle(&current, &birth()).await.unwrap();
     let from = FileProviderLines::open("file", &source_dir, &fabric)
         .await
         .unwrap();
@@ -599,21 +570,9 @@ async fn a_provider_copy_preserves_both_record_kinds_and_applied_operations() {
         reopened.properties(&initial.birth.node_id).await.unwrap(),
         Some(written)
     );
-    assert_eq!(
-        reopened
-            .lifecycle(&initial.birth.node_id, &previous.writer)
-            .await
-            .unwrap(),
-        Some(previous)
-    );
-    assert_eq!(
-        reopened
-            .lifecycle(&initial.birth.node_id, &current.writer)
-            .await
-            .unwrap(),
-        Some(current)
-    );
-    assert_eq!(reopened.lifecycles(&mesh).await.unwrap().len(), 2);
+    assert_eq!(reopened.lifecycle(&initial.birth.node_id).await.unwrap(), Some(current), "the copy carries the node's latest line");
+    assert_eq!(reopened.lifecycles(&mesh).await.unwrap().len(), 1);
+    let _ = previous;
     drop(reopened);
     drop(from);
     drop(writer);

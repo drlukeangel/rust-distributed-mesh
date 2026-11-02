@@ -1755,9 +1755,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = control.node_rows.set(nodes_storage.clone());
                                 let _ = control.node_records.set(topology_storage.node_records());
                                 let _ = records.node_records.set(topology_storage.node_records());
-                                // Every record this admin's writer puts persists its lifecycle record under this admin's
-                                // writer birth, its role flags the election result's (build.md §5.3; node-primary-update.md step 5).
-                                written.writes_lifecycle_to(topology_storage.node_records(), topology_view.primaries().clone(), cfg.fabric_id.clone());
+                                // Every record this admin's writer puts persists its lifecycle record at the node's id, its
+                                // role flags the election result's (Q323; build.md §5.3; node-primary-update.md step 5).
+                                let mesh_ids = records.clone();
+                                written.writes_lifecycle_to(topology_storage.node_records(), topology_view.primaries().clone(), cfg.fabric_id.clone(), Arc::new(move |mesh: &str| mesh_ids.meshes.lock().unwrap().get(mesh).cloned()));
                                 let _ = control.node_id.set(node_id.clone());
                                 let _ = control.incarnation.set(incarnation.clone());
                                 records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone())));
@@ -2015,9 +2016,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let stores = control.upgrade()?.record_stores()?;
                                             let reader = stores.reader();
                                             let read = async {
-                                                let Some(row) = reader.row(&view, &node_id).await? else { return Ok(None) };
+                                                let Some(row) = reader.row(&node_id).await? else { return Ok(None) };
                                                 let predecessor = match row.predecessor.as_ref() {
-                                                    Some(p) => reader.row(&view, &p.node_id).await?,
+                                                    Some(p) => reader.row(&p.node_id).await?,
                                                     None => None,
                                                 };
                                                 let properties = stores.records.properties(&node_id).await.map_err(|e| format!("the property record of node {node_id} could not be read: {e}"))?;

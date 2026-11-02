@@ -210,11 +210,9 @@ pub async fn bind_records(cp: &rdm_admin::control_plane::ControlPlane, views: &[
 }
 
 /// Bind on `cp` the records its acceptance and name lookups read (query.md §1: the pair's name claim,
-/// then the lifecycle record under the subject mesh's current writer): `rows`, the nodes store its name
-/// claims are read from, and, for every record `rows` holds of a mesh `t` names, its lifecycle record
-/// written under that mesh's writer in `t` (its installed mesh-primary, else the fabric-primary,
-/// `current_record::writer_of`), each mesh given its Mesh record in `cp`'s mesh store. A mesh `t` names
-/// no writer of has none written. Called again after a fixture rewrites a record in `rows`, it writes
+/// then the lifecycle record at the node id): `rows`, the nodes store its name claims are read from,
+/// and, for every record `rows` holds of a mesh `t` names, its lifecycle record, each mesh given its
+/// Mesh record in `cp`'s mesh store. Called again after a fixture rewrites a record in `rows`, it writes
 /// that record's lifecycle record again.
 pub async fn bind_store(cp: &rdm_admin::control_plane::ControlPlane, rows: std::sync::Arc<rdm_admin::storage::MemoryNodesStorage>, t: &rdm_admin::topology::Topology) {
     let _ = cp.node_rows.set(rows.clone());
@@ -222,17 +220,15 @@ pub async fn bind_store(cp: &rdm_admin::control_plane::ControlPlane, rows: std::
     write_lifecycles(&rows, t, &*cp.claims, &*records).await;
 }
 
-/// For every record `rows` holds of a mesh `t` names, its lifecycle record written to `records` under
-/// that mesh's writer in `t` (its installed mesh-primary, else the fabric-primary,
-/// `current_record::writer_of`), each mesh given its Mesh record and name claim in `meshes` (the one
-/// `meshes` holds by name, else `t`'s id for it, else a minted one). A mesh `t` names no writer of has none written:
-/// the records a reader (`current_record::CurrentRecords`) reads over `rows`' name claims.
+/// For every record `rows` holds of a mesh `t` names, its lifecycle record written to `records` at its
+/// node id, each mesh given its Mesh record and name claim in `meshes` (the one `meshes` holds by name,
+/// else `t`'s id for it, else a minted one): the records a reader (`current_record::CurrentRecords`)
+/// reads over `rows`' name claims.
 pub async fn write_lifecycles(rows: &rdm_admin::storage::MemoryNodesStorage, t: &rdm_admin::topology::Topology, meshes: &dyn rdm_admin::storage::MeshStorage, records: &dyn rdm_node::node_records::NodeRecordsStorage) {
     use rdm_admin::storage::NodesStorage as _;
     let names: std::collections::BTreeSet<String> = t.nodes.iter().map(|n| n.mesh.clone()).chain(t.meshes.iter().map(|m| m.name.clone())).collect();
+    let writer = rdm_node::node_records::RecordBirth { node_id: rdm_admin::model::NodeId::mint(), incarnation_id: rdm_admin::model::IncarnationId::mint() };
     for mesh in names {
-        let Ok(writer) = rdm_admin::current_record::writer_of(t, &mesh) else { continue };
-        let writer = rdm_admin::storage::BirthRef { node_id: writer.node_id, incarnation_id: writer.incarnation_id };
         let mesh_id = match meshes.mesh_named(&mesh).await.expect("the mesh store reads") {
             Some(m) => m.mesh_id,
             None => {
@@ -243,8 +239,8 @@ pub async fn write_lifecycles(rows: &rdm_admin::storage::MemoryNodesStorage, t: 
             }
         };
         for row in rows.nodes(&mesh).await.expect("the nodes store reads") {
-            if let Some(record) = rdm_admin::node_rows::lifecycle_record(&row, &t.fabric.id, Some(&mesh_id), row.node_type().to_string(), &writer, (false, false)) {
-                records.put_lifecycle(&record).await.expect("the lifecycle record is written");
+            if let Some(record) = rdm_admin::node_rows::lifecycle_record(&row, &t.fabric.id, Some(&mesh_id), row.node_type().to_string(), (false, false)) {
+                records.put_lifecycle(&record, &writer).await.expect("the lifecycle record is written");
             }
         }
     }

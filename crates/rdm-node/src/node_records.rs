@@ -9,7 +9,7 @@ use rdm_core::{IncarnationId, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The identity already assigned to a running node, also identifying a lifecycle writer.
+/// The identity already assigned to a running node: a birth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordBirth {
     /// The node instance.
@@ -295,13 +295,12 @@ impl NodePropertyWriter {
     }
 }
 
-/// Lifecycle state for one subject, written only under its writer's own birth.
+/// Lifecycle state for one node, at its node id: append-only, the latest line current (Q323). Its
+/// mesh-primary writes it; no writer is in its key or its fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeLifecycle {
-    /// The subject instance.
+    /// The node.
     pub node_id: NodeId,
-    /// The exact primary that authored this record; part of its durable key.
-    pub writer: RecordBirth,
     /// The subject's path, independent of its mesh and node type.
     pub path: String,
     /// The subject's name within that path.
@@ -377,20 +376,12 @@ pub trait NodeRecordsStorage: Send + Sync {
     async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError>;
     /// Read the property record at an exact node ID.
     async fn properties(&self, node: &NodeId) -> Result<Option<NodeProperties>, StorageError>;
-    /// Persist lifecycle state at `(subject ID, writer ID, writer incarnation)`.
-    async fn put_lifecycle(&self, record: &NodeLifecycle) -> Result<(), StorageError>;
-    /// Read only the lifecycle record of the selected primary's birth.
-    async fn lifecycle(
-        &self,
-        node: &NodeId,
-        writer: &RecordBirth,
-    ) -> Result<Option<NodeLifecycle>, StorageError>;
-    /// Read the records of one exact subject across writer births. This lookup does not need
-    /// a path-derived mesh: the reader selects the installed primary using each record's mesh.
-    /// The store returns records only and never chooses a primary.
-    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<NodeLifecycle>, StorageError>;
-    /// List all stored lifecycle records for a mesh, including predecessor writers.
-    /// Selection of the current writer remains the reader's responsibility.
+    /// Persist the node's lifecycle record at its node ID; `writer` is the birth appending it (the
+    /// store log's own write sequence), never part of the record or its key.
+    async fn put_lifecycle(&self, record: &NodeLifecycle, writer: &RecordBirth) -> Result<(), StorageError>;
+    /// Read the latest lifecycle record at an exact node ID.
+    async fn lifecycle(&self, node: &NodeId) -> Result<Option<NodeLifecycle>, StorageError>;
+    /// The latest lifecycle record of every node of a mesh.
     async fn lifecycles(&self, mesh: &rdm_core::MeshId)
         -> Result<Vec<NodeLifecycle>, StorageError>;
 }
@@ -399,7 +390,7 @@ pub trait NodeRecordsStorage: Send + Sync {
 #[derive(Default)]
 pub struct MemoryNodeRecords {
     properties: std::sync::Mutex<BTreeMap<NodeId, NodeProperties>>,
-    lifecycle: std::sync::Mutex<BTreeMap<(NodeId, NodeId, String), NodeLifecycle>>,
+    lifecycle: std::sync::Mutex<BTreeMap<NodeId, NodeLifecycle>>,
 }
 
 #[async_trait]
@@ -414,35 +405,12 @@ impl NodeRecordsStorage for MemoryNodeRecords {
     async fn properties(&self, node: &NodeId) -> Result<Option<NodeProperties>, StorageError> {
         Ok(self.properties.lock().unwrap().get(node).cloned())
     }
-    async fn put_lifecycle(&self, record: &NodeLifecycle) -> Result<(), StorageError> {
-        self.lifecycle.lock().unwrap().insert(
-            (
-                record.node_id.clone(),
-                record.writer.node_id.clone(),
-                record.writer.incarnation_id.to_string(),
-            ),
-            record.clone(),
-        );
+    async fn put_lifecycle(&self, record: &NodeLifecycle, _writer: &RecordBirth) -> Result<(), StorageError> {
+        self.lifecycle.lock().unwrap().insert(record.node_id.clone(), record.clone());
         Ok(())
     }
-    async fn lifecycle(
-        &self,
-        node: &NodeId,
-        writer: &RecordBirth,
-    ) -> Result<Option<NodeLifecycle>, StorageError> {
-        Ok(self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .get(&(
-                node.clone(),
-                writer.node_id.clone(),
-                writer.incarnation_id.to_string(),
-            ))
-            .cloned())
-    }
-    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<NodeLifecycle>, StorageError> {
-        Ok(self.lifecycle.lock().unwrap().values().filter(|record| record.node_id == *node).cloned().collect())
+    async fn lifecycle(&self, node: &NodeId) -> Result<Option<NodeLifecycle>, StorageError> {
+        Ok(self.lifecycle.lock().unwrap().get(node).cloned())
     }
     async fn lifecycles(
         &self,
@@ -486,9 +454,6 @@ impl FileNodeRecords {
         })
     }
 
-    fn key(node: &NodeId, writer: &RecordBirth) -> String {
-        format!("{}/{}/{}", node, writer.node_id, writer.incarnation_id)
-    }
 
     /// Wait until every append already issued through this file has ended.
     pub async fn finish_issued_writes(&self) {
@@ -518,33 +483,12 @@ impl NodeRecordsStorage for FileNodeRecords {
             .map(|l| l.decode(self.log.path()))
             .transpose()
     }
-    async fn put_lifecycle(&self, record: &NodeLifecycle) -> Result<(), StorageError> {
-        let writer =
-            crate::store_log::LogWriter::new(&record.writer.node_id, &record.writer.incarnation_id);
-        self.log
-            .append(
-                &writer,
-                LIFECYCLE_FORMAT,
-                &Self::key(&record.node_id, &record.writer),
-                record,
-            )
-            .await
+    async fn put_lifecycle(&self, record: &NodeLifecycle, writer: &RecordBirth) -> Result<(), StorageError> {
+        let writer = crate::store_log::LogWriter::new(&writer.node_id, &writer.incarnation_id);
+        self.log.append(&writer, LIFECYCLE_FORMAT, record.node_id.as_str(), record).await
     }
-    async fn lifecycle(
-        &self,
-        node: &NodeId,
-        writer: &RecordBirth,
-    ) -> Result<Option<NodeLifecycle>, StorageError> {
-        self.log
-            .latest("node-lifecycle", &Self::key(node, writer))
-            .await?
-            .map(|l| l.decode(self.log.path()))
-            .transpose()
-    }
-    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<NodeLifecycle>, StorageError> {
-        let prefix = format!("{node}/");
-        self.log.latest_under("node-lifecycle", &prefix).await?.into_iter()
-            .map(|line| line.decode(self.log.path())).collect()
+    async fn lifecycle(&self, node: &NodeId) -> Result<Option<NodeLifecycle>, StorageError> {
+        self.log.latest("node-lifecycle", node.as_str()).await?.map(|l| l.decode(self.log.path())).transpose()
     }
     async fn lifecycles(
         &self,

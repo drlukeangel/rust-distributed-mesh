@@ -866,10 +866,7 @@ impl ControlPlane {
             let deleted_here = current.steps.iter().filter_map(|s| crate::build_state::delete_step_birth(s, "NodeDeleted")).any(|(p, n, i)| p == path && n == node_id && i == incarnation);
             // The node's current record (query.md §1), what says it is deleted beside the atlas's ops.
             let row = match (deleted_here, self.current_records()) {
-                (false, Some(records)) => {
-                    let observed = self.topology.read().await.clone();
-                    records.row(&observed, &node_id).await.map_err(Refusal::Unavailable)?
-                }
+                (false, Some(records)) => records.row(&node_id).await.map_err(Refusal::Unavailable)?,
                 _ => None,
             };
             if !deleted_here && !self.atlas.holds_deleted(&node_id, &incarnation, row.as_ref()) && self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)?.is_none() {

@@ -103,12 +103,11 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
         tokio::time::timeout(WRONG, async {
             loop {
                 let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::Ready && n.is_primary && n.is_fabric_primary);
-                // Its record under its mesh's current writer, read through the reader (query.md §1).
+                // Its record at its node id, read through the reader (query.md §1).
                 let row_ready = match (running.control.node_rows.get(), running.control.node_records.get()) {
                     (Some(claims), Some(records)) => {
                         let reader = rdm_admin::current_record::CurrentRecords { claims: &**claims, meshes: &*running.control.claims, records: &**records };
-                        let t = running.control.topology.read().await.clone();
-                        reader.row(&t, &me.node.node_id).await.ok().flatten().is_some_and(|r| r.status == rdm_admin::model::NodeStatus::Ready)
+                        reader.row(&me.node.node_id).await.ok().flatten().is_some_and(|r| r.status == rdm_admin::model::NodeStatus::Ready)
                     }
                     _ => false,
                 };

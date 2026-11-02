@@ -157,14 +157,13 @@ impl RefusedCallers {
                 return Err((CallerDecision::NoRecord, "build-unread".into()));
             }
         };
-        // The caller's record under its mesh's current writer, and the record the current-pair lookup names
-        // at its (path, name) (query.md §1), over this admin's installed view.
+        // The caller's record at its node id, and the record the current-pair lookup names at its
+        // (path, name) (query.md §1).
         let read = async {
             let stores = (self.stores)().ok_or_else(|| "this admin's node records are not open".to_string())?;
-            let view = self.recovery.topology.read().await.clone();
             let reader = stores.reader();
-            let Some(caller) = reader.row(&view, node_id).await? else { return Ok((None, None)) };
-            let at_path = reader.row_at(&view, &caller.name).await?;
+            let Some(caller) = reader.row(node_id).await? else { return Ok((None, None)) };
+            let at_path = reader.row_at(&caller.name).await?;
             Ok::<_, String>((Some(caller), at_path))
         };
         let (caller, at_path) = match read.await {

@@ -776,14 +776,11 @@ impl rdm_node::node_records::NodeRecordsStorage for RefusingRecords {
     async fn properties(&self, node: &NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, rdm_node::storage_error::StorageError> {
         self.0.properties(node).await
     }
-    async fn put_lifecycle(&self, record: &rdm_node::node_records::NodeLifecycle) -> Result<(), rdm_node::storage_error::StorageError> {
-        self.0.put_lifecycle(record).await
+    async fn put_lifecycle(&self, record: &rdm_node::node_records::NodeLifecycle, writer: &rdm_node::node_records::RecordBirth) -> Result<(), rdm_node::storage_error::StorageError> {
+        self.0.put_lifecycle(record, writer).await
     }
-    async fn lifecycle(&self, node: &NodeId, writer: &rdm_node::node_records::RecordBirth) -> Result<Option<rdm_node::node_records::NodeLifecycle>, rdm_node::storage_error::StorageError> {
-        self.0.lifecycle(node, writer).await
-    }
-    async fn lifecycles_of(&self, node: &NodeId) -> Result<Vec<rdm_node::node_records::NodeLifecycle>, rdm_node::storage_error::StorageError> {
-        self.0.lifecycles_of(node).await
+    async fn lifecycle(&self, node: &NodeId) -> Result<Option<rdm_node::node_records::NodeLifecycle>, rdm_node::storage_error::StorageError> {
+        self.0.lifecycle(node).await
     }
     async fn lifecycles(&self, mesh: &rdm_core::MeshId) -> Result<Vec<rdm_node::node_records::NodeLifecycle>, rdm_node::storage_error::StorageError> {
         self.0.lifecycles(mesh).await

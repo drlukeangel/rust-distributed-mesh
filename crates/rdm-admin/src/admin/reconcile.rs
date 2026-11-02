@@ -130,9 +130,8 @@ impl crate::build_drive::Gate for RoleGate {
         if let Ok(p) = self.builds.read_build(build_id).await {
             let rows = match self.control.current_records() {
                 Some(records) => {
-                    let observed = self.control.topology.read().await.clone();
                     let operations: Vec<rdm_core::OperationId> = p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete).map(|s| s.operation.clone()).collect();
-                    match crate::atlas::subject_rows(&records, &observed, operations.iter()).await {
+                    match crate::atlas::subject_rows(&records, operations.iter()).await {
                         Ok(rows) => rows,
                         Err(e) => {
                             tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, outcome = "subjects-unread", detail = %e, "otel.kind" = "internal")

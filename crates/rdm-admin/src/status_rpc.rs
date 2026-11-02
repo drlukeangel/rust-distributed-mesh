@@ -1629,7 +1629,7 @@ impl StatusDoor {
                     let scope = atlas.meshes();
                     let mut rows = Vec::new();
                     for n in view.births().filter(|n| scope.contains(&n.mesh)) {
-                        match reader.row(view, &n.node_id).await {
+                        match reader.row(&n.node_id).await {
                             Ok(Some(row)) => rows.push(row),
                             Ok(None) => {}
                             Err(e) => return rdm_core::reply::status::bounded_source_failed("node records", op, &format!("path {me_name_path:?}, name {me_name_name:?} could not read the record of node {}: {e}", n.node_id, me_name_path = &me_name.path, me_name_name = &me_name.name)),

@@ -76,17 +76,16 @@ pub struct NodeRows {
 }
 
 /// The lifecycle record of `row`'s current birth (its newest birth's, else its claim's allocated
-/// incarnation) that the writer born as `writer` persists at `(row's node id, writer)`: the row's
-/// lifecycle facts (proposal node-record.md R-NR3), `flags` its boolean role flags. `None` when the row
-/// names no birth or no mesh id is known for it: nothing is invented for a key.
-pub fn lifecycle_record(row: &NodeRow, fabric_id: &FabricId, mesh_id: Option<&MeshId>, node_type: String, writer: &crate::storage::BirthRef, flags: (bool, bool)) -> Option<rdm_node::node_records::NodeLifecycle> {
+/// incarnation), persisted at the row's node id (Q323): the row's lifecycle facts (proposal
+/// node-record.md R-NR3), `flags` its boolean role flags. `None` when the row names no birth or no mesh
+/// id is known for it: nothing is invented for a record.
+pub fn lifecycle_record(row: &NodeRow, fabric_id: &FabricId, mesh_id: Option<&MeshId>, node_type: String, flags: (bool, bool)) -> Option<rdm_node::node_records::NodeLifecycle> {
     let birth = row.newest_birth();
     let incarnation_id = birth.map(|b| b.incarnation_id.clone()).or_else(|| row.allocated.as_ref().map(|a| a.incarnation.clone()))?;
     let mesh_id = row.mesh_id.clone().or_else(|| mesh_id.cloned())?;
     let record_birth = |b: &crate::storage::BirthRef| rdm_node::node_records::RecordBirth { node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone() };
     Some(rdm_node::node_records::NodeLifecycle {
         node_id: row.node_id.clone(),
-        writer: record_birth(writer),
         path: row.name.path.clone(),
         name: row.name.name.clone(),
         kind: row.kind,
@@ -147,14 +146,14 @@ pub struct WrittenRows {
     /// ([`Self::subscribe_names`]); nothing is sent.
     names: tokio::sync::watch::Sender<u64>,
     /// Where this writer's lifecycle records are persisted, set once its node records are open
-    /// ([`Self::writes_lifecycle_to`]): every put of a record persists its lifecycle record there under
-    /// this writer's birth (build.md §5.3: "Each mesh-primary writes ... lifecycle facts for its members
-    /// under that primary's writer birth"). Unset: no lifecycle record is written.
+    /// ([`Self::writes_lifecycle_to`]): every put of a record persists its lifecycle record there, at
+    /// the node's id (Q323). Unset: no lifecycle record is written.
     lifecycle: std::sync::OnceLock<LifecycleWrites>,
-    /// The id of each mesh a takeover of this writer named, by name: the key of a record that carries
-    /// no mesh id of its own.
-    mesh_ids: Mutex<BTreeMap<String, MeshId>>,
 }
+
+/// The id of a mesh by its name, as the admin holds its Mesh records: the mesh id of a record that
+/// carries none of its own.
+pub type MeshIds = Arc<dyn Fn(&str) -> Option<MeshId> + Send + Sync>;
 
 /// Where a writer's lifecycle records are persisted, and the election result their boolean role flags
 /// are recorded from (node-primary-update.md step 5: "The lifecycle writer records the election result
@@ -163,6 +162,7 @@ pub struct LifecycleWrites {
     records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>,
     primaries: rdm_transport::topology::PrimaryView,
     fabric_id: FabricId,
+    meshes: MeshIds,
 }
 
 impl std::fmt::Debug for LifecycleWrites {
@@ -205,29 +205,23 @@ impl WrittenRows {
     }
 
     /// Persist the lifecycle record of every record this writer puts from now on to `records` of
-    /// `fabric_id`, its role flags as `primaries` holds the election result. The first call stands.
-    pub fn writes_lifecycle_to(&self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>, primaries: rdm_transport::topology::PrimaryView, fabric_id: FabricId) {
-        let _ = self.lifecycle.set(LifecycleWrites { records, primaries, fabric_id });
+    /// `fabric_id`, its role flags as `primaries` holds the election result, a record with no mesh id
+    /// of its own given its mesh's id from `meshes`. The first call stands.
+    pub fn writes_lifecycle_to(&self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>, primaries: rdm_transport::topology::PrimaryView, fabric_id: FabricId, meshes: MeshIds) {
+        let _ = self.lifecycle.set(LifecycleWrites { records, primaries, fabric_id, meshes });
     }
 
-    /// Hold `ids`, each mesh's id by its name, as a takeover's candidate view names them.
-    pub fn hold_mesh_ids(&self, ids: impl IntoIterator<Item = (String, MeshId)>) {
-        self.mesh_ids.lock().unwrap().extend(ids);
-    }
-
-    /// The lifecycle record of `row`, the record this writer puts, persisted under this writer's birth
-    /// at `(row's node id, writer)` (build.md §5.3; node-name-update.md "Claim and move": "put lifecycle
-    /// record at the same subject/writer key"), with the election result's boolean role flags. Nothing
-    /// is written while no lifecycle target is set. A record whose mesh id is unknown (neither on the
-    /// record nor named by a takeover of this writer) is not keyed: one
-    /// `rdm.node_admin.node.update.via-lifecycle-record` span names it, and its next put after a
-    /// takeover names the mesh writes it.
+    /// The lifecycle record of `row`, the record this writer puts, persisted at the row's node id
+    /// (Q323; build.md §5.3), with the election result's boolean role flags. Nothing is written while
+    /// no lifecycle target is set. A record whose mesh id is unknown (neither on the record nor among
+    /// the admin's Mesh records) is not written: one `rdm.node_admin.node.update.via-lifecycle-record`
+    /// span names it, and its next put writes it once the mesh's id is known.
     async fn put_lifecycle(&self, row: &NodeRow) -> Result<(), crate::storage_error::StorageError> {
         let (Some(target), Some(writer)) = (self.lifecycle.get(), self.birth.get()) else { return Ok(()) };
-        let mesh_id = self.mesh_ids.lock().unwrap().get(&row.mesh).cloned();
+        let mesh_id = (target.meshes)(&row.mesh);
         let node_type = self.node_type_of(&row.node_id).unwrap_or_else(|| row.node_type().to_string());
-        match lifecycle_record(row, &target.fabric_id, mesh_id.as_ref(), node_type, writer, target.flags(row)) {
-            Some(record) => target.records.put_lifecycle(&record).await,
+        match lifecycle_record(row, &target.fabric_id, mesh_id.as_ref(), node_type, target.flags(row)) {
+            Some(record) => target.records.put_lifecycle(&record, &rdm_node::node_records::RecordBirth { node_id: writer.node_id.clone(), incarnation_id: writer.incarnation_id.clone() }).await,
             None => {
                 tracing::info_span!("rdm.node_admin.node.update.via-lifecycle-record", subject_path = %row.name.path, subject_name = %row.name.name, node_id = %row.node_id, mesh = %row.mesh, writer_node_id = %writer.node_id, writer_incarnation_id = %writer.incarnation_id.as_str(), outcome = "unkeyed", "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the record names no birth or no mesh id is known for it: no lifecycle record is keyed for it"));

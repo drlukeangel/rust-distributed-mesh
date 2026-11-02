@@ -6,7 +6,7 @@
 //! Its sources are ops, never a gossip frame (Q197: "nothing starts or stops or does any action through
 //! gossip"):
 //! - the birth at a path is the one the current-pair lookup names (query.md §1: its name claim, then its
-//!   lifecycle record under its mesh's current writer, read through the reader, never a copy held here;
+//!   lifecycle record at its node id, read through the reader, never a copy held here;
 //!   a recovery's or a re-create's new birth included);
 //! - an operation accepted on a node and not yet complete is written at its acceptance;
 //! - a completed lifecycle operation is written from the receipts the fabric-primary's own attempts
@@ -283,15 +283,15 @@ fn birth_of_step(rows: &[NodeRow], p: &BuildProjection, receipt: &crate::build_s
     Some(Birth { node_id: expected.0, incarnation: expected.1 })
 }
 
-/// The current records of the subjects of `operations` (query.md §1, read through `records` over
-/// `observed`): a node or birth subject by its node ID, a location by the current-pair lookup. What names
-/// a receipt's birth when its attempt pinned none ([`birth_of_step`]). `Err` names a read that failed.
-pub(crate) async fn subject_rows<'a>(records: &crate::current_record::CurrentRecords<'_>, observed: &Topology, operations: impl IntoIterator<Item = &'a rdm_core::OperationId>) -> Result<Vec<NodeRow>, String> {
+/// The current records of the subjects of `operations` (query.md §1, read through `records`): a node or
+/// birth subject by its node ID, a location by the current-pair lookup. What names a receipt's birth when
+/// its attempt pinned none ([`birth_of_step`]). `Err` names a read that failed.
+pub(crate) async fn subject_rows<'a>(records: &crate::current_record::CurrentRecords<'_>, operations: impl IntoIterator<Item = &'a rdm_core::OperationId>) -> Result<Vec<NodeRow>, String> {
     let mut out: Vec<NodeRow> = Vec::new();
     for operation in operations {
         let row = match &operation.subject {
-            Some(rdm_core::OperationSubject::Node(id) | rdm_core::OperationSubject::Birth { node_id: id, .. }) => records.row(observed, id).await?,
-            Some(rdm_core::OperationSubject::Location(at)) => records.row_at(observed, at).await?,
+            Some(rdm_core::OperationSubject::Node(id) | rdm_core::OperationSubject::Birth { node_id: id, .. }) => records.row(id).await?,
+            Some(rdm_core::OperationSubject::Location(at)) => records.row_at(at).await?,
             _ => None,
         };
         if let Some(r) = row.filter(|r| !out.iter().any(|o| o.node_id == r.node_id)) {
@@ -375,8 +375,8 @@ impl Atlas {
         self.callers.get()
     }
 
-    /// Whether the atlas holds the birth `(node_id, incarnation)` deleted: `row`, its node's record under its
-    /// mesh's current writer (query.md §1), deleted or withdrawn with that birth, or a node.delete of that
+    /// Whether the atlas holds the birth `(node_id, incarnation)` deleted: `row`, its node's record at its
+    /// node id (query.md §1), deleted or withdrawn with that birth, or a node.delete of that
     /// birth completed (Q217: such a birth that comes back is deleted, its runtime terminated).
     pub(crate) fn holds_deleted(&self, node_id: &NodeId, incarnation: &IncarnationId, row: Option<&NodeRow>) -> bool {
         let recorded = row.is_some_and(|r| r.node_id == *node_id && matches!(r.status, NodeStatus::Deleted | NodeStatus::Withdrawn) && r.birth(incarnation).is_some());
@@ -413,7 +413,7 @@ impl Atlas {
     }
 
     /// Q207: the caller birth of `caller`'s node, `incarnation`, a primary refused as one it does not hold,
-    /// decided from `caller` (its record under its mesh's current writer, query.md §1), `at_path` (the
+    /// decided from `caller` (its record at its node id, query.md §1), `at_path` (the
     /// record the current-pair lookup names at `caller`'s `(path, name)`) and the ops executing (never the
     /// gossip view): another birth at the caller's `(path, name)`, or an op executing that fills it,
     /// deletes the caller; nothing there and the caller's record deleted deletes it, never re-admitted
@@ -589,7 +589,7 @@ impl Atlas {
         let mut kept = Vec::with_capacity(t.nodes.len());
         for mut n in std::mem::take(&mut t.nodes) {
             let row = match records {
-                Some(records) => records.row(&observed, &n.node_id).await?,
+                Some(records) => records.row(&n.node_id).await?,
                 None => None,
             };
             if self.answer(&mut n, row.as_ref()) {
@@ -604,7 +604,7 @@ impl Atlas {
             held.created.iter().cloned().collect()
         };
         for b in created {
-            let Some(r) = records.row(&observed, &b.node_id).await? else { continue };
+            let Some(r) = records.row(&b.node_id).await? else { continue };
             let live = r.status.is_live() || r.status == NodeStatus::Starting;
             let Some(nb) = r.newest_birth().filter(|nb| live && nb.incarnation_id == b.incarnation) else { continue };
             if self.deleted_by_op(&b.node_id, &b.incarnation) || t.nodes.iter().any(|n| n.node_id == r.node_id || (n.name == r.name && n.status.is_live())) {
@@ -670,8 +670,8 @@ impl Atlas {
 
     /// `n`, a birth `node.get` answers, as `row` carries it and the ops left it (query.md §1; Q233,
     /// states.md "Who sets each state": "A query answers the state the row last took from the node's frame
-    /// or the mesh-primary's receipt"): `row` is the node's lifecycle record under its mesh's current
-    /// writer ([`crate::current_record::CurrentRecords::row`]), whose name and replacement provenance the
+    /// or the mesh-primary's receipt"): `row` is the node's lifecycle record at its node
+    /// id ([`crate::current_record::CurrentRecords::row`]), whose name and replacement provenance the
     /// birth takes, and, where it is of this birth (its newest, or a record with no birth yet), its status,
     /// `stopped` exactly when that is stopped. Never a lifecycle effect laid over the view: a command the
     /// node has not acknowledged moved the row nowhere, so it moves the answer nowhere. Silence is not a
@@ -720,20 +720,19 @@ impl Atlas {
     }
 
     /// The atlas row of `path`: the birth the current-pair lookup names (query.md §1: the pair's name
-    /// claim, then the lifecycle record under its mesh's current writer, `records`), its lifecycle as the
+    /// claim, then the lifecycle record at the claimant's node id, `records`), its lifecycle as the
     /// newest of the fabric-primary's own receipts and the record's effects, and the operation accepted on
     /// it. `None` when no claim holds the pair or its claimant's record stands at another: the gossip
-    /// view never stands in for one (Q197). A record the current writer does not hold is unavailable,
-    /// named.
+    /// view never stands in for one (Q197).
     pub(crate) async fn row(&self, path: &PathName, records: &crate::current_record::CurrentRecords<'_>, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<Option<AtlasRow>, String> {
-        let row = records.row_at(observed, path).await?;
+        let row = records.row_at(path).await?;
         self.project_row(row, builds, observed).await
     }
 
-    /// Read an admitted node directly by its globally unique ID, its record under its mesh's current
-    /// writer (query.md §1), never through a location index.
+    /// Read an admitted node directly by its globally unique ID, its record at that id (query.md §1),
+    /// never through a location index.
     pub(crate) async fn row_id(&self, node_id: &NodeId, records: &crate::current_record::CurrentRecords<'_>, builds: &dyn BuildStateAdapter, observed: &Topology) -> Result<Option<AtlasRow>, String> {
-        let row = records.row(observed, node_id).await?;
+        let row = records.row(node_id).await?;
         self.project_row(row, builds, observed).await
     }
 
@@ -829,8 +828,7 @@ impl crate::control_plane::ControlPlane {
         // the attempt pinned none.
         let rows = match self.current_records() {
             Some(records) => {
-                let observed = self.topology.read().await.clone();
-                subject_rows(&records, &observed, [operation]).await.unwrap_or_else(|e| {
+                subject_rows(&records, [operation]).await.unwrap_or_else(|e| {
                     span.record("detail", e.as_str());
                     Vec::new()
                 })
@@ -988,7 +986,7 @@ mod tests {
     }
 
     /// The stores `rows` are read from as current records (query.md §1): each row's name claimed, its
-    /// lifecycle record written under the writer birth of a fabric-primary that `observed` gains, acting for
+    /// lifecycle record written at its node id by a fabric-primary that `observed` gains, acting for
     /// every mesh of `rows` (each given a Mesh record and an id in `observed`), which names no mesh-primary.
     struct Current {
         claims: MemoryNodesStorage,
@@ -1022,10 +1020,10 @@ mod tests {
             current
         }
 
-        /// Write `row`'s lifecycle record under the writer birth.
+        /// Write `row`'s lifecycle record at its node id.
         async fn put(&self, row: &NodeRow) {
-            let record = crate::node_rows::lifecycle_record(row, &self.fabric_id, self.mesh_ids.get(&row.mesh), row.node_type().to_string(), &self.writer, (false, false)).expect("a keyed record");
-            self.records.put_lifecycle(&record).await.unwrap();
+            let record = crate::node_rows::lifecycle_record(row, &self.fabric_id, self.mesh_ids.get(&row.mesh), row.node_type().to_string(), (false, false)).expect("a keyed record");
+            self.records.put_lifecycle(&record, &rdm_node::node_records::RecordBirth { node_id: self.writer.node_id.clone(), incarnation_id: self.writer.incarnation_id.clone() }).await.unwrap();
         }
 
         fn reader(&self) -> crate::current_record::CurrentRecords<'_> {
@@ -1054,25 +1052,23 @@ mod tests {
         out
     }
 
-    /// CONTRACT (query.md §1: "point-reads the lifecycle record under that writer's node ID and
-    /// incarnation ... A missing current-writer record is unavailable; neither another writer's value nor
-    /// a raw last-written-path index supplies a fallback"): a deleted birth still running (a paused
-    /// node-admin a recovery deleted, resumed) writes its own record at its path and name after the birth
-    /// that re-created the path claimed it, under its own writer birth. The atlas row Build acceptance
-    /// reads is the re-created birth's, live (its claim, then mesh2's installed primary's record); the
-    /// deleted birth read by its id is the current writer's `Deleted` record; a node whose records only
-    /// another writer wrote is unavailable, named.
-    /// Must NOT happen: the path read `Deleted` from the deleted birth's own write and a stop of its
-    /// live successor refused `node-not-live` (S2 container seed 1431101 round 40, candidate 187fe558a).
+    /// CONTRACT (query.md §1: "A current-pair lookup resolves the path/name claim to a node ID. The reader
+    /// reads the node's record at that node ID: one record per node, append-only, its latest line current";
+    /// Q323): a deleted birth still running (a paused node-admin a recovery deleted, resumed) writes its
+    /// own record after the birth that re-created the path claimed it. The atlas row Build acceptance
+    /// reads at the path is the re-created birth's, live: the claim names it, and its own record is read
+    /// at its own id; the deleted birth read by its id is its own latest line.
+    /// Must NOT happen: the path read from the deleted birth's own write and a stop of its live successor
+    /// refused `node-not-live` (S2 container seed 1431101 round 40, candidate 187fe558a).
     #[tokio::test]
-    async fn a_deleted_births_own_write_never_hides_the_record_its_meshs_current_writer_holds() {
+    async fn a_deleted_births_own_write_never_hides_the_birth_that_holds_its_path() {
         use crate::model::{Fabric, FabricId, Mesh, MeshId, ProviderKind, ScopeStatus};
         let at = path("mesh2.admin", "1");
         let (old, old_inc) = record(path("mesh2.admin", "1"), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Deleted);
         let (mut new, new_inc) = record(path("mesh2.admin", "1"), "mesh2", rdm_core::NodeKind::NodeAdmin, NodeStatus::Ready);
         new.birth_mut(&new_inc, &at).declared.insert(rdm_core::status::NodeState::Ready);
         let atlas = TestAtlas::new();
-        // mesh2's installed mesh-primary is the re-created birth: the current writer of mesh2's records.
+        // mesh2's installed mesh-primary is the re-created birth: it writes mesh2's records.
         let (fabric_id, mesh_id) = (FabricId::mint(), MeshId::mint());
         let mut primary = crate::model::Node::allocated(at.clone(), "mesh2", rdm_core::NodeKind::NodeAdmin);
         primary.node_id = new.node_id.clone();
@@ -1083,29 +1079,23 @@ mod tests {
         let meshes = crate::storage::MemoryMeshStorage::default();
         meshes.put_mesh(&crate::storage::MeshRecord::new(mesh_id.clone(), "mesh2")).await.unwrap();
         let (claims, records) = (MemoryNodesStorage::default(), rdm_node::node_records::MemoryNodeRecords::default());
-        let current = crate::storage::BirthRef { node_id: new.node_id.clone(), incarnation_id: new_inc.clone() };
-        let lifecycle = |row: &NodeRow, writer: &crate::storage::BirthRef| crate::node_rows::lifecycle_record(row, &fabric_id, Some(&mesh_id), row.node_type().to_string(), writer, (false, false)).expect("a keyed record");
-        records.put_lifecycle(&lifecycle(&new, &current)).await.unwrap();
-        records.put_lifecycle(&lifecycle(&old, &current)).await.unwrap();
-        // The deleted birth, resumed, writes its own record live at the path, under its own writer birth.
+        let lifecycle = |row: &NodeRow| crate::node_rows::lifecycle_record(row, &fabric_id, Some(&mesh_id), row.node_type().to_string(), (false, false)).expect("a keyed record");
+        let primary_birth = rdm_node::node_records::RecordBirth { node_id: new.node_id.clone(), incarnation_id: new_inc.clone() };
+        records.put_lifecycle(&lifecycle(&new), &primary_birth).await.unwrap();
+        records.put_lifecycle(&lifecycle(&old), &primary_birth).await.unwrap();
+        // The deleted birth, resumed, writes its own record live, after the re-creation.
         let mut late = old.clone();
         late.status = NodeStatus::Ready;
-        records.put_lifecycle(&lifecycle(&late, &crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() })).await.unwrap();
+        records.put_lifecycle(&lifecycle(&late), &rdm_node::node_records::RecordBirth { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() }).await.unwrap();
         // The re-creation's claim holds the path.
         claims.claim_node_name(&at, &new.node_id).await.unwrap().unwrap();
         let reader = crate::current_record::CurrentRecords { claims: &claims, meshes: &meshes, records: &records };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let row = atlas.row(&at, &reader, &builds, &observed).await.unwrap().expect("a record is current at the path");
         assert_eq!((row.node_id.clone(), row.status, row.live), (new.node_id.clone(), NodeStatus::Ready, true), "the re-created birth is the path's, live: {row:?}");
-        // By its own id, the deleted birth answers the current writer's record of it, never its own write.
+        // By its own id, the deleted birth answers its own latest line (Q323: one record per node, latest wins).
         let by_id = atlas.row_id(&old.node_id, &reader, &builds, &observed).await.unwrap().expect("the deleted birth's record");
-        assert_eq!(by_id.status, NodeStatus::Deleted, "the current writer's record of the deleted birth: {by_id:?}");
-        // A node whose records its current writer never wrote is unavailable, named: no other writer's value.
-        let (other, _) = record(path("mesh2.rpc", "1"), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Ready);
-        records.put_lifecycle(&lifecycle(&other, &crate::storage::BirthRef { node_id: old.node_id.clone(), incarnation_id: old_inc.clone() })).await.unwrap();
-        claims.claim_node_name(&other.name, &other.node_id).await.unwrap().unwrap();
-        let unavailable = atlas.row(&other.name, &reader, &builds, &observed).await.expect_err("no current-writer record");
-        assert!(unavailable.contains("unavailable") && unavailable.contains(new.node_id.as_str()), "{unavailable}");
+        assert_eq!(by_id.node_id, old.node_id, "the deleted birth's own record: {by_id:?}");
     }
 
     /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:31

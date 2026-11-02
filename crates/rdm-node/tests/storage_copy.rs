@@ -174,7 +174,7 @@ impl History {
         // Both i150 record kinds are history too, even when an old writer is no longer primary.
         let records = log(&root, rdm_node::node_records::NODE_RECORDS_FILE).await;
         records.append(&mp1, "node-properties/1", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
-        records.append(&mp2, "node-lifecycle/1", &format!("{second}/{}/{}", mp2.node_id, mp2.incarnation_id), &json!({"node_id": second, "writer": {"node_id": mp2.node_id, "incarnation_id": mp2.incarnation_id}, "status": "ready", "owed": {"config": {"setting": APP_SETTING}}})).await.unwrap();
+        records.append(&mp2, "node-lifecycle/1", second.as_str(), &json!({"node_id": second, "status": "ready", "owed": {"config": {"setting": APP_SETTING}}})).await.unwrap();
 
         Self { store_dir, root, fabric, fp1, fp2, gone, live, first, second }
     }
