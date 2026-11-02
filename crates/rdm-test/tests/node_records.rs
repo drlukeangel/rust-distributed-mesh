@@ -504,6 +504,39 @@ async fn a_deleted_birth_cannot_hide_its_successor() {
 }
 
 // @feature: node-records
+/// CONTRACT (i150 R11, e5.s2; query.md §1: "Historical records, including Deleted nodes, remain
+/// queryable by their own IDs and matching properties; a history query does not redirect to the current
+/// pair's claimant"; Q323: the record's latest line is current): `mesh1.rpc` / `2` is replaced and its
+/// predecessor deleted. node.get by the predecessor's id answers that node's latest line, Deleted, under
+/// the same id and incarnation, and the successor is not in that answer; the shared resolver records the
+/// read of the predecessor's record. Must NOT happen: an empty answer for the deleted birth, or the read
+/// redirected to the pair's claimant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deleted_birth_is_read_by_its_id() {
+    let test = "a_deleted_birth_is_read_by_its_id";
+    let mut estate = estate_at(Estate::bootstrap(owner_of(test, "deleted-history"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
+    let subject = pair("mesh1.rpc", "2");
+    let before = estate.node_view(&subject).await;
+    steps_to_complete(&estate, rdm_test::steps::replace(&subject, &before.mesh, before.kind).unwrap()).await;
+    let successor = estate.until_node(&subject, "the successor is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
+    let record = latest(&estate, &before.node_id).await.expect("the deleted predecessor's record");
+    assert_eq!(status_of(&record), "deleted", "the predecessor's latest line is Deleted: {record:?}");
+    let read_at = now_ns();
+    let listed = by_id(&estate, &before.node_id).await;
+    assert_eq!(
+        listed.iter().map(|n| (n.node_id.clone(), n.incarnation_id.clone(), n.status)).collect::<Vec<_>>(),
+        vec![(before.node_id.clone(), before.incarnation_id.clone(), NodeStatus::Deleted)],
+        "node.get by the deleted predecessor's id answers its latest line, Deleted: {listed:#?}"
+    );
+    assert!(listed.iter().all(|n| n.node_id != successor.node_id), "the read by the predecessor's id is not redirected to the pair's claimant");
+    estate.artifact("deleted-history.json", &json!({"before": before, "successor": successor, "record": record, "listed": listed}));
+    estate.stop().await;
+    let spans = estate.spans();
+    let read = *reads_of(&spans, &before.node_id, read_at).first().expect("the shared resolver records the read of the deleted predecessor's record");
+    estate.record_trace_url(read["trace_id"].as_str().unwrap());
+}
+
+// @feature: node-records
 /// CONTRACT (i150 R12, R13; e2; node-config-update.md "Deferred application and startup": "Existing
 /// durable properties and application recognition survive startup"): every field of a node survives
 /// its restart, compared whole, not sampled. An rpc node of mesh1 holding no role updates its own

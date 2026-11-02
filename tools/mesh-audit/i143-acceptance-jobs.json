@@ -809,6 +809,14 @@
           "test": "a_deleted_birth_cannot_hide_its_successor"
         },
         {
+          "name": "a_deleted_birth_is_read_by_its_id",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_deleted_birth_is_read_by_its_id/estate cargo test -p rdm-test --test main node_records::a_deleted_birth_is_read_by_its_id -- --exact",
+          "dir": "target/i143-acceptance/260/process/a_deleted_birth_is_read_by_its_id",
+          "evidence": "runner",
+          "test": "a_deleted_birth_is_read_by_its_id"
+        },
+        {
           "name": "all_node_fields_survive_node_restart",
           "source": "crates/rdm-test/tests/node_records.rs",
           "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/all_node_fields_survive_node_restart/estate cargo test -p rdm-test --test main node_records::all_node_fields_survive_node_restart -- --exact",
