@@ -352,6 +352,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
         row_moved: Default::default(),
         loads: Some(loads),
         digest_view: None,
+        unreachable: Default::default(),
         builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     }
 }

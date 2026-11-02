@@ -688,6 +688,46 @@ pub enum StatusRequest {
         /// The complete entry.
         entry: crate::properties::EntryProperties,
     },
+    /// Upward (node-rpc.md §43; Q311, Q322): a caller's report that its call to the exact birth
+    /// `receiver` ended with its attempts spent and no answer, sent to the primary above that birth,
+    /// which marks the birth as a command never sent marks it (node-recovery.md step 1). Answered
+    /// [`StatusReply::Applied`], or `RejectedNotPrimary { why: SubjectUnknown }` for a birth the
+    /// receiver is not the primary above. The report is itself never reported: its own spent attempts
+    /// end it. Appended last: no variant before it moves.
+    ///
+    /// Position 38 on the wire.
+    ReportCallFailed {
+        /// The calling birth.
+        sender: ReportedBirth,
+        /// The birth the call was addressed to.
+        receiver: ReportedBirth,
+        /// The call's end by name with its reason (`not-sent: ...` or `indeterminate: ...`), within
+        /// [`MAX_REPORT_REASON_BYTES`].
+        reason: String,
+    },
+}
+
+/// One exact birth as a [`StatusRequest::ReportCallFailed`] names it: `(node_id, incarnation, path,
+/// name)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportedBirth {
+    /// The birth's node.
+    pub node_id: NodeId,
+    /// The birth's incarnation.
+    pub incarnation: IncarnationId,
+    /// The birth's separate path and name.
+    pub name: crate::PathName,
+}
+
+/// The most a [`StatusRequest::ReportCallFailed`]'s `reason` carries: well within the Status request
+/// bound with both births beside it.
+pub const MAX_REPORT_REASON_BYTES: usize = 1024;
+
+impl StatusRequest {
+    /// A [`StatusRequest::ReportCallFailed`] whose `reason` is cut to [`MAX_REPORT_REASON_BYTES`].
+    pub fn report_call_failed(sender: ReportedBirth, receiver: ReportedBirth, reason: &str) -> Self {
+        Self::ReportCallFailed { sender, receiver, reason: within(reason, MAX_REPORT_REASON_BYTES) }
+    }
 }
 
 /// A read as one shape (Q167): the entity, the exact birth a `node.connection.get` reads, and the filter.
@@ -1166,6 +1206,7 @@ impl StatusRequest {
             Self::UpdateIssuer { .. } => "node.issuer.update",
             Self::UpdateRoots { .. } => "node.roots.update",
             Self::UpdateRoot { .. } => "fabric.root.update",
+            Self::ReportCallFailed { .. } => "report-call-failed",
         }
     }
 }
@@ -2161,7 +2202,7 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 38;
+    const REQUEST_VARIANTS: u32 = 39;
     const REPLY_VARIANTS: u32 = 63;
 
     type Request = StatusRequest;
@@ -2502,6 +2543,11 @@ mod tests {
             StatusRequest::ApplyNodeProperties { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), entry: crate::properties::EntryProperties {
                 config: Default::default(), tags: Default::default(),
             } },
+            StatusRequest::report_call_failed(
+                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", "1").unwrap() },
+                ReportedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: crate::PathName::new("mesh1.rpc", "2").unwrap() },
+                "not-sent: Connection(\"connect refused\")",
+            ),
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

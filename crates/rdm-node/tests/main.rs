@@ -9,6 +9,7 @@ mod connections_open;
 mod leadership;
 mod node_hooks;
 mod operations;
+mod spent_calls;
 #[cfg(feature = "file-backend")]
 mod storage_copy;
 #[cfg(feature = "file-backend")]

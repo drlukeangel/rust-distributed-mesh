@@ -200,6 +200,12 @@ pub trait CallFailedObserver: Send + Sync {
     fn call_failed(&self, receiver: Option<&ResolvedNode>, reason: CallFailedReason);
 }
 
+/// Where a client tells a call whose attempts are spent so the primary above its receiver marks or is
+/// reported the birth (node-rpc.md §43; Q311): set once, when the process holds what it decides with,
+/// and shared by every clone of the client and every client handed the same slot. Told at the same
+/// point as the application's `on_call_failed` ([`NodeRpcClient::with_call_failed_observer`]).
+pub type SpentCallsSlot = Arc<std::sync::OnceLock<Arc<dyn CallFailedObserver>>>;
+
 /// A connection this process's server accepted from a live node (connections.md section 10,
 /// R-CN1): a recovery trigger for this node's own direct dial toward that exact birth, never
 /// Direct evidence. The acceptor writes nothing to its connections log.
@@ -221,6 +227,10 @@ pub struct NodeRpcClient {
     /// Told of each call this client opened that ends with its attempts spent, when the node
     /// registered `on_call_failed`.
     call_failed: Option<Arc<dyn CallFailedObserver>>,
+    /// Where a call of this client whose attempts are spent is marked or reported at the primary above
+    /// its receiver (node-rpc.md §43; Q311): empty for a client whose spent calls start nothing
+    /// ([`Self::without_spent_calls`]).
+    spent_calls: SpentCallsSlot,
     /// The system this process originates calls for (`rdm`, `rafka`); observability only.
     caller_system: Option<String>,
     /// Why this client opens no new connection now, while its source admits none
@@ -361,6 +371,7 @@ impl NodeRpcClient {
             pool: Pool::default(),
             observer: None,
             call_failed: None,
+            spent_calls: SpentCallsSlot::default(),
             caller_system: None,
             admission: crate::pool::Admission::default(),
             delivery: Delivery::new(crate::delivery::minted_birth()),
@@ -457,13 +468,48 @@ impl NodeRpcClient {
     /// `NotSent` and `Indeterminate` only, and never for a carried call (the origin's, not this
     /// node's).
     pub(crate) fn tell_call_failed<R>(&self, opts: &CallOptions, receiver: Option<&ResolvedNode>, out: &RpcOutcome<R>) {
-        let Some(observer) = self.call_failed.as_ref().filter(|_| opts.carried.is_none()) else { return };
+        if opts.carried.is_some() {
+            return;
+        }
         let reason = match out {
             RpcOutcome::NotSent(n) => CallFailedReason::NotSent(n.reason().clone()),
             RpcOutcome::Indeterminate(i) => CallFailedReason::Indeterminate(i.reason().clone()),
             _ => return,
         };
-        observer.call_failed(receiver, reason);
+        // The primary above the receiver marks it or is reported it (node-rpc.md §43; Q311).
+        if let Some(spent) = self.spent_calls.get() {
+            spent.call_failed(receiver, reason.clone());
+        }
+        if let Some(observer) = self.call_failed.as_ref() {
+            observer.call_failed(receiver, reason);
+        }
+    }
+
+    /// Tell a call whose attempts are spent where `slot` tells it: a process whose clients share one
+    /// slot sets it once.
+    pub fn with_spent_calls(mut self, slot: SpentCallsSlot) -> Self {
+        self.spent_calls = slot;
+        self
+    }
+
+    /// Where this client tells a call whose attempts are spent; set it once the process holds what it
+    /// decides with.
+    pub fn spent_calls(&self) -> &SpentCallsSlot {
+        &self.spent_calls
+    }
+
+    /// This client, its pool and delivery shared, whose spent calls start nothing at the primary
+    /// above their receiver: node investigation's own probes, which never mark the birth they
+    /// investigate (node-rpc.md §43).
+    pub fn without_spent_calls(&self) -> Self {
+        Self { spent_calls: SpentCallsSlot::default(), ..self.clone() }
+    }
+
+    /// [`Self::without_spent_calls`], telling no `on_call_failed` either: the client a
+    /// `ReportCallFailed` is sent on, since nothing reports a report and RDM's own report is not an
+    /// application's call (node-rpc.md §43).
+    pub fn for_reports(&self) -> Self {
+        Self { call_failed: None, ..self.without_spent_calls() }
     }
 
     /// Name the originating system every call of this client carries (`rdm`, `rafka`).

@@ -211,6 +211,7 @@ impl RefusedCallers {
             crate::node_config::Owed::Answered(rdm_core::status::StatusReply::Atlas { atlas }) => Ok(Some(atlas)),
             crate::node_config::Owed::Answered(other) => Err(format!("fabric.atlas.get at the fabric-primary answered {}: nothing acts until the root answers its atlas", other.name())),
             crate::node_config::Owed::Gone(_) => Err("fabric.atlas.get was withdrawn".into()),
+            crate::node_config::Owed::Unanswered(why) => Err(format!("fabric.atlas.get at the fabric-primary ended unanswered: nothing acts until the root answers its atlas ({why})")),
         }
     }
 }
@@ -333,6 +334,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: builds.clone(),
         }
     }
@@ -693,6 +695,8 @@ mod tests {
         let _router = iroh::protocol::Router::builder(fp_ep).accept(rdm_transport::ALPN, server).spawn();
         let resolver = Arc::new(rdm_transport::StaticResolver::new());
         resolver.insert(rdm_transport::ResolvedNode { mesh: fp.mesh.clone(), kind: fp.kind, node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        // The fabric-primary record names it, as the process's topology feed names it (Q313).
+        resolver.set_primary(None, Some(fp.node_id.clone()));
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, resolver));
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;
@@ -814,6 +818,8 @@ mod tests {
         let _router = iroh::protocol::Router::builder(fp_ep).accept(rdm_transport::ALPN, server).spawn();
         let resolver = Arc::new(rdm_transport::StaticResolver::new());
         resolver.insert(rdm_transport::ResolvedNode { mesh: fp.mesh.clone(), kind: fp.kind, node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        // The fabric-primary record names it, as the process's topology feed names it (Q313).
+        resolver.set_primary(None, Some(fp.node_id.clone()));
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, resolver));
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;
@@ -939,6 +945,8 @@ mod tests {
         let router = iroh::protocol::Router::builder(fp_ep.clone()).accept(rdm_transport::ALPN, server).spawn();
         let resolver = Arc::new(rdm_transport::StaticResolver::new());
         resolver.insert(rdm_transport::ResolvedNode { mesh: fp.mesh.clone(), kind: fp.kind, node_id: fp.node_id.clone(), name: fp.name.clone(), endpoint_id: fp_key.public(), transport_addr: fp_addr, incarnation: fp.incarnation_id.clone().unwrap() });
+        // The fabric-primary record names it, as the process's topology feed names it (Q313).
+        resolver.set_primary(None, Some(fp.node_id.clone()));
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), resolver));
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;

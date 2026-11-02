@@ -747,13 +747,15 @@ impl RecoverySubmitter {
     /// the fabric-primary's answer, its stream's first frame. `Ok` once the fabric-primary answered
     /// (opened, or already applied).
     ///
-    /// The report is owed until then (node-rpc.md §43; node-recovery.md "Failure and receipts": the
-    /// submitter submits again after its backoff; rdm#179): a `BuildInProgress` answer (an attempt
-    /// still holds the birth's mesh, as the recovery that re-created it does) is sent again on the resend
-    /// schedule; a view naming no fabric-primary, a `NotFabricPrimary` answer, or a call that ends
-    /// without one, is sent again to the fabric-primary the view names next, when `views` (the tick of
-    /// this admin's installed view) moves or after the schedule's next delay. Any other refusal ends
-    /// the report by name.
+    /// The report is one `Resend::default()` call addressed to the fabric-primary role
+    /// (`NodeTarget::Primary`), sent again only on the fabric-primary's own answer (node-recovery.md
+    /// "Failure and receipts": the submitter submits again after its backoff; rdm#179): a
+    /// `BuildInProgress` answer (an attempt still holds the birth's mesh, as the recovery that
+    /// re-created it does) is sent again on the resend schedule; a view naming no fabric-primary, or a
+    /// `NotFabricPrimary` answer, is sent again to the fabric-primary the view names next, when `views`
+    /// (the tick of this admin's installed view) moves or after the schedule's next delay. A call that
+    /// ends with no answer, its attempts spent, ends the report by name: the owner never resends
+    /// (node-rpc.md §43). Any other refusal ends the report by name.
     pub(crate) async fn report_terminate(&self, client: Option<&Arc<rdm_transport::NodeRpcClient>>, mut views: Option<tokio::sync::watch::Receiver<u64>>, path: PathName, node_id: NodeId, incarnation: IncarnationId) -> Result<(), String> {
         let me = self.held_name();
         let span = tracing::info_span!(
@@ -844,9 +846,9 @@ impl RecoverySubmitter {
             return TerminateTurn::Refused(format!("{}: no node-RPC client to report {node_id} to {fp_id}", self.me_id));
         };
         let req = BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Terminate { node: path.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) };
-        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(std::time::Duration::from_secs(10)), ..rdm_transport::CallOptions::default() };
+        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::default(), ..rdm_transport::CallOptions::default() };
         *sends += 1;
-        match client.call_stream::<Build>(&rdm_transport::NodeTarget::ExactNode(fp_id.clone()), &req, &opts).await {
+        match client.call_stream::<Build>(&rdm_transport::NodeTarget::Primary { mesh: None }, &req, &opts).await {
             Ok((stream, _)) => {
                 // The fabric-primary's answer is the stream's first frame; the termination it opens runs
                 // on its own drive, whoever reads the stream.
@@ -856,12 +858,13 @@ impl RecoverySubmitter {
                         TerminateTurn::Answered(if disposition == Disposition::AlreadyApplied { "already-applied" } else { "opened" }, Some((build_id, attempt)))
                     }
                     Some(StreamItem::Frame(_, other)) => answered(other),
-                    Some(StreamItem::Failed(f)) => TerminateTurn::Owed(format!("the report to {fp_id} broke before its answer: {f:?}"), OwedWake::View),
-                    None => TerminateTurn::Owed(format!("the report to {fp_id} ended without its answer"), OwedWake::View),
+                    Some(StreamItem::Failed(f)) => TerminateTurn::Refused(format!("{}: the termination report of {node_id} to {fp_id} broke before its answer: {f:?}", self.me_id)),
+                    None => TerminateTurn::Refused(format!("{}: the termination report of {node_id} to {fp_id} ended without its answer", self.me_id)),
                 }
             }
             Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => answered(r.into_value()),
-            Err((other, _)) => TerminateTurn::Owed(format!("the report to {fp_id} ended {} with no answer", other.name()), OwedWake::View),
+            // No answer, the call's attempts spent: the owner never resends it (node-rpc.md §43).
+            Err((other, _)) => TerminateTurn::Refused(format!("{}: the termination report of {node_id} to {fp_id} ended {} with no answer", self.me_id, other.name())),
         }
     }
 }
@@ -870,9 +873,9 @@ impl RecoverySubmitter {
 enum TerminateTurn {
     /// The fabric-primary opened the termination, or had applied it: the outcome, with its Build and attempt.
     Answered(&'static str, Option<(String, u32)>),
-    /// Still owed: why, and what wakes the next send.
+    /// The fabric-primary's answer keeps it: why, and what wakes the next send.
     Owed(String, OwedWake),
-    /// Refused by name: the report ends.
+    /// Refused by name, or ended with no answer: the report ends.
     Refused(String),
 }
 

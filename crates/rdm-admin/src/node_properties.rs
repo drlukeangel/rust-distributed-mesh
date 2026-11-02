@@ -31,6 +31,7 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
             match door.forward_up(me, me_id, &first, view, req).await {
                 crate::node_config::Up::Answered(reply) => return reply,
                 crate::node_config::Up::InProcess(now) => first = now,
+                crate::node_config::Up::Unanswered(why) => return crate::node_config::Up::unanswered(why),
             }
         }
     }
@@ -43,10 +44,19 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
                 outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
             );
             let down = tracing::Instrument::instrument(door.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
-            if let crate::node_config::Down::Answered(reply) = down {
-                span.record("outcome", reply.name());
-                span.in_scope(|| tracing::info!("{} at the fabric-primary decided", req.op()));
-                return reply;
+            match down {
+                crate::node_config::Down::Answered(reply) => {
+                    span.record("outcome", reply.name());
+                    span.in_scope(|| tracing::info!("{} at the fabric-primary decided", req.op()));
+                    return reply;
+                }
+                // The call down ended with its attempts spent: the caller is told by name.
+                crate::node_config::Down::Unanswered(why) => {
+                    span.record("outcome", "unanswered").record("detail", why.as_str());
+                    span.in_scope(|| tracing::info!("{} at the fabric-primary: the call down ended unanswered", req.op()));
+                    return crate::node_config::Up::unanswered(why);
+                }
+                crate::node_config::Down::InProcess(_) | crate::node_config::Down::Gone(_) => {}
             }
             // This admin holds the node's mesh-primary now, or no longer holds the birth: served here.
         }

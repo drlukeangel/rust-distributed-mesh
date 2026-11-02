@@ -1555,9 +1555,19 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     },
                                     loads: control.loads.get().cloned(),
                                     digest_view: Some(digest_view.clone()),
+                                    unreachable: records.unreachable.clone(),
                                     builds: control.builds.clone(),
                                 }));
                                     status_door_set.notify_waiters();
+                                    // A call of this admin's whose attempts are spent (node-rpc.md §43; Q311): a birth of a mesh it
+                                    // is the mesh-primary of is marked for its tick, any other reported to the primary above it.
+                                    let _ = node_rpc.client.spent_calls().set(Arc::new(crate::offline::MarkOrReport {
+                                        report: rdm_node::spent_calls::ReportToPrimary::new(node_rpc_resolver.clone(), &node_rpc.client, node_id.clone(), incarnation.clone(), name.clone()),
+                                        topology: control.topology.clone(),
+                                        marks: records.unreachable.clone(),
+                                        digest_view: digest_view.clone(),
+                                        me_id: node_id.clone(),
+                                    }));
                             }
                             // The Node RPC door: opened by the first view installed that holds this admin's exact birth
                             // once the authority above is filled, whichever task installs it.

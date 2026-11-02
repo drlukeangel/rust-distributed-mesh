@@ -291,6 +291,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                     row_moved: Default::default(),
                     loads: None,
                     digest_view: Some(topology_view.digest_view.clone()),
+                    unreachable: Default::default(),
                     builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                 };
                 let declared = door.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None }).await;
@@ -395,7 +396,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                     mesh_deleter: Default::default(), hold_next_reply: Default::default(), wake: Default::default(),
                     fabric_states: Default::default(), atlas: Default::default(), fabric_recovery: Default::default(), configs: Default::default(), republish: Default::default(),
                     pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(),
-                    loads: None, digest_view: None, builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
+                    loads: None, digest_view: None, unreachable: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                 };
                 let reply = door.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState {
                     node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(),

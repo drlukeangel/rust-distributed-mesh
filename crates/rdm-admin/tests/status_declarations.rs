@@ -174,6 +174,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
         // node.get answers beside the view: no node's load is held here.
         loads: Some(Arc::new(BTreeMap::new)),
         digest_view,
+        unreachable: Default::default(),
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     });
     // The rig's view stands for the admin's projection: a moved row moves the birth's entry.
@@ -1068,6 +1069,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
         row_moved: Default::default(),
         loads: Some(Arc::new(BTreeMap::new)),
         digest_view: None,
+        unreachable: Default::default(),
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     });
     let resolver = Arc::new(StaticResolver::new());
@@ -2264,6 +2266,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 row_moved: Default::default(),
                 loads: Some(Arc::new(BTreeMap::new)),
                 digest_view: None,
+                unreachable: Default::default(),
                 builds,
             };
             let read = rdm_core::status::Read { entity: rdm_core::filter::Entity::Fabrics, node: None, filter: rdm_core::filter::Filter::new() };

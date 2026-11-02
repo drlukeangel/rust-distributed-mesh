@@ -202,6 +202,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         row_moved: Default::default(),
         loads: None,
         digest_view: None,
+        unreachable: Default::default(),
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     });
     let slot: Arc<OnceLock<Arc<StatusDoor>>> = Arc::new(OnceLock::new());

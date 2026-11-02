@@ -2508,6 +2508,77 @@ mod tests {
         assert!(marks.lock().unwrap().is_empty(), "an ended mark is dropped");
     }
 
+    /// CONTRACT (i151.s2; node-rpc.md §43, Q311: "a call whose attempts end unanswered starts node
+    /// investigation on that birth (the mesh-primary itself, ...)"; node-recovery.md step 1: "The
+    /// mesh-primary also marks a member `PendingReconnect` at once when a command to it was never
+    /// sent"; step 2: "Half a floor after the mark it runs node investigation"): a mesh-primary's own
+    /// call to a member of its mesh whose attempts are spent marks the birth at once, the tick watches it
+    /// from the mark, and its ladder starts half a floor after the mark, never before. A second spent
+    /// call keeps the first mark (one investigation per silence). Must NOT happen: a birth of another
+    /// mesh marked here (it is reported to its own mesh-primary), or a ladder before half a floor.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_mesh_primarys_spent_call_to_a_member_marks_it_and_the_tick_investigates_it_half_a_floor_after_the_mark() {
+        use MemberStatus::*;
+        let digest_view = DigestView::default();
+        let me = with_id(digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Ready), "200000000000");
+        let own = with_id(digest(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, Ready), "300000000000");
+        let peer = with_id(digest(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, Ready), "500000000000");
+        for d in [&me, &own, &peer] {
+            digest_view.record((*d).clone());
+        }
+        let mut view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
+        for n in view.nodes.iter_mut().filter(|n| n.node_id == me.node.node_id) {
+            n.is_primary = true;
+        }
+        assert!(view.is_mesh_primary("mesh1", &me.node.node_id));
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
+        let client = rdm_transport::NodeRpcClient::new(ep.clone(), resolver.clone());
+        let marks: crate::offline::UnreachableMarks = Arc::default();
+        let decider = crate::offline::MarkOrReport {
+            report: rdm_node::spent_calls::ReportToPrimary::new(resolver, &client, me.node.node_id.clone(), me.node.incarnation.clone(), me.node.name.clone()),
+            topology: Arc::new(tokio::sync::RwLock::new(view.clone())),
+            marks: marks.clone(),
+            digest_view: digest_view.clone(),
+            me_id: me.node.node_id.clone(),
+        };
+        let spent = |d: &MeshDigest| rdm_node::spent_calls::SpentCall {
+            receiver: rdm_transport::ResolvedNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: iroh::SecretKey::generate().public(), transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone() },
+            reason: "NotSent(Connection(\"connect refused\"))".into(),
+        };
+        decider.decide(&spent(&own)).await;
+        decider.decide(&spent(&peer)).await;
+        let first = marks.lock().unwrap().get(&own.node.node_id).cloned().expect("the member is marked at once");
+        assert_eq!((first.incarnation.clone(), first.reason), (own.node.incarnation.clone(), "attempts-spent"));
+        assert!(!marks.lock().unwrap().contains_key(&peer.node.node_id), "another mesh's birth is reported to its own mesh-primary, never marked here");
+        decider.decide(&spent(&own)).await;
+        assert_eq!(marks.lock().unwrap().get(&own.node.node_id), Some(&first), "a later spent call keeps the first mark");
+        // The tick: the marked member is watched PendingReconnect, silent from the mark's instant.
+        let floor = std::time::Duration::from_secs(30);
+        let now = std::time::Instant::now();
+        let held = crate::offline::held_marks(&marks, &view, "mesh1", &digest_view, now);
+        let mut watched = watched_births(&view, &me.node.node_id, "mesh1", &[]);
+        crate::offline::watch_marked(&mut watched, &held, &view, &me.node.node_id);
+        assert_eq!(watched.get(own.node.node_id.as_str()).map(|n| n.status), Some(NodeStatus::PendingReconnect));
+        let silent: Vec<_> = crate::offline::silent_set(watched.values(), &digest_view, now, first.at_ms, floor).into_iter().map(|s| crate::offline::marked_from(s, &held)).collect();
+        assert_eq!(silent.iter().map(|s| (s.node_id.clone(), s.marked_at_ms)).collect::<Vec<_>>(), vec![(own.node.node_id.to_string(), Some(first.at_ms))]);
+        // Its ladder starts half a floor after the mark (node-recovery.md step 2), not a tick before.
+        let half = floor.as_millis() as u64 / 2;
+        let started = std::sync::atomic::AtomicUsize::new(0);
+        let mut tickle = crate::offline::OfflineTickle::new();
+        for (at, ladders) in [(first.at_ms + half - 1, 0), (first.at_ms + half, 1)] {
+            tickle
+                .tick(at, true, silent.clone(), |_| true, half, |_| {
+                    started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    async { crate::offline::Ladder::Tickled(Err("the cell runs no probe".into())) }
+                }, |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() })
+                .await;
+            assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), ladders, "at {} ms after the mark", at - first.at_ms);
+        }
+        ep.close().await;
+    }
+
     /// CONTRACT (node-investigation.md, Q182): a member of the mesh that gossips but left a command
     /// unanswered past the staleness floor is silent whatever it gossips: the tick watches it
     /// `PendingReconnect` and lists it in the silent set, marked from the instant its command passed the
@@ -3252,6 +3323,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let _ = Declared::default();

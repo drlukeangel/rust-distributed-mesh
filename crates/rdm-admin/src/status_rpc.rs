@@ -606,6 +606,9 @@ pub struct StatusDoor {
     /// [`set_member_status`], from the frame or declaration that caused it. `None` only where no admin
     /// owns a digest view.
     pub digest_view: Option<rdm_transport::topology::DigestView>,
+    /// The births this admin, as their mesh-primary, marks `PendingReconnect` at once for its tick
+    /// (node-recovery.md step 1): a `ReportCallFailed` it takes marks there (node-rpc.md §43).
+    pub unreachable: crate::offline::UnreachableMarks,
     /// This admin's builds store: `fabric.get` answers the current Build from it, read last in, first
     /// out (build.md §4; R-BI3: "Each accepted Build is its own entity in the builds store, written
     /// once"; "The Fabric row carries no pointer to the newest Build").
@@ -727,7 +730,7 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
-        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateRoot { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::Reserved34 { .. } => {
+        StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::Reserved12 { .. } | StatusRequest::Reserved13 { .. } | StatusRequest::Reserved14 { .. } | StatusRequest::Reserved15 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateRoots { .. } | StatusRequest::UpdateRoot { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetAtlas | StatusRequest::GetConnections { .. } | StatusRequest::Get { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::RenewCert { .. } | StatusRequest::UpdateIssuer { .. } | StatusRequest::Reserved34 { .. } | StatusRequest::ReportCallFailed { .. } => {
             (crate::node_self::request_not_handled(door.node_id.as_str(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state, changed_at_rafka_ms } => {
@@ -1344,6 +1347,8 @@ impl StatusDoor {
             // holds the new root as the next root, writes the roots row `minted` and answers; the phases
             // follow on its renewal tick (`cert_renewal::rotate_roots`).
             StatusRequest::UpdateRoot { secret } => return self.update_root(&view, secret).await,
+            // A caller's call to a birth ended with its attempts spent (node-rpc.md §43; Q311).
+            StatusRequest::ReportCallFailed { sender: from, receiver, reason } => return self.report_call_failed(&view, from, receiver, reason),
             _ => {}
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
@@ -1396,6 +1401,29 @@ impl StatusDoor {
 }
 
 impl StatusDoor {
+    /// A caller's `ReportCallFailed` (node-rpc.md §43; Q311, Q322): its call to the exact birth
+    /// `receiver` ended with its attempts spent. This admin, the mesh-primary of that birth's mesh
+    /// (and not the birth itself), marks it as its own spent call marks it ([`crate::offline::mark_spent`])
+    /// and answers `Applied`; a birth it does not hold, or is not the primary above, is refused
+    /// `RejectedNotPrimary { why: SubjectUnknown }`. Nothing is reported on from here.
+    fn report_call_failed(&self, view: &Topology, from: &rdm_core::status::ReportedBirth, receiver: &rdm_core::status::ReportedBirth, reason: &str) -> StatusReply {
+        let above = view.own(&receiver.node_id).filter(|n| n.incarnation_id.as_ref() == Some(&receiver.incarnation) && n.node_id != self.node_id && view.is_mesh_primary(&n.mesh, &self.node_id));
+        let Some(node) = above else {
+            tracing::info_span!(
+                "rdm.node_admin.node.reject.via-call-failed",
+                node_path = %self.me.path, node_name = %self.me.name,
+                node_id = %receiver.node_id, incarnation_id = %receiver.incarnation.as_str(),
+                sender = %from.node_id, reason,
+                outcome = "subject-unknown",
+                "otel.kind" = "internal",
+            )
+            .in_scope(|| tracing::info!("a report of a spent call for a birth this admin is not the primary above: refused subject-unknown"));
+            return rdm_core::reply::status::rejected_not_primary(NotPrimary::SubjectUnknown);
+        };
+        crate::offline::mark_spent(&self.unreachable, self.digest_view.as_ref(), node, from.node_id.as_str(), reason);
+        rdm_core::reply::applied()
+    }
+
     /// This admin's exact birth in `view`, when `incarnation` is it; else the reply that refuses the
     /// call naming the birth held (R-RX5: the birth the call reached answers it).
     fn own_birth(&self, view: &Topology, incarnation: &IncarnationId) -> Result<crate::model::Node, StatusReply> {
@@ -3033,6 +3061,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         crate::offline::put_silence_status(&*status, &door.caches.nodes, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
@@ -3099,6 +3128,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let published: Arc<Mutex<Vec<(NodeId, rdm_core::OperationId, u32)>>> = Arc::default();
@@ -3299,6 +3329,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
     }
@@ -3630,6 +3661,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
@@ -3694,6 +3726,59 @@ mod tests {
     }
 
     /// The status authority of the admin born as `me`, deciding over `view`.
+    /// CONTRACT (i151.s2; node-rpc.md §43, Q311, Q322: `ReportCallFailed { sender, receiver, reason }`
+    /// "answered `Applied`, or `RejectedNotPrimary { why: NotPrimary::SubjectUnknown }` for a birth the
+    /// receiver is not the primary above"): mesh2's primary takes a report of a spent call to its
+    /// member and marks the exact birth at once, as its own spent call marks it; it refuses
+    /// `SubjectUnknown` a report naming a birth of another mesh, another incarnation of its member, a
+    /// birth it holds nothing of, and itself; an admin of mesh2 that is not its primary refuses its
+    /// member's report `SubjectUnknown`. Must NOT happen: a refused report marking anything.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_report_of_a_spent_call_is_applied_only_by_the_primary_above_the_birth() {
+        let admin = |name: rdm_core::PathName, mesh: &str, primary: bool| {
+            let mut n = node(name, mesh, NodeKind::NodeAdmin);
+            n.kind = NodeKind::NodeAdmin;
+            n.mesh = mesh.into();
+            n.status = crate::model::NodeStatus::Ready;
+            n.is_primary = primary;
+            n
+        };
+        let member = |name: rdm_core::PathName, mesh: &str| {
+            let mut n = node(name, mesh, NodeKind::RpcNode);
+            n.kind = NodeKind::RpcNode;
+            n.mesh = mesh.into();
+            n.status = crate::model::NodeStatus::Ready;
+            n
+        };
+        let m1p = admin(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", true);
+        let m2p = admin(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", true);
+        let m2a = admin(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", false);
+        let own = member(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2");
+        let other = member(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1");
+        let stranger = member(rdm_core::PathName::new("mesh2.rpc", "9").unwrap(), "mesh2");
+        let view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![m1p.clone(), m2p.clone(), m2a.clone(), own.clone(), other.clone()],
+        };
+        let birth = |n: &crate::model::Node| rdm_core::status::ReportedBirth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), name: n.name.clone() };
+        let report = |n: rdm_core::status::ReportedBirth| StatusRequest::report_call_failed(birth(&m1p), n, "not-sent: Connection(\"connect refused\")");
+        let door = mesh_primary_of(&m2p, view.clone());
+        let mut reborn = birth(&own);
+        reborn.incarnation = crate::model::IncarnationId::mint();
+        for (receiver, what) in [(birth(&other), "a birth of another mesh"), (reborn, "another incarnation of its member"), (birth(&stranger), "a birth it holds nothing of"), (birth(&m2p), "itself")] {
+            assert_eq!(door.apply(None, &report(receiver)).await, R::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "{what}");
+        }
+        assert!(door.unreachable.lock().unwrap().is_empty(), "a refused report marks nothing");
+        let standby = mesh_primary_of(&m2a, view.clone());
+        assert_eq!(standby.apply(None, &report(birth(&own))).await, R::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "an admin that is not the primary above the birth");
+        assert!(standby.unreachable.lock().unwrap().is_empty());
+        assert_eq!(door.apply(None, &report(birth(&own))).await, R::Applied, "the primary above the birth takes it");
+        let mark = door.unreachable.lock().unwrap().get(&own.node_id).cloned().expect("the birth is marked at once");
+        assert_eq!((mark.incarnation, mark.reason), (own.incarnation_id.clone().unwrap(), "attempts-spent"));
+    }
+
     fn mesh_primary_of(me: &crate::model::Node, view: Topology) -> StatusDoor {
         StatusDoor {
             certs: None,
@@ -3726,6 +3811,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         }
     }
@@ -4130,6 +4216,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         for n in [&restarted, &deleted, &standing] {
@@ -4232,6 +4319,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
@@ -4341,6 +4429,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         // The records: the predecessor's row is Deleted (it released the path and name), and the current

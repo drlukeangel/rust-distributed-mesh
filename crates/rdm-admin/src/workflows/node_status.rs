@@ -340,6 +340,7 @@ mod tests {
             row_moved: Default::default(),
             loads: Some(Arc::new(BTreeMap::new)),
             digest_view: None,
+            unreachable: Default::default(),
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         });
         {

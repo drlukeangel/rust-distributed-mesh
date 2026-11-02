@@ -76,6 +76,7 @@ pub mod durable_file;
 #[cfg(feature = "file-backend")]
 pub mod record_store;
 pub mod owed;
+pub mod spent_calls;
 pub mod storage;
 pub mod storage_backend;
 pub mod storage_move;

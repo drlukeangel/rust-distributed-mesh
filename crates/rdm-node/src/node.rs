@@ -551,10 +551,14 @@ async fn start_booted(
         Some(o) => c.with_call_failed_observer(o.clone()),
         None => c,
     };
-    let client = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_delivery(delivery.clone())));
+    // A call of either client whose attempts are spent is marked or reported at the primary above its
+    // receiver (node-rpc.md §43; Q311): one slot for the process's clients.
+    let spent_calls = rdm_transport::SpentCallsSlot::default();
+    let client = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_delivery(delivery.clone()).with_spent_calls(spent_calls.clone())));
     // The data plane of RDM standalone: the originate door's own client, whose dials are the
     // connections this node originates for traffic, each a Direct entry of its log.
-    let data_plane = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone())));
+    let data_plane = Arc::new(told(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()).with_spent_calls(spent_calls.clone())));
+    let _ = spent_calls.set(Arc::new(crate::spent_calls::ReportToPrimary::new(resolver.clone(), &client, launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone())));
     // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy delete
     // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
@@ -1850,6 +1854,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             if let StatusRequest::NodeLeft { node_id, .. } = &req {
                 let name = me.topology_view.digest_view.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.node_id.to_string()).unwrap_or_default();
                 return Ok(crate::node_self::refuse_node_left(&me.digest.node.node_id.to_string(), &name, &sender_name, &req));
+            }
+            // A report of a spent call (node-rpc.md §43): a node that is no node-admin is the primary above
+            // no birth.
+            if matches!(req, StatusRequest::ReportCallFailed { .. }) {
+                return Ok(rdm_core::reply::status::rejected_not_primary(rdm_core::status::NotPrimary::SubjectUnknown));
             }
             // A read (Q167, Q285): the reads are op 0x23's stream; on Status they are refused by name,
             // and the retained `GetFabric` (its one fabric) is forwarded to its own mesh-primary.

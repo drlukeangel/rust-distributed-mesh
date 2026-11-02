@@ -67,6 +67,7 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
         match door.forward_up(me, me_id, &first, view, req).await {
             crate::node_config::Up::Answered(reply) => return Routed::Answered(reply),
             crate::node_config::Up::InProcess(now) => first = now,
+            crate::node_config::Up::Unanswered(why) => return Routed::Answered(crate::node_config::Up::unanswered(why)),
         }
     }
     let Some(subject) = first.own(node_id).cloned() else { return Routed::Here };
@@ -80,11 +81,20 @@ pub async fn routed(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
         outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
     let down = tracing::Instrument::instrument(door.send_down(me, me_id, &first, view, &subject, req), span.clone()).await;
-    let crate::node_config::Down::Answered(reply) = down else {
-        // This admin holds the node's mesh-primary now, or no longer holds the birth: served here.
-        span.record("outcome", "in-process");
-        span.in_scope(|| tracing::info!("node.name.update at the fabric-primary is served here"));
-        return Routed::Here;
+    let reply = match down {
+        crate::node_config::Down::Answered(reply) => reply,
+        // The call down ended with its attempts spent: the caller is told by name.
+        crate::node_config::Down::Unanswered(why) => {
+            span.record("outcome", "unanswered").record("detail", why.as_str());
+            span.in_scope(|| tracing::info!("node.name.update at the fabric-primary: the call down ended unanswered"));
+            return Routed::Answered(crate::node_config::Up::unanswered(why));
+        }
+        crate::node_config::Down::InProcess(_) | crate::node_config::Down::Gone(_) => {
+            // This admin holds the node's mesh-primary now, or no longer holds the birth: served here.
+            span.record("outcome", "in-process");
+            span.in_scope(|| tracing::info!("node.name.update at the fabric-primary is served here"));
+            return Routed::Here;
+        }
     };
     span.record("outcome", reply.name());
     span.in_scope(|| tracing::info!("node.name.update at the fabric-primary decided"));

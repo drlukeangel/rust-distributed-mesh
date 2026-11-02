@@ -6,13 +6,15 @@
 //! config its answer (33) carries, the tag refusal (43), the tags commands `node.tag.create` (26)
 //! and `node.tag.delete` (27) with their replies (45, 46), and `node.name.update` (20) with its
 //! completion (26), its refusals (27, 47) and the apply's answer naming held connections (48).
+//! `report-call-failed` (request 38, node-rpc.md §43) is appended after `apply-node-properties` (37),
+//! its bytes written by hand: every earlier request keeps its position and bytes.
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rdm_core::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
-use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteIdentity, MeshState, NodeSelect, NodeState, NotPrimary, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteIdentity, MeshState, NodeSelect, NodeState, NotPrimary, ReportedBirth, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
 use rdm_core::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -30,7 +32,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_thirty_eight_variant_wire_schema() {
+fn requests_match_the_frozen_thirty_nine_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
@@ -99,6 +101,19 @@ fn requests_match_the_frozen_thirty_eight_variant_wire_schema() {
         (ApplyNodeProperties { node_id: node(), incarnation: birth(), entry: rdm_core::properties::EntryProperties {
             config: Default::default(), tags: Default::default(),
         } }, "250c3031323334353637383961620c3977637072666777767468790000"),
+        // report-call-failed (node-rpc.md §43; Q311, Q322), appended last at position 38: sender { node_id |
+        // incarnation | path "mesh1.rpc" name "1" } | receiver { node_id | incarnation | path "mesh1.rpc"
+        // name "2" } | reason "r". Written by hand from the postcard rules.
+        (ReportCallFailed {
+            sender: ReportedBirth { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.rpc", "1").unwrap() },
+            receiver: ReportedBirth { node_id: node(), incarnation: birth(), name: rdm_core::PathName::new("mesh1.rpc", "2").unwrap() },
+            reason: "r".into(),
+        }, concat!(
+            "26",
+            "0c303132333435363738396162", "0c397763707266677776746879", "096d657368312e7270630131",
+            "0c303132333435363738396162", "0c397763707266677776746879", "096d657368312e7270630132",
+            "0172",
+        )),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {

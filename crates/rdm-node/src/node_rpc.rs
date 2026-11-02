@@ -104,6 +104,7 @@ pub fn feed_once(digest_view: &DigestView, resolver: &LiveNodeResolver, node: &s
                 .in_scope(|| tracing::info!("the resolver holds the stopped birth by its exact id only: its path is given up"));
         }
     }
+    feed_primaries(digest_view, resolver, node);
     for d in digest_view.all().into_iter().chain(digest_view.projected_unheard_at(std::time::Instant::now()).into_iter().map(|(d, _)| d)) {
         let Some(birth) = resolved(&d) else { continue };
         let (target, target_id, incarnation) = (birth.node_id.to_string(), birth.node_id.to_string(), birth.incarnation.to_string());
@@ -117,15 +118,33 @@ pub fn feed_once(digest_view: &DigestView, resolver: &LiveNodeResolver, node: &s
     }
 }
 
-/// Feed `resolver` now and again on every birth change `digest_view` holds.
+/// Name for `resolver` the birth each primary record `digest_view` holds names: the mesh-primary of
+/// each mesh and the fabric-primary, what a `NodeTarget::Primary` call resolves to (Q313). A record
+/// naming a birth proven gone names none, as `DigestView::mesh_primary` holds it.
+fn feed_primaries(digest_view: &DigestView, resolver: &LiveNodeResolver, node: &str) {
+    let gone = digest_view.primaries.gone();
+    let named = |p: &rdm_core::Primary| (!gone.contains(&p.incarnation)).then(|| p.node_id.clone());
+    let roles = digest_view.primaries.meshes().into_iter().map(|(mesh, p)| (Some(mesh), named(&p))).chain(std::iter::once((None, digest_view.primaries.fabric().as_ref().and_then(named))));
+    for (mesh, primary) in roles {
+        if resolver.set_primary(mesh.clone(), primary.clone()) {
+            tracing::info_span!("rdm.node_rpc.primary.update.via-topology", node, mesh = mesh.as_deref().unwrap_or(""), role = if mesh.is_some() { "mesh-primary" } else { "fabric-primary" }, primary_node_id = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
+                .in_scope(|| tracing::info!("the resolver names the birth the primary record names for the role"));
+        }
+    }
+}
+
+/// Feed `resolver` now and again on every birth change and every primary record `digest_view` holds.
 fn spawn_feed(digest_view: DigestView, resolver: Arc<LiveNodeResolver>, node: String) -> tokio::task::JoinHandle<()> {
     let mut births = digest_view.birth_changes();
+    let mut primaries = digest_view.primaries.subscribe();
     tokio::spawn(async move {
         loop {
             births.borrow_and_update();
+            primaries.borrow_and_update();
             feed_once(&digest_view, &resolver, &node);
-            if births.changed().await.is_err() {
-                return;
+            tokio::select! {
+                changed = births.changed() => if changed.is_err() { return },
+                changed = primaries.changed() => if changed.is_err() { return },
             }
         }
     })

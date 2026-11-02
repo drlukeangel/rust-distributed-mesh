@@ -631,6 +631,7 @@ mod tests {
                 row_moved: Default::default(),
                 loads: None,
                 digest_view: None,
+                unreachable: Default::default(),
                 builds: Arc::new(MemoryBuildStateAdapter::new()),
             });
             let slot: Arc<OnceLock<Arc<StatusDoor>>> = Arc::new(OnceLock::new());

@@ -383,6 +383,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             row_moved: Default::default(),
             loads: None,
             digest_view: None,
+            unreachable: Default::default(),
             builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
         };
 

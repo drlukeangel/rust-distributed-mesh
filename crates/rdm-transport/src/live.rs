@@ -264,8 +264,9 @@ impl LiveNodeResolver {
     }
 
     /// Name `node` for the primary role of `mesh` (`None`: the fabric-primary), or no birth for it
-    /// when `node` is `None`: what a [`NodeTarget::Primary`] call resolves to (Q313).
-    pub fn set_primary(&self, mesh: Option<String>, node: Option<NodeId>) {
+    /// when `node` is `None`: what a [`NodeTarget::Primary`] call resolves to (Q313). Whether the
+    /// role's answer changed.
+    pub fn set_primary(&self, mesh: Option<String>, node: Option<NodeId>) -> bool {
         let mut live = self.live.write().unwrap();
         let changed = match node {
             Some(n) => live.primaries.insert(mesh, n.clone()).as_ref() != Some(&n),
@@ -275,6 +276,7 @@ impl LiveNodeResolver {
         if changed {
             self.tick();
         }
+        changed
     }
 
     /// The live node whose Iroh key is `endpoint`: the peer of an accepted connection. A key
