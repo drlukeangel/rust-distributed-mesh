@@ -566,6 +566,146 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probes": f.probes(&spans).iter().map(|p| p["attributes"].clone()).collect::<Vec<_>>(), "verdict": verdict["attributes"]}));
 }
 
+/// A faulted-admin estate (every admin serves the fault door) of `shape`, born ready: its views.
+async fn faulted_estate(cell: &str, shape: &[(&str, u32, u32)]) -> (Estate, Vec<Value>) {
+    let sha = rdm_test::faults::candidate_sha();
+    let estate = Estate::bootstrap_on_with_env(owner(cell), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["rpc_node"], &[]).await.expect("the faulted-admin binding set is accepted");
+    estate.reconcile_shape("fabric1", shape).await;
+    let nodes = Estate::values(&estate.settles_to(shape, Duration::from_secs(60)).await);
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
+    (estate, nodes)
+}
+
+/// The birth `node_id` as the fabric's shared store root holds it: its row's status, and the node id the
+/// path.name `node`'s name is held by (`None`: released).
+fn stored_birth(root: &std::path::Path, node: &PathName, node_id: &str) -> (Option<String>, Option<String>) {
+    let status = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::NODES_FILE), "node-record", Some(node_id)).map(|r| s(&r["record"]["status"]));
+    let name = std::fs::read(root.join(rdm_admin::store_root::LOCKS_DIR).join("name").join(node.physical_index_key())).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).map(|r| s(&r["record"]["node_id"]));
+    (status, name)
+}
+
+/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md step 4
+/// "Direct backbone receipt from mesh-x at any point cancels the investigation and resets the
+/// unheard interval."
+/// CONTRACT (Q325; fabric-recovery.md step 3, Q153: "On `running`, the investigation's report stands and
+/// the executor writes nothing: no row, no name release, no mark against the birth in its own view, no
+/// create"): every UDP path between the fabric-primary's mesh and the peer mesh is cut while every
+/// process runs. At its decision step no member of the peer mesh answered, so the fabric-primary opens the
+/// recovery of the mesh (`fully-crashed`, the fabric `degraded`) and its create of the mesh's first
+/// node-admin targets the birth at that path: node investigation reads its runtime `running` and reaches
+/// it through no call. The testkit's path-target cut holds the create there, before it acts on that
+/// verdict; the cut is lifted and the fabric-primary hears the mesh on the backbone again (`heard-again`)
+/// while the create is held; then the create is released. The receipt cancels the pending recovery: the
+/// create does not act, and its `running` verdict writes nothing. The mesh's primary is the same birth,
+/// ready and its mesh's primary in every view, its row live and its name held by its node id on the
+/// store root, and the fabric is ready again. Must NOT happen: that birth's TerminateRuntime, its row
+/// written deleted, its name released, its `NodeDeleted`, or a node.create at its path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_mesh_heard_again_before_its_recovery_acts_cancels_the_recovery_and_its_running_primary_is_not_written() {
+    let cell = "a_peer_mesh_heard_again_before_its_recovery_acts_cancels_the_recovery_and_its_running_primary_is_not_written";
+    let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
+    let (mut estate, nodes) = faulted_estate(cell, &shape).await;
+    let fp_row = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric-primary");
+    let (fp, fp_id) = (location(&fp_row), s(&fp_row["node_id"]));
+    let lost = if fp.path.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+    // The recovery creates the peer mesh's first node-admin in path order (mesh-investigation.md step 5).
+    let first_row = nodes.iter().filter(|n| n["mesh"] == lost && n["kind"] == "node_admin").min_by_key(|n| location(n)).cloned().expect("the peer mesh's node-admins");
+    let (first, first_id, first_inc) = (location(&first_row), s(&first_row["node_id"]), s(&first_row["incarnation_id"]));
+    assert_eq!(first_row["is_primary"], true, "the peer mesh's first node-admin is its primary: {first_row}");
+    let mine: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == fp_row["mesh"]).map(location).collect();
+    let theirs: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == lost).map(location).collect();
+    estate.enter(&fp).await;
+    let root = estate.fabric_store_root();
+    let intact = || {
+        let (status, name) = stored_birth(&root, &first, &first_id);
+        assert!(status.as_deref().is_some_and(|st| st != "deleted"), "{first:?}'s row stays live on the store root: {status:?}");
+        assert_eq!(name.as_deref(), Some(first_id.as_str()), "{first:?}'s name stays held by its node id on the store root");
+    };
+    intact();
+    let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
+    let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let door = rdm_test::faults::Door::at(&estate, &fp).await;
+    door.arm("recovery-act", json!({"kind": "path-target", "node": first})).await;
+    let cut = match Partition::start(&udp_ports(&nodes, &mine), &udp_ports(&nodes, &theirs)) {
+        Ok(p) => p,
+        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
+            eprintln!("SKIPPED by name: the host cannot cut UDP between the meshes: {why}");
+            estate.stop().await;
+            return;
+        }
+        Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
+    };
+    let cut_ns = now_ns();
+    // Under the cut: the decision, the recovery and the create's target on the peer mesh's primary, held
+    // before it acts.
+    let held = door.wait_held("recovery-act").await;
+    assert_eq!(s(&held["hit"]["node_id"]), first_id, "the create held is the one over {first:?}: {held}");
+    // The spans of what led to the hold, as the estate's span files carry them once written.
+    let (opened, target) = wait_for(&format!("{fp:?}'s recovery of {lost} and its create's target on {first:?}, under the cut"), Duration::from_secs(30), || {
+        let spans = estate.spans();
+        let opened = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().find(|sp| at_ns(sp) >= cut_ns && attr(sp, "mesh") == lost && rdm_test::estate::at_location(sp, &fp)).cloned();
+        let target = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().find(|sp| at_ns(sp) >= cut_ns && attr(sp, "node_id") == first_id).cloned();
+        async move { opened.zip(target) }
+    })
+    .await;
+    assert_eq!(attr(&opened, "verdict"), "fully-crashed", "no member of {lost} answered, so the recovery is the no-member-answers arm's: {opened}");
+    assert_eq!((attr(&target, "outcome"), attr(&target, "verdict")), ("unreached".to_string(), "running".to_string()), "node investigation read {first:?} running and reached it through no call: {target}");
+    intact();
+    drop(cut);
+    let healed_ns = now_ns();
+    // Heard again on the backbone while the create is held.
+    let heard = wait_for(&format!("{fp:?} hears {lost} on the backbone again"), floor * 2 + Duration::from_secs(30), || {
+        let found = named(&estate.spans(), "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().find(|sp| at_ns(sp) >= healed_ns && attr(sp, "mesh") == lost && attr(sp, "outcome") == "heard-again" && rdm_test::estate::of_node(sp, &fp, &fp_id)).cloned();
+        async move { found }
+    })
+    .await;
+    assert_eq!(door.cut("recovery-act").await["held"], true, "the create is still held when {lost} is heard again");
+    let released_ns = now_ns();
+    door.release("recovery-act").await;
+    door.wait_released("recovery-act").await;
+    estate.record_trace_url(&s(&target["trace_id"]));
+    // The create ends: cancelled, or (the defect) the running birth deleted.
+    let ended = wait_for(&format!("{fp:?}'s create over {first:?} ends after the release"), floor * 2 + Duration::from_secs(30), || {
+        let spans = estate.spans();
+        let found = named(&spans, "rdm.node_admin.node.create.via-heard-again")
+            .into_iter()
+            .chain(named(&spans, "rdm.node_admin.node.delete.via-node-row"))
+            .find(|sp| at_ns(sp) >= released_ns && attr(sp, "node_id") == first_id)
+            .cloned();
+        async move { found }
+    })
+    .await;
+    assert_eq!(s(&ended["name"]), "rdm.node_admin.node.create.via-heard-again", "the receipt cancelled the recovery before it acted, and its running verdict wrote nothing: {ended}");
+    intact();
+    // The mesh's primary is the same birth, ready and its mesh's primary, in the fabric-primary's view and
+    // its own, and the fabric is ready again: the cancelled recovery leaves nothing degraded.
+    for at in [&fp, &first] {
+        estate
+            .until_view_at(at, &format!("{at:?}'s view holds {first:?} as the same birth, ready and {lost}'s primary"), floor + gossip * 2, |v| {
+                Estate::values(v).iter().any(|n| location(n) == first && s(&n["node_id"]) == first_id && s(&n["incarnation_id"]) == first_inc && n["is_primary"] == true && n["status"] == "ready").then_some(())
+            })
+            .await;
+    }
+    wait_for("the fabric is ready again", floor + gossip * 2, || async { estate.fabric_view_at(&fp).await.filter(|f| status_word(f.status) == "ready").map(|_| ()) }).await;
+    intact();
+    let stop_at = now_ns();
+    estate.stop().await;
+    let spans = estate.spans();
+    let before_stop = |sp: &&Value| at_ns(sp) < stop_at && at_ns(sp) >= cut_ns;
+    let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(before_stop).filter(|sp| rdm_test::estate::at_location(sp, &first) && attr(sp, "step") == "TerminateRuntime").collect();
+    assert!(terminated.is_empty(), "{first:?}'s runtime was never terminated: {terminated:#?}");
+    let marks: Vec<&Value> = spans
+        .iter()
+        .filter(before_stop)
+        .filter(|sp| sp["name"].as_str().is_some_and(|n| n.ends_with(".via-deleted-birth") || n.ends_with(".via-node-deleted") || n.ends_with(".via-node-deleting") || n == "rdm.node_admin.node.delete.via-node-row"))
+        .filter(|sp| sp["attributes"].to_string().contains(&first_id) || sp["attributes"].to_string().contains(&first_inc))
+        .collect();
+    assert!(marks.is_empty(), "nothing deleted or marked {first:?}'s birth: {marks:#?}");
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(before_stop).filter(|sp| rdm_test::estate::names_location(sp, "subject", &first)).collect();
+    assert!(creates.is_empty(), "no node.create at {first:?}: {creates:#?}");
+    eprintln!("{fp:?}: recovery {} at {} ms after the cut, target {}, heard again {} ms after the heal, ended {}", attr(&opened, "verdict"), (at_ns(&opened) - cut_ns) / 1_000_000, target["attributes"], (at_ns(&heard) - healed_ns) / 1_000_000, ended["attributes"]);
+}
+
 /// CONTRACT (mesh-investigation.md step 5, "No member answers"; Q111; R-DG1): every runtime of the peer
 /// mesh (admins and rpc nodes) is frozen (SIGSTOP; the host has no root to cut the mesh's UDP, the frozen
 /// processes answer nothing and are not exited): both probes find no member that answers the Ping and the

@@ -73,6 +73,16 @@ pub trait DriftSeam: Send + Sync {
     fn before_drift_pass(&self, node: &str) -> Option<DriftHold>;
 }
 
+/// Asked by a create's target once its node investigation found the birth at the path unreached, before
+/// the create acts on that verdict (`AdminRunner::create`): a testkit cut holds the create there, so what
+/// the admin hears before the create acts is the cell's to order. The product passes none, so the create
+/// acts at once.
+#[async_trait::async_trait]
+pub trait TargetSeam: Send + Sync {
+    /// Returns when the create at `path` may act on its target's verdict on the unreached birth `node_id`.
+    async fn before_target_act(&self, path: &rdm_core::PathName, node_id: &rdm_core::NodeId);
+}
+
 /// A held reconcile pass: what holds it, and the wait that ends at its release.
 pub struct DriftHold {
     /// What holds the pass, named on its span.
@@ -266,6 +276,8 @@ pub struct Wiring {
     pub command_frame_seam: Option<Arc<dyn CommandFrameSeam>>,
     /// Asked by the reconcile loop before each drift pass.
     pub drift_seam: Option<Arc<dyn DriftSeam>>,
+    /// Asked by a create before it acts on its target's verdict on an unreached birth.
+    pub target_seam: Option<Arc<dyn TargetSeam>>,
     /// Wraps `fabric.storage` before the Fabric identity record and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the

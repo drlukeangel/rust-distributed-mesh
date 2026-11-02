@@ -1676,6 +1676,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let drives = Arc::new(crate::build_drive::Drives::default());
                             let runner = Arc::new(AdminRunner {
                                 storage_changes: storage_changes.clone(),
+                                target_seam: wiring.target_seam.take(),
                                 drives: drives.clone(),
                                 listeners: listener_names.clone(),
                                 mesh_deleter: mesh_deleter.clone(),

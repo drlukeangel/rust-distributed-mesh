@@ -46,6 +46,7 @@ enum CutWire {
     StorageSwitch,
     StoreAppend { file: String, key: String, after: bool },
     PropertiesReply { node_id: Option<rdm_core::NodeId> },
+    PathTarget { node: Option<PathName> },
 }
 
 /// A fault door call.
@@ -245,6 +246,15 @@ pub enum Hit {
         /// The Build whose entry it applied.
         build_id: String,
     },
+    /// A create held before it acts on its target's verdict on the unreached birth at a path.
+    ///
+    /// Position 16 on the wire.
+    PathTarget {
+        /// The path's separate path and name.
+        node: PathName,
+        /// The unreached birth's node id.
+        node_id: rdm_core::NodeId,
+    },
 }
 
 impl Hit {
@@ -268,6 +278,7 @@ impl Hit {
             Hit::StorageSwitch { change_id } => json!({"change_id": change_id}),
             Hit::StoreAppend { file, key, after } => json!({"file": file, "key": key, "after": after}),
             Hit::PropertiesReply { node_id, build_id } => json!({"node_id": node_id, "build_id": build_id}),
+            Hit::PathTarget { node, node_id } => json!({"node": node, "node_id": node_id}),
         }
     }
 }

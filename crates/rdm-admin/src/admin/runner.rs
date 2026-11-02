@@ -121,6 +121,9 @@ pub struct AdminRunner {
     /// This admin's storage changes: its own block, and the change it runs as the fabric-primary
     /// (storage.md §2 "Changing it").
     pub storage_changes: Arc<crate::storage_change::StorageChanges>,
+    /// Asked by a create before it acts on its target's verdict on an unreached birth (the product passes
+    /// none, [`crate::wiring::TargetSeam`]).
+    pub target_seam: Option<Arc<dyn crate::wiring::TargetSeam>>,
 }
 
 /// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
@@ -609,6 +612,9 @@ impl AdminRunner {
             // row's in its place (proposal executable-bindings-at-create.md rule 5: one whose entry
             // differs from its row is replaced; rule 6 is a recovery's create, which names none).
             TargetOutcome::Clear { gone: Some(prev) } => {
+                if let Some(seam) = &self.target_seam {
+                    seam.before_target_act(node, &prev.node_id).await;
+                }
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
                     self.delete_unreached(&*self.builds, build_id, attempt, node, &from).await?;
@@ -2375,6 +2381,7 @@ mod tests {
         records.set_rows(Arc::new(crate::node_rows::NodeRows::new(me.clone(), node_id.clone(), topology.clone(), nodes_storage.clone()).with_written(records.caches.nodes.clone())));
         let runner = Arc::new(AdminRunner {
             storage_changes,
+            target_seam: None,
             drives: Arc::new(crate::build_drive::Drives::default()),
             listeners: Default::default(),
             mesh_deleter: Arc::default(),

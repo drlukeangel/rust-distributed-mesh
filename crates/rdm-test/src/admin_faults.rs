@@ -168,6 +168,13 @@ pub enum CutSpec {
         /// The replying node; every node when absent.
         #[serde(default)] node_id: Option<rdm_core::NodeId>,
     },
+    /// A create's target found the birth at `node` unreached (its node investigation's verdict is any but
+    /// `reached`) and the create has not acted on that verdict: held there until the release, so nothing of
+    /// the birth is deleted, terminated or written meanwhile. `node` narrows the cut to one path.
+    PathTarget {
+        /// The path's separate path and name; every path when absent.
+        #[serde(default)] node: Option<rdm_core::PathName>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -279,6 +286,13 @@ pub enum Probe {
         /// The Build whose entry it applied.
         build_id: String,
     },
+    /// A create about to act on its target's verdict on the unreached birth at a path.
+    PathTarget {
+        /// The path's separate path and name.
+        node: rdm_core::PathName,
+        /// The unreached birth's node id.
+        node_id: rdm_core::NodeId,
+    },
 }
 
 impl CutSpec {
@@ -305,6 +319,7 @@ impl CutSpec {
             (CutSpec::StorageStep { node }, Probe::StorageStep { node: n, .. }) => node.as_ref().is_none_or(|wanted| wanted == n),
             (CutSpec::StorageSwitch, Probe::StorageSwitch { .. }) => true,
             (CutSpec::PropertiesReply { node_id }, Probe::PropertiesReply { node_id: n, .. }) => node_id.as_ref().is_none_or(|wanted| wanted == n),
+            (CutSpec::PathTarget { node }, Probe::PathTarget { node: n, .. }) => node.as_ref().is_none_or(|wanted| wanted == n),
             _ => false,
         }
     }
@@ -329,6 +344,7 @@ impl Probe {
             Probe::StorageStep { node, change_id } => Hit::StorageStep { node: node.clone(), change_id: change_id.clone() },
             Probe::StorageSwitch { change_id } => Hit::StorageSwitch { change_id: change_id.clone() },
             Probe::PropertiesReply { node_id, build_id } => Hit::PropertiesReply { node_id: node_id.clone(), build_id: build_id.clone() },
+            Probe::PathTarget { node, node_id } => Hit::PathTarget { node: node.clone(), node_id: node_id.clone() },
         }
     }
 }
@@ -743,6 +759,17 @@ impl rdm_admin::wiring::DriftSeam for FaultedDrift {
     }
 }
 
+/// The create's target seam: an armed [`CutSpec::PathTarget`] holds a create before it acts on its
+/// target's verdict on an unreached birth, until the release.
+struct FaultedTarget(Arc<AdminFaults>);
+
+#[async_trait]
+impl rdm_admin::wiring::TargetSeam for FaultedTarget {
+    async fn before_target_act(&self, path: &rdm_core::PathName, node_id: &rdm_core::NodeId) {
+        self.0.hold(Probe::PathTarget { node: path.clone(), node_id: node_id.clone() }).await;
+    }
+}
+
 struct FaultedCommandFrame(Arc<AdminFaults>);
 
 #[async_trait]
@@ -780,6 +807,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         declaration_seam: Some(Arc::new(FaultedDeclaration(faults.clone()))),
         command_frame_seam: Some(Arc::new(FaultedCommandFrame(faults.clone()))),
         drift_seam: Some(Arc::new(FaultedDrift(faults.clone()))),
+        target_seam: Some(Arc::new(FaultedTarget(faults.clone()))),
         builds: Some(Box::new(move |inner| Arc::new(FaultedBuilds { inner, faults: f_builds }))),
         fabric_storage: None,
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),

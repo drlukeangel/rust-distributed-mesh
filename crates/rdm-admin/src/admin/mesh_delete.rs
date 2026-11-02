@@ -1235,6 +1235,7 @@ mod tests {
         ));
         let runner = Arc::new(AdminRunner {
             storage_changes,
+            target_seam: None,
             drives: Arc::new(crate::build_drive::Drives::default()),
             listeners: Default::default(),
             mesh_deleter: Arc::default(),
