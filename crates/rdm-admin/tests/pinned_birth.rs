@@ -312,7 +312,7 @@ async fn a_not_yet_held_pinned_birth_ends_incomplete_and_resumes_on_that_birth_o
 
     // Reopen with another birth at the name -> refused `birth-replaced` (`BuildState::Failed`).
     let replaced_view = replaced(&full, &PathName::new("mesh1.rpc", "1").unwrap(), false);
-    records.install_projected(&topology, || replaced_view.clone()).await;
+    records.install_projected(&topology, || replaced_view).await;
     let reopened = cp
         .open_attempt_in(tracing::info_span!("pinned-replaced"), "pinned-replaced", AttemptReason::Stop, path.clone(), ActionKind::Stop)
         .await

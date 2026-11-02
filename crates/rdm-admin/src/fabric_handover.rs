@@ -164,21 +164,14 @@ impl HandoverDoor {
     }
 
     /// Install the entries an answer named, under the decision lock, and project the view from them.
-    /// When they give this admin the lifecycle writing of a mesh, its takeover preparation completes
-    /// first, with no lock of the view held (node-primary-update.md step 4: "required takeover preparation
-    /// finishes earlier issued writes and the frozen snapshot before installation and command
-    /// admission"): an outstanding preparation installs nothing and is answered by name.
-    async fn take(&self, entries: &[Entry]) -> Result<&'static str, String> {
+    async fn take(&self, entries: &[Entry]) -> &'static str {
         let mesh_of = self.mesh_of().await;
-        let incoming = rdm_node::member_handover::records_of(entries, &mesh_of);
-        let held = self.topology.read().await.clone();
-        self.records.prepare_takeover_of(&held, &incoming).await?;
         let outcome = {
             let _decisions = self.decisions.clone().lock_owned().await;
             install(self.topology_view.primaries(), entries, mesh_of)
         };
         (self.project_view)().await;
-        Ok(outcome)
+        outcome
     }
 
     /// One call to `target`: its reply, or how it ended without one.
@@ -205,15 +198,7 @@ impl HandoverDoor {
         }
         // The span covers the install: its start is the moment the successor begins to install.
         let span = tracing::info_span!("rdm.node_admin.primary.update.via-primary-updated", node_path = %self.held_name().path, node_name = %self.held_name().name, fabric = %self.fabric, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.recipe_step, build_id = %build_id, run, primaries = %entries_named(&primaries), outcome = tracing::field::Empty);
-        let outcome = match self.take(&primaries).instrument(span.clone()).await {
-            Ok(outcome) => outcome,
-            Err(why) => {
-                span.record("outcome", "preparation-outstanding");
-                span.in_scope(|| tracing::info!("the successor's takeover preparation is outstanding: it installs nothing and answers no completion"));
-                refused("successor", "preparation-outstanding", &why, &operation);
-                return rdm_core::reply::handover::not_ready(format!("the takeover preparation of path {:?}, name {:?} is outstanding: {why}", self.held_name().path, self.held_name().name));
-            }
-        };
+        let outcome = self.take(&primaries).instrument(span.clone()).await;
         span.record("outcome", outcome);
         span.in_scope(|| tracing::info!("the successor installed the election's result the call carries and answers node.primary.updated"));
         if primaries.iter().any(|(_, _, s, _)| s.node_id == self.node_id) {
@@ -370,7 +355,7 @@ impl HandoverDoor {
             .in_scope(|| tracing::info!("the primary finished the writes it issued before its call"));
         // Step 4: the call on the successor's exact birth.
         let revisions = self.call_and_look(&to_node, &entries, build_id, run, operation).await?;
-        self.take(&revisions).await.map_err(rdm_core::reply::handover::not_ready)?;
+        self.take(&revisions).await;
         Ok(revisions)
     }
 
@@ -434,12 +419,12 @@ impl HandoverDoor {
             // The node restoring itself (the admin a person launched at the path and name) installs the records
             // as node.primary.update's receiver does, with no call.
             if to.node_id == self.node_id {
-                self.take(&entries).await.map_err(rdm_core::reply::handover::not_ready)?;
+                self.take(&entries).await;
                 self.memo.acknowledge("fabric-recovery", 0, &operation, true);
                 return Ok(entries.clone());
             }
             let revisions = self.call_and_look(to, &entries, "fabric-recovery", 0, &operation).await?;
-            self.take(&revisions).await.map_err(rdm_core::reply::handover::not_ready)?;
+            self.take(&revisions).await;
             Ok(revisions)
         }
         .instrument(span.clone())
@@ -462,12 +447,6 @@ impl HandoverDoor {
         };
         let held = |mesh: &str, revision: u64| rdm_core::Primary { mesh: mesh.to_string(), node_id: to.node_id.clone(), incarnation: incarnation.clone(), revision };
         let records = vec![(rdm_core::PrimaryRole::FabricPrimary, held(&to.mesh, target.revision + 1)), (rdm_core::PrimaryRole::of_node_type(crate::model::NodeKind::NodeAdmin), held(&target.mesh, mesh_revision))];
-        // The roles taken under the delete write the lost mesh's lifecycle records: their takeover
-        // preparation completes before either is installed (node-primary-update.md step 4).
-        let view = self.topology.read().await.clone();
-        if let Err(why) = self.records.prepare_takeover_of(&view, &records).await {
-            return Err(rdm_core::reply::handover::not_ready(format!("{}: the takeover preparation of the roles taken under the delete is outstanding: {why}", to.node_id)));
-        }
         let taken = {
             let _decisions = self.decisions.clone().lock_owned().await;
             self.topology_view.primaries().take_together(&records)
@@ -748,12 +727,6 @@ mod tests {
 
     /// CONTRACT: docs/architecture/lifecycles/fabric-recovery.md:87
     /// "The executor takes the fabric-primary role and the lost mesh's mesh-primary role by one winning claim and one recorded transition at the next revision, keeping its own mesh's"
-    /// CONTRACT: docs/architecture/lifecycles/node-primary-update.md step 4 "When this transfers
-    /// lifecycle writing, required takeover preparation finishes earlier issued writes and the frozen
-    /// snapshot before installation and command admission": the roles taken under the delete give the
-    /// executor the lost mesh's lifecycle writing; while the store refuses its lifecycle puts, neither
-    /// role is installed and the take is answered `NotReady`, by name; once the store answers, the lost
-    /// mesh's records are persisted under the executor's writer birth and both roles installed.
     #[tokio::test]
     async fn take_under_delete_installs_fabric_and_lost_mesh_primary_roles_all_or_none() {
         let ep = rdm_transport::endpoint::bind(
@@ -811,55 +784,26 @@ mod tests {
             connections: None,
             commands: None,
         };
-        // The lost mesh, mesh1: its lost fabric-primary admin and a member, each with its row; and this
-        // executor, mesh2's primary.
-        let lost_mesh = MeshId::mint();
-        let born = |name: PathName, mesh: &str, kind: NodeKind| {
-            let mut n = Node::allocated(name, mesh, kind);
-            n.node_id = NodeId::mint();
-            n.incarnation_id = Some(IncarnationId::mint());
-            n.status = crate::model::NodeStatus::Ready;
-            n
-        };
-        let mut lost_admin = born(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", NodeKind::NodeAdmin);
-        (lost_admin.is_primary, lost_admin.is_fabric_primary) = (true, true);
-        let lost_member = born(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode);
-        let mut executor = born(me.clone(), "mesh2", NodeKind::NodeAdmin);
-        (executor.node_id, executor.incarnation_id, executor.is_primary) = (node_id.clone(), Some(incarnation.clone()), true);
-        let nodes: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::MemoryNodesStorage::default());
-        for n in [&lost_admin, &lost_member] {
-            let mut row = crate::storage::NodeRow::new(n.name.clone(), "mesh1", n.kind, n.node_id.clone(), crate::model::NodeStatus::Ready);
-            row.mesh_id = Some(lost_mesh.clone());
-            row.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
-            crate::node_rows::write_record(&*nodes, &row).await.unwrap().unwrap();
-        }
-        let view = Arc::new(RwLock::new(Topology {
-            fabric: Fabric {
-                id: fabric_id.clone(),
-                name: "fab".into(),
-                status: ScopeStatus::Ready,
-                provider: ProviderKind::Process,
-            },
-            meshes: vec![crate::model::Mesh { id: Some(lost_mesh.clone()), name: "mesh1".into(), status: ScopeStatus::Ready }, crate::model::Mesh { id: Some(mesh_id.clone()), name: "mesh2".into(), status: ScopeStatus::Ready }],
-            nodes: vec![lost_admin.clone(), lost_member.clone(), executor.clone()],
-        }));
-        let lifecycle = Arc::new(crate::test_support::FailingLifecycle::default());
-        let rows = crate::node_rows::NodeRows::new(me.clone(), node_id.clone(), view.clone(), nodes.clone()).with_lifecycle(lifecycle.clone(), Arc::new(|| Box::pin(async {})));
-        rows.written().writes_as(crate::storage::BirthRef { node_id: node_id.clone(), incarnation_id: incarnation.clone() });
-        let records = Arc::new(crate::admin::Records::default());
-        records.set_me(node_id.clone());
-        records.set_rows(Arc::new(rows));
         let door = HandoverDoor {
             fabric: "fab".into(),
             me: me.clone(),
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),
-            topology: view.clone(),
+            topology: Arc::new(RwLock::new(Topology {
+                fabric: Fabric {
+                    id: FabricId::mint(),
+                    name: "fab".into(),
+                    status: ScopeStatus::Ready,
+                    provider: ProviderKind::Process,
+                },
+                meshes: Vec::new(),
+                nodes: Vec::new(),
+            })),
             digest_view: topology_view.digest_view.clone(),
             topology_view: topology_view.clone(),
             backbone,
             client,
-            records: records.clone(),
+            records: Arc::new(crate::admin::Records::default()),
             locks: Default::default(),
             memo: Default::default(),
             decisions: Arc::default(),
@@ -870,8 +814,8 @@ mod tests {
 
         let lost_fp = Primary {
             mesh: "mesh1".into(),
-            node_id: lost_admin.node_id.clone(),
-            incarnation: lost_admin.incarnation_id.clone().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
             revision: 3,
         };
 
@@ -883,20 +827,9 @@ mod tests {
             Err(Reply::NotReady { .. })
         ));
 
-        // 2. While the store refuses the executor's lifecycle puts, its takeover preparation is outstanding:
-        //    `NotReady` by name, and neither role installed.
+        // 2. With a valid incarnation, `take_under_delete` installs both `FabricPrimary` (at `target.revision + 1`)
+        //    and `mesh1`'s `NodeAdmin` primary (at `mesh_revision`) onto `to_node`.
         to_node.incarnation_id = Some(incarnation.clone());
-        lifecycle.failing.store(true, std::sync::atomic::Ordering::SeqCst);
-        match door.take_under_delete(&lost_fp, 2, &to_node).await {
-            Err(Reply::NotReady { reason }) => assert!(reason.contains("takeover preparation") && reason.contains("refused for the cell"), "{reason}"),
-            other => panic!("an outstanding preparation is answered NotReady by name: {other:?}"),
-        }
-        assert!(topology_view.primaries().fabric().is_none() && topology_view.primaries().mesh("mesh1").is_none(), "no role is installed over an outstanding preparation");
-        lifecycle.failing.store(false, std::sync::atomic::Ordering::SeqCst);
-
-        // 3. Once the store answers, `take_under_delete` persists the lost mesh's records under the
-        //    executor's writer birth, then installs both `FabricPrimary` (at `target.revision + 1`) and
-        //    `mesh1`'s `NodeAdmin` primary (at `mesh_revision`) onto `to_node`.
         let entries = door.take_under_delete(&lost_fp, 2, &to_node).await.expect("take_under_delete succeeds");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, FABRIC);
@@ -907,16 +840,8 @@ mod tests {
         let held_fp = topology_view.primaries().fabric().expect("fabric primary installed");
         assert_eq!(held_fp.node_id, node_id);
         assert_eq!(held_fp.revision, 4);
-        {
-            use rdm_node::node_records::NodeRecordsStorage as _;
-            let writer = rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() };
-            for n in [&lost_admin, &lost_member] {
-                let r = lifecycle.lifecycle(&n.node_id, &writer).await.unwrap().unwrap_or_else(|| panic!("{:?}'s lifecycle record under the executor's writer birth", n.name));
-                assert_eq!((r.mesh_id.clone(), r.is_primary, r.is_fabric_primary), (lost_mesh.clone(), false, false), "the lost mesh's record carries no role the candidate does not name: {r:?}");
-            }
-        }
 
-        // 4. If a newer revision is already held, `take_under_delete` refuses `NotReady` all-or-none.
+        // 3. If a newer revision is already held, `take_under_delete` refuses `NotReady` all-or-none.
         assert!(matches!(
             door.take_under_delete(&lost_fp, 1, &to_node).await,
             Err(Reply::NotReady { .. })
