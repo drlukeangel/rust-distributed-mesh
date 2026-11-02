@@ -1090,8 +1090,8 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
 /// `node.tag.create` / `node.tag.delete` is, and every property once its create claimed the name (`PrepareStorage`, which writes the
 /// entry's onto the row: a plain create, or a replacement's successor whose minted node is the row's,
 /// Q305). A write the node or a caller makes after it stands until the next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
-/// the replacement's, whose claim writes its properties. A path whose node's property record could not
-/// be read is owed its `node.config.update`, the entry sent, as for any differing config.
+/// the replacement's, whose claim writes its properties. A node with no property record yet has none
+/// ([`recorded_executables`]): its entry's are owed as any differing ones are.
 fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
     let receipted = |operation: &rdm_core::OperationId, step: &str| steps.iter().any(|r| r.operation == *operation && r.step == step && r.outcome == crate::build_state::StepOutcome::Complete);
     // The node this Build's create at `path` minted (its AllocateIdentity receipt's output).
@@ -1126,9 +1126,7 @@ fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, 
             continue;
         }
         let applied = row.applied.contains(&rdm_core::properties::PropertyApplication::entry(build_id, path));
-        // A node whose own property record could not be read carries no config: its entry is owed, as
-        // any differing config is, and the step sends it.
-        let config = (!applied && row.config.as_ref() != Some(&spec.config)) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
+        let config = (!applied && row.config.as_ref().is_some_and(|c| *c != spec.config)) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
         let mut owed = Vec::new();
         if config {
             owed.push(BuildOperation::UpdateConfig { node_id: recorded[&path].node_id.clone(), kind: spec.kind, mesh: spec.mesh.clone(), node: path.clone(), entry: None });
@@ -1190,11 +1188,12 @@ pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, prope
             // a node that wrote none carries none known.
             let (mut applied, mut config, mut tags) = (BTreeSet::new(), None, None);
             if let Some(properties) = properties {
-                if let Some(own) = properties.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))? {
-                    config = Some(own.config);
-                    tags = Some(own.tags);
-                    applied = own.applied;
-                }
+                // A node that has written no record yet has no properties yet (query.md §1, Q323): its
+                // entry's config and tags are owed and sent as any differing ones are (Q321).
+                let own = properties.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))?;
+                config = Some(own.as_ref().map(|o| o.config.clone()).unwrap_or_default());
+                tags = Some(own.as_ref().map(|o| o.tags.clone()).unwrap_or_default());
+                applied = own.map(|o| o.applied).unwrap_or_default();
             }
             out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, applied, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config, tags, storage_persistence: row.storage_persistence, placement: row.placement });
         }
