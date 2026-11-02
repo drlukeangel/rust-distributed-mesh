@@ -1678,19 +1678,20 @@ async fn a_signal_stop_waits_for_its_owed_declarations_delivered_within_the_boun
     assert!(elapsed >= held.as_millis() as u64 * 3 / 4, "the stop waited for the held mesh-primary's answers ({elapsed} ms): {outcome}");
 }
 
-/// CONTRACT (Q210, Q206): the same node, its mesh-primary held and never continued within the bound
-/// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS` 3000). The stop waits the bound and no longer, then the process
-/// leaves; its outcome span says `deadline`, delivered nothing, and names the undelivered declarations
-/// (`ConnectionsDeleting,Stopped`) it left. Must NOT happen: the process waiting past the bound, or leaving
-/// without naming what it left undelivered.
+/// CONTRACT (Q210, Q206, Q311): the same node, its mesh-primary held and never continued within the bound
+/// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS` 3000). The stop waits the bound, or until the declaration's call
+/// ends unanswered with its attempts spent, whichever is first, and no longer, then the process leaves; its
+/// outcome span says `deadline` or `unanswered`, delivered nothing, and names the undelivered declarations
+/// (`ConnectionsDeleting,Stopped`) it left. Must NOT happen: the process waiting past the bound, a spent
+/// declaration named delivered, or leaving without naming what it left undelivered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_signal_stop_past_the_bound_leaves_naming_its_undelivered_declarations() {
     let (outcome, _, _) = signal_stop_with_primary_held("a_signal_stop_past_the_bound_leaves_naming_its_undelivered_declarations", "3000", None).await;
-    assert_eq!(attr(&outcome, "outcome"), "deadline", "the bound passed with the mesh-primary silent: {outcome}");
+    assert!(["deadline", "unanswered"].contains(&attr(&outcome, "outcome").as_str()), "the bound passed, or the call was spent, with the mesh-primary silent: {outcome}");
     assert_eq!(attr(&outcome, "delivered"), "", "nothing was delivered: {outcome}");
     assert_eq!(attr(&outcome, "left"), "ConnectionsDeleting,Stopped", "the outcome span names the undelivered declarations in the order owed: {outcome}");
     let elapsed: u64 = attr(&outcome, "elapsed_ms").parse().unwrap_or(0);
-    assert!((3_000..8_000).contains(&elapsed), "the stop waited the bound and left ({elapsed} ms): {outcome}");
+    assert!((1_500..8_000).contains(&elapsed), "the stop waited for the call's attempts or the bound, and left ({elapsed} ms): {outcome}");
 }
 
 /// CONTRACT (rdm#118; telemetry.md §1 "Exit": the exit flush is bounded, i146 Q60): an estate's

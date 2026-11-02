@@ -1303,25 +1303,28 @@ impl NodeSelf {
             tokio::time::timeout(self.connections_delete_deadline, each).await.is_ok()
         };
         // What was delivered and what was left: the stop's own declarations by their state, then
-        // whatever else the birth still owed its mesh-primary ahead of them (a config update).
-        let delivered: Vec<&str> = declarations.iter().filter(|(_, d)| d.is_finished()).map(|(n, _)| n.as_str()).collect();
-        let mut left: Vec<String> = declarations.iter().filter(|(_, d)| !d.is_finished()).map(|(n, _)| n.clone()).collect();
-        if let Some(owed) = &self.owed {
-            for name in owed.names() {
-                if !left.contains(&name) {
-                    left.push(name);
-                }
+        // whatever else the birth still owed its mesh-primary ahead of them (a config update). A
+        // declaration whose call ended unanswered, its attempts spent (Q311), is still owed: left.
+        let still_owed: Vec<String> = self.owed.as_ref().map(|o| o.names()).unwrap_or_default();
+        let delivered: Vec<&str> = declarations.iter().filter(|(n, d)| d.is_finished() && !still_owed.contains(n)).map(|(n, _)| n.as_str()).collect();
+        let mut left: Vec<String> = declarations.iter().filter(|(n, d)| !d.is_finished() || still_owed.contains(n)).map(|(n, _)| n.clone()).collect();
+        for name in still_owed {
+            if !left.contains(&name) {
+                left.push(name);
             }
         }
+        let unanswered = ended && !left.is_empty();
         for (_, d) in &declarations {
             d.abort();
         }
         span.record("elapsed_ms", began.elapsed().as_millis() as u64);
-        span.record("outcome", if ended { "ended" } else { "deadline" });
+        span.record("outcome", if unanswered { "unanswered" } else if ended { "ended" } else { "deadline" });
         span.record("delivered", delivered.join(",").as_str());
         span.record("left", left.join(",").as_str());
         span.in_scope(|| {
-            if ended {
+            if unanswered {
+                tracing::info!("each owed declaration's call ended, and one ended unanswered, its attempts spent: it is left undelivered");
+            } else if ended {
                 tracing::info!("each owed declaration's call ended: answered, or its receiver proven gone");
             } else {
                 tracing::info!("a declaration's call was still open at the birth's bound: it ends with the process, undelivered");
