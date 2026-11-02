@@ -98,9 +98,10 @@ lines, so a new mesh-primary always has a source for the Build work its mesh owe
 **Decided before their stories (Luke, 2026-11-02):**
 - s5, the fabric name: the claim at `<store_dir>/fabrics/<name>` stays, the one name claim, since
   two `fabric.create` on one store root have no fabric-primary above them to look it up ("yes").
-- s6, RDM's two types: `node-admin` and `node` ("node?", on the dev recommendation `rpc-node`).
-  `node` is the plain node that serves the core protocols only (today's `NodeKind::RpcNode`);
-  `rpc-node` is not a type name.
+- s6, RDM's two types: `node` is the base and `node-admin` the other ("yes node is base,
+  node-admin other"). `node` is the plain node that serves the core protocols only (today's
+  `NodeKind::RpcNode`); every type extends it: `node-admin` is RDM's, and each type the
+  application declares on Fabrics overrides `node`'s defaults. `rpc-node` is not a type name.
 
 **Re-read after s2:** rdm#295 (a reached mesh-primary re-marked every ~30 s and commanded back
 through node.mesh.join during a primary move): the repair path it ran through is rewritten by s2;
