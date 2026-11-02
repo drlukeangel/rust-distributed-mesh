@@ -472,9 +472,10 @@ async fn read_with(
     mut take: impl FnMut(Chunk) -> Taken,
 ) -> Result<TopologyRead, TopologyFailure> {
     let req = TopologyRequest::GetTopology { mesh: mesh.map(String::from), since };
-    // One attempt: the reader's own loop goes on to its next contact (Q315: the caller owns its
-    // attempts).
-    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_secs(10)) }, ..Default::default() };
+    // The read's one 10 s bound on this contact, spread over its attempts: a contact that refuses
+    // at once is asked again, and one that cannot be reached costs 10 s before the reader's own loop
+    // goes on to its next contact (Q315: the caller owns its attempts and time limit).
+    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(10) / u32::from(rdm_transport::Resend::default().attempts)), ..Default::default() };
     let target_name = match target {
         NodeTarget::ExactNode(id) => id.to_string(),
         other => format!("{other:?}"),
