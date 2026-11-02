@@ -436,6 +436,10 @@ per_exe rdm-transport rdm-transport
 echo "i143-2777-process sh:scripts/i143-acceptance-gate.sh i143-2777-process" >> $D/jobs
 echo "i143-2780-process sh:scripts/i143-acceptance-gate.sh i143-2780-process" >> $D/jobs
 echo "i143-2805-process sh:scripts/i143-acceptance-gate.sh i143-2805-process" >> $D/jobs
+# The replay manifest's and the acceptance runner's unit cells (runtime/manifest_replay.rs, rdm#302); the
+# stem stays in SCENARIO_SKIP: its estate cells are i143-2776-process's, and the external binary set
+# cell needs the consumer build only the release gate makes.
+echo "i143-2776-unit sh:scripts/i143-acceptance-gate.sh i143-2776-unit" >> $D/jobs
 # connections.md §13 F, G, H on the process provider (rpc/proxy_cutback.rs); its stem stays in
 # SCENARIO_SKIP, so the sharded main job does not run it a second time.
 echo "i143-2938-process sh:scripts/i143-acceptance-gate.sh i143-2938-process" >> $D/jobs

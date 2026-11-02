@@ -50,7 +50,7 @@ fn candidate_sha() -> String {
 /// `RDM_RSHAPE_CONSUMER_BIN_DIR` names. Its candidate is the RDM commit the demo imported.
 fn consumer_set() -> BindingSet {
     let root = workspace_root();
-    let dir = std::env::var(ENV_CONSUMER_BIN_DIR).unwrap_or_else(|_| panic!("RED: {ENV_CONSUMER_BIN_DIR} is not set: build the demo's executables with scripts/i143-rshape-build-consumer.sh and name their directory"));
+    let dir = std::env::var(ENV_CONSUMER_BIN_DIR).unwrap_or_else(|_| panic!("REFUSED: {ENV_CONSUMER_BIN_DIR} is not set; the registered command (tools/mesh-audit/i143-acceptance-jobs.json, i143-2776-process and i143-2776-container) sets it, and no default stands in for it"));
     let bin = root.join(&dir).canonicalize().unwrap_or_else(|e| panic!("RED: {ENV_CONSUMER_BIN_DIR}={dir}: {e} (scripts/i143-rshape-build-consumer.sh)"));
     let manifest = root.join("target/i143-rshape/consumer-build/manifest.json");
     binding_set_from_build_manifest(&manifest, &bin, provider() == "container").unwrap_or_else(|e| panic!("RED: the demo's build manifest does not bind its executables: {e}"))
@@ -465,7 +465,7 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
     expect("truncated", ReplayManifest::parse(&text[..text.len() / 2]), |e| matches!(e, ManifestError::Schema(_)));
     expect("missing_seed", mutate(&|x| { x.as_object_mut().unwrap().remove("seed"); }), |e| matches!(e, ManifestError::Schema(m) if m.contains("seed")));
     expect("unknown_field", mutate(&|x| { x["invented"] = json!(1); }), |e| matches!(e, ManifestError::Schema(m) if m.contains("invented")));
-    expect("schema_version", mutate(&|x| { x["schema_version"] = json!(2); }), |e| matches!(e, ManifestError::UnsupportedSchemaVersion(2)));
+    expect("schema_version", mutate(&|x| { x["schema_version"] = json!(SCHEMA_VERSION + 1); }), |e| matches!(e, ManifestError::UnsupportedSchemaVersion(v) if *v == SCHEMA_VERSION + 1));
     expect("unknown_provider", mutate(&|x| { x["owner"]["provider"] = json!("vm"); }), |e| matches!(e, ManifestError::UnknownProvider(p) if p == "vm"));
     expect("provider_disagrees", mutate(&|x| { x["owner"]["provider"] = json!("container"); }), |e| matches!(e, ManifestError::ProviderDisagrees { .. }));
     expect("empty_owner_test", mutate(&|x| { x["owner"]["test"] = json!(""); }), |e| matches!(e, ManifestError::EmptyOwnerField("test")));
