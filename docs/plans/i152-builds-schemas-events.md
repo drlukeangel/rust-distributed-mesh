@@ -72,10 +72,11 @@ from a read put back values a node had changed since (Q202).
    `rdm.node.investigated` (an investigation is a function; its verdict is an event, never an
    entity), and the mesh and fabric state moves. `on_build_started`, `on_build_ended` and
    `on_node_investigated` are sent from the event's write.
-6. **Claims and locks:** `locks/in-flight` and the attempt claim go (one writer of Builds, the
-   fabric-primary, which is re-born, never elected); `locks/name` goes (a lookup by the one
-   writer); `locks/commit` (the storage copy's commit marker) stays. The fabric name above the
-   per-fabric roots has no writer above it: held open (s5).
+6. **Claims and locks: all go (Luke, 2026-11-02, "no all locks are dead").** `locks/` is removed:
+   the in-flight row and the attempt claim, the node and mesh name claims (a lookup by the one writer),
+   the storage change's `commit` marker (an event in the events store) and the fabric name claim at
+   `<store_dir>/fabrics/<name>` (nothing checks a fabric name across one shared store root). Adoption
+   takes none.
 7. **The "proof" wording goes:** the provider's inspect answer (node.runtime.inspect) is the one
    mechanism; the page sentences that say what is not proof collapse into one line on
    node-runtime-inspect.md; `RuntimeProof`, `StopProof`, `DepartureProof` and the testkit
@@ -97,14 +98,14 @@ lines, so a new mesh-primary always has a source for the Build work its mesh owe
 | s2 | Repairs and node commands leave the Build. node.stop, node.start, node.connections.delete: node commands of the primary above, recorded on the node record. Node recovery and re-adoption: the primary's workflow, recorded on the node record. Fabric recovery acts on the primary watch's verdict and writes no Build record (Q337, rdm#291, folded). Goes: every `AttemptReason` but `Requested` and `Steps` (`Steps` goes in s4); the drift pass; `PrimaryMoved`; the per-mesh lane; the owed recovery; the hand-back; the drift guards; the R-D1 exemptions; repair claims and their in-flight rows; the Build carrier paths of the node commands; `BuildChange::{Stop, Start, DeleteConnections, Recover, Terminate}`. Stays: Q335's "no node-admin left" guard (F7/F5, noted in Q341); Q250's dispatch of each mesh's section by the fabric-primary. | rdm#296 | s1 | stop, start and connections-delete cells by node command; a recovery during a caller's Build runs at once (Q291's case); a hung mesh-primary recovered by the fabric-primary's workflow (rdm#294's case); a flame of each |
 | s3 | The events store. `events.jsonl` (the `EventsStorage` trait: append, by event.id, by build.id, by node.id), the CloudEvents envelope, UUIDv7 ids, the two ordered lookups; `rdm.build.*` and `rdm.node.investigated`; the three hooks sent from the write. Each event is its own record with one writer: the fabric-primary for Build-level events, the mesh-primary for its steps, the primary above for an investigation. A new mesh-primary reads the current Build's events for work its mesh owes. | rdm#297 | s2 | the events of one Build and of one node read back in order; a hook sent once per event; a new mesh-primary resumes its mesh's owed step from the events |
 | s4 | The request and the record. `BuildChange` = `Create`, `Delete` (by node.id), `DeleteFabric`; the fabric-primary composes the topology at acceptance; the Build record written once; the dispatch recorded as `rdm.build.dispatched`. Goes: `Reconcile`, `RemoveNode`, `RemoveMesh`, `Steps` and `Step`; the attempt and receipt lines of the Build record; the replace as a Build (node-replace.md: node commands, then one Build that adds). Q202 and Q236 amended: a Build still states each node it creates whole, and never states a node it does not touch. Nodes and Meshes schemas land here, `path`/`name` flat in them. | rdm#298 | s3 | a Create of several meshes and nodes; a Delete by node.id; a delete of a replaced node.id refused by name; a node.config.update between the caller's read and the Build survives it |
-| s5 | Claims and locks. Goes: `LockKind::InFlight`, `claim_attempt`, `adopt_claim`, `StaleClaim`, the held/won claim fold; `LockKind::Name` and the node name claim, replaced by the fabric-primary's lookup. Stays: `LockKind::Commit`. | rdm#299 | s4 | a second Build refused build-in-progress with no lock; a held path.name refused by lookup |
+| s5 | Claims and locks. Goes: `LockKind::InFlight`, `claim_attempt`, `adopt_claim`, `StaleClaim`, the held/won claim fold; `LockKind::Name` and the node name claim, replaced by the fabric-primary's lookup. Goes too: `LockKind::Commit` (the commit marker becomes an event) and the fabric name claim; `locks/` is removed. | rdm#299 | s4 | a second Build refused build-in-progress with no lock; a held path.name refused by lookup |
 | s6 | Schemas for the rest. Fabrics with `types` and `state`; Meshes `state` (`dead`, `states` go); `FabricRecord.events` goes; `MeshState` takes the page's names; `type` replaces `NodeKind` (RDM's two types, `node-admin` and `node`; the application's declared); `placement` goes; i150 e1.s2's remaining `PathName` fields flat (D16). The pages' joined `path.name` token goes: each reference becomes node.id, or `path` and `name` where the two properties are meant; operation strings key on node.id. A durable-format move, with its commit marker. | rdm#300 | s5 | a declared type's defaults applied at acceptance; an undeclared type refused by name; RDM's two types not overridable |
 | s7 | The proof wording. Renames by symbol, the page sentences collapsed into node-runtime-inspect.md, the name check. | rdm#301 | s6 | the name check refuses the words |
 | s8 | Rafka (i150 e6, rafka-v2): one pin; the replace cells removed (in e6.s2); deletes look up node.id with `node.get`; Events as an entity with two declared index slots; NodesStorage's two parts. | e6 | s7 | e6's acceptance |
 
 **Decided before their stories (Luke, 2026-11-02):**
-- s5, the fabric name: the claim at `<store_dir>/fabrics/<name>` stays, the one name claim, since
-  two `fabric.create` on one store root have no fabric-primary above them to look it up ("yes").
+- s5, the fabric name: the claim at `<store_dir>/fabrics/<name>` goes with every other lock ("no all
+  locks are dead", reversing the earlier "yes").
 - s6, RDM's two types: `node` is the base and `node-admin` the other ("yes node is base,
   node-admin other"). `node` is the plain node that serves the core protocols only (today's
   `NodeKind::RpcNode`); every type extends it: `node-admin` is RDM's, and each type the
@@ -112,8 +113,7 @@ lines, so a new mesh-primary always has a source for the Build work its mesh owe
 
 **Adoption takes no lock (Luke, 2026-11-02, "no lock"):** with no node-admin alive, nothing on the
 store orders two adoption launches; one launch at a time is the operator's. A launch that finds the
-lost birth reached or a node-admin answering exits NameHeld, as today. The only record left under
-`locks/` is the fabric name claim.
+lost birth reached or a node-admin answering exits NameHeld, as today.
 
 **Re-read after s2:** rdm#295 (a reached mesh-primary re-marked every ~30 s and commanded back
 through node.mesh.join during a primary move): the repair path it ran through is rewritten by s2;
