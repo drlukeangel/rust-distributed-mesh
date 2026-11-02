@@ -4,7 +4,7 @@
 
 `node.config.update` replaces the whole application config map: a PUT. RDM stores the values
 without interpreting them. A node owns its property record and persists changes through its one
-serialized property writer. Properties and lifecycle facts are separate records; node-side application mutates only properties and moves no primary role. Deferred acceptance
+serialized property writer. The node's properties and the status and role flags its mesh-primary writes are in the node's one record (Q323); node-side application mutates only properties and moves no primary role. Deferred acceptance
 records its identified obligation separately in lifecycle state.
 
 ## Numbered end-to-end sequence

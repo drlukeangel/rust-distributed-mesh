@@ -8,7 +8,7 @@ An already-held member requests [node.topology.get](../node-rpc-envelope.md#topo
 from its own current mesh-primary when a differential cannot be applied to the state it holds.
 For this repair it requests the affected mesh with `since: None`: no publisher or version is
 sent. It installs a complete snapshot from the reply, then resumes applicable differentials. The answer also carries the node's own
-composed node view from the selected lifecycle record and its own property record, read from
+node record at its node.id (Q323), read from
 the shared backend. This startup context is not a second property owner; the node's writer
 preserves retained properties and application recognition (Q234).
 JoinNode is only a join and is

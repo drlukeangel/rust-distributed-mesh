@@ -43,10 +43,10 @@ The lifecycle architecture rests on five design rules:
 
 ## 2. A node is an ENTITY, and it has three ids
 
-**A node is one entity with two owned records.** Its property record is keyed by node ID and
-written by the node: config, tags, bound addresses and application declarations. Its lifecycle
-record is keyed by subject node ID and the writing primary's node ID and incarnation. It contains
-identity, explicit mesh/kind, lifecycle status, certificates, executable and placement facts.
+**A node is one entity with one record** (Q323), keyed by its node ID, append-only, its latest
+line current. The node writes its own properties in it: config, tags, bound addresses and
+application declarations. Its mesh-primary writes the status and role flags in the same record,
+beside identity, explicit mesh/kind, certificates, executable and placement facts.
 A current-pair lookup uses the ordinary name claim; it never uses the last writer at a path.
 Gossip is a projection, not persistence or proof that a lifecycle operation completed.
 
@@ -163,21 +163,12 @@ adoption launch, are new nodes: the first step mints a new id, never the inherit
 
 ### 2.5 ONE system org, one projection, one writer per mesh
 
-The fabric shares records across its meshes through the registered storage backend. Node-owned
-properties and writer-birth lifecycle records are separate values, not copies fed through primaries.
-A node writes its own property record; a mesh-primary writes lifecycle facts under its own writer
-birth. Fabric recovery uses its existing executor identity while its target mesh has no active
-mesh-primary; it never writes under another active primary's lifecycle key.
-
-A superseded writer changes only its own lifecycle record. The installed election result selects
-which writer readers use. No node-property or lifecycle record has a revision or tenure counter;
-existing `Primary.revision` remains part of the separately persisted election result. Flags in a
-lifecycle record record the role and never elect it.
-
-Before publishing or installing a candidate primary or opening command admission, freeze its
-accepted takeover evidence, settle earlier issued writes of that same writer birth, and finish its
-required lifecycle puts through the retained serialized writer. Retry uses the frozen evidence,
-not a fresh mutable predecessor snapshot. Missing current-writer evidence is unavailable.
+The fabric shares records across its meshes through the registered storage backend, never as
+copies fed through primaries. A node writes its own properties in its record; its mesh-primary
+writes the status and role flags in the same record (Q323). Fabric recovery writes the status its
+operations require while its target mesh has no active mesh-primary. No node record has a revision
+or tenure counter; `Primary.revision` belongs to the election result. Flags in a node record record
+the role and never elect it.
 
 <a id="the-projection-differs-from-every-other-projection-in-exactly-two-ways"></a>
 #### The projection is filled from two gossip channels

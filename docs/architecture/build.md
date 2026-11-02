@@ -461,17 +461,15 @@ order together with held claims and in-flight operations.
 
 The fabric-primary writes the Fabric record, accepted Build definitions, Build-attempt records,
 and step receipts for operations it executes. Each mesh-primary
-writes its Mesh record and lifecycle facts for its members under that primary's writer birth.
+writes its Mesh record and the status and role flags in its members' node records (Q323).
 Each node writes its own config, tags, bound addresses and declarations through its property
 writer, and its connection facts through the connection writer. The launching admin records the
-birth's runtime and immutable claim snapshot. Existing election results and revisions persist
-independently of lifecycle role flags. A node record has no revision or tenure counter.
+birth's runtime and immutable claim snapshot. A node has one record, keyed by its node.id,
+append-only, its latest line current; it has no revision or tenure counter (Q323).
 
 While the fabric-primary is unavailable, the existing fabric-recovery executor writes only the
-attempt facts and the lifecycle/claim facts its operations require for a mesh with no active
-mesh-primary, using its own writer identity. That exception does not grant a primary role or let
-it overwrite an active primary's lifecycle key. Ordinary lifecycle writing transfers through the
-same preparation boundary when the restored primary takes the role (Q122).
+attempt facts and the node-record status its operations require for a mesh with no active
+mesh-primary. That exception grants no primary role (Q122).
 
 The Build journal retains one fact at its semantic identity: the Build ID, an attempt under its
 mesh, a claim for that attempt, and each step receipt. Property application recognition is written
