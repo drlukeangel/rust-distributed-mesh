@@ -4465,28 +4465,6 @@ mod tests {
         eprintln!("span rdm.node_admin.node.resolve.via-runtime-rows-read trace_id={} {:?}", read[0].trace_id, read[0].attributes);
     }
 
-    /// The events an events store was given, in the order appended: what a cell reads the state
-    /// moves from (they name no Build and no node, so the store's two range reads hold none).
-    #[derive(Default)]
-    struct AppendedEvents(std::sync::Mutex<Vec<crate::events_storage::Event>>);
-
-    #[async_trait::async_trait]
-    impl crate::events_storage::EventsStorage for AppendedEvents {
-        async fn append(&self, event: &crate::events_storage::Event) -> Result<(), crate::storage_error::StorageError> {
-            self.0.lock().unwrap().push(event.clone());
-            Ok(())
-        }
-        async fn event(&self, id: &crate::events_storage::EventId) -> Result<Option<crate::events_storage::Event>, crate::storage_error::StorageError> {
-            Ok(self.0.lock().unwrap().iter().find(|e| &e.id == id).cloned())
-        }
-        async fn of_build(&self, _: &crate::build::BuildId) -> Result<Vec<crate::events_storage::Event>, crate::storage_error::StorageError> {
-            Ok(Vec::new())
-        }
-        async fn of_node(&self, _: &rdm_core::NodeId) -> Result<Vec<crate::events_storage::Event>, crate::storage_error::StorageError> {
-            Ok(Vec::new())
-        }
-    }
-
     /// CONTRACT (node-identity-and-state.md §2.7, the Meshes schema's `state`): a mesh's record holds
     /// one `state`, and it moves pending (its name claim) -> ready -> deleting -> deleted (its
     /// removal), each move one event of the state it moved to (`rdm.mesh.pending`, `.ready`,
@@ -4500,7 +4478,7 @@ mod tests {
         use rdm_core::status::MeshState;
         let meshes = crate::storage::MemoryMeshStorage::default();
         let records = Records::default();
-        let appended = std::sync::Arc::new(AppendedEvents::default());
+        let appended = std::sync::Arc::new(crate::events_storage::AppendedEvents::default());
         let (fabric_id, me) = (rdm_core::FabricId::mint(), rdm_core::NodeId::mint());
         let writer = crate::events_storage::EventsWriter::on(appended.clone(), &fabric_id, &me);
         let source = writer.source.uri();
@@ -4535,7 +4513,7 @@ mod tests {
     async fn the_fabric_state_moves_to_ready_with_one_event() {
         let fabric = crate::fabric_storage::MemoryFabricStorage::new();
         let records = Records::default();
-        let appended = std::sync::Arc::new(AppendedEvents::default());
+        let appended = std::sync::Arc::new(crate::events_storage::AppendedEvents::default());
         let identity = crate::fabric_storage::FabricIdentity { fabric_id: rdm_core::FabricId::mint(), name: "fabric1".into() };
         records.caches.writes_events(crate::events_storage::EventsWriter::on(appended.clone(), &identity.fabric_id, &rdm_core::NodeId::mint()));
         crate::fabric_storage::write_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is claimed");

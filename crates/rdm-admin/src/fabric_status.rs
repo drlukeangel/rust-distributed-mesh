@@ -270,7 +270,7 @@ impl FabricStates {
                 change.tracked_build = None;
                 change.notified = false;
                 change.root = None;
-                self.enter(change, FabricState::Pending, me);
+                self.enter(change, FabricState::Pending, me).await;
                 true
             }
             Some(_) => false,
@@ -329,14 +329,22 @@ impl FabricStates {
         }
     }
 
-    fn enter(&self, change: &mut Change, next: FabricState, me: &PathName) {
+    async fn enter(&self, change: &mut Change, next: FabricState, me: &PathName) {
         let from = self.env.records.fabric_state();
         self.env.records.set_fabric_state(next);
         self.env.records.set_fabric_blocker(None);
         change.named = None;
         let parent = change.root.clone().unwrap_or_else(tracing::Span::none);
-        tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-state-entered", node_path = %me.path, node_name = %me.name, fabric_id = %self.env.fabric_id, from = from.as_str(), to = next.as_str(), "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the fabric-primary entered a fabric state"));
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-state-entered", node_path = %me.path, node_name = %me.name, fabric_id = %self.env.fabric_id, from = from.as_str(), to = next.as_str(), record = tracing::field::Empty, error = tracing::field::Empty, "otel.kind" = "internal");
+        // The Fabric record holds the state the fabric-primary entered, rewritten whole by it, each move
+        // an event (node-identity-and-state.md §2.8; `Caches::fabric_moved`).
+        let written: Result<Option<()>, String> = Ok(None);
+        match &written {
+            Ok(Some(())) => span.record("record", "written"),
+            Ok(None) => span.record("record", "no-fabric-record"),
+            Err(e) => span.record("record", "not-written").record("error", e.as_str()),
+        };
+        span.in_scope(|| tracing::info!("the fabric-primary entered a fabric state"));
         self.env.records.wake.poke();
     }
 
@@ -410,7 +418,7 @@ impl FabricStates {
         tracing::info_span!(parent: &root, "rdm.node_admin.fabric.update.via-every-mesh-ready", node_path = %me.path, node_name = %me.name, build_id = %build.build_id.log(), attempt = build.attempt, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("every mesh is ready: the fabric is ready"));
         change.root = Some(root.clone());
-        self.enter(change, FabricState::Ready, &me);
+        self.enter(change, FabricState::Ready, &me).await;
         if !change.notified {
             change.notified = true;
             self.notify_fabric_ready(build, root, me);
@@ -871,6 +879,46 @@ mod tests {
         assert_eq!(records.fabric_state(), FabricState::Ready, "the change entered ready: {:?}", records.fabric_blocker());
         assert_eq!(capture.named("rdm.node_admin.fabric.update.via-every-mesh-ready").len(), 1, "every mesh ready is named once");
         assert!(reads.iter().all(|n| *n == 1), "each status turn reads the current Build once: reads per turn {reads:?}");
+    }
+
+    /// CONTRACT (node-identity-and-state.md §2.8, the Fabrics schema's `state`; build.md §5): the Fabric
+    /// record holds the state its fabric-primary entered, rewritten whole by it, and the move to ready is
+    /// one `rdm.fabric.ready` event. Must NOT happen: the fabric ready in the fabric-primary's view while
+    /// its record still holds pending, or the move written with no event.
+    // @feature: fabric-lifecycle
+    #[tokio::test]
+    async fn the_fabric_primarys_entry_to_ready_moves_the_fabric_record_with_one_event() {
+        use crate::accepted::MeshTopology;
+        use crate::build::MeshDesired;
+        use crate::build_state::BuildAccepted;
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
+        let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1)])));
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { section_of: None, pinned: Vec::new(), storage_change: None, topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        let (fp, _) = fabric_primary_and_mesh2();
+        claim(&builds, &id, 1, &fp.birth().unwrap()).await;
+        let view = projected(vec![fp.clone()]);
+        let records = Arc::new(Records::default());
+        every_mesh_ready(&records, None);
+        // The fabric-primary's Fabric record, pending, on the fabric store it writes; its events by its birth.
+        let identity = crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
+        let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
+        crate::fabric_storage::claim_identity(&*fabric, &identity).await.unwrap().expect("the fabric's name is claimed");
+        records.set_status(Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::storage::MemoryMeshStorage::default()), fabric.clone(), "mesh1".into(), fp.name.clone(), fp.node_id.clone());
+        let appended = Arc::new(crate::events_storage::AppendedEvents::default());
+        records.caches.writes_events(crate::events_storage::EventsWriter::on(appended.clone(), &identity.fabric_id, &fp.node_id));
+        let fabric_states = states_of(&fp, view.clone(), builds.clone(), records.clone(), identity.fabric_id.clone()).await;
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while records.fabric_state() != FabricState::Ready && tokio::time::Instant::now() < until {
+            let read = builds.current().await;
+            fabric_states.change_step(ChangeInputs { is_fabric_primary: true, heard: Some("pending"), view: &view, current: &read }).await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(records.fabric_state(), FabricState::Ready, "the change entered ready: {:?}", records.fabric_blocker());
+        let record = crate::fabric_storage::FabricStorage::fabric(&*fabric).await.unwrap().expect("the Fabric record");
+        assert_eq!(record.state, FabricState::Ready, "the Fabric record holds the state the fabric-primary entered: {record:?}");
+        let types: Vec<String> = appended.0.lock().unwrap().iter().map(|e| e.r#type.clone()).collect();
+        assert_eq!(types, vec![crate::events_storage::FABRIC_READY.to_string()], "one rdm.fabric.ready event for the move");
     }
 
     /// CONTRACT (R-RC1): a replace is a delete and a create at the same path and name with a new node

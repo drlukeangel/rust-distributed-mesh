@@ -559,6 +559,30 @@ impl EventsStorage for FileEventsStorage {
     }
 }
 
+/// The events an events store was given, in the order appended: what a cell reads the state moves
+/// from (they name no Build and no node, so the store's two range reads hold none).
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct AppendedEvents(pub(crate) Mutex<Vec<Event>>);
+
+#[cfg(test)]
+#[async_trait]
+impl EventsStorage for AppendedEvents {
+    async fn append(&self, event: &Event) -> Result<(), StorageError> {
+        self.0.lock().unwrap().push(event.clone());
+        Ok(())
+    }
+    async fn event(&self, id: &EventId) -> Result<Option<Event>, StorageError> {
+        Ok(self.0.lock().unwrap().iter().find(|e| &e.id == id).cloned())
+    }
+    async fn of_build(&self, _: &BuildId) -> Result<Vec<Event>, StorageError> {
+        Ok(Vec::new())
+    }
+    async fn of_node(&self, _: &NodeId) -> Result<Vec<Event>, StorageError> {
+        Ok(Vec::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
