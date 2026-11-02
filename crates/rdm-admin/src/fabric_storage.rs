@@ -66,17 +66,23 @@ pub use crate::storage_error::StorageError as FabricStorageError;
 
 /// Claim the fabric's name for `identity.fabric_id` and keep `identity` as the Fabric's identity row
 /// (node-identity-and-state.md §2.8): the writer reads the claim at the fabric's `(path, name)` (R-FN1:
-/// `<store_dir>/fabrics/<name>`) and claims it, then the identity row at the fabric's key (Q109: the
-/// storage decides nothing). A free key takes the row (`Written`); this Fabric's own row there writes
-/// nothing (`Held`); another Fabric holds it: `FabricNameHeld` naming that Fabric, and nothing of this
-/// fabric is written.
+/// `<store_dir>/fabrics/<name>`) and, when none stands, inserts it, an insert-and-fail (R-FN1): of two
+/// claims that both read the name free, the insert lets one in and answers the other the claim that
+/// stands; then the identity row at the fabric's key (Q109: the storage decides nothing). A free key
+/// takes the row (`Written`); this Fabric's own row there writes nothing (`Held`); another Fabric holds
+/// it: `FabricNameHeld` naming that Fabric, and nothing of this fabric is written.
 pub async fn claim_identity(storage: &dyn FabricStorage, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
-    let named = match claim_fabric_against(storage.name_claim(&identity.name).await?.as_ref(), identity) {
+    let mut named = match claim_fabric_against(storage.name_claim(&identity.name).await?.as_ref(), identity) {
         Ok(c) => c,
         Err(held) => return Ok(Err(held)),
     };
     if named == FabricClaim::Written {
-        storage.put_name_claim(identity).await?;
+        if let Some(standing) = storage.insert_name_claim(identity).await? {
+            named = match claim_fabric_against(Some(&standing), identity) {
+                Ok(c) => c,
+                Err(held) => return Ok(Err(held)),
+            };
+        }
     }
     let own = match claim_fabric_against(storage.fabric().await?.map(|r| r.identity()).as_ref(), identity) {
         Ok(c) => c,
@@ -194,9 +200,10 @@ pub trait FabricStorage: Send + Sync {
     /// The claim of the fabric name `name` at the fabric's `(path, name)` (R-FN1:
     /// `<store_dir>/fabrics/<name>`, above the per-fabric roots): the Fabric that holds it, if any.
     async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError>;
-    /// Write `identity` as the claim of its name, as given; the claim is the writer's
-    /// ([`claim_identity`]).
-    async fn put_name_claim(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError>;
+    /// Write `identity` as the claim of its name only when no claim of the name stands: `None` when
+    /// this call wrote it, else the claim that stands, as stored. An insert-and-fail (R-FN1), never a
+    /// replacement; whose claim it is, is the writer's to judge ([`claim_identity`]).
+    async fn insert_name_claim(&self, identity: &FabricIdentity) -> Result<Option<FabricIdentity>, FabricStorageError>;
     /// Remove the claim of the fabric name `name`.
     async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError>;
 }
@@ -227,9 +234,15 @@ impl FabricStorage for MemoryFabricStorage {
     async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError> {
         Ok(self.claim.lock().unwrap().clone().filter(|i| i.name == name))
     }
-    async fn put_name_claim(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
-        *self.claim.lock().unwrap() = Some(identity.clone());
-        Ok(())
+    async fn insert_name_claim(&self, identity: &FabricIdentity) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        let mut held = self.claim.lock().unwrap();
+        match &*held {
+            Some(standing) if standing.name == identity.name => Ok(Some(standing.clone())),
+            _ => {
+                *held = Some(identity.clone());
+                Ok(None)
+            }
+        }
     }
     // One fabric per memory store: its record goes with its name's claim.
     async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError> {
@@ -297,8 +310,19 @@ impl FabricStorage for FileFabricStorage {
     async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError> {
         self.names.read(name_key(&self.names, name)?, NAME_FORMAT).await
     }
-    async fn put_name_claim(&self, identity: &FabricIdentity) -> Result<(), FabricStorageError> {
-        self.names.write(name_key(&self.names, &identity.name)?, NAME_FORMAT, identity).await
+    /// The filesystem's create-exclusive link of the claim to its key (`FileRecords::insert`), the
+    /// insert every other name claim makes; a claim that stood at the insert is read back. A claim the
+    /// insert met and the read no longer finds was released between the two: refused by name, never
+    /// answered as either outcome.
+    async fn insert_name_claim(&self, identity: &FabricIdentity) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        let key = name_key(&self.names, &identity.name)?;
+        if self.names.insert(key, NAME_FORMAT, identity).await? {
+            return Ok(None);
+        }
+        match self.names.read(key, NAME_FORMAT).await? {
+            Some(standing) => Ok(Some(standing)),
+            None => Err(FabricStorageError::Io { file: format!("{}/{key}.json", self.names.store_name()), reason: "the fabric name's claim stood at the insert and was gone at the read after it: its Fabric released it between the two; nothing is written, and the next claim decides on the free name".into() }),
+        }
     }
     async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError> {
         self.names.remove(name_key(&self.names, name)?).await.map(|_| ())
@@ -432,6 +456,83 @@ mod tests {
                 assert!(!d.join(crate::store_root::FABRIC_NAMES).join("fabric1.json").exists(), "the index row is removed");
             }
         }
+    }
+
+    /// A fabric store whose first read of a name claim waits at `read` until every claimant has read:
+    /// two claims of one name, each past the read before either writes.
+    struct ReadTogether {
+        inner: FileFabricStorage,
+        read: std::sync::Arc<tokio::sync::Barrier>,
+        waited: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl FabricStorage for ReadTogether {
+        async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
+            self.inner.fabric().await
+        }
+        async fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
+            self.inner.put_fabric(record).await
+        }
+        async fn name_claim(&self, name: &str) -> Result<Option<FabricIdentity>, FabricStorageError> {
+            let read = self.inner.name_claim(name).await;
+            if !self.waited.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                self.read.wait().await;
+            }
+            read
+        }
+        async fn insert_name_claim(&self, identity: &FabricIdentity) -> Result<Option<FabricIdentity>, FabricStorageError> {
+            self.inner.insert_name_claim(identity).await
+        }
+        async fn remove_name_claim(&self, name: &str) -> Result<(), FabricStorageError> {
+            self.inner.remove_name_claim(name).await
+        }
+    }
+
+    /// CONTRACT (R-FN1: the fabric's (path, name) claim "is an insert-and-fail at the path level ... A
+    /// second fabric of the same name under that path is refused `NameHeld { by }`"): two Day-0
+    /// claims of one fabric name under one store_dir, each with its own root, both read the name free
+    /// before either writes. Exactly one wins; the other is refused naming the winner, and the index
+    /// row at `<store_dir>/fabrics/<name>` is the winner's. Must NOT happen: both answered written,
+    /// the later write replacing the earlier claim.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn two_claims_of_one_fabric_name_racing_at_the_read_leave_one_winner_and_refuse_the_other_naming_it() {
+        let store = tempdir().join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let read = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let fabric = |name: &str| FabricIdentity { fabric_id: FabricId::mint(), name: name.into() };
+        let (a, b) = (fabric("fabric1"), fabric("fabric1"));
+        let open = |id: &FabricIdentity| {
+            let (store, id, read) = (store.clone(), id.fabric_id.clone(), read.clone());
+            async move {
+                let root = crate::store_root::StoreRoot::open(&store, &id).unwrap();
+                let inner = FileFabricStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
+                ReadTogether { inner, read, waited: false.into() }
+            }
+        };
+        let (store_a, store_b) = (open(&a).await, open(&b).await);
+        let capture = crate::span_capture::Capture::new("rdm274-fabric-name-claim-race");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let (node_a, node_b) = (crate::model::NodeId::mint(), crate::model::NodeId::mint());
+        let (claim_a, claim_b) = tokio::join!(crate::admin::claim_fabric_name(&store_a, &a, &node_a), crate::admin::claim_fabric_name(&store_b, &b, &node_b));
+        let (claim_a, claim_b) = (claim_a.unwrap(), claim_b.unwrap());
+        let (winner, refused) = match (&claim_a, &claim_b) {
+            (Ok(FabricClaim::Written), Err(held)) => (&a, held),
+            (Err(held), Ok(FabricClaim::Written)) => (&b, held),
+            other => panic!("exactly one claim of fabric1 wins and the other is refused: {other:?}"),
+        };
+        assert_eq!(refused, &FabricNameHeld { name: "fabric1".into(), by: winner.fabric_id.clone() }, "the refused claim names the winner");
+        let spans = capture.named("rdm.node_admin.fabric.create.via-fabric-row");
+        assert_eq!(spans.len(), 2, "{spans:?}");
+        let mut outcomes: Vec<_> = spans.iter().map(|s| (s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("holder").cloned())).collect();
+        outcomes.sort();
+        assert_eq!(outcomes, vec![("name-held".to_string(), Some(winner.fabric_id.to_string())), ("row-written".to_string(), None)], "one claim's span is written, the other's names the refusal and the winner: {spans:?}");
+        for s in &spans {
+            eprintln!("span rdm.node_admin.fabric.create.via-fabric-row trace_id={} {:?}", s.trace_id, s.attributes);
+        }
+        let index: serde_json::Value = serde_json::from_slice(&std::fs::read(store.join(crate::store_root::FABRIC_NAMES).join("fabric1.json")).unwrap()).unwrap();
+        assert_eq!(index["record"]["fabric_id"].as_str(), Some(winner.fabric_id.to_string().as_str()), "the index row is the winner's: {index}");
     }
 
     fn tempdir() -> std::path::PathBuf {

@@ -562,9 +562,9 @@ impl FabricStorage for Through {
     async fn name_claim(&self, name: &str) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
         self.read().stores().boundaries.fabric.name_claim(name).await
     }
-    async fn put_name_claim(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<(), crate::fabric_storage::FabricStorageError> {
+    async fn insert_name_claim(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
         let w = self.write();
-        w.boundaries.fabric.put_name_claim(identity).await
+        w.boundaries.fabric.insert_name_claim(identity).await
     }
     async fn remove_name_claim(&self, name: &str) -> Result<(), crate::fabric_storage::FabricStorageError> {
         let w = self.write();
@@ -983,7 +983,7 @@ mod tests {
         assert_eq!(meshes.mesh(&before.mesh_id).await.unwrap(), None, "a read after the change answers the new provider's records, which do not hold the old one's");
         let identity = FabricIdentity { fabric_id: scope.fabric_id.clone(), name: "fabricafter".into() };
         fabric.put_fabric(&FabricRecord::new(identity.clone())).await.unwrap();
-        fabric.put_name_claim(&identity).await.unwrap();
+        assert_eq!(fabric.insert_name_claim(&identity).await.unwrap(), None, "the claim is inserted on the new provider");
         let mesh = MeshRecord::new(crate::model::MeshId::mint(), "meshafter");
         meshes.put_mesh(&mesh).await.unwrap();
         meshes.claim_mesh_name("meshafter", &mesh.mesh_id).await.unwrap().unwrap();
@@ -1052,8 +1052,8 @@ mod tests {
         async fn name_claim(&self, name: &str) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
             self.inner.name_claim(name).await
         }
-        async fn put_name_claim(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<(), crate::fabric_storage::FabricStorageError> {
-            self.inner.put_name_claim(identity).await
+        async fn insert_name_claim(&self, identity: &crate::fabric_storage::FabricIdentity) -> Result<Option<crate::fabric_storage::FabricIdentity>, crate::fabric_storage::FabricStorageError> {
+            self.inner.insert_name_claim(identity).await
         }
         async fn remove_name_claim(&self, name: &str) -> Result<(), crate::fabric_storage::FabricStorageError> {
             self.inner.remove_name_claim(name).await

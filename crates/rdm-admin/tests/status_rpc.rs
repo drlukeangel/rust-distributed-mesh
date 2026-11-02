@@ -634,8 +634,8 @@ impl FabricStorage for Refusing {
     async fn name_claim(&self, name: &str) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {
         self.fabric.name_claim(name).await
     }
-    async fn put_name_claim(&self, identity: &rdm_admin::fabric_storage::FabricIdentity) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.fabric.put_name_claim(identity).await
+    async fn insert_name_claim(&self, identity: &rdm_admin::fabric_storage::FabricIdentity) -> Result<Option<rdm_admin::fabric_storage::FabricIdentity>, rdm_admin::storage_error::StorageError> {
+        self.fabric.insert_name_claim(identity).await
     }
     async fn remove_name_claim(&self, name: &str) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.fabric.remove_name_claim(name).await
