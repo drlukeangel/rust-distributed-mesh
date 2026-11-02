@@ -338,7 +338,10 @@ impl FabricStates {
         let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-state-entered", node_path = %me.path, node_name = %me.name, fabric_id = %self.env.fabric_id, from = from.as_str(), to = next.as_str(), record = tracing::field::Empty, error = tracing::field::Empty, "otel.kind" = "internal");
         // The Fabric record holds the state the fabric-primary entered, rewritten whole by it, each move
         // an event (node-identity-and-state.md §2.8; `Caches::fabric_moved`).
-        let written: Result<Option<()>, String> = Ok(None);
+        let written = match self.env.records.status.get() {
+            Some(fold) => self.env.records.caches.update_fabric(&**fold.fabric(), &self.env.fabric_id, None, |r| r.state = next).await,
+            None => Err("this admin holds no fabric store".into()),
+        };
         match &written {
             Ok(Some(())) => span.record("record", "written"),
             Ok(None) => span.record("record", "no-fabric-record"),
