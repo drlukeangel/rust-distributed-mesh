@@ -3149,6 +3149,122 @@ mod tests {
 
     }
 
+    /// The `rdm.node_admin.node.update.via-row-status` spans in the order they open, each
+    /// `(status, outcome)`; the open of the one whose status is `held` waits, on its own thread,
+    /// for the cell's release, as a worker thread the operating system holds does.
+    struct RowStatusOpens {
+        held: &'static str,
+        at_open: std::sync::mpsc::SyncSender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+        opened: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    #[derive(Default)]
+    struct RowStatusFields {
+        status: String,
+        outcome: String,
+    }
+
+    impl tracing::field::Visit for RowStatusFields {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "outcome" { self.outcome = value.to_string(); }
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            match field.name() {
+                "status" => self.status = format!("{value:?}"),
+                "outcome" => self.outcome = format!("{value:?}").trim_matches('"').to_string(),
+                _ => {}
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RowStatusOpens {
+        fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _: &tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+            if attrs.metadata().name() != "rdm.node_admin.node.update.via-row-status" { return; }
+            let mut fields = RowStatusFields::default();
+            attrs.record(&mut fields);
+            if fields.status == self.held {
+                let _ = self.at_open.send(());
+                let _ = self.release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10));
+            }
+            self.opened.lock().unwrap().push((fields.status, fields.outcome));
+        }
+    }
+
+    /// CONTRACT (node-identity-and-state.md §2.5: a node record carries no revision; node-stop.md
+    /// step 5: the node's `Stopped` declaration and the stop stream's frames are applied whichever
+    /// first reaches the mesh-primary, and each frame after it leaves the row stopped; rdm#266): the
+    /// mesh-primary's `via-row-status` spans of one record follow the order its writes were made. The
+    /// stop stream's `connections-deleting` frame writes the row over `Stopping`, and the open of its
+    /// span is held on its thread (as the gate's loaded worker thread was, gate 7 2f76d5a5a) while the
+    /// node's `Stopped` declaration is taken. Either the frame's write is spanned before the
+    /// declaration's write begins (`ConnectionsDeleting` written, then `Stopped` written), or the
+    /// declaration writes first and the frame finds the row stopped (`Stopped` written, then
+    /// `ConnectionsDeleting` unchanged); the record holds `Stopped`. Must NOT happen: `Stopped`
+    /// written, then `ConnectionsDeleting` written, over a record that holds `Stopped`: the spans
+    /// reading as a frame that wrote the row back from stopped when it did not.
+    // @feature: node-records
+    #[test]
+    fn a_stop_frames_row_write_and_the_nodes_stopped_declaration_are_spanned_in_the_order_they_write_the_record() {
+        rdm_transport::enable_callsites();
+        let (at_open_tx, at_open) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let opened: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let d = tracing::Dispatch::new(tracing_subscriber::registry().with(RowStatusOpens { held: "ConnectionsDeleting", at_open: at_open_tx, release: Mutex::new(release_rx), opened: opened.clone() }));
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(3).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
+
+        let mut admin = node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
+        admin.mesh = "mesh1".into();
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let rpc = node(rdm_core::PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", NodeKind::RpcNode);
+        let incarnation = rpc.incarnation_id.clone().unwrap();
+        let fabric_id = FabricId::mint();
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
+            fabric: crate::model::Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: crate::model::ScopeStatus::Ready, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![admin.clone(), rpc.clone()],
+        }));
+        let store: Arc<crate::storage::MemoryNodesStorage> = Arc::default();
+        let door = Arc::new(mesh_primary_with_store(&admin, topology, fabric_id, store.clone()));
+        let publisher: StoppedPublisher = Arc::new(|_, _| Box::pin(async {}));
+        let _ = door.stopped.set(publisher);
+        let stop = DeclaredOperation { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &rpc.node_id) };
+        rt.block_on(async {
+            claimed(&store, &[&rpc]).await;
+            // The stop's acknowledgement: stopping, its span opened at once.
+            door.put_status(&rpc.node_id, &incarnation, &rpc.name, crate::model::NodeStatus::Stopping).await.unwrap();
+        });
+        opened.lock().unwrap().clear();
+
+        // The stream's connections-deleting frame; the open of its span is held.
+        let frame = rt.spawn({
+            let (door, rpc, incarnation) = (door.clone(), rpc.clone(), incarnation.clone());
+            async move { door.put_status(&rpc.node_id, &incarnation, &rpc.name, crate::model::NodeStatus::ConnectionsDeleting).await }
+        });
+        at_open.recv_timeout(std::time::Duration::from_secs(10)).expect("the frame's row-status span is about to open");
+        // The node's Stopped declaration, while the frame's span is held.
+        let mut declared = rt.spawn({
+            let (door, rpc, stop) = (door.clone(), rpc.clone(), stop.clone());
+            async move { door.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation: Some(stop) }).await }
+        });
+        let early = rt.block_on(async { tokio::time::timeout(std::time::Duration::from_millis(500), &mut declared).await });
+        release.send(()).unwrap();
+        rt.block_on(frame).unwrap().unwrap();
+        let declared = match early { Ok(done) => done, Err(_) => rt.block_on(declared) };
+        assert_eq!(declared.unwrap(), R::Applied);
+
+        let stored = rt.block_on(crate::storage::NodesStorage::node(&*store, &rpc.node_id)).unwrap().expect("the record is held").status;
+        let at = |status: &str, outcome: &str| (status.to_string(), outcome.to_string());
+        let opened = opened.lock().unwrap().clone();
+        assert_eq!(stored, crate::model::NodeStatus::Stopped, "the record holds stopped: {opened:?}");
+        assert!(
+            [vec![at("ConnectionsDeleting", "written"), at("Stopped", "written")], vec![at("Stopped", "written"), at("ConnectionsDeleting", "unchanged")]].contains(&opened),
+            "the row-status spans of the record follow the order of its writes: {opened:?}"
+        );
+    }
+
     /// The status authority of `admin`, with `topology` as its view and `status` as its status store.
     /// Each node's record as its create's claim leaves it in the store: a join is accepted for a node
     /// that has one, and its mesh and kind are read from it.
