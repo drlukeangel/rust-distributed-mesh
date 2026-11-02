@@ -39,13 +39,13 @@ Every gap has a BUILD owner. Existing behavior used as a dependency is source-ve
 | R1 | Code selects globally unique node IDs first; location arguments carry separate immutable path and mutable name, with explicit mesh/type metadata | BUILD | `crates/rdm-core/src/path.rs:91` stores mesh/kind/ordinal/label/old; `:228` serializes one string | e1 |
 | R2 | A late predecessor property write cannot hide the successor | BUILD | `crates/rdm-admin/src/storage.rs:605` exposes node lookup, `:609` node_at, `:617` index_path, `:625` name_claim | e2 |
 | R3 | A node persists its properties directly; success follows durable persistence | BUILD | `docs/architecture/lifecycles/node-config-update.md:33` sends the own update upward; `crates/rdm-test/tests/node_own_config.rs:22` asserts that route | e3 |
-| R4 | Lifecycle records are keyed by subject node ID and writer node ID/incarnation; flags are not counters | BUILD | `crates/rdm-node/src/nodes_storage.rs:200` has one combined NodeRow; proposal R-NR2/R-NR3 specify the split | e2, e3 |
-| R5 | Readers select the election's current primary, never the most recently written lifecycle record | BUILD | `crates/rdm-admin/src/atlas.rs:874` reads node_at; proposal R-NR2 requires election resolution then exact record read | e3, e5 |
+| R4 | One node record keyed by node ID, append-only, latest line current: the node writes its properties, its mesh-primary writes status and role flags; no writer in the key, no author field, flags not counters (Q323) | BUILD | `NodeLifecycle` in `rdm-node` `node_records` is keyed by writer birth today; proposal R-NR2 as Q323 rewrote it | e2, e3 |
+| R5 | Readers read the node record's latest line at the node ID; no current-writer resolution (Q323) | BUILD | `current_record.rs` resolves a writer today; proposal R-NR2 as Q323 rewrote it | e3, e5 |
 | R6 | A regained primary cannot overtake an unresolved earlier write to its own lifecycle key | BUILD | Proposal R-NR2 and approved `4dbf01eba`; current provider methods promise durability, not this cancellation ordering (`storage.rs:613`) | e0, e3 |
 | R7 | Builds override all entry-owned properties of new and existing nodes through appropriate operations | BUILD | `crates/rdm-admin/src/accepted.rs:1042` properties_owed; `node_rows.rs:1321` seeds properties; proposal R-NR5 | e4 |
 | R8 | A lost apply reply or executor crash cannot make the same Build overwrite a later update | BUILD | Proposal R-NR5 uses receipt-after-reply; `accepted.rs:1043` checks completed receipts; fork F1 | e4 |
 | R9 | A stopped-node update survives restart, and Ready cannot clear a newer unapplied update | BUILD | `node-config-update.md:23` acknowledges durable writes for stopped nodes; proposal R-NR5 adds owed map but clears on Ready; F2 | e4 |
-| R10 | Takeover reconstructs valid lifecycle evidence without promoting a late predecessor write | BUILD | Proposal R-NR8 reads earlier records and observations; F3; `atlas.rs:500` currently folds records | e3 |
+| R10 | Removed (Q323): no takeover preparation; the successor installs the election's result the call carries and writes its nodes' records from then on (node-primary-update.md as main has it) | — | 415f1caef and e63570305 reverted 2026-11-01 | — |
 | R11 | node.get and acceptance read current records; missing or failed evidence never becomes a fabricated live/dead result | BUILD | `docs/architecture/node-rpc-envelope.md:346` currently serves node.get from atlas; `atlas.rs:877` raw path lookup | e5 |
 | R12 | Config, tags, ports, executable, storage, placement and identity have explicit owners and restart semantics | BUILD | `crates/rdm-node/src/nodes_storage.rs:200` and proposal R-NR3 field table; allocation and issuer facts must enter one lifecycle write path | e2, e3, e4 |
 | R13 | File and application providers implement the same split-record contract; storage migration includes both record kinds | BUILD | `crates/rdm-admin/src/storage.rs:596` NodesStorage; `crates/rdm-node/src/storage_backend.rs`; i149 moves topology stores | e2, e6 |
@@ -64,7 +64,7 @@ requires the exact-text approval and coordinated landing recorded in e7.
 |---|---|---|---|---|
 | F1: lost apply acknowledgement | `crates/rdm-core/src/status.rs` ApplyNodeConfig and `crates/rdm-client/src/calls.rs:373` config_apply; current request carries revision | `node-config-update.md:24`: completion after Applied or AlreadyApplied; current installs ordered by revision at `:14` | Proposal R-NR5 “written when the node's completion arrives”; R-NR6 permits repeated map writes | Removing revision and recording only the later Build receipt leaves apply → lost reply → local update → repeated apply unresolved |
 | F2: update during startup | `node-config-update.md:23` stopped update completes after durable row write | `rg -n 'stopped|durable|Applied' docs/architecture/lifecycles/node-config-update.md`; `:26` next start receives config | Proposal R-NR5 “clears the owed map on the node's ready” | Environment A can be read before acknowledged update B; Ready for A cannot prove B applied |
-| F3: source of takeover state | `atlas.rs:500` folds earlier records; `:874` composes admission state | Q109 requires all readers to apply the same fold; Q197 requires operations as action evidence | Proposal R-NR8 “predecessor's records ... join reports, the digest” | An old mutable record can be changed after supersession; copying it under the successor's key would promote stale state |
+| F3: source of takeover state | Closed by Q323 (Luke, 2026-11-01): no takeover preparation, no frozen snapshot, no election record; R10 removed |
 
 **F1 disposition:** A is implemented in the property-writer increment: persist config, tags and
 `PropertyApplication(build_id, semantic entry operation)` atomically at the exact node; attempts
@@ -76,7 +76,7 @@ from node application.
 
 **F2 arms:** A: identify each owed update and clear only the one acknowledged as applied; B: serialize startup with all incoming property commands, retaining their obligations; X: equivalent ordering proof. Recommend A, using existing operation identity where sufficient, not a row revision. e4 must account for config and tag operations, a second update during startup, re-birth and caller cancellation.
 
-**F3 arms:** A: reconstruct from durable committed lifecycle operations/receipts; B: use a stable handover snapshot with an explicit committed boundary; X: equivalent provenance proof. Recommend A where existing receipts cover the fields; e3 must name any missing evidence and implement its source rather than guess from gossip. This is required for correctness but not yet approval of a new storage schema.
+**F3:** closed by Q323; no arms remain.
 
 The exact architecture deltas implementing these answers require approval before landing, not before preparing code and proofs. e0 reads the positive surfaces and records one numbered ruling packet per unresolved choice under the existing workflow. No speculative framework is authorized by this PRD.
 
@@ -753,7 +753,7 @@ exhaustion. Architect 1 reviewed these source changes; their regression tests ha
 - **Goal → gap:** deliver R3–R6,R10,R12; source/design anchor: `node-config-update.md:33; proposal R-NR3/R-NR6/R-NR8; atlas.rs:500`.
 - **Detailed requirements / stories:**
   - **i150.e3.s1 — BUILD:** Bind node-owned writer and one serialized lifecycle writer; route allocation and fabric-primary-flag facts through that writer; explicitly assign fabric recovery ownership.
-  - **i150.e3.s2 — BUILD:** Resolve existing election result then writer-birth key; keep flags boolean; make missing current records unavailable; settle F3 source evidence and implement takeover.
+  - **i150.e3.s2 — BUILD (as Q323 rewrote it):** `NodeLifecycle` keyed by `node_id` alone, no `writer` in the key and no author field; `current_record.rs` resolver removed; `lifecycle_record` loses its writer argument; `views.rs`, `atlas.rs`, `node_rows.rs` read the latest line at the node id; "missing current-writer record" answers become "no record yet"; `durable format moved` in the commit; the `node_records` cells follow. No takeover preparation, no election record.
   - **i150.e3.s3 — BUILD:** Retain ownership of unresolved provider writes across timeout; same-birth regain cannot overtake earlier puts. Audit process-exit/provider-late-commit behavior rather than relying on task locks alone.
   - **i150.e3.s4 — BUILD:** Remove upward own-property route and copied rows only after new writer/reader paths and takeover controls pass.
 - **Spans:** assert the applicable production/control spans in the OTLP table; add the exact emit-site mapping and mandatory attributes before GREEN. e0 registers capture, e7 verifies retrieved traces.

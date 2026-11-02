@@ -83,19 +83,18 @@ both as separate properties.
 Durable format moved: node and connection records, digest names, JoinNode and
 launch inputs retain the two fields separately.
 
-**R-NR2. The node record is keyed by node.id; the lifecycle record by node.id and its writer's
-birth; the claim is the only record keyed by the pair.** A node id follows the instance
-(node-identity-and-state.md:132), so a record is a birth's record. A lifecycle record of node X is
-keyed `(X's node.id, the writing primary's node.id and incarnation)`, so the predecessor's and the
-successor's writes of one node are two records, and a predecessor's delayed write changes only its
-own; it cannot destroy the successor's value. No node or lifecycle-write counter is introduced (Luke, 2026-10-31:
+**R-NR2 (Q323, Luke 2026-11-01). One node record, keyed by node.id; the claim is the only record
+keyed by the pair.** A node id follows the instance (node-identity-and-state.md:132), so a record is a
+birth's record. The record is append-only and its latest line is current: the node writes its own
+properties into it, and its mesh-primary writes its status and role flags into it. No writer is in the
+key and no author field is in the record: the stored line already carries its writer's operation
+identity (storage.md §2). No node or lifecycle-write counter is introduced (Luke, 2026-10-31:
 "is_primary is 0 or 1, not a counter"): `is_primary` and `is_fabric_primary` are flags, and the role
-is the election's, which the record follows and never makes (node-primary-update.md:32). A reader
-resolves the mesh's current primary as RDM resolves it today, from the election's result it holds
-(the recorded primaries, `boot.rs:1188`; the view), never by comparing records, then reads
-`(node.id, that primary's birth)`; a node with no record under the current primary is
-**unavailable**, never the predecessor's value and never an invented status. The same birth losing
-and regaining the role reuses its lifecycle keys. Its takeover writes follow all earlier writes
+is the election's, which the record follows and never makes (node-primary-update.md). A reader reads
+the latest line at the node id; a node with no record yet has no properties yet. A superseded
+primary's late write is a case no flame has shown; it is not built against (Luke, 2026-11-01: no
+escape hatch without proof) and gets its own ruling the day it shows. The same birth losing
+and regaining the role writes the same record. Its takeover writes follow all earlier writes
 through the same serialized write path (R-NR6). The takeover cannot complete while an earlier
 write's outcome remains unresolved. An expired client wait does not prove that the provider can
 no longer commit that write. Election timing supplies no storage-ordering guarantee. The node
@@ -248,22 +247,16 @@ commit later. An error can still mean that an already committed write lost its a
 the next operation resolves the exact durable value. An adapter whose append remains pending after
 a transport deadline retains that original append until its outcome resolves. It does not retry it
 or treat the deadline as absence. Providers do not select primaries or order competing writers.
-Different primary births write different lifecycle keys; reuse by the same birth follows R-NR2.
+Every primary birth writes the one record at the node id (R-NR2).
 Build replay safety is the atomic application evidence in R-NR5, not merely replaying a whole map.
 
-**R-NR8. Takeover.** Compute the candidate from the existing election, then prepare its lifecycle
-state before installing or publishing the role or opening command admission. Freeze the accepted
-takeover evidence once; finish the candidate birth's earlier issued writes and persist each required
-lifecycle record under that writer birth through the same retained serialized path. Retry uses the
-frozen evidence rather than re-reading a mutable predecessor value and promoting it as current.
-Only completed preparation exposes the new installed role and its lifecycle flags. An incomplete
-preparation exposes no new acting primary. The existing election result and its revision are
-persisted independently from those flags. Missing current-writer lifecycle evidence is unavailable,
-never a fallback to another writer. The exact stable evidence boundary and interrupted-takeover
-proof remain required i150.e3 acceptance work. A read begun before a primary change can still be stale: the
-command it produces keeps its exact target and the admission checks every command has at its
-execution, as today (build.md:177, workflow input carries the exact birth). This design prevents
-the destructive overwrite; it does not make a read and a later action one atomic operation.
+**R-NR8 (Q323, Luke 2026-11-01). Takeover.** There is no takeover preparation. The successor
+installs the election's result the call carries and is primary from that moment
+(node-primary-update.md, as main has it); as mesh-primary it writes status and role flags into its
+nodes' records from then on. No election record is kept beside the row and no frozen snapshot is
+made. A read begun before a primary change can still be stale: the command it produces keeps its
+exact target and the admission checks every command has at its execution, as today (build.md:177,
+workflow input carries the exact birth).
 
 **R-NR7. What goes.** `index_path`, `node_at`, `record_at` and its rename guard, the `renamed()`
 second lookups (`runner.rs:304`, `node_rows.rs:1321`), `IndexMoves::path`, the Q308 fold in

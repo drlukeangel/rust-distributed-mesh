@@ -13,12 +13,11 @@ serves its own scope or forwards to the fabric-primary. The fabric-primary's own
 topology and in-flight facts remain its control state. Node rows and property maps are not copied
 into an atlas to serve `node.get` or acceptance.
 
-A current-pair lookup resolves the path/name claim to a node ID. The reader obtains the subject's
-explicit mesh identity, selects that mesh's installed primary from the existing election result,
-and point-reads the lifecycle record under that writer's node ID and incarnation. Properties are
-read separately at the subject node ID. A missing current-writer record is unavailable; neither
-another writer's value nor a raw last-written-path index supplies a fallback. Record read errors
-remain named errors, not empty results or fabricated lifecycle status.
+A current-pair lookup resolves the path/name claim to a node ID. The reader reads the node's record
+at that node ID: one record per node, append-only, its latest line current, the node's own properties
+and the status and role flags its mesh-primary writes in the same record (Q323). A node that has not
+written yet has no properties yet. A raw last-written-path index supplies no fallback. Record read
+errors remain named errors, not empty results or fabricated lifecycle status.
 
 `node.get` materializes records and applies its complete filter in stable pair/ID order. Historical
 records, including Deleted nodes, remain queryable by their own IDs and matching properties; a
@@ -67,7 +66,7 @@ The matching rules:
 - **Nothing matching** is `[]`, a mesh the fabric-primary does not hold included. Every matching row is
   answered, streamed in frames on [op 0x23](node-rpc-envelope.md#read-op-0x23-rdm) (Q285); a row that fits no
   frame alone is `ReadOverBound` (`RESOURCE_EXHAUSTED`) naming it, and the read fails.
-- **Status:** the selected lifecycle writer's recorded status, declarations and committed operation
+- **Status:** the node record's latest status, declarations and committed operation
   effects. Sending an unacknowledged command moves nothing. Silence is the existing observer-inferred
   fact, never proof of exit. Gossip does not make a record current or complete an operation.
 - **`node.connection.get`:** answered by the exact birth from its own connections log, not from the atlas:
