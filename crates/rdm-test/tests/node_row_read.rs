@@ -144,13 +144,16 @@ fn a_nodes_start_opens_no_nodes_store_and_its_first_read_does() {
         admin.deployed(&launch, &key);
         let gw1 = node::start(&launch, |b, _| b).await.expect("gw1 starts over a nodes store it cannot fold");
         assert!(nodes_folds(&seen).is_empty(), "gw1's start folds no nodes.jsonl (Q227)");
+        // The start appended gw1's own part of its record after the line, reading none of it (Q333).
+        let started = std::fs::read_to_string(&file).unwrap();
+        assert!(started.starts_with(&line), "the start leaves the line it cannot read as it is");
 
         // A read by id folds the records; a (path, name) resolves through its name claim first, and
         // a name no node claims reads no record (node-identity-and-state.md §2).
         let refused = gw1.node_row(NodeId::mint()).await.expect_err("the first read folds the store and meets the line");
         assert!(matches!(&refused, StorageError::Unrecognised { file: f, .. } if f.ends_with("nodes.jsonl")), "refused by name, naming the file: {refused:?}");
         assert_eq!(nodes_folds(&seen), vec![Some(READ.to_string())], "the one fold is the read's");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), line, "the read leaves the file as it is");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), started, "the read leaves the file as it is");
 
         gw1.stop().await;
         drop(admin);

@@ -326,7 +326,8 @@ mod tests {
     }
 
     /// CONTRACT (the store root's births are read off the Node records: each record's newest birth gives
-    /// the node id, name, endpoint, address, incarnation and primaries its mesh's writer recorded on it;
+    /// the node id, name, incarnation and primaries its mesh's writer recorded on it, and the endpoint and
+    /// address the node wrote in its own part of its record at that birth (Q333);
     /// node-identity-and-state.md §2.7, the record; elections §3: the recorded primary is an election
     /// input), on either backend. Every read a restart makes of the births the store holds answers from
     /// the records: the clean-dir refusal (a birth the records name to reach is a durable topology; an
@@ -356,6 +357,10 @@ mod tests {
             let mut mesh2 = MeshRowsWriter::new("mesh2.admin.1", "mesh2", mesh_id("mesh2"), nodes.clone(), meshes.clone(), Default::default());
             mesh1.sweep(&[admin.clone(), rpc.clone(), deleted.clone()], &writing(&["mesh1"]), |_| false).await;
             mesh2.sweep(std::slice::from_ref(&other), &writing(&["mesh2"]), |_| false).await;
+            // Each node that started wrote its own part, its address in it; mesh1.rpc.2 has not yet.
+            for d in [&admin, &rpc, &deleted, &other] {
+                own_part(&*nodes, d).await;
+            }
             crate::node_rows::write_deleted(&*nodes, &crate::node_rows::WrittenRows::default(), &deleted.node.name, &deleted.node.node_id).await.ok().expect("the deleted node's record");
             // The live records of every mesh: no Deleted one.
             let live: std::collections::BTreeSet<PathName> = crate::storage::live_records(&*meshes, &*nodes, "mesh1").await.unwrap().into_iter().map(|r| r.name.clone()).collect();
@@ -367,7 +372,7 @@ mod tests {
                 .into_iter()
                 .map(|d| crate::reenter::MapNode { mesh: d.node.mesh.clone(), kind: d.node.kind, node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone(), transition: None, ready: false, data_dir: None, admin_api_base: None })
                 .collect();
-            assert_eq!(births, want, "{backend}: each live record's newest birth at the address its writer recorded, every mesh's; no Deleted record's, none with no address");
+            assert_eq!(births, want, "{backend}: each live record's newest birth at the address its node wrote, every mesh's; no Deleted record's, none with no address");
             // The durable map on an inherited root.
             assert_eq!(crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&births)).await.unwrap(), want, "{backend}: the durable map is the births the records hold");
             // The recorded primaries, the own one included.
@@ -384,7 +389,7 @@ mod tests {
     /// restart replaced, the newest last): a birth that left is no seed and no primary once its
     /// record's next write lands, on either backend. A restarted node's record takes its new birth's
     /// facts as its newest: the replaced birth is no seed and its primaries are no election input, and
-    /// once the writer records the new birth's address that birth is the seed. A deleted node's record
+    /// once the node writes the new birth's address in its own part that birth is the seed. A deleted node's record
     /// is `Deleted`: its address is not read, and its recorded primary stays an election input until a
     /// newer revision supersedes it (elections §3), as a lost primary's does through fabric recovery.
     /// Must NOT happen: a replaced or a deleted birth handed to a restart as a node to reach, or a
@@ -400,6 +405,9 @@ mod tests {
             let written = crate::record_cache::Caches::default();
             let mut writer = MeshRowsWriter::new("100000000000", "mesh1", mesh_id("mesh1"), nodes.clone(), meshes.clone(), written.clone());
             writer.sweep(&[admin.clone(), rpc.clone()], &writing(&["mesh1"]), |_| false).await;
+            for d in [&admin, &rpc] {
+                own_part(&*nodes, d).await;
+            }
             assert_eq!(births_named(&*meshes, &*nodes).await.len(), 2, "{backend}: both births are seeds");
             assert_eq!(primaries_recorded(&*meshes, &*nodes).await, 2, "{backend}: both primaries are recorded");
             // mesh1.rpc.1 restarts: its record's next write is its new birth's declared state.
@@ -408,8 +416,9 @@ mod tests {
             assert_eq!(births_named(&*meshes, &*nodes).await, vec![admin.node.node_id.clone()], "{backend}: the replaced birth is no seed");
             assert_eq!(primaries_recorded(&*meshes, &*nodes).await, 1, "{backend}: the replaced birth's primary is no election input");
             writer.sweep(&[admin.clone(), restarted.clone()], &writing(&["mesh1"]), |_| false).await;
+            own_part(&*nodes, &restarted).await;
             let seeds = rows_writer::recorded_births(&*meshes, &*nodes, "mesh1").await.unwrap();
-            assert!(seeds.iter().any(|b| b.node_id == rpc.node.node_id && b.incarnation == restarted.node.incarnation), "{backend}: the new birth is the seed once its address is recorded: {seeds:?}");
+            assert!(seeds.iter().any(|b| b.node_id == rpc.node.node_id && b.incarnation == restarted.node.incarnation), "{backend}: the new birth is the seed once the node writes its address: {seeds:?}");
             // mesh1.admin.1 is deleted: its record is Deleted.
             crate::node_rows::write_deleted(&*nodes, &written.nodes, &admin.node.name, &admin.node.node_id).await.ok().expect("the deleted node's record");
             assert_eq!(births_named(&*meshes, &*nodes).await, vec![rpc.node.node_id.clone()], "{backend}: the deleted node's birth is no seed");
@@ -424,7 +433,7 @@ mod tests {
     /// that mesh: the Mesh row is its own primary's (or the fabric-primary's `create-mesh`). Once that
     /// mesh has a primary again, the fabric-primary writes none of its records. On either backend.
     #[tokio::test]
-    async fn the_fabric_primary_writes_the_addresses_of_a_mesh_with_no_primary_onto_its_records() {
+    async fn the_fabric_primary_writes_the_primaries_of_a_mesh_with_no_primary_onto_its_records() {
         for (backend, nodes, meshes) in record_stores("acting-addresses").await {
             let fp = primaries(digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready), Some(1), Some(1));
             let orphan = primaries(digest(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Ready), Some(4), None);
@@ -435,11 +444,10 @@ mod tests {
             let mut writer = MeshRowsWriter::new("100000000000", "mesh1", mesh_id("mesh1"), counting.clone(), meshes.clone(), Default::default());
             writer.sweep(&[fp.clone(), orphan.clone()], &writing(&["mesh1", "mesh2"]), |_| false).await;
             let b = newest_of(&*nodes, &orphan).await.unwrap_or_else(|| panic!("{backend}: mesh2's member's record carries its birth"));
-            assert_eq!((b.endpoint_id.as_ref(), b.transport_addr, b.is_primary), (Some(&orphan.node.endpoint_id), Some(orphan.node.transport_addr), Some(4)), "{backend}: the acting primary writes the address and the primaries its view holds");
+            assert_eq!(b.is_primary, Some(4), "{backend}: the acting primary writes the primaries its view holds");
             assert_eq!(nodes.node(&orphan.node.node_id).await.unwrap().and_then(|r| r.mesh_id), Some(mesh_id("mesh2")), "{backend}: the record names its own mesh's id");
             let named: Vec<String> = meshes.meshes().await.unwrap().into_iter().map(|m| m.name).collect();
             assert_eq!(named, vec!["mesh1".to_string()], "{backend}: the acting primary claims no name of the mesh it acts for");
-            assert!(rows_writer::recorded_births(&*meshes, &*nodes, "mesh2").await.unwrap().iter().any(|m| m.node_id == orphan.node.node_id), "{backend}: no reader is left without it");
             // mesh2 has a primary again: the fabric-primary writes none of its records.
             let before = counting.1.load(std::sync::atomic::Ordering::SeqCst);
             let moved = MeshDigest { node: MeshNode { transport_addr: "127.0.0.1:41999".parse().unwrap(), ..orphan.node.clone() }, ..orphan.clone() };
@@ -469,7 +477,7 @@ mod tests {
             let before = counting.1.load(std::sync::atomic::Ordering::SeqCst);
             writer.sweep(&[fp.clone(), held.clone(), member.clone()], &writing(&["mesh1", "mesh2"]), |_| false).await;
             assert_eq!(counting.1.load(std::sync::atomic::Ordering::SeqCst), before, "{backend}: no record of mesh2, whose mesh-primary the view holds, is written");
-            assert!(newest_of(&*nodes, &held).await.and_then(|b| b.transport_addr).is_none(), "{backend}: mesh2's primary's record is its own to write");
+            assert!(newest_of(&*nodes, &held).await.and_then(|b| b.is_primary).is_none(), "{backend}: mesh2's primary's record is its own to write");
         }
     }
 
@@ -603,6 +611,12 @@ mod tests {
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
         }
+        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_properties(record).await
+        }
+        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+            self.0.properties(node_id).await
+        }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.put_node(row).await
@@ -644,6 +658,12 @@ mod tests {
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
         }
+        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_properties(record).await
+        }
+        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+            self.inner.properties(node_id).await
+        }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
                 self.refused.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -667,6 +687,15 @@ mod tests {
     /// The record of `d`'s node as its create's claim writes it, before any address is on it.
     async fn claimed(nodes: &dyn crate::storage::NodesStorage, d: &MeshDigest) {
         crate::node_rows::write_record(nodes, &crate::storage::NodeRow::new(d.node.name.clone(), d.node.mesh.clone(), d.node.kind, d.node.node_id.clone(), NodeStatus::Pending)).await.unwrap().unwrap();
+    }
+
+    /// `d`'s own part of its record (Q333): its address, as its own writer puts it at its start.
+    async fn own_part(nodes: &dyn crate::storage::NodesStorage, d: &MeshDigest) {
+        nodes.put_properties(&rdm_node::node_records::NodeProperties {
+            birth: rdm_node::node_records::RecordBirth { node_id: d.node.node_id.clone(), incarnation_id: d.node.incarnation.clone() },
+            config: Default::default(), tags: Default::default(),
+            endpoint_id: Some(d.node.endpoint_id.clone()), transport_addr: Some(d.node.transport_addr), listeners: Vec::new(), app_types: None, held: Default::default(),
+        }).await.unwrap();
     }
 
     /// The newest birth `nodes` holds on `d`'s node's record, when that birth is `d`'s.
@@ -708,7 +737,7 @@ mod tests {
         let (births, primaries) = (*digest_view.birth_changes().borrow(), *digest_view.primaries.subscribe().borrow());
         refusing.refusing.store(false, std::sync::atomic::Ordering::SeqCst);
         tokio::time::timeout(Duration::from_secs(30), async {
-            let addressed = async |d: &MeshDigest| newest_of(&*refusing.inner, d).await.is_some_and(|b| b.transport_addr.is_some());
+            let addressed = async |d: &MeshDigest| newest_of(&*refusing.inner, d).await.is_some_and(|b| b.is_primary.is_some());
             while !(addressed(&admin).await && addressed(&rpc).await) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -718,7 +747,6 @@ mod tests {
         assert_eq!((*digest_view.birth_changes().borrow(), *digest_view.primaries.subscribe().borrow()), (births, primaries), "no birth or primary changed while the rows were owed");
         let row = async |d: &MeshDigest| newest_of(&*refusing.inner, d).await.expect("the member's record carries its birth");
         let (a, r) = (row(&admin).await, row(&rpc).await);
-        assert_eq!((a.endpoint_id.as_ref(), a.transport_addr), (Some(&admin.node.endpoint_id), Some(admin.node.transport_addr)), "the mesh-primary's own record carries its birth's address");
         assert_eq!((a.is_primary, a.is_fabric_primary), (Some(3), None), "the mesh-primary's own row records is_primary at its revision");
         assert_eq!((r.is_primary, r.is_fabric_primary), (Some(2), None), "the rpc node's row records is_primary at its revision");
         assert_eq!(refusing.inner.node(&rpc.node.node_id).await.unwrap().and_then(|r| r.mesh_id), Some(mesh_id("mesh1")), "the record names its mesh by id");
@@ -808,7 +836,7 @@ mod tests {
     /// writes no record.
     #[cfg(feature = "file-backend")]
     #[tokio::test]
-    async fn a_meshs_member_addresses_and_mesh_row_are_written_by_its_primary_alone_on_the_shared_root() {
+    async fn a_meshs_member_records_and_mesh_row_are_written_by_its_primary_alone_on_the_shared_root() {
         let d = crate::test_support::tempdir("addresses-ladder");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
@@ -827,8 +855,12 @@ mod tests {
         let mut qw = MeshRowsWriter::new("200000000000", "mesh1", mesh_id("mesh1"), q_nodes.clone(), q_meshes.clone(), Default::default());
         let (primary, not_primary) = (writing(&["mesh1"]), writing(&[]));
         tokio::join!(pw.sweep(&held, &primary, |_| false), qw.sweep(&held, &not_primary, |_| false));
+        // Each node writes its own part, its address in it (Q333).
+        for m in [&p, &q, &rpc, &other] {
+            own_part(&*claims, m).await;
+        }
         for m in [&p, &q, &rpc] {
-            assert_eq!(newest_of(&*claims, m).await.and_then(|b| b.transport_addr), Some(m.node.transport_addr), "mesh1's primary writes {}'s address", m.node.node_id);
+            assert!(newest_of(&*claims, m).await.is_some(), "mesh1's primary writes {}'s birth on its record", m.node.node_id);
         }
         assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), 3, "mesh1's primary writes its three members' records");
         assert_eq!(newest_of(&*claims, &other).await, None, "mesh1's primary writes nothing of mesh2's");
@@ -839,6 +871,7 @@ mod tests {
         crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &rpc.node.name, &rpc.node.node_id).await.ok().expect("the replaced node's record is Deleted");
         let recovered = digest(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, MemberStatus::Ready);
         claimed(&*claims, &recovered).await;
+        own_part(&*claims, &recovered).await;
         let held = vec![p.clone(), q.clone(), recovered.clone(), other.clone()];
         let before = p_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
         tokio::join!(pw.sweep(&held, &not_primary, |_| false), qw.sweep(&held, &primary, |_| false));
@@ -1340,6 +1373,9 @@ mod tests {
         // The removed mesh's admin's node.delete wrote its record Deleted; the recreated mesh's admin claimed the name.
         crate::node_rows::write_deleted(&*claims, &crate::node_rows::WrittenRows::default(), &a_admin.node.name, &a_admin.node.node_id).await.ok().expect("the removed mesh's admin's record is Deleted");
         claimed(&*claims, &b_admin).await;
+        // Each node writes its own part, its address in it (Q333).
+        own_part(&*claims, &a_admin).await;
+        own_part(&*claims, &b_admin).await;
         let mut bw = MeshRowsWriter::new("mesh2.admin.1", "mesh2", recreated.clone(), b_nodes.clone(), meshes.clone(), Default::default());
         bw.sweep(std::slice::from_ref(&b_admin), &writing(&["mesh2"]), |_| false).await;
         let row = crate::storage::MeshStorage::mesh_named(&*meshes, "mesh2").await.unwrap();
@@ -1429,6 +1465,12 @@ mod tests {
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
         }
+        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_properties(record).await
+        }
+        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+            self.0.properties(node_id).await
+        }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_node(row).await
         }
@@ -1472,6 +1514,12 @@ mod tests {
         }
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
+        }
+        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_properties(record).await
+        }
+        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+            self.inner.properties(node_id).await
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
@@ -1851,7 +1899,7 @@ mod tests {
         crate::fabric_storage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
         // The exited birth's node record stays in the store, Deleted (a delete appends its status, never removes it).
         let nodes_storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let row = crate::storage::NodeRow { replacement_from: None, kind: NodeKind::RpcNode, mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: NodeKind::RpcNode, mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         crate::node_rows::write_record(&*nodes_storage, &row).await.unwrap().unwrap();
         let recovery = RecoverySubmitter {
             me: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
@@ -2856,27 +2904,34 @@ mod tests {
     /// CONTRACT (R-MN1: a mesh removal deletes every roster birth, and a mesh created again under
     /// the name is a new mesh; mesh-delete.md step 7: at mesh-left the fabric-primary is the acting
     /// primary of a mesh that has none left, and deleted births resolve Gone; R14 item 2: a mesh's
-    /// records are its primary's rows): mesh-left takes the address and primaries of every birth its
-    /// proof set names off its node's record, so the stored map the fabric-primary answers a recreated
-    /// mesh's first admin with names none of them; another mesh's record is untouched. Must NOT happen:
+    /// records are its primary's rows; mesh-delete.md "Rows": each member's row deleted by its
+    /// node.delete): mesh-left takes the primaries of every birth its proof set names off its node's
+    /// record (the address is the node's own part of the record, Q333), so neither the stored map the
+    /// fabric-primary answers a recreated mesh's first admin with nor an election names any of them;
+    /// another mesh's record is untouched. Must NOT happen:
     /// mesh_identity::canonical_ids at :208 (trace a6f24e5914ac3658d302079ddb0c28f0): the recreated
     /// mesh2.admin.1's entry sweep pings the removed mesh's births (via-entry-sweep-no-reply), handed by
     /// the maker's stored map from addresses nobody took off (rdm.mesh.topology.serve.via-read stored 1,
     /// stored_nodes 5).
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn mesh_left_takes_the_address_of_every_birth_its_proof_set_names_off_its_record() {
+    async fn mesh_left_takes_the_primaries_of_every_birth_its_proof_set_names_off_its_record() {
         use crate::storage::NodesStorage;
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let last = with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, MemberStatus::Leaving), "200000000000");
         let member = with_id(digest(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, MemberStatus::Leaving), "210000000000");
         let (fp, digest_view, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        // mesh2's primary wrote its members' addresses on their records while it was mesh2's primary; mesh1's own stays.
+        // mesh2's primary wrote its members' primaries on their records while it was mesh2's primary, and
+        // each node its own address; mesh1's own stays.
         for d in [&last, &member, &fp] {
             let mut row = crate::storage::NodeRow::new(d.node.name.clone(), d.node.mesh.clone(), d.node.kind, d.node.node_id.clone(), NodeStatus::Ready);
-            let b = row.birth_mut(&d.node.incarnation, &d.node.name);
-            (b.endpoint_id, b.transport_addr, b.is_primary) = (Some(d.node.endpoint_id.clone()), Some(d.node.transport_addr), Some(1));
+            row.birth_mut(&d.node.incarnation, &d.node.name).is_primary = Some(1);
             crate::node_rows::write_record(&*storage, &row).await.unwrap().unwrap();
+            own_part(&*storage, d).await;
+        }
+        // Each member of mesh2 deleted by its node.delete (mesh-delete.md "Rows").
+        for d in [&last, &member] {
+            crate::node_rows::write_deleted(&*storage, &crate::node_rows::WrittenRows::default(), &d.node.name, &d.node.node_id).await.ok().expect("the member's Deleted record");
         }
         depart(&digest_view, &records, &last).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)).await;
@@ -2895,7 +2950,7 @@ mod tests {
         let spans = capture.named("rdm.node_admin.node.remove.via-mesh-left-contact");
         assert_eq!(spans.len(), 1, "{spans:?}");
         let dropped = spans[0].attributes.get("dropped").cloned().unwrap_or_default();
-        assert!(dropped.contains(last.node.node_id.as_str()) && dropped.contains(member.node.node_id.as_str()), "the span names each birth whose address is taken off, by node id: {dropped}");
+        assert!(dropped.contains(last.node.node_id.as_str()) && dropped.contains(member.node.node_id.as_str()), "the span names each birth whose primaries are taken off, by node id: {dropped}");
         eprintln!("span rdm.node_admin.node.remove.via-mesh-left-contact trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
     }
 
@@ -3392,7 +3447,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         crate::node_rows::move_row(&primary, &Default::default(), &rdm_core::PathName::new("mesh1.admin", "1").unwrap(), &record, &held.node.name, &to).await.unwrap();
         // This admin: the same view, its own store on the same root, no rename of its own.
@@ -3761,6 +3816,12 @@ mod tests {
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
         }
+        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_properties(record).await
+        }
+        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+            self.inner.properties(node_id).await
+        }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
@@ -3801,7 +3862,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let row = crate::storage::NodeRow { replacement_from: None, kind: held.node.kind, mesh: held.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         crate::node_rows::write_record(&primary, &row).await.unwrap().unwrap();
         let (me, base) = (rdm_core::PathName::new("mesh1.admin", "1").unwrap(), rdm_core::PathName::new("mesh1.rpc", "1").unwrap());
         crate::node_rows::move_row(&primary, &Default::default(), &me, &record, &held.node.name, &base).await.unwrap();
@@ -4270,6 +4331,12 @@ mod tests {
         }
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.inner.nodes(mesh).await
+        }
+        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_properties(record).await
+        }
+        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+            self.inner.properties(node_id).await
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await

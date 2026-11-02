@@ -45,10 +45,9 @@ pub use rdm_core::launch::ENV_STORE_DIR;
 pub const FABRIC_FILE: &str = "fabric.jsonl";
 /// The meshes' store file: every Mesh record's writes.
 pub const MESHES_FILE: &str = "meshes.jsonl";
-/// The nodes' store file: every node record's writes, runtime rows and tag rows.
+/// The nodes' store file: every node record's writes, both its parts (its mesh-primary's row and the
+/// node's own line, Q333), and the runtime rows.
 pub const NODES_FILE: &str = "nodes.jsonl";
-/// Node-owned properties and lifecycle records addressed by subject and writer birth.
-pub const NODE_RECORDS_FILE: &str = "node-records.jsonl";
 /// The connections' store file: every connection fact of every source.
 pub const CONNECTIONS_FILE: &str = "connections.jsonl";
 /// The builds' store file: every Build fact.

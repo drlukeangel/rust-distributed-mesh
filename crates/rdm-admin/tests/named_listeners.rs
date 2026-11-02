@@ -65,10 +65,10 @@ impl Capture {
 ///  the address the birth bound: the IP address node-admin assigned and a nonzero port the operating
 ///  system chose (Q151). The serving node-admin validates the whole report before it installs any
 ///  part of the join, and refuses it by name, installing nothing, unless it carries exactly the
-///  declared names, each once, on its assigned IP address with a nonzero OS-selected port; it writes
-///  them on the birth's row."
+///  declared names, each once, on its assigned IP address with a nonzero OS-selected port; the node
+///  writes them in its own part of its record (Q333)."
 #[test]
-fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listeners_on_the_birth_row(
+fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verified_listeners(
 ) {
     let capture = Capture::new("named-listeners-functional");
     let _guard = tracing::dispatcher::set_default(&capture.dispatch);
@@ -258,10 +258,15 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
             .await
             .expect("read storage")
             .is_none());
+        assert!(nodes_storage
+            .properties(&dep.node_id)
+            .await
+            .expect("read storage")
+            .is_none(), "a refused report records no listener");
 
         // 2. Valid listener report (each declared listener once on its assigned IP with a nonzero
-        //    OS-selected port) is admitted, installs the address, completes WaitForBind with the
-        //    listeners, and writes the listeners on the birth's row.
+        //    OS-selected port) is admitted, installs the address and completes WaitForBind with the
+        //    listeners; the node, answered Joined, writes them in its own part of its record (Q333).
         let good_listeners: Vec<(String, SocketAddr)> = vec![
             ("kafka".into(), "127.0.0.1:41001".parse().unwrap()),
             ("rest".into(), "127.0.0.1:41002".parse().unwrap()),
@@ -282,16 +287,31 @@ fn join_door_refuses_mismatched_listener_reports_and_publishes_verified_listener
             watch.borrow().as_ref().map(|r| r.listeners.clone()),
             Some(good_listeners.clone())
         );
-
-        let row = nodes_storage
-            .node(&dep.node_id)
+        // The node's own writer records the listeners it bound at this birth, as a started node's
+        // `bound` write does; read back through the nodes store at its node id.
+        let writer = rdm_node::node_records::NodePropertyWriter::new(nodes_storage.clone(), || "memory".into());
+        writer
+            .bound(
+                rdm_node::node_records::NodeProperties {
+                    birth: rdm_node::node_records::RecordBirth { node_id: dep.node_id.clone(), incarnation_id: dep.incarnation.clone() },
+                    config: Default::default(),
+                    tags: Default::default(),
+                    endpoint_id: Some(dep.endpoint_id.clone()),
+                    transport_addr: Some(digest.node.transport_addr),
+                    listeners: good_listeners.clone(),
+                    app_types: None,
+                    held: Default::default(),
+                },
+                |_| {},
+            )
+            .await
+            .expect("the node's own part is written");
+        let own = nodes_storage
+            .properties(&dep.node_id)
             .await
             .expect("read storage")
-            .expect("birth row written");
-        assert_eq!(
-            row.births.last().map(|b| b.listeners.clone()),
-            Some(good_listeners)
-        );
+            .expect("the node's own part of its record");
+        assert_eq!(own.listeners, good_listeners, "the verified listeners are in the node's own part of its record");
     });
 
     drop(rt);

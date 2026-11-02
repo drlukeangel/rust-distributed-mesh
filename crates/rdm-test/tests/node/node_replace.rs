@@ -1179,7 +1179,7 @@ async fn a_replaced_nodes_successor_takes_its_build_entrys_config_and_tags_at_it
     assert_eq!(selected, vec![s(&before["node_id"])], "a read by the tag names the retained predecessor, whose own record keeps it, and never the successor, whose entry named no tag: {selected:?}");
     let retained = estate.node_values().await.into_iter().find(|n| n["node_id"] == before["node_id"]).unwrap_or_else(|| panic!("the predecessor is retained at {old_name:?}"));
     assert_eq!(retained["name"], json!(old_name), "predecessor keeps its path and changes only its name");
-    let retained_record = rdm_admin::store_log::read_record(&estate.fabric_store_root().join(rdm_node::node_records::NODE_RECORDS_FILE), "node-properties", Some(member.node_id.as_str())).expect("durable retained predecessor properties");
+    let retained_record = rdm_admin::store_log::read_record(&estate.fabric_store_root().join(rdm_admin::store_root::NODES_FILE), "node-properties", Some(member.node_id.as_str())).expect("durable retained predecessor properties");
     assert_eq!(retained_record["record"]["tags"], json!(labels), "the retained row keeps its tags after leaving the active index");
     assert_eq!(retained_record["record"]["config"], told_json, "the retained row keeps its own config");
     assert_eq!(retained["node_id"], before["node_id"], "the retained {old_name:?} is the predecessor: {retained}");

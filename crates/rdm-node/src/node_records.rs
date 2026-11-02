@@ -1,8 +1,9 @@
-//! The property record each node writes itself (i150): its config, tags, bound addresses and join
-//! declaration, at its node id. The store persists records at their explicit keys; it decides nothing.
+//! The node's own part of its record (Q333), written by the node itself: its config, tags, bound
+//! addresses and join declaration, appended at its node id in the nodes store
+//! ([`crate::nodes_storage::NodesStorage::put_properties`]) beside its mesh-primary's part. The store
+//! persists lines at their explicit keys; it decides nothing.
 
 use crate::storage_error::StorageError;
-use async_trait::async_trait;
 use rdm_core::{IncarnationId, NodeId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,7 +17,8 @@ pub struct RecordBirth {
     pub incarnation_id: IncarnationId,
 }
 
-/// Properties written by the node itself, separate from its primary's lifecycle decisions.
+/// The node's own part of its record (Q333): what the node writes itself, one whole line at its node id;
+/// its mesh-primary's part (`crate::nodes_storage::NodeRow`) is the other.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeProperties {
     /// The node writing this record; the durable key is its node ID.
@@ -42,7 +44,10 @@ pub struct NodeProperties {
 /// releases write ordering while that call can still commit.
 #[derive(Clone)]
 pub struct NodePropertyWriter {
-    records: std::sync::Arc<dyn NodeRecordsStorage>,
+    records: std::sync::Arc<dyn crate::nodes_storage::NodesStorage>,
+    /// The registered name of the topology storage provider the node writes now (storage.md §2), as a
+    /// write's span names its backend.
+    provider: std::sync::Arc<dyn Fn() -> String + Send + Sync>,
     current: std::sync::Arc<tokio::sync::Mutex<Option<NodeProperties>>>,
     /// The writing node's current path and name, once its topology view holds them
     /// ([`Self::named_by`]): what each write's span names it by. Unset: the span names none.
@@ -77,11 +82,13 @@ pub enum TagChange {
 }
 
 impl NodePropertyWriter {
-    /// Create the single writer for a running node. The first command reads its own retained
-    /// record, or uses the launch/join properties when no record has been written yet.
-    pub fn new(records: std::sync::Arc<dyn NodeRecordsStorage>) -> Self {
+    /// Create the single writer for a running node. Its start's [`Self::bound`] writes the part the
+    /// start holds; a runtime command with no part held reads the node's own part first.
+    /// `provider` answers the provider the node writes at each write.
+    pub fn new(records: std::sync::Arc<dyn crate::nodes_storage::NodesStorage>, provider: impl Fn() -> String + Send + Sync + 'static) -> Self {
         Self {
             records,
+            provider: std::sync::Arc::new(provider),
             current: Default::default(),
             name: Default::default(),
         }
@@ -99,22 +106,27 @@ impl NodePropertyWriter {
         PropertyFreeze(self.current.clone().lock_owned().await)
     }
 
-    /// Publish the actual bound addresses and join declaration at this start, preserving
-    /// retained config and tags for the same node ID.
+    /// Publish the actual bound addresses and join declaration at this start. `initial` carries the
+    /// retained config and tags for the same node ID as the start holds them (the hydration sync's own
+    /// row, Q234, else the launch snapshot): the start reads nothing from the store (Q227); a part
+    /// already written by this process stands under the bound facts.
     pub async fn bound(
         &self,
         initial: NodeProperties,
         publish: impl FnOnce(&NodeProperties) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
-        self.update(
-            initial.clone(),
+        let bound = initial.clone();
+        self.write(
+            initial,
+            false,
             move |record| {
-                record.birth = initial.birth;
-                record.endpoint_id = initial.endpoint_id;
-                record.transport_addr = initial.transport_addr;
-                record.listeners = initial.listeners;
-                record.app_types = initial.app_types;
-                record.held = initial.held;
+                record.birth = bound.birth;
+                record.endpoint_id = bound.endpoint_id;
+                record.transport_addr = bound.transport_addr;
+                record.listeners = bound.listeners;
+                record.app_types = bound.app_types;
+                record.held = bound.held;
+                Ok(())
             },
             publish,
         )
@@ -251,24 +263,39 @@ impl NodePropertyWriter {
         change: impl FnOnce(&mut NodeProperties) -> Result<(), StorageError> + Send + 'static,
         publish: impl FnOnce(&NodeProperties) + Send + 'static,
     ) -> Result<PropertyWritten, StorageError> {
+        self.write(initial, true, change, publish).await
+    }
+
+    /// [`Self::update_checked`]'s write. With no part held by this process, a runtime command
+    /// (`read_retained`) first reads the node's own part at its node id (Q237: after an unacknowledged
+    /// write, or before this start's [`Self::bound`]); the start's [`Self::bound`] takes `initial` as
+    /// the retained part and reads nothing (Q227).
+    async fn write(
+        &self,
+        initial: NodeProperties,
+        read_retained: bool,
+        change: impl FnOnce(&mut NodeProperties) -> Result<(), StorageError> + Send + 'static,
+        publish: impl FnOnce(&NodeProperties) + Send + 'static,
+    ) -> Result<PropertyWritten, StorageError> {
         use tracing::Instrument;
         let (records, current) = (self.records.clone(), self.current.clone());
+        let backend = (self.provider)();
         let at = self.name.get().and_then(|name| name());
         let (path, name) = at.map(|at| (at.path, at.name)).unwrap_or_default();
         let (node_id, incarnation_id) = (initial.birth.node_id.clone(), initial.birth.incarnation_id.clone());
-        let write = move |records: &dyn NodeRecordsStorage| tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, backend = %records.provider(), outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal");
+        let write = move || tracing::info_span!("rdm.node.record.update.via-properties", node_id = %node_id, incarnation_id = %incarnation_id, path = %path, name = %name, backend = %backend, outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal");
         // Dropping JoinHandle detaches the admitted write; it does not cancel it. In
         // particular no timeout may allow a second command to overtake the first call.
         tokio::spawn(
             async move {
                 let mut held = current.lock().await;
-                if held.is_none() {
+                if held.is_none() && read_retained {
                     *held = records.properties(&initial.birth.node_id).await.inspect_err(|e| {
-                        write(&*records).record("outcome", "failed").record("cause", e.to_string());
+                        write().record("outcome", "failed").record("cause", e.to_string());
                     })?;
                 }
                 let mut next = held.as_ref().cloned().unwrap_or(initial);
-                let write = write(&*records);
+                let write = write();
                 change(&mut next).inspect_err(|e| {
                     write.record("outcome", "refused").record("cause", e.to_string());
                 })?;
@@ -292,108 +319,5 @@ impl NodePropertyWriter {
         )
         .await
         .expect("property writer task panicked")
-    }
-}
-
-/// The persistence boundary of the property records the nodes write.
-///
-/// Successful writes are durable. Implementations return the requested exact key; they never
-/// select a primary, substitute an earlier writer, or treat an I/O error as absence.
-///
-/// A put owns the submitted backend operation until that operation has ended. On **every**
-/// return, including an error, that issued operation can no longer commit in the future. An
-/// error may have lost the acknowledgement of an already committed record, so readers still
-/// resolve it by its exact key. A transport deadline with a pending backend mutation is not a
-/// completed put: the adapter must retain the original operation until its outcome resolves.
-/// Callers retain the future through cancellation; adapters retain any lower-level operation.
-#[async_trait]
-pub trait NodeRecordsStorage: Send + Sync {
-    /// The registered name of the topology storage provider these records are persisted to
-    /// (storage.md §2), as a write's span names its backend.
-    fn provider(&self) -> String;
-    /// Persist the node's complete property record at its node ID.
-    async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError>;
-    /// Read the property record at an exact node ID.
-    async fn properties(&self, node: &NodeId) -> Result<Option<NodeProperties>, StorageError>;
-}
-
-/// In-memory adapter for fixtures and backends without restart survival.
-#[derive(Default)]
-pub struct MemoryNodeRecords {
-    properties: std::sync::Mutex<BTreeMap<NodeId, NodeProperties>>,
-}
-
-#[async_trait]
-impl NodeRecordsStorage for MemoryNodeRecords {
-    fn provider(&self) -> String {
-        "memory".into()
-    }
-    async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError> {
-        self.properties
-            .lock()
-            .unwrap()
-            .insert(record.birth.node_id.clone(), record.clone());
-        Ok(())
-    }
-    async fn properties(&self, node: &NodeId) -> Result<Option<NodeProperties>, StorageError> {
-        Ok(self.properties.lock().unwrap().get(node).cloned())
-    }
-}
-
-/// The log of the property records.
-#[cfg(feature = "file-backend")]
-pub use crate::store_root::NODE_RECORDS_FILE;
-
-#[cfg(feature = "file-backend")]
-const PROPERTIES_FORMAT: &str = "node-properties/1";
-
-/// File adapter using the existing checksummed, durable store log.
-#[cfg(feature = "file-backend")]
-pub struct FileNodeRecords {
-    log: crate::store_log::StoreLog,
-}
-
-#[cfg(feature = "file-backend")]
-impl FileNodeRecords {
-    /// Open without reading the log; reads and writes fold it at their own boundary.
-    pub async fn open(root: &crate::store_root::StoreRoot) -> Result<Self, StorageError> {
-        let formats = crate::store_log::Formats::new()
-            .with::<NodeProperties>(PROPERTIES_FORMAT);
-        Ok(Self {
-            log: root.log(NODE_RECORDS_FILE, formats).await?,
-        })
-    }
-
-
-    /// Wait until every append already issued through this file has ended.
-    pub async fn finish_issued_writes(&self) {
-        self.log.finish_issued_writes().await;
-    }
-}
-
-#[cfg(feature = "file-backend")]
-#[async_trait]
-impl NodeRecordsStorage for FileNodeRecords {
-    fn provider(&self) -> String {
-        "file".into()
-    }
-    async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError> {
-        let writer =
-            crate::store_log::LogWriter::new(&record.birth.node_id, &record.birth.incarnation_id);
-        self.log
-            .append(
-                &writer,
-                PROPERTIES_FORMAT,
-                record.birth.node_id.as_str(),
-                record,
-            )
-            .await
-    }
-    async fn properties(&self, node: &NodeId) -> Result<Option<NodeProperties>, StorageError> {
-        self.log
-            .latest("node-properties", node.as_str())
-            .await?
-            .map(|l| l.decode(self.log.path()))
-            .transpose()
     }
 }

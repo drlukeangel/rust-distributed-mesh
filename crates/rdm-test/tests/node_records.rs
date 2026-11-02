@@ -2,7 +2,7 @@
 
 use rdm_client::{NodeStatus, NodeView};
 use rdm_core::{NodeId, NodeKind, PathName};
-use rdm_node::node_records::NodeRecordsStorage as _;
+use rdm_node::nodes_storage::NodesStorage as _;
 use rdm_node::nodes_storage::{NodeRow, NodeRowsStorage as _, NodesStorage as _};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -193,7 +193,7 @@ async fn own_properties_survive_node_restart() {
     .await;
     let records = estate
         .fabric_store_root()
-        .join(rdm_node::node_records::NODE_RECORDS_FILE);
+        .join(rdm_admin::store_root::NODES_FILE);
     estate.stop().await;
     assert_eq!(
         recovered.config, expected,
@@ -349,8 +349,10 @@ async fn late_record_put(estate: &Estate, record: &NodeRow) {
 }
 
 async fn late_properties_put(estate: &Estate, record: &rdm_node::node_records::NodeProperties) {
-    let store = rdm_node::node_records::FileNodeRecords::open(&rdm_node::store_root::StoreRoot::at(&estate.fabric_store_root())).await.expect("the fabric's node records open");
+    let root = estate.fabric_store_root();
+    let store = rdm_node::nodes_storage::FileNodesStorage::open(&root, &rdm_node::store_root::StoreRoot::at(&root), "", &rdm_node::store_log::LogWriter::mint()).await.expect("the fabric's nodes store opens");
     store.put_properties(record).await.expect("the late property put is durable");
+    store.finish_issued_writes().await;
 }
 
 /// Each named field of `a` and `b` (both serialized) that differs, as `field: a -> b`; a field absent

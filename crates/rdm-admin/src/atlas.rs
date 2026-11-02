@@ -607,6 +607,9 @@ impl Atlas {
             let Some(r) = records.row(&b.node_id).await? else { continue };
             let live = r.status.is_live() || r.status == NodeStatus::Starting;
             let Some(nb) = r.newest_birth().filter(|nb| live && nb.incarnation_id == b.incarnation) else { continue };
+            // Its addresses are the node's own part of its record at that birth (Q333).
+            let own = records.properties(&b.node_id).await?;
+            let own = crate::current_record::of_birth(own.as_ref(), &r.node_id, &nb.incarnation_id);
             if self.deleted_by_op(&b.node_id, &b.incarnation) || t.nodes.iter().any(|n| n.node_id == r.node_id || (n.name == r.name && n.status.is_live())) {
                 continue;
             }
@@ -618,7 +621,7 @@ impl Atlas {
                 node_type: r.node_type().to_string(),
                 mesh: r.mesh.clone(),
                 node_id: r.node_id.clone(),
-                endpoint_id: nb.endpoint_id.clone(),
+                endpoint_id: own.and_then(|o| o.endpoint_id.clone()),
                 incarnation_id: Some(nb.incarnation_id.clone()),
                 deployment_id: None,
                 provider: None,
@@ -627,8 +630,8 @@ impl Atlas {
                 is_primary: false,
                 is_fabric_primary: false,
                 admin_api_base: None,
-                transport_addr: nb.transport_addr,
-                listeners: nb.listeners.clone(),
+                transport_addr: own.and_then(|o| o.transport_addr),
+                listeners: own.map(|o| o.listeners.clone()).unwrap_or_default(),
                 routable: false,
                 declared: None,
                 stopped: false,
@@ -876,10 +879,10 @@ impl crate::control_plane::ControlPlane {
         moved
     }
 
-    /// The reader of the current records (query.md §1), once this admin's nodes.storage and node records
-    /// are open: its name claims, its Mesh records and its node records.
+    /// The reader of the current records (query.md §1), once this admin's nodes.storage is open: each
+    /// node's record, both its parts, and the name claims.
     pub(crate) fn current_records(&self) -> Option<crate::current_record::CurrentRecords<'_>> {
-        Some(crate::current_record::CurrentRecords { claims: &**self.node_rows.get()?, records: &**self.node_records.get()? })
+        Some(crate::current_record::CurrentRecords { nodes: &**self.node_rows.get()? })
     }
 
     /// `t` as this fabric-primary's atlas holds its births ([`crate::atlas::Atlas::apply`]), their records
@@ -891,7 +894,7 @@ impl crate::control_plane::ControlPlane {
 
     /// [`Self::current_records`]' stores, held, once they are open.
     pub(crate) fn record_stores(&self) -> Option<crate::current_record::RecordStores> {
-        Some(crate::current_record::RecordStores { claims: self.node_rows.get()?.clone(), records: self.node_records.get()?.clone() })
+        Some(crate::current_record::RecordStores { nodes: self.node_rows.get()?.clone() })
     }
 
     /// The atlas row of `path` Build acceptance reads (fabric-atlas.md R-FA1): the current-pair lookup over
@@ -989,7 +992,6 @@ mod tests {
     /// of `rows` (each given an id in `observed`), which names no mesh-primary.
     struct Current {
         claims: MemoryNodesStorage,
-        records: rdm_node::node_records::MemoryNodeRecords,
         mesh_ids: BTreeMap<String, crate::model::MeshId>,
     }
 
@@ -1001,7 +1003,7 @@ mod tests {
             fp.status = NodeStatus::Ready;
             fp.is_fabric_primary = true;
             observed.nodes.push(fp);
-            let mut current = Self { claims: MemoryNodesStorage::default(), records: Default::default(), mesh_ids: BTreeMap::new() };
+            let mut current = Self { claims: MemoryNodesStorage::default(), mesh_ids: BTreeMap::new() };
             for row in rows {
                 if !current.mesh_ids.contains_key(&row.mesh) {
                     let id = crate::model::MeshId::mint();
@@ -1020,7 +1022,7 @@ mod tests {
         }
 
         fn reader(&self) -> crate::current_record::CurrentRecords<'_> {
-            crate::current_record::CurrentRecords { claims: &self.claims, records: &self.records }
+            crate::current_record::CurrentRecords { nodes: &self.claims }
         }
     }
 
@@ -1069,7 +1071,7 @@ mod tests {
         primary.status = NodeStatus::Ready;
         primary.is_primary = true;
         let observed = crate::topology::Topology { fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process }, meshes: vec![Mesh { id: Some(mesh_id.clone()), name: "mesh2".into(), status: ScopeStatus::Ready }], nodes: vec![primary] };
-        let (claims, records) = (MemoryNodesStorage::default(), rdm_node::node_records::MemoryNodeRecords::default());
+        let claims = MemoryNodesStorage::default();
         claims.put_node(&new).await.unwrap();
         claims.put_node(&old).await.unwrap();
         // The deleted birth, resumed, writes its own record live, after the re-creation.
@@ -1079,7 +1081,7 @@ mod tests {
         claims.put_node(&late).await.unwrap();
         // The re-creation's claim holds the path.
         claims.claim_node_name(&at, &new.node_id).await.unwrap().unwrap();
-        let reader = crate::current_record::CurrentRecords { claims: &claims, records: &records };
+        let reader = crate::current_record::CurrentRecords { nodes: &claims };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let row = atlas.row(&at, &reader, &builds, &observed).await.unwrap().expect("a record is current at the path");
         assert_eq!((row.node_id.clone(), row.status, row.live), (new.node_id.clone(), NodeStatus::Ready, true), "the re-created birth is the path's, live: {row:?}");

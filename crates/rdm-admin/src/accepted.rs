@@ -1176,21 +1176,17 @@ pub type Recorded = BTreeMap<PathName, RecordedRow>;
 /// attempt computes its remaining work from "the accepted topology, the current node rows, observed
 /// state and its receipts"): one point read per path, a `Deleted` row and a path no row is written at
 /// left out. A read that fails is named.
-pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, properties: Option<&dyn rdm_node::node_records::NodeRecordsStorage>, topology: &FabricTopology) -> Result<Recorded, String> {
+pub async fn recorded_executables(rows: &dyn crate::storage::NodesStorage, topology: &FabricTopology) -> Result<Recorded, String> {
     let mut out = Recorded::new();
     for p in topology.meshes.values().flat_map(|m| m.nodes.iter()) {
         let row = crate::node_rows::record_at(rows, p).await.map_err(|e| format!("the row at path {:?}, name {:?} could not be read for its executable: {e}", p.path, p.name))?;
         if let Some(row) = row.filter(|r| r.status != NodeStatus::Deleted) {
-            // The path's config and tags are its node's own property record, never a lifecycle row's:
-            // a node that wrote none carries none known.
-            let (mut config, mut tags) = (None, None);
-            if let Some(properties) = properties {
-                // A node that has written no record yet has no properties yet (query.md §1, Q323): its
-                // entry's config and tags are owed and sent as any differing ones are (Q321).
-                let own = properties.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))?;
-                config = Some(own.as_ref().map(|o| o.config.clone()).unwrap_or_default());
-                tags = Some(own.map(|o| o.tags).unwrap_or_default());
-            }
+            // The path's config and tags are its node's own part of its record, never its mesh-primary's
+            // part. A node that has written no part yet has no properties yet (query.md §1, Q323): its
+            // entry's config and tags are owed and sent as any differing ones are (Q321).
+            let own = rows.properties(&row.node_id).await.map_err(|error| format!("the properties of {} could not be read: {error}", row.node_id))?;
+            let config = Some(own.as_ref().map(|o| o.config.clone()).unwrap_or_default());
+            let tags = Some(own.map(|o| o.tags).unwrap_or_default());
             out.insert(p.clone(), RecordedRow { mesh: row.mesh.clone(), kind: row.kind, node_id: row.node_id, sha256: row.executable.map(|b| b.sha256), config, tags, storage_persistence: row.storage_persistence, placement: row.placement });
         }
     }

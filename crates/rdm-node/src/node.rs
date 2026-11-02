@@ -515,7 +515,7 @@ async fn start_booted(
     let base_storage = topology_storage.connections();
     // Other nodes' rows: nothing opened or read here (Q227), the store opened on the first read (Q237).
     let node_rows = topology_storage.node_rows();
-    let property_writer = crate::node_records::NodePropertyWriter::new(topology_storage.node_records());
+    let property_writer = crate::node_records::NodePropertyWriter::new(topology_storage.nodes(), { let handle = topology_storage.clone(); move || handle.provider() });
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
         rdm_core::connections::ConnectionEnd { mesh: launch.mesh.clone(), kind: launch.kind, name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         decorate_storage(base_storage),
@@ -805,8 +805,12 @@ async fn start_booted(
                                 listeners: listener_addrs.clone(),
                             }));
                             let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.kind, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
-                            let mut initial = property_snapshot(&topology_view, &digest, launch.initial_properties.config.clone());
-                            initial.tags = launch.initial_properties.tags.clone();
+                            // The retained config and tags of this node ID are its own row as the hydration sync
+                            // handed it (Q234), when that row carries the node's own part; else the launch
+                            // snapshot. The start reads nothing from the store (Q227).
+                            let (config, tags) = retained_properties(&topology_view, &launch.node_id, &launch.initial_properties);
+                            let mut initial = property_snapshot(&topology_view, &digest, config);
+                            initial.tags = tags;
                             initial.listeners = listener_addrs.clone();
                             let properties_view = topology_view.clone();
                             property_writer.bound(initial, move |record| { properties_view.set_config(record.config.clone()); properties_view.set_tags(record.tags.clone()); }).await
@@ -1371,6 +1375,15 @@ impl OwnConfig {
         Ok(rdm_core::status::StatusReply::ConfigUpdated {
             node_id: self.digest.node.node_id.clone(), incarnation: self.digest.node.incarnation.clone(), config,
         })
+    }
+}
+
+/// The config and tags a start of `node_id` holds as its own: its own row from the hydration sync
+/// (Q234) when that row read the node's own part of its record, else `launch`, the claim's snapshot.
+pub fn retained_properties(topology: &TopologyView, node_id: &rdm_core::NodeId, launch: &rdm_core::launch::InitialProperties) -> (std::collections::BTreeMap<String, String>, std::collections::BTreeSet<String>) {
+    match topology.own_row().filter(|row| row.node_id == *node_id && row.properties == rdm_core::views::PropertyRecord::Read) {
+        Some(row) => (row.config, row.tags),
+        None => (launch.config.clone(), launch.tags.clone()),
     }
 }
 

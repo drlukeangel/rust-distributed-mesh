@@ -47,23 +47,23 @@ pub fn control_plane(builds: std::sync::Arc<dyn rdm_admin::build_state::BuildSta
     cp
 }
 
-/// A config door bound to node property records as boot binds it (`NodeConfigs::uses_records`): a fresh
-/// records store, its own channels joined on an endpoint of its own.
+/// A config door bound to the nodes store as boot binds it (`NodeConfigs::uses_records`): a fresh
+/// nodes store, its own channels joined on an endpoint of its own.
 pub async fn bound_configs(configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
-    bound_configs_on(std::sync::Arc::new(rdm_node::node_records::MemoryNodeRecords::default()), configs).await
+    bound_configs_on(std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), configs).await
 }
 
-/// [`bound_configs`] over `records`, the store a cell reads the written properties back from.
-pub async fn bound_configs_on(records: std::sync::Arc<rdm_node::node_records::MemoryNodeRecords>, configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
+/// [`bound_configs`] over `records`, the nodes store a cell reads the written properties back from.
+pub async fn bound_configs_on(records: std::sync::Arc<rdm_admin::storage::MemoryNodesStorage>, configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
     bound_configs_over(records, configs).await
 }
 
-/// [`bound_configs`] over any node records store: a cell's own (one that refuses a write, say).
-pub async fn bound_configs_over(records: std::sync::Arc<dyn rdm_node::node_records::NodeRecordsStorage>, configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
+/// [`bound_configs`] over any nodes store: a cell's own (one that refuses a write, say).
+pub async fn bound_configs_over(records: std::sync::Arc<dyn rdm_admin::storage::NodesStorage>, configs: rdm_admin::node_config::NodeConfigs) -> rdm_admin::node_config::NodeConfigs {
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &rdm_core::FabricId::mint(), "mesh1", &rdm_core::MeshId::mint(), rdm_core::NodeId::mint().as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-    configs.uses_records(records, channels);
+    configs.uses_records(records, || "memory".into(), channels);
     configs
 }
 
@@ -214,7 +214,6 @@ pub async fn bind_records(cp: &rdm_admin::control_plane::ControlPlane, views: &[
 /// mesh `t` names given its Mesh record in `cp`'s mesh store.
 pub async fn bind_store(cp: &rdm_admin::control_plane::ControlPlane, rows: std::sync::Arc<rdm_admin::storage::MemoryNodesStorage>, t: &rdm_admin::topology::Topology) {
     let _ = cp.node_rows.set(rows.clone());
-    let _ = cp.node_records.get_or_init(|| std::sync::Arc::new(rdm_node::node_records::MemoryNodeRecords::default()) as std::sync::Arc<dyn rdm_node::node_records::NodeRecordsStorage>);
     write_meshes(t, &*cp.claims).await;
 }
 

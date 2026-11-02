@@ -405,14 +405,11 @@ impl MeshStorage for FileMeshStorage {
 
 pub use rdm_node::nodes_storage::{AppTypes, Allocation, BirthFacts, BirthRef, CertDates, DataDirLost, DataDirUnreadable, NodeOperation, NodeRow, RuntimeRow, SigningCertDates, BIRTHS_KEPT};
 
-/// The address of `birth` and the primaries recorded for it leave its facts: a birth whose exit is
-/// proven is no node to reach and holds no primary (mesh-delete.md step 7, "Deleted births resolve
-/// Gone"). The mesh-primary's write, never a node's: a node records no primary (rdm-node's
-/// `node_base_holds_no_comparator`).
-pub fn clear_address_and_primaries(birth: &mut BirthFacts) {
-    birth.endpoint_id = None;
-    birth.transport_addr = None;
-    birth.listeners.clear();
+/// The primaries recorded for `birth` leave its facts: a birth whose exit is proven holds no primary
+/// (mesh-delete.md step 7, "Deleted births resolve Gone"). The mesh-primary's write, never a node's: a
+/// node records no primary (rdm-node's `node_base_holds_no_comparator`). The birth's addresses are the
+/// node's own part of its record (Q333), never the mesh-primary's to clear.
+pub fn clear_primaries(birth: &mut BirthFacts) {
     birth.is_primary = None;
     birth.is_fabric_primary = None;
 }
@@ -622,6 +619,12 @@ mod tests {
             async fn runtime(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> { self.inner.runtime(n, i).await }
             async fn node(&self, n: &NodeId) -> Result<Option<NodeRow>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.node(n).await }
             async fn nodes(&self, m: &str) -> Result<Vec<NodeRow>, StorageError> { self.log.lock().unwrap().push("read".into()); self.inner.nodes(m).await }
+            async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), StorageError> {
+                self.inner.put_properties(record).await
+            }
+            async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, StorageError> {
+                self.inner.properties(node_id).await
+            }
             async fn put_node(&self, r: &NodeRow) -> Result<(), StorageError> { self.log.lock().unwrap().push("put".into()); self.puts.lock().unwrap().push(r.clone()); self.inner.put_node(r).await }
             async fn name_claim(&self, n: &PathName) -> Result<Option<NodeId>, StorageError> { self.inner.name_claim(n).await }
             async fn claim_node_name(&self, n: &PathName, id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> { self.inner.claim_node_name(n, id).await }
@@ -664,6 +667,12 @@ mod tests {
             async fn node(&self, n: &NodeId) -> Result<Option<NodeRow>, StorageError> { self.inner.node(n).await }
             // The listing as it stood before the last write landed.
             async fn nodes(&self, _m: &str) -> Result<Vec<NodeRow>, StorageError> { Ok(self.listed.lock().unwrap().clone()) }
+            async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), StorageError> {
+                self.inner.put_properties(record).await
+            }
+            async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, StorageError> {
+                self.inner.properties(node_id).await
+            }
             async fn put_node(&self, r: &NodeRow) -> Result<(), StorageError> { self.inner.put_node(r).await }
             async fn name_claim(&self, n: &PathName) -> Result<Option<NodeId>, StorageError> { self.inner.name_claim(n).await }
             async fn claim_node_name(&self, n: &PathName, id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> { self.inner.claim_node_name(n, id).await }
@@ -701,6 +710,12 @@ mod tests {
         }
         async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
+        }
+        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_properties(record).await
+        }
+        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+            self.0.properties(node_id).await
         }
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_node(row).await
@@ -1205,23 +1220,17 @@ mod tests {
     /// "node.delete releases the node's identity and name; its row stays. The node's mesh-primary writes
     /// the row with status deleted, keeping the record and its config; the deleted row releases..."
     #[tokio::test]
-    async fn clear_address_and_primaries_fold_declared_and_own_in_behave_as_specified() {
-        // 1. `clear_address_and_primaries` strips endpoint_id, transport_addr, listeners, and primary revisions.
+    async fn clear_primaries_fold_declared_and_own_in_behave_as_specified() {
+        // 1. `clear_primaries` strips the primary revisions.
         let inc = IncarnationId::mint();
         let name: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
         let mut birth = BirthFacts::new(inc.clone(), name.clone());
-        birth.endpoint_id = Some(EndpointId("ep-1".into()));
-        birth.transport_addr = Some("127.0.0.1:9000".parse().unwrap());
-        birth.listeners.push(("control".into(), "127.0.0.1:9001".parse().unwrap()));
         birth.is_primary = Some(3);
         birth.is_fabric_primary = Some(4);
         birth.declared.insert(NodeState::Ready);
         birth.declared.insert(NodeState::Stopped);
 
-        clear_address_and_primaries(&mut birth);
-        assert_eq!(birth.endpoint_id, None);
-        assert_eq!(birth.transport_addr, None);
-        assert!(birth.listeners.is_empty());
+        clear_primaries(&mut birth);
         assert_eq!(birth.is_primary, None);
         assert_eq!(birth.is_fabric_primary, None);
 

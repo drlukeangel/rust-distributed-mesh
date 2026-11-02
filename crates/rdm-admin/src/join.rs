@@ -432,7 +432,20 @@ impl JoinDoor {
                         return rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported);
                     }
                     Some(row) if row.node_id == d.node.node_id => {
-                        if let Some(held) = row.app_types.as_ref().filter(|held| held.incarnation == d.node.incarnation) {
+                        // The birth's declared types are the node's own part of its record (Q333): one point
+                        // read at its id, the one check of an immutable declaration (a birth that declared
+                        // other types rejoins refused by name). A read that fails is not ready.
+                        let own = match self.nodes.as_ref() {
+                            Some((storage, _)) => match storage.properties(&d.node.node_id).await {
+                                Ok(own) => own,
+                                Err(why) => {
+                                    span.record("outcome", "not-ready");
+                                    return rdm_core::reply::join::not_ready(format!("node {}: the own part of its record could not be read: {why}", d.node.node_id));
+                                }
+                            },
+                            None => None,
+                        };
+                        if let Some(held) = own.and_then(|o| o.app_types).filter(|held| held.incarnation == d.node.incarnation) {
                             if held.types != types {
                                 return rdm_core::reply::join::join_mismatch("types".into(), format!("{:?}", held.types), format!("{types:?}"));
                             }
@@ -468,11 +481,11 @@ impl JoinDoor {
                     }
                 };
                 // The join admits the birth holding the cert: its dates, the receipt (Q141), are written
-                // on its node record before the birth is admitted; a node-admin's signing cert dates
-                // beside them when this admin minted the key it was launched with, and the listeners the
-                // validated report carries (Q151), in the same write. A write refused leaves nothing
-                // installed, and the join is retried.
-                if let (Some((storage, written)), true) = (&self.nodes, !issue.bytes.is_empty() || !listeners.is_empty()) {
+                // on its node record before the birth is admitted, with a node-admin's signing cert dates
+                // beside them when this admin minted the key it was launched with, in the same write (the
+                // listeners the validated report carries, Q151, are the node's own part of its record,
+                // Q333). A write refused leaves nothing installed, and the join is retried.
+                if let (Some((storage, written)), true) = (&self.nodes, !issue.bytes.is_empty()) {
                     let dates = (!issue.bytes.is_empty()).then(|| crate::cert_renewal::dates_of(&issue));
                     let signing = (!issue.bytes.is_empty() && d.node.kind == crate::model::NodeKind::NodeAdmin).then(|| self.issuer.held_mint(&birth.mesh)).flatten().map(|m| crate::cert_renewal::signing_dates(&m));
                     let base = crate::storage::NodeRow::new(birth.name.clone(), birth.mesh.clone(), d.node.kind, birth.node_id.clone(), crate::model::NodeStatus::Pending);
@@ -484,7 +497,6 @@ impl JoinDoor {
                         if let Some(s) = signing {
                             b.signing_cert = Some(s);
                         }
-                        b.listeners = listeners.clone();
                     });
                     if let Err(why) = put.await {
                         span.record("outcome", "not-ready");

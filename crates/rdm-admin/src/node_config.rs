@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// admin's own config (the mesh-primary is a member of its mesh and the writer of its own row too),
 /// and the lock that makes every config change one at a time.
 pub struct NodeConfigs {
-    records: std::sync::OnceLock<Arc<dyn rdm_node::node_records::NodeRecordsStorage>>,
+    records: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
     own_properties: std::sync::OnceLock<rdm_node::node_records::NodePropertyWriter>,
     own_channels: std::sync::OnceLock<rdm_transport::topology::TopologyView>,
     client: Arc<NodeRpcClient>,
@@ -115,9 +115,10 @@ impl NodeConfigs {
         Self { own_channels: Default::default(), records: Default::default(), own_properties: Default::default(), client, one_at_a_time: tokio::sync::Mutex::new(()), written, views: Default::default() }
     }
 
-    /// Bind the configured provider's node records. Every access follows provider migration.
-    pub fn uses_records(&self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>, channels: rdm_transport::topology::TopologyView) {
-        let writer = rdm_node::node_records::NodePropertyWriter::new(records.clone());
+    /// Bind the configured provider's nodes store, where each node's record is, both its parts (Q333);
+    /// `provider` answers the provider it is written to now. Every access follows provider migration.
+    pub fn uses_records(&self, records: Arc<dyn crate::storage::NodesStorage>, provider: impl Fn() -> String + Send + Sync + 'static, channels: rdm_transport::topology::TopologyView) {
+        let writer = rdm_node::node_records::NodePropertyWriter::new(records.clone(), provider);
         let held = channels.clone();
         writer.named_by(move || held.own_row().map(|row| row.name));
         let _ = self.own_channels.set(channels);
@@ -125,8 +126,8 @@ impl NodeConfigs {
         let _ = self.records.set(records);
     }
 
-    /// The shared records used for current property reads and exact lifecycle resolution.
-    pub fn records(&self) -> Option<&Arc<dyn rdm_node::node_records::NodeRecordsStorage>> {
+    /// The nodes store bound by [`Self::uses_records`]: where each node's record is read.
+    pub fn records(&self) -> Option<&Arc<dyn crate::storage::NodesStorage>> {
         self.records.get()
     }
 
@@ -150,9 +151,16 @@ impl NodeConfigs {
     /// Persist this admin's actual binding before it may become Ready. Retained properties
     /// take precedence for the same node ID; only the bound metadata is refreshed.
     pub async fn bound_own(&self, subject: &crate::model::Node, properties: rdm_core::launch::InitialProperties) -> Result<(), String> {
-        let mut initial = self.own_snapshot(subject, properties.config)
+        // The retained config and tags: this admin's own row from its hydration sync (Q234) when it
+        // read the admin's own part, else `properties`, the launch snapshot. Nothing is read from the
+        // store at this start (Q227).
+        let (config, tags) = match self.own_channels.get() {
+            Some(channels) => rdm_node::node::retained_properties(channels, &subject.node_id, &properties),
+            None => (properties.config, properties.tags),
+        };
+        let mut initial = self.own_snapshot(subject, config)
             .ok_or_else(|| format!("{}: own property writer is not bound", subject.node_id))?;
-        initial.tags = properties.tags;
+        initial.tags = tags;
         let channels = self.own_channels.get().expect("own snapshot requires channels").clone();
         self.own_properties.get().expect("production own writer is bound").bound(initial,
             move |record| { channels.set_config(record.config.clone()); channels.set_tags(record.tags.clone()); })
@@ -714,7 +722,7 @@ mod tests {
     /// Build's entry and a later local map go through the same writer, the last write standing.
     #[tokio::test]
     async fn local_and_downward_config_use_the_same_durable_writer() {
-        use rdm_node::node_records::{MemoryNodeRecords, NodeRecordsStorage};
+        use crate::storage::NodesStorage as _;
         use rdm_core::properties::EntryProperties;
         let mut admin = Node::allocated(rdm_core::PathName::new("unrelated.path", "admin").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin);
         admin.status = NodeStatus::Ready; admin.stopped = true;
@@ -731,14 +739,14 @@ mod tests {
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &view.fabric.id, "mesh1", &mesh_id, admin.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
         let door = NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
-        let records = Arc::new(MemoryNodeRecords::default());
+        let records = Arc::new(MemoryNodesStorage::default());
         let storage = MemoryNodesStorage::default();
         let req = |value: &str| StatusRequest::UpdateNodeConfig {
             node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap(), config: [("source".into(), value.into())].into(),
         };
         assert!(matches!(door.update(&admin.name, &admin.node_id, &view, &storage, &req("unbound")).await, StatusReply::NotReady { .. }));
         assert!(storage.record_at(&admin.name).await.unwrap().is_none());
-        door.uses_records(records.clone(), channels.clone());
+        door.uses_records(records.clone(), || "memory".into(), channels.clone());
         door.bound_own(&admin, rdm_core::launch::InitialProperties { config: [("old".into(), "value".into())].into(), tags: ["kept".into()].into() }).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(view.clone()));
         assert!(matches!(door.serve(&admin.name, &admin.node_id, &view, &topology, &storage, SentBy::Caller, &req("caller")).await, StatusReply::ConfigUpdated { .. }));

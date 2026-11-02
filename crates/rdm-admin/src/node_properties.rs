@@ -252,12 +252,12 @@ mod tests {
 
         assert!(matches!(tags(&admin1.name, &admin1.node_id, &view, &storage, Some(&door), SentBy::Other, &create_req).await, StatusReply::NotReady { .. }));
         assert!(storage.node(&admin1.node_id).await.unwrap().is_none());
-        use rdm_node::node_records::{MemoryNodeRecords, NodeRecordsStorage};
-        let records = Arc::new(MemoryNodeRecords::default());
+        use crate::storage::NodesStorage as _;
+        let records = Arc::new(crate::storage::MemoryNodesStorage::default());
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let snapshot = view.read().await.clone();
         let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        door.uses_records(records.clone(), channels.clone());
+        door.uses_records(records.clone(), || "memory".into(), channels.clone());
         door.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default() }).await.unwrap();
 
         // 3. Create {"gold", "ssd"} persists both labels in node-owned properties.

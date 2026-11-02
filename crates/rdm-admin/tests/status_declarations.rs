@@ -64,8 +64,9 @@ struct Rig {
     withhold: Arc<ReplyWithhold>,
     /// Armed by a cell: the authority's nodes store refuses the next release of a row's key.
     refuse_release: Arc<std::sync::atomic::AtomicBool>,
-    /// The node property records the rig's config doors write (`crate::bound_configs_on`).
-    records: Arc<rdm_node::node_records::MemoryNodeRecords>,
+    /// The nodes store the rig's config doors and served nodes write their own parts to
+    /// (`crate::bound_configs_on`, [`node_records`]).
+    records: Arc<MemoryNodesStorage>,
 }
 
 /// The authority's nodes store: the rig's memory store, whose next release of a row's key is refused
@@ -91,6 +92,12 @@ impl NodesStorage for Rows {
     }
     async fn nodes(&self, mesh: &str) -> Result<Vec<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.nodes(mesh).await
+    }
+    async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_properties(record).await
+    }
+    async fn properties(&self, node_id: &rdm_admin::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, rdm_admin::storage_error::StorageError> {
+        self.inner.properties(node_id).await
     }
     async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node(row).await
@@ -215,22 +222,22 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
 /// The node property records every birth of these cells writes its own record to and every admin
 /// door of them reads: one store for the process (each birth's node id is minted, so no two cells
 /// share a record).
-fn node_records() -> Arc<rdm_node::node_records::MemoryNodeRecords> {
-    static RECORDS: OnceLock<Arc<rdm_node::node_records::MemoryNodeRecords>> = OnceLock::new();
+fn node_records() -> Arc<MemoryNodesStorage> {
+    static RECORDS: OnceLock<Arc<MemoryNodesStorage>> = OnceLock::new();
     RECORDS.get_or_init(Default::default).clone()
 }
 
 /// The config and tags the node property record of `node_id` holds in the rig's records (empty when
 /// none is written).
 async fn props(rig: &Rig, node_id: &NodeId) -> (BTreeMap<String, String>, std::collections::BTreeSet<String>) {
-    use rdm_node::node_records::NodeRecordsStorage as _;
+    use rdm_admin::storage::NodesStorage as _;
     rig.records.properties(node_id).await.unwrap().map(|p| (p.config, p.tags)).unwrap_or_default()
 }
 
 /// The config the node property record of `node_id` holds in [`node_records`] (empty when none is
 /// written): what a door other than the rig's wrote.
 async fn config_of(node_id: &NodeId) -> BTreeMap<String, String> {
-    use rdm_node::node_records::NodeRecordsStorage as _;
+    use rdm_admin::storage::NodesStorage as _;
     node_records().properties(node_id).await.unwrap().map(|p| p.config).unwrap_or_default()
 }
 
@@ -487,7 +494,7 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
     let (s, h) = (seen.clone(), heard.clone());
     let answer = Arc::new(answer);
     let (cs, ch, canswer) = (seen.clone(), heard.clone(), answer.clone());
-    let writer = Arc::new(rdm_node::node_records::NodePropertyWriter::new(node_records()));
+    let writer = Arc::new(rdm_node::node_records::NodePropertyWriter::new(node_records(), || "memory".into()));
     let server = ServerBuilder::new()
         // The node command op 0x22 (i144 R22): `node.connection.delete` reaches the birth here, answered
         // through the same `answer` and logged as the request it carries, on the command's ordered stream.
@@ -765,14 +772,41 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
     eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config outcome=config-not-applied answered=not-ready detail={} bytes (reply reason {} bytes, cut)", detail.len(), cut.len());
 }
 
-/// Node property records that refuse every property put, by name; every read is the memory store's.
+/// A nodes store that refuses every put of a node's own part, by name; every other call is the memory
+/// store's.
 #[derive(Default)]
-struct RefusingRecords(rdm_node::node_records::MemoryNodeRecords);
+struct RefusingRecords(MemoryNodesStorage);
+
+type Answer<T> = Result<T, rdm_node::storage_error::StorageError>;
 
 #[async_trait::async_trait]
-impl rdm_node::node_records::NodeRecordsStorage for RefusingRecords {
-    fn provider(&self) -> String {
-        self.0.provider()
+impl rdm_admin::storage::NodesStorage for RefusingRecords {
+    async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Answer<()> {
+        self.0.put_runtime(row).await
+    }
+    async fn runtimes(&self) -> Answer<Vec<rdm_admin::storage::RuntimeRow>> {
+        self.0.runtimes().await
+    }
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Answer<Option<rdm_admin::storage::RuntimeRow>> {
+        self.0.runtime(node_id, incarnation).await
+    }
+    async fn node(&self, node_id: &NodeId) -> Answer<Option<rdm_admin::storage::NodeRow>> {
+        self.0.node(node_id).await
+    }
+    async fn nodes(&self, mesh: &str) -> Answer<Vec<rdm_admin::storage::NodeRow>> {
+        self.0.nodes(mesh).await
+    }
+    async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Answer<()> {
+        self.0.put_node(row).await
+    }
+    async fn name_claim(&self, name: &PathName) -> Answer<Option<NodeId>> {
+        self.0.name_claim(name).await
+    }
+    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Answer<Result<(), rdm_admin::storage::NameHeld>> {
+        self.0.claim_node_name(name, node_id).await
+    }
+    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Answer<()> {
+        self.0.release_node_name(name, node_id).await
     }
     async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), rdm_node::storage_error::StorageError> {
         Err(rdm_node::storage_error::StorageError::Io { file: format!("nodes/properties/{}", record.birth.node_id), reason: "disk refused the write".into() })
@@ -804,7 +838,7 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
             matches!(&reply, StatusReply::ConfigRowRefused { node, reason, .. } if *node == me.node_id.to_string() && reason.contains("disk refused the write")),
             "the store refused the put: {reply:?}"
         );
-        use rdm_node::node_records::NodeRecordsStorage as _;
+        use rdm_admin::storage::NodesStorage as _;
         assert!(refusing.properties(&me.node_id).await.unwrap().is_none(), "nothing is written");
     });
     let spans = cap.spans("rdm.node_admin.node.update.via-config");
@@ -1117,6 +1151,14 @@ fn name_primaries(resolver: &StaticResolver, view: &rdm_admin::topology::Topolog
 
 /// `node.get [id: b]` at the rig's fabric-primary: the config its answer carries.
 async fn config_read_from_the_fabric_primary(rig: &Rig, b: &Birth) -> BTreeMap<String, String> {
+    // The node's own part of its record, as it wrote it ([`node_records`]), beside its mesh-primary's part
+    // in the rig's nodes store: one store in a running fabric (Q333).
+    {
+        use rdm_admin::storage::NodesStorage as _;
+        if let Some(own) = node_records().properties(&b.node.node_id).await.unwrap() {
+            rig.nodes.put_properties(&own).await.unwrap();
+        }
+    }
     let read = rdm_core::status::Read { entity: rdm_core::filter::Entity::Nodes, node: None, filter: rdm_core::filter::Filter::new().eq("id", [b.node.node_id.to_string()]) };
     match rig.door.read_rows(&read).await {
         Ok(rdm_core::read::Rows::Nodes(nodes)) => {
@@ -1487,7 +1529,7 @@ const NAME_SPAN: &str = "rdm.node_admin.name.update.via-writer";
 
 /// `b`'s own property record in [`node_records`] carrying `tags`, as its own writer put them.
 async fn own_tags(b: &Birth, tags: &[&str]) {
-    use rdm_node::node_records::NodeRecordsStorage as _;
+    use rdm_admin::storage::NodesStorage as _;
     node_records()
         .put_properties(&rdm_node::node_records::NodeProperties {
             birth: rdm_node::node_records::RecordBirth { node_id: b.node.node_id.clone(), incarnation_id: b.node.incarnation_id.clone().unwrap() },
@@ -1504,7 +1546,7 @@ async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
         (n.stopped, n.status) = (true, NodeStatus::Leaving);
     }
-    let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: b.node.kind, mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+    let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: b.node.kind, mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
 }
 
@@ -1526,7 +1568,7 @@ async fn hold_left(rig: &Rig, b: &Birth) {
 async fn left_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
     hold_left(rig, b).await;
     own_tags(b, tags).await;
-    let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: b.node.kind, mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+    let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: b.node.kind, mesh: b.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
     rig.nodes.write_record(&row).await.unwrap();
     let node = serve_node(b).await;
     configs_door(rig, &node).await;
@@ -1703,7 +1745,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         hold_left(&rig, &succ).await;
         let holder = NodeId::mint();
         let taken: PathName = rdm_core::PathName::new("mesh1.rpc", "3").unwrap();
-        rig.nodes.write_record(&rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
+        rig.nodes.write_record(&rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".to_owned(), initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None }).await.unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(held, StatusReply::NameHeld { path: taken.path.clone(), name: taken.name.clone(), by: holder.clone() });
         assert_eq!(rig.nodes.record_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
@@ -2067,7 +2109,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
 
         hold_left(&rig, rpc2).await;
         own_tags(rpc2, &["red"]).await;
-        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rpc2.node.kind, mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
+        let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rpc2.node.kind, mesh: rpc2.node.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
         rig.nodes.write_record(&row).await.unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2-old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });

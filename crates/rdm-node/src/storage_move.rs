@@ -144,7 +144,8 @@ impl StorageMoves {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_records::{MemoryNodeRecords, NodeProperties, NodePropertyWriter, NodeRecordsStorage, RecordBirth};
+    use crate::node_records::{NodeProperties, NodePropertyWriter, RecordBirth};
+    use crate::nodes_storage::{MemoryNodesStorage, NodesStorage};
     use rdm_core::IncarnationId;
 
     fn properties() -> NodeProperties {
@@ -155,8 +156,8 @@ mod tests {
     /// A rollback releases its own block and late commands cannot release or recreate another one.
     #[tokio::test]
     async fn an_exact_storage_change_freezes_writes_until_move_or_rollback() {
-        let store = Arc::new(MemoryNodeRecords::default());
-        let writer = NodePropertyWriter::new(store.clone());
+        let store = Arc::new(MemoryNodesStorage::default());
+        let writer = NodePropertyWriter::new(store.clone(), || "memory".into());
         let initial = properties();
         writer.bound(initial.clone(), |_| {}).await.unwrap();
         let moves = StorageMoves::new(initial.birth.node_id.clone(), Arc::new(|| "file".into()), Arc::new(|_| Box::pin(async { panic!("same-provider rollback must not open another provider") }))).with_properties(writer.clone());
@@ -188,7 +189,7 @@ mod tests {
     /// An accepted move retains its transition through caller cancellation after the handle changes.
     #[tokio::test]
     async fn a_cancelled_storage_move_still_releases_its_property_writer() {
-        let writer = NodePropertyWriter::new(Arc::new(MemoryNodeRecords::default()));
+        let writer = NodePropertyWriter::new(Arc::new(MemoryNodesStorage::default()), || "memory".into());
         let initial = properties();
         writer.bound(initial.clone(), |_| {}).await.unwrap();
         let entered = Arc::new(tokio::sync::Notify::new());

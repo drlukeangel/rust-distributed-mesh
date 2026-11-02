@@ -86,8 +86,6 @@ pub struct ControlPlane {
     /// opens them: a complete-topology request is compiled against what each row records of its
     /// executable (proposal executable-bindings-at-create.md rule 5, R4).
     pub node_rows: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
-    /// The configured shared node records, read at acceptance.
-    pub node_records: std::sync::OnceLock<Arc<dyn rdm_node::node_records::NodeRecordsStorage>>,
     /// The node id this admin was born with, set with `node_rows`: a recovery it opens and a claim it
     /// decides for itself are refused by name while the rows hold this birth deleted (Q181,
     /// [`crate::node_rows::deleted_birth`]).
@@ -134,7 +132,6 @@ impl ControlPlane {
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
             departure: std::sync::OnceLock::new(),
-            node_records: Default::default(),
             node_rows: std::sync::OnceLock::new(),
             node_id: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
@@ -428,7 +425,7 @@ impl ControlPlane {
                         }
                     }
                     let rows = self.node_rows.get().ok_or_else(|| Refusal::Unavailable(format!("path={} name={}: no nodes.storage is open yet to read what each node's row records", self.me.path, self.me.name)))?;
-                    crate::accepted::recorded_executables(&**rows, self.node_records.get().map(|r| &**r), &current.topology).await.map_err(Refusal::Unavailable)?
+                    crate::accepted::recorded_executables(&**rows, &current.topology).await.map_err(Refusal::Unavailable)?
                 }
                 _ => crate::accepted::Recorded::new(),
             };

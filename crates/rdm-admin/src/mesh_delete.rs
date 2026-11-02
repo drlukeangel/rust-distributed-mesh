@@ -907,15 +907,16 @@ pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, cach
     }
 }
 
-/// mesh-left takes the address and the primaries of every birth the complete proof set `proof` names
-/// off its node's record (R-MN1; R14 item 2: a mesh's records are its primary's, written here by the
+/// mesh-left takes the primaries of every birth the complete proof set `proof` names off its node's
+/// record (its addresses are the node's own part of the record, Q333, and each member's row is
+/// deleted by its node.delete, mesh-delete.md "Rows") (R-MN1; R14 item 2: a mesh's records are its primary's, written here by the
 /// fabric-primary as acting primary of a mesh with none left): a deleted birth never answers, and a
 /// maker's stored map never hands it to a mesh created again under the name. Each record is written
 /// whole from the copy the writer holds ([`crate::node_rows::WrittenRows::update`]); a birth whose record
 /// holds no address for it is left as it is. One `rdm.node_admin.node.remove.via-mesh-left-contact` span
 /// names them, and a refused write ends mesh-left by name.
 async fn drop_mesh_left_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
-    let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to take {mesh}'s births' addresses off", format!("{:?}", key.operation)))?;
+    let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to take {mesh}'s births' primaries off", format!("{:?}", key.operation)))?;
     let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation.action, operation_subject = ?key.operation.subject, dropped = tracing::field::Empty, error = tracing::field::Empty);
     let mut dropped = Vec::new();
     for t in proof {
@@ -924,20 +925,20 @@ async fn drop_mesh_left_contacts(rows: Option<&crate::node_rows::NodeRows>, exec
             .written()
             .update(&**rows.storage(), &node_id, None, |r| {
                 if let Some(b) = r.births.iter_mut().find(|b| b.incarnation_id.as_str() == t.incarnation_id) {
-                    crate::storage::clear_address_and_primaries(b);
+                    crate::storage::clear_primaries(b);
                 }
             })
             .await;
         if let Err(e) = written {
-            let why = format!("{}: the address of {} ({node_id}) could not be taken off its record: {e}", format!("{:?}", key.operation), t.node_id);
+            let why = format!("{}: the primaries of {} ({node_id}) could not be taken off its record: {e}", format!("{:?}", key.operation), t.node_id);
             span.record("error", why.as_str());
-            span.in_scope(|| tracing::info!("mesh-left: a deleted birth's address is not taken off its record"));
+            span.in_scope(|| tracing::info!("mesh-left: a deleted birth's primaries are not taken off its record"));
             return Err(why);
         }
         dropped.push(format!("{} {node_id}", t.node_id));
     }
     span.record("dropped", dropped.join(", ").as_str());
-    span.in_scope(|| tracing::info!("mesh-left: the removed mesh's deleted births' addresses are taken off their records"));
+    span.in_scope(|| tracing::info!("mesh-left: the removed mesh's deleted births' primaries are taken off their records"));
     Ok(())
 }
 

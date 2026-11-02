@@ -41,13 +41,11 @@ pub enum Store {
     Connections,
     /// `builds.storage`.
     Builds,
-    /// Node-owned properties and writer-birth lifecycle records, including apply recognition.
-    NodeRecords,
 }
 
 impl Store {
     /// The stores, in the order a copy takes them.
-    pub const ALL: [Store; 6] = [Store::Fabric, Store::Meshes, Store::Nodes, Store::Connections, Store::Builds, Store::NodeRecords];
+    pub const ALL: [Store; 5] = [Store::Fabric, Store::Meshes, Store::Nodes, Store::Connections, Store::Builds];
 
     /// The store's name.
     pub fn name(self) -> &'static str {
@@ -57,7 +55,6 @@ impl Store {
             Self::Nodes => "nodes",
             Self::Connections => "connections",
             Self::Builds => "builds",
-            Self::NodeRecords => "node-records",
         }
     }
 
@@ -70,7 +67,6 @@ impl Store {
             Self::Nodes => NODES_FILE,
             Self::Connections => CONNECTIONS_FILE,
             Self::Builds => BUILDS_FILE,
-            Self::NodeRecords => crate::store_root::NODE_RECORDS_FILE,
         }
     }
 }

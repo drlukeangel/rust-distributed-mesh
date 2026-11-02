@@ -884,10 +884,10 @@ impl Estate {
         }
     }
 
-    /// Latest appended node-owned properties, selected by globally unique node ID.
+    /// The node's own part of its record (Q333), its latest line at its node id in the root's `nodes.jsonl`.
     pub fn node_properties(&self, node_id: &rdm_core::NodeId) -> Option<rdm_node::node_records::NodeProperties> {
         let stored = rdm_admin::store_log::read_record(
-            &self.fabric_store_root().join(rdm_node::node_records::NODE_RECORDS_FILE),
+            &self.fabric_store_root().join(rdm_admin::store_root::NODES_FILE),
             "node-properties", Some(node_id.as_str()),
         )?;
         let properties: rdm_node::node_records::NodeProperties = serde_json::from_value(stored["record"].clone())

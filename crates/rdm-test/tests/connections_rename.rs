@@ -150,7 +150,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name off its mesh");
         let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &renamed.node_id) };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
-        admin.put_row(NodeRow { mesh: renamed.mesh.clone(), kind: renamed.kind, replacement_from: None, initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None });
+        admin.put_row(NodeRow { mesh: renamed.mesh.clone(), kind: renamed.kind, replacement_from: None, initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None });
         let key = node::load_or_mint_key(&renamed.data_dir).unwrap();
         admin.deployed_as(&renamed, &key, taken.clone(), Some(taken.clone()));
         let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 2, operation: rdm_core::OperationId::node("node.start", &renamed.node_id) };
@@ -360,7 +360,7 @@ fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_th
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         seams.connections.observations_landed().await;
         let at_stop = kept_log(&store, &fabric, &launch.node_id).len();
-        admin.put_row(NodeRow { mesh: launch.mesh.clone(), kind: launch.kind, replacement_from: None, initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, app_types: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None });
+        admin.put_row(NodeRow { mesh: launch.mesh.clone(), kind: launch.kind, replacement_from: None, initial_properties: None, topology_storage_provider: None, name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
         let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 2, operation: rdm_core::OperationId::node("node.start", &launch.node_id) };
         assert_eq!(call(start).await, StatusReply::Started, "the node starts under the name it holds");

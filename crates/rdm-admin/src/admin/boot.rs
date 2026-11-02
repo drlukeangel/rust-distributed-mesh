@@ -895,7 +895,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         .await
                         .map_err(|e| format!("{node_id} cannot terminate the lost birth {} ({}) at path {:?}, name {:?}: {e}", lost.node_id, lost.incarnation_id.as_str(), lost.name.path, lost.name.name))?;
                 }
-                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, Some(&*topology_storage.node_records()), &*journal).await
+                super::adoption::release_name(claimed, &node_id, &*nodes_storage, &caches.nodes, &*journal).await
             }
             .instrument(boot.clone())
             .await
@@ -949,7 +949,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 .map_err(|e| format!("refusing to start: {}: {} cannot terminate the inherited birth {} ({}) at path {:?}, name {:?}: {e}", cfg.data_dir.display(), node_id, own.node_id, own.incarnation_id.as_str(), own.name.path, own.name.name))?;
         }
         // A name another node holds refuses the start by name.
-        crate::node_rows::take_inherited_name(&*nodes_storage, &caches.nodes, Some(&*topology_storage.node_records()), &own, &node_id)
+        crate::node_rows::take_inherited_name(&*nodes_storage, &caches.nodes, &own, &node_id)
             .instrument(step.clone())
             .await
             .map_err(|e| format!("refusing to start: {}: {} takes path {:?}, name {:?} over the inherited birth {}: {e}", cfg.data_dir.display(), node_id, own.name.path, own.name.name, own.node_id))?;
@@ -1510,7 +1510,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 // put through the door is what the node's next row carries (`crate::node_rows::WrittenRows`).
                                 let written = records.caches.nodes.clone();
                                 let configs = crate::node_config::NodeConfigs::new(node_rpc.client.clone(), written.clone());
-                                configs.uses_records(topology_storage.node_records(), topology_view.clone());
+                                configs.uses_records(topology_storage.nodes(), { let handle = topology_storage.clone(); move || handle.provider() }, topology_view.clone());
                                 // A command it sends down that a mesh-primary not yet holding the primary refused waits on the view's next change (D12).
                                 configs.watch_views(records.subscribe_view());
                                 // An owed push of a node's row up to the fabric-primary reads the view again on each send (Q235 P3).
@@ -1776,8 +1776,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 });
                                 let _ = control.departure.set(env.departure.clone());
                                 let _ = control.node_rows.set(nodes_storage.clone());
-                                let _ = control.node_records.set(topology_storage.node_records());
-                                let _ = records.node_records.set(topology_storage.node_records());
                                 let _ = control.node_id.set(node_id.clone());
                                 let _ = control.incarnation.set(incarnation.clone());
                                 records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_fabric_recovery(crate::fabric_recovery::reader(digest_view.clone(), records.clone())).with_configs(configs_slot.clone()).with_written(written.clone())));
@@ -1939,7 +1937,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         move |d: MeshDigest, types: std::collections::BTreeSet<String>| {
                                             let (topology_view, records) = (topology_view.clone(), records.clone());
                                             Box::pin(async move {
-                                                records.declare_app_types_or_hold(&d, types.clone()).await?;
+                                                records.seed_at_arrival_or_hold(&d).await?;
                                                 // The joiner's types are held before the join is answered; the joiner is handed to no
                                                 // channel as a peer: it dials this admin, its first neighbour (gossip.md §8, Q84).
                                                 topology_view.hold_app_types_from(&d, types.clone(), types).await.map_err(|e| e.to_string())
@@ -1983,25 +1981,20 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let _ = join_slot.set(door);
                                 // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
                                 let own = digest.clone();
-                                // For a mesh it holds no snapshot of, this admin answers from the records it writes and the
-                                // births its view holds now (its durable topology included), never from the store (Q227;
-                                // node-rpc-envelope.md Topology, Stored): a read is never refused because the store is
-                                // mid-write.
-                                let (written, held_digest_view, held_fabric, held_me, held_ids) = (records.caches.nodes.clone(), digest_view.clone(), cfg.fabric_id.clone(), node_id.clone(), records.clone());
+                                // For a mesh it holds no snapshot of, this admin answers from the births its view holds now
+                                // (its durable topology included), never from the store (Q227; node-rpc-envelope.md
+                                // Topology, Stored): a read is never refused because the store is mid-write. A birth's
+                                // address is the node's own part of its record (Q333), not on the records this admin
+                                // writes, so a record whose birth the view does not hold names no address to list.
+                                let (held_digest_view, held_fabric, held_me, held_ids) = (digest_view.clone(), cfg.fabric_id.clone(), node_id.clone(), records.clone());
                                 let stored: crate::topology_read::StoredSource = Arc::new(move || {
-                                    let (written, held_digest_view, held_fabric, held_me, held_ids) = (written.clone(), held_digest_view.clone(), held_fabric.clone(), held_me.clone(), held_ids.clone());
+                                    let (held_digest_view, held_fabric, held_me, held_ids) = (held_digest_view.clone(), held_fabric.clone(), held_me.clone(), held_ids.clone());
                                     Box::pin(async move {
                                         // The id this admin holds for each mesh it knows, a deleted mesh's none.
                                         let mut ids = held_ids.meshes.lock().unwrap().clone();
                                         let deleted = held_ids.deleted_meshes.lock().unwrap().clone();
                                         ids.retain(|_, id| !deleted.contains(id));
-                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = written
-                                            .rows()
-                                            .iter()
-                                            .filter(|r| r.status != NodeStatus::Deleted)
-                                            .filter_map(crate::reenter::MapNode::of_record)
-                                            .map(|r| (r.node_id.clone(), rdm_core::topology::StoredNode { mesh: r.mesh.clone(), kind: r.kind, node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, incarnation: r.incarnation, transport_addr: r.transport_addr }))
-                                            .collect();
+                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = BTreeMap::new();
                                         for d in held_births(&held_digest_view, &held_fabric, &held_me) {
                                             nodes.insert(
                                                 d.node.node_id.clone(),
@@ -2031,8 +2024,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                             // The caller's node: the birth the view holds at its endpoint, else the record this
                                             // writer holds at it (a birth the view does not hold yet).
-                                            let node_id = view.births().find(|n| n.endpoint_id.as_ref().is_some_and(|e| e.0 == caller)).map(|n| n.node_id.clone()).or_else(|| written.record_of_endpoint(&caller).map(|r| r.node_id))?;
                                             let stores = control.upgrade()?.record_stores()?;
+                                            let node_id = match view.births().find(|n| n.endpoint_id.as_ref().is_some_and(|e| e.0 == caller)).map(|n| n.node_id.clone()) {
+                                                Some(node_id) => node_id,
+                                                None => written.record_of_endpoint(&*stores.nodes, &caller).await.ok().flatten()?.node_id,
+                                            };
                                             let reader = stores.reader();
                                             let read = async {
                                                 let Some(row) = reader.row(&node_id).await? else { return Ok(None) };
@@ -2040,7 +2036,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     Some(p) => reader.row(&p.node_id).await?,
                                                     None => None,
                                                 };
-                                                let properties = stores.records.properties(&node_id).await.map_err(|e| format!("the property record of node {node_id} could not be read: {e}"))?;
+                                                let properties = reader.properties(&node_id).await?;
                                                 Ok::<_, String>(Some((row, predecessor, properties)))
                                             };
                                             let (row, predecessor, properties) = match read.await {
@@ -2055,10 +2051,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             if row.mesh != mesh || row.node_id == me {
                                                 return None;
                                             }
-                                            let mut v = crate::views::own_row_view(&view, &atlas, &row, predecessor.as_ref());
-                                            if let Some(own) = properties {
-                                                v.config = own.config;
-                                                v.tags = own.tags;
+                                            let mut v = crate::views::own_row_view(&view, &atlas, &row, predecessor.as_ref(), properties.as_ref());
+                                            match properties {
+                                                Some(own) => {
+                                                    v.config = own.config;
+                                                    v.tags = own.tags;
+                                                }
+                                                // A node that has written no part of its own yet has no properties yet
+                                                // (query.md §1): named, so its start keeps its launch snapshot.
+                                                None => v.properties = rdm_core::views::PropertyRecord::Unavailable { reason: format!("node {node_id} has no property record: its properties are unavailable") },
                                             }
                                             Some(v)
                                         })
@@ -2121,8 +2122,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         }
                                                     }
                                                 } else if let Ok(Some(row)) = crate::node_rows::record_at(&*rows, &d.node.name).await {
+                                                    // Its declared types are the node's own part of its record (Q333).
+                                                    let own = if row.node_id == birth.0 { rows.properties(&row.node_id).await.ok().flatten() } else { None };
                                                     if row.node_id == birth.0 {
-                                                        if let Some(t) = row.app_types.filter(|t| t.incarnation == birth.1) {
+                                                        if let Some(t) = own.and_then(|o| o.app_types).filter(|t| t.incarnation == birth.1) {
                                                             // A member of this admin's own mesh: its types are held, it is dialled by no one but §6's repair (Q84).
                                                             if topology_view.hold_app_types_from(&d, t.types.clone(), t.types).await.is_ok() { return Some((birth, d.held_hash)); }
                                                         }
@@ -3120,7 +3123,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 backbone.set_mesh_primary(mesh_primary);
                                                 backbone.set_fabric_primary(fabric_primary);
                                                 if took_a_writing_role {
-                                                    records.write_held_declarations().await;
+                                                    records.write_held_arrival_seeds().await;
                                                 }
                                                 // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
                                                 // new primary authors no ready on a topology reading.

@@ -104,9 +104,9 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
             loop {
                 let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::Ready && n.is_primary && n.is_fabric_primary);
                 // Its record at its node id, read through the reader (query.md §1).
-                let row_ready = match (running.control.node_rows.get(), running.control.node_records.get()) {
-                    (Some(claims), Some(records)) => {
-                        let reader = rdm_admin::current_record::CurrentRecords { claims: &**claims, records: &**records };
+                let row_ready = match running.control.node_rows.get() {
+                    Some(nodes) => {
+                        let reader = rdm_admin::current_record::CurrentRecords { nodes: &**nodes };
                         reader.row(&me.node.node_id).await.ok().flatten().is_some_and(|r| r.status == rdm_admin::model::NodeStatus::Ready)
                     }
                     _ => false,

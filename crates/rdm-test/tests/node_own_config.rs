@@ -77,9 +77,10 @@ fn a_running_node_persists_own_and_caller_config_through_one_writer() {
         let (ack, _) = admin.observer.client.call::<rdm_core::status::Status>(&target, &tags, &rdm_transport::CallOptions::default()).await;
         assert!(matches!(ack, rdm_core::outcome::RpcOutcome::Reply(ref r) if matches!(r.value(), StatusReply::TagsCreated { .. })), "{ack:?}");
         assert_eq!(running.topology_view.config(), Some(later.clone()));
-        use rdm_node::node_records::NodeRecordsStorage;
+        use rdm_node::nodes_storage::NodesStorage;
+        // The node's own part of its record, read back from the fabric's nodes.jsonl (Q331, Q333).
         let root = rdm_node::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).unwrap();
-        let records = rdm_node::node_records::FileNodeRecords::open(&root).await.unwrap();
+        let records = rdm_node::nodes_storage::FileNodesStorage::open(&launch.data_dir, &root, &launch.mesh, &rdm_node::store_log::LogWriter::mint()).await.unwrap();
         let durable = records.properties(&launch.node_id).await.unwrap().unwrap();
         assert_eq!(durable.config, later);
         assert_eq!(durable.tags, ["build".into(), "node".into()].into());

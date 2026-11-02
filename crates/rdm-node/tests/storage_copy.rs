@@ -44,7 +44,7 @@ const DESTINATION: &str = "target";
 /// An application setting a node record carries: never in a refusal or a span.
 const APP_SETTING: &str = "app-setting-0f3a9c";
 
-const FILES: [(Store, &str); 6] = [(Store::Fabric, FABRIC_FILE), (Store::Meshes, MESHES_FILE), (Store::Nodes, NODES_FILE), (Store::Connections, CONNECTIONS_FILE), (Store::Builds, BUILDS_FILE), (Store::NodeRecords, rdm_node::node_records::NODE_RECORDS_FILE)];
+const FILES: [(Store, &str); 5] = [(Store::Fabric, FABRIC_FILE), (Store::Meshes, MESHES_FILE), (Store::Nodes, NODES_FILE), (Store::Connections, CONNECTIONS_FILE), (Store::Builds, BUILDS_FILE)];
 
 fn dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("rdm-storage-copy-{tag}-{}", NodeId::mint()));
@@ -171,8 +171,8 @@ impl History {
         b.append(&fp2, "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 3, "fact": "opened", "attempt": 1})).await.unwrap();
         b.append(&fp2, "build-record/1", &format!("{build}/opened/2"), &json!({"seq": 4, "fact": "opened", "attempt": 2})).await.unwrap();
 
-        // The property records the nodes write are history too, each at its node id.
-        let records = log(&root, rdm_node::node_records::NODE_RECORDS_FILE).await;
+        // The nodes' own parts of their records are history too, each at its node id in the nodes store (Q333).
+        let records = log(&root, NODES_FILE).await;
         records.append(&mp1, "node-properties/1", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
         records.append(&mp2, "node-properties/1", second.as_str(), &json!({"node_id": second, "config": {"setting": APP_SETTING}})).await.unwrap();
 

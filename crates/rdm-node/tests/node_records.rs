@@ -1,10 +1,8 @@
-//! i150 storage contract: the property records the nodes write, beside their records in the nodes store.
+//! i150 storage contract (Q331, Q333): each node's record in the nodes store, in two parts at its node
+//! id, its mesh-primary's row and the node's own part, the reader taking the latest line of each.
 
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rdm_node::node_records::{
-    FileNodeRecords, MemoryNodeRecords, NodeProperties, NodeRecordsStorage,
-    RecordBirth,
-};
+use rdm_node::node_records::{NodeProperties, RecordBirth};
 use rdm_node::nodes_storage::{FileNodesStorage, MemoryNodesStorage, NodeRow, NodesStorage};
 use rdm_node::store_root::StoreRoot;
 use std::collections::BTreeMap;
@@ -33,6 +31,11 @@ fn record(node_id: NodeId, mesh: &str) -> NodeRow {
     row.birth_mut(&IncarnationId::mint(), &name);
     row.topology_storage_provider = Some("file".into());
     row
+}
+
+/// The nodes store of the file provider under `dir`.
+async fn file_store(dir: &std::path::Path) -> FileNodesStorage {
+    FileNodesStorage::open(dir, &StoreRoot::at(dir), "mesh1", &rdm_node::store_log::LogWriter::mint()).await.unwrap()
 }
 
 fn root(tag: &str) -> std::path::PathBuf {
@@ -79,7 +82,7 @@ async fn a_nodes_record_is_its_latest_line_at_its_node_id() {
 #[tokio::test]
 async fn an_old_nodes_update_preserves_its_successors_properties() {
     let dir = root("successor");
-    let store = FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap();
+    let store = file_store(&dir).await;
     let mut old = properties();
     let successor = properties();
     store.put_properties(&old).await.unwrap();
@@ -106,7 +109,7 @@ async fn acknowledged_properties_survive_writer_process_exit() {
         let dir = std::path::PathBuf::from(dir);
         let records: Vec<NodeProperties> =
             serde_json::from_slice(&std::fs::read(dir.join("input.json")).unwrap()).unwrap();
-        let store = FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap();
+        let store = file_store(&dir).await;
         for record in &records {
             store.put_properties(record).await.unwrap();
         }
@@ -163,7 +166,7 @@ async fn acknowledged_properties_survive_writer_process_exit() {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        let reopened = FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap();
+        let reopened = file_store(&dir).await;
         for record in records {
             assert_eq!(
                 reopened.properties(&record.birth.node_id).await.unwrap(),
@@ -182,16 +185,16 @@ async fn acknowledged_properties_survive_writer_process_exit() {
 async fn an_unrecognised_record_is_not_answered_as_absent() {
     let dir = root("malformed");
     let node = properties();
-    let store = FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap();
+    let store = file_store(&dir).await;
     store.put_properties(&node).await.unwrap();
     drop(store);
-    let file = dir.join(rdm_node::node_records::NODE_RECORDS_FILE);
+    let file = dir.join(rdm_node::store_root::NODES_FILE);
     let mut bytes = std::fs::read(&file).unwrap();
     // Damage a complete committed line without manufacturing another valid record.
     let at = bytes.iter().position(|b| *b == b'{').unwrap();
     bytes[at] = b'!';
     std::fs::write(&file, bytes).unwrap();
-    let reopened = FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap();
+    let reopened = file_store(&dir).await;
     assert!(
         matches!(
             reopened.properties(&node.birth.node_id).await,
@@ -211,12 +214,12 @@ async fn a_cancelled_property_caller_cannot_release_an_unresolved_write() {
     use rdm_node::node_records::NodePropertyWriter;
     use std::sync::{Arc, Mutex};
     let dir = root("cancelled-property");
-    let store = Arc::new(FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap());
-    let writer = NodePropertyWriter::new(store.clone());
+    let store = Arc::new(file_store(&dir).await);
+    let writer = NodePropertyWriter::new(store.clone(), || "file".into());
     let initial = properties();
     let shown = Arc::new(Mutex::new(Vec::new()));
     let door = rdm_node::store_log::write_door::arm(
-        &dir.join(rdm_node::node_records::NODE_RECORDS_FILE),
+        &dir.join(rdm_node::store_root::NODES_FILE),
         initial.birth.node_id.as_str(),
     );
     let (first, seed, published) = (writer.clone(), initial.clone(), shown.clone());
@@ -275,14 +278,40 @@ async fn a_cancelled_property_caller_cannot_release_an_unresolved_write() {
 /// A provider that commits a put but loses its acknowledgement once. All later point reads
 /// expose the committed record; the runtime decides what that means, never the provider.
 struct LostAcknowledgement {
-    records: MemoryNodeRecords,
+    records: MemoryNodesStorage,
     lose: std::sync::atomic::AtomicBool,
 }
 
+type Answer<T> = Result<T, rdm_node::storage_error::StorageError>;
+
 #[async_trait::async_trait]
-impl NodeRecordsStorage for LostAcknowledgement {
-    fn provider(&self) -> String {
-        self.records.provider()
+impl NodesStorage for LostAcknowledgement {
+    async fn put_runtime(&self, row: &rdm_node::nodes_storage::RuntimeRow) -> Answer<()> {
+        self.records.put_runtime(row).await
+    }
+    async fn runtimes(&self) -> Answer<Vec<rdm_node::nodes_storage::RuntimeRow>> {
+        self.records.runtimes().await
+    }
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Answer<Option<rdm_node::nodes_storage::RuntimeRow>> {
+        self.records.runtime(node_id, incarnation).await
+    }
+    async fn node(&self, node_id: &NodeId) -> Answer<Option<NodeRow>> {
+        self.records.node(node_id).await
+    }
+    async fn nodes(&self, mesh: &str) -> Answer<Vec<NodeRow>> {
+        self.records.nodes(mesh).await
+    }
+    async fn put_node(&self, row: &NodeRow) -> Answer<()> {
+        self.records.put_node(row).await
+    }
+    async fn name_claim(&self, name: &PathName) -> Answer<Option<NodeId>> {
+        self.records.name_claim(name).await
+    }
+    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Answer<Result<(), rdm_node::nodes_storage::NameHeld>> {
+        self.records.claim_node_name(name, node_id).await
+    }
+    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Answer<()> {
+        self.records.release_node_name(name, node_id).await
     }
 
     async fn put_properties(
@@ -318,7 +347,7 @@ async fn a_lost_storage_acknowledgement_is_resolved_before_the_next_change() {
         records: Default::default(),
         lose: true.into(),
     });
-    let writer = NodePropertyWriter::new(store.clone());
+    let writer = NodePropertyWriter::new(store.clone(), || "file".into());
     let initial = properties();
     assert!(writer
         .update(
@@ -357,7 +386,7 @@ async fn a_complete_entry_is_one_put_and_a_later_entry_replaces_both_fields_whol
     use rdm_node::node_records::NodePropertyWriter;
     use std::sync::Arc;
     let store = Arc::new(LostAcknowledgement { records: Default::default(), lose: true.into() });
-    let writer = NodePropertyWriter::new(store.clone());
+    let writer = NodePropertyWriter::new(store.clone(), || "file".into());
     let initial = properties();
     let entry = EntryProperties {
         config: [("source".into(), "build".into())].into(),
@@ -370,7 +399,7 @@ async fn a_complete_entry_is_one_put_and_a_later_entry_replaces_both_fields_whol
         record.config = [("source".into(), "node".into())].into();
         record.tags = ["node".into()].into();
     }, |_| {}).await.unwrap();
-    let restarted = NodePropertyWriter::new(store.clone());
+    let restarted = NodePropertyWriter::new(store.clone(), || "file".into());
     let empty = EntryProperties { config: Default::default(), tags: Default::default() };
     let next = restarted.entry(initial, empty, |_| {}).await.unwrap();
     assert!(next.record.config.is_empty());
@@ -388,8 +417,8 @@ async fn a_provider_copy_preserves_both_record_kinds() {
     let (source_dir, destination_dir) = (root("copy-source"), root("copy-destination"));
     let fabric = FabricId::mint();
     let root = StoreRoot::open(&source_dir, &fabric).unwrap();
-    let records = Arc::new(FileNodeRecords::open(&root).await.unwrap());
-    let writer = NodePropertyWriter::new(records.clone());
+    let records = Arc::new(FileNodesStorage::open(&source_dir, &root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.unwrap());
+    let writer = NodePropertyWriter::new(records.clone(), || "file".into());
     let initial = properties();
     let written = writer
         .update(
@@ -424,7 +453,7 @@ async fn a_provider_copy_preserves_both_record_kinds() {
     copy(&run, &from, &to).await.unwrap();
     drop(to);
     let destination_root = StoreRoot::open(&destination_dir, &fabric).unwrap();
-    let reopened = FileNodeRecords::open(&destination_root)
+    let reopened = FileNodesStorage::open(&destination_dir, &destination_root, "mesh1", &rdm_node::store_log::LogWriter::mint())
         .await
         .unwrap();
     let reopened_nodes = FileNodesStorage::open(&destination_dir, &destination_root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.unwrap();
@@ -446,15 +475,16 @@ async fn a_provider_copy_preserves_both_record_kinds() {
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R12): a same-ID start refreshes bound metadata and declarations while the
-/// acknowledged properties survive. Actual new addresses replace old ones.
+/// CONTRACT (i150 R12; Q227, Q234): a same-ID start refreshes bound metadata and declarations while
+/// the acknowledged properties survive, as the start holds them (its own row from the hydration sync):
+/// the start's write reads nothing from the store. Actual new addresses replace old ones.
 #[tokio::test]
 async fn a_same_id_start_refreshes_bound_facts_and_preserves_applied_properties() {
     use rdm_node::node_records::NodePropertyWriter;
     use std::sync::Arc;
     let dir = root("same-id-bind");
-    let store = Arc::new(FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap());
-    let writer = NodePropertyWriter::new(store.clone());
+    let store = Arc::new(file_store(&dir).await);
+    let writer = NodePropertyWriter::new(store.clone(), || "file".into());
     let initial = properties();
     let before = writer
         .update(
@@ -469,11 +499,13 @@ async fn a_same_id_start_refreshes_bound_facts_and_preserves_applied_properties(
         .unwrap()
         .record;
     drop(writer);
+    // The restart holds its acknowledged config and tags from its hydration sync's own row.
     let mut bound = initial.clone();
+    (bound.config, bound.tags) = (before.config.clone(), before.tags.clone());
     bound.transport_addr = Some("127.0.0.1:45012".parse().unwrap());
     bound.listeners = vec![("data".into(), "127.0.0.1:45011".parse().unwrap())];
     bound.held = ["new.declaration".into()].into();
-    let writer = NodePropertyWriter::new(store.clone());
+    let writer = NodePropertyWriter::new(store.clone(), || "file".into());
     let after = writer.bound(bound.clone(), |_| {}).await.unwrap().record;
     assert_eq!(after.birth, before.birth);
     assert_eq!(after.config, before.config);
@@ -529,11 +561,11 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
         .register("file", Arc::new(FileNodeBackend::at(&source)))
         .register("target", Arc::new(FileNodeBackend::at(&destination)));
     let handle = NodeStorageHandle::open(&providers, &launch).await.unwrap();
-    let writer = NodePropertyWriter::new(handle.node_records());
+    let writer = NodePropertyWriter::new(handle.nodes(), || "file".into());
     let door = rdm_node::store_log::write_door::arm(
         &source
             .join(launch.fabric_id.as_str())
-            .join(rdm_node::node_records::NODE_RECORDS_FILE),
+            .join(rdm_node::store_root::NODES_FILE),
         initial.birth.node_id.as_str(),
     );
     let (w, seed) = (writer.clone(), initial.clone());
@@ -565,7 +597,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
     );
     door.release();
     moved.await.unwrap().unwrap();
-    let old = FileNodeRecords::open(&StoreRoot::open(&source, &launch.fabric_id).unwrap())
+    let old = FileNodesStorage::open(&source, &StoreRoot::open(&source, &launch.fabric_id).unwrap(), "mesh1", &rdm_node::store_log::LogWriter::mint())
         .await
         .unwrap();
     let committed = old
@@ -589,7 +621,7 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
     assert!(later.tags.contains("after-move"));
     assert_eq!(
         handle
-            .node_records()
+            .nodes()
             .properties(&initial.birth.node_id)
             .await
             .unwrap(),
@@ -612,8 +644,8 @@ async fn provider_migration_waits_for_a_cancelled_callers_property_write() {
 async fn tag_deltas_preserve_properties_and_refusals_change_nothing() {
     use rdm_node::node_records::{NodePropertyWriter, TagChange};
     use rdm_core::status::{StatusReply, TagScope, MAX_NODE_TAGS};
-    let records = std::sync::Arc::new(MemoryNodeRecords::default());
-    let writer = NodePropertyWriter::new(records.clone());
+    let records = std::sync::Arc::new(MemoryNodesStorage::default());
+    let writer = NodePropertyWriter::new(records.clone(), || "memory".into());
     let mut initial = properties();
     initial.tags = (0..MAX_NODE_TAGS).map(|n| format!("tag-{n}")).collect();
     writer.bound(initial.clone(), |_| {}).await.unwrap();

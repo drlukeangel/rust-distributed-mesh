@@ -49,17 +49,18 @@ pub(crate) struct MapNode {
 }
 
 impl MapNode {
-    /// The birth `record` names to reach: its newest birth, at the address its writer recorded on it
-    /// (`crate::admin::rows_writer::MeshRowsWriter`). A record whose newest birth carries no address
+    /// The birth `record` names to reach: its newest birth, at the address the node wrote in its own
+    /// part of its record, `own` (Q333), at that birth. A record whose newest birth has no such part
     /// names none. A stored record says nothing of who lives: the birth is settled and not ready.
-    pub(crate) fn of_record(record: &NodeRow) -> Option<Self> {
+    pub(crate) fn of_record(record: &NodeRow, own: Option<&rdm_node::node_records::NodeProperties>) -> Option<Self> {
         let b = record.newest_birth()?;
+        let own = crate::current_record::of_birth(own, &record.node_id, &b.incarnation_id)?;
         Some(Self {
             mesh: record.mesh.clone(), kind: record.kind,
             node_id: record.node_id.clone(),
             name: record.name.clone(),
-            endpoint_id: b.endpoint_id.clone()?,
-            transport_addr: b.transport_addr?,
+            endpoint_id: own.endpoint_id.clone()?,
+            transport_addr: own.transport_addr?,
             incarnation: b.incarnation_id.clone(),
             transition: None,
             ready: false,

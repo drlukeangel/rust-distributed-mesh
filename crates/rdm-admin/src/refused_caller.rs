@@ -887,7 +887,15 @@ mod tests {
         let cp = crate::control_plane::ControlPlane::new(fp_builds.clone(), fp_accepted, fp.name.clone(), planned.clone(), time);
         // Boot sets the admin's own node id once it is minted; the fabric-primary role is checked by it.
         let _ = cp.node_id.set(fp.node_id.clone());
-        let _ = cp.node_rows.set(rows.clone());
+        // The fabric-primary reads the caller's record before the deleting mesh-primary's Deleted line
+        // has landed there: the record it reads is live, so only the NodeDeleted receipt tells it.
+        let fp_rows = Arc::new(crate::storage::MemoryNodesStorage::default());
+        for n in [&admin, &caller] {
+            let mut r = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
+            r.birth_mut(n.incarnation_id.as_ref().unwrap(), &n.name);
+            fp_rows.put_node(&r).await.unwrap();
+        }
+        let _ = cp.node_rows.set(fp_rows.clone());
         let cp = Arc::new(cp);
 
         let fp_key = iroh::SecretKey::generate();

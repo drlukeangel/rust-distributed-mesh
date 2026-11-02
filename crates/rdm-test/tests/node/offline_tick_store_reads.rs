@@ -72,6 +72,12 @@ impl NodesStorage for Recorded {
     async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
         self.inner.nodes(mesh).await
     }
+    async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), StorageError> {
+        self.inner.put_properties(record).await
+    }
+    async fn properties(&self, node_id: &NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, StorageError> {
+        self.inner.properties(node_id).await
+    }
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
         self.inner.put_node(row).await
     }

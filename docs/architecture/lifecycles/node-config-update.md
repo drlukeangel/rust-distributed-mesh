@@ -3,7 +3,7 @@
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Typed calls and wire mapping](../node-rpc-envelope.md#typed-object-contract)
 
 `node.config.update` replaces the whole application config map: a PUT. RDM stores the values
-without interpreting them. A node owns its property record and persists changes through its one
+without interpreting them. A node owns its own part of its record and persists changes through its one
 serialized property writer. The node's properties and the status and role flags its mesh-primary writes are in the node's one record (Q323); node-side application mutates only properties and moves no primary role. Deferred acceptance
 records its identified obligation separately in lifecycle state.
 
@@ -17,7 +17,7 @@ records its identified obligation separately in lifecycle state.
    The writer retains serialization through terminal persistence and local publication.
 3. Completion follows durable persistence. The completion carries no node-record revision and
    causes no copy of the map to be installed in either primary's atlas.
-4. A reader that needs config reads the node's property record at its node ID. A read failure is
+4. A reader that needs config reads the node's own part of its record at its node ID. A read failure is
    reported by name; a stale copy is not substituted.
 
 ### A node's own update
@@ -50,7 +50,7 @@ recorded for it.
 
 Launch properties initialize an absent own record. Existing durable properties survive startup; an older environment must not overwrite them. The own-property
 writer may read its retained state. Startup operations supply the lifecycle/topology context that
-an ordinary node needs, without requiring it to reconstruct another node's lifecycle records.
+an ordinary node needs, without requiring it to reconstruct another node's record.
 
 ## Failure and receipts
 

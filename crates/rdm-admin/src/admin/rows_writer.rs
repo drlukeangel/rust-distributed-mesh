@@ -91,8 +91,9 @@ impl MeshRowsWriter {
         // A deleted birth is never written: its node's record is written `Deleted` by its delete.
         for d in held.iter().filter(|d| !deleted(&d.node.node_id) && writes.contains(&d.node.mesh) && !primaried.contains(d.node.mesh.as_str()) && (d.node.mesh != self.mesh || own)) {
             let mesh_id = if d.node.mesh == self.mesh { Some(self.mesh_id.clone()) } else { d.mesh_id.clone() };
-            // The birth's address and the primaries the view holds, put whole on its record from the copy
-            // this admin holds; a `Deleted` record is left as it stands.
+            // The primaries the view holds, put whole on the birth's record from the copy this admin holds
+            // (its addresses are the node's own part of its record, Q333); a `Deleted` record is left as
+            // it stands.
             let written = self
                 .caches
                 .nodes
@@ -105,8 +106,6 @@ impl MeshRowsWriter {
                         r.mesh_id = mesh_id.clone();
                     }
                     let b = r.birth_mut(&d.node.incarnation, &d.node.name);
-                    b.endpoint_id = Some(d.node.endpoint_id.clone());
-                    b.transport_addr = Some(d.node.transport_addr);
                     b.is_primary = d.is_primary;
                     b.is_fabric_primary = d.is_fabric_primary;
                     *r != before
@@ -114,7 +113,7 @@ impl MeshRowsWriter {
                 .await;
             match written {
                 Ok(Some(true)) => tracing::info_span!("rdm.node_admin.node.update.via-node-row", writer_node_id = %self.me, subject_path = %d.node.name.path, subject_name = %d.node.name.name, node_id = %d.node.node_id, is_primary = ?d.is_primary, is_fabric_primary = ?d.is_fabric_primary, outcome = "written")
-                    .in_scope(|| tracing::info!("the node's record is put whole, the birth's address and the primaries the view holds recorded on it")),
+                    .in_scope(|| tracing::info!("the node's record is put whole, the primaries the view holds recorded on it")),
                 Ok(Some(false)) => {}
                 Ok(None) => owed = true,
                 Err(e) => {
@@ -190,7 +189,13 @@ pub(crate) async fn keep_mesh_rows(mut writer: MeshRowsWriter, digest_view: Dige
 /// reached) and a maker's stored topology. A record whose newest birth carries no address names no
 /// node to reach.
 pub(crate) async fn recorded_births(meshes: &dyn crate::storage::MeshStorage, nodes: &dyn crate::storage::NodesStorage, own_mesh: &str) -> Result<Vec<crate::reenter::MapNode>, crate::storage_error::StorageError> {
-    Ok(crate::storage::live_records(meshes, nodes, own_mesh).await?.iter().filter_map(crate::reenter::MapNode::of_record).collect())
+    let mut out = Vec::new();
+    for record in crate::storage::live_records(meshes, nodes, own_mesh).await? {
+        // The birth's address is the node's own part of its record (Q333), one point read at its id.
+        let own = nodes.properties(&record.node_id).await?;
+        out.extend(crate::reenter::MapNode::of_record(&record, own.as_ref()));
+    }
+    Ok(out)
 }
 
 /// Hold the primaries the node records on the store root record (`is_primary`, `is_fabric_primary` on

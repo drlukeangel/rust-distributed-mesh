@@ -363,14 +363,13 @@ mod tests {
         // node-status.md:5-7 — Status never moves through a meta or config put. The put goes through this
         // admin's own property writer, bound as boot binds it (`NodeConfigs::uses_records`, `bound_own`).
         {
-            use rdm_node::node_records::MemoryNodeRecords;
             let ep = rdm_transport::endpoint::bind(iroh::SecretKey::from_bytes(&[11u8; 32]), "127.0.0.1:0".parse().unwrap()).await.unwrap();
             let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
             let configs = crate::node_config::NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
             let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             let snapshot = topology.read().await.clone();
             let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-            configs.uses_records(Arc::new(MemoryNodeRecords::default()), channels);
+            configs.uses_records(Arc::new(crate::storage::MemoryNodesStorage::default()), || "memory".into(), channels);
             configs.bound_own(snapshot.own(&admin_id).unwrap(), Default::default()).await.unwrap();
             let _ = door.configs.set(Arc::new(configs));
         }

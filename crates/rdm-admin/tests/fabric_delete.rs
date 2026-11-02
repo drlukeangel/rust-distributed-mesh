@@ -160,7 +160,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 status: NodeStatus::Ready,
                 allocated: None,
                 renamed_from: None,
-                app_types: None, inherited_by: None,
+                inherited_by: None,
                 executable: None,
                 births: Vec::new(),
                 predecessor: None,

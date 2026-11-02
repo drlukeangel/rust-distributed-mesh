@@ -29,6 +29,12 @@ pub(crate) mod tests {
         async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, crate::storage_error::StorageError> {
             self.0.nodes(mesh).await
         }
+        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_properties(record).await
+        }
+        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
+            self.0.properties(node_id).await
+        }
         async fn put_node(&self, row: &NodeRow) -> Result<(), crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io {
                 file: format!("nodes/records/{}", row.node_id),

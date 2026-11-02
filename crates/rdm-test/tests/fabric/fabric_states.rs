@@ -449,17 +449,23 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     // builds.jsonl's (R-BI6), and no per-role row stands beside them (Part C2).
     let only_identity_builds_and_events = |rows: &[String]| !rows.iter().any(|r| r.starts_with("fabric/")) && rows.iter().filter(|r| r.starts_with("fabric.jsonl#")).all(|r| r.starts_with("fabric.jsonl#fabric-record/"));
     assert!(only_identity_builds_and_events(&after), "the Fabric row carries no pointer to the newest Build and no primary row stands beside it: {after:#?}");
-    // A mesh's primary records each member's address on its Node record.
+    // Each node records its own address in its own part of its record, at the birth its mesh's primary
+    // records on the record's other part (Q333).
     let addressed = |mesh: &str, id: &str| {
         let (mesh, id) = (mesh.to_string(), id.to_string());
         let estate = &estate;
         async move {
-            let addressed = || estate.node_record(&id).filter(|r| r["record"]["births"].as_array().and_then(|b| b.last()).is_some_and(|b| b["transport_addr"].is_string()));
+            let addressed = || {
+                let record = estate.node_record(&id)?;
+                let birth = record["record"]["births"].as_array().and_then(|b| b.last()).and_then(|b| b["incarnation_id"].as_str()).map(str::to_string)?;
+                let own = estate.node_properties(&rdm_core::NodeId::parse(&id).ok()?)?;
+                (own.birth.incarnation_id.as_str() == birth && own.transport_addr.is_some()).then_some(record)
+            };
             let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while addressed().is_none() && std::time::Instant::now() < until {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            assert!(addressed().is_some(), "{mesh}'s primary recorded {id}'s address on its Node record: {:?}", estate.node_record(&id));
+            assert!(addressed().is_some(), "{mesh}: {id} recorded its address in its own part of its record at its birth: {:?} {:?}", estate.node_record(&id), rdm_core::NodeId::parse(&id).ok().and_then(|n| estate.node_properties(&n)));
         }
     };
     let fp_id = s(&nodes[0]["node_id"]);

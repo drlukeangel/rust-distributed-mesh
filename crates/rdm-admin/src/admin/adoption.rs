@@ -153,6 +153,9 @@ pub async fn read(
             }
         }
     }
+    // Its address is the node's own part of its record at that birth (Q333).
+    let own = nodes.properties(&row.node_id).await.map_err(|e| format!("{of}: nodes.storage could not read the own part of the record of {}: {e}", row.node_id))?;
+    let own = crate::current_record::of_birth(own.as_ref(), &row.node_id, &birth.incarnation_id);
     let lost = crate::storage::NodeRecord {
         mesh: row.mesh.clone(),
         node_id: row.node_id.clone(),
@@ -160,9 +163,9 @@ pub async fn read(
         name: row.name.clone(),
         mesh_id: row.mesh_id.clone().unwrap_or_else(|| mesh.mesh_id.clone()),
         incarnation_id: birth.incarnation_id.clone(),
-        endpoint_id: birth.endpoint_id.clone().unwrap_or_else(|| EndpointId(String::new())),
-        transport_addr: birth.transport_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0))),
-        listeners: birth.listeners.clone(),
+        endpoint_id: own.and_then(|o| o.endpoint_id.clone()).unwrap_or_else(|| EndpointId(String::new())),
+        transport_addr: own.and_then(|o| o.transport_addr).unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0))),
+        listeners: own.map(|o| o.listeners.clone()).unwrap_or_default(),
         is_primary: birth.is_primary,
         is_fabric_primary: birth.is_fabric_primary,
         topology_storage_provider: None,
@@ -512,8 +515,8 @@ pub async fn take_new_name(me: &PathName, mesh: &str, me_id: &NodeId, nodes: &dy
 /// ([`crate::node_rows::take_inherited_name`]: the lost birth's row written `Deleted`, then this node's
 /// claim of the path and name), then the deletion's receipt (`node.delete:<path>` `NodeDeleted`, naming the
 /// exact birth) on the journal.
-pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, properties: Option<&dyn rdm_node::node_records::NodeRecordsStorage>, builds: &dyn BuildStateAdapter) -> Result<(), String> {
-    crate::node_rows::take_inherited_name(nodes, written, properties, &c.lost, me_id).await.map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.name.path, c.lost.name.name, c.lost.node_id))?;
+pub async fn release_name(c: &Claimed, me_id: &NodeId, nodes: &dyn crate::storage::NodesStorage, written: &crate::node_rows::WrittenRows, builds: &dyn BuildStateAdapter) -> Result<(), String> {
+    crate::node_rows::take_inherited_name(nodes, written, &c.lost, me_id).await.map_err(|e| format!("node_id={me_id} claims path={} name={} after lost node_id={}: {e}", c.lost.name.path, c.lost.name.name, c.lost.node_id))?;
     let receipt = BuildStepReceipt {
         build_id: c.row.build_id.clone(),
         attempt: c.row.attempt,
@@ -622,9 +625,19 @@ impl Answers for ProbeAnswers {
             Err(e) => return Err(format!("the node rows could not be read: {e}")),
         };
         let calls = self.calls();
+        // Each admin's address is the node's own part of its record (Q333), one point read at its id.
+        let mut owns = std::collections::BTreeMap::new();
+        for r in rows.iter().filter(|r| r.kind == NodeKind::NodeAdmin && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)) {
+            match self.nodes.properties(&r.node_id).await {
+                Ok(Some(own)) => { owns.insert(r.node_id.clone(), own); }
+                Ok(None) => {}
+                Err(e) => return Err(format!("the own part of the record of {} could not be read: {e}", r.node_id)),
+            }
+        }
         let probes = rows.iter().filter(|r| r.kind == NodeKind::NodeAdmin && r.node_id != self.me_id && self.inherited.as_ref() != Some(&r.node_id)).filter_map(|r| {
             let b = r.newest_birth()?;
-            let (endpoint, addr) = (b.endpoint_id.clone()?, b.transport_addr?);
+            let own = crate::current_record::of_birth(owns.get(&r.node_id), &r.node_id, &b.incarnation_id)?;
+            let (endpoint, addr) = (own.endpoint_id.clone()?, own.transport_addr?);
             self.resolve(&r.node_id, &r.name, &r.mesh, r.kind, &endpoint, addr, &b.incarnation_id).then(|| {
                 let mut node = Node::allocated(r.name.clone(), r.mesh.clone(), r.kind);
                 node.node_id = r.node_id.clone();
@@ -882,7 +895,7 @@ mod tests {
             assert_eq!(finding, Finding::Exited { code: Some(0) });
 
             let written = WrittenRows::default();
-            release_name(&claimed_3, &me_3, &nodes_store, &written, None, &builds_store)
+            release_name(&claimed_3, &me_3, &nodes_store, &written, &builds_store)
                 .await
                 .expect("release_name marks lost birth Deleted and claims path for me_3");
 

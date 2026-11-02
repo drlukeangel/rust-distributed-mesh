@@ -334,17 +334,15 @@ impl Prepared {
                 })
                 .await
                 .unwrap();
-            // The birth's row at its path.name, its address on its newest birth, as its mesh's writer left
-            // them: the name is held by this node.id.
-            let mut birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.name.clone());
-            (birth.endpoint_id, birth.transport_addr) = (Some(own.endpoint_id.clone()), Some(own.transport_addr));
+            // The birth's row at its path.name, as its mesh's writer left it: the name is held by this node.id.
+            let birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), own.name.clone());
             let row = rdm_admin::storage::NodeRow { replacement_from: None, kind: rdm_core::NodeKind::NodeAdmin, mesh: own.mesh.clone(), initial_properties: None, topology_storage_provider: None, writer: None,
                 name: own.name.clone(),
                 node_id: node_id.clone(),
                 status: rdm_admin::model::NodeStatus::Ready,
                 allocated: None,
                 renamed_from: None,
-                app_types: None, inherited_by: None,
+                inherited_by: None,
                 executable: None,
                 births: vec![birth],
                 predecessor: None,
@@ -353,27 +351,32 @@ impl Prepared {
                 placement: None,
             };
             nodes.write_record(&row).await.unwrap();
-            // The birth's own property record, as its own writer put it.
-            use rdm_node::node_records::NodeRecordsStorage as _;
-            rdm_node::node_records::FileNodeRecords::open(&root).await.unwrap().put_properties(&rdm_node::node_records::NodeProperties {
+            // The birth's own part of its record, its address included, as its own writer put it (Q333).
+            use rdm_admin::storage::NodesStorage as _;
+            nodes.put_properties(&rdm_node::node_records::NodeProperties {
                 birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
                 config: INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
                 tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
-                endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
+                endpoint_id: Some(own.endpoint_id.clone()), transport_addr: Some(own.transport_addr), listeners: Vec::new(), app_types: None, held: Default::default(),
             }).await.unwrap();
             let mut launched = Vec::new();
             for (path, name, kind) in launched_names {
                 let location = rdm_core::PathName::new(*path, *name).unwrap();
                 let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-                let mut birth = rdm_admin::storage::BirthFacts::new(incarnation, location.clone());
-                (birth.endpoint_id, birth.transport_addr) = (Some(EndpointId(iroh::SecretKey::generate().public().to_string())), Some(unanswered_addr()));
+                let birth = rdm_admin::storage::BirthFacts::new(incarnation.clone(), location.clone());
+                // Its address is the node's own part of its record (Q333).
+                nodes.put_properties(&rdm_node::node_records::NodeProperties {
+                    birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation },
+                    config: Default::default(), tags: Default::default(),
+                    endpoint_id: Some(EndpointId(iroh::SecretKey::generate().public().to_string())), transport_addr: Some(unanswered_addr()), listeners: Vec::new(), app_types: None, held: Default::default(),
+                }).await.unwrap();
                 let row = rdm_admin::storage::NodeRow { mesh: "mesh1".to_owned(), kind: *kind, replacement_from: None, initial_properties: None, topology_storage_provider: None, writer: None,
                     name: location.clone(),
                     node_id: node_id.clone(),
                     status: rdm_admin::model::NodeStatus::Ready,
                     allocated: None,
                     renamed_from: None,
-                    app_types: None, inherited_by: None,
+                    inherited_by: None,
                     executable: None,
                     births: vec![birth],
                     predecessor: None,
@@ -429,7 +432,14 @@ impl Prepared {
             let nodes = rdm_admin::storage::FileNodesStorage::open(&self.data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
             let row = nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap();
             let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-            let contacts = rdm_admin::storage::live_records(&meshes, &nodes, "mesh1").await.unwrap().into_iter().filter(|r| r.newest_birth().is_some_and(|b| b.transport_addr.is_some())).map(|r| r.node_id.to_string()).collect();
+            // A birth's address is the node's own part of its record at that birth (Q333).
+            let mut contacts = Vec::new();
+            for r in rdm_admin::storage::live_records(&meshes, &nodes, "mesh1").await.unwrap() {
+                let own = nodes.properties(&r.node_id).await.unwrap();
+                if r.newest_birth().is_some_and(|b| own.is_some_and(|o| o.birth.incarnation_id == b.incarnation_id && o.transport_addr.is_some())) {
+                    contacts.push(r.node_id.to_string());
+                }
+            }
             (row, contacts)
         })
     }

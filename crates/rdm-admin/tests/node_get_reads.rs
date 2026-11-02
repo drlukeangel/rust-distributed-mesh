@@ -25,14 +25,14 @@ fn node(name: rdm_core::PathName, mesh: &str, kind: rdm_core::NodeKind) -> Node 
 /// The node property records the reads below answer config and tags from (node-config-update.md step 4:
 /// "A reader that needs config reads the node's property record at its node ID"): one store for every
 /// cell of this file, each node's record at its own minted id.
-fn properties() -> &'static rdm_node::node_records::MemoryNodeRecords {
-    static RECORDS: std::sync::OnceLock<rdm_node::node_records::MemoryNodeRecords> = std::sync::OnceLock::new();
+fn properties() -> &'static MemoryNodesStorage {
+    static RECORDS: std::sync::OnceLock<MemoryNodesStorage> = std::sync::OnceLock::new();
     RECORDS.get_or_init(Default::default)
 }
 
 /// `node_id`'s own property record carrying `config` and `tags`, as its own writer put it.
 async fn own(node_id: &NodeId, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>) {
-    use rdm_node::node_records::NodeRecordsStorage as _;
+    use rdm_admin::storage::NodesStorage as _;
     properties().put_properties(&rdm_node::node_records::NodeProperties {
         birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: IncarnationId::mint() },
         config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
@@ -60,7 +60,24 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     let meshes = rdm_admin::storage::MemoryMeshStorage::default();
     crate::write_meshes(view, &meshes).await;
-    let current = rdm_admin::current_record::CurrentRecords { claims: status, records: properties() };
+    // Each node's own part of its record beside its mesh-primary's in the one nodes store (Q333).
+    {
+        use rdm_admin::storage::NodesStorage as _;
+        let meshes: std::collections::BTreeSet<String> = view.nodes.iter().map(|n| n.mesh.clone()).chain(view.meshes.iter().map(|m| m.name.clone())).collect();
+        for mesh in meshes {
+            for row in status.nodes(&mesh).await.unwrap() {
+                if let Some(own) = properties().properties(&row.node_id).await.unwrap() {
+                    status.put_properties(&own).await.unwrap();
+                }
+            }
+        }
+        for n in &view.nodes {
+            if let Some(own) = properties().properties(&n.node_id).await.unwrap() {
+                status.put_properties(&own).await.unwrap();
+            }
+        }
+    }
+    let current = rdm_admin::current_record::CurrentRecords { nodes: status };
     rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin", "1"), view, &loads, &atlas, planned, filter, &|_| {}, Some(current)).await
 }
 
@@ -264,9 +281,10 @@ async fn a_retained_predecessors_labels_stay_at_its_own_id_and_the_current_pair_
 }
 
 /// The fabric-primary `me`'s Status door over `view`, its atlas `atlas`, its nodes store
-/// `nodes_storage`, its mesh store `meshes` and its node records `records` (its config door bound to
-/// them, as boot binds it); every other store in memory.
-async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>, meshes: Arc<dyn rdm_admin::storage::MeshStorage>, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>) -> rdm_admin::status_rpc::StatusDoor {
+/// `nodes_storage` (its config door bound to it, as boot binds it) and its mesh store `meshes`; every
+/// other store in memory.
+async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>, meshes: Arc<dyn rdm_admin::storage::MeshStorage>) -> rdm_admin::status_rpc::StatusDoor {
+    let records = nodes_storage.clone();
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
     let configs: rdm_admin::node_config::NodeConfigsSlot = Default::default();
@@ -346,15 +364,14 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
     atlas.scope(["mesh1".to_string()].into());
     // Each record read at its node id in the nodes store (query.md §1).
     let meshes = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
-    let node_records = Arc::new(rdm_node::node_records::MemoryNodeRecords::default());
     crate::write_meshes(&view, &*meshes).await;
     for n in [&admin, &gw] {
         own(&n.node_id, BTreeMap::new(), Default::default()).await;
-        use rdm_node::node_records::NodeRecordsStorage as _;
-        let own = properties().properties(&n.node_id).await.unwrap().expect("the node's own property record");
-        node_records.put_properties(&own).await.unwrap();
+        use rdm_admin::storage::NodesStorage as _;
+        let own = properties().properties(&n.node_id).await.unwrap().expect("the node's own part of its record");
+        records.put_properties(&own).await.unwrap();
     }
-    let fp = fabric_primary_at(&admin, view, atlas, records.clone(), meshes, node_records).await;
+    let fp = fabric_primary_at(&admin, view, atlas, records.clone(), meshes).await;
 
     match fp.read_rows(&get(rdm_core::filter::Entity::Nodes, Filter::new().eq("mesh", ["mesh1"]))).await {
         Ok(rdm_core::read::Rows::Nodes(nodes)) => {

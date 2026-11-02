@@ -1,5 +1,5 @@
 //! The storage backend a node runs on: its own connections rows (`connections.storage`) and its point
-//! reads of other nodes' rows (`nodes.storage`, query.md §1, Q237). A node-admin's backend opens the admin's six boundaries (`rdm_admin::storage_backend`);
+//! reads of other nodes' rows and its own part of its record (`nodes.storage`, query.md §1, Q237, Q331). A node-admin's backend opens the admin's five boundaries (`rdm_admin::storage_backend`);
 //! a node opens this one at its boot. RDM standalone's is [`FileNodeBackend`] (the `file-backend`
 //! feature, the default), the rows as files on the fabric's store root. [`MemoryNodeBackend`] holds
 //! one process's rows.
@@ -17,8 +17,9 @@ pub struct NodeStorage {
     /// The nodes' rows, a point read by id or by `(path, name)` (query.md §1, Q237): the backend opens
     /// them on the first read, never at the node's start, join or create (Q227).
     pub node_rows: Arc<dyn NodeRowsStorage>,
-    /// Node-owned properties and writer-birth lifecycle records on this same backend.
-    pub node_records: Arc<dyn crate::node_records::NodeRecordsStorage>,
+    /// The nodes store, bound for the node's own id: the node appends its own part of its record there
+    /// (Q333, [`crate::nodes_storage::NodesStorage::put_properties`]) and reads it back.
+    pub nodes: Arc<dyn crate::nodes_storage::NodesStorage>,
     /// Where the rows are written now, as the boot's span records it.
     pub writes_to: String,
 }
@@ -59,7 +60,7 @@ impl NodeStorageBackend for FileNodeBackend {
         let connections = crate::storage::FileConnectionsStorage::open(&root, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("connections storage: {e}"))?;
         Ok(NodeStorage {
             connections: Arc::new(connections),
-            node_records: Arc::new(crate::node_records::FileNodeRecords::open(&root).await.map_err(|e| format!("node records storage: {e}"))?),
+            nodes: Arc::new(crate::nodes_storage::FileNodesStorage::open(&launch.data_dir, &root, &launch.mesh, &crate::store_log::LogWriter::new(&launch.node_id, &launch.incarnation)).await.map_err(|e| format!("nodes storage: {e}"))?),
             node_rows: Arc::new(crate::nodes_storage::FileNodeRowsOnFirstRead::at(root)),
             writes_to: "store-root".into(),
         })
@@ -163,9 +164,10 @@ impl NodeStorageHandle {
         Arc::new(NodeRowsThroughHandle(self.clone()))
     }
 
-    /// Split node records through this handle, so a provider move changes subsequent calls.
-    pub fn node_records(self: &Arc<Self>) -> Arc<dyn crate::node_records::NodeRecordsStorage> {
-        Arc::new(NodeRecordsThroughHandle(self.clone()))
+    /// The nodes store through this handle, bound for the node's own id (Q331): every call goes to the
+    /// provider the node writes at that call.
+    pub fn nodes(self: &Arc<Self>) -> Arc<dyn crate::nodes_storage::NodesStorage> {
+        Arc::new(NodesThroughHandle(self.clone()))
     }
 
     /// Replace the provider with the one this executable registers as `provider`, opened now, off the
@@ -221,20 +223,56 @@ impl NodeRowsStorage for NodeRowsThroughHandle {
     }
 }
 
-/// Split node records use the same migration admission as connection writes.
-struct NodeRecordsThroughHandle(Arc<NodeStorageHandle>);
+/// `nodes.storage` through a node's [`NodeStorageHandle`], bound for the node's own id (Q331): it
+/// writes the node's own part of its record and nothing else, its writes taking the same migration
+/// admission as connection writes; every other write (a row, a runtime row, a name claim) is its
+/// mesh-primary's or its launcher's, refused here by name.
+struct NodesThroughHandle(Arc<NodeStorageHandle>);
+
+impl NodesThroughHandle {
+    fn not_the_nodes(&self, what: &str) -> crate::storage_error::StorageError {
+        crate::storage_error::StorageError::Refused { file: "nodes.storage".into(), reason: format!("node {} writes only its own part of its record; {what} is not its to write", self.0.launch.node_id) }
+    }
+}
 
 #[async_trait]
-impl crate::node_records::NodeRecordsStorage for NodeRecordsThroughHandle {
-    fn provider(&self) -> String {
-        self.0.provider()
+impl crate::nodes_storage::NodesStorage for NodesThroughHandle {
+    async fn put_runtime(&self, _row: &crate::nodes_storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+        Err(self.not_the_nodes("a runtime row"))
+    }
+    async fn runtimes(&self) -> Result<Vec<crate::nodes_storage::RuntimeRow>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().nodes.runtimes().await
+    }
+    async fn runtime(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<crate::nodes_storage::RuntimeRow>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().nodes.runtime(node_id, incarnation).await
+    }
+    async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().nodes.node(node_id).await
+    }
+    async fn nodes(&self, mesh: &str) -> Result<Vec<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().nodes.nodes(mesh).await
+    }
+    async fn put_node(&self, _row: &crate::nodes_storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
+        Err(self.not_the_nodes("a mesh-primary's row"))
     }
     async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
+        if record.birth.node_id != self.0.launch.node_id {
+            return Err(self.not_the_nodes(&format!("the own part of node {}", record.birth.node_id)));
+        }
         let w = self.0.current.write();
-        w.node_records.put_properties(record).await
+        w.nodes.put_properties(record).await
     }
-    async fn properties(&self, node: &crate::model::NodeId) -> Result<Option<crate::node_records::NodeProperties>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().node_records.properties(node).await
+    async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::node_records::NodeProperties>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().nodes.properties(node_id).await
+    }
+    async fn name_claim(&self, name: &crate::model::PathName) -> Result<Option<crate::model::NodeId>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().nodes.name_claim(name).await
+    }
+    async fn claim_node_name(&self, _name: &crate::model::PathName, _node_id: &crate::model::NodeId) -> Result<Result<(), crate::nodes_storage::NameHeld>, crate::storage_error::StorageError> {
+        Err(self.not_the_nodes("a name claim"))
+    }
+    async fn release_node_name(&self, _name: &crate::model::PathName, _node_id: &crate::model::NodeId) -> Result<(), crate::storage_error::StorageError> {
+        Err(self.not_the_nodes("a name claim's release"))
     }
 }
 
@@ -255,15 +293,15 @@ fn no_node_rows() -> crate::storage_error::StorageError {
     crate::storage_error::StorageError::Refused { file: "nodes.storage".into(), reason: "the memory backend holds this process's own connections only: no node's row is read from it".into() }
 }
 
-/// One process's rows: the node's connections held in memory, gone with its process; it holds no
-/// node's row, and a read of one is refused by name.
+/// One process's rows: the node's connections and its own part of its record held in memory, gone
+/// with its process; a point read of a node's row is refused by name.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MemoryNodeBackend;
 
 #[async_trait]
 impl NodeStorageBackend for MemoryNodeBackend {
     async fn open(&self, _launch: &Launch) -> Result<NodeStorage, String> {
-        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), node_rows: Arc::new(NoNodeRows), node_records: Arc::new(crate::node_records::MemoryNodeRecords::default()), writes_to: "memory".into() })
+        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), node_rows: Arc::new(NoNodeRows), nodes: Arc::new(crate::nodes_storage::MemoryNodesStorage::default()), writes_to: "memory".into() })
     }
 }
 

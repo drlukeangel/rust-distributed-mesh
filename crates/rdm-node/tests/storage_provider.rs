@@ -157,7 +157,7 @@ struct StalledFile {
 impl NodeStorageBackend for StalledFile {
     async fn open(&self, launch: &Launch) -> Result<NodeStorage, String> {
         let opened = self.file.open(launch).await?;
-        Ok(NodeStorage { connections: Arc::new(Stalled { rows: opened.connections, gate: self.gate.clone(), arrived: self.arrived.clone() }), node_rows: opened.node_rows, node_records: opened.node_records, writes_to: opened.writes_to })
+        Ok(NodeStorage { connections: Arc::new(Stalled { rows: opened.connections, gate: self.gate.clone(), arrived: self.arrived.clone() }), node_rows: opened.node_rows, nodes: opened.nodes, writes_to: opened.writes_to })
     }
 }
 

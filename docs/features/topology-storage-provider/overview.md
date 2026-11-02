@@ -21,13 +21,11 @@ During a change the two differ; that difference is the change's progress. Cell:
 `a_customer_reads_each_nodes_topology_provider` (both read on a two-mesh fabric, beside
 `storage_persistence`, a separate property of the node: [storage.md §1](../../architecture/storage.md#1-storage_persistence-a-nodes-own-storage)).
 
-The six stores are `fabric.storage`, `mesh.storage`, `nodes.storage`, `connections.storage`,
-`builds.storage` and the `node-records` boundary (`NodeRecordsStorage`). The last contains
-node-owned properties and lifecycle records addressed by the writing primary's birth. Both kinds,
-including claim snapshots, belong to the same migration inventory.
-On the file backend they share `node-records.jsonl`. An application's own rows, events and data dirs
+The five stores are `fabric.storage`, `mesh.storage`, `nodes.storage`, `connections.storage` and `builds.storage`.
+A node's record, its mesh-primary's part and its own, is in `nodes.storage` and belongs to the same migration inventory.
+An application's own rows, events and data dirs
 are not among these stores. [i150](../../plans/i150-node-writes-lifecyle-updates.md) tracks removal
-of the old combined node rows and full application-provider acceptance; the six-store copy
+of the old combined node rows and full application-provider acceptance; the five-store copy
 substrate alone does not establish that the lifecycle transition is complete.
 
 ## Providers and registration
