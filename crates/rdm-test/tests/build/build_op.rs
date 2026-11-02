@@ -1401,9 +1401,10 @@ async fn an_os_stopped_node_admin_recovered_and_resumed_is_refused_by_name_and_d
         .iter()
         .find(|d| ["digest", "declaration", "join"].contains(&attr(d, "door").as_str()) && ["delete-deleted-birth", "delete-path-held"].contains(&attr(d, "decision").as_str()) && attr(d, "outcome") == "terminate-reported")
         .unwrap_or_else(|| panic!("expected a digest, declaration or join door decision that deletes the caller, with terminate-reported: {decisions:#?}"));
-    // Deleted either way (Q207, Q217): its record deleted, or its path already held by the re-created
-    // birth when the caller was decided, whichever the decision met first; never re-admitted.
-    assert!(["delete-deleted-birth", "delete-path-held"].contains(&attr(refused_decided, "own").as_str()), "{refused_decided}");
+    // Deleted either way (Q207, Q217), never re-admitted. The admin's own read (`own`) is not asserted:
+    // the resumed birth, the old mesh-primary, can write its own record after its successor wrote it
+    // Deleted, and a node's record is its latest line (query.md §1, Q323), so `own` may read that late
+    // line; the decision still deletes it (lead-decisions-2026-11-02 D7).
 
     let reported = spans_named(&spans, "rdm.node_admin.node.update.via-returned-reported")
         .into_iter()
