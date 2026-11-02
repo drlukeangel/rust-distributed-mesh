@@ -137,3 +137,57 @@ async fn a_nodes_own_config_is_read_from_its_record_at_both_primaries() {
     assert!(rdm_test::estate::named(&spans, "rdm.node_admin.node.update.via-config").iter().all(|span| attr(span, "apply") != "own"));
     estate.record_trace_url(written["trace_id"].as_str().unwrap());
 }
+
+// @feature: node-lifecycle
+/// CONTRACT (Q227: the fabric-primary of a single mesh with nobody to pull from reads the node
+/// records; fabric-recovery.md "Nothing alive"; node-config-update.md "Build application": "True
+/// recovery inherits the predecessor's acknowledged properties."): mesh1's fabric-primary, its only
+/// node-admin (one rpc node beside it, so its store names a node and Q200's Day 0 is not this case),
+/// changes its own config, is lost, and a person starts a node-admin again on its data dir (fabric
+/// recovery, a new birth at its path and name). The new birth's config is the changed map, read from
+/// the lost birth's own part of its record in nodes.jsonl by the recovery's claim, and the new birth
+/// writes that map as its own part. Must NOT happen: the new birth starting from an empty launch
+/// snapshot, the change made before the loss gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lone_fabric_primary_keeps_its_own_config_across_its_restart() {
+    let cell = "a_lone_fabric_primary_keeps_its_own_config_across_its_restart";
+    let shape = [("mesh1", 1, 1)];
+    let mut estate = rdm_test::estate::Estate::bootstrap(estate_owner(cell), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settled_views(&shape).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let fp = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
+    let before = estate.node_view(&fp).await;
+    let config: BTreeMap<String, String> = [("listener.data".to_string(), "127.0.0.1:45007".to_string())].into();
+    // node.config.update of its own exact birth, sent to it as the fabric-primary, which sends it down
+    // to the node's mesh-primary, itself (node-config-update.md "A caller's update").
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(before.node_id.clone()), node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().expect("the fabric-primary names its incarnation") };
+    let carrier = estate.carrier().await;
+    let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&before.node_id, &rdm_transport::RouteChoice::Direct, &birth, config.clone(), &rdm_transport::CallOptions::default()).await;
+    assert!(matches!(reply, Ok(StatusReply::ConfigUpdated { ref config, .. }) if config.get("listener.data").map(String::as_str) == Some("127.0.0.1:45007")), "the lone fabric-primary updates its own config: {reply:?}");
+    // The kill flushes nothing: the acknowledged write's span is exported before it.
+    let written = rdm_test::estate::wait_for("the fabric-primary's own write span is exported", Duration::from_secs(10), || async {
+        estate.spans_named(&["rdm.node.record.update.via-properties"]).into_iter()
+            .find(|s| s["attributes"]["node_id"] == before.node_id.as_str() && s["attributes"]["outcome"] == "durable")
+            .and_then(|s| s["trace_id"].as_str().map(str::to_string))
+    })
+    .await;
+    let fp_dir = estate.bootstrap_data_dir("mesh1");
+    estate.kill_bootstrap();
+    let restarted = estate.restart_admin_with(&fp_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    assert_eq!(restarted, fp, "the start on the data dir is at its own row's (path, name)");
+    estate.enter(&restarted).await;
+    let after = rdm_test::estate::wait_for("the restarted fabric-primary is ready at its (path, name)", Duration::from_secs(120), || async {
+        estate.node_views().await.into_iter().find(|n| n.name == fp && n.node_id != before.node_id && n.status == rdm_client::NodeStatus::Ready)
+    })
+    .await;
+    estate.artifact("lone-fabric-primary-restart.json", &serde_json::json!({"before": before, "config": config, "after": after}));
+    estate.stop().await;
+    assert_eq!(after.config, config, "the restarted lone fabric-primary's config is the one it changed before its loss: {after:?}");
+    let spans = estate.spans();
+    let own = rdm_test::estate::named(&spans, "rdm.node.record.update.via-properties").into_iter()
+        .find(|s| s["attributes"]["node_id"] == after.node_id.as_str())
+        .unwrap_or_else(|| panic!("the restarted fabric-primary {} wrote its own part", after.node_id));
+    estate.record_trace_url(&written);
+    estate.record_trace_url(own["trace_id"].as_str().unwrap());
+}

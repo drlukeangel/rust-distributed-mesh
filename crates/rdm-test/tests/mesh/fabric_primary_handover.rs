@@ -260,13 +260,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // removed. Each mesh1 birth's Node record stays on the fabric's store root at its node id
     // (its lines in `nodes.jsonl` at its node id, R-SR1; storage-whole-records.md), written Deleted: the members' by
     // mesh1's primary, the final primary's by the fabric-primary in its node.delete. A deleted birth
-    // never answers, so mesh-left takes the address of every birth its proof set names off its record.
+    // never answers, so mesh-left takes the primaries of every birth its proof set names off its record
+    // (`clear_primaries`; its address is in the node's own part of the record, Q333, which mesh-left leaves).
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.admin.1's own Node row remains in {mesh1_dir}");
     for (name, id) in mesh1_ids.iter() {
         let row: Value = estate.node_record(id).unwrap_or_else(|| panic!("the Node row of {name:?} ({id}) remains in nodes.jsonl"));
         assert_eq!((s(&row["record"]["node_id"]), s(&row["record"]["status"])), (id.clone(), "deleted".to_string()), "{name:?}'s Node row is written Deleted: {row}");
         let newest = row["record"]["births"].as_array().and_then(|b| b.last()).cloned().unwrap_or_default();
-        assert!(newest["transport_addr"].is_null() && newest["is_primary"].is_null(), "mesh-left took {name:?}'s ({id}) address and primaries off its record: {row}");
+        assert!(newest["is_primary"].is_null() && newest["is_fabric_primary"].is_null(), "mesh-left took {name:?}'s ({id}) primaries off its record: {row}");
     }
     // states.md: the mesh's `deleting` is entered by the delete-mesh down op, and "one commit stores
     // the row, applies it, gossips it and answers the op": mesh1's primary stored its own mesh row
@@ -445,14 +446,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // fabric-primary, after the final birth's exited verdict.
     let left_recorded: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt").into_iter().filter(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4).collect();
     assert!(left_recorded.iter().any(|sp| start_ns(sp) >= final_exit), "the fabric-primary recorded MeshLeft over all four births after the final birth's exited verdict: {left_recorded:?}");
-    // mesh-left takes the addresses of the births its proof set names off their records, the final primary included.
+    // mesh-left takes the primaries of the births its proof set names off their records, the final primary included.
     let dropped = named(&spans, "rdm.node_admin.node.remove.via-mesh-left-contact")
         .into_iter()
         .find(|sp| keyed(sp, "mesh.delete", &mesh1_id) && sp["attributes"]["error"].is_null())
         .cloned()
-        .unwrap_or_else(|| panic!("mesh-left took mesh1's births' addresses off their records under mesh.delete:{mesh1_bare}"));
+        .unwrap_or_else(|| panic!("mesh-left took mesh1's births' primaries off their records under mesh.delete:{mesh1_bare}"));
     for (name, id) in mesh1_ids.iter() {
-        assert!(s(&dropped["attributes"]["dropped"]).split(", ").any(|d| d.contains(id.as_str())), "mesh-left took the address of {name:?} ({id}) off its record: {dropped}");
+        assert!(s(&dropped["attributes"]["dropped"]).split(", ").any(|d| d.contains(id.as_str())), "mesh-left took the primaries of {name:?} ({id}) off its record: {dropped}");
     }
     // e12.s72: the deleted mesh's last admin publishes the final mesh topology (`published == "true"`,
     // `status == "Leaving"`, carrying `node.delete:<final_name>` in `in_flight`) after its stop's

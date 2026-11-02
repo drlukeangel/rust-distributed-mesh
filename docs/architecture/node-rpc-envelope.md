@@ -1247,7 +1247,7 @@ record (Q237, Q323). A mesh neither held, written nor in the answerer's durable 
 UnknownMesh.
 
 Stored is reply position 11; REPLY_VARIANTS is 15. Stored is data-class, built from the
-records the answerer writes and the births its view holds (its durable topology included), never
+births the answerer's view holds (its durable topology included), never
 from the store,
 and carries up to 24 nodes per frame; End.meshes counts a stored mesh once across frames.
 It serves only a mesh the maker holds no snapshot of, never the maker's own mesh. A held

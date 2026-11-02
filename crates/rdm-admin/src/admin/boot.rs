@@ -1856,7 +1856,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 subject.incarnation_id = Some(incarnation.clone());
                                 subject.endpoint_id = Some(EndpointId(key.public().to_string()));
                                 subject.transport_addr = Some(mesh_addr);
-                                let initial = cfg.launch.as_ref().map(|launch| launch.initial_properties.clone()).unwrap_or_default();
+                                // Its launch snapshot: a launched admin's is its launch's; an admin no launcher
+                                // started takes the one on the claim of its path and name this boot wrote (Day 0's,
+                                // empty; fabric recovery's and the adoption launch's, the lost birth's own part of its
+                                // record, read by that claim from the nodes store at the lost birth's node id: Q227's
+                                // fabric-primary with nobody to pull from, `take_inherited_name`). Nothing more is read.
+                                let initial = match &cfg.launch {
+                                    Some(launch) => launch.initial_properties.clone(),
+                                    None => records.caches.nodes.row_of(&node_id).and_then(|row| row.initial_properties).unwrap_or_default(),
+                                };
                                 configs_slot.get().expect("configs bound before digest").bound_own(&subject, initial).await?;
                             }
                             // The own row in the data dir: this birth and its Mesh, so a restart on this data dir is the
