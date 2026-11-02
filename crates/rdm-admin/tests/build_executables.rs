@@ -375,7 +375,7 @@ fn build_executable_admission_refuses_missing_or_mismatched_bindings_and_drive_r
             }),
             dispatcher: loopback,
             gate,
-            departure: Arc::new(crate::loopback::Proofs::default()),
+            departure: Arc::new(crate::loopback::Exits::default()),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
             notices: Default::default(),
             turns: rdm_admin::stop_gate::StopGate::new(),

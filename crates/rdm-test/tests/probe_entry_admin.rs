@@ -14,7 +14,7 @@ use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_transport::{ServedBirth, ServerBuilder};
 use rdm_core::filter::{Entity, Filter};
 use rdm_core::status::StatusRequest;
-use rdm_test::proof_store::{self, FileProofStore};
+use rdm_test::testkit_store::{self, FileTestkitStore};
 use std::sync::Arc;
 
 /// CONTRACT: a probe given `--admin-birth` of a node-admin that serves Node RPC only asks that admin
@@ -57,9 +57,9 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             declared: Default::default(),
         };
-        let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
-        let server = proof_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
-            .carry::<rdm_test::proof_store::ProofStore>()
+        let store = Arc::new(FileTestkitStore::open(&launch.data_dir).unwrap());
+        let server = testkit_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
+            .carry::<rdm_test::testkit_store::TestkitStore>()
             .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -90,7 +90,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
         .filter(|e| e.file_name().to_string_lossy().starts_with("rdm-rpc-probe.") && e.file_name().to_string_lossy().ends_with(".spans.jsonl"))
         .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect::<Vec<serde_json::Value>>())
         .collect();
-    let root = spans.iter().find(|s| s["name"] == "rdm.node_rpc.proof_store.resolve.via-probe").unwrap_or_else(|| panic!("the probe left no via-probe span: {spans:?}"));
+    let root = spans.iter().find(|s| s["name"] == "rdm.node_rpc.evidence_store.resolve.via-probe").unwrap_or_else(|| panic!("the probe left no via-probe span: {spans:?}"));
     let trace = root["trace_id"].as_str().unwrap_or_default();
     for read in ["rdm.node_admin.fabric.resolve.via-call", "rdm.node_admin.node.resolve.via-call"] {
         let s = spans.iter().find(|s| s["name"] == read).unwrap_or_else(|| panic!("the probe left no {read} span: {spans:?}"));

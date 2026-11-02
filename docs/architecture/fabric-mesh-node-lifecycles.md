@@ -15,7 +15,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Node RPC envelope](node-rpc-envelope.md) | the op ledger, target and context, every op's request/reply schema and positional order, reserved stream codes, the typed object → wire mapping, the Build carrier `0x20` schema, RPC runtime span names, caller execution and certainty |
 | [Query](query.md) | how anything reads the fabric: the filter and its matching rules, the reads the fabric-primary answers through the current-pair lookup, and a node's local query of the topology it holds |
 | [Node RPC runtime](node-rpc.md) | how one invocation executes: resolver, pool, dispatch after the target, admission and memory, supervision, HandlerScope/ReplySink, the RpcOutcome algebra, budgets, connections-deleting runtime behaviour, retry guidance |
-| workflow pages under `lifecycles/` (including [fabric.create](lifecycles/fabric-create.md) and [node.name.update](lifecycles/node-name-update.md)) | one workflow each: its sequence, actors, completion proof, failure, diagram and observability table (tables below) |
+| workflow pages under `lifecycles/` (including [fabric.create](lifecycles/fabric-create.md) and [node.name.update](lifecycles/node-name-update.md)) | one workflow each: its sequence, actors, completion evidence, failure, diagram and observability table (tables below) |
 | [Fabric and node hooks](fabric-node-hooks.md) | where application work enters a lifecycle (`pre_node_ready`, `on_node_ready`, `on_fabric_ready`), NodeReadyCtx, outcomes, the rafka-time handle |
 | [Fabric certs](fabric-certs.md) | the cert chain, issuance, renewal and verification at a connection; the cert workflows table |
 | [Elections](fabric-node-lifecycle-elections.md) | the leadership election: a heard primary stays, unheard past the staleness floor it is superseded; the Mesh row and the fabric row as its inputs |
@@ -91,7 +91,7 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node.stop](lifecycles/node-stop.md) | Taking a node out of traffic while its process stays alive |
 | [node.delete](lifecycles/node-delete.md) | Removing a node and releasing its identity |
 | [node.connection.delete](lifecycles/node-connections-delete.md) | Closing a node's connections while its process keeps running: all of them gracefully, or exactly the named ones |
-| [node recovery (RDM)](lifecycles/node-recovery.md) | Replacing a member whose exit its mesh-primary proved |
+| [node recovery (RDM)](lifecycles/node-recovery.md) | Replacing a member whose exit its mesh-primary found |
 | [Rafka replace](lifecycles/node-replace.md) | Replacing a node under Rafka's steps: the predecessor renamed `<name>.old` live and stopped, the successor re-born at `<name>` |
 | [node status (internal)](lifecycles/node-status.md) | The node's status report and its mesh-primary's apply; not a caller op |
 | [node.topology.get](lifecycles/node-topology-get.md) | Reading a node's held topology; a [running node's reconnect](lifecycles/node-topology-get.md#running-node-reconnect) |

@@ -85,7 +85,7 @@ process running state
     -> one long-lived NodeRpcClient
 ~~~
 
-Node-admin readiness Ping, control calls, proof-store calls, Forward inner calls and ordinary RPC-node callers reuse that process client and resolver.
+Node-admin readiness Ping, control calls, evidence-store calls, Forward inner calls and ordinary RPC-node callers reuse that process client and resolver.
 
 The process-scoped LiveNodeResolver is the only topology model Node RPC reads.
 
@@ -101,7 +101,7 @@ NoActiveRoute
 
 The domain chooses WHO. Connections chooses HOW. Node RPC executes the selected direct or one-hop invocation.
 
-Node RPC never chooses a role/replica/fallback and never turns failed reachability into death proof.
+Node RPC never chooses a role/replica/fallback and never turns failed reachability into a sign the node is dead.
 
 ---
 
@@ -180,7 +180,7 @@ Node RPC is a runtime, **not a wire protocol of its own**.
 
 Every wire family is one op with one codec. Its declaration is the envelope's [`NodeProtocol`](node-rpc-envelope.md#section-2-the-body). Every shared refusal constructor and the reply classifier are required, never defaulted away.
 
-An ordinary product op is addable entirely in the application: define its typed request and reply and its op and descriptor, register the owning role's handler, and invoke the typed client. Adding it needs no RDM revision change. A missing generic capability is implemented and proven in RDM, then imported at one exact revision; the product never copies or reimplements the generic algorithm after import.
+An ordinary product op is addable entirely in the application: define its typed request and reply and its op and descriptor, register the owning role's handler, and invoke the typed client. Adding it needs no RDM revision change. A missing generic capability is implemented and tested in RDM, then imported at one exact revision; the product never copies or reimplements the generic algorithm after import.
 
 Streaming adds a frame type and classifier:
 
@@ -335,7 +335,7 @@ Passing readiness is a fast-path check, not a guarantee. A handler can still ret
 
 ## 14. Authenticated `PeerContext`
 
-The transport proves one fact: the caller's iroh `EndpointId`, which Node RPC hands each handler. A request can never claim its sender. Nothing inside the mesh checks who sent a frame or call: a Node RPC handler is addressed by target node id + op, and a gossip receiver takes or ignores a frame by what it carries ([gossip receive path](gossip.md#31-frame-catalog)). `Unauthorized`, `SenderNotSubject` and a caller-side `PeerUnresolved` keep their codec positions and a mesh receiver never sends them.
+The transport shows one fact: the caller's iroh `EndpointId`, which Node RPC hands each handler. A request can never claim its sender. Nothing inside the mesh checks who sent a frame or call: a Node RPC handler is addressed by target node id + op, and a gossip receiver takes or ignores a frame by what it carries ([gossip receive path](gossip.md#31-frame-catalog)). `Unauthorized`, `SenderNotSubject` and a caller-side `PeerUnresolved` keep their codec positions and a mesh receiver never sends them.
 
 ---
 
@@ -389,11 +389,11 @@ Admission never queues on the server. Failure is an immediate typed:
 Busy(reason)
 ```
 
-and proves the domain handler never ran.
+and shows the domain handler never ran.
 
 ### 17.1 Caller identity key
 
-The per-caller cap is keyed by the caller's transport-proven `EndpointId`, never by slot or freshness.
+The per-caller cap is keyed by the caller's `EndpointId`, as the transport carries it,, never by slot or freshness.
 
 ### 17.2 Why caller and server keys differ
 
@@ -501,7 +501,7 @@ Node RPC may evict because:
 
 - Iroh reports the connection closed/unusable;
 - `open_bi` fails before commit;
-- resolver/current transport state proves the exact incarnation or slot/freshness was superseded;
+- resolver/current transport state shows the exact incarnation or slot/freshness was superseded;
 - a peer answers typed `ConnectionsDeleting`;
 - topology departure invokes the pool purge hook.
 
@@ -594,9 +594,9 @@ There is no NotSentReason::Superseded.
 
 RejectedStale means the caller's pinned target is superseded, decided by the caller before send. It is definitive no-dispatch.
 
-Unserved means the receiver's reserved unserved-op reset proves protocol dispatch did not occur.
+Unserved means the receiver's reserved unserved-op reset shows protocol dispatch did not occur.
 
-Indeterminate means the request crossed the complete-send certainty cut and no stronger evidence proves non-dispatch or returns a valid protocol reply.
+Indeterminate means the request crossed the complete-send certainty cut and no stronger evidence shows non-dispatch or returns a valid protocol reply.
 
 The runtime never automatically retries any outcome.
 
@@ -691,7 +691,7 @@ The reserved stream codes are the envelope's [Reserved stream codes](node-rpc-en
 
 Only Node RPC emits the canonical 421-424 and 499 reset namespace. Domain protocols never reset streams; they reply with typed protocol values.
 
-`421 UNSERVED_OP` is the receiver reset that proves non-dispatch; `499 FRAME_NOT_SENT` is the caller's own reset of an unfinished request.
+`421 UNSERVED_OP` is the receiver reset that shows non-dispatch; `499 FRAME_NOT_SENT` is the caller's own reset of an unfinished request.
 
 ---
 
@@ -879,7 +879,7 @@ Before the complete request frame is sent, deadline/cancellation/send failure is
 
 The caller's time limit is not a generic remote execution deadline. After dispatch, a streaming handler's sink answers `CallerGone` when the caller ends the invocation or the runtime disappears; a lost connection is no cancellation: the response is held for resend (§43). The owning protocol decides whether to stop, finish or detach durable work.
 
-Node RPC never rolls back domain mutations and never pretends cancellation proves non-execution.
+Node RPC never rolls back domain mutations and never pretends cancellation shows non-execution.
 
 A protocol that needs its own execution budget carries a protocol-specific field, expressed as a relative budget or Rafka-time instant, not arbitrary local wall-clock time.
 
@@ -889,7 +889,7 @@ If a handler continues after caller cancellation, telemetry records caller_cance
 
 ## 35. Connections-deleting
 
-When its node enters connections-deleting under [node.connection.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`, on its own or as the first step of [node.stop](lifecycles/node-stop.md), the runtime answers new non-status calls with typed `ConnectionsDeleting`, which proves their handler did not run. The Status family stays served.
+When its node enters connections-deleting under [node.connection.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`, on its own or as the first step of [node.stop](lifecycles/node-stop.md), the runtime answers new non-status calls with typed `ConnectionsDeleting`, which shows their handler did not run. The Status family stays served.
 
 The caller invalidates pooled connections to that birth and re-enters its own target and reachability policy on a future attempt.
 
@@ -1026,7 +1026,7 @@ may travel through (§45). The request's first attempt goes direct; once an atte
 resend takes the route the policy answers then, a carried resend keeping the request's delivery id toward
 the same receiver. A carrier's failure ends that attempt, never the request.
 
-An ack proves receipt, never execution. The receiver acks only once the operation owner has made the
+An ack shows receipt, never execution. The receiver acks only once the operation owner has made the
 accepted work recoverable (a durable acceptance record, or the result already recorded); a read-only
 request needs no new write. The handler supplies that boundary; the runtime sends the ack and holds
 no durable queue. Each owner defines how its pending commands, check-ins and responses are
@@ -1101,7 +1101,7 @@ The carrier never chooses another carrier and never forwards twice. The route pr
 
 ## 47. Testing contract
 
-The runtime is proven once in RDM; a product proves only the ops it adds.
+The runtime is tested once in RDM; a product shows only the ops it adds.
 
 ---
 

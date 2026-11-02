@@ -1,8 +1,8 @@
-# Deployment provider, RuntimeFact and exact runtime proof
+# Deployment provider, RuntimeFact and the exact runtime's inspection
 
-This page owns the deployment provider: the contract every provider satisfies, the two providers RDM ships (a process provider over pids and a container provider over a Docker daemon), the RuntimeFact each birth publishes, the exact runtime proof, the runtime state the provider reports, and the storage rule for a birth's data dir. The Build engine that drives the provider, the storage interfaces and crash safety are [build.md](build.md). The sequences that use the provider are the workflow pages in the [lifecycle index](fabric-mesh-node-lifecycles.md); the one primitive that reads the provider is [node.runtime.inspect](lifecycles/node-runtime-inspect.md).
+This page owns the deployment provider: the contract every provider satisfies, the two providers RDM ships (a process provider over pids and a container provider over a Docker daemon), the RuntimeFact each birth publishes, the the exact runtime's inspection, the runtime state the provider reports, and the storage rule for a birth's data dir. The Build engine that drives the provider, the storage interfaces and crash safety are [build.md](build.md). The sequences that use the provider are the workflow pages in the [lifecycle index](fabric-mesh-node-lifecycles.md); the one primitive that reads the provider is [node.runtime.inspect](lifecycles/node-runtime-inspect.md).
 
-It is part of the generic control-plane contract proven in `rust-distributed-mesh` (RDM) and imported by Rafka ([build.md](build.md)).
+It is part of the generic control-plane contract built and tested in `rust-distributed-mesh` (RDM) and imported by Rafka ([build.md](build.md)).
 
 **The one sentence.** The provider launched the runtime and is the only thing that can see it. It reports what it sees of the exact runtime it launched or adopted: running, suspended by the operating system, exited with its code, or unknown. It never infers; the mesh never infers what the provider can read. Commands to a node travel on Node RPC; the provider is observational except for its one explicit act, terminating the exact runtime it is asked to.
 
@@ -90,7 +90,7 @@ Exact Rust naming may differ. The semantic cuts may not:
 
 - **Spawn records before it runs.** The launch record (`deployment.json` in the data dir) is durable before the executable runs, so a runtime that runs always has its record and an executor lost at any point of the spawn leaves `find` a record to read. A record that cannot be written stops the launch before the executable runs.
 - **Find is for the launcher's successor.** It tells a running launch, one that ran and exited, and one never launched apart, from the record and the domain, so a re-run after a crash mid-`DeployRuntime` adopts the runtime instead of starting a second one.
-- **Every command has a deadline.** Every provider command has a finite deadline, bounded by any earlier caller deadline, except the provider's own wait for the exit of a runtime it started, which ends with that exit or with the provider. Expiry ends the client wait and names the command and the elapsed time; it proves neither the cancellation of an external mutation nor the runtime's exit. Before repeating a mutation the workflow finds its exact deployment in the same control domain and adopts or reconciles what it observes; an inspection that is unavailable never means absence.
+- **Every command has a deadline.** Every provider command has a finite deadline, bounded by any earlier caller deadline, except the provider's own wait for the exit of a runtime it started, which ends with that exit or with the provider. Expiry ends the client wait and names the command and the elapsed time; it shows neither the cancellation of an external mutation nor the runtime's exit. Before repeating a mutation the workflow finds its exact deployment in the same control domain and adopts or reconciles what it observes; an inspection that is unavailable never means absence.
 - **Adopt is for any primary.** A successor reconstructs a control handle from a birth's published RuntimeFact alone, with no launcher and no completed Build receipts. The Day-0 admin a person or the test harness started enters the same tracking by adopting its own current runtime before Ready.
 - **Inspect reads, terminate acts, nothing else commands.** The provider sends no signal to a runtime but the stop ladder's and the terminate's. It never sends `SIGCONT`, never unpauses a container, never authors a node's status, never speaks Node RPC.
 
@@ -191,15 +191,15 @@ A cross-domain locator cannot be acted on as though it were local: it is refused
 
 ```rust
 pub enum DeploymentStatus {
-    /// The exact runtime exists, is nonterminal and is not observed OS-suspended. It proves
+    /// The exact runtime exists, is nonterminal and is not observed OS-suspended. It shows
     /// neither responsiveness nor readiness: a sleeping task, a runtime still starting and a
     /// deadlocked one all read `Running`.
     Running,
     /// The exact runtime exists and the operating system holds every task of it suspended
     /// (a process in state `T`/`t`; a paused container). Observed suspension: it is NOT the
-    /// lifecycle status `stopped` and proves no completed `node.stop`.
+    /// lifecycle status `stopped` and shows no completed `node.stop`.
     OsStopped,
-    /// The exact runtime exited; `code` when its record proves one.
+    /// The exact runtime exited; `code` when its record shows one.
     Exited { code: Option<i32> },
     /// The exact runtime's state cannot be told: an unreadable, partial or inconclusive inspection.
     Unknown,
@@ -210,10 +210,10 @@ The four states are provider-independent: every caller (the lifecycle pages, nod
 
 What each state is, and what the mesh does with it:
 
-| state | meaning | proof value | the caller's act |
+| state | meaning | evidence value | the caller's act |
 |---|---|---|---|
-| `Running` | the exact runtime exists, is nonterminal and is not observed OS-suspended | the runtime is not gone; this proves neither that it answers nor that it is ready, however silent or loud the node | [node investigation](lifecycles/node-investigation.md)'s `running` verdict: a silent `Running` birth is re-created, `TerminateRuntime` first ([node recovery](lifecycles/node-recovery.md)) |
-| `OsStopped` | the operating system holds every task suspended | the exact runtime exists and is observed suspended: this proves neither exit nor a completed `node.stop`, and says nothing about whether the node would answer once the suspension ends | node investigation's `os-stopped` verdict: re-created over a newly allocated data dir; an explicit node.delete skips the stop and terminates |
+| `Running` | the exact runtime exists, is nonterminal and is not observed OS-suspended | the runtime is not gone; this shows neither that it answers nor that it is ready, however silent or loud the node | [node investigation](lifecycles/node-investigation.md)'s `running` verdict: a silent `Running` birth is re-created, `TerminateRuntime` first ([node recovery](lifecycles/node-recovery.md)) |
+| `OsStopped` | the operating system holds every task suspended | the exact runtime exists and is observed suspended: this shows neither exit nor a completed `node.stop`, and says nothing about whether the node would answer once the suspension ends | node investigation's `os-stopped` verdict: re-created over a newly allocated data dir; an explicit node.delete skips the stop and terminates |
 | `Exited { code }` | the exact runtime ended | the concrete runtime can no longer accept work | node investigation's `exited` verdict: re-created over the inherited data dir, `TerminateRuntime` first, which removes what the runtime left (Q145); a delete proceeds to `node.deleted` |
 | `Unknown` | the inspection could not tell | neither life nor exit | node investigation's `unproven` verdict: re-created over a newly allocated data dir |
 

@@ -21,13 +21,13 @@ The lifecycle architecture rests on five design rules:
 
 1. **One status writer per node.** Its mesh-primary sets a node's status from the node's reports
    on its workflow's reply stream ([node status](lifecycles/node-status.md)); absence, a failed
-   dial or RPC, a transport drop or an unheard peer mesh never proves an exact runtime gone
+   dial or RPC, a transport drop or an unheard peer mesh never shows an exact runtime gone
    ([States](lifecycles/states.md#routing)).
 2. **Aliveness and readiness are separate axes** (§4): readiness is
    the status a node's row holds, liveness the `NodeState` peers observe from its digests (§4).
 3. **Observation and exact departure are different facts.** Local NodeState::Dead/stale vocabulary may
    describe an observer's routing view, but destructive recovery and Node RPC Gone require canonical
-   exact-runtime deletion/supersession evidence. A stopped status is a lifecycle state, not proof that the
+   exact-runtime deletion/supersession evidence. A stopped status is a lifecycle state, not evidence that the
    runtime has disappeared.
 4. **Events, not timers.** Every transition is event-observable (span-emitting). The time-based
    mechanisms are the heartbeat and anti-entropy cadence
@@ -49,7 +49,7 @@ The node writes its own properties in it: config, tags, bound addresses and
 application declarations. Its mesh-primary writes the status and role flags in the same record,
 beside identity, explicit mesh/kind, certificates, executable and placement facts.
 A current-pair lookup uses the ordinary name claim; it never uses the last writer at a path.
-Gossip is a projection, not persistence or proof that a lifecycle operation completed.
+Gossip is a projection, not persistence or evidence that a lifecycle operation completed.
 
 **A node has one identity on the fabric, a name that says where it sits, and one ID — its
 minted id. THE FABRIC IS ALL MESHES**, so the endpoint identity is globally unique — never
@@ -519,7 +519,7 @@ counted ([gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-
 |---|---|---|
 | **Stopped** | the mesh-primary's `NodeStopped` overlay, from node.stop's `node.stopped` | on receipt |
 | **Stale** (observer) | unheard past the staleness floor (local receive-time, clock-skew-safe): held, not current | the staleness floor |
-| **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after exact provider proof | on receipt |
+| **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after the provider's inspect answer | on receipt |
 | **Re-born** | the same `path.name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by the recovery Build, so the projection holds one entry per `path.name` | on receipt |
 
 The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license destructive Build recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `MeshTopology.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.

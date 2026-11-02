@@ -2,7 +2,7 @@
 
 This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](deployment-provider.md).
 
-It defines the generic control-plane contract proven in `rust-distributed-mesh` (RDM), an independently owned and versioned reusable distributed-system substrate that Rafka imports at an exact revision. Rafka is its first customer: RDM owns how distributed execution works, and Rafka owns what its product asks nodes to do.
+It defines the generic control-plane contract built and tested in `rust-distributed-mesh` (RDM), an independently owned and versioned reusable distributed-system substrate that Rafka imports at an exact revision. Rafka is its first customer: RDM owns how distributed execution works, and Rafka owns what its product asks nodes to do.
 
 The ownership test is behavioral: a mechanism that makes sense for a non-Rafka distributed mesh belongs in RDM. Behavior that depends on Rafka roles, entities, authorization, storage policy or other product concepts belongs in Rafka.
 
@@ -62,7 +62,7 @@ Allowed customer seams are:
 
 RDM retains Build compilation/reconciliation and attempts, the leadership election,
 executor selection, generic lifecycle eligibility/commit/receipts, readiness roots, recovery,
-drift, exact-runtime adoption/death proof, provider-domain execution and connection mechanics.
+drift, exact-runtime adoption/a sign the node is dead, provider-domain execution and connection mechanics.
 Customer seams supply policy or facts; they MUST NOT substitute a second implementation of
 those algorithms. Hooks are registered before the registry is built, idempotent and bounded, and report
 failure through the lifecycle receipt path. A hook requesting exact synchronous execution
@@ -102,9 +102,9 @@ Rafka imports these RDM packages at one exact revision:
 | `rdm-admin` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, the leadership election, the four storage interfaces, fabric, mesh, nodes and connections, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
 | `rdm-client` | the typed client and DTOs for the node-admin control API |
 | `rdm-test-scenario` | provider-neutral scenario, evidence and replay contracts |
-| `rdm-test` | the generic RPC proof node, proof protocols and probes |
+| `rdm-test` | the generic RPC test node, test protocols and probes |
 
-the chaos kit (`rdm-test`'s `faults` modules), the fault backends with typed outcomes, is an RDM proof package used by
+the chaos kit (`rdm-test`'s `faults` modules), the fault backends with typed outcomes, is an RDM test package used by
 `rdm-test-scenario`. RDM packages import no Rafka domain crate.
 
 ---
@@ -384,9 +384,9 @@ These facts describe reconciliation execution. The current Build is read from th
 
 ### 5.1 RDM adapters
 
-RDM proves the contract without inventing a broker-backed database:
+RDM shows the contract without inventing a broker-backed database:
 
-- `MemoryBuildStateAdapter` for unit/functional proof;
+- `MemoryBuildStateAdapter` for unit/functional evidence;
 - fabric-projected **active** Build facts for the fabric recovery workflow's executor;
 - local-file journal for same-node-admin restart, replay, and evidence artifacts.
 
@@ -527,13 +527,13 @@ pub struct Transition<'a> {
 
 `LifecycleTransitionPipeline` runs a `Transition` through its built hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rdm-admin`). `transition_id` is internal to one transition execution and keys its once-only hook receipts; the Status calls do not carry it, and their natural idempotency keys are defined in [the envelope](node-rpc-envelope.md#status-op-0x1b-rdm).
 
-Application work enters a lifecycle only through [Fabric and node hooks](fabric-node-hooks.md). What an Applied reply means beside gossip is [gossip.md §10](gossip.md#10-status-dissemination-versus-status-certainty); what proves a runtime dead is [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
+Application work enters a lifecycle only through [Fabric and node hooks](fabric-node-hooks.md). What an Applied reply means beside gossip is [gossip.md §10](gossip.md#10-status-dissemination-versus-status-certainty); what shows a runtime dead is [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
 
 ---
 
 ## 10. Readiness gates are shape-aware through the accepted Build
 
-SN/MN/MM are minimum proof rungs, not caps. Lifecycle eligibility should usually derive from the accepted Build rather than hard-coded `if shape == MM` branches.
+SN/MN/MM are minimum test rungs, not caps. Lifecycle eligibility should usually derive from the accepted Build rather than hard-coded `if shape == MM` branches.
 
 The Fabric leaves `pending` when every Mesh the accepted Build names is ready (every planned member ready), and only then ([States](lifecycles/states.md#states), Q174). A Build that put the fabric back to pending completes when its ready state is set, not with its last step ([States](lifecycles/states.md#resize-and-executable-replacement)).
 
@@ -561,7 +561,7 @@ Day 0
     establish first Ready through the Day-0 lifecycle path (the sequence is lifecycles/fabric-create.md)
 
 single-admin recovery root
-    only when canonical lifecycle proof says no live Ready admin exists
+    only when canonical lifecycle evidence says no live Ready admin exists
     use the defined single-admin recovery-root Ready self-apply
 ```
 
@@ -683,7 +683,7 @@ Rafka adapters
 Rafka protocol/domain consumers
 ```
 
-An import boundary is eligible when it proves:
+An import boundary is eligible when it shows:
 
 1. logical FabricId and transport EndpointId are distinct everywhere in target APIs;
 2. exactly one fabric-primary topology writer and one current Build exist, with one drift mechanism that opens attempts of the current Build, driven by the mesh-primary of the drifting mesh; no node-admin other than the fabric-primary accepts a topology change, and no desired topology stands beside the accepted Build, including imported generic desired-state/revision machinery promoted into Rafka's topology;
@@ -692,7 +692,7 @@ An import boundary is eligible when it proves:
 5. one current RuntimeFact + runtime-metadata publication/adoption contract exists; no Rafka-local runtime adoption depends on launcher-private completed Build receipts, and no launcher-private `data_dir`/runtime-management metadata keeps a successor from managing a current birth;
 6. provider/bootstrap produces the locator and the node publishes the one normalized RuntimeFact;
 7. one provider-control-domain execution contract exists, and host locality never alters the election;
-8. one exact-runtime provider/death-proof contract exists, including Day-0 adoption;
+8. one exact-runtime provider/death-evidence contract exists, including Day-0 adoption;
 9. one Ready-root rule exists: ordinary admins hydrate, and only the Day-0 or single-admin recovery root establishes Ready without a live Ready primary (§10.1);
 10. one held-member repair mechanism exists (§13);
 11. one Direct/Proxy route-truth source exists ([connections.md](connections.md));
@@ -707,17 +707,17 @@ A compatibility wrapper is allowed only when it delegates to the imported mechan
 
 ## 16. Test ownership
 
-Framework mechanisms are proven once by the Mesh product feature that owns them; a downstream application feature consumes those guarantees and tests only the application semantics it adds.
+Framework mechanisms are tested once by the Mesh product feature that owns them; a downstream application feature consumes those guarantees and tests only the application semantics it adds.
 
-RDM's role executables, the demo's `rshape-broker`, `rshape-gateway`, `rshape-compute` and `rshape-node-admin` (`demo/`), are role processes on `rdm-node` that carry no Rafka product behaviour; they are not Rafka's product roles. A generic proof runs node-admins, the RPC proof nodes of `rdm-test` and these role processes, and asserts no Rafka customer or product state; that proof stays in Rafka.
+RDM's role executables, the demo's `rshape-broker`, `rshape-gateway`, `rshape-compute` and `rshape-node-admin` (`demo/`), are role processes on `rdm-node` that carry no Rafka product behaviour; they are not Rafka's product roles. A generic test runs node-admins, the RPC test nodes of `rdm-test` and these role processes, and asserts no Rafka customer or product state; that evidence stays in Rafka.
 
-The RDM-generic proofs of this page's mechanisms:
+The RDM-generic tests of this page's mechanisms:
 
 - an all-node-admin restart kills every node-admin at once and restarts them from durable storage: Fabric/Mesh/Node/Connection state is recovered, the Builds read newest first still name the active Build current, its evidence is recovered, exactly one fabric-primary continues it without repeating completed work, and no new Build or competing topology appears (§5.3);
 - a fabric-primary death mid-Build: the successor recovers and continues the same Build (§4.1);
-- process/container proof demonstrates same-domain successor control and refusal of cross-domain PID/container-ID misuse ([deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain)); a multi-host proof demonstrates remotely controllable locators or domain-local exact-runtime execution without changing the election ([deployment-provider.md §1](deployment-provider.md#1-deployment-provider-is-environment-policy));
+- process/container evidence demonstrates same-domain successor control and refusal of cross-domain PID/container-ID misuse ([deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain)); a multi-host test demonstrates remotely controllable locators or domain-local exact-runtime execution without changing the election ([deployment-provider.md §1](deployment-provider.md#1-deployment-provider-is-environment-policy));
 - elastic shape/grow/shrink tests assert accepted per-kind counts or settled shape rather than requiring surviving names to be contiguous; identity/leadership/restart/replacement tests retain exact path/NodeId/IncarnationId assertions when identity is the behavior under test;
-- leadership proof uses [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) as its only expected-result specification;
+- leadership test uses [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) as its only expected-result specification;
 - private maps are not E2E truth.
 
-Topology, hydration, late-admin adoption and repair proofs are [gossip.md §14](gossip.md#14-required-proofs).
+Topology, hydration, late-admin adoption and repair tests are [gossip.md §14](gossip.md#14-required-tests).

@@ -10,7 +10,7 @@
 
 use crate::mesh_delete_resume::{capture, trace_id};
 use rdm_core::{BuildId, MeshId, NodeId};
-use rdm_admin::deployment::pipeline::RuntimeProof;
+use rdm_admin::deployment::pipeline::RuntimeIdentity;
 use rdm_admin::mesh_delete::{admit_delete_mesh, operation, run_admitted, Admitted, ExitManifest, MeshDeleteAdmission, MeshDeleteView, MeshDeleteKey, DeleteMeshAdmission, MeshDeleteRunEnd, MeshDeleteRuns, RosterBirth};
 use rdm_admin::status_rpc::Declared;
 use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
@@ -38,8 +38,8 @@ fn final_primary() -> RosterBirth {
     RosterBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin, node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() }
 }
 
-fn runtime() -> RuntimeProof {
-    RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() }
+fn runtime() -> RuntimeIdentity {
+    RuntimeIdentity { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() }
 }
 
 /// The cell's spans, written to `target/cells/mesh_delete_workflow/<cell>/spans.json`; its trace id and

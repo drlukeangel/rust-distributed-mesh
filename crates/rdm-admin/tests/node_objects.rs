@@ -12,7 +12,7 @@ use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, Me
 use rdm_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_claim::{AttemptContexts, ClaimDoor};
-use rdm_admin::build_drive::{DepartureProof, Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
+use rdm_admin::build_drive::{ExecutorInspection, Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
 use rdm_admin::build_op::{local_dispatched, BuildDoor, BuildSlot};
 use rdm_admin::build_run::{AttemptRuns, FramedBuilds, RunDoor};
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
@@ -206,12 +206,12 @@ fn mn() -> Topology {
 /// The fabric-primary's Build door over `rig`'s Build state: the control plane that accepts a change,
 /// the drive that claims on its own log, and the executor door that runs the create pipeline.
 async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
-    door_via(rig, join, |run| Arc::new(Local(run)), Arc::new(crate::loopback::Proofs::default())).await
+    door_via(rig, join, |run| Arc::new(Local(run)), Arc::new(crate::loopback::Exits::default())).await
 }
 
 /// [`door`], whose drive calls `dispatcher` (made over the in-process executor door) and reads an
 /// executor's departure from `departure`.
-async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<RunDoor>) -> Arc<dyn Dispatcher>, departure: Arc<dyn DepartureProof>) -> Arc<BuildDoor> {
+async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<RunDoor>) -> Arc<dyn Dispatcher>, departure: Arc<dyn ExecutorInspection>) -> Arc<BuildDoor> {
     let t = mn();
     let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
     let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
@@ -288,7 +288,7 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         }),
         dispatcher: Arc::new(Local(run.clone())),
         gate: Arc::new(OpenGate),
-        departure: Arc::new(crate::loopback::Proofs::default()),
+        departure: Arc::new(crate::loopback::Exits::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
@@ -335,7 +335,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         }),
         dispatcher: Arc::new(Local(run.clone())),
         gate: Arc::new(OpenGate),
-        departure: Arc::new(crate::loopback::Proofs::default()),
+        departure: Arc::new(crate::loopback::Exits::default()),
         verdicts: Arc::new(rdm_admin::build_op::LocalVerdicts { local: fp }),
         notices: rig.told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
@@ -1325,7 +1325,7 @@ impl InnerStream for Script {
 /// the stop to its end.
 struct LostAfterStopNode {
     runs: Mutex<u32>,
-    proofs: Arc<crate::loopback::Proofs>,
+    exits: Arc<crate::loopback::Exits>,
 }
 
 #[async_trait::async_trait]
@@ -1347,7 +1347,7 @@ impl Dispatcher for LostAfterStopNode {
             *runs
         };
         let items = if run == 1 {
-            self.proofs.exited.lock().unwrap().insert(executor.clone());
+            self.exits.exited.lock().unwrap().insert(executor.clone());
             vec![step("node.stop", "StopNode"), InnerItem::Broke(format!("node {} was lost after its StopNode receipt", executor.node_id))]
         } else {
             vec![
@@ -1373,9 +1373,9 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
     let cap = capture();
     let frames = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let proofs = Arc::new(crate::loopback::Proofs::default());
-        let script = Arc::new(LostAfterStopNode { runs: Mutex::new(0), proofs: proofs.clone() });
-        let door = door_via(&rig, Duration::from_secs(60), move |_| script, proofs).await;
+        let exits = Arc::new(crate::loopback::Exits::default());
+        let script = Arc::new(LostAfterStopNode { runs: Mutex::new(0), exits: exits.clone() });
+        let door = door_via(&rig, Duration::from_secs(60), move |_| script, exits).await;
         let served = serve(door).await;
         let mut stream = nodes_over(&served.carrier).stop(&rdm_core::PathName::new("mesh1.rpc", "1").unwrap()).await.expect("the fabric-primary accepts the stop");
         let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
@@ -1393,7 +1393,7 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
     let spans = cap.spans();
     let lost: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["outcome"] == "executor-lost").collect();
     assert_eq!(lost.len(), 1, "the first attempt's executor was lost: {spans:?}");
-    assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").len(), 1, "its departure was proven before the successor's attempt");
+    assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-executor-exited-or-os-stopped").len(), 1, "its departure was proven before the successor's attempt");
     assert_eq!(spans_named(&spans, "rdm.node_admin.connection.delete.via-deleted-frame").len(), 1, "node.connections.deleted was delivered once");
 }
 

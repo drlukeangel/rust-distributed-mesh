@@ -300,7 +300,7 @@ async fn row(variant: Variant, timing: Timing) -> Row {
         }),
         dispatcher: Arc::new(Dispatch { inner: loopback, during: (timing == Timing::During).then(|| fabric.clone()) }),
         gate: fabric.clone(),
-        departure: Arc::new(crate::loopback::Proofs::default()),
+        departure: Arc::new(crate::loopback::Exits::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         notices: Default::default(),
         turns: rdm_admin::stop_gate::StopGate::new(),

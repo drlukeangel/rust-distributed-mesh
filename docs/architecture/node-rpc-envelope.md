@@ -253,7 +253,7 @@ sees only the catalog.
 | `0x3D` | topic.traffic.get | rafka | live | canonical | Rafka's product op |
 | `0x3E` | topic.slot.delete | rafka | live | canonical | Rafka's product op |
 | `0x3F` | system.framework.update | rafka | live | canonical | Rafka's product op (moved off 0x23) |
-| `0x70` | proof-store | testkit | live | canonical | `Get`, `Put`, `Delete`, `CompareAndSwap` |
+| `0x70` | evidence-store | testkit | live | canonical | `Get`, `Put`, `Delete`, `CompareAndSwap` |
 | `0x71` | resolve-probe | testkit | live | canonical | `Resolve` |
 | `0x72` | declare-probe | testkit | live | canonical | `Declare` |
 | `0x73` | originate | testkit | live | canonical | `Call`, `ArmFault`, `ReleaseFault`, `Snapshot`, `RecordProxy`, `Dial`, `StopTransport` |
@@ -297,7 +297,7 @@ success event follows it.
 Transport uncertainty is NotSent before the request commit cut and Indeterminate
 after it; both are statements about execution certainty, and under either the runtime keeps
 delivering the same invocation ([node-rpc.md §43](node-rpc.md#43-resend-delivery-is-the-runtimes)),
-which authorises no new execution. A broken stream proves neither step failure nor completion. The Build's
+which authorises no new execution. A broken stream shows neither step failure nor completion. The Build's
 only durable step outcomes are Complete and Failed { step, reason }. build.get [id: build_id] is a read for reattachment, never a resume. The caller resubmits the
 same build_id to the fabric-primary under the [Build carrier](#build-op-0x20-rdm). Reissuing a naturally
 idempotent uncertain step can settle it with AlreadyApplied. A Build adds durability, not
@@ -320,7 +320,7 @@ Call patterns:
   operation and exact births before it reuses them.
 
 The target is `{ node_id, op }` ([Section 0](#section-0-the-target)); `(node.id, incarnation)`
-is the exact-birth identity used by resolution, lifecycle checks and terminal proof.
+is the exact-birth identity used by resolution, lifecycle checks and the provider's `Exited`.
 Stop/start retain the same instance. A stopped endpoint answers anyone who reaches it:
 the mesh adds no generic caller check or authorship validation. connections-deleting and stopped
 are defined in [States](lifecycles/states.md#stopped-nodes); the graceful closure behind
@@ -566,13 +566,13 @@ rdm.node_rpc.node.remove.via-topology
 rdm.node_rpc.node.reject.via-topology
 ```
 
-The testkit oracles and the proof product's own families (`rdm-test`,
-`rdm-node`) are RDM-owned test and proof instrumentation, never product acceptance
+The testkit oracles and the test product's own families (`rdm-test`,
+`rdm-node`) are RDM-owned test instrumentation, never product acceptance
 evidence:
 
 ```text
-rdm.node_rpc.proof_store.serve.via-request
-rdm.node_rpc.proof_store.resolve.via-probe
+rdm.node_rpc.evidence_store.serve.via-request
+rdm.node_rpc.evidence_store.resolve.via-probe
 rdm.node_rpc.resolve_probe.serve.via-request
 rdm.node_rpc.declare_probe.serve.via-request
 rdm.node_rpc.status.update.via-declare-own
@@ -989,7 +989,7 @@ The receipt_manifest is a bounded reference (at most 128 bytes) to immutable ter
 in the accepted Build's durable operation records, scoped to
 `(mesh_id, build_id, attempt, operation)`. It is not arbitrary caller-supplied storage to
 trust. The fabric-primary must read and validate those records before it accepts the handoff;
-a reference alone is not terminal proof. No storage API name is fixed here. RuntimeFact uses
+a reference alone is not the provider's `Exited`. No storage API name is fixed here. RuntimeFact uses
 RDM's exact deployment/provider/control-domain/locator identity, defined in
 `crates/rdm-core/src/runtime.rs::RuntimeFact`.
 
@@ -1013,8 +1013,8 @@ refusal naming the mismatch; not-primary, stale-mesh, malformed and other Status
 calls are forwardable under Status rules. A lost handoff or missing exact receipt leaves the
 workflow incomplete, never successful.
 
-The mesh-primary commits the mesh row deleted before it calls MeshDeleted. A deleted mesh is not proof of the
-mesh-primary's exit; a separate node.delete, with the fabric-primary as executor, proves it.
+The mesh-primary commits the mesh row deleted before it calls MeshDeleted. A deleted mesh is not evidence of the
+mesh-primary's exit; a separate node.delete, with the fabric-primary as executor, shows it.
 
 ## BuildClaim, op `0x1C`, rdm
 
@@ -1275,7 +1275,7 @@ Caller span: `rdm.node_rpc.request.update.via-call`, op=0x1E. Server:
 `rdm.node_rpc.request.serve.via-direct`, child `rdm.mesh.topology.serve.via-read`, with
 `meshes`, `snapshots`, `unchanged`, `stored`, `bytes`. Caller installation emits
 `rdm.mesh.topology.update.via-read-install` per mesh, with publisher, topology_version
-and target node. Complete state installation is proof in addition to trace ancestry.
+and target node. Complete state installation is evidence in addition to trace ancestry.
 
 Uses: [node-admin create](lifecycles/node-create.md#ordinary-process-birth),
 [delta-gap top-up](lifecycles/node-topology-get.md#node-topology-top-up),
@@ -1721,21 +1721,21 @@ ops: their schemas, directions and reply enums are Rafka's own.
 They ride the same target, context and body, the same ledger and the same runtime rules as every op here;
 nothing in this repository serves them.
 
-## Proof-store, op `0x70`, testkit
+## Testkit store, op `0x70`, testkit
 
-Contract source: RDM `crates/rdm-test/src/proof_store.rs::ProofRequest`.
+Contract source: RDM `crates/rdm-test/src/testkit_store.rs::TestkitStoreRequest`.
 
-Direction: peer. Test clients call a testkit node that serves its durable proof store. Forwardable. Mismatch, TooLarge and StoreFailed are typed refusals; runtime refusals are in ProofReply. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
+Direction: peer. Test clients call a testkit node that serves its durable testkit store. Forwardable. Mismatch, TooLarge and StoreFailed are typed refusals; runtime refusals are in TestkitStoreReply. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
 
 ```rust
-pub enum ProofRequest {
+pub enum TestkitStoreRequest {
     Get { key: Vec<u8> },
     Put { key: Vec<u8>, value: Vec<u8> },
     Delete { key: Vec<u8> },
     CompareAndSwap { key: Vec<u8>, expected: Option<Vec<u8>>, new: Option<Vec<u8>> },
 }
 
-pub enum ProofOp {
+pub enum TestkitStoreOp {
     Get,
     Put,
     Delete,
@@ -1747,10 +1747,10 @@ pub struct Provenance {
     pub node: String,
     pub mesh: String,
     pub incarnation_id: String,
-    pub op: ProofOp,
+    pub op: TestkitStoreOp,
 }
 
-pub enum ProofReply {
+pub enum TestkitStoreReply {
     Value { at: Provenance, value: Vec<u8> },
     Absent { at: Provenance },
     Stored { at: Provenance },
@@ -1837,16 +1837,16 @@ pub enum DeclareReply {
 
 Contract source: RDM `crates/rdm-test/src/originate.rs::OriginateRequest`.
 
-Direction: peer. Test clients call a testkit node to originate calls or control its test fault/evidence seams. Not forwardable. BadDestination and the runtime refusal variants are typed refusals. ProofOp here is local to the originate family, distinct from the proof-store operation label. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
+Direction: peer. Test clients call a testkit node to originate calls or control its test fault seams. Not forwardable. BadDestination and the runtime refusal variants are typed refusals. OriginateStoreOp here is local to the originate family, distinct from the evidence-store operation label. Caller/server emit the canonical runtime spans above. These families are served only by testkit binaries, never product binaries.
 
 ```rust
-pub enum ProofOp {
+pub enum OriginateStoreOp {
     Get { key: Vec<u8> },
     Put { key: Vec<u8>, value: Vec<u8> },
 }
 
 pub enum OriginateRequest {
-    Call { destination: String, op: ProofOp },
+    Call { destination: String, op: OriginateStoreOp },
     ArmFault { refuse_index: u32, refuse_history: u32, pass_history: u32 },
     ReleaseFault,
     Snapshot,
@@ -1872,7 +1872,7 @@ pub enum OriginateReply {
         carrier: Option<String>,
         deleted: Option<String>,
         outcome: String,
-        reply: Option<ProofReply>,
+        reply: Option<TestkitStoreReply>,
         pooled: Vec<String>,
     },
     FaultArmed { by: AnsweredBy, refuse_index: u32, refuse_history: u32 },

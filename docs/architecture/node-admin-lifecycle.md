@@ -33,7 +33,7 @@ workflow node-admin drives, its events and its gossip),
    because of that loss alone.
 5. **Stored topology is a recovery contact map.** The attached snapshot is the last ready
    fabric, not the latest state. It locates live nodes; current topology comes from those nodes.
-   A stored member may not answer, and the stored map is not current birth or liveness proof.
+   A stored member may not answer, and the stored map is not current birth or a sign of liveness.
 6. **A node-admin acts on its own view.** Silence is receipt age on the node's own clock, so a node held
    or suspended wakes to a view in which every member is silent at once; what it then does is what every
    node-admin does with an unheard member, [node investigation](lifecycles/node-investigation.md), whose

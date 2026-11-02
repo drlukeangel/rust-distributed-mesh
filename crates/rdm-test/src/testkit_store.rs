@@ -1,6 +1,6 @@
-//! The proof store: a testkit-only key/value oracle on op `0x70` (i143.e7.s3).
+//! The testkit store: a testkit-only key/value oracle on op `0x70` (i143.e7.s3).
 //!
-//! Ping proves a call reached a node; the proof store proves WHICH birth it
+//! Ping proves a call reached a node; the testkit store proves WHICH birth it
 //! reached and what state that birth holds. Its file lives in the node's data
 //! dir, so a same-node restart (same data dir) still holds every value and a
 //! replacement (fresh data dir) holds none. Every reply names the executing
@@ -27,17 +27,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// The proof store protocol on op `0x70`.
-pub struct ProofStore;
+/// The testkit store protocol on op `0x70`.
+pub struct TestkitStore;
 
 /// The longest key, in bytes.
 pub const MAX_KEY_BYTES: usize = 256;
 /// The longest value, in bytes.
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 
-/// A proof store call.
+/// A testkit store call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProofRequest {
+pub enum TestkitStoreRequest {
     /// Read `key`.
     ///
     /// Position 0 on the wire.
@@ -75,14 +75,14 @@ pub enum ProofRequest {
     },
 }
 
-impl ProofRequest {
+impl TestkitStoreRequest {
     /// The operation the request is.
-    pub fn op(&self) -> ProofOp {
+    pub fn op(&self) -> TestkitStoreOp {
         match self {
-            Self::Get { .. } => ProofOp::Get,
-            Self::Put { .. } => ProofOp::Put,
-            Self::Delete { .. } => ProofOp::Delete,
-            Self::CompareAndSwap { .. } => ProofOp::CompareAndSwap,
+            Self::Get { .. } => TestkitStoreOp::Get,
+            Self::Put { .. } => TestkitStoreOp::Put,
+            Self::Delete { .. } => TestkitStoreOp::Delete,
+            Self::CompareAndSwap { .. } => TestkitStoreOp::CompareAndSwap,
         }
     }
 
@@ -95,7 +95,7 @@ impl ProofRequest {
 
 /// The operation a request or a reply concerns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProofOp {
+pub enum TestkitStoreOp {
     /// Read.
     ///
     /// Position 0 on the wire.
@@ -114,7 +114,7 @@ pub enum ProofOp {
     CompareAndSwap,
 }
 
-impl ProofOp {
+impl TestkitStoreOp {
     /// The operation's name as it appears in replies and spans.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -138,12 +138,12 @@ pub struct Provenance {
     /// The executing node's incarnation id.
     pub incarnation_id: String,
     /// The operation executed.
-    pub op: ProofOp,
+    pub op: TestkitStoreOp,
 }
 
-/// A proof store answer.
+/// A testkit store answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProofReply {
+pub enum TestkitStoreReply {
     /// The value of the key.
     ///
     /// Position 0 on the wire.
@@ -256,7 +256,7 @@ pub enum ProofReply {
     },
 }
 
-impl ProofReply {
+impl TestkitStoreReply {
     /// The executing node's provenance, on every reply the store itself made.
     pub fn provenance(&self) -> Option<&Provenance> {
         match self {
@@ -273,9 +273,9 @@ impl ProofReply {
     }
 }
 
-impl NodeProtocol for ProofStore {
+impl NodeProtocol for TestkitStore {
     const OP: u8 = 0x70;
-    const NAME: &'static str = "proof-store";
+    const NAME: &'static str = "evidence-store";
     // A compare-and-swap carries a key and two values.
     const MAX_REQUEST_FRAME_BYTES: usize = MAX_KEY_BYTES + 2 * MAX_VALUE_BYTES + 1024;
     const MAX_REPLY_FRAME_BYTES: usize = MAX_VALUE_BYTES + 2048;
@@ -283,71 +283,71 @@ impl NodeProtocol for ProofStore {
     const REQUEST_VARIANTS: u32 = 4;
     const REPLY_VARIANTS: u32 = 14;
 
-    type Request = ProofRequest;
-    type Reply = ProofReply;
+    type Request = TestkitStoreRequest;
+    type Reply = TestkitStoreReply;
 
     fn reply_detail(reply: &Self::Reply) -> &'static str {
         match reply {
-            ProofReply::Value { .. } => "value",
-            ProofReply::Absent { .. } => "absent",
-            ProofReply::Stored { .. } => "stored",
-            ProofReply::Deleted { .. } => "deleted",
-            ProofReply::Swapped { .. } => "swapped",
-            ProofReply::Mismatch { .. } => "mismatch",
-            ProofReply::TooLarge { .. } => "too-large",
-            ProofReply::StoreFailed { .. } => "store-failed",
-            ProofReply::PeerUnresolved { .. } => "peer-unresolved",
-            ProofReply::NotReady { .. } => "not-ready",
-            ProofReply::Busy { .. } => "busy",
-            ProofReply::ConnectionsDeleting { .. } => "connections-deleting",
-            ProofReply::Malformed { .. } => "malformed",
-            ProofReply::Unauthorized { .. } => "unauthorized",
+            TestkitStoreReply::Value { .. } => "value",
+            TestkitStoreReply::Absent { .. } => "absent",
+            TestkitStoreReply::Stored { .. } => "stored",
+            TestkitStoreReply::Deleted { .. } => "deleted",
+            TestkitStoreReply::Swapped { .. } => "swapped",
+            TestkitStoreReply::Mismatch { .. } => "mismatch",
+            TestkitStoreReply::TooLarge { .. } => "too-large",
+            TestkitStoreReply::StoreFailed { .. } => "store-failed",
+            TestkitStoreReply::PeerUnresolved { .. } => "peer-unresolved",
+            TestkitStoreReply::NotReady { .. } => "not-ready",
+            TestkitStoreReply::Busy { .. } => "busy",
+            TestkitStoreReply::ConnectionsDeleting { .. } => "connections-deleting",
+            TestkitStoreReply::Malformed { .. } => "malformed",
+            TestkitStoreReply::Unauthorized { .. } => "unauthorized",
         }
     }
 
 
-    fn classify_reply(reply: &ProofReply) -> ReplyKind {
+    fn classify_reply(reply: &TestkitStoreReply) -> ReplyKind {
         match reply {
-            ProofReply::Value { .. } => ReplyKind::Success,
-            ProofReply::Absent { .. } => ReplyKind::Success,
-            ProofReply::Stored { .. } => ReplyKind::Success,
-            ProofReply::Deleted { .. } => ReplyKind::Success,
-            ProofReply::Swapped { .. } => ReplyKind::Success,
-            ProofReply::Mismatch { .. } => ReplyKind::Success,
-            ProofReply::TooLarge { .. } => ReplyKind::new(rdm_core::outcome::Code::ResourceExhausted),
-            ProofReply::StoreFailed { .. } => ReplyKind::new(rdm_core::outcome::Code::Internal),
-            ProofReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
-            ProofReply::NotReady { .. } => ReplyKind::NotReady,
-            ProofReply::Busy { .. } => ReplyKind::Busy,
-            ProofReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
-            ProofReply::Malformed { kind } => ReplyKind::Malformed(*kind),
-            ProofReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            TestkitStoreReply::Value { .. } => ReplyKind::Success,
+            TestkitStoreReply::Absent { .. } => ReplyKind::Success,
+            TestkitStoreReply::Stored { .. } => ReplyKind::Success,
+            TestkitStoreReply::Deleted { .. } => ReplyKind::Success,
+            TestkitStoreReply::Swapped { .. } => ReplyKind::Success,
+            TestkitStoreReply::Mismatch { .. } => ReplyKind::Success,
+            TestkitStoreReply::TooLarge { .. } => ReplyKind::new(rdm_core::outcome::Code::ResourceExhausted),
+            TestkitStoreReply::StoreFailed { .. } => ReplyKind::new(rdm_core::outcome::Code::Internal),
+            TestkitStoreReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
+            TestkitStoreReply::NotReady { .. } => ReplyKind::NotReady,
+            TestkitStoreReply::Busy { .. } => ReplyKind::Busy,
+            TestkitStoreReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
+            TestkitStoreReply::Malformed { kind } => ReplyKind::Malformed(*kind),
+            TestkitStoreReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
     }
 
-    fn peer_unresolved(reason: String) -> ProofReply {
-        ProofReply::PeerUnresolved { reason }
+    fn peer_unresolved(reason: String) -> TestkitStoreReply {
+        TestkitStoreReply::PeerUnresolved { reason }
     }
-    fn not_ready(reason: String) -> ProofReply {
-        ProofReply::NotReady { reason }
+    fn not_ready(reason: String) -> TestkitStoreReply {
+        TestkitStoreReply::NotReady { reason }
     }
-    fn busy(reason: String) -> ProofReply {
-        ProofReply::Busy { reason }
+    fn busy(reason: String) -> TestkitStoreReply {
+        TestkitStoreReply::Busy { reason }
     }
-    fn connections_deleting(reason: String) -> ProofReply {
-        ProofReply::ConnectionsDeleting { reason }
+    fn connections_deleting(reason: String) -> TestkitStoreReply {
+        TestkitStoreReply::ConnectionsDeleting { reason }
     }
-    fn malformed(kind: MalformedKind) -> ProofReply {
-        ProofReply::Malformed { kind }
+    fn malformed(kind: MalformedKind) -> TestkitStoreReply {
+        TestkitStoreReply::Malformed { kind }
     }
-    fn unauthorized(reason: String) -> ProofReply {
-        ProofReply::Unauthorized { reason }
+    fn unauthorized(reason: String) -> TestkitStoreReply {
+        TestkitStoreReply::Unauthorized { reason }
     }
 }
 
 /// The store file inside a node's data dir.
-pub(crate) const STORE_FILE: &str = "proof-store.json";
-const FORMAT: &str = "proof-store/1";
+pub(crate) const STORE_FILE: &str = "testkit-store.json";
+const FORMAT: &str = "testkit-store/1";
 
 #[derive(Serialize, Deserialize)]
 struct Stored {
@@ -356,14 +356,14 @@ struct Stored {
     entries: BTreeMap<String, String>,
 }
 
-/// One node's proof store, held in memory and in its data dir.
+/// One node's testkit store, held in memory and in its data dir.
 #[derive(Debug)]
-pub struct FileProofStore {
+pub struct FileTestkitStore {
     path: PathBuf,
     map: Mutex<BTreeMap<Vec<u8>, Vec<u8>>>,
 }
 
-impl FileProofStore {
+impl FileTestkitStore {
     /// Open the store in `data_dir`: what a previous incarnation of this node
     /// wrote there, or empty. A file this build does not recognise is refused
     /// by name, never read as empty.
@@ -371,7 +371,7 @@ impl FileProofStore {
         let path = data_dir.join(STORE_FILE);
         let map = match std::fs::read(&path) {
             Ok(bytes) => {
-                let stored: Stored = serde_json::from_slice(&bytes).map_err(|e| format!("{} is not a proof store: {e}", path.display()))?;
+                let stored: Stored = serde_json::from_slice(&bytes).map_err(|e| format!("{} is not a testkit store: {e}", path.display()))?;
                 if stored.format != FORMAT {
                     return Err(format!("{} has format {:?}; this build reads {FORMAT:?}", path.display(), stored.format));
                 }
@@ -414,8 +414,8 @@ impl FileProofStore {
     }
 
     /// Execute one request against this store; `at` names where.
-    pub fn apply(&self, req: ProofRequest, at: Provenance) -> ProofReply {
-        let too_large = |field: &str, limit: usize, got: usize| ProofReply::TooLarge {
+    pub fn apply(&self, req: TestkitStoreRequest, at: Provenance) -> TestkitStoreReply {
+        let too_large = |field: &str, limit: usize, got: usize| TestkitStoreReply::TooLarge {
             at: at.clone(),
             field: field.into(),
             limit: limit as u32,
@@ -425,8 +425,8 @@ impl FileProofStore {
             return too_large("key", MAX_KEY_BYTES, req.key().len());
         }
         for (field, v) in match &req {
-            ProofRequest::Put { value, .. } => vec![("value", Some(value))],
-            ProofRequest::CompareAndSwap { expected, new, .. } => vec![("expected", expected.as_ref()), ("new", new.as_ref())],
+            TestkitStoreRequest::Put { value, .. } => vec![("value", Some(value))],
+            TestkitStoreRequest::CompareAndSwap { expected, new, .. } => vec![("expected", expected.as_ref()), ("new", new.as_ref())],
             _ => vec![],
         } {
             if let Some(v) = v.filter(|v| v.len() > MAX_VALUE_BYTES) {
@@ -434,45 +434,45 @@ impl FileProofStore {
             }
         }
         let mut held = self.map.lock().unwrap();
-        let write = |held: &mut BTreeMap<Vec<u8>, Vec<u8>>, next, ok: ProofReply| match self.persist(held, next) {
+        let write = |held: &mut BTreeMap<Vec<u8>, Vec<u8>>, next, ok: TestkitStoreReply| match self.persist(held, next) {
             Ok(()) => ok,
-            Err(reason) => ProofReply::StoreFailed { at: at.clone(), reason },
+            Err(reason) => TestkitStoreReply::StoreFailed { at: at.clone(), reason },
         };
         match req {
-            ProofRequest::Get { key, .. } => match held.get(&key) {
-                Some(v) => ProofReply::Value { at, value: v.clone() },
-                None => ProofReply::Absent { at },
+            TestkitStoreRequest::Get { key, .. } => match held.get(&key) {
+                Some(v) => TestkitStoreReply::Value { at, value: v.clone() },
+                None => TestkitStoreReply::Absent { at },
             },
-            ProofRequest::Put { key, value, .. } => {
+            TestkitStoreRequest::Put { key, value, .. } => {
                 let mut next = held.clone();
                 next.insert(key, value);
-                write(&mut held, next, ProofReply::Stored { at: at.clone() })
+                write(&mut held, next, TestkitStoreReply::Stored { at: at.clone() })
             }
-            ProofRequest::Delete { key, .. } => {
+            TestkitStoreRequest::Delete { key, .. } => {
                 if !held.contains_key(&key) {
-                    return ProofReply::Absent { at };
+                    return TestkitStoreReply::Absent { at };
                 }
                 let mut next = held.clone();
                 next.remove(&key);
-                write(&mut held, next, ProofReply::Deleted { at: at.clone() })
+                write(&mut held, next, TestkitStoreReply::Deleted { at: at.clone() })
             }
-            ProofRequest::CompareAndSwap { key, expected, new, .. } => {
+            TestkitStoreRequest::CompareAndSwap { key, expected, new, .. } => {
                 let current = held.get(&key).cloned();
                 if current != expected {
-                    return ProofReply::Mismatch { at, current };
+                    return TestkitStoreReply::Mismatch { at, current };
                 }
                 let mut next = held.clone();
                 match new {
                     Some(v) => next.insert(key, v),
                     None => next.remove(&key),
                 };
-                write(&mut held, next, ProofReply::Swapped { at: at.clone() })
+                write(&mut held, next, TestkitStoreReply::Swapped { at: at.clone() })
             }
         }
     }
 }
 
-/// One failpoint of a proof-store call: armed for the NEXT call to cross it, it holds that call's
+/// One failpoint of a testkit-store call: armed for the NEXT call to cross it, it holds that call's
 /// handler, signals that it holds (`reached`), and waits for `release`. Shaped like
 /// [`rdm_transport::Failpoint`], which it carries. Testkit only; the product handler has none.
 #[derive(Default)]
@@ -512,7 +512,7 @@ impl ApplyCut {
     }
 }
 
-/// The two apply cuts of a proof-store call and the counters that say what crossed them.
+/// The two apply cuts of a testkit-store call and the counters that say what crossed them.
 #[derive(Default)]
 pub struct ApplyCuts {
     /// The handler is running, the request complete and finished, nothing applied yet.
@@ -527,14 +527,14 @@ pub struct ApplyCuts {
 
 /// Serve `store` (opened from `launch`'s data dir). Every reply's provenance
 /// names this birth, by the name it holds at that call (`name`).
-pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, name: &HeldName) -> ServerBuilder {
+pub fn serve(b: ServerBuilder, store: Arc<FileTestkitStore>, launch: &Launch, name: &HeldName) -> ServerBuilder {
     serve_with_cuts(b, store, launch, name, Arc::new(ApplyCuts::default()))
 }
 
 /// [`serve`], with the handler crossing `cuts` before and after its apply.
-pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, name: &HeldName, cuts: Arc<ApplyCuts>) -> ServerBuilder {
+pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileTestkitStore>, launch: &Launch, name: &HeldName, cuts: Arc<ApplyCuts>) -> ServerBuilder {
     let (node_id, mesh, incarnation, name) = (launch.node_id.to_string(), launch.mesh.clone(), launch.incarnation.to_string(), name.clone());
-    b.serve::<ProofStore, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ProofRequest| {
+    b.serve::<TestkitStore, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: TestkitStoreRequest| {
         let at = Provenance {
             node_id: node_id.clone(),
             node: name.now(),
@@ -545,7 +545,7 @@ pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &La
         let (store, cuts) = (store.clone(), cuts.clone());
         async move {
             let span = tracing::info_span!(
-                "rdm.node_rpc.proof_store.serve.via-request",
+                "rdm.node_rpc.evidence_store.serve.via-request",
                 node_path = %at.node.path, node_name = %at.node.name,
                 node_id = %at.node_id,
                 incarnation_id = %at.incarnation_id,
@@ -560,9 +560,9 @@ pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &La
                     cuts.before_apply.pass().await;
                     let reply = tokio::task::spawn_blocking(move || store.apply(req, at))
                         .await
-                        .map_err(|e| HandlerFault::invariant_broken(format!("proof store task: {e}")))?;
+                        .map_err(|e| HandlerFault::invariant_broken(format!("testkit store task: {e}")))?;
                     span.record("outcome", outcome_name(&reply));
-                    if matches!(reply, ProofReply::Stored { .. } | ProofReply::Deleted { .. } | ProofReply::Swapped { .. }) {
+                    if matches!(reply, TestkitStoreReply::Stored { .. } | TestkitStoreReply::Deleted { .. } | TestkitStoreReply::Swapped { .. }) {
                         cuts.applied.fetch_add(1, Ordering::SeqCst);
                     }
                     cuts.after_apply.pass().await;
@@ -575,16 +575,16 @@ pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &La
     })
 }
 
-fn outcome_name(r: &ProofReply) -> &'static str {
+fn outcome_name(r: &TestkitStoreReply) -> &'static str {
     match r {
-        ProofReply::Value { .. } => "value",
-        ProofReply::Absent { .. } => "absent",
-        ProofReply::Stored { .. } => "stored",
-        ProofReply::Deleted { .. } => "deleted",
-        ProofReply::Swapped { .. } => "swapped",
-        ProofReply::Mismatch { .. } => "mismatch",
-        ProofReply::TooLarge { .. } => "too-large",
-        ProofReply::StoreFailed { .. } => "store-failed",
+        TestkitStoreReply::Value { .. } => "value",
+        TestkitStoreReply::Absent { .. } => "absent",
+        TestkitStoreReply::Stored { .. } => "stored",
+        TestkitStoreReply::Deleted { .. } => "deleted",
+        TestkitStoreReply::Swapped { .. } => "swapped",
+        TestkitStoreReply::Mismatch { .. } => "mismatch",
+        TestkitStoreReply::TooLarge { .. } => "too-large",
+        TestkitStoreReply::StoreFailed { .. } => "store-failed",
         _ => "refused",
     }
 }
@@ -593,7 +593,7 @@ fn outcome_name(r: &ProofReply) -> &'static str {
 mod tests {
     use super::*;
 
-    fn at(op: ProofOp) -> Provenance {
+    fn at(op: TestkitStoreOp) -> Provenance {
         Provenance {
             node_id: "n1".into(),
             node: rdm_core::PathName::new("mesh1.rpc", "1").unwrap(),
@@ -610,7 +610,7 @@ mod tests {
                 let _ = std::fs::remove_dir_all(d);
             }
         }
-        let d = std::env::temp_dir().join(format!("proof-store-{}-{}", std::process::id(), rand_suffix()));
+        let d = std::env::temp_dir().join(format!("testkit-store-{}-{}", std::process::id(), rand_suffix()));
         std::fs::create_dir_all(&d).unwrap();
         let mut made = MADE.lock().unwrap();
         if made.is_empty() {
@@ -629,122 +629,122 @@ mod tests {
         format!("{}-{n}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
     }
 
-    fn get(s: &FileProofStore, k: &[u8]) -> ProofReply {
-        s.apply(ProofRequest::Get { key: k.to_vec() }, at(ProofOp::Get))
+    fn get(s: &FileTestkitStore, k: &[u8]) -> TestkitStoreReply {
+        s.apply(TestkitStoreRequest::Get { key: k.to_vec() }, at(TestkitStoreOp::Get))
     }
 
     #[test]
     fn every_op_answers_its_typed_result_and_names_where_it_ran() {
         let d = dir();
-        let s = FileProofStore::open(&d).unwrap();
-        assert_eq!(get(&s, b"k"), ProofReply::Absent { at: at(ProofOp::Get) });
-        let put = |k: &[u8], v: &[u8]| s.apply(ProofRequest::Put { key: k.into(), value: v.into() }, at(ProofOp::Put));
-        assert_eq!(put(b"k", b"v1"), ProofReply::Stored { at: at(ProofOp::Put) });
-        assert_eq!(get(&s, b"k"), ProofReply::Value { at: at(ProofOp::Get), value: b"v1".to_vec() });
+        let s = FileTestkitStore::open(&d).unwrap();
+        assert_eq!(get(&s, b"k"), TestkitStoreReply::Absent { at: at(TestkitStoreOp::Get) });
+        let put = |k: &[u8], v: &[u8]| s.apply(TestkitStoreRequest::Put { key: k.into(), value: v.into() }, at(TestkitStoreOp::Put));
+        assert_eq!(put(b"k", b"v1"), TestkitStoreReply::Stored { at: at(TestkitStoreOp::Put) });
+        assert_eq!(get(&s, b"k"), TestkitStoreReply::Value { at: at(TestkitStoreOp::Get), value: b"v1".to_vec() });
         let cas = |e: Option<&[u8]>, n: Option<&[u8]>| {
             s.apply(
-                ProofRequest::CompareAndSwap { key: b"k".to_vec(), expected: e.map(|v| v.to_vec()), new: n.map(|v| v.to_vec()) },
-                at(ProofOp::CompareAndSwap),
+                TestkitStoreRequest::CompareAndSwap { key: b"k".to_vec(), expected: e.map(|v| v.to_vec()), new: n.map(|v| v.to_vec()) },
+                at(TestkitStoreOp::CompareAndSwap),
             )
         };
-        assert_eq!(cas(Some(b"nope"), Some(b"v2")), ProofReply::Mismatch { at: at(ProofOp::CompareAndSwap), current: Some(b"v1".to_vec()) });
-        assert_eq!(cas(Some(b"v1"), Some(b"v2")), ProofReply::Swapped { at: at(ProofOp::CompareAndSwap) });
-        assert_eq!(cas(Some(b"v2"), None), ProofReply::Swapped { at: at(ProofOp::CompareAndSwap) }, "new: None deletes");
-        assert_eq!(get(&s, b"k"), ProofReply::Absent { at: at(ProofOp::Get) });
-        assert_eq!(cas(None, Some(b"v3")), ProofReply::Swapped { at: at(ProofOp::CompareAndSwap) }, "expected: None means absent");
-        assert_eq!(cas(None, Some(b"v4")), ProofReply::Mismatch { at: at(ProofOp::CompareAndSwap), current: Some(b"v3".to_vec()) });
-        let del = |k: &[u8]| s.apply(ProofRequest::Delete { key: k.into() }, at(ProofOp::Delete));
-        assert_eq!(del(b"k"), ProofReply::Deleted { at: at(ProofOp::Delete) });
-        assert_eq!(del(b"k"), ProofReply::Absent { at: at(ProofOp::Delete) });
+        assert_eq!(cas(Some(b"nope"), Some(b"v2")), TestkitStoreReply::Mismatch { at: at(TestkitStoreOp::CompareAndSwap), current: Some(b"v1".to_vec()) });
+        assert_eq!(cas(Some(b"v1"), Some(b"v2")), TestkitStoreReply::Swapped { at: at(TestkitStoreOp::CompareAndSwap) });
+        assert_eq!(cas(Some(b"v2"), None), TestkitStoreReply::Swapped { at: at(TestkitStoreOp::CompareAndSwap) }, "new: None deletes");
+        assert_eq!(get(&s, b"k"), TestkitStoreReply::Absent { at: at(TestkitStoreOp::Get) });
+        assert_eq!(cas(None, Some(b"v3")), TestkitStoreReply::Swapped { at: at(TestkitStoreOp::CompareAndSwap) }, "expected: None means absent");
+        assert_eq!(cas(None, Some(b"v4")), TestkitStoreReply::Mismatch { at: at(TestkitStoreOp::CompareAndSwap), current: Some(b"v3".to_vec()) });
+        let del = |k: &[u8]| s.apply(TestkitStoreRequest::Delete { key: k.into() }, at(TestkitStoreOp::Delete));
+        assert_eq!(del(b"k"), TestkitStoreReply::Deleted { at: at(TestkitStoreOp::Delete) });
+        assert_eq!(del(b"k"), TestkitStoreReply::Absent { at: at(TestkitStoreOp::Delete) });
     }
 
     #[test]
     fn the_same_data_dir_keeps_every_value_and_a_fresh_one_holds_none() {
         let d = dir();
-        let first = FileProofStore::open(&d).unwrap();
-        first.apply(ProofRequest::Put { key: b"41".to_vec(), value: b"before-restart".to_vec() }, at(ProofOp::Put));
+        let first = FileTestkitStore::open(&d).unwrap();
+        first.apply(TestkitStoreRequest::Put { key: b"41".to_vec(), value: b"before-restart".to_vec() }, at(TestkitStoreOp::Put));
         drop(first);
-        let restarted = FileProofStore::open(&d).unwrap();
-        assert_eq!(get(&restarted, b"41"), ProofReply::Value { at: at(ProofOp::Get), value: b"before-restart".to_vec() });
-        let replacement = FileProofStore::open(&dir()).unwrap();
-        assert_eq!(get(&replacement, b"41"), ProofReply::Absent { at: at(ProofOp::Get) });
+        let restarted = FileTestkitStore::open(&d).unwrap();
+        assert_eq!(get(&restarted, b"41"), TestkitStoreReply::Value { at: at(TestkitStoreOp::Get), value: b"before-restart".to_vec() });
+        let replacement = FileTestkitStore::open(&dir()).unwrap();
+        assert_eq!(get(&replacement, b"41"), TestkitStoreReply::Absent { at: at(TestkitStoreOp::Get) });
     }
 
     #[test]
     fn an_oversized_key_or_value_is_refused_by_name_and_writes_nothing() {
         let d = dir();
-        let s = FileProofStore::open(&d).unwrap();
-        let r = s.apply(ProofRequest::Get { key: vec![0; MAX_KEY_BYTES + 1] }, at(ProofOp::Get));
-        assert_eq!(r, ProofReply::TooLarge { at: at(ProofOp::Get), field: "key".into(), limit: 256, got: 257 });
-        let r = s.apply(ProofRequest::Put { key: b"k".to_vec(), value: vec![0; MAX_VALUE_BYTES + 1] }, at(ProofOp::Put));
-        assert_eq!(r, ProofReply::TooLarge { at: at(ProofOp::Put), field: "value".into(), limit: 65536, got: 65537 });
+        let s = FileTestkitStore::open(&d).unwrap();
+        let r = s.apply(TestkitStoreRequest::Get { key: vec![0; MAX_KEY_BYTES + 1] }, at(TestkitStoreOp::Get));
+        assert_eq!(r, TestkitStoreReply::TooLarge { at: at(TestkitStoreOp::Get), field: "key".into(), limit: 256, got: 257 });
+        let r = s.apply(TestkitStoreRequest::Put { key: b"k".to_vec(), value: vec![0; MAX_VALUE_BYTES + 1] }, at(TestkitStoreOp::Put));
+        assert_eq!(r, TestkitStoreReply::TooLarge { at: at(TestkitStoreOp::Put), field: "value".into(), limit: 65536, got: 65537 });
         let r = s.apply(
-            ProofRequest::CompareAndSwap { key: b"k".to_vec(), expected: None, new: Some(vec![0; MAX_VALUE_BYTES + 1]) },
-            at(ProofOp::CompareAndSwap),
+            TestkitStoreRequest::CompareAndSwap { key: b"k".to_vec(), expected: None, new: Some(vec![0; MAX_VALUE_BYTES + 1]) },
+            at(TestkitStoreOp::CompareAndSwap),
         );
-        assert_eq!(r, ProofReply::TooLarge { at: at(ProofOp::CompareAndSwap), field: "new".into(), limit: 65536, got: 65537 });
+        assert_eq!(r, TestkitStoreReply::TooLarge { at: at(TestkitStoreOp::CompareAndSwap), field: "new".into(), limit: 65536, got: 65537 });
         assert!(!d.join(STORE_FILE).exists(), "nothing was written");
-        let at_limit = s.apply(ProofRequest::Put { key: vec![1; MAX_KEY_BYTES], value: vec![2; MAX_VALUE_BYTES] }, at(ProofOp::Put));
-        assert_eq!(at_limit, ProofReply::Stored { at: at(ProofOp::Put) }, "exactly at the limits is accepted");
+        let at_limit = s.apply(TestkitStoreRequest::Put { key: vec![1; MAX_KEY_BYTES], value: vec![2; MAX_VALUE_BYTES] }, at(TestkitStoreOp::Put));
+        assert_eq!(at_limit, TestkitStoreReply::Stored { at: at(TestkitStoreOp::Put) }, "exactly at the limits is accepted");
     }
 
     #[test]
     fn a_store_file_this_build_does_not_recognise_is_refused_by_name() {
         let d = dir();
-        std::fs::write(d.join(STORE_FILE), br#"{"format":"proof-store/9","entries":{}}"#).unwrap();
-        let e = FileProofStore::open(&d).unwrap_err();
-        assert!(e.contains("proof-store/9") && e.contains(STORE_FILE), "{e}");
+        std::fs::write(d.join(STORE_FILE), br#"{"format":"testkit-store/9","entries":{}}"#).unwrap();
+        let e = FileTestkitStore::open(&d).unwrap_err();
+        assert!(e.contains("testkit-store/9") && e.contains(STORE_FILE), "{e}");
         std::fs::write(d.join(STORE_FILE), b"garbage").unwrap();
-        assert!(FileProofStore::open(&d).unwrap_err().contains("is not a proof store"));
+        assert!(FileTestkitStore::open(&d).unwrap_err().contains("is not a testkit store"));
     }
 
     #[test]
     fn a_failed_write_changes_nothing_and_names_the_file() {
         let d = dir();
-        let s = FileProofStore::open(&d).unwrap();
-        s.apply(ProofRequest::Put { key: b"k".to_vec(), value: b"v1".to_vec() }, at(ProofOp::Put));
+        let s = FileTestkitStore::open(&d).unwrap();
+        s.apply(TestkitStoreRequest::Put { key: b"k".to_vec(), value: b"v1".to_vec() }, at(TestkitStoreOp::Put));
         // A directory where the temp file goes makes the write fail.
         std::fs::create_dir_all(d.join(STORE_FILE).with_extension("json.tmp")).unwrap();
-        let r = s.apply(ProofRequest::Put { key: b"k".to_vec(), value: b"v2".to_vec() }, at(ProofOp::Put));
-        assert!(matches!(&r, ProofReply::StoreFailed { reason, .. } if reason.contains("json.tmp")), "{r:?}");
-        assert_eq!(get(&s, b"k"), ProofReply::Value { at: at(ProofOp::Get), value: b"v1".to_vec() }, "the held value is unchanged");
+        let r = s.apply(TestkitStoreRequest::Put { key: b"k".to_vec(), value: b"v2".to_vec() }, at(TestkitStoreOp::Put));
+        assert!(matches!(&r, TestkitStoreReply::StoreFailed { reason, .. } if reason.contains("json.tmp")), "{r:?}");
+        assert_eq!(get(&s, b"k"), TestkitStoreReply::Value { at: at(TestkitStoreOp::Get), value: b"v1".to_vec() }, "the held value is unchanged");
     }
 
     #[test]
     fn the_protocol_is_testkit_forwardable_and_every_variant_round_trips() {
-        assert_eq!(ProofStore::OP, 0x70);
-        assert!(rdm_core::catalog::TESTKIT_OPS.contains(&ProofStore::OP));
-        assert!(ProofStore::FORWARDABLE);
-        let a = at(ProofOp::Get);
+        assert_eq!(TestkitStore::OP, 0x70);
+        assert!(rdm_core::catalog::TESTKIT_OPS.contains(&TestkitStore::OP));
+        assert!(TestkitStore::FORWARDABLE);
+        let a = at(TestkitStoreOp::Get);
         let replies = vec![
-            ProofReply::Value { at: a.clone(), value: vec![1] },
-            ProofReply::Absent { at: a.clone() },
-            ProofReply::Stored { at: a.clone() },
-            ProofReply::Deleted { at: a.clone() },
-            ProofReply::Swapped { at: a.clone() },
-            ProofReply::Mismatch { at: a.clone(), current: None },
-            ProofReply::TooLarge { at: a.clone(), field: "key".into(), limit: 1, got: 2 },
-            ProofReply::StoreFailed { at: a.clone(), reason: "r".into() },
-            ProofReply::PeerUnresolved { reason: "p".into() },
-            ProofReply::NotReady { reason: "n".into() },
-            ProofReply::Busy { reason: "b".into() },
-            ProofReply::ConnectionsDeleting { reason: "d".into() },
-            ProofReply::Malformed { kind: MalformedKind::Corrupt },
-            ProofReply::Unauthorized { reason: "u".into() },
+            TestkitStoreReply::Value { at: a.clone(), value: vec![1] },
+            TestkitStoreReply::Absent { at: a.clone() },
+            TestkitStoreReply::Stored { at: a.clone() },
+            TestkitStoreReply::Deleted { at: a.clone() },
+            TestkitStoreReply::Swapped { at: a.clone() },
+            TestkitStoreReply::Mismatch { at: a.clone(), current: None },
+            TestkitStoreReply::TooLarge { at: a.clone(), field: "key".into(), limit: 1, got: 2 },
+            TestkitStoreReply::StoreFailed { at: a.clone(), reason: "r".into() },
+            TestkitStoreReply::PeerUnresolved { reason: "p".into() },
+            TestkitStoreReply::NotReady { reason: "n".into() },
+            TestkitStoreReply::Busy { reason: "b".into() },
+            TestkitStoreReply::ConnectionsDeleting { reason: "d".into() },
+            TestkitStoreReply::Malformed { kind: MalformedKind::Corrupt },
+            TestkitStoreReply::Unauthorized { reason: "u".into() },
         ];
-        assert_eq!(replies.len() as u32, ProofStore::REPLY_VARIANTS);
+        assert_eq!(replies.len() as u32, TestkitStore::REPLY_VARIANTS);
         for r in replies {
-            assert_eq!(ProofStore::decode_reply(&ProofStore::encode_reply(&r).unwrap()).unwrap(), r);
+            assert_eq!(TestkitStore::decode_reply(&TestkitStore::encode_reply(&r).unwrap()).unwrap(), r);
         }
         let requests = vec![
-            ProofRequest::Get { key: vec![1] },
-            ProofRequest::Put { key: vec![1], value: vec![2] },
-            ProofRequest::Delete { key: vec![1] },
-            ProofRequest::CompareAndSwap { key: vec![1], expected: None, new: Some(vec![3]) },
+            TestkitStoreRequest::Get { key: vec![1] },
+            TestkitStoreRequest::Put { key: vec![1], value: vec![2] },
+            TestkitStoreRequest::Delete { key: vec![1] },
+            TestkitStoreRequest::CompareAndSwap { key: vec![1], expected: None, new: Some(vec![3]) },
         ];
-        assert_eq!(requests.len() as u32, ProofStore::REQUEST_VARIANTS);
+        assert_eq!(requests.len() as u32, TestkitStore::REQUEST_VARIANTS);
         for r in requests {
-            assert_eq!(ProofStore::decode_request(&ProofStore::encode_request(&r).unwrap()).unwrap(), r);
+            assert_eq!(TestkitStore::decode_request(&TestkitStore::encode_request(&r).unwrap()).unwrap(), r);
         }
     }
 }

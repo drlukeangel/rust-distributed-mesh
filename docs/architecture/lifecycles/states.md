@@ -10,7 +10,7 @@ lives on its own page; op fields and enums live only in the
 
 - **Fabric:** `pending` → `ready`.
 - **Mesh:** `pending` → `ready` → `deleting` → `deleted`. A mesh is alive while it holds a node; only its mesh-primary leaves it, always last, and the mesh is then dead and never restarted. A mesh id is never reissued; deleted is final. A deleted mesh releases its name within the fabric as a deleted node releases its name within its path; a mesh created again under that name is a new mesh with a new id.
-- **Node:** starting → pending → ready → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted under the [node object contract](../node-rpc-envelope.md#typed-object-contract). Stopped is a status: a live, stopped process. Start rejoins that same process and restores readiness only after all start gates pass. Delete proves exact runtime exit, writes the durable row deleted and releases identity/name; it is not a return to readiness.
+- **Node:** starting → pending → ready → connections-deleting → connections-deleted → stopping → stopped → deleting → deleted under the [node object contract](../node-rpc-envelope.md#typed-object-contract). Stopped is a status: a live, stopped process. Start rejoins that same process and restores readiness only after all start gates pass. Delete shows exact runtime exit, writes the durable row deleted and releases identity/name; it is not a return to readiness.
 - **Node row silence marks:** a node row may carry the observer-inferred marks `PendingReconnect` and `Dead` (TRUE OFFLINE), written by the node's mesh-primary. They are never themselves a reason to act ([node recovery](node-recovery.md)).
 
 A mesh is ready when every planned exact member birth for the accepted
@@ -94,14 +94,14 @@ and no active routing-stop overlay remains. A late ready digest or stopped overl
 cannot restore a deleted identity or a member of a deleted mesh.
 Peers may observe a mesh's final primary go directly from running to Gone when its
 NodeDeleted arrives before its NodeStopped; observing Stopped is not a prerequisite to
-accepting terminal proof.
+accepting the provider's `Exited`.
 
 Application eligibility does not prevent lifecycle/control calls to a retained
 endpoint: a stopped process remains reachable for start, update and delete. Only whoever
 selects application targets reads lifecycle; the [resolver](../node-rpc.md#42-live-resolver-contract)
 reads none, so a connections-deleting, connections-deleted, stopping or stopped birth still resolves Found and the lifecycle op reaches it.
 Deletion separately blocks the deleted identity in the peer-location view, where
-the resolver answers Gone. Silence and lack of an application route are not that proof.
+the resolver answers Gone. Silence and lack of an application route are not that evidence.
 
 What every node observes while a node.delete removes `mesh2.rpc.2`: the accepted topology
 changes first, the observed topology only as the executor acts.
@@ -111,7 +111,7 @@ changes first, the observed topology only as the executor acts.
 | Build accepted | does not name it | current | Found | selects it |
 | executor claimed, `NodeDeleting` | does not name it | current, overlay `NodeDeleting` | Found | never selects it |
 | node.stopped; the mesh-primary's NodeStopped | does not name it | current, status `stopped`, overlay | Found | never selects it |
-| provider proof, `NodeDeleted` | does not name it | removed; deleted identity retained | Gone | not a candidate |
+| the provider's inspect answer, `NodeDeleted` | does not name it | removed; deleted identity retained | Gone | not a candidate |
 | after the deleted retention | does not name it | forgotten | Unknown | not a candidate |
 
 ## Stopped nodes

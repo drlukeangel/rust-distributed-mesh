@@ -70,8 +70,8 @@ fn opened(facts: &[BuildFact]) -> usize {
 struct Departure(std::sync::atomic::AtomicBool);
 
 #[async_trait::async_trait]
-impl rdm_admin::build_drive::DepartureProof for Departure {
-    async fn proven(&self, executor: &rdm_core::framing::Birth) -> Result<(), String> {
+impl rdm_admin::build_drive::ExecutorInspection for Departure {
+    async fn exited_or_os_stopped(&self, executor: &rdm_core::framing::Birth) -> Result<(), String> {
         if self.0.load(std::sync::atomic::Ordering::SeqCst) {
             Ok(())
         } else {

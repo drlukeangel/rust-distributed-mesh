@@ -68,7 +68,7 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     estate.stop().await;
 
     let spans = estate.spans();
-    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
     let served_in = |t: &[&Value]| served.iter().filter(|s| t.iter().any(|x| x["trace_id"] == s["trace_id"])).cloned().collect::<Vec<_>>();
     let direct_b1: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "direct" && s["attributes"]["target"] == b1_id).collect();
     assert!(!direct_b1.is_empty() && direct_b1.iter().all(|r| r["attributes"]["outcome"] == "Reply"), "{direct_b1:?}");
@@ -81,7 +81,7 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     assert_eq!(via.len(), 1, "{via:?}");
     assert_eq!((via[0]["attributes"]["target"].as_str(), via[0]["attributes"]["carrier"].as_str(), via[0]["attributes"]["outcome"].as_str()), (Some(b1_id.as_str()), Some(carrier_id.as_str()), Some("Reply")));
     let via_served = served_in(&via);
-    assert_eq!(via_served.len(), 1, "one carried proof-store request was served: {via_served:?}");
+    assert_eq!(via_served.len(), 1, "one carried testkit-store request was served: {via_served:?}");
     assert!(via_served.iter().all(|s| s["attributes"]["node_id"] == b1["node_id"] && s["attributes"]["incarnation_id"] == b1["incarnation_id"]), "the carried call was served by broker.1's birth only");
     let none_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "no-active-route").collect();
     assert_eq!(none_t.len(), 1, "{none_t:?}");

@@ -88,7 +88,7 @@ and recording it are separate for every type.
   and answers, and whether it is primary is the election's result against its own birth, never the
   record's. A call that reached a process other than the
   named birth, a refusal or no answer decides nothing about the successor's birth (R-SW1: a failed probe
-  never proves anything). The call fails by name, and [node investigation](node-recovery.md) on the
+  never shows anything). The call fails by name, and [node investigation](node-recovery.md) on the
   successor's exact birth decides (Q111): reached, the call is retried against it; any other verdict, the
   successor is re-created and the ordinary election names the primary by the staleness-floor rule, the
   old primary included.

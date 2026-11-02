@@ -63,7 +63,7 @@ behind the trait knows where. Storage is persistence only; it stores and returns
 and decides nothing (Q109). A property or lifecycle put retains the original backend operation
 until it is terminal. Every returned outcome, including an error, means that issued mutation can
 no longer commit later; an error may still conceal a committed value whose acknowledgement was
-lost. Caller cancellation or a transport deadline does not release serialization or prove absence.
+lost. Caller cancellation or a transport deadline does not release serialization or show absence.
 
 A **provider** is a backend supplying all six storage boundaries, compiled into an executable and
 registered in its wiring by name:

@@ -71,7 +71,7 @@ O=$DEPLOY/gates-$(basename $(pwd))-$SHA${GATE/fast/}.log; : > $O; : > $O.detail
 echo "[gate] head=$(git rev-parse HEAD) dirty=$(git status --porcelain | wc -l | tr -d ' ')" | tee -a $O
 D=$O.d; rm -rf $D; mkdir -p $D
 export I143_PREBUILT_ARTIFACTS="$D/artifacts.json"
-SCENARIOS="node_delete node_connections_delete connections_acceptance connections_restart node_replace node_restart routing status shape_reconcile live_resize role_build role_election restart_target role_routing role_context role_wedge provider_state late_lower_node_id_admin node_primary_update mesh_create fabric_primary_handover canonical_ids node_type_election fabric_primary fabric_takeover rpc_proof_store accepted_topology node_admin_loss_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance fabric_states node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence backbone successor_adoption admins_lost_mid_build topology_storage_provider"
+SCENARIOS="node_delete node_connections_delete connections_acceptance connections_restart node_replace node_restart routing status shape_reconcile live_resize role_build role_election restart_target role_routing role_context role_wedge provider_state late_lower_node_id_admin node_primary_update mesh_create fabric_primary_handover canonical_ids node_type_election fabric_primary fabric_takeover rpc_testkit_store accepted_topology node_admin_loss_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance fabric_states node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence backbone successor_adoption admins_lost_mid_build topology_storage_provider"
 t0=$(date +%s)
 
 # 1. Build once: check, every bin, every test binary. Nothing compiles after this.
@@ -350,7 +350,7 @@ if [ "$GATE" = fast ]; then
     m=$(exe $SCENARIO_PKG main)
     if [ -n "$m" ]; then echo "topology_storage_provider_fast $m --exact topology_storage_provider::every_serving_node_keeps_its_birth_and_ready_through_a_change" >> $D/jobs; else echo "FAIL topology_storage_provider_fast 0s" | tee -a $O; fi
 fi
-SCENARIO_SKIP=$(for s in $SCENARIOS build_log estate_handover estate_teardown await_attempt seeded operation_ledger driver_reconcile proof_holder_lifecycle manifest_replay restart_canary_seed action_generator failpoint_explorer wedge_detector process_fault_backend container_fault_backend bootstrap_pending primary_loss_takeover supplied_clock delta_gap_recovery held_status_join partition_rejoin proxy_cutback restarted_member_rejoin stopped_last_admin peer_mesh_topology topology_get container_kill node_connections_delete poc_chaos_kit rshape_burn_in; do printf " --skip %s::" "$s"; done)
+SCENARIO_SKIP=$(for s in $SCENARIOS build_log estate_handover estate_teardown await_attempt seeded operation_ledger driver_reconcile testkit_store_lifecycle manifest_replay restart_canary_seed action_generator failpoint_explorer wedge_detector process_fault_backend container_fault_backend bootstrap_pending primary_loss_takeover supplied_clock delta_gap_recovery held_status_join partition_rejoin proxy_cutback restarted_member_rejoin stopped_last_admin peer_mesh_topology topology_get container_kill node_connections_delete poc_chaos_kit rshape_burn_in; do printf " --skip %s::" "$s"; done)
 # One job per test executable (2026-10-12): a crate's lib, bin and main executables run in parallel, each its tests in
 # parallel threads. Chained in one job they summed: admin-core lib 39.7 s + main 30.4 s ran as one 116 s job under load.
 per_exe(){
@@ -538,7 +538,7 @@ PRIORITY = [
     "node_primary_update",
     "canonical_ids",
     "fabric_primary",
-    "rpc_proof_store",
+    "rpc_testkit_store",
     "role_wedge",
     "live_resize",
 ]

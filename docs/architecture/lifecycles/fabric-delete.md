@@ -16,7 +16,7 @@ itself is then deleted by a separate `node.delete`, called from outside the fabr
 | Precondition | None on the fabric's state: admitted before the first ready, and while a Build is in progress, which it interrupts as [build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine) states |
 | Driver | The fabric-primary, one Build |
 | Steps | [mesh.delete](mesh-delete.md) of each mesh, the fabric-primary's own mesh last; then [node.delete](node-delete.md) of each other mesh's mesh-primary, after its mesh.deleted |
-| Executor | The fabric-primary executes each other mesh-primary's node.delete and proves its exit |
+| Executor | The fabric-primary executes each other mesh-primary's node.delete and shows its exit |
 | Fabric-primary | Stays on its own mesh, because no other mesh is left to take it; that mesh.delete skips its [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) step |
 | Completion | `fabric.deleted`, reported by the fabric-primary, still alive |
 | After completion | A separate `node.delete` of the fabric-primary, called from outside the fabric; its `node.deleted` is its last reply and the caller takes its word |
@@ -37,7 +37,7 @@ itself is then deleted by a separate `node.delete`, called from outside the fabr
    successful connection runs [node.delete](node-delete.md) for that node, as executor. Nothing of
    the fabric's topology is left behind.
 2. After each other mesh's mesh.deleted, run [node.delete](node-delete.md) of that mesh's
-   mesh-primary. The fabric-primary is the executor and proves its exit.
+   mesh-primary. The fabric-primary is the executor and shows its exit.
 3. The fabric-primary, still alive, reports fabric.deleted. The primary runs the workflow
    needs are retained until it completes ([Elections](../fabric-node-lifecycle-elections.md)).
 4. A separate call from outside the fabric runs node.delete of the fabric-primary. Its
@@ -56,12 +56,12 @@ fabric.delete
                          a mesh-primary that does not answer: reached through mesh
                          investigation, whose outcome here is the delete
   > node.delete          each other mesh's mesh-primary, after its mesh.deleted; the
-                         fabric-primary is the executor and proves its exit
+                         fabric-primary is the executor and shows its exit
     < fabric.deleted     reported by the fabric-primary, still alive
 then a separate call, from outside the fabric:
 node.delete              the fabric-primary
     < node.deleted       its last reply; the caller takes its word, because nobody is left
-                         in the fabric to prove the exit
+                         in the fabric to show the exit
 ```
 
 ## Failure
@@ -70,7 +70,7 @@ A step that cannot complete ends the workflow `Failed { step, reason }`, naming 
 no fabric.deleted follows. Completion of steps 1 to 3 rests on each deleted runtime's exact
 its node.delete receipt: a runtime inside the workflow whose delete has no receipt is never
 reported deleted. A node the fabric-primary cannot reach, directly or through a node-admin, and
-cannot prove exited is named in `Failed { step, reason }`.
+cannot show exited is named in `Failed { step, reason }`.
 
 A fabric-primary lost mid-delete is fabric recovery's: its executor continues the delete as
 fabric-primary and re-creates nothing ([fabric recovery](fabric-recovery.md) step 4, Q155); a mesh

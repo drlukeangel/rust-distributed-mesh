@@ -2,7 +2,7 @@
 //! All configuration is the launch environment.
 
 use rdm_test::launch::Launch;
-use rdm_test::{declare_probe, node, proof_store, resolve_probe};
+use rdm_test::{declare_probe, node, testkit_store, resolve_probe};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -35,11 +35,11 @@ async fn main() {
     }
     // The declare oracle calls out through the node's one client, which exists once the node runs.
     let declare_client: Arc<std::sync::OnceLock<rdm_test::node_rpc::ProcessNodeRpc>> = Arc::new(std::sync::OnceLock::new());
-    let store = match proof_store::FileProofStore::open(&launch.data_dir) {
+    let store = match testkit_store::FileTestkitStore::open(&launch.data_dir) {
         Ok(s) => Arc::new(s),
         Err(e) => {
-            boot.in_scope(|| tracing::error!(error = %e, "the proof store refused to open"));
-            eprintln!("rdm-rpc-node: proof store: {e}");
+            boot.in_scope(|| tracing::error!(error = %e, "the testkit store refused to open"));
+            eprintln!("rdm-rpc-node: testkit store: {e}");
             drop(telemetry);
             std::process::exit(3);
         }
@@ -55,7 +55,7 @@ async fn main() {
         }
         .with_on_call_failed(Arc::new(rdm_test::test_app::CallFailed));
         let register = |b, seams: rdm_test::originate::Seams| {
-            let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch, &seams.name), seams.resolver.clone(), &launch, &seams.name), declare_client.clone(), &launch);
+            let b = declare_probe::serve(resolve_probe::serve(testkit_store::serve(b, store, &launch, &seams.name), seams.resolver.clone(), &launch, &seams.name), declare_client.clone(), &launch);
             rdm_test::originate::serve(b, seams, &launch)
         };
         // The testkit's app protocol, registered when the estate's root holds its knob: every admitted

@@ -18,7 +18,7 @@
 
 use crate::build::BuildId;
 use crate::build_state::{BuildFact, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
-use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
+use crate::deployment::pipeline::{RuntimeIdentity, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
 use rdm_core::{LifecycleOp, MeshId, NodeId};
@@ -116,7 +116,7 @@ pub struct ExitManifest {
     pub final_primary: RosterBirth,
     /// The final primary's exact runtime by fingerprint, when `OtherMembersExited` or `MeshDeleted`
     /// names it still running; `None` in `MeshLeft`, whose receipts include the final primary's exit.
-    pub final_runtime: Option<RuntimeProof>,
+    pub final_runtime: Option<RuntimeIdentity>,
     /// One terminal receipt per birth that exited.
     pub receipts: Vec<TerminalReceipt>,
 }
@@ -164,7 +164,7 @@ pub fn first_mismatch(manifest: &ExitManifest, roster: &[RosterBirth], final_pri
 /// exited is no longer live, and the proof set must still cover it. With no receipt recorded,
 /// `capture()` (the roster as this admin's view holds it now) is recorded with one blind append and
 /// returned.
-pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, step: &str, executor: &str, final_primary: &RosterBirth, final_runtime: &RuntimeProof, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
+pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, step: &str, executor: &str, final_primary: &RosterBirth, final_runtime: &RuntimeIdentity, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
     let build_id = key.build_id.clone();
     let view = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the {step} receipt of {}: {e}", format!("{:?}", key.operation)))?;
     let recorded = view.steps.iter().filter(|r| r.operation == key.operation && r.step == step && r.outcome == StepOutcome::Complete).min_by_key(|r| r.attempt);
@@ -217,12 +217,12 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], roster: &[RosterBirth]) -> BTre
     for b in roster {
         let Ok(node_id) = NodeId::parse(&b.node_id) else { continue };
         let deleted = rdm_core::OperationId::node("node.delete", &node_id);
-        let proof = steps
+        let exited = steps
             .iter()
             .filter(|r| r.operation == deleted && r.step == terminate && r.outcome == StepOutcome::Complete)
             .filter_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<TerminalReceipt>(v).ok()))
             .find(|t| t.node_id == b.node_id && t.incarnation_id == b.incarnation_id);
-        if let Some(t) = proof {
+        if let Some(t) = exited {
             held.insert((b.node_id.clone(), b.incarnation_id.clone()), t);
         }
     }
@@ -315,7 +315,7 @@ pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &MeshDeleteK
 /// proved. `terminal` must name the completion's final primary and the exact runtime it named still
 /// running; the set must then cover the roster exactly, the final primary included. Anything else
 /// refuses by name, the field and both values.
-pub fn mesh_left_proof(completion: &ExitManifest, terminal: &TerminalReceipt) -> Result<ExitManifest, String> {
+pub fn mesh_left_manifest(completion: &ExitManifest, terminal: &TerminalReceipt) -> Result<ExitManifest, String> {
     let last = &completion.final_primary;
     let named = format!("{} {}", last.node_id, last.incarnation_id);
     if terminal.node_id != last.node_id || terminal.incarnation_id != last.incarnation_id {
@@ -353,7 +353,7 @@ pub struct RosterAmended {
     /// The new final primary.
     pub final_primary: RosterBirth,
     /// The new final primary's exact runtime, by fingerprint.
-    pub final_runtime: RuntimeProof,
+    pub final_runtime: RuntimeIdentity,
 }
 
 /// What recording an amendment did.
@@ -502,11 +502,11 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
 /// one inspect ([`crate::deployment::provider::inspect_runtime`]). Its answer is the verdict the birth's
 /// node.delete acts on (node-recovery.md step 3: `TerminateRuntime` first when it runs). A birth with
 /// no row, or another runtime, names no runtime to act on.
-pub async fn predecessor_verdict(provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, lost: &RosterBirth, runtime: &RuntimeProof) -> Result<crate::deployment::provider::Inspected, String> {
+pub async fn predecessor_verdict(provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, lost: &RosterBirth, runtime: &RuntimeIdentity) -> Result<crate::deployment::provider::Inspected, String> {
     let named = format!("{} {}", lost.node_id, lost.incarnation_id);
     let row = row.ok_or_else(|| format!("no durable runtime row of {named} was ever written here: its runtime is unknown"))?;
-    if &RuntimeProof::of(&row.runtime) != runtime {
-        return Err(format!("the durable runtime row of {named} names the runtime {:?}, not the one admitted for it {runtime:?}", RuntimeProof::of(&row.runtime)));
+    if &RuntimeIdentity::of(&row.runtime) != runtime {
+        return Err(format!("the durable runtime row of {named} names the runtime {:?}, not the one admitted for it {runtime:?}", RuntimeIdentity::of(&row.runtime)));
     }
     Ok(crate::deployment::provider::inspect_runtime(provider, &row.runtime, row.data_dir.as_deref(), &lost.incarnation_id).await)
 }
@@ -520,7 +520,7 @@ pub async fn predecessor_verdict(provider: &dyn crate::deployment::provider::Dep
 /// `node.delete` with an explicit node ID is its roster receipt; then `RosterAmended` admits `held`. A lost primary
 /// whose runtime is unknown here refuses the resume by name and nothing is amended.
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_after_loss<F, Fut>(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, key: &MeshDeleteKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof, delete: F) -> Result<Amended, crate::executor::RunEnd>
+pub async fn resume_after_loss<F, Fut>(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, key: &MeshDeleteKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeIdentity, delete: F) -> Result<Amended, crate::executor::RunEnd>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
@@ -575,8 +575,8 @@ where
     let last = |steps: &[BuildStepReceipt]| amendment_chain(&first, steps, operation).map(|c| c.last().map(|a| a.final_primary.clone()).unwrap_or_else(|| first.clone()));
     let chain = amendment_chain(&first, own, operation)?;
     // Kept as [`members_exited`] keeps a member: its exact Exited receipt and every later step's.
-    let proofs = exit_receipts(own, &chain.iter().map(|a| a.predecessor.clone()).collect::<Vec<_>>());
-    let predecessors_deleted = chain.iter().try_fold(true, |all, a| finished_delete(own, &named(me), &a.predecessor).map(|d| all && d.is_some() && proofs.contains_key(&(a.predecessor.node_id.clone(), a.predecessor.incarnation_id.clone()))))?;
+    let exits = exit_receipts(own, &chain.iter().map(|a| a.predecessor.clone()).collect::<Vec<_>>());
+    let predecessors_deleted = chain.iter().try_fold(true, |all, a| finished_delete(own, &named(me), &a.predecessor).map(|d| all && d.is_some() && exits.contains_key(&(a.predecessor.node_id.clone(), a.predecessor.incarnation_id.clone()))))?;
     if &last(own)? == me && predecessors_deleted {
         let amendments = chain.len();
         if amendments > 0 {
@@ -632,7 +632,7 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
 /// no Build gossip is authored for them, and that one read is what the rest of the admission uses.
 /// A Build log that could not be read refuses the run by name.
 #[allow(clippy::too_many_arguments)]
-pub async fn leaving_roster<F, Fut>(builds: &dyn BuildStateAdapter, local: &dyn LocalBuildLog, key: &MeshDeleteKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
+pub async fn leaving_roster<F, Fut>(builds: &dyn BuildStateAdapter, local: &dyn LocalBuildLog, key: &MeshDeleteKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeIdentity, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<Vec<BuildFact>, String>>,
@@ -775,7 +775,7 @@ pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executo
 /// node.delete (mesh-delete.md step 3), answering the provider's terminal receipt of its exact
 /// runtime, its row `Deleted` and its `NodeDeleted` the delete's own.
 #[allow(clippy::too_many_arguments)]
-pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], shutdown: F) -> Result<ExitManifest, String>
+pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeIdentity, records: &[Node], known: &[BuildStepReceipt], shutdown: F) -> Result<ExitManifest, String>
 where
     F: Fn(Node) -> Fut,
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
@@ -787,7 +787,7 @@ where
     let build_id = key.build_id.clone();
     let mut steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {}: {e}", format!("{:?}", key.operation)))?.steps;
     steps.extend(known.iter().cloned());
-    let proofs = exit_receipts(&steps, roster);
+    let exits = exit_receipts(&steps, roster);
     let mut receipts: Vec<TerminalReceipt> = Vec::new();
     let mut remaining: Vec<&RosterBirth> = Vec::new();
     // Births kept with their receipts: a member whose own delete finished.
@@ -795,7 +795,7 @@ where
     // Births whose own node.delete holds the provider's exact Exited and not every later step.
     let mut owed: Vec<&RosterBirth> = Vec::new();
     for b in roster.iter().filter(|b| *b != me) {
-        match proofs.get(&(b.node_id.clone(), b.incarnation_id.clone())) {
+        match exits.get(&(b.node_id.clone(), b.incarnation_id.clone())) {
             // The exited verdict is a step of the delete, not the delete: a birth is done once its delete
             // has every step's receipt. One that holds the proof alone is run on (its receipted steps
             // are reused, the rest executed in order, NodeDeleted included).
@@ -874,8 +874,8 @@ where
 /// held in `declared`, and the Mesh row Dead on `meshes`, which releases the mesh's name (R-MD1
 /// item 2, R-MN1 item 2).
 #[allow(clippy::too_many_arguments)]
-pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, meshes: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
-    drop_mesh_left_contacts(rows, executor, key, mesh, proof).await?;
+pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, meshes: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str, exited: &[TerminalReceipt]) -> Result<(), String> {
+    drop_mesh_left_contacts(rows, executor, key, mesh, exited).await?;
     ensure_mesh_dead(meshes, caches, declared, executor, key, mesh).await
 }
 
@@ -915,11 +915,11 @@ pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, cach
 /// whole from the copy the writer holds ([`crate::node_rows::WrittenRows::update`]); a birth whose record
 /// holds no address for it is left as it is. One `rdm.node_admin.node.remove.via-mesh-left-contact` span
 /// names them, and a refused write ends mesh-left by name.
-async fn drop_mesh_left_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
+async fn drop_mesh_left_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &MeshDeleteKey, mesh: &str, exited: &[TerminalReceipt]) -> Result<(), String> {
     let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to take {mesh}'s births' primaries off", format!("{:?}", key.operation)))?;
     let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation.action, operation_subject = ?key.operation.subject, dropped = tracing::field::Empty, error = tracing::field::Empty);
     let mut dropped = Vec::new();
-    for t in proof {
+    for t in exited {
         let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("{}: the Exited receipt of {} {} names no node id ({:?}): {e}", format!("{:?}", key.operation), t.node_id, t.incarnation_id, t.node_id))?;
         let written = rows
             .written()
@@ -1237,7 +1237,7 @@ pub struct Admitted {
     /// The final mesh-primary.
     pub final_primary: RosterBirth,
     /// The final primary's exact runtime, by fingerprint, as its provider domain holds it.
-    pub final_runtime: RuntimeProof,
+    pub final_runtime: RuntimeIdentity,
     /// Every roster amendment, in chain order from the admitted final primary.
     pub amendments: Vec<RosterAmended>,
 }
@@ -1691,12 +1691,12 @@ where
     if admins.is_empty() {
         return Err(format!("{outer:?}: {mesh} holds no node-admin birth to delete"));
     }
-    let mut admin_exits: Vec<(RosterBirth, RuntimeProof, TerminalReceipt)> = Vec::new();
+    let mut admin_exits: Vec<(RosterBirth, RuntimeIdentity, TerminalReceipt)> = Vec::new();
     for admin in &admins {
         let birth = RosterBirth::of(admin)?;
         let inc = birth.birth().map_err(|e| format!("{outer:?}: {e}"))?;
         let row = runtime_store.runtime(&admin.node_id, &inc).await.map_err(|e| format!("{outer:?}: the runtime row of {} {} could not be read: {e}", birth.node_id, birth.incarnation_id))?;
-        let runtime = row.as_ref().map(|r| RuntimeProof::of(&r.runtime)).ok_or_else(|| {
+        let runtime = row.as_ref().map(|r| RuntimeIdentity::of(&r.runtime)).ok_or_else(|| {
             let reason = format!("no durable runtime row of {} {} was ever written here", birth.node_id, birth.incarnation_id);
             span_unproven(key, &birth, &reason);
             format!("{outer:?}: {mesh} is unanswered and the runtime of its node-admin {} {} is not known here ({reason})", birth.node_id, birth.incarnation_id)
@@ -1720,7 +1720,7 @@ where
         let row = runtime_store.runtime(&ord.node_id, &inc).await.map_err(|e| format!("{outer:?}: the runtime row of {} {} could not be read: {e}", birth.node_id, birth.incarnation_id))?;
         match row.as_ref() {
             Some(r) => {
-                let runtime = RuntimeProof::of(&r.runtime);
+                let runtime = RuntimeIdentity::of(&r.runtime);
                 match predecessor_verdict(provider, row.as_ref(), &birth, &runtime).await {
                     // A member that runs and is live in this view answers for the mesh: kept.
                     Ok(crate::deployment::provider::Inspected::Running) if ord.status.is_live() => live_ordinary.push(birth),
@@ -1776,7 +1776,7 @@ pub async fn deleted_in_process(
     mesh: &str,
     roster: Vec<RosterBirth>,
     final_primary: &RosterBirth,
-    final_runtime: Option<RuntimeProof>,
+    final_runtime: Option<RuntimeIdentity>,
     all_receipts: Vec<TerminalReceipt>,
 ) -> Result<ExitManifest, String> {
     let outer = &key.operation;
@@ -1881,7 +1881,7 @@ mod tests {
             node: b.node.clone(),
             node_id: b.node_id.clone(),
             incarnation_id: b.incarnation_id.clone(),
-            runtime: Some(RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() }),
+            runtime: Some(RuntimeIdentity { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() }),
             exit_code: Some(0),
             verdict: None,
             data_dir: None,
@@ -2084,9 +2084,9 @@ mod tests {
         let next = MeshDeleteKey { attempt: 2, ..first.clone() };
         let owner = owner();
         let last = birth(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, "i3");
-        let proof = RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
-        let manifest = ExitManifest { mesh_id: first.mesh_id.to_string(), roster: vec![last.clone()], final_primary: last.clone(), final_runtime: Some(proof.clone()), receipts: vec![] };
-        let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: proof, amendments: vec![] };
+        let runtime = RuntimeIdentity { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
+        let manifest = ExitManifest { mesh_id: first.mesh_id.to_string(), roster: vec![last.clone()], final_primary: last.clone(), final_runtime: Some(runtime.clone()), receipts: vec![] };
+        let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: vec![] };
 
         // The member workflows run once and record the manifest under attempt 1; the report the
         // mesh-primary then calls up is lost: the cell delivers nothing to the owner.

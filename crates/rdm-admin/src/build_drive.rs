@@ -198,13 +198,13 @@ impl Gate for OpenGate {
     }
 }
 
-/// Proof that an executor's birth deleted: the exact runtime inspected and found exited or
-/// os-stopped (build.md, Q239). Running, unproven and silence are not proof.
+/// The provider's inspection of an executor's exact runtime (build.md, Q239): it answers whether the
+/// birth is exited or os-stopped. Running, unproven and silence never are.
 #[async_trait::async_trait]
-pub trait DepartureProof: Send + Sync {
+pub trait ExecutorInspection: Send + Sync {
     /// `Ok` when the provider reads the exact admitted birth `executor` exited or
     /// os-stopped; `Err` names why it is not.
-    async fn proven(&self, executor: &rdm_core::framing::Birth) -> Result<(), String>;
+    async fn exited_or_os_stopped(&self, executor: &rdm_core::framing::Birth) -> Result<(), String>;
 }
 
 /// Where the verdict an executor reported is recorded on the fabric-primary's own log, so the
@@ -824,7 +824,7 @@ pub struct DriveEnv {
     /// The cut-off rule and the role target.
     pub gate: Arc<dyn Gate>,
     /// Proof of an executor's departure.
-    pub departure: Arc<dyn DepartureProof>,
+    pub departure: Arc<dyn ExecutorInspection>,
     /// Records an executor's verdict on this admin's log.
     pub verdicts: Arc<dyn VerdictSink>,
     /// The application's Build notices this fabric-primary sends (fabric-node-hooks.md, Q256).
@@ -1611,14 +1611,14 @@ impl DriveEnv {
                     if deleted.is_some() {
                         return self.stalled(&me, drive, format!("{executor} was proven exited and the attempt claimed after it could not be dispatched either: {detail}"));
                     }
-                    match self.departure.proven(&executor).await {
+                    match self.departure.exited_or_os_stopped(&executor).await {
                         Ok(()) => {
-                            tracing::info_span!("rdm.node_admin.build.update.via-departure-proven", build_id = %id.log(), attempt, executor = %executor, node_path = %me.path, node_name = %me.name)
+                            tracing::info_span!("rdm.node_admin.build.update.via-executor-exited-or-os-stopped", build_id = %id.log(), attempt, executor = %executor, node_path = %me.path, node_name = %me.name)
                                 .in_scope(|| tracing::info!("the executor's exact runtime is proven exited or os-stopped: the next attempt may be claimed"));
                             deleted = Some(executor.clone());
                         }
-                        Err(not_proven) => {
-                            let why = format!("executor {executor} is {class} ({detail}); its departure is not proven ({not_proven}); the attempt is not claimed for another admin");
+                        Err(not_exited) => {
+                            let why = format!("executor {executor} is {class} ({detail}); its departure is not proven ({not_exited}); the attempt is not claimed for another admin");
                             return self.stalled(&me, drive, why);
                         }
                     }
@@ -1715,9 +1715,9 @@ impl DriveEnv {
                     Err(e) => Interrupted::Open(format!("path {me_path:?}, name {me_name:?}: Build {id}, which fabric.delete {} interrupts, could not be read after its terminal: {e}", delete.build_id, me_path = &me.path, me_name = &me.name)),
                 };
             }
-            if let Err(not_proven) = self.departure.proven(&executor).await {
+            if let Err(not_exited) = self.departure.exited_or_os_stopped(&executor).await {
                 return Interrupted::Open(format!(
-                    "path {me_path:?}, name {me_name:?}: attempt {} of Build {id}, which fabric.delete {} interrupts, runs at {executor} ({not_proven}): the teardown waits for it to end within its bound",
+                    "path {me_path:?}, name {me_name:?}: attempt {} of Build {id}, which fabric.delete {} interrupts, runs at {executor} ({not_exited}): the teardown waits for it to end within its bound",
                     p.attempt, delete.build_id, me_path = &me.path, me_name = &me.name));
             }
             span.record("executor", executor.to_string().as_str());
@@ -2163,7 +2163,7 @@ impl DriveEnv {
             let mut failed_step: Option<(rdm_core::OperationId, String, String)> = None;
             let outcome = match self.dispatcher.dispatch_in(turn, executor, &mesh, id, attempt, context, plan).await {
                 Dispatched::Refused(r) => AttemptOutcome::Failed { reason: format!("{executor} refused the section: {}", describe(&r)), code: rdm_core::outcome::Code::Unavailable },
-                Dispatched::Unreached(why) => match self.departure.proven(executor).await {
+                Dispatched::Unreached(why) => match self.departure.exited_or_os_stopped(executor).await {
                     Ok(()) => AttemptOutcome::Failed { reason: format!("{executor} exited with the section unfinished: {why}"), code: rdm_core::outcome::Code::Unavailable },
                     Err(not) => return Err(SectionEnd::Held(format!("the section of mesh {mesh} at {executor} was not reached ({why}) and its departure is not proven ({not}): attempt {attempt} holds the mesh"))),
                 },
@@ -2201,7 +2201,7 @@ impl DriveEnv {
                             break AttemptOutcome::Failed { reason: format!("action {}, subject {:?}, step {:?}: {reason}", operation.action, operation.subject, operation.recipe_step), code };
                         }
                         InnerItem::Frame(other) => break AttemptOutcome::Failed { reason: format!("{executor}'s section ended {}", other.name()), code: rdm_core::outcome::Code::Unavailable },
-                        InnerItem::Ended | InnerItem::Broke(_) => match self.departure.proven(executor).await {
+                        InnerItem::Ended | InnerItem::Broke(_) => match self.departure.exited_or_os_stopped(executor).await {
                             Ok(()) => break AttemptOutcome::Failed { reason: format!("{executor} exited with the section unfinished"), code: rdm_core::outcome::Code::Unavailable },
                             Err(not) => return Err(SectionEnd::Held(format!("the section of mesh {mesh} at {executor} was lost and its departure is not proven ({not}): attempt {attempt} holds the mesh"))),
                         },

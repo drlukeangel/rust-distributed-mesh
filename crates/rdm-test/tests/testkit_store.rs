@@ -3,7 +3,7 @@
 //! leaves `result.json` (its direct observations) and `spans.json` (every span it emitted, captured
 //! in-process by its own OTel exporter) there.
 //!
-//! The testkit proof store (op 0x70) is served by a real `NodeRpcServer` on its own endpoint, over
+//! The testkit testkit store (op 0x70) is served by a real `NodeRpcServer` on its own endpoint, over
 //! a store file in its own data dir, and called by a real `NodeRpcClient` naming the exact birth.
 
 use iroh::protocol::Router;
@@ -12,7 +12,7 @@ use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
-use rdm_test::proof_store::{self, FileProofStore, ProofOp, ProofReply, ProofRequest, ProofStore, Provenance, MAX_KEY_BYTES, MAX_VALUE_BYTES};
+use rdm_test::testkit_store::{self, FileTestkitStore, TestkitStoreOp, TestkitStoreReply, TestkitStoreRequest, TestkitStore, Provenance, MAX_KEY_BYTES, MAX_VALUE_BYTES};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -78,14 +78,14 @@ impl Capture {
     }
 }
 
-fn reply(out: RpcOutcome<ProofReply>) -> ProofReply {
+fn reply(out: RpcOutcome<TestkitStoreReply>) -> TestkitStoreReply {
     match out {
         RpcOutcome::Reply(r) => r.value().clone(),
-        other => panic!("expected a reply from the proof store: {other:?}"),
+        other => panic!("expected a reply from the testkit store: {other:?}"),
     }
 }
 
-/// CONTRACT (#2775): every proof-store op served over real Node RPC answers its typed reply, and
+/// CONTRACT (#2775): every testkit-store op served over real Node RPC answers its typed reply, and
 /// each reply names exactly the birth that executed it (logical NodeId, separate path and name, mesh,
 /// incarnation) and the op. A compare-and-swap whose expected value does not match answers
 /// Mismatch with the current value and changes nothing; one that matches swaps to exactly the new
@@ -94,13 +94,13 @@ fn reply(out: RpcOutcome<ProofReply>) -> ProofReply {
 /// happen: a reply without provenance or naming another birth, a mismatched CAS that writes, or an
 /// oversized write that touches the store.
 #[test]
-fn proof_holder_applies_cas_reports_exact_executing_birth() {
+fn testkit_store_applies_cas_reports_exact_executing_birth() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "proof_holder_applies_cas_reports_exact_executing_birth") {
+    if crate::own_process::delegated(module_path!(), "testkit_store_applies_cas_reports_exact_executing_birth") {
         return;
     }
-    let cell = "proof_holder_applies_cas_reports_exact_executing_birth";
+    let cell = "testkit_store_applies_cas_reports_exact_executing_birth";
     let dir = acceptance_dir(cell);
     let cap = capture(cell);
     let data_dir = std::env::temp_dir().join(format!("rdm-2775-proof-data-{}", std::process::id()));
@@ -129,10 +129,10 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             declared: Default::default(),
         };
-        let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
-        let server = proof_store::serve(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
+        let store = Arc::new(FileTestkitStore::open(&launch.data_dir).expect("the store opens in its data dir"));
+        let server = testkit_store::serve(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
             .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
-            .expect("the proof store is built");
+            .expect("the testkit store is built");
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
@@ -140,11 +140,11 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         resolver.insert(ResolvedNode { mesh: launch.mesh.clone(), kind: launch.kind, node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
         let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
         let target = NodeTarget::ExactNode(launch.node_id.clone());
-        let call = |req: ProofRequest| {
+        let call = |req: TestkitStoreRequest| {
             let (client, target) = (&client, &target);
-            async move { reply(client.call::<ProofStore>(target, &req, &CallOptions::default()).await.0) }
+            async move { reply(client.call::<TestkitStore>(target, &req, &CallOptions::default()).await.0) }
         };
-        let at = |op: ProofOp| Provenance {
+        let at = |op: TestkitStoreOp| Provenance {
             node_id: launch.node_id.to_string(),
             node: launch.name.clone(),
             mesh: launch.mesh.clone(),
@@ -153,48 +153,48 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         };
         let k = b"k1".to_vec();
         let mut seen = Vec::new();
-        let mut step = |label: &str, req: ProofRequest, r: ProofReply, want: ProofReply| {
+        let mut step = |label: &str, req: TestkitStoreRequest, r: TestkitStoreReply, want: TestkitStoreReply| {
             assert_eq!(r, want, "{label}");
             seen.push(json!({"step": label, "request": format!("{req:?}"), "reply": r}));
         };
 
-        let r = call(ProofRequest::Put { key: k.clone(), value: b"v1".to_vec() }).await;
-        step("put", ProofRequest::Put { key: k.clone(), value: b"v1".to_vec() }, r, ProofReply::Stored { at: at(ProofOp::Put) });
-        let r = call(ProofRequest::Get { key: k.clone() }).await;
-        step("get", ProofRequest::Get { key: k.clone() }, r, ProofReply::Value { at: at(ProofOp::Get), value: b"v1".to_vec() });
+        let r = call(TestkitStoreRequest::Put { key: k.clone(), value: b"v1".to_vec() }).await;
+        step("put", TestkitStoreRequest::Put { key: k.clone(), value: b"v1".to_vec() }, r, TestkitStoreReply::Stored { at: at(TestkitStoreOp::Put) });
+        let r = call(TestkitStoreRequest::Get { key: k.clone() }).await;
+        step("get", TestkitStoreRequest::Get { key: k.clone() }, r, TestkitStoreReply::Value { at: at(TestkitStoreOp::Get), value: b"v1".to_vec() });
         // A mismatched CAS answers the current value and writes nothing.
         let before = std::fs::read(store.path()).unwrap();
-        let req = ProofRequest::CompareAndSwap { key: k.clone(), expected: Some(b"nope".to_vec()), new: Some(b"x".to_vec()) };
+        let req = TestkitStoreRequest::CompareAndSwap { key: k.clone(), expected: Some(b"nope".to_vec()), new: Some(b"x".to_vec()) };
         let r = call(req.clone()).await;
-        step("cas-mismatch", req, r, ProofReply::Mismatch { at: at(ProofOp::CompareAndSwap), current: Some(b"v1".to_vec()) });
+        step("cas-mismatch", req, r, TestkitStoreReply::Mismatch { at: at(TestkitStoreOp::CompareAndSwap), current: Some(b"v1".to_vec()) });
         assert_eq!(std::fs::read(store.path()).unwrap(), before, "a mismatched CAS leaves the store file unchanged");
-        let r = call(ProofRequest::Get { key: k.clone() }).await;
-        step("get-after-mismatch", ProofRequest::Get { key: k.clone() }, r, ProofReply::Value { at: at(ProofOp::Get), value: b"v1".to_vec() });
+        let r = call(TestkitStoreRequest::Get { key: k.clone() }).await;
+        step("get-after-mismatch", TestkitStoreRequest::Get { key: k.clone() }, r, TestkitStoreReply::Value { at: at(TestkitStoreOp::Get), value: b"v1".to_vec() });
         // A matching CAS swaps to exactly the new value.
-        let req = ProofRequest::CompareAndSwap { key: k.clone(), expected: Some(b"v1".to_vec()), new: Some(b"v2".to_vec()) };
+        let req = TestkitStoreRequest::CompareAndSwap { key: k.clone(), expected: Some(b"v1".to_vec()), new: Some(b"v2".to_vec()) };
         let r = call(req.clone()).await;
-        step("cas-swap", req, r, ProofReply::Swapped { at: at(ProofOp::CompareAndSwap) });
-        let r = call(ProofRequest::Get { key: k.clone() }).await;
-        step("get-after-swap", ProofRequest::Get { key: k.clone() }, r, ProofReply::Value { at: at(ProofOp::Get), value: b"v2".to_vec() });
-        let r = call(ProofRequest::Delete { key: k.clone() }).await;
-        step("delete", ProofRequest::Delete { key: k.clone() }, r, ProofReply::Deleted { at: at(ProofOp::Delete) });
-        let r = call(ProofRequest::Get { key: k.clone() }).await;
-        step("get-after-delete", ProofRequest::Get { key: k.clone() }, r, ProofReply::Absent { at: at(ProofOp::Get) });
+        step("cas-swap", req, r, TestkitStoreReply::Swapped { at: at(TestkitStoreOp::CompareAndSwap) });
+        let r = call(TestkitStoreRequest::Get { key: k.clone() }).await;
+        step("get-after-swap", TestkitStoreRequest::Get { key: k.clone() }, r, TestkitStoreReply::Value { at: at(TestkitStoreOp::Get), value: b"v2".to_vec() });
+        let r = call(TestkitStoreRequest::Delete { key: k.clone() }).await;
+        step("delete", TestkitStoreRequest::Delete { key: k.clone() }, r, TestkitStoreReply::Deleted { at: at(TestkitStoreOp::Delete) });
+        let r = call(TestkitStoreRequest::Get { key: k.clone() }).await;
+        step("get-after-delete", TestkitStoreRequest::Get { key: k.clone() }, r, TestkitStoreReply::Absent { at: at(TestkitStoreOp::Get) });
         // Limits: refused by name, the store file untouched.
-        let r = call(ProofRequest::Put { key: b"kept".to_vec(), value: b"kv".to_vec() }).await;
-        step("put-kept", ProofRequest::Put { key: b"kept".to_vec(), value: b"kv".to_vec() }, r, ProofReply::Stored { at: at(ProofOp::Put) });
+        let r = call(TestkitStoreRequest::Put { key: b"kept".to_vec(), value: b"kv".to_vec() }).await;
+        step("put-kept", TestkitStoreRequest::Put { key: b"kept".to_vec(), value: b"kv".to_vec() }, r, TestkitStoreReply::Stored { at: at(TestkitStoreOp::Put) });
         let before = std::fs::read(store.path()).unwrap();
         let long_key = vec![b'k'; MAX_KEY_BYTES + 1];
-        let r = call(ProofRequest::Put { key: long_key.clone(), value: b"v".to_vec() }).await;
-        step("put-key-too-large", ProofRequest::Put { key: b"<257 bytes>".to_vec(), value: b"v".to_vec() }, r, ProofReply::TooLarge { at: at(ProofOp::Put), field: "key".into(), limit: MAX_KEY_BYTES as u32, got: (MAX_KEY_BYTES + 1) as u32 });
+        let r = call(TestkitStoreRequest::Put { key: long_key.clone(), value: b"v".to_vec() }).await;
+        step("put-key-too-large", TestkitStoreRequest::Put { key: b"<257 bytes>".to_vec(), value: b"v".to_vec() }, r, TestkitStoreReply::TooLarge { at: at(TestkitStoreOp::Put), field: "key".into(), limit: MAX_KEY_BYTES as u32, got: (MAX_KEY_BYTES + 1) as u32 });
         let big = vec![b'v'; MAX_VALUE_BYTES + 1];
-        let r = call(ProofRequest::Put { key: b"big".to_vec(), value: big }).await;
-        step("put-value-too-large", ProofRequest::Put { key: b"big".to_vec(), value: b"<65537 bytes>".to_vec() }, r, ProofReply::TooLarge { at: at(ProofOp::Put), field: "value".into(), limit: MAX_VALUE_BYTES as u32, got: (MAX_VALUE_BYTES + 1) as u32 });
+        let r = call(TestkitStoreRequest::Put { key: b"big".to_vec(), value: big }).await;
+        step("put-value-too-large", TestkitStoreRequest::Put { key: b"big".to_vec(), value: b"<65537 bytes>".to_vec() }, r, TestkitStoreReply::TooLarge { at: at(TestkitStoreOp::Put), field: "value".into(), limit: MAX_VALUE_BYTES as u32, got: (MAX_VALUE_BYTES + 1) as u32 });
         assert_eq!(std::fs::read(store.path()).unwrap(), before, "an oversized write leaves the store file unchanged");
-        let r = call(ProofRequest::Get { key: b"big".to_vec() }).await;
-        step("get-big-absent", ProofRequest::Get { key: b"big".to_vec() }, r, ProofReply::Absent { at: at(ProofOp::Get) });
-        let r = call(ProofRequest::Get { key: b"kept".to_vec() }).await;
-        step("get-kept", ProofRequest::Get { key: b"kept".to_vec() }, r, ProofReply::Value { at: at(ProofOp::Get), value: b"kv".to_vec() });
+        let r = call(TestkitStoreRequest::Get { key: b"big".to_vec() }).await;
+        step("get-big-absent", TestkitStoreRequest::Get { key: b"big".to_vec() }, r, TestkitStoreReply::Absent { at: at(TestkitStoreOp::Get) });
+        let r = call(TestkitStoreRequest::Get { key: b"kept".to_vec() }).await;
+        step("get-kept", TestkitStoreRequest::Get { key: b"kept".to_vec() }, r, TestkitStoreReply::Value { at: at(TestkitStoreOp::Get), value: b"kv".to_vec() });
         json!({
             "birth": {"node_id": launch.node_id.to_string(), "path": launch.name.path, "name": launch.name.name, "mesh": launch.mesh, "incarnation_id": launch.incarnation.to_string()},
             "store_file": store.path().display().to_string(),
@@ -206,7 +206,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
     let foreign: std::collections::BTreeSet<&str> = spans.iter().filter_map(|s| s["name"].as_str()).filter(|n| !n.starts_with("rdm.")).collect();
     assert!(foreign.is_empty(), "spans outside the cell's story were exported: {foreign:?}");
     // Every call is served at this birth, under its caller's trace, naming the op and its outcome.
-    let served: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.proof_store.serve.via-request").collect();
+    let served: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.evidence_store.serve.via-request").collect();
     let calls: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.update.via-call").collect();
     let outcomes: Vec<(String, String)> = served.iter().map(|s| (s["attributes"]["op"].as_str().unwrap().to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
     let want: Vec<(String, String)> = [

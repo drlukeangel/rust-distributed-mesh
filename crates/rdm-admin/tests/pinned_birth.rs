@@ -276,7 +276,7 @@ async fn a_not_yet_held_pinned_birth_ends_incomplete_and_resumes_on_that_birth_o
         }),
         dispatcher: dispatch.clone(),
         gate: Arc::new(AtlasGate(Some(pinned.clone()))),
-        departure: Arc::new(crate::loopback::Proofs::default()),
+        departure: Arc::new(crate::loopback::Exits::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         notices: crate::Told::default().notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),

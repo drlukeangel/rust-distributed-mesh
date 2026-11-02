@@ -40,7 +40,7 @@
 //! | op | name | protocol | request | reply |
 //! |---|---|---|---|---|
 //! | `0x40` | `broker-data` | [`BrokerData`](crate::families::BrokerData) | [`BrokerDataRequest`](crate::families::BrokerDataRequest) | [`BrokerDataReply`](crate::families::BrokerDataReply) |
-//! | `0x70` | `proof-store` | [`ProofStore`](crate::proof_store::ProofStore) | [`ProofRequest`](crate::proof_store::ProofRequest) | [`ProofReply`](crate::proof_store::ProofReply) |
+//! | `0x70` | `evidence-store` | [`TestkitStore`](crate::testkit_store::TestkitStore) | [`TestkitStoreRequest`](crate::testkit_store::TestkitStoreRequest) | [`TestkitStoreReply`](crate::testkit_store::TestkitStoreReply) |
 //! | `0x71` | `resolve-probe` | [`ResolveProbe`](crate::resolve_probe::ResolveProbe) | [`ResolveRequest`](crate::resolve_probe::ResolveRequest) | [`ResolveReply`](crate::resolve_probe::ResolveReply) |
 //! | `0x72` | `declare-probe` | [`DeclareProbe`](crate::declare_probe::DeclareProbe) | [`DeclareRequest`](crate::declare_probe::DeclareRequest) | [`DeclareReply`](crate::declare_probe::DeclareReply) |
 //! | `0x73` | `originate` | [`Originate`](crate::originate::Originate) | [`OriginateRequest`](crate::originate::OriginateRequest) | [`OriginateReply`](crate::originate::OriginateReply) |
@@ -65,7 +65,7 @@ pub use rdm_node::{executable_name, launch_for, read_launch, Role};
 pub use rdm_node::node_rpc;
 pub mod declare_probe;
 pub mod pre_node_ready_probe;
-pub mod proof_store;
+pub mod testkit_store;
 pub mod families;
 pub mod conformance;
 pub use rdm_node::held_name;
@@ -279,8 +279,8 @@ pub fn compose(
 
 /// The testkit's oracles the proof estate's probe speaks, served by every role.
 pub struct Oracles {
-    /// The data-dir key-value store the proof store protocol serves.
-    pub store: std::sync::Arc<crate::proof_store::FileProofStore>,
+    /// The data-dir key-value store the testkit store protocol serves.
+    pub store: std::sync::Arc<crate::testkit_store::FileTestkitStore>,
     /// The declare oracle calls out through the process's one client, set once the node runs.
     pub declare_client: std::sync::Arc<std::sync::OnceLock<crate::node_rpc::ProcessNodeRpc>>,
 }
@@ -288,15 +288,15 @@ pub struct Oracles {
 impl Oracles {
     /// Open the oracles under `launch`'s data directory.
     pub fn open(launch: &rdm_core::launch::Launch) -> anyhow::Result<Self> {
-        let store = crate::proof_store::FileProofStore::open(&launch.data_dir)
-            .map_err(|e| anyhow::anyhow!("the proof store refused to open: {e}"))?;
+        let store = crate::testkit_store::FileTestkitStore::open(&launch.data_dir)
+            .map_err(|e| anyhow::anyhow!("the testkit store refused to open: {e}"))?;
         Ok(Self {
             store: std::sync::Arc::new(store),
             declare_client: std::sync::Arc::new(std::sync::OnceLock::new()),
         })
     }
 
-    /// Add the proof store, resolve probe and declare probe protocols to `b`.
+    /// Add the testkit store, resolve probe and declare probe protocols to `b`.
     pub fn serve(
         &self,
         b: rdm_transport::ServerBuilder,
@@ -306,7 +306,7 @@ impl Oracles {
     ) -> rdm_transport::ServerBuilder {
         crate::declare_probe::serve(
             crate::resolve_probe::serve(
-                crate::proof_store::serve(b, self.store.clone(), launch, name),
+                crate::testkit_store::serve(b, self.store.clone(), launch, name),
                 resolver,
                 launch,
                 name,
@@ -318,17 +318,17 @@ impl Oracles {
 }
 
 /// The one proof-node executable's run (`rdm-node`).
-pub async fn run_proof_launched() -> anyhow::Result<()> {
-    run_proof(Role::of(&read_launch()?)).await
+pub async fn run_test_node_launched() -> anyhow::Result<()> {
+    run_test_node(Role::of(&read_launch()?)).await
 }
 
 /// Run a proof role process to completion with testkit seams and oracles.
-pub async fn run_proof(role: Role) -> anyhow::Result<()> {
-    run_proof_with(role, crate::node_hooks::NodeHooks::none(), |b| b).await
+pub async fn run_test_node(role: Role) -> anyhow::Result<()> {
+    run_test_node_with(role, crate::node_hooks::NodeHooks::none(), |b| b).await
 }
 
-/// [`run_proof`] for a proof role with a `pre_node_ready` hook.
-pub async fn run_proof_with(
+/// [`run_test_node`] for a proof role with a `pre_node_ready` hook.
+pub async fn run_test_node_with(
     role: Role,
     node_hooks: crate::node_hooks::NodeHooks,
     serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder,

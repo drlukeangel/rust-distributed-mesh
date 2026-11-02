@@ -22,7 +22,7 @@ rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev 
 rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "848d42853ccc790d9c686ddaf405a83c0361a87a" }
 # The carrier policy this shape declares for the originate door (a gateway carries).
 rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "848d42853ccc790d9c686ddaf405a83c0361a87a" }
-# Qualification-only: the testkit protocols 0x70-0x73 (proof store, resolve probe, declare probe,
+# Qualification-only: the testkit protocols 0x70-0x73 (testkit store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.
 rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "848d42853ccc790d9c686ddaf405a83c0361a87a" }
 tokio = { version = "1", features = ["full"] }

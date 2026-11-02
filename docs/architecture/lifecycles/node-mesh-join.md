@@ -263,7 +263,7 @@ A refused report fails the primitive by the refusal's name, nothing joined. An u
 is not `Joined`: the node retries the identical report and the primary's installed report
 resolves it. A mesh that cannot be joined after an accepted report leaves the primitive in
 `joining`, named with which one, and the commanding workflow's next attempt resumes from the
-accepted report; a runtime exit needs independent exact provider proof
+accepted report; a runtime exit needs independent the provider's inspect answer
 ([node.runtime.inspect](node-runtime-inspect.md)), even for a deployment that never joined.
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

@@ -15,7 +15,10 @@ RETIRED = {"drain", "drains", "draining", "drained", "park", "parked", "parking"
            # Q211: the Build's ordered list is steps, one item a step
            "recipe", "recipes",
            # Q297: edge is gossip's word; a connection is a Direct or a Proxy (gossip's code defines no edge name)
-           "edge", "edges"}
+           "edge", "edges",
+           # i152 s7: the provider's inspect answer (node.runtime.inspect) is the one mechanism; a thing is named
+           # for what it is, never a proof. `unproven`, the investigation's verdict, is its own word and stays (D46)
+           "proof", "proofs", "prove", "proves", "proved", "proven", "proving"}
 DEF = re.compile(r'\b(?:fn|struct|enum|mod|trait|type|const|static)\s+([A-Za-z_][A-Za-z0-9_]*)')
 def words(name):
     parts = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', name).lower().split('_')

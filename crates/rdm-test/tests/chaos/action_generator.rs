@@ -38,9 +38,9 @@ fn kind(a: &Action) -> &'static str {
         Action::Heal { .. } => "heal",
         Action::Kill { .. } => "kill",
         Action::Wedge { .. } => "wedge",
-        Action::Proof(Operation::Put { .. }) => "proof-put",
-        Action::Proof(Operation::Cas { .. }) => "proof-cas",
-        Action::Proof(Operation::Delete { .. }) => "proof-delete",
+        Action::Store(Operation::Put { .. }) => "store-put",
+        Action::Store(Operation::Cas { .. }) => "store-cas",
+        Action::Store(Operation::Delete { .. }) => "store-delete",
     }
 }
 
@@ -96,7 +96,7 @@ fn action_generator_replays_seed_preserves_legal_sequence() {
         *m.entry(kind(a)).or_default() += 1;
         m
     });
-    let every = ["grow", "shrink", "restart", "replace", "hand-off", "unheard", "heal", "proof-put", "proof-cas", "proof-delete"];
+    let every = ["grow", "shrink", "restart", "replace", "hand-off", "unheard", "heal", "store-put", "store-cas", "store-delete"];
     let missing: Vec<&&str> = every.iter().filter(|k| !kinds.contains_key(**k)).collect();
     assert!(missing.is_empty(), "seed {SEED}: every action kind is generated; missing {missing:?} of {kinds:?}");
 
@@ -170,7 +170,7 @@ fn grown_written_restarted(rule: &str) -> impl Fn(&Model, &[Action]) -> Result<(
             }
             prev = now;
             match a {
-                Action::Proof(Operation::Put { target, .. }) if grown.contains(target) => {
+                Action::Store(Operation::Put { target, .. }) if grown.contains(target) => {
                     written.insert(target.clone());
                 }
                 Action::Restart { node } if written.contains(node) => {
@@ -231,7 +231,7 @@ fn action_shrinker_preserves_failure_returns_minimal_legal_sequence() {
     }
     // The story the rule names survives: a grow of a mesh2 rpc node, a write to it, its restart last.
     let kinds: Vec<&str> = shrunk.minimized.iter().map(kind).collect();
-    assert!(kinds.contains(&"grow") && kinds.contains(&"proof-put") && kinds.last() == Some(&"restart"), "{:?}", shrunk.minimized);
+    assert!(kinds.contains(&"grow") && kinds.contains(&"store-put") && kinds.last() == Some(&"restart"), "{:?}", shrunk.minimized);
     assert_eq!(shrunk.failure.step, shrunk.minimized.len() - 1, "the rule breaks at the last row: {}", shrunk.failure);
 
     // A property that holds is never shrunk.

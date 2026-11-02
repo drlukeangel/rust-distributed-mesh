@@ -2,7 +2,7 @@
 //!
 //! product=mesh, feature=fabric-soak, subfeature=seeded, rung=MM.
 //!
-//! The schedule, the continuous proof-store traffic, the invariants, the operation ledger's
+//! The schedule, the continuous testkit-store traffic, the invariants, the operation ledger's
 //! reconciliation and the failure report (seed, executed sequence, minimized legal reproduction)
 //! are the soak driver's (`rdm_test::soak`); the 30-minute acceptance cells over it are
 //! `tests/i143_acceptance_2787.rs`. This stem runs the same driver for `RDM_SOAK_SECS` seconds
@@ -13,7 +13,7 @@ use rdm_test::estate::{Estate, Owner};
 use rdm_test::soak::{self, Config, Driver};
 
 /// CONTRACT: for `RDM_SOAK_SECS` seconds of one seed, the driver's legal random actions and
-/// continuous proof-store operations leave every invariant holding and every issued operation
+/// continuous testkit-store operations leave every invariant holding and every issued operation
 /// accounted for by the ledger. What must NOT happen: a violated invariant, an operation without an
 /// outcome, a lost applied write, a runtime left running. A failure names the seed and prints the
 /// minimized reproduction.

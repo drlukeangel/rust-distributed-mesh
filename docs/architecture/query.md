@@ -68,7 +68,7 @@ The matching rules:
   frame alone is `ReadOverBound` (`RESOURCE_EXHAUSTED`) naming it, and the read fails.
 - **Status:** the node record's latest status, declarations and committed operation
   effects. Sending an unacknowledged command moves nothing. Silence is the existing observer-inferred
-  fact, never proof of exit. Gossip does not make a record current or complete an operation.
+  fact, never evidence of exit. Gossip does not make a record current or complete an operation.
 - **`node.connection.get`:** answered by the exact birth from its own connections log, not from the atlas:
   the node (id and incarnation) is the read's address, outside the filter; the filter matches that
   node's connection rows (`id`, `destination`, `kind`, `state`).

@@ -1,7 +1,7 @@
 //! The name this birth holds now (R12, R-JN1; lifecycles/node-start.md step 2: at any join the row
 //! wins). A node's name moves by `node.name.update`: a stopped node takes its row's name from its join
 //! answer, a live one from `ApplyNodeName`; either way its topology view holds it. Every testkit door that
-//! names this node in a reply (the proof store's provenance, the resolve probe's and the originate
+//! names this node in a reply (the testkit store's provenance, the resolve probe's and the originate
 //! door's `by`) and the originate door's own route source read it per call, as the connections writer
 //! names its rows' source ([`rdm_admin::connections_writer::ConnectionsWriter::follow_held_name`](crate::connections_writer::ConnectionsWriter::follow_held_name)).
 //! Before the node has joined it is the launch's name, the name it holds while nothing can have given

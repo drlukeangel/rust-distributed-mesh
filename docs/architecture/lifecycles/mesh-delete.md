@@ -25,7 +25,7 @@ executor, deletes it afterwards.
 | After | The mesh-primary keeps publishing its mesh topology until a separate node.delete, with the fabric-primary as executor, deletes it; its final mesh topology, the mesh deleted and itself deleting, is its last gossip, and the fabric-primary publishes nothing for the mesh or that admin (R-RX4) |
 | Identity | A mesh's deleted and a node's deleted release names as [States](states.md) states; a mesh created again under the same name claims its names over the deleted mesh and node rows |
 | Build step key | `mesh.delete:<mesh_id>`; each member's step is its own `node.delete:<path.name>` |
-| Forbidden proof | Silence, a closed endpoint, a failed call or a timeout never proves a member exited |
+| Forbidden evidence | Silence, a closed endpoint, a failed call or a timeout never shows a member exited |
 
 ## Numbered end-to-end sequence
 
@@ -52,7 +52,7 @@ executor, deletes it afterwards.
 7. A separate [node.delete](node-delete.md) deletes the mesh-primary, the fabric-primary its
    executor. When the delete reaches the mesh-primary, its final mesh topology, the mesh deleted and
    itself deleting, is its last gossip: the node.delete's NodeDeleting in mesh topology form. The
-   fabric-primary stops it, proves its exit and writes its row deleted as the writer of a mesh
+   fabric-primary stops it, shows its exit and writes its row deleted as the writer of a mesh
    with no primary (R-OW1); it publishes nothing for the mesh or that admin (R-RX4). Receivers
    hold the mesh for the deleted retention from that final mesh topology and then nothing
    ([Mesh delete gossip](../gossip.md#mesh-delete)).

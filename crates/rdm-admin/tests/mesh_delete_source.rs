@@ -14,7 +14,7 @@
 use crate::mesh_delete_resume::{capture, trace_id};
 use rdm_core::{BuildId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_admin::build_state::BuildStateError;
-use rdm_admin::deployment::pipeline::RuntimeProof;
+use rdm_admin::deployment::pipeline::RuntimeIdentity;
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::mesh_delete::{adopt_final_runtime, handoff_verdict_from_read, leave_owner, manifest_reference, operation, Admitted, MeshDeleteKey, MeshDeleteOwner, RosterBirth};
 use rdm_transport::NodeTarget;
@@ -71,7 +71,7 @@ fn a_mesh_deleted_report_whose_manifest_cannot_be_read_is_refused_by_name_and_th
     let mesh_id = MeshId::mint();
     let k = key(&mesh_id);
     let fp = RosterBirth { mesh: "mesh2".into(), kind: rdm_core::NodeKind::NodeAdmin, node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() };
-    let runtime = RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
+    let runtime = RuntimeIdentity { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
     let admitted = Admitted { roster: vec![fp.clone()], final_primary: fp, final_runtime: runtime, amendments: Vec::new() };
     let reference = manifest_reference(k.build_id.as_str(), 1, &k.operation, false);
     let cap = capture();

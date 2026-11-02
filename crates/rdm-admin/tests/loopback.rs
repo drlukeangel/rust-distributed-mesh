@@ -4,7 +4,7 @@
 //! unreachable, as a dead admin's address is.
 
 use rdm_admin::build::BuildId;
-use rdm_admin::build_drive::{Dispatched, Dispatcher, DepartureProof, VerdictSink};
+use rdm_admin::build_drive::{Dispatched, Dispatcher, ExecutorInspection, VerdictSink};
 use rdm_admin::build_op::local_dispatched;
 use rdm_admin::build_run::{AttemptRuns, FramedBuilds, RunDoor};
 use rdm_admin::build_state::{BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, LocalBuildLog, MemoryBuildStateAdapter, StepOutcome};
@@ -161,7 +161,7 @@ impl Dispatcher for Loopback {
 
 /// Departure proof the fixture holds: the executors it has proven exited.
 #[derive(Default)]
-pub struct Proofs {
+pub struct Exits {
     pub exited: Mutex<std::collections::HashSet<Birth>>,
     /// The executors a call of `proven` proved, as the product records an exit it proved.
     pub recorded: Mutex<std::collections::HashSet<Birth>>,
@@ -170,8 +170,8 @@ pub struct Proofs {
 }
 
 #[async_trait::async_trait]
-impl DepartureProof for Proofs {
-    async fn proven(&self, executor: &Birth) -> Result<(), String> {
+impl ExecutorInspection for Exits {
+    async fn exited_or_os_stopped(&self, executor: &Birth) -> Result<(), String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.exited.lock().unwrap().contains(&executor.clone()) {
             self.recorded.lock().unwrap().insert(executor.clone());

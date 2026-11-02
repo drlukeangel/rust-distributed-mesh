@@ -43,13 +43,13 @@ async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_proces
     estate.stop().await;
 
     let spans = estate.spans();
-    let root = named(&spans, "rdm.node_rpc.proof_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put").cloned().expect("the probe's call span");
+    let root = named(&spans, "rdm.node_rpc.evidence_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put").cloned().expect("the probe's call span");
     let carried = named(&spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().find(|s| s["attributes"]["target"] == broker_id.as_str()).cloned().expect("the gateway's carried inner invocation");
-    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").into_iter().find(|s| s["attributes"]["node_id"] == broker["node_id"] && s["attributes"]["incarnation_id"] == broker["incarnation_id"]).cloned().expect("the broker's serve span");
+    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").into_iter().find(|s| s["attributes"]["node_id"] == broker["node_id"] && s["attributes"]["incarnation_id"] == broker["incarnation_id"]).cloned().expect("the broker's serve span");
     let op_is = |v: &Value, op: u64| v.as_u64() == Some(op) || v.as_str() == Some(&op.to_string());
     // Every role runs the one node executable, so the process is told apart by what it served: the
-    // one direct serve of the proof-store op in the probe's trace is the broker's (the broker's
-    // proof-store serve, found by its incarnation, runs under it: asserted below).
+    // one direct serve of the testkit-store op in the probe's trace is the broker's (the broker's
+    // testkit-store serve, found by its incarnation, runs under it: asserted below).
     let broker_direct: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.serve.via-direct" && s["trace_id"] == root["trace_id"] && op_is(&s["attributes"]["op"], 0x70)).collect();
     assert_eq!(broker_direct.len(), 1, "the broker served the one carried request in the probe's trace: {broker_direct:?}");
     assert_eq!(broker_direct[0]["attributes"]["caller_system"], "rdm", "the originating system rode through the carrier unchanged: {}", broker_direct[0]);
@@ -57,7 +57,7 @@ async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_proces
     assert_eq!(served["trace_id"], root["trace_id"], "one trace");
     assert!(descends_from(&spans, &carried, &root), "the gateway's inner invocation descends from the probe's call");
     assert!(descends_from(&spans, broker_direct[0], &root), "the broker's serve descends from the probe's call: the carrier handed the original context through");
-    assert!(descends_from(&spans, &served, broker_direct[0]), "the proof store served under the broker's serve");
+    assert!(descends_from(&spans, &served, broker_direct[0]), "the testkit store served under the broker's serve");
     estate.artifact("trace.json", &json!({"trace_id": root["trace_id"], "root": root, "carried": carried, "served": served}));
     estate.record_trace_url(root["trace_id"].as_str().unwrap_or(""));
 }

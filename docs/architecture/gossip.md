@@ -74,12 +74,12 @@ Fabric control state
 
 Build/lifecycle/leadership
     accepted topology (fabric-primary only)
-    exact runtime adoption/death proof
+    exact runtime adoption/a sign the node is dead
     destructive reconciliation
     primary projection
 ```
 
-Gossip silence, neighbour loss, failed dial, or missing push never proves a node Dead by itself.
+Gossip silence, neighbour loss, failed dial, or missing push never shows a node Dead by itself.
 
 Completed Build receipt history is not required to recover current runtime identity and is not replayed merely so a future primary can manage a birth.
 
@@ -150,7 +150,7 @@ local Instant         silence and elapsed time                    (receiver-loca
 | `Digest { node, incarnation, endpoints with freshness, node_state, runtime, digest_seq, emitted_at_rafka_ms }` | own mesh channel | every node, on its heartbeat timer | nobody | same exact birth: higher `digest_seq` is newer, equal or lower is not taken; a new incarnation is taken only along its lineage and only for a NodeId not accepted as `NodeDeleted`; its `digest_seq` starts again at 1 | until silent for the silence window, or until `NodeDeleted` | that node's current identity, endpoints, liveness and runtime fact. `node_state` (Joining / Alive / Overloaded / Degraded, node-identity-and-state.md §4) is liveness only: a heartbeat never carries or moves a status, and a member's status comes only from its mesh-primary |
 | `MeshTopology { mesh, publisher (exact identity), forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }` | backbone; and the source Mesh's primary's own mesh channel (its own member projection) | the source Mesh's current primary; after mesh.deleted its last node-admin, still its primary, until it is stopped or deleted; nobody else, ever: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's `MeshTopology` projection (the fabric-primary never publishes a mesh as its acting primary, R-RX4) | nobody as is; a receiving primary derives the two frames below from it | `(mesh, publisher, topology_version, snapshot_id)`; a receiving admin installs the snapshot atomically once it holds every chunk, and only then advances the held source version or derives a delta; the version bumps on a material change of the normalized projection below and not on an unchanged republish; the publisher's exact identity is the version's revision | `digests`: as held; `in_flight`: while the operation is claimed and has no completed receipt (derived from Build facts at each publication, never stored), and NodeStopped until the next lifecycle op on that exact birth; `deleted`: local age since accepted, up to the deleted retention | the complete Mesh with loads: what every node-admin holds of every Mesh for routing and control decisions. In `digests`, each member is a projection entry `{ digest, status }`, the status authored by the mesh-primary alone. Own-mesh members receive the primary's statuses through the primary's versioned member projection. One mesh has one publisher on the backbone, its mesh-primary, and none while it has no primary (R-RX4), so a receiver takes its MeshTopology and MeshTopologyDelta as they arrive. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and status from the projection; NodeStopped and NodeDeleting stay immediate events. |
 | `MeshTopologyDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted }` | the forwarding primary's own mesh channel | the local mesh primary, when a source Mesh it holds moved from one version to another; and the source Mesh's primary, for its own Mesh, on its own mesh channel | nobody | `(mesh, source_publisher, base_version, topology_version)`; applied only when the receiver holds exactly `base_version` of that source and publisher | not retained as a frame | transforms the held remote projection from `base_version` into `topology_version`: births added or changed, identities removed, overlay and deleted changes, loads omitted. In `changed`, each member is a projection entry `{ digest, status }`, the status authored by the mesh-primary alone. Own-mesh members receive the primary's statuses through the primary's versioned member projection. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). A delta whose base version the receiver does not hold triggers GetTopology repair. Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and status from the projection; NodeStopped and NodeDeleting stay immediate events. |
-| [`NodeStopped { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#node-stopped-lifecycle-overlay) | owning mesh channel; backbone MeshTopology.in_flight; peer mesh channels | mesh-primary from matching stop-stream stopped; none for a mesh's last admin after mesh.deleted ([Mesh delete](#mesh-delete)) | peer mesh primaries preserve op | `(kind, build_id, attempt, operation, node_id, incarnation)` | the lifecycle in-flight overlay | subject is stopped; not runtime-exit proof. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
+| [`NodeStopped { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#node-stopped-lifecycle-overlay) | owning mesh channel; backbone MeshTopology.in_flight; peer mesh channels | mesh-primary from matching stop-stream stopped; none for a mesh's last admin after mesh.deleted ([Mesh delete](#mesh-delete)) | peer mesh primaries preserve op | `(kind, build_id, attempt, operation, node_id, incarnation)` | the lifecycle in-flight overlay | subject is stopped; not the provider's `Exited`. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
 | [`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting and stopping reach peers as the member's status in its mesh-primary's projection (the `MeshTopology` and `MeshTopologyDelta` rows above); node.connection.deleted is a reply on the call, never gossip | — | — | — | — |
 | `NodeLeft { op: LifecycleOp, forwarded_by }` | reserved position; never published | none: a stopping node gossips nothing and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
 | [`NewFabricPrimary { primary, endpoint_id, transport_addr, admin_api_base }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: a primary change rides the successor's `Digest` and the mesh-primary's `MeshTopology` projection, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `MeshTopology` projection | — | — | — | — |
@@ -158,7 +158,7 @@ local Instant         silence and elapsed time                    (receiver-loca
 | `FabricStatus { fabric, status, publisher, changed_at_rafka_ms }` | backbone and the fabric primary's own mesh channel; then each peer mesh channel | the fabric primary only, when the Fabric's status changes | peer mesh primaries, unchanged | `(publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its publisher on a join, heal, refeed or top-up | the Fabric's status projection |
 | [`NodeRestarting { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#reserved-lifecycle-frame-positions) (position 7) | reserved position (Q183); never published | none: node.restart is removed; callers run node.stop then node.start, and the stop's stopped is published as [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
 | `NodeDeleting { op: LifecycleOp, forwarded_by, publisher, topology_version }` | executor's own mesh channel; backbone MeshTopology.in_flight | the mesh executor, once its own journal holds the adopted won claim for the attempt that carries the operation; seeing the Build, a hand-off receipt naming the operation or being the mesh-primary does not start it | peer mesh primaries, onto their mesh channels, unchanged | `(kind, build_id, attempt, operation)`; applied once however many copies arrive | not retained as a frame; the fact rides `MeshTopology.in_flight` until the operation completes | application routing stops selecting the node; the node stays `Found`. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
-| `NodeDeleted { op: LifecycleOp, forwarded_by }` | executor's own mesh channel; backbone MeshTopology.deleted | the mesh executor, after exact provider proof that the runtime is terminal; none for a mesh's last admin after mesh.deleted, whose final mesh topology carries it deleting ([Mesh delete](#mesh-delete)) | same | `(kind, build_id, attempt, operation)` | the deletion rides `MeshTopology.deleted` for the deleted retention | the birth is removed, its exact identity is held deleted, the resolver answers `Gone`, the current topology no longer lists it |
+| `NodeDeleted { op: LifecycleOp, forwarded_by }` | executor's own mesh channel; backbone MeshTopology.deleted | the mesh executor, after the provider's inspect answer that the runtime is terminal; none for a mesh's last admin after mesh.deleted, whose final mesh topology carries it deleting ([Mesh delete](#mesh-delete)) | same | `(kind, build_id, attempt, operation)` | the deletion rides `MeshTopology.deleted` for the deleted retention | the birth is removed, its exact identity is held deleted, the resolver answers `Gone`, the current topology no longer lists it |
 
 `operation` is the lifecycle operation's idempotency key (`node.delete:mesh2.rpc.2`), not a
 deployment pipeline step: one node.delete runs many steps and publishes one `NodeDeleting` and one
@@ -190,7 +190,7 @@ re-broadcast it exists to avoid.
 
 Receiver rules:
 
-- a `Digest`, a mesh topology entry, a delta entry or a snapshot entry for a deleted exact birth is refused by name, and so is any later incarnation of a NodeId accepted as `NodeDeleted`, for the deleted retention; the deleted record keeps `(NodeId, IncarnationId)` for exact proof, the refusal keys on the NodeId. A restart never emits `NodeDeleted`, so a new incarnation along the lineage of a node that was not deleted is taken;
+- a `Digest`, a mesh topology entry, a delta entry or a snapshot entry for a deleted exact birth is refused by name, and so is any later incarnation of a NodeId accepted as `NodeDeleted`, for the deleted retention; the deleted record keeps `(NodeId, IncarnationId)` for the provider's `Exited`, the refusal keys on the NodeId. A restart never emits `NodeDeleted`, so a new incarnation along the lineage of a node that was not deleted is taken;
 - a lifecycle event whose key the receiver already applied is a no-op;
 - the `NodeDeleting` overlay, like every lifecycle state and overlay, is read only by application routing, under the [routing rule](lifecycles/states.md#routing-stop); the election and the Node RPC client never read lifecycle;
 - a receiving primary forwards a status frame and never restates it as its own;
@@ -268,7 +268,7 @@ backbone MeshTopology.in_flight. Peer mesh primaries carry it onto their own mes
 under the mesh topology/forwarding rules, preserving operation and subject.
 The decoded message is the [NodeStopped example](#examples).
 What a stopped node is, and why its endpoint stays reachable, is [States](lifecycles/states.md#stopped-nodes).
-The announcement is not node.deleted or provider proof and refreshes no liveness.
+The announcement is not node.deleted or the provider's inspect answer and refreshes no liveness.
 
 node.restart is removed (Q183): callers run node.stop then node.start, and the stop's stopped is
 published as NodeStopped. An exit and a new birth under a new node.id are the [recover steps](lifecycles/node-recovery.md), not a restart. No other gossip frame is renamed here.
@@ -303,7 +303,7 @@ own beyond the frames in the catalog:
 - the separate node.delete of that admin, the fabric-primary as executor, ends its publishing:
   when the delete reaches it, its final mesh topology, the mesh deleted and itself deleting, is its
   last gossip, the node.delete's NodeDeleting in mesh topology form. It is best-effort dissemination,
-  and the stop does not wait for its delivery (R-NS2). The fabric-primary stops it, proves its exit
+  and the stop does not wait for its delivery (R-NS2). The fabric-primary stops it, shows its exit
   and writes its row deleted, and publishes nothing for the mesh or that admin: no `NodeStopped`, no
   `NodeDeleted`, never the mesh's topology (R-RX4);
 - receivers hold the mesh for the deleted retention from that final mesh topology, and after the
@@ -735,15 +735,15 @@ A known exact deletion is topology state and a lifecycle event, never a second g
 
 The mesh executor that holds the node.delete publishes `NodeDeleted` (§3.1) on its own mesh
 channel, and carries it in `MeshTopology.deleted` on the backbone, the moment it holds exact provider
-proof that the runtime is terminal; peer primaries forward it. The operation's Step receipt is
+evidence that the runtime is terminal; peer primaries forward it. The operation's Step receipt is
 written after `NodeDeleted`. The same deletion is then retained in the source Mesh's `MeshTopology.deleted`
 for the deleted retention, so a node that missed the event, joined later or was re-fed after going unheard
 learns it from the next mesh topology, delta, full or top-up.
 
-A deletion is recorded only from exact provider proof:
-- the controlling executor has exact proof that an intentionally removed runtime is terminal.
+A deletion is recorded only from the provider's inspect answer:
+- the controlling executor has the provider's `Exited` showing that an intentionally removed runtime is terminal.
 
-These are **not** deletion proof:
+These are **not** the provider's `Exited`:
 - the node's own reply;
 - a stopped status by itself;
 - silence/staleness;
@@ -759,7 +759,7 @@ keeps an eternal NodeId graveyard.
 
 A NodeId accepted as `NodeDeleted` stays deleted for the retention: a later digest of the deleted
 birth, and a later incarnation wearing that NodeId, are refused. The record keeps the
-incarnation for exact proof; the refusal keys on the NodeId. A restart never emits `NodeDeleted`, so a
+incarnation for the provider's `Exited`; the refusal keys on the NodeId. A restart never emits `NodeDeleted`, so a
 restarted node that was not deleted is taken along its lineage.
 
 Every running process feeds current births, overlays and deletions from the topology view into its
@@ -878,7 +878,7 @@ current runtimes or to know the current accepted topology.
 [States](lifecycles/states.md#states) owns the lifecycle states, who sets them, setting a state and
 their checklist; the directed calls are the certainty.
 
-Applied means the target accepted/applied the operation. Gossip independently disseminates the resulting current MemberStatus/state. Neither plane proves, approves, attests, or confirms the other.
+Applied means the target accepted/applied the operation. Gossip independently disseminates the resulting current MemberStatus/state. Neither plane shows, approves, attests, or confirms the other.
 
 RPC failure is not converted into a negative gossip lifecycle state.
 
@@ -941,7 +941,7 @@ A deletion is published by the executor that holds the operation, after its node
 
 ---
 
-## 14. Required proofs
+## 14. Required tests
 
 At minimum:
 1. ordinary nodes never join backbone yet converge all meshes;
@@ -978,4 +978,4 @@ At minimum:
 32. a source Mesh whose nodes only heartbeat does not bump `topology_version`, and no delta travels;
 33. `NodeDeleting` is never emitted before the executor's own journal holds its adopted claim for the attempt; a multi-mesh Build's second Mesh emits its `NodeDeleting` only after the fabric-primary claims the next attempt and dispatches build.attempt.run and that Mesh's executor adopts the won claim, keyed on that attempt, never on Build acceptance;
 34. `NodeDeleted` is never emitted without node.delete's step receipt; silence, a failed RPC and an unheard peer never produce it; after it, `ExactNode(old)` is `Gone`, the path has no node until a new birth, and the current topology does not list the node;
-35. unplanned loss produces one `NodeDeleted` for the old identity, after proof, from the recovery Build's node.delete.
+35. unplanned loss produces one `NodeDeleted` for the old identity, after evidence, from the recovery Build's node.delete.

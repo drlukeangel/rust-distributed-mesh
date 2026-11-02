@@ -1,4 +1,4 @@
-//! The multi-mesh soak driver (i143.e9.s2, rafka-v2 #2787): continuous proof-store operations,
+//! The multi-mesh soak driver (i143.e9.s2, rafka-v2 #2787): continuous testkit-store operations,
 //! recorded in the operation ledger, while the action model generates legal random topology and
 //! fault actions that run as Builds the node-admin rectifier executes or as provider faults on
 //! exact runtimes.
@@ -40,7 +40,7 @@ use crate::ledger::{Bucket, Ledger, MutationIntent, OperationId};
 use crate::model::{generate_among, replay, shrink, Action, Capabilities, ClassBounds, Failure, Model, NodeClass, Rng};
 use crate::netfault::{udp_ports, Partition};
 use crate::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault};
-use crate::scenario::Operation as ProofOp;
+use crate::scenario::Operation as StoreOp;
 use crate::sim::Scheduler;
 use crate::wedge::{judge, Control, Evidence, Family, FaultAck, Primitive, Progress as WedgeProgress, Reconciliation, Recovery, Release, Routing};
 use rdm_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, MeshNode, NodeView, PathName, ScopeStatus, WorkflowStream};
@@ -51,9 +51,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The opcode of the proof store on Node RPC.
-const PROOF_STORE_OP: u8 = 0x70;
-/// The keys the traffic stream writes: disjoint from the model's own proof keys (`0..PROOF_KEYS`).
+/// The opcode of the testkit store on Node RPC.
+const TESTKIT_STORE_OP: u8 = 0x70;
+/// The keys the traffic stream writes: disjoint from the model's own proof keys (`0..STORE_KEYS`).
 const TRAFFIC_KEYS: std::ops::Range<u64> = 100..108;
 /// The bound on one action's birth sequence to complete (a Build and its convergence).
 const CONVERGE: Duration = Duration::from_secs(150);
@@ -79,9 +79,9 @@ pub fn kind(a: &Action) -> &'static str {
         Action::Heal { .. } => "heal",
         Action::Kill { .. } => "kill",
         Action::Wedge { .. } => "wedge",
-        Action::Proof(ProofOp::Put { .. }) => "proof-put",
-        Action::Proof(ProofOp::Cas { .. }) => "proof-cas",
-        Action::Proof(ProofOp::Delete { .. }) => "proof-delete",
+        Action::Store(StoreOp::Put { .. }) => "store-put",
+        Action::Store(StoreOp::Cas { .. }) => "store-cas",
+        Action::Store(StoreOp::Delete { .. }) => "store-delete",
     }
 }
 
@@ -89,7 +89,7 @@ pub fn kind(a: &Action) -> &'static str {
 fn node_of(a: &Action) -> Option<&PathName> {
     match a {
         Action::Shrink { node } | Action::Restart { node } | Action::Replace { node } | Action::Kill { node } | Action::Wedge { node } => Some(node),
-        Action::Proof(ProofOp::Put { target, .. } | ProofOp::Cas { target, .. } | ProofOp::Delete { target, .. }) => Some(target),
+        Action::Store(StoreOp::Put { target, .. } | StoreOp::Cas { target, .. } | StoreOp::Delete { target, .. }) => Some(target),
         _ => None,
     }
 }
@@ -185,7 +185,7 @@ pub enum Profile {
     /// Every legal action.
     All,
     /// Restarts, kills and holds of role nodes (every class but the node-admin); the continuous
-    /// traffic stream is the proof-store load in every profile.
+    /// traffic stream is the testkit-store load in every profile.
     Routing,
     /// Restarts, kills and holds of node-admins, and mesh-primary hand-offs (the fabric-primary's
     /// included), under traffic.
@@ -353,7 +353,7 @@ struct Shared {
     stop: AtomicBool,
 }
 
-/// One proof-store operation of a stream.
+/// One testkit-store operation of a stream.
 struct Call {
     target_path: PathName,
     target_id: String,
@@ -377,7 +377,7 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &MeshNode, call: Cal
         if call.kind == "delete" {
             b.excluded.insert((call.target_id.clone(), call.key));
         }
-        let id = b.ledger.issue(PROOF_STORE_OP, call.target_id.clone(), mutation);
+        let id = b.ledger.issue(TESTKIT_STORE_OP, call.target_id.clone(), mutation);
         debug_assert_eq!(id.0 as usize, b.meta.len());
         b.meta.push(OpMeta { target_path: call.target_path.clone(), target_id: call.target_id.clone(), key: call.key, trace_id: None, via: call.via.clone(), route: None });
         id
@@ -571,8 +571,8 @@ fn expected_counts(model: &Model) -> BTreeMap<String, BTreeMap<&'static str, u32
     model.meshes.keys().map(|m| (m.clone(), classes.iter().map(|c| (c.kind_name(), model.count(m, *c))).collect())).collect()
 }
 
-/// A node that serves the proof store: every kind but the node-admin.
-fn serves_proof(n: &Value) -> bool {
+/// A node that serves the testkit store: every kind but the node-admin.
+fn serves_testkit_store(n: &Value) -> bool {
     n["kind"].as_str().is_some_and(|k| k != "node_admin")
 }
 
@@ -1124,11 +1124,11 @@ impl Driver {
             .and_then(|n| serde_json::from_value::<NodeView>(n.clone()).ok())
             .as_ref()
             .and_then(birth_of_view);
-        let rpcs = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready").map(|n| (location(n), s(&n["node_id"]))).collect();
+        let rpcs = nodes.iter().filter(|n| serves_testkit_store(n) && n["status"] == "ready").map(|n| (location(n), s(&n["node_id"]))).collect();
         let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready").map(|n| s(&n["node_id"])).collect();
         *self.shared.view.lock().unwrap() = View { admin, rpcs, gateways };
         let mut b = self.shared.op_view.lock().unwrap();
-        for n in nodes.iter().filter(|n| serves_proof(n)) {
+        for n in nodes.iter().filter(|n| serves_testkit_store(n)) {
             b.data_dirs.insert(s(&n["node_id"]), n["data_dir"].as_str().map(str::to_string));
         }
     }
@@ -1186,7 +1186,7 @@ impl Driver {
                 let fp = nodes.iter().any(|n| n["mesh"] == mesh.as_str() && n["is_fabric_primary"] == true);
                 fp.then(|| format!("unheard: {mesh} holds the fabric-primary; the silenced set never holds it"))
             }
-            Action::Grow { .. } | Action::Heal { .. } | Action::Proof(_) => None,
+            Action::Grow { .. } | Action::Heal { .. } | Action::Store(_) => None,
         }
     }
 
@@ -1197,11 +1197,11 @@ impl Driver {
         // silenced is not the fabric the invariants describe.
         if let Some((mesh, _)) = self.model.meshes.iter().find(|(_, m)| m.unheard) {
             // The floors story holds the cut: until the hold has elapsed since the cut, the rows are
-            // proof-store traffic on both sides, and the Heal row comes after.
+            // testkit-store traffic on both sides, and the Heal row comes after.
             if let (Some(hold), Some(at)) = (self.cfg.hold, self.cut_at.get(mesh).copied()) {
                 if at.elapsed() < hold {
                     let seed = self.rng.next();
-                    if let Some(a) = generate_among(seed, &self.model, 1, |a| matches!(a, Action::Proof(_))).into_iter().next() {
+                    if let Some(a) = generate_among(seed, &self.model, 1, |a| matches!(a, Action::Store(_))).into_iter().next() {
                         self.sched.record("hold-cut", &format!("{mesh}: {} ms of {} ms held; traffic row", at.elapsed().as_millis(), hold.as_millis()));
                         return Some(a);
                     }
@@ -1484,17 +1484,17 @@ impl Driver {
                     }
                 }
             }
-            Action::Proof(op) => {
+            Action::Store(op) => {
                 let (target, key) = match op {
-                    ProofOp::Put { target, key, .. } | ProofOp::Cas { target, key, .. } | ProofOp::Delete { target, key } => (target, *key),
+                    StoreOp::Put { target, key, .. } | StoreOp::Cas { target, key, .. } | StoreOp::Delete { target, key } => (target, *key),
                 };
                 let n = node_json(target).filter(|n| n["status"] == "ready").ok_or_else(|| broken("model-matches-view", format!("{target:?} is not ready in the view")))?;
                 let probe = self.estate.probe_handle();
                 let admin = self.shared.view.lock().unwrap().admin.clone().unwrap_or_else(|| self.estate.entry_birth());
                 let call = match op {
-                    ProofOp::Put { value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "put", key, value: Some(value.clone()), expected: None, via: None },
-                    ProofOp::Cas { expected, value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "cas", key, value: Some(value.clone()), expected: Some(expected.clone()), via: None },
-                    ProofOp::Delete { .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "delete", key, value: None, expected: None, via: None },
+                    StoreOp::Put { value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "put", key, value: Some(value.clone()), expected: None, via: None },
+                    StoreOp::Cas { expected, value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "cas", key, value: Some(value.clone()), expected: Some(expected.clone()), via: None },
+                    StoreOp::Delete { .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "delete", key, value: None, expected: None, via: None },
                 };
                 issue(&self.shared, &probe, &admin, call).await;
                 return Ok(());
@@ -1731,7 +1731,7 @@ impl Driver {
         let path = location(n);
         let attempt_before = num(&before["attempt"]);
         let container = self.estate.owner.provider == "container";
-        let is_rpc = serves_proof(n);
+        let is_rpc = serves_testkit_store(n);
         let exact = format!("exact:{}", s(&n["node_id"]));
         let floor = self.cfg.floor;
         let key = (9000 + round).to_string();
@@ -2103,7 +2103,7 @@ impl Driver {
         if !ok {
             return Err(broken("primaries-equal-the-public-candidates", format!("round {round}: {why}")));
         }
-        for n in nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready") {
+        for n in nodes.iter().filter(|n| serves_testkit_store(n) && n["status"] == "ready") {
             let r = self.estate.probe(&["get", "--target", &format!("exact:{}", s(&n["node_id"])), "--key", "9998"]);
             if r["outcome"] != "Reply" || r["reply"]["incarnation_id"] != n["incarnation_id"] {
                 let name = location(n);
@@ -2131,12 +2131,12 @@ impl Driver {
     async fn reconcile_ledger(&mut self) -> (LedgerReport, Vec<(String, String)>) {
         let mut found: Vec<(String, String)> = Vec::new();
         let nodes = if relocate_control(&mut self.estate, &self.known).await.is_some() { self.estate.node_values().await } else { Vec::new() };
-        let alive: BTreeMap<String, PathName> = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready").map(|n| (s(&n["node_id"]), location(n))).collect();
+        let alive: BTreeMap<String, PathName> = nodes.iter().filter(|n| serves_testkit_store(n) && n["status"] == "ready").map(|n| (s(&n["node_id"]), location(n))).collect();
         let (meta, excluded, probe_failures, mut data_dirs) = {
             let b = self.shared.op_view.lock().unwrap();
             (b.meta.clone(), b.excluded.clone(), b.probe_failures.clone(), b.data_dirs.clone())
         };
-        for n in nodes.iter().filter(|n| serves_proof(n)) {
+        for n in nodes.iter().filter(|n| serves_testkit_store(n)) {
             data_dirs.insert(s(&n["node_id"]), n["data_dir"].as_str().map(str::to_string));
         }
         let mut report = LedgerReport { probe_failures, keys_excluded_from_state: excluded.len(), ..Default::default() };

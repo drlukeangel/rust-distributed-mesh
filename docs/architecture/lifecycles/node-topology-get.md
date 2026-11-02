@@ -49,7 +49,7 @@ The request, reply variants, install rules and spans are the
 [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm). The node's own Digest and
 its mesh-primary's mesh topologies follow the [frame catalog](../gossip.md#31-frame-catalog) and
 the [cross-mesh projection](../gossip.md#33-cross-mesh-topology-inside-a-mesh-deltas-full-snapshots-and-the-top-up).
-Read completion does not prove a runtime exited.
+Read completion does not show a runtime exited.
 
 ## Message sequence diagram
 
@@ -79,10 +79,10 @@ Reconnect is not an op. It opens no Build and emits no join receipt.
    exact current mesh-primary, installs the complete snapshot, then applies further deltas
    against that source version. A fresher digest alone does not fill a gap.
 3. The node publishes its current digest. Transient connection markers clear only on
-   connection or readiness proof for the same exact birth.
+   connection or readiness evidence for the same exact birth.
 
 A topology refusal or an incomplete stream installs no partial snapshot. Transport
-uncertainty is neither a successful read nor proof of death. Reconnect needs no restart
+uncertainty is neither a successful read nor a sign of death. Reconnect needs no restart
 and changes no identity.
 
 ```mermaid
@@ -96,7 +96,7 @@ sequenceDiagram
     Note over N: Same endpoint and port, no JoinNode
 ```
 
-| Actor | Channel/op | Payload / proof | Span |
+| Actor | Channel/op | Payload / evidence | Span |
 |---|---|---|---|
 | Held member → own mesh-primary | node.topology.get on delta gap | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm) | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read` |
 | Held member | complete topology install | complete source snapshot; no partial install | `rdm.mesh.topology.update.via-read-install` |

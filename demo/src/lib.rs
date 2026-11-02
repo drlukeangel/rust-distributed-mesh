@@ -1,7 +1,7 @@
 //! The R-shape consumer's composition root: a role process composed from RDM's public seams and
 //! nothing else. No Rafka business crate, no application semantics: a role is a label (a
 //! `NodeKind`), the families it serves are the node base's generic proof families, and the
-//! testkit's opaque protocols 0x70 (proof store), 0x71 (resolve probe), 0x72 (declare probe)
+//! testkit's opaque protocols 0x70 (testkit store), 0x71 (resolve probe), 0x72 (declare probe)
 //! and, for the roles that originate or accept work, 0x73 (originate) are served as the testkit
 //! defines them. The R-shape roles allocate no opcode; [`consumer_example`], the compiled example
 //! of the consumer guide's own ops, holds two (0x50, 0x51) and runs as its own executable,

@@ -1,5 +1,5 @@
 //! The originate door: a testkit-only protocol on op `0x73` that asks the executing node to
-//! make a proof-store call of its own to a destination over its own held connections projection
+//! make a testkit-store call of its own to a destination over its own held connections projection
 //! (`NodeRpcClient::call_connected`, connections.md §5), to arm or release its storage fault
 //! ([`crate::faults`]), and to answer a snapshot of what it holds and owes. A scenario thereby
 //! proves CONN-B, CONN-D and CONN-G on a real, restartable node: the node is the source, its
@@ -9,7 +9,7 @@
 //! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use crate::faults::StorageFault;
-use crate::proof_store::{ProofReply, ProofRequest, ProofStore};
+use crate::testkit_store::{TestkitStoreReply, TestkitStoreRequest, TestkitStore};
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionState, NodeConnection};
 use rdm_core::launch::Launch;
 use rdm_core::{NodeKind, PathName};
@@ -21,16 +21,16 @@ use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// The carrier policy the testkit applies to its proof-store calls: proxied through an rpc
+/// The carrier policy the testkit applies to its testkit-store calls: proxied through an rpc
 /// node (the product's own policies are the product's).
 pub const POLICY: CarrierPolicy = CarrierPolicy::Proxy { carrier_kind: NodeKind::RpcNode };
 
 /// The originate door protocol on op `0x73`.
 pub struct Originate;
 
-/// A proof-store operation the originating node makes.
+/// A testkit-store operation the originating node makes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProofOp {
+pub enum OriginateStoreOp {
     /// Read `key`.
     ///
     /// Position 0 on the wire.
@@ -58,8 +58,8 @@ pub enum OriginateRequest {
     Call {
         /// The node ID to call.
         destination: rdm_core::NodeId,
-        /// The proof-store operation to make.
-        op: ProofOp,
+        /// The testkit-store operation to make.
+        op: OriginateStoreOp,
     },
     /// Refuse the next `refuse_index` index writes and `refuse_history` history appends, after
     /// letting `pass_history` history appends through.
@@ -193,8 +193,8 @@ pub enum OriginateReply {
         deleted: Option<String>,
         /// The call's outcome name.
         outcome: String,
-        /// The proof-store reply, when the call replied.
-        reply: Option<ProofReply>,
+        /// The testkit-store reply, when the call replied.
+        reply: Option<TestkitStoreReply>,
         /// The source's pooled connections after the call, by target path.
         pooled: Vec<String>,
     },
@@ -516,7 +516,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
     })
 }
 
-async fn call(by: &AnsweredBy, seams: &Seams, own: &rdm_core::NodeId, destination: &rdm_core::NodeId, op: ProofOp, policy: CarrierPolicy) -> OriginateReply {
+async fn call(by: &AnsweredBy, seams: &Seams, own: &rdm_core::NodeId, destination: &rdm_core::NodeId, op: OriginateStoreOp, policy: CarrierPolicy) -> OriginateReply {
     let target = match seams.resolver.resolve(&NodeTarget::ExactNode(destination.clone())) {
         Ok(n) => n,
         Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
@@ -530,10 +530,10 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &rdm_core::NodeId, destinatio
         resolve(&held, own, &target.node_id, policy)
     };
     let req = match op {
-        ProofOp::Get { key } => ProofRequest::Get { key },
-        ProofOp::Put { key, value } => ProofRequest::Put { key, value },
+        OriginateStoreOp::Get { key } => TestkitStoreRequest::Get { key },
+        OriginateStoreOp::Put { key, value } => TestkitStoreRequest::Put { key, value },
     };
-    let call = seams.client.call_resolved::<ProofStore>(resolution, own, &target.name, &target.node_id, &req, &CallOptions::default()).await;
+    let call = seams.client.call_resolved::<TestkitStore>(resolution, own, &target.name, &target.node_id, &req, &CallOptions::default()).await;
     // Each Proxy the resolution found invalid is deleted by this source, as the caller of the seam;
     // the reply names the first, the one toward this destination when it was among them.
     let deleted = call.delete.first().map(|(_, why)| why.to_string());
@@ -766,7 +766,7 @@ mod tests {
         let s = || "r".to_string();
         let by = || AnsweredBy { node_id: "i".into(), node: PathName::new("p", "n").unwrap(), incarnation_id: "c".into() };
         let requests = [
-            (OriginateRequest::Call { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), op: ProofOp::Put { key: vec![1], value: vec![2] } }, "000c6464646464646464646464640101010102"),
+            (OriginateRequest::Call { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), op: OriginateStoreOp::Put { key: vec![1], value: vec![2] } }, "000c6464646464646464646464640101010102"),
             (OriginateRequest::ArmFault { refuse_index: 1, refuse_history: 2, pass_history: 3 }, "01010203"),
             (OriginateRequest::ReleaseFault, "02"),
             (OriginateRequest::Snapshot, "03"),

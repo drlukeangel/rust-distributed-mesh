@@ -314,10 +314,10 @@
       "layer": "unit",
       "cells": [
         {
-          "name": "proof_holder_applies_cas_reports_exact_executing_birth",
-          "source": "crates/rdm-test/tests/proof_store.rs",
-          "command": "cargo test -p rdm-test --test main proof_store::proof_holder_applies_cas_reports_exact_executing_birth -- --exact",
-          "dir": "target/i143-acceptance/2775/unit/proof_holder_applies_cas_reports_exact_executing_birth"
+          "name": "testkit_store_applies_cas_reports_exact_executing_birth",
+          "source": "crates/rdm-test/tests/testkit_store.rs",
+          "command": "cargo test -p rdm-test --test main testkit_store::testkit_store_applies_cas_reports_exact_executing_birth -- --exact",
+          "dir": "target/i143-acceptance/2775/unit/testkit_store_applies_cas_reports_exact_executing_birth"
         }
       ]
     },
@@ -326,16 +326,16 @@
       "layer": "process",
       "cells": [
         {
-          "name": "proof_holder_restarts_preserves_same_node_store",
-          "source": "crates/rdm-test/tests/rpc/proof_holder_lifecycle.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store/estate cargo test -p rdm-test --test main proof_holder_lifecycle::proof_holder_restarts_preserves_same_node_store -- --exact",
-          "dir": "target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store"
+          "name": "testkit_store_node_restarts_preserves_same_node_store",
+          "source": "crates/rdm-test/tests/rpc/testkit_store_lifecycle.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/testkit_store_node_restarts_preserves_same_node_store/estate cargo test -p rdm-test --test main testkit_store_lifecycle::testkit_store_node_restarts_preserves_same_node_store -- --exact",
+          "dir": "target/i143-acceptance/2775/process/testkit_store_node_restarts_preserves_same_node_store"
         },
         {
-          "name": "proof_replacement_inherits_the_data_dir_exact_old_never_follows_path",
-          "source": "crates/rdm-test/tests/rpc/proof_holder_lifecycle.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_replacement_inherits_the_data_dir_exact_old_never_follows_path/estate cargo test -p rdm-test --test main proof_holder_lifecycle::proof_replacement_inherits_the_data_dir_exact_old_never_follows_path -- --exact",
-          "dir": "target/i143-acceptance/2775/process/proof_replacement_inherits_the_data_dir_exact_old_never_follows_path"
+          "name": "testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path",
+          "source": "crates/rdm-test/tests/rpc/testkit_store_lifecycle.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path/estate cargo test -p rdm-test --test main testkit_store_lifecycle::testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path -- --exact",
+          "dir": "target/i143-acceptance/2775/process/testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path"
         }
       ]
     },
@@ -388,16 +388,16 @@
       "layer": "unit",
       "cells": [
         {
-          "name": "failpoint_explorer_before_apply_proves_not_sent_or_unapplied",
+          "name": "failpoint_explorer_before_apply_answers_not_sent_or_unapplied",
           "source": "crates/rdm-test/tests/rpc/apply_cuts.rs",
-          "command": "cargo test -p rdm-test --test main apply_cuts::failpoint_explorer_before_apply_proves_not_sent_or_unapplied -- --exact",
-          "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_before_apply_proves_not_sent_or_unapplied"
+          "command": "cargo test -p rdm-test --test main apply_cuts::failpoint_explorer_before_apply_answers_not_sent_or_unapplied -- --exact",
+          "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_before_apply_answers_not_sent_or_unapplied"
         },
         {
-          "name": "failpoint_explorer_after_apply_lost_reply_proves_indeterminate",
+          "name": "failpoint_explorer_after_apply_lost_reply_answers_indeterminate",
           "source": "crates/rdm-test/tests/rpc/apply_cuts.rs",
-          "command": "cargo test -p rdm-test --test main apply_cuts::failpoint_explorer_after_apply_lost_reply_proves_indeterminate -- --exact",
-          "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_after_apply_lost_reply_proves_indeterminate"
+          "command": "cargo test -p rdm-test --test main apply_cuts::failpoint_explorer_after_apply_lost_reply_answers_indeterminate -- --exact",
+          "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_after_apply_lost_reply_answers_indeterminate"
         }
       ]
     },

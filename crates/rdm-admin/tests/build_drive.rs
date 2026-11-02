@@ -126,7 +126,7 @@ struct Rig {
     env: Arc<DriveEnv>,
     switch: Arc<Switch>,
     dispatch: Arc<crate::loopback::Loopback>,
-    proofs: Arc<crate::loopback::Proofs>,
+    exits: Arc<crate::loopback::Exits>,
     ran: Arc<Creates>,
     build: BuildId,
     /// The application the drive sends its Build notices to (Q256).
@@ -161,7 +161,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
     let opened = cp.submit("test", change).await.unwrap();
     let ran = Arc::new(Creates(Mutex::new(Vec::new()), builds.clone()));
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
-    let proofs = Arc::new(crate::loopback::Proofs::default());
+    let exits = Arc::new(crate::loopback::Exits::default());
     let switch = Arc::new(Switch { node_id: fp_id.clone(), targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, recorded_primary: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: Some(topology.clone()) });
     let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
     let told = crate::Told::default();
@@ -181,12 +181,12 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         }),
         dispatcher: dispatch.clone(),
         gate: switch.clone(),
-        departure: proofs.clone(),
+        departure: exits.clone(),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         notices: told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id, told }
+    Rig { builds, env, switch, dispatch, exits, ran, build: opened.build_id, told }
 }
 
 async fn next_within(reader: &mut rdm_admin::build_drive::DriveReader) -> Option<Read> {
@@ -342,13 +342,13 @@ async fn the_callers_streams_name_the_successor_a_primary_update_installed_while
 /// is claimed for it and nothing runs. The wait frames nothing to the caller (node-rpc-envelope.md:
 /// Blocked's "only source is the subject's Status `Blocked` reply to the executor's ProbeNodeState").
 #[tokio::test]
-async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_frames_nothing() {
+async fn an_unreachable_executor_not_inspected_exited_keeps_its_attempt_and_frames_nothing() {
     let r = rig().await;
     let executor = r.birth("mesh1.admin", "2").await;
     r.dispatch.lose(&executor.node_id);
     // An exited process of this ID with a different incarnation proves nothing about this executor.
     let other_incarnation = rdm_core::framing::Birth { node_id: executor.node_id.clone(), incarnation: IncarnationId::mint() };
-    r.proofs.exited.lock().unwrap().insert(other_incarnation);
+    r.exits.exited.lock().unwrap().insert(other_incarnation);
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     for _ in 0..3 {
@@ -365,7 +365,7 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_frames_noth
     // The proof arrives: the next attempt is claimed for the admin the view now names, and the
     // caller's reader carries its frames to the terminal.
     let exited = r.birth("mesh1.admin", "2").await;
-    r.proofs.exited.lock().unwrap().insert(exited);
+    r.exits.exited.lock().unwrap().insert(exited);
     {
         let mut v = r.env.topology.write().await;
         for n in v.nodes.iter_mut() {
@@ -409,7 +409,7 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     assert!(matches!(r.env.door.claim(&r.birth("mesh2.admin", "1").await.node_id, &r.build, 1).await, rdm_core::build_claim::BuildClaimReply::Won { .. }));
     r.dispatch.lose(&r.birth("mesh2.admin", "1").await.node_id);
     let exited = r.birth("mesh2.admin", "1").await;
-    r.proofs.exited.lock().unwrap().insert(exited);
+    r.exits.exited.lock().unwrap().insert(exited);
     {
         let mut v = r.env.topology.write().await;
         for n in v.nodes.iter_mut() {
@@ -432,7 +432,7 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
         }
     }
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the wait for mesh2's election frames no Blocked to the caller: no subject's Status Blocked reply made one");
-    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 3, "each pass proves the departure itself: nothing holds it between passes");
+    assert_eq!(r.exits.calls.load(Ordering::SeqCst), 3, "each pass proves the departure itself: nothing holds it between passes");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_ref()), (1, Some(&r.birth("mesh2.admin", "1").await)), "nothing is claimed while mesh2's role is held");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty() && r.ran.0.lock().unwrap().is_empty());
@@ -443,7 +443,7 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     }
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh2.admin", "2").await, 2)], "attempt 2 is the same-mesh successor's");
-    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 4, "the run that claims attempt 2 proves the departure once more");
+    assert_eq!(r.exits.calls.load(Ordering::SeqCst), 4, "the run that claims attempt 2 proves the departure once more");
 }
 
 /// Births `mesh2.admin.1` anew in place of its exited birth when its create has run, in its role as
@@ -778,7 +778,7 @@ async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() 
     r.builds.append_step_receipt(&receipt).await.unwrap();
     r.dispatch.lose(&r.birth("mesh1.admin", "2").await.node_id);
     let exited = r.birth("mesh1.admin", "2").await;
-    r.proofs.exited.lock().unwrap().insert(exited);
+    r.exits.exited.lock().unwrap().insert(exited);
     for n in r.env.topology.write().await.nodes.iter_mut() {
         match (n.name.path.as_str(), n.name.name.as_str()) {
             ("mesh1.admin", "2") => {
@@ -1205,7 +1205,7 @@ const LEAVE_INCOMPLETE: &str = "mesh.delete: mesh2.admin.1 sent no valid mesh-de
 /// resumes the leave), an attempt claimed again on every pass of the drive, or a `Blocked` frame on
 /// the caller's stream that no subject's Status `Blocked` reply made.
 #[test]
-fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_and_resumes_when_the_loss_is_proven() {
+fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_and_resumes_when_the_primary_is_inspected_exited() {
     use rdm_admin::build_state::{AttemptOutcome, BuildFact, BuildState, CurrentBuild};
     let cap = crate::mesh_delete_resume::capture();
     let (expected_executor, trace_id, first, second, third, facts, ran, dispatched, after, read) = cap.run(async {
@@ -1321,7 +1321,7 @@ async fn mesh2_primary_becomes(r: &Rig, status: NodeStatus) {
 /// failed, the Build left in progress with no attempt claimed after the proof, or a `Blocked` frame on
 /// the caller's stream that no subject's Status `Blocked` reply made.
 #[test]
-fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unproven_and_resumes_when_it_is_proven() {
+fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unproven_and_resumes_when_it_is_inspected_exited() {
     use rdm_admin::build_state::{BuildState, CurrentBuild};
     let cap = crate::mesh_delete_resume::capture();
     let (expected_executor, first, second, third, current, dispatched, ran, read) = cap.run(async {
@@ -2047,17 +2047,17 @@ async fn a_successor_that_reads_the_primarys_attempt_ended_claims_the_next_attem
 /// The successor's gate in a primary-lost hand-over: each acknowledgement the drive asks for the rows
 /// the fixture committed, with whether the primary's departure was proven by then and how many
 /// dispatches had been made.
-struct AfterTheProof {
+struct AfterTheExit {
     lost: rdm_core::framing::Birth,
     inner: Arc<Switch>,
     rows: Vec<PrecedingUpdate>,
-    proofs: Arc<crate::loopback::Proofs>,
+    exits: Arc<crate::loopback::Exits>,
     dispatch: Arc<crate::loopback::Loopback>,
     asked: Mutex<Vec<(PrecedingUpdate, bool, usize)>>,
 }
 
 #[async_trait::async_trait]
-impl Gate for AfterTheProof {
+impl Gate for AfterTheExit {
     async fn target(&self) -> Result<Option<NodeId>, BuildStateError> {
         self.inner.target().await
     }
@@ -2065,10 +2065,10 @@ impl Gate for AfterTheProof {
         self.inner.target_set().await
     }
     async fn primaries_updated(&self, updates: &[PrecedingUpdate], _: &BuildId, _: u32) -> Result<(), String> {
-        let proven = self.proofs.recorded.lock().unwrap().contains(&self.lost);
+        let exited = self.exits.recorded.lock().unwrap().contains(&self.lost);
         let dispatched = self.dispatch.dispatched.lock().unwrap().len();
         for u in updates.iter().filter(|u| self.rows.contains(u)) {
-            self.asked.lock().unwrap().push((u.clone(), proven, dispatched));
+            self.asked.lock().unwrap().push((u.clone(), exited, dispatched));
         }
         Ok(())
     }
@@ -2120,13 +2120,13 @@ async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_ack
     let _ = p_driving.await;
     r.dispatch.lose(&r.birth("mesh1.admin", "1").await.node_id);
     let exited = lost.clone();
-    r.proofs.exited.lock().unwrap().insert(exited);
+    r.exits.exited.lock().unwrap().insert(exited);
     let n_name: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
     let n_switch = Arc::new(Switch { node_id: n_id.clone(), targeted: AtomicBool::new(false), successor: Mutex::new(None), target_tx: tokio::sync::watch::channel(false).0, recorded_primary: Mutex::new(None), peer: Mutex::new(Default::default()), dead: Mutex::new(Default::default()), view: None });
     let op = rdm_core::OperationId::node("node.delete", &lost.node_id);
     let update = PrecedingUpdate { run: 1, mesh: "mesh1".into(), operation: rdm_admin::fabric_handover::update_operation(rdm_core::PrimaryRole::MeshPrimary, &op), primary: Some(rdm_core::OperationSubject::Birth { node_id: lost.node_id.clone(), incarnation: lost.incarnation.clone() }) };
-    let n_gate = Arc::new(AfterTheProof { lost, inner: n_switch, rows: vec![update.clone()], proofs: r.proofs.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
+    let n_gate = Arc::new(AfterTheExit { lost, inner: n_switch, rows: vec![update.clone()], exits: r.exits.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
     let successor = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
         me: n_name.clone(),
         topology: e.topology.clone(),
@@ -2150,7 +2150,7 @@ async fn a_fabric_primary_lost_after_its_row_has_exited_before_its_successor_ack
     });
     let n_drive = Drive::detached(r.build.clone());
     assert_eq!(tokio::time::timeout(Duration::from_secs(60), successor.run(&n_drive)).await.expect("the successor's drive ends"), DriveEnd::Terminal);
-    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 1, "the primary's departure was proven once");
+    assert_eq!(r.exits.calls.load(Ordering::SeqCst), 1, "the primary's departure was proven once");
     assert_eq!(*n_gate.asked.lock().unwrap(), vec![(update, true, 0)], "the row's update was acknowledged once, after the departure proof and before any dispatch");
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt_executors.get(&1), p.attempt_executors.get(&2)), (Some(&r.birth("mesh1.admin", "1").await), Some(&r.birth("mesh1.admin", "2").await)), "the successor claimed the attempt after the holder's: {:?}", p.attempt_executors);
@@ -2392,7 +2392,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             }),
             dispatcher: rpc_dispatcher,
             gate: switch,
-            departure: Arc::new(crate::loopback::Proofs::default()),
+            departure: Arc::new(crate::loopback::Exits::default()),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
             notices: Default::default(),
             turns: rdm_admin::stop_gate::StopGate::new(),
@@ -2841,7 +2841,7 @@ async fn the_day0_build_writes_its_complete_only_after_its_own_ready() {
         }),
         dispatcher: dispatch.clone(),
         gate: gate.clone(),
-        departure: Arc::new(crate::loopback::Proofs::default()),
+        departure: Arc::new(crate::loopback::Exits::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         notices: Default::default(),
         turns: rdm_admin::stop_gate::StopGate::new(),
@@ -2917,7 +2917,7 @@ async fn a_fabric_delete_ends_an_attempt_this_fabric_primary_holds_without_waiti
     let end = tokio::time::timeout(Duration::from_secs(10), r.env.run(&drive)).await;
     assert_eq!(end.ok(), Some(DriveEnd::Terminal), "the interrupted Build ends at once, never waiting on this fabric-primary's own exit");
     assert!(started.elapsed() < Duration::from_secs(5), "ended within its bound: {:?}", started.elapsed());
-    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 0, "no departure proof is asked of this fabric-primary's own runtime");
+    assert_eq!(r.exits.calls.load(Ordering::SeqCst), 0, "no departure proof is asked of this fabric-primary's own runtime");
     let ended = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((ended.state, ended.failed_at), (rdm_admin::build_state::BuildState::Failed, Some(1)), "attempt 1 ended Failed: {ended:?}");
     assert!(ended.last_failure.as_deref().is_some_and(|f| f.contains(delete.build_id.as_str())), "the failure names the delete: {:?}", ended.last_failure);
@@ -4080,7 +4080,7 @@ async fn build_drive_fires_on_build_started_on_opening_and_reopening_skips_takeo
     let drive1 = Drive::detached(r.build.clone());
     assert!(matches!(r.env.run(&drive1).await, DriveEnd::Stalled(_)));
     let exited = r.birth("mesh1.admin", "2").await;
-    r.proofs.exited.lock().unwrap().insert(exited);
+    r.exits.exited.lock().unwrap().insert(exited);
     {
         let mut v = r.env.topology.write().await;
         for n in v.nodes.iter_mut() {
@@ -4226,12 +4226,12 @@ async fn build_drive_step_faults_recover_or_fail_as_the_page_specifies() {
     assert!(r.ran.0.lock().unwrap().is_empty());
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new());
 
-    // Fault 2: Executor `mesh1.admin.2` is proven exited (`r.proofs.exited`), `mesh1.admin.1` takes
+    // Fault 2: Executor `mesh1.admin.2` is proven exited (`r.exits.exited`), `mesh1.admin.1` takes
     // the mesh-primary role, and attempt 2 is cut mid-run after completing the first operation
     // (`node.create:mesh1.admin.2`). On the next pass, the completed receipt is reused (not run
     // twice) and the remaining operation (`node.create:mesh1.rpc.2`) completes (`DriveEnd::Terminal`).
     let exited = r.birth("mesh1.admin", "2").await;
-    r.proofs.exited.lock().unwrap().insert(exited);
+    r.exits.exited.lock().unwrap().insert(exited);
     {
         let mut v = r.env.topology.write().await;
         for n in v.nodes.iter_mut() {

@@ -5,8 +5,8 @@
 A primitive. `node.tickle` asks one node, by node.id and incarnation, whether anyone can reach it: one probe direct,
 and if that fails the same probe through up to two live peers of the node's mesh, sent at once
 (R-SW1). It answers `reached`, with what the node said, or `unreached`. It never answers dead:
-a failure, a deadline included, proves nothing, and only [node.runtime.inspect](node-runtime-inspect.md)
-proves a runtime gone. It is run by:
+a failure, a deadline included, shows nothing, and only [node.runtime.inspect](node-runtime-inspect.md)
+shows a runtime gone. It is run by:
 
 - the mesh-primary in [node recovery](node-recovery.md), on a member marked `PendingReconnect`;
 - the fabric-primary in [node recovery](node-recovery.md) of an unheard mesh-primary (Q335);
@@ -135,7 +135,7 @@ the first answer from the node, under the probed incarnation, ends the ladder; `
 ## Failure and receipts
 
 The primitive has no failure of its own: `unreached` is a result, not an error, and it is never
-recorded as the node's death. Proof of exit is [node.runtime.inspect](node-runtime-inspect.md)'s, which node investigation reads before the tickle. Budgets and the certainty of each call
+recorded as the node's death. Evidence of exit is [node.runtime.inspect](node-runtime-inspect.md)'s, which node investigation reads before the tickle. Budgets and the certainty of each call
 follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).
 
 ## Observability contract

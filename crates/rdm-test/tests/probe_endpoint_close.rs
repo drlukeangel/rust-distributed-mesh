@@ -2,7 +2,7 @@
 //!
 //! A `--via` call whose exact target the admin's view does not hold sends nothing: the probe's
 //! endpoint is bound, reads the entry admin's view, and carries no call. An endpoint dropped open makes iroh abort the process
-//! ungracefully, and the probe's span file (`rdm.node_rpc.proof_store.resolve.via-probe` and all)
+//! ungracefully, and the probe's span file (`rdm.node_rpc.testkit_store.resolve.via-probe` and all)
 //! is lost with it, so a scenario that reads the call's trace id from that file finds none.
 
 use crate::common::admin_view::{node, serve_on_own_runtime};

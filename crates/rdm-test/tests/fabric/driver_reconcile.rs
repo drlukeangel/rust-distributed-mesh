@@ -144,10 +144,10 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     }
     let mut violations: Vec<String> = Vec::new();
     // The path RAN: the operations reached handlers, the topology actions ran as Build attempts.
-    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").len();
+    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").len();
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
     if report.ledger.issued > 0 && served == 0 {
-        violations.push(format!("{} operations were issued and no proof-store handler span was exported", report.ledger.issued));
+        violations.push(format!("{} operations were issued and no testkit-store handler span was exported", report.ledger.issued));
     }
     if reconciles == 0 {
         violations.push("no Build attempt span (rdm.node_admin.build.update.via-reconcile) was exported".into());
@@ -204,7 +204,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
 
 /// CONTRACT (#2787): on the canonical R-shape estate (two meshes, each of two node-admins, two
 /// compute, three gateway and three broker nodes: twenty nodes), the
-/// soak driver issues continuous proof-store operations (puts, compare-and-swaps, gets, deletes,
+/// soak driver issues continuous testkit-store operations (puts, compare-and-swaps, gets, deletes,
 /// each recorded in the operation ledger before it is sent and classified once from its typed
 /// outcome) for `RDM_SOAK_SECS` seconds of seed `RDM_SOAK_SEED` (1432787, 1800 s in the
 /// registered job) while the action model's legal random actions run: grow, shrink, restart,

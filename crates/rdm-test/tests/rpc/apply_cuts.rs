@@ -3,7 +3,7 @@
 //! leaves `result.json` (its direct observations, one row per explored cut) and `spans.json` (every
 //! span it emitted, captured in-process by its own OTel exporter) there.
 //!
-//! The testkit proof store (op 0x70) is served by a real `NodeRpcServer` over a real store file; its
+//! The testkit testkit store (op 0x70) is served by a real `NodeRpcServer` over a real store file; its
 //! two apply failpoints (`ApplyCuts`: before the apply, after the apply and before the reply) are
 //! the testkit-only seam, shaped like `rdm_transport::Failpoint`. The request-side cut is the
 //! client's own `CallOptions::cut_before_finish`. Every cut is explored against a healthy control
@@ -15,14 +15,14 @@ use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
-use rdm_test::proof_store::{self, ApplyCuts, FileProofStore, ProofOp, ProofReply, ProofRequest, ProofStore, Provenance};
+use rdm_test::testkit_store::{self, ApplyCuts, FileTestkitStore, TestkitStoreOp, TestkitStoreReply, TestkitStoreRequest, TestkitStore, Provenance};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Every request/apply cut of one proof-store call, in the order a call crosses them.
+/// Every request/apply cut of one testkit-store call, in the order a call crosses them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cut {
     /// The request is written in part and reset with 499 before its direction finished.
@@ -167,10 +167,10 @@ impl Capture {
     }
 }
 
-/// One real proof-store server and a real client naming its exact birth.
+/// One real testkit-store server and a real client naming its exact birth.
 struct Rig {
     _router: Router,
-    store: Arc<FileProofStore>,
+    store: Arc<FileTestkitStore>,
     cuts: Arc<ApplyCuts>,
     stats: Arc<ServerStats>,
     client: NodeRpcClient,
@@ -207,11 +207,11 @@ async fn rig(dir: &std::path::Path) -> Rig {
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         declared: Default::default(),
     };
-    let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
+    let store = Arc::new(FileTestkitStore::open(&launch.data_dir).expect("the store opens in its data dir"));
     let cuts = Arc::new(ApplyCuts::default());
-    let server = proof_store::serve_with_cuts(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()), cuts.clone())
+    let server = testkit_store::serve_with_cuts(ServerBuilder::new(), store.clone(), &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()), cuts.clone())
         .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
-        .expect("the proof store is built");
+        .expect("the testkit store is built");
     let stats = server.stats();
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -229,7 +229,7 @@ impl Drop for Rig {
 }
 
 impl Rig {
-    fn at(&self, op: ProofOp) -> Provenance {
+    fn at(&self, op: TestkitStoreOp) -> Provenance {
         Provenance {
             node_id: self.launch.node_id.to_string(),
             node: self.launch.name.clone(),
@@ -241,15 +241,15 @@ impl Rig {
 
     /// What the store holds for `key` right now: read from the store itself, never through a call.
     fn held(&self, key: &[u8]) -> Option<Vec<u8>> {
-        match self.store.apply(ProofRequest::Get { key: key.to_vec() }, self.at(ProofOp::Get)) {
-            ProofReply::Value { value, .. } => Some(value),
-            ProofReply::Absent { .. } => None,
+        match self.store.apply(TestkitStoreRequest::Get { key: key.to_vec() }, self.at(TestkitStoreOp::Get)) {
+            TestkitStoreReply::Value { value, .. } => Some(value),
+            TestkitStoreReply::Absent { .. } => None,
             other => panic!("the store answered a direct read with {other:?}"),
         }
     }
 
-    async fn put(&self, key: &[u8], value: &[u8], opts: &CallOptions) -> (RpcOutcome<ProofReply>, Option<rdm_transport::CallEvidence>) {
-        self.client.call::<ProofStore>(&self.target, &ProofRequest::Put { key: key.to_vec(), value: value.to_vec() }, opts).await
+    async fn put(&self, key: &[u8], value: &[u8], opts: &CallOptions) -> (RpcOutcome<TestkitStoreReply>, Option<rdm_transport::CallEvidence>) {
+        self.client.call::<TestkitStore>(&self.target, &TestkitStoreRequest::Put { key: key.to_vec(), value: value.to_vec() }, opts).await
     }
 
     /// The server's own counters: what it dispatched, dropped unfinished, runs now, and how many
@@ -288,13 +288,13 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()
 }
 
-/// The healthy same-family control: a completed Put emits the serve span and the proof-store span
+/// The healthy same-family control: a completed Put emits the serve span and the testkit-store span
 /// under it, both under the caller's trace, and stores exactly its value.
 async fn control(r: &Rig) -> Value {
     let (out, ev) = r.put(b"control", b"v-control", &CallOptions::default()).await;
     let outcome = format!("{out:?} evidence={ev:?}");
     let reply = out.reply().unwrap_or_else(|| panic!("the healthy control call replies; it ended {outcome}")).value().clone();
-    assert_eq!(reply, ProofReply::Stored { at: r.at(ProofOp::Put) });
+    assert_eq!(reply, TestkitStoreReply::Stored { at: r.at(TestkitStoreOp::Put) });
     assert!(ev.expect("evidence").committed);
     assert_eq!(r.held(b"control"), Some(b"v-control".to_vec()));
     let c = r.counters();
@@ -303,20 +303,20 @@ async fn control(r: &Rig) -> Value {
 }
 
 /// Parent links the unit census requires: the serve span is the child of the caller's call span
-/// (propagated context), and the proof-store span is the child of the serve span.
+/// (propagated context), and the testkit-store span is the child of the serve span.
 fn assert_serve_chain(spans: &[Value], want_serves: usize) -> Value {
     let serves = spans_named(spans, "rdm.node_rpc.request.serve.via-direct");
-    let stores = spans_named(spans, "rdm.node_rpc.proof_store.serve.via-request");
+    let stores = spans_named(spans, "rdm.node_rpc.evidence_store.serve.via-request");
     let calls = spans_named(spans, "rdm.node_rpc.request.update.via-call");
     assert_eq!(serves.len(), want_serves, "one serve span per dispatched call: {serves:#?}");
-    assert_eq!(stores.len(), want_serves, "one proof-store span per dispatched call");
+    assert_eq!(stores.len(), want_serves, "one testkit-store span per dispatched call");
     let mut chain = Vec::new();
     for s in &serves {
-        assert_eq!(s["attributes"]["protocol"], "proof-store");
+        assert_eq!(s["attributes"]["protocol"], "evidence-store");
         assert_eq!(s["attributes"]["op"], "112");
         let call = calls.iter().find(|c| c["trace_id"] == s["trace_id"]).unwrap_or_else(|| panic!("a serve span is under its caller's trace: {s}"));
         assert_eq!(s["parent_span_id"], call["span_id"], "the serve span's parent is the transmitted call span");
-        let store = stores.iter().find(|p| p["parent_span_id"] == s["span_id"]).unwrap_or_else(|| panic!("the proof-store span is the child of its serve span: {s}"));
+        let store = stores.iter().find(|p| p["parent_span_id"] == s["span_id"]).unwrap_or_else(|| panic!("the testkit-store span is the child of its serve span: {s}"));
         assert_eq!(store["trace_id"], s["trace_id"]);
         chain.push(json!({
             "trace_id": s["trace_id"], "call_span_id": call["span_id"], "serve_span_id": s["span_id"], "serve_parent_span_id": s["parent_span_id"],
@@ -337,8 +337,8 @@ fn assert_serve_chain(spans: &[Value], want_serves: usize) -> Value {
 /// happen: NotSent inferred from a post-commit timeout, a dispatch for the unfinished request, or a
 /// replay by the client.
 #[test]
-fn failpoint_explorer_before_apply_proves_not_sent_or_unapplied() {
-    let cell = "failpoint_explorer_before_apply_proves_not_sent_or_unapplied";
+fn failpoint_explorer_before_apply_answers_not_sent_or_unapplied() {
+    let cell = "failpoint_explorer_before_apply_answers_not_sent_or_unapplied";
     let dir = acceptance_dir(cell);
     let cap = capture(cell);
     let rows = cap.run(async {
@@ -417,8 +417,8 @@ fn failpoint_explorer_before_apply_proves_not_sent_or_unapplied() {
 /// recorded act and the only second dispatch. What must NOT happen: NotSent after an apply, a
 /// second stored mutation from the lost-reply call, or an automatic replay.
 #[test]
-fn failpoint_explorer_after_apply_lost_reply_proves_indeterminate() {
-    let cell = "failpoint_explorer_after_apply_lost_reply_proves_indeterminate";
+fn failpoint_explorer_after_apply_lost_reply_answers_indeterminate() {
+    let cell = "failpoint_explorer_after_apply_lost_reply_answers_indeterminate";
     let dir = acceptance_dir(cell);
     let cap = capture(cell);
     let rows = cap.run(async {
@@ -445,11 +445,11 @@ fn failpoint_explorer_after_apply_lost_reply_proves_indeterminate() {
             assert_eq!(released["dispatched"], at_timeout["dispatched"], "no automatic replay");
             assert_eq!(r.held(b"k-lost"), Some(b"v-lost".to_vec()));
             // Terminal recovery: the connection and the server are healthy for the next call.
-            let (next, _) = r.client.call::<ProofStore>(&r.target, &ProofRequest::Get { key: b"k-lost".to_vec() }, &CallOptions::default()).await;
-            assert_eq!(next.reply().expect("the next call replies").value(), &ProofReply::Value { at: r.at(ProofOp::Get), value: b"v-lost".to_vec() });
+            let (next, _) = r.client.call::<TestkitStore>(&r.target, &TestkitStoreRequest::Get { key: b"k-lost".to_vec() }, &CallOptions::default()).await;
+            assert_eq!(next.reply().expect("the next call replies").value(), &TestkitStoreReply::Value { at: r.at(TestkitStoreOp::Get), value: b"v-lost".to_vec() });
             // A separate, explicit, domain-approved idempotent retry: the only second dispatch of this key.
             let (retry, _) = r.put(b"k-lost", b"v-lost", &CallOptions::default()).await;
-            assert_eq!(retry.reply().expect("the explicit retry replies").value(), &ProofReply::Stored { at: r.at(ProofOp::Put) });
+            assert_eq!(retry.reply().expect("the explicit retry replies").value(), &TestkitStoreReply::Stored { at: r.at(TestkitStoreOp::Put) });
             let retried = r.counters();
             assert_eq!(r.held(b"k-lost"), Some(b"v-lost".to_vec()), "the idempotent retry leaves the same value");
             rows.push(json!({

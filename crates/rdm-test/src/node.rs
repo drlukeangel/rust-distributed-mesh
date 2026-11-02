@@ -1,5 +1,5 @@
 //! Testkit wrapper around `rdm_node::node`, wiring `FaultedConnectionsStorage`,
-//! `crate::originate::Seams`, `ProofStore` carrying, and `testkit-skew` rafka-time knobs.
+//! `crate::originate::Seams`, `TestkitStore` carrying, and `testkit-skew` rafka-time knobs.
 
 use std::sync::Arc;
 
@@ -288,7 +288,7 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
                 data_plane_registry,
                 own_config: door,
             };
-            register(b, seams).carry::<crate::proof_store::ProofStore>()
+            register(b, seams).carry::<crate::testkit_store::TestkitStore>()
         },
         &[],
         alpns,

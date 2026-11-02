@@ -77,7 +77,7 @@ Two words for a call through a middle node, one per plane:
   (`build.attempt.run`, 0x20) and the mesh-primary executes it on the mesh's nodes (commands go
   down). Nothing is kept by the forwarder: no connection, no id, no row. A mesh-primary healing
   its own mesh from the topology it holds (R-BI7) forwards nothing; it is its own attempt.
-- **Proxy** is the data plane's. A node that cannot open a direct path for traffic proves a
+- **Proxy** is the data plane's. A node that cannot open a direct path for traffic shows a
   two-hop path through one exact carrier and keeps it as a connection of its own: the `Proxy`
   kind below, with its minted id, listed, deleted by name, deleted by this subsystem. The
   carrier carries traffic for as long as the connection stands.
@@ -85,7 +85,7 @@ Two words for a call through a middle node, one per plane:
 The same carrier can be both at once: forwarding one command and carrying one proxy connection
 are two unrelated facts, and deleting the connection never affects a forward.
 
-`Proxy` means the source has proven a usable two-hop path to the destination through one exact carrier:
+`Proxy` means the source has shown a usable two-hop path to the destination through one exact carrier:
 
 ```text
 source -> carrier -> destination
@@ -114,12 +114,12 @@ Refused      -> state=refused
 ```
 
 `Failed` is valid for Direct recovery attempts. It means only that this source failed to establish the
-named direct connection. It is never global proof that the destination node is dead.
+named direct connection. It is never global evidence that the destination node is dead.
 
 `Refused` is written by an acceptor for an inbound connection it dropped at admission
 ([fabric-certs.md](fabric-certs.md#on-a-connection), [node.connection.create](lifecycles/node-connections-admit.md)),
 naming the reason, one of node.connection.create's `refused` reasons (its Result row). It is the
-acceptor's fact about one dial, never proof about the dialer.
+acceptor's fact about one dial, never evidence about the dialer.
 
 ### 1.3 One dial: its rows and its spans
 
@@ -136,7 +136,7 @@ one whole append-only row (§3); an accept writes nothing (R-CN1).
 | Through a carrier | The opener's `rdm.node.connection.create.via-tunnel` carries `cert_expires_at`; the carrier dials the destination. After the destination's `admitted` comes back through the carrier (§7), the opener writes `Proxy Connected` naming the carrier. | the destination serves or refuses as above |
 | Ended | `Disconnected` when the connection closes or is deleted (node.connection.delete); a tunnel's end is spanned `rdm.node.connection.delete.via-tunnel-ended` and writes no second row | — |
 
-`Refused` and `Failed` are each one side's fact about one dial: neither is proof about the other side.
+`Refused` and `Failed` are each one side's fact about one dial: neither is evidence about the other side.
 
 ---
 
@@ -259,7 +259,7 @@ member                = hash(source, destination, alpn, kind)
 
 The exact hash helper may follow existing entity-framework conventions. What is normative is one latest
 member per `(source,destination,alpn,kind)`, never one member per connection-event id. Reachability is per
-protocol: a working ALPN proves nothing about another, and a reconnect on one never deletes another's Proxy.
+protocol: a working ALPN shows nothing about another, and a reconnect on one never deletes another's Proxy.
 
 ### 3.2 Virtual topics
 
@@ -357,7 +357,7 @@ Any other non-active Direct has no series: none ever observed, a closed connecti
 `node.connection.delete` writes at every node.stop), or an acceptor's Refused. A new call
 dials it (§7), and a failed dial writes the first Failed of a series.
 
-This precedence provides ordered cutback. When a direct connection returns, traffic stays on the proven
+This precedence provides ordered cutback. When a direct connection returns, traffic stays on the working
 Proxy until `Proxy Disconnected(reason=direct-restored)` lands. Only then does Direct become effective.
 
 If the proxy-delete write fails, continuing on the working proxy is safe. Node-base must retry the
@@ -420,13 +420,13 @@ Sequence:
 2. It asks the candidates of §6 in their order; the first whose own Direct to the destination is Active
    answers.
 3. It proxies the invocation once through that carrier.
-4. Only a conclusive end-to-end success/refusal proving the carrier path was actually usable may establish
+4. Only a conclusive end-to-end success/refusal showing the carrier path was actually usable may establish
    the proxy route.
 5. `gw1` writes `Proxy Connected`, recording the exact carrier and the destination/carrier incarnation ids.
 6. Future new invocations from gw1 to brk2 use the durable Proxy override without paying the direct ladder
    again.
 
-A post-commit answer timeout, reply loss, or other Indeterminate outcome does not prove a Proxy connection and
+A post-commit answer timeout, reply loss, or other Indeterminate outcome does not show a Proxy connection and
 must not create `Proxy Connected`.
 
 For a stream connection the conclusive answer is RDM's tunnel handshake: the destination's own `admitted`
@@ -692,7 +692,7 @@ gw1 !-> brk2
 gw2  -> brk2
 ```
 
-First operation from gw1 proves and writes `Proxy Connected via gw2`. A second operation, including one for a
+First operation from gw1 shows and writes `Proxy Connected via gw2`. A second operation, including one for a
 different topic that selects the same brk2, must use the Proxy immediately. Forbidden: another full direct
 dial ladder before proxying.
 
@@ -706,8 +706,8 @@ Proxy  -> Connected(via=gw2)
 ```
 
 restart gw1. The restarted gw1 holds no Direct and no Proxy and reads none back; its first operation dials
-Direct and, on NotSent, proves its carrier again (§7). Forbidden: a route over a Proxy the restarted birth
-did not prove.
+Direct and, on NotSent, shows its carrier again (§7). Forbidden: a route over a Proxy the restarted birth
+did not show.
 
 ### C. A restart starts reconnect backoff fresh
 
@@ -800,7 +800,7 @@ policy; Rafka's, and where its copies lived before i148, are Rafka's pages.
 16. Only the source's own Direct Connected creates the proxy-delete obligation; an accepted inbound connection from the destination is a recovery trigger (§13 G).
 17. Failed proxy-delete writes are retried; routing safely remains on Proxy until the delete lands.
 18. Destination and carrier process incarnations make stale route evidence refusable by name.
-19. A failed direct attempt is source-local reachability evidence, not global node-death proof.
+19. A failed direct attempt is source-local reachability evidence, not a sign the node is dead anywhere.
 20. Customer traffic does not periodically probe Direct while a durable Proxy is active.
 21. A sent/committed invocation is never silently rerouted or replayed.
 22. Connection routing is independent of `orgs.topics` semantic-route convergence and #2640.

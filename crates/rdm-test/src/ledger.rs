@@ -92,7 +92,7 @@ impl Classification {
     /// The classification of an outcome as `rdm-rpc-probe` prints it (`{"outcome": ..}`): the
     /// probe is the typed `RpcOutcome` rendered to one JSON line, so the bucket is the outcome's
     /// own name and the detail is the same typed reason text [`Self::of`] renders. A `Reply` is a
-    /// success when the proof store applied or answered the request; a compare-and-swap mismatch
+    /// success when the testkit store applied or answered the request; a compare-and-swap mismatch
     /// is a protocol success that applied nothing, so it is a `Reply` with `reply_success` false
     /// (the state algebra reads `reply_success` as "the mutation took effect"). A line that names
     /// no outcome is refused by name, never guessed into a bucket. A `Refused` line is the probe

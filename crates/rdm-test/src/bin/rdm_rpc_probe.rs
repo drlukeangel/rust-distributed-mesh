@@ -1,4 +1,4 @@
-//! `rdm-rpc-probe`: one proof-store call over real Node RPC, for scenarios
+//! `rdm-rpc-probe`: one testkit-store call over real Node RPC, for scenarios
 //! (PRD §6: no in-process shortcut).
 //!
 //! ```text
@@ -28,7 +28,7 @@ use rdm_core::{IncarnationId, MeshNode, NodeId, PathName};
 use rdm_client::{BuildCarrier, Fabrics, NodeView, Nodes};
 use rdm_transport::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
-use rdm_test::proof_store::{ProofReply, ProofRequest, ProofStore};
+use rdm_test::testkit_store::{TestkitStoreReply, TestkitStoreRequest, TestkitStore};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -265,14 +265,14 @@ fn resolved(views: &[NodeView]) -> Result<Vec<ResolvedNode>, String> {
     Ok(out)
 }
 
-fn request(a: &Args) -> Result<ProofRequest, String> {
+fn request(a: &Args) -> Result<TestkitStoreRequest, String> {
     let key = a.key.as_bytes().to_vec();
     let bytes = |v: &Option<String>| v.as_ref().map(|s| s.as_bytes().to_vec());
     Ok(match a.op.as_str() {
-        "get" => ProofRequest::Get { key },
-        "put" => ProofRequest::Put { key, value: bytes(&a.value).ok_or("put needs --value")? },
-        "delete" => ProofRequest::Delete { key },
-        "cas" => ProofRequest::CompareAndSwap { key, expected: bytes(&a.expected), new: bytes(&a.value) },
+        "get" => TestkitStoreRequest::Get { key },
+        "put" => TestkitStoreRequest::Put { key, value: bytes(&a.value).ok_or("put needs --value")? },
+        "delete" => TestkitStoreRequest::Delete { key },
+        "cas" => TestkitStoreRequest::CompareAndSwap { key, expected: bytes(&a.expected), new: bytes(&a.value) },
         other => return Err(format!("unknown op {other:?}")),
     })
 }
@@ -284,16 +284,16 @@ fn text(v: &[u8]) -> Value {
     }
 }
 
-fn reply(r: &ProofReply) -> Value {
+fn reply(r: &TestkitStoreReply) -> Value {
     let result = match r {
-        ProofReply::Value { value, .. } => json!({"found": true, "value": text(value)}),
-        ProofReply::Absent { .. } => json!({"found": false}),
-        ProofReply::Stored { .. } => json!({"stored": true}),
-        ProofReply::Deleted { .. } => json!({"deleted": true}),
-        ProofReply::Swapped { .. } => json!({"swapped": true}),
-        ProofReply::Mismatch { current, .. } => json!({"swapped": false, "current": current.as_deref().map(text)}),
-        ProofReply::TooLarge { field, limit, got, .. } => json!({"refused": "too-large", "field": field, "limit": limit, "got": got}),
-        ProofReply::StoreFailed { reason, .. } => json!({"refused": "store-failed", "reason": reason}),
+        TestkitStoreReply::Value { value, .. } => json!({"found": true, "value": text(value)}),
+        TestkitStoreReply::Absent { .. } => json!({"found": false}),
+        TestkitStoreReply::Stored { .. } => json!({"stored": true}),
+        TestkitStoreReply::Deleted { .. } => json!({"deleted": true}),
+        TestkitStoreReply::Swapped { .. } => json!({"swapped": true}),
+        TestkitStoreReply::Mismatch { current, .. } => json!({"swapped": false, "current": current.as_deref().map(text)}),
+        TestkitStoreReply::TooLarge { field, limit, got, .. } => json!({"refused": "too-large", "field": field, "limit": limit, "got": got}),
+        TestkitStoreReply::StoreFailed { reason, .. } => json!({"refused": "store-failed", "reason": reason}),
         other => json!({"refused": format!("{other:?}")}),
     };
     let mut v = json!({ "result": result });
@@ -350,15 +350,15 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     if let Some(ms) = a.budget_ms {
         opts.resend = rdm_transport::Resend::with_time_limit(std::time::Duration::from_millis(ms));
     }
-    let (out, leg): (RpcOutcome<ProofReply>, &str) = match route {
-        Err(f) => (rdm_core::outcome::PreCommit::begin(<ProofStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), "via-peer"),
+    let (out, leg): (RpcOutcome<TestkitStoreReply>, &str) = match route {
+        Err(f) => (rdm_core::outcome::PreCommit::begin(<TestkitStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), "via-peer"),
         Ok(route) => match resolver.resolve(&target) {
             Ok(n) => {
-                let (out, _, leg) = client.call_routed::<ProofStore>(&n.node_id, &route, &req, &opts).await;
+                let (out, _, leg) = client.call_routed::<TestkitStore>(&n.node_id, &route, &req, &opts).await;
                 (out, leg.token())
             }
-            Err(_) if matches!(route, rdm_transport::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &opts).await.0, "direct"),
-            Err(f) => (rdm_core::outcome::PreCommit::begin(<ProofStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), route.token()),
+            Err(_) if matches!(route, rdm_transport::RouteChoice::Direct) => (client.call::<TestkitStore>(&target, &req, &opts).await.0, "direct"),
+            Err(f) => (rdm_core::outcome::PreCommit::begin(<TestkitStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), route.token()),
         },
     };
     // The reply is observable as soon as the call ends. The caller still owns
@@ -396,7 +396,7 @@ async fn probe() -> std::process::ExitCode {
     let args = match parse(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            tracing::info_span!("rdm.node_rpc.proof_store.reject.via-probe-arguments", reason = %e).in_scope(|| {
+            tracing::info_span!("rdm.node_rpc.evidence_store.reject.via-probe-arguments", reason = %e).in_scope(|| {
                 rdm_transport::report_init_steps_here();
                 tracing::info!("the probe refused its arguments")
             });
@@ -404,7 +404,7 @@ async fn probe() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
-    let span = tracing::info_span!("rdm.node_rpc.proof_store.resolve.via-probe", op = %args.op, target = %args.target);
+    let span = tracing::info_span!("rdm.node_rpc.evidence_store.resolve.via-probe", op = %args.op, target = %args.target);
     // The invocation is one trace: the process's init steps are reported inside its root.
     span.in_scope(rdm_transport::report_init_steps_here);
     let out = {
@@ -479,7 +479,7 @@ fn probe_bind() -> std::net::SocketAddr {
 /// `fault --target <source> --refuse-index N --refuse-history M | --release`, and
 /// `snapshot --target <source>`: the testkit's originate door on the source node (op 0x73).
 async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
-    use rdm_test::originate::{Originate, OriginateReply, OriginateRequest, ProofOp};
+    use rdm_test::originate::{Originate, OriginateReply, OriginateRequest, OriginateStoreOp};
     // A destination or carrier is a node id: `exact:<node_id>` as given, or `path:<JSON>` read as the
     // node the entry admin's view holds at that location now.
     let mut held: Option<Vec<NodeView>> = None;
@@ -511,8 +511,8 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             let destination = exact("--destination", &a.destination)?;
             let key = a.key.as_bytes().to_vec();
             let op = match a.value.as_ref() {
-                Some(v) => ProofOp::Put { key, value: v.as_bytes().to_vec() },
-                None => ProofOp::Get { key },
+                Some(v) => OriginateStoreOp::Put { key, value: v.as_bytes().to_vec() },
+                None => OriginateStoreOp::Get { key },
             };
             OriginateRequest::Call { destination, op }
         }

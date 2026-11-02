@@ -27,7 +27,7 @@ the recorded primary (`is_primary` on the node rows) + current candidate facts
 Equal candidate facts and equal records produce equal winners. Every primary moves in two ways only: it
 hands over by [node.primary.update](lifecycles/node-primary-update.md) (`node.fabric-primary.update` for the
 fabric-primary), or it is unheard past the staleness floor and is superseded by the rule above (Q107 (1),
-Q89). Nothing else moves a primary, and nothing waits for proof of anything (Q111).
+Q89). Nothing else moves a primary, and nothing waits for evidence of anything (Q111).
 
 A published or recorded `is_primary` or `is_fabric_primary` bit is a projection of this result. It
 never makes a primary by advertisement or by a write: the write records the role.

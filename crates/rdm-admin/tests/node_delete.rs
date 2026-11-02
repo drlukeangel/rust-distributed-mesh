@@ -1016,7 +1016,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         assert!(observer.commands.lock().unwrap().is_empty());
 
         // 3. Live target whose `StopNode` reply is lost (`CommandAdmission::Indeterminate`): under
-        // `delete_node` (`StopProof::Lenient`), `AwaitNodeLeft` records `Completion::NotAwaited` without
+        // `delete_node` (`RequiredCompletion::Lenient`), `AwaitNodeLeft` records `Completion::NotAwaited` without
         // fabricating a `stopped` event, and the delete proceeds to `TerminateRuntime`, verifies `Exited`,
         // and completes `NodeDeleted`.
         store.write_record(&initial_row).await.unwrap();

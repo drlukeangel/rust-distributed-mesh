@@ -394,8 +394,8 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
 /// its `StartNode` receipt not yet durable, and it is killed while held. The successor reissues the
 /// start, which the node settles `AlreadyApplied`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_proof() {
-    let test = "a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_proof";
+async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_its_exit_is_inspected() {
+    let test = "a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_its_exit_is_inspected";
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_on(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
@@ -430,12 +430,12 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     estate.stop().await;
     let spans = estate.spans();
     let build = &accepted.build_id.to_string();
-    let proofs: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string()).collect();
-    assert!(!proofs.is_empty(), "the departure was proven before the next attempt was claimed: {proofs:?}");
-    assert_eq!(s(&proofs[0]["attributes"]["executor"]), birth_of(&executor).to_string());
+    let inspections: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-executor-exited-or-os-stopped").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string()).collect();
+    assert!(!inspections.is_empty(), "the departure was proven before the next attempt was claimed: {inspections:?}");
+    assert_eq!(s(&inspections[0]["attributes"]["executor"]), birth_of(&executor).to_string());
     let claims: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && sp["attributes"]["attempt"].as_str().and_then(|a| a.parse::<u32>().ok()) > Some(accepted.attempt)).collect();
     let successor = claims.iter().find(|sp| s(&sp["attributes"]["executor"]) == birth_of(&next_executor).to_string()).expect("the next attempt was claimed for the successor");
-    assert!(successor["start_unix_nano"].as_u64() > proofs[0]["start_unix_nano"].as_u64(), "the claim for the successor came after the proof");
+    assert!(successor["start_unix_nano"].as_u64() > inspections[0]["start_unix_nano"].as_u64(), "the claim for the successor came after the proof");
     let lost = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["outcome"]) == "executor-lost").expect("the inner call to the lost executor ended");
     assert!(!s(&lost["attributes"]["reason"]).is_empty(), "the executor-lost dispatch names why the inner call ended: {lost}");
     estate.record_trace_url(lost["trace_id"].as_str().unwrap_or(""));
@@ -600,14 +600,14 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let of_build = |name: &str| -> Vec<Value> { spans_named(&spans, name).into_iter().filter(|sp| attr(sp, "build_id") == *build).cloned().collect() };
     let lost = of_build("rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| attr(sp, "attempt") == accepted.attempt.to_string() && attr(sp, "outcome") == "executor-lost").expect("the inner call to the suspended executor ended executor-lost");
-    let proof = of_build("rdm.node_admin.build.update.via-departure-proven").into_iter().find(|sp| attr(sp, "attempt") == accepted.attempt.to_string()).unwrap_or_else(|| panic!("the os-stopped executor's departure is proven: {:#?}", of_build("rdm.node_admin.fabric.update.via-blocked")));
-    assert_eq!(attr(&proof, "executor"), birth_of(&executor).to_string(), "{proof}");
+    let inspected = of_build("rdm.node_admin.build.update.via-executor-exited-or-os-stopped").into_iter().find(|sp| attr(sp, "attempt") == accepted.attempt.to_string()).unwrap_or_else(|| panic!("the os-stopped executor's departure is proven: {:#?}", of_build("rdm.node_admin.fabric.update.via-blocked")));
+    assert_eq!(attr(&inspected, "executor"), birth_of(&executor).to_string(), "{inspected}");
     let claim = of_build("rdm.node_admin.build.update.via-claim-decision")
         .into_iter()
         .find(|sp| at_node(sp, &fabric_primary.name) && attr(sp, "outcome") == "won" && attr(sp, "attempt").parse::<u32>().ok() > Some(accepted.attempt))
         .expect("the next attempt is claimed");
     assert_eq!(attr(&claim, "executor"), birth_of(&successor).to_string(), "the next attempt is the other node-admin of mesh2's: {claim}");
-    assert!(claim["start_unix_nano"].as_u64() > proof["start_unix_nano"].as_u64(), "the claim follows the proof");
+    assert!(claim["start_unix_nano"].as_u64() > inspected["start_unix_nano"].as_u64(), "the claim follows the proof");
     // The mesh: the fabric-primary's investigation of the unheard mesh-primary finds it os-stopped, and the
     // recovery it opens is admitted, never refused behind the held attempt.
     let investigations: Vec<Value> = spans_named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(|sp| at_node(sp, &fabric_primary.name) && attr(sp, "suspect_node_id") == node_id).cloned().collect();
@@ -620,7 +620,7 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
     let refused: Vec<&Value> = recoveries.iter().filter(|sp| attr(sp, "outcome") == "build-in-progress" && sp["start_unix_nano"].as_u64().unwrap_or(0) > ended).collect();
     assert!(refused.is_empty(), "the recovery of the mesh-primary is never refused behind the suspended executor's attempt once the next attempt ran: {refused:#?}");
     let admitted = recoveries.iter().find(|sp| attr(sp, "outcome") == "admitted").unwrap_or_else(|| panic!("the recovery is admitted: {recoveries:#?}"));
-    assert!(admitted["start_unix_nano"].as_u64() > proof["start_unix_nano"].as_u64(), "the recovery is admitted after the departure proof: {admitted}");
+    assert!(admitted["start_unix_nano"].as_u64() > inspected["start_unix_nano"].as_u64(), "the recovery is admitted after the departure proof: {admitted}");
     assert_eq!(investigations.len(), 1, "the mesh is recovered within one investigation: {investigations:#?}");
     let at_delete = spans_named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| attr(sp, "node_id") == node_id && attr(sp, "caller") == "terminate").cloned().expect("the recovery's TerminateRuntime reads the exact runtime at its instant");
     assert_eq!(attr(&at_delete, "verdict"), "os-stopped", "{at_delete}");
@@ -628,10 +628,10 @@ async fn an_os_stopped_executors_unfinished_attempt_is_claimed_by_the_next_and_i
     assert!(signalled.is_empty(), "the recovery stops no runtime of the suspended birth: {signalled:#?}");
     println!("recovered {node_id}: {} -> {}", node_id, s(&recovered["node_id"]));
     println!("executor lost: http://192.168.68.99:16687/trace/{}", s(&lost["trace_id"]));
-    println!("departure proven os-stopped: http://192.168.68.99:16687/trace/{}", s(&proof["trace_id"]));
+    println!("departure proven os-stopped: http://192.168.68.99:16687/trace/{}", s(&inspected["trace_id"]));
     println!("investigation: http://192.168.68.99:16687/trace/{}", s(&investigations[0]["trace_id"]));
     println!("runtime left os-stopped: http://192.168.68.99:16687/trace/{}", s(&at_delete["trace_id"]));
-    estate.record_trace_url(&s(&proof["trace_id"]));
+    estate.record_trace_url(&s(&inspected["trace_id"]));
 }
 
 /// CONTRACT (build.md: "an os-stopped executor that resumes after the next attempt is claimed is a

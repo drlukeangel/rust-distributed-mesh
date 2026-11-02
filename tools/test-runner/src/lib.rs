@@ -66,7 +66,7 @@ const GATE_SCENARIOS: &[&str] = &[
     "node_delete", "node_connections_delete", "node_stop", "node_replace", "node_restart", "routing", "status",
     "shape_reconcile", "live_resize", "role_build", "role_election", "restart_target",
     "role_routing", "role_context", "role_wedge", "provider_state", "late_lower_node_id_admin", "node_primary_update",
-    "mesh_create", "fabric_primary_handover", "canonical_ids", "node_type_election", "fabric_primary", "rpc_proof_store",
+    "mesh_create", "fabric_primary_handover", "canonical_ids", "node_type_election", "fabric_primary", "rpc_testkit_store",
     "accepted_topology", "build_op", "node_admin_loss_recovery", "rpc_certainty", "peer_mesh_investigation", "joiner_build_facts", "rafka_time_discipline", "issuance", "fabric_states",
     "mesh_delete_resume", "mesh_delete_no_survivor",
     "apply_cuts", "scheduler_replay", "shared_dial", "topology_storage_provider",

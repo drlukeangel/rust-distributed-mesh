@@ -13,10 +13,10 @@ use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshId, NodeId};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter};
 use rdm_admin::fabric_builds::BuildMessage;
-use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
+use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, NodeObserver, NoLifecycleEvents, Publication, RuntimeIdentity, TerminalReceipt, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::join::Joins;
-use rdm_admin::mesh_delete::{await_mesh_deleted, MeshDeleteView, MESH_DELETED_WAIT, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, Admitted, Amended, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rdm_admin::mesh_delete::{await_mesh_deleted, MeshDeleteView, MESH_DELETED_WAIT, completion_of, mesh_left_manifest, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, Admitted, Amended, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rdm_core::status::StatusReply;
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows, RowRefused};
@@ -393,7 +393,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.to_string())).collect(), ..Default::default() };
     *fleet.blind_once.lock().unwrap() = handles[&failing.node_id].pid;
     let me = RosterBirth::of(&final_admin).unwrap();
-    let final_runtime = RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap());
+    let final_runtime = RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap());
     let calls: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
     let storage = Arc::new(MemoryNodesStorage::default());
     let final_id = final_admin.node_id.clone();
@@ -547,7 +547,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
     let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.to_string())).collect(), ..Default::default() };
     *fleet.blind_once.lock().unwrap() = handles[&failing.node_id].pid;
     let me = RosterBirth::of(&final_admin).unwrap();
-    let final_runtime = RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap());
+    let final_runtime = RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap());
     let view = View::default();
 
     let (tier, verdict, trace_id) = cap.run(async {
@@ -636,7 +636,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
     let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.to_string())).collect(), ..Default::default() };
     let last_record = final_admin.clone();
     let me = RosterBirth::of(&last_record).unwrap();
-    let final_runtime = RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap());
+    let final_runtime = RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap());
     let view = View::default();
 
     let out = cap.run(async {
@@ -711,11 +711,11 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             .map(|v| serde_json::from_value(v).unwrap())
             .expect("the node.delete proved the final birth's exit");
         let completion = completion_of(&steps, &outer).unwrap().unwrap();
-        let proof = mesh_left_proof(&completion, &terminal);
-        let recycled = mesh_left_proof(&completion, &TerminalReceipt { runtime: Some(RuntimeProof { locator_fingerprint: "recycled".into(), ..terminal.runtime.clone().unwrap() }), ..terminal.clone() });
-        (manifest, terminated_at_completion, resume, replay, other, completions, indexed, (build_id, outer), completion, proof, recycled, trace_id)
+        let left_manifest = mesh_left_manifest(&completion, &terminal);
+        let recycled = mesh_left_manifest(&completion, &TerminalReceipt { runtime: Some(RuntimeIdentity { locator_fingerprint: "recycled".into(), ..terminal.runtime.clone().unwrap() }), ..terminal.clone() });
+        (manifest, terminated_at_completion, resume, replay, other, completions, indexed, (build_id, outer), completion, left_manifest, recycled, trace_id)
     });
-    let (manifest, terminated_at_completion, resume, replay, other, completions, indexed, (build_id, outer), completion, proof, recycled, trace_id) = out;
+    let (manifest, terminated_at_completion, resume, replay, other, completions, indexed, (build_id, outer), completion, left_manifest, recycled, trace_id) = out;
     let spans = cap.spans();
     let dir = artifact_dir().join("mesh-deleted");
     std::fs::create_dir_all(&dir).unwrap();
@@ -731,7 +731,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
     assert!(matches!(&other, Some(StatusReply::RejectedUnmatchedCompletion { field, .. }) if field == "final_primary"), "a handoff naming another birth is refused by name: {other:?}");
     assert_eq!(completions, 1, "the replay recorded no second completion receipt");
     assert_eq!(indexed, Some((build_id, 1, outer.clone())), "the completion index names the mesh.delete for the final birth");
-    let all = proof.unwrap_or_else(|e| panic!("the final birth's own exited verdict completes the set: {e}"));
+    let all = left_manifest.unwrap_or_else(|e| panic!("the final birth's own exited verdict completes the set: {e}"));
     assert_eq!(first_mismatch(&all, &all.roster, &me, true), None, "MeshLeft covers every accepted birth, the final primary included");
     assert_eq!(all.receipts.iter().map(|r| (r.node_id.clone(), r.incarnation_id.clone())).collect::<BTreeSet<_>>(), BTreeSet::from([&failing, &exiting, &other_admin, &final_admin].map(|n| (n.node_id.to_string(), n.incarnation_id.as_ref().unwrap().to_string()))));
     assert!(recycled.as_ref().is_err_and(|e| e.starts_with("final_runtime")), "a receipt of another runtime proves nothing: {recycled:?}");
@@ -833,7 +833,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
 
 
 /// The exact Exited receipt the provider's inspection of `b`'s runtime `runtime` proves.
-fn exited(b: &RosterBirth, runtime: &RuntimeProof) -> TerminalReceipt {
+fn exited(b: &RosterBirth, runtime: &RuntimeIdentity) -> TerminalReceipt {
     TerminalReceipt { node: b.node.clone(), node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: Some(137) , verdict: None, data_dir: None }
 }
 
@@ -865,7 +865,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
     *fleet.blind_once.lock().unwrap() = handles[&failing.node_id].pid;
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
-    let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeProof::of(&handles[&other_admin.node_id].fact().unwrap()));
+    let (lost_runtime, survivor_runtime) = (RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()));
     let view = View::default();
     let calls: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
     let amendment = RosterAmended { predecessor: lost.clone(), final_primary: survivor.clone(), final_runtime: survivor_runtime.clone() };
@@ -958,7 +958,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         let fp_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &fp_template, timeouts: Timeouts::default() };
         let terminal = fp_pipeline.delete_node(&rdm_admin::deployment::pipeline::DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(last).node_id), build_id: delete_build, attempt: 1, node: last, handle: handles[&other_admin.node_id].clone(), unreached: false }).await.expect("the amended primary's node.delete proves its exit");
         let steps = builds.read_build(&build_id).await.unwrap().steps;
-        let mesh_left = completion_of(&steps, &outer).expect("a completion is recorded").map_err(|e| e.to_string()).and_then(|c| mesh_left_proof(&c, &terminal));
+        let mesh_left = completion_of(&steps, &outer).expect("a completion is recorded").map_err(|e| e.to_string()).and_then(|c| mesh_left_manifest(&c, &terminal));
         (applied, replayed, second_amendment, admitted, verdict, stale, (owner_resume(&steps, &outer), mesh_left), steps, trace_id)
     });
     let (applied, replayed, second_amendment, admitted, verdict, stale, (resume, mesh_left), steps, trace_id) = out;
@@ -1023,7 +1023,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_neither_run_nor_publ
     *fleet.blind_once.lock().unwrap() = handles[&failing.node_id].pid;
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
-    let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeProof::of(&handles[&other_admin.node_id].fact().unwrap()));
+    let (lost_runtime, survivor_runtime) = (RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()));
     let view = View::default();
     let calls: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
     // Each primary's own publications: the lost primary's never reach the amended one.
@@ -1146,9 +1146,9 @@ fn an_unproven_silent_primary_refuses_the_resume_and_no_amendment_is_recorded() 
     let records = vec![failing.clone(), exiting.clone(), other_admin.clone(), final_admin.clone()];
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
-    let lost_runtime = RuntimeProof::of(&runtime_handles(std::slice::from_ref(&final_admin), 45_000)[&final_admin.node_id].fact().unwrap());
-    let recycled = RuntimeProof::of(&runtime_handles(std::slice::from_ref(&final_admin), 45_001)[&final_admin.node_id].fact().unwrap());
-    let amendment = RosterAmended { predecessor: lost.clone(), final_primary: survivor.clone(), final_runtime: RuntimeProof::of(&runtime_handles(std::slice::from_ref(&other_admin), 45_002)[&other_admin.node_id].fact().unwrap()) };
+    let lost_runtime = RuntimeIdentity::of(&runtime_handles(std::slice::from_ref(&final_admin), 45_000)[&final_admin.node_id].fact().unwrap());
+    let recycled = RuntimeIdentity::of(&runtime_handles(std::slice::from_ref(&final_admin), 45_001)[&final_admin.node_id].fact().unwrap());
+    let amendment = RosterAmended { predecessor: lost.clone(), final_primary: survivor.clone(), final_runtime: RuntimeIdentity::of(&runtime_handles(std::slice::from_ref(&other_admin), 45_002)[&other_admin.node_id].fact().unwrap()) };
     let (unproven, recycled_exit, steps, trace_id) = cap.run(async {
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
@@ -1203,7 +1203,7 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
     let mut runtime_nodes = records.clone();
     runtime_nodes.push(fresh.clone());
     let handles = runtime_handles(&runtime_nodes, 46_000);
-    let runtime = |node: &Node| RuntimeProof::of(&handles[&node.node_id].fact().unwrap());
+    let runtime = |node: &Node| RuntimeIdentity::of(&handles[&node.node_id].fact().unwrap());
     let (first, second, third) = (birth(&final_admin), birth(&other_admin), birth(&fresh));
     let a1 = RosterAmended { predecessor: first.clone(), final_primary: second.clone(), final_runtime: runtime(&other_admin) };
     let a2 = RosterAmended { predecessor: second.clone(), final_primary: third.clone(), final_runtime: runtime(&fresh) };
@@ -1276,7 +1276,7 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
     let handles = runtime_handles(&records, 46_000);
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
-    let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeProof::of(&handles[&other_admin.node_id].fact().unwrap()));
+    let (lost_runtime, survivor_runtime) = (RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()));
     let ran: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let (out, trace_id) = cap.run(async {
         let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
@@ -1366,7 +1366,7 @@ fn own_amendment_without_the_delete(case: &str, keep_of_lost_delete: &[&str]) {
     let handles = runtime_handles(&records, 47_000);
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
-    let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeProof::of(&handles[&other_admin.node_id].fact().unwrap()));
+    let (lost_runtime, survivor_runtime) = (RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()));
     let ran: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let (out, read_owner, trace_id) = cap.run(async {
         let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
@@ -1434,7 +1434,7 @@ fn the_fabric_primary_reads_a_lost_primarys_runtime_from_its_durable_runtime_row
     let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.to_string())).collect(), ..Default::default() };
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
-    let (lost_runtime, survivor_runtime) = (RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeProof::of(&handles[&other_admin.node_id].fact().unwrap()));
+    let (lost_runtime, survivor_runtime) = (RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()), RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()));
     let lost_node = &final_admin;
     let row = rdm_admin::storage::RuntimeRow { kind: lost_node.kind, mesh: lost_node.mesh.clone(), node_id: lost_node.node_id.clone(), name: lost_node.name.clone(), incarnation_id: lost_node.incarnation_id.clone().unwrap(), runtime: handles[&final_admin.node_id].fact().unwrap(), data_dir: None };
     let (without_row, with_row, before, after, steps_after, outer, trace_id) = cap.run(async {
@@ -1498,7 +1498,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
     let records = vec![final_admin.clone(), exiting.clone(), failing.clone(), new_admin.clone()];
     let handles = runtime_handles(&records, 48_000);
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
-    let runtime = |node_id: &NodeId| RuntimeProof::of(&handles[node_id].fact().unwrap());
+    let runtime = |node_id: &NodeId| RuntimeIdentity::of(&handles[node_id].fact().unwrap());
     let (lost, created) = (birth(&final_admin), birth(&new_admin));
     let admitted_births: Vec<Node> = records.iter().filter(|n| n.node_id != new_admin.node_id).cloned().collect();
     // The name: skip occupied pairs and reserved predecessor pairs, without decoding names.
@@ -1613,7 +1613,7 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_topology_
     assert_eq!(worked.iter().find(|n| n.node_id == failing.node_id), Some(&held_stopped), "the stopped roster birth is worked from the record its topology view holds: {worked:?}");
     assert_eq!(worked.len(), 3, "every roster birth has its record: {worked:?}");
 
-    let runtime = RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap());
+    let runtime = RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap());
     let manifest = cap.run(async {
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();
@@ -1626,7 +1626,7 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_topology_
         // The leave's records, under the cell's capture: the held record is named as it is taken.
         let worked = roster_records(&view, &roster, |b| (b.node_id == failing.node_id.as_str()).then(|| held_stopped.clone()));
         members_exited(&builds, &key, final_admin.node_id.as_str(), &roster, &me, runtime.clone(), &worked, &[], |n: Node| {
-            let runtime = RuntimeProof::of(&handles[&n.node_id].fact().unwrap());
+            let runtime = RuntimeIdentity::of(&handles[&n.node_id].fact().unwrap());
             async move { Ok(exited(&RosterBirth::of(&n).unwrap(), &runtime)) }
         })
         .await
@@ -1662,7 +1662,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
     let storage = Arc::new(MemoryNodesStorage::default());
     let me_id = created.node_id.clone();
     let rows = NodeRows::new(me.node.clone(), me_id.clone(), Arc::new(RwLock::new(writer_view(&records, Some(&me_id), None))), storage.clone());
-    let runtime = RuntimeProof::of(&handles[&created.node_id].fact().unwrap());
+    let runtime = RuntimeIdentity::of(&handles[&created.node_id].fact().unwrap());
     let ran: Mutex<Vec<Node>> = Mutex::new(Vec::new());
     let (manifest, trace_id) = cap.run(async {
         // Every member's row as its create left it. The created admin's writer holds the rows of the
@@ -1689,7 +1689,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
         // from the record it was handed, then the provider's exact Exited is its receipt.
         let manifest = members_exited(&builds, &key, created.node_id.as_str(), &roster, &me, runtime.clone(), &records, &[], |n: Node| {
             ran.lock().unwrap().push(n.clone());
-            let (runtime, rows, operation) = (RuntimeProof::of(&handles[&n.node_id].fact().unwrap()), &rows, rdm_core::OperationId::node("node.delete", &n.node_id));
+            let (runtime, rows, operation) = (RuntimeIdentity::of(&handles[&n.node_id].fact().unwrap()), &rows, rdm_core::OperationId::node("node.delete", &n.node_id));
             async move {
                 rows.deleted(&n, &operation).await.map_err(|e| e.to_string())?;
                 Ok(exited(&RosterBirth::of(&n).unwrap(), &runtime))
@@ -1729,7 +1729,7 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
     let records = vec![final_admin.clone(), exiting.clone()];
     let handles = runtime_handles(&records, 49_000);
     let me = RosterBirth::of(&final_admin).unwrap();
-    let my_runtime = RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap());
+    let my_runtime = RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap());
     let (roster, held, trace_id) = cap.run(async {
         let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
         let build_id = BuildId::mint();
@@ -1778,7 +1778,7 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
     let handles = runtime_handles(&records, 50_000);
     let roster = live_roster(&records).unwrap();
     let me = RosterBirth::of(&final_admin).unwrap();
-    let admitted = Admitted { roster: roster.clone(), final_primary: me.clone(), final_runtime: RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap()), amendments: Vec::new() };
+    let admitted = Admitted { roster: roster.clone(), final_primary: me.clone(), final_runtime: RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()), amendments: Vec::new() };
     let mesh_id = MeshId::mint();
     let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint(), attempt: 1, operation: operation(&mesh_id) };
     let reference = manifest_reference(key.build_id.as_str(), 1, &key.operation, false);
@@ -1931,7 +1931,7 @@ fn a_delete_cut_after_its_terminate_runtime_receipt_is_finished_by_the_resumed_a
     let handles = runtime_handles(&records, 44_000);
     let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.to_string())).collect(), ..Default::default() };
     let me = RosterBirth::of(&final_admin).unwrap();
-    let final_runtime = RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap());
+    let final_runtime = RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap());
     let view = View::default();
     // Each mesh-primary's own publications: what attempt 1's primary publishes is never heard by
     // attempt 2's (it is lost before its frames land), so each holds its own.
@@ -2045,7 +2045,7 @@ fn open_leave(mesh_delete_view: &MeshDeleteView, records: &[Node], final_node: &
     let final_primary = RosterBirth::of(final_node).unwrap();
     let mesh_id = MeshId::mint();
     let key = MeshDeleteKey { operation: operation(&mesh_id), mesh_id, build_id: BuildId::mint(), attempt: 1 };
-    let admitted = Admitted { roster, final_primary: final_primary.clone(), final_runtime: RuntimeProof::of(&runtime_handles(std::slice::from_ref(final_node), 46_000)[&final_node.node_id].fact().unwrap()), amendments: Vec::new() };
+    let admitted = Admitted { roster, final_primary: final_primary.clone(), final_runtime: RuntimeIdentity::of(&runtime_handles(std::slice::from_ref(final_node), 46_000)[&final_node.node_id].fact().unwrap()), amendments: Vec::new() };
     let handoff = mesh_delete_view.open(key.clone(), admitted);
     (key, handoff, final_primary)
 }
@@ -2075,8 +2075,8 @@ fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
         let root = tracing::info_span!("cell.owner-wait-exited-verdict", operation = %key.operation.action, operation_subject = ?key.operation.subject, operation_step = ?key.operation.recipe_step, operation_occurrence = ?key.operation.occurrence);
         let trace_id = trace_id(&root);
         let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
-        let proven: Arc<Mutex<Option<String>>> = Arc::default();
-        let held = proven.clone();
+        let exit_read: Arc<Mutex<Option<String>>> = Arc::default();
+        let held = exit_read.clone();
         let (k, primary) = (key.clone(), format!("{} {}", final_primary.node_id, final_primary.incarnation_id));
         let wait = tokio::spawn(tracing::Instrument::instrument(
             async move { await_mesh_deleted(&k, &primary, handoff, view_rx, move || std::future::ready(held.lock().unwrap().clone()), MESH_DELETED_WAIT).await },
@@ -2090,7 +2090,7 @@ fn the_owners_wait_ends_when_the_final_primary_is_lost_never_on_a_timer() {
         let open_after_silence = !wait.is_finished();
         // The owner's view holds it unheard, its runtime read exited.
         let began = tokio::time::Instant::now();
-        *proven.lock().unwrap() = Some(format!("the final primary is unheard; its runtime reads exited: {} {}", final_primary.node_id, final_primary.incarnation_id));
+        *exit_read.lock().unwrap() = Some(format!("the final primary is unheard; its runtime reads exited: {} {}", final_primary.node_id, final_primary.incarnation_id));
         view_tx.send_modify(|t| *t += 1);
         let end = wait.await.unwrap();
         (end, open_after_silence, began.elapsed(), trace_id)
@@ -2162,8 +2162,8 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
     let (lost_runtime, survivor_runtime) = (
-        RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap()),
-        RuntimeProof::of(&handles[&other_admin.node_id].fact().unwrap()),
+        RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()),
+        RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()),
     );
     let view = View::default();
     let calls: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
@@ -2300,8 +2300,8 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let mesh_delete_view = MeshDeleteView::default();
         let handoff_rx = mesh_delete_view.open(key(1), initial_admitted);
         let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
-        let proven: Arc<Mutex<Option<String>>> = Arc::default();
-        let held = proven.clone();
+        let exit_read: Arc<Mutex<Option<String>>> = Arc::default();
+        let held = exit_read.clone();
         let (k1, primary_label) = (key(1), format!("{} {}", lost.node_id, lost.incarnation_id));
         let wait_task = tokio::spawn(tracing::Instrument::instrument(
             async move {
@@ -2323,7 +2323,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         }
         let open_on_silence = !wait_task.is_finished();
         let began_wait = tokio::time::Instant::now();
-        *proven.lock().unwrap() = Some(format!(
+        *exit_read.lock().unwrap() = Some(format!(
             "the final primary is unheard; its runtime reads exited: {} {}",
             lost.node_id, lost.incarnation_id
         ));
@@ -2422,7 +2422,7 @@ fn mesh_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let mesh_left = completion_of(&steps_final, &outer)
             .unwrap()
             .map_err(|e| e.to_string())
-            .and_then(|c| mesh_left_proof(&c, &terminal));
+            .and_then(|c| mesh_left_manifest(&c, &terminal));
         let replay_handoff = replayed_handoff(&steps_final, &key(2), &records[2].node_id, &survivor.incarnation_id);
         (
             first,
@@ -2534,8 +2534,8 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
     let birth = |n: &Node| RosterBirth::of(n).unwrap();
     let (lost, survivor) = (birth(&final_admin), birth(&other_admin));
     let (lost_runtime, survivor_runtime) = (
-        RuntimeProof::of(&handles[&final_admin.node_id].fact().unwrap()),
-        RuntimeProof::of(&handles[&other_admin.node_id].fact().unwrap()),
+        RuntimeIdentity::of(&handles[&final_admin.node_id].fact().unwrap()),
+        RuntimeIdentity::of(&handles[&other_admin.node_id].fact().unwrap()),
     );
     let lost_node = records.iter().find(|n| n.node_id == final_admin.node_id).unwrap().clone();
     let survivor_node = records.iter().find(|n| n.node_id == other_admin.node_id).unwrap().clone();
@@ -2754,7 +2754,7 @@ fn lost_primary_verdict_is_recorded_as_roster_receipt_reached_refuses_resume_and
             })
             .await
             .expect("the mesh-primary's separate node.delete completes");
-        let all = mesh_left_proof(&validated, &terminal).expect("MeshLeft proof covers all 4 roster births");
+        let all = mesh_left_manifest(&validated, &terminal).expect("MeshLeft proof covers all 4 roster births");
         mesh_left_rows(Some(&rows), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key(2), "mesh2", &all.receipts)
             .await
             .expect("mesh row Dead is written");

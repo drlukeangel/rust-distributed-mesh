@@ -45,7 +45,7 @@ pub fn probe_root_span_or_named_loss(evidence: &std::path::Path, stderr: &str) -
         .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rdm-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl")))
         .collect();
     let spans: Vec<serde_json::Value> = files.iter().flat_map(|p| std::fs::read_to_string(p).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect::<Vec<_>>()).collect();
-    if let Some(root) = spans.iter().find(|s| s["name"] == "rdm.node_rpc.proof_store.resolve.via-probe") {
+    if let Some(root) = spans.iter().find(|s| s["name"] == "rdm.node_rpc.evidence_store.resolve.via-probe") {
         return Some(root.clone());
     }
     match loss_named_whole(stderr, spans.len()) {
@@ -89,7 +89,7 @@ mod probe_root_span_tests {
     #[test]
     fn root_span_in_the_file_is_returned() {
         let d = empty_dir("root");
-        std::fs::write(d.join("rdm-rpc-probe.1.spans.jsonl"), "{\"name\":\"rdm.node_rpc.proof_store.resolve.via-probe\",\"trace_id\":\"t\"}\n").unwrap();
+        std::fs::write(d.join("rdm-rpc-probe.1.spans.jsonl"), "{\"name\":\"rdm.node_rpc.evidence_store.resolve.via-probe\",\"trace_id\":\"t\"}\n").unwrap();
         assert_eq!(read(&d, "").unwrap()["trace_id"], "t");
         let _ = std::fs::remove_dir_all(&d);
     }

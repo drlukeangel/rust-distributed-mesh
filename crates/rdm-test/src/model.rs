@@ -4,7 +4,7 @@
 //! rule.
 //!
 //! The model knows node CLASSES and their CAPABILITIES (`node_admin` holds roles and executes
-//! Builds; `rpc_node` serves the proof store) and the provider's capabilities (a network fault is
+//! Builds; `rpc_node` serves the testkit store) and the provider's capabilities (a network fault is
 //! a container-provider capability). It knows no application role and no authority: who holds a
 //! role after a hand-off is decided by the live election, never by the model.
 //!
@@ -53,8 +53,8 @@ impl NodeClass {
     pub fn can_be_primary(self) -> bool {
         self == NodeClass::NodeAdmin
     }
-    /// A node of this class serves the proof store (0x70): every class but the node-admin.
-    pub fn serves_proof(self) -> bool {
+    /// A node of this class serves the testkit store (0x70): every class but the node-admin.
+    pub fn serves_testkit_store(self) -> bool {
         self != NodeClass::NodeAdmin
     }
 }
@@ -94,7 +94,7 @@ pub struct ModelMesh {
 }
 
 /// A legal action. Topology actions are Builds the node-admin rectifier executes; `Unheard` and
-/// `Heal` are provider network faults; `Proof` is one typed proof-store operation.
+/// `Heal` are provider network faults; `Store` is one typed testkit-store operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -119,8 +119,8 @@ pub enum Action {
     /// The provider holds the node's runtime in place (alive and silent) until the view marks it
     /// unheard, then releases it: the same birth comes back.
     Wedge { node: PathName },
-    /// One proof-store operation on an rpc node.
-    Proof(Operation),
+    /// One testkit-store operation on an rpc node.
+    Store(Operation),
 }
 
 impl fmt::Display for Action {
@@ -148,7 +148,7 @@ impl fmt::Display for Illegal {
 
 /// The proof keys the generator writes (a small space, so a key is written, overwritten and
 /// deleted in one run).
-pub const PROOF_KEYS: u64 = 8;
+pub const STORE_KEYS: u64 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Model {
@@ -268,16 +268,16 @@ impl Model {
                 Some(m) if !m.unheard => return Err(illegal(step, action, "mesh-unheard", format!("{mesh} is heard; there is nothing to heal"))),
                 Some(_) => {}
             },
-            Action::Proof(op) => {
+            Action::Store(op) => {
                 let (target, key) = match op {
                     Operation::Put { target, key, .. } | Operation::Cas { target, key, .. } | Operation::Delete { target, key } => (target, *key),
                 };
                 let (_, class) = self.live_node(step, action, target)?;
-                if !class.serves_proof() {
-                    return Err(illegal(step, action, "target-serves-proof", format!("{target:?} is a {class:?}; it serves no proof store")));
+                if !class.serves_testkit_store() {
+                    return Err(illegal(step, action, "target-serves-store", format!("{target:?} is a {class:?}; it serves no testkit store")));
                 }
-                if key >= PROOF_KEYS {
-                    return Err(illegal(step, action, "key-in-space", format!("key {key} is outside 0..{PROOF_KEYS}")));
+                if key >= STORE_KEYS {
+                    return Err(illegal(step, action, "key-in-space", format!("key {key} is outside 0..{STORE_KEYS}")));
                 }
             }
         }
@@ -307,7 +307,7 @@ impl Model {
                 }
             }
             // A restart (node.stop then node.start) keeps the birth: the same NodeId and incarnation (node-stop.md "Kept").
-            Action::Restart { .. } | Action::HandOff { .. } | Action::Proof(_) | Action::Kill { .. } | Action::Wedge { .. } => {}
+            Action::Restart { .. } | Action::HandOff { .. } | Action::Store(_) | Action::Kill { .. } | Action::Wedge { .. } => {}
             Action::Unheard { mesh } => self.meshes.get_mut(mesh).expect("checked").unheard = true,
             Action::Heal { mesh } => self.meshes.get_mut(mesh).expect("checked").unheard = false,
         }
@@ -334,10 +334,10 @@ impl Model {
             out.push(Action::Unheard { mesh: mesh.clone() });
             out.push(Action::Heal { mesh: mesh.clone() });
             for (node, n) in &m.nodes {
-                if n.class.serves_proof() {
-                    out.push(Action::Proof(Operation::Put { target: node.clone(), key: 0, value: String::new() }));
-                    out.push(Action::Proof(Operation::Cas { target: node.clone(), key: 0, expected: String::new(), value: String::new() }));
-                    out.push(Action::Proof(Operation::Delete { target: node.clone(), key: 0 }));
+                if n.class.serves_testkit_store() {
+                    out.push(Action::Store(Operation::Put { target: node.clone(), key: 0, value: String::new() }));
+                    out.push(Action::Store(Operation::Cas { target: node.clone(), key: 0, expected: String::new(), value: String::new() }));
+                    out.push(Action::Store(Operation::Delete { target: node.clone(), key: 0 }));
                 }
             }
         }
@@ -383,8 +383,8 @@ pub fn generate_among(seed: u64, initial: &Model, len: usize, allow: impl Fn(&Ac
             break;
         }
         let mut action = cands[rng.below(cands.len() as u64) as usize].clone();
-        if let Action::Proof(op) = &mut action {
-            let key = rng.below(PROOF_KEYS);
+        if let Action::Store(op) = &mut action {
+            let key = rng.below(STORE_KEYS);
             let value = format!("v{}", rng.below(1 << 16));
             match op {
                 Operation::Put { key: k, value: v, .. } => (*k, *v) = (key, value),

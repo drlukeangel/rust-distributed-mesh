@@ -1,6 +1,6 @@
 //! Functional: the probe's root span is exported on every run, whatever the call did.
 //!
-//! The probe's `rdm.node_rpc.proof_store.resolve.via-probe` span is the root of the one trace of
+//! The probe's `rdm.node_rpc.testkit_store.resolve.via-probe` span is the root of the one trace of
 //! one invocation; a scenario reads the call's trace from it. A call that dials a live node starts
 //! connection work under the root; that work must not keep the root open past the process's exit.
 
@@ -9,7 +9,7 @@ use iroh::SecretKey;
 use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_transport::{ServedBirth, ServerBuilder};
-use rdm_test::proof_store::{self, FileProofStore};
+use rdm_test::testkit_store::{self, FileTestkitStore};
 use crate::common::admin_view::{self, node};
 use std::sync::Arc;
 use crate::common::named_loss;
@@ -52,7 +52,7 @@ fn failure_context(out: &std::process::Output, evidence: &std::path::Path, run: 
     format!("{run}: status={:?}; trace={traces:?}; evidence_dir={}; listing={listing:#?}; stdout={}; stderr={}", out.status, evidence.display(), String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
-/// CONTRACT: forty probe invocations (twenty direct, twenty carried through a gateway), each a real Get against a live proof-store node (the call
+/// CONTRACT: forty probe invocations (twenty direct, twenty carried through a gateway), each a real Get against a live testkit-store node (the call
 /// dials, opens a stream, reads a reply), each leave their `via-probe` root span in their own span
 /// file, in one trace with the call's spans, or end their exit's evidence flush at its bound with the
 /// loss named whole (i146 Q42; Luke 2026-10-17: the bound is the contract, a named, bounded loss);
@@ -88,9 +88,9 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             declared: Default::default(),
         };
-        let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
-        let server = proof_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
-            .carry::<rdm_test::proof_store::ProofStore>()
+        let store = Arc::new(FileTestkitStore::open(&launch.data_dir).unwrap());
+        let server = testkit_store::serve(ServerBuilder::new(), store, &launch, &rdm_test::held_name::HeldName::of_birth(launch.name.clone()))
+            .carry::<rdm_test::testkit_store::TestkitStore>()
             .build(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();
         let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -104,7 +104,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
         carrier_resolver.insert(target_record.clone());
         let carrier_client = Arc::new(rdm_transport::NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), carrier_resolver));
         let carrier_server = ServerBuilder::new()
-            .carry::<rdm_test::proof_store::ProofStore>()
+            .carry::<rdm_test::testkit_store::TestkitStore>()
             .serve_forward(carrier_client)
             .build(ServedBirth { node_id: carrier_id.to_string(), incarnation: carrier_inc.to_string() })
             .unwrap();
@@ -153,7 +153,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
                 Some(file) => std::fs::read_to_string(file).unwrap_or_else(|e| panic!("the span file could not be read: {e}; {}", context())),
                 None => String::new(),
             };
-            if !spans.contains("rdm.node_rpc.proof_store.resolve.via-probe") {
+            if !spans.contains("rdm.node_rpc.evidence_store.resolve.via-probe") {
                 let written = spans.lines().filter(|l| !l.trim().is_empty()).count();
                 match named_loss(&String::from_utf8_lossy(&out.stderr)) {
                     Some((unwritten, handed)) if unwritten > 0 && written + unwritten >= handed => {
@@ -187,7 +187,7 @@ fn a_probe_that_refuses_its_arguments_exits_two_and_keeps_its_refusal_span() {
     let reason = v["reason"].as_str().unwrap_or_else(|| panic!("no refusal reason: {}", context())).to_string();
     assert!(reason.contains("--no-such-flag"), "the refusal names the argument: {reason}; {}", context());
     let spans: String = std::fs::read_dir(&evidence).unwrap_or_else(|e| panic!("evidence read failed: {e}; {}", context())).flatten().filter(|e| e.file_name().to_string_lossy().starts_with("rdm-rpc-probe.")).map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
-    if spans.contains("rdm.node_rpc.proof_store.reject.via-probe-arguments") {
+    if spans.contains("rdm.node_rpc.evidence_store.reject.via-probe-arguments") {
         assert!(spans.contains("--no-such-flag"), "the refusal span carries its reason: {spans:?}; {}", context());
     } else {
         let written = spans.lines().filter(|l| !l.trim().is_empty()).count();

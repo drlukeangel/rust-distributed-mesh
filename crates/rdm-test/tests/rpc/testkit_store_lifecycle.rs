@@ -3,7 +3,7 @@
 //! cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans land under it, feature `i143-2775`).
 //!
-//! The testkit proof store (op 0x70) on a real estate, driven only through the `node` objects and
+//! The testkit testkit store (op 0x70) on a real estate, driven only through the `node` objects and
 //! `rdm-rpc-probe` over real Node RPC: a restart is a Build the rectifier executes and keeps the
 //! node.id and the incarnation (node-restart.md: stop then start on the stopped process); the new
 //! birth is node recovery (node-recovery.md), the mesh-primary's answer to the runtime's death (an
@@ -22,7 +22,7 @@ fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "i143-2775".into(),
-        subfeature: "proof-store".into(),
+        subfeature: "evidence-store".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: test.into(),
@@ -73,7 +73,7 @@ fn birth(n: &Value) -> Value {
     json!({"node": n["name"], "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "mesh": n["mesh"]})
 }
 
-/// CONTRACT (#2775): a restart of the logical node holding the proof store, a `node.restart` call to the
+/// CONTRACT (#2775): a restart of the logical node holding the testkit store, a `node.restart` call to the
 /// fabric-primary (Node RPC -> reconcile -> node.update.via-build), is stop then start on the stopped
 /// process: it keeps its NodeId, incarnation and data dir and serves the value written before it, the
 /// Put and the Get after the restart each naming the executing birth exactly as the node-admin view
@@ -82,8 +82,8 @@ fn birth(n: &Value) -> Value {
 /// NOT happen: the restarted node answering absent, or the restart reaching the node other than
 /// through the Build it was accepted as.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn proof_holder_restarts_preserves_same_node_store() {
-    let cell = "proof_holder_restarts_preserves_same_node_store";
+async fn testkit_store_node_restarts_preserves_same_node_store() {
+    let cell = "testkit_store_node_restarts_preserves_same_node_store";
     let dir = acceptance_dir(cell);
     let (mut estate, _) = estate(cell).await;
     let path = format!("path:{}", serde_json::to_string(&node()).unwrap());
@@ -110,14 +110,14 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let kept = estate.probe(&["get", "--target", &exact, "--key", "41"]);
     landed_on(&kept, &restarted, "get");
     assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the restarted node serves the old value: {kept}");
-    let store_file = std::fs::read_dir(&restarted_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().contains("proof"))).map(|p| p.display().to_string());
+    let store_file = std::fs::read_dir(&restarted_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().contains("testkit-store"))).map(|p| p.display().to_string());
     let receipts = estate.carrier().await.build(&restart_attempt.build_id).await.expect("stop receipts");
     let stop_operation = receipts.steps.iter().find(|r| r.operation.action == "node.stop" && r.operation.subject == Some(rdm_core::OperationSubject::Node(s(&first["node_id"]).parse().unwrap()))).expect("stop operation").operation.clone();
     let primary_operation = rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::NodeTypePrimary(rdm_core::NodeKind::RpcNode), &stop_operation);
     estate.stop().await;
 
     let spans = estate.spans();
-    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
     let at = |inc: &Value, op: &str, outcome: &str| served.iter().find(|s| s["attributes"]["node_id"] == first["node_id"] && s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).cloned().cloned();
     let put_span = at(&first["incarnation_id"], "put", "stored").expect("the first birth served the put");
     let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
@@ -186,8 +186,8 @@ async fn proof_holder_restarts_preserves_same_node_store() {
 /// seen. What must NOT happen: the replacement starting over another data dir, `exact:<old>`
 /// reaching the replacement, or any handler success at the old birth after its replacement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() {
-    let cell = "proof_replacement_inherits_the_data_dir_exact_old_never_follows_path";
+async fn testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path() {
+    let cell = "testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows_path";
     let dir = acceptance_dir(cell);
     let (mut estate, build) = estate(cell).await;
     let path = format!("path:{}", serde_json::to_string(&node()).unwrap());
@@ -245,12 +245,12 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
         })
         .cloned()
         .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting and creating the selected node, and nothing else, in the recovery's trace: {reconciles:?}"));
-    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
     // The old birth's own serve span of the put is not evidence here: the cell SIGKILLs that process,
     // and spans still queued in its batch exporter die with it (rafka-mesh-telemetry init_telemetry:
     // a batch provider). The put's reply named the old birth as executor (`landed_on` above); the
     // caller's span is the put's trace.
-    let stored = named(&spans, "rdm.node_rpc.proof_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put" && s["attributes"]["target"] == path.as_str()).cloned().expect("the probe's put call span");
+    let stored = named(&spans, "rdm.node_rpc.evidence_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put" && s["attributes"]["target"] == path.as_str()).cloned().expect("the probe's put call span");
     let inherited = served.iter().find(|s| s["attributes"]["node_id"] == replacement["node_id"] && s["attributes"]["op"] == "get" && s["attributes"]["outcome"] == "value").cloned().expect("the new node served the value the old birth stored");
     let replace_start = replace["start_unix_nano"].as_u64().unwrap_or(0);
     let old_after: Vec<&&Value> = served.iter().filter(|s| s["attributes"]["node_id"] == first["node_id"] && s["start_unix_nano"].as_u64().unwrap_or(0) > replace_start).collect();

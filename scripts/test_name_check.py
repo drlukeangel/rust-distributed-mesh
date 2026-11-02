@@ -45,6 +45,25 @@ class MadeUpWords(unittest.TestCase):
                 self.assertEqual(check('crates/rdm-admin/src/primary.rs', name + ' {}\n'), '')
 
 
+class ProofWords(unittest.TestCase):
+    """i152 s7: the provider's inspect answer is the one mechanism, so a new name is never a proof; the
+    investigation's `unproven` verdict, a wire and hook value, is its own whole word and stays (D46)."""
+
+    def test_a_new_definition_named_by_a_proof_word_is_refused(self):
+        for name in ['fn proof_x', 'struct RuntimeProof', 'enum StopProof', 'fn proofs', 'fn prove_exit', 'fn proves_gone',
+                     'fn proved_exited', 'const PROVEN: u8 = 0;', 'fn proving_ground']:
+            with self.subTest(name=name):
+                self.assertIn('retired word', check('crates/rdm-admin/src/inspect.rs', name + ' {}\n'))
+
+    def test_a_new_file_named_by_a_proof_word_is_refused(self):
+        self.assertIn('retired word', check('crates/rdm-test/src/proof_x.rs', 'fn get() {}\n'))
+
+    def test_unproven_and_provenance_are_not_refused(self):
+        for name in ['fn unproven', 'struct Provenance', 'fn provenance']:
+            with self.subTest(name=name):
+                self.assertEqual(check('crates/rdm-admin/src/inspect.rs', name + ' {}\n'), '')
+
+
 class RuntimeAuthCodes(unittest.TestCase):
     def test_permission_denied_and_unauthenticated_are_never_constructed(self):
         for path in ['crates/rdm-core/src/handler.rs', 'crates/rdm-test/src/handler.rs', 'crates/rdm-core/tests/handler.rs', 'tests/handler.rs']:

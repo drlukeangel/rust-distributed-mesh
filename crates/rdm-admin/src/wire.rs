@@ -867,7 +867,7 @@ mod tests {
         assert!(text.contains(&format!("unknown field `{EXTRA}`")), "the refusal names the unknown field: {text}");
     }
 
-    fn runtime_proof() -> Value {
+    fn runtime_identity() -> Value {
         json!({ "deployment_id": "d1", "provider": "process", "control_domain_fingerprint": "cd", "locator_kind": "pid", "locator_fingerprint": "lf" })
     }
 
@@ -876,7 +876,7 @@ mod tests {
     }
 
     fn terminal() -> Value {
-        json!({ "node": PathName::new("mesh1.rpc", "1").unwrap(), "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_proof(), "exit_code": 0 })
+        json!({ "node": PathName::new("mesh1.rpc", "1").unwrap(), "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_identity(), "exit_code": 0 })
     }
 
     #[test]
@@ -977,12 +977,12 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_proof_inside_a_terminal_output_with_an_unknown_field_is_refused_by_name() {
+    fn a_runtime_identity_inside_a_terminal_output_with_an_unknown_field_is_refused_by_name() {
         unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.delete"), DeleteStep::TerminateRuntime.name(), terminal(), "/runtime");
     }
 
     fn exit_manifest() -> Value {
-        json!({ "mesh_id": "meshd0000001", "roster": [roster_birth(PathName::new("mesh1.admin", "1").unwrap())], "final_primary": roster_birth(PathName::new("mesh1.admin", "1").unwrap()), "final_runtime": runtime_proof(), "receipts": [terminal()] })
+        json!({ "mesh_id": "meshd0000001", "roster": [roster_birth(PathName::new("mesh1.admin", "1").unwrap())], "final_primary": roster_birth(PathName::new("mesh1.admin", "1").unwrap()), "final_runtime": runtime_identity(), "receipts": [terminal()] })
     }
 
     #[test]
@@ -996,7 +996,7 @@ mod tests {
 
     #[test]
     fn a_roster_amended_output_with_an_unknown_field_is_refused_by_name() {
-        let valid = json!({ "predecessor": roster_birth(PathName::new("mesh1.admin", "1").unwrap()), "final_primary": roster_birth(PathName::new("mesh1.admin", "2").unwrap()), "final_runtime": runtime_proof() });
+        let valid = json!({ "predecessor": roster_birth(PathName::new("mesh1.admin", "1").unwrap()), "final_primary": roster_birth(PathName::new("mesh1.admin", "2").unwrap()), "final_runtime": runtime_identity() });
         unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), crate::mesh_delete::STEP_ROSTER_AMENDED, valid.clone(), "");
         unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("mesh.delete"), crate::mesh_delete::STEP_ROSTER_AMENDED, valid, "/final_runtime");
     }

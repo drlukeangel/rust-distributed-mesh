@@ -142,7 +142,7 @@ impl rdm_admin::build_drive::Gate for RowsGate {
 
 /// A fabric-primary's drive of the Build over `builds`: its claim door is its own log, and
 /// `dispatch` reaches the executors that are still alive.
-fn drive_env(me: &PathName, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, proofs: Arc<crate::loopback::Proofs>, told: &crate::Told) -> Arc<DriveEnv> {
+fn drive_env(me: &PathName, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, exits: Arc<crate::loopback::Exits>, told: &crate::Told) -> Arc<DriveEnv> {
     Arc::new(DriveEnv { me_mesh: "mesh1".into(),
         me: me.clone(),
         topology: topology.clone(),
@@ -165,7 +165,7 @@ fn drive_env(me: &PathName, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatc
         }),
         dispatcher: dispatch,
         gate: Arc::new(RowsGate { view: topology.clone() }),
-        departure: proofs,
+        departure: exits,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         notices: told.notices(),
         turns: rdm_admin::stop_gate::StopGate::new(),
@@ -300,9 +300,9 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let b_dispatch = crate::loopback::Loopback::new(b.builds.clone(), b.local.clone(), topology.clone(), b_runner.clone());
     // A is gone: nothing answers at its address.
     b_dispatch.lose(&a_birth.node_id);
-    let proofs = Arc::new(crate::loopback::Proofs::default());
+    let exits = Arc::new(crate::loopback::Exits::default());
     let b_told = crate::Told::default();
-    let b_env = drive_env(&PathName::new("mesh1.admin", "2").unwrap(), &b, &topology, b_dispatch.clone(), proofs.clone(), &b_told);
+    let b_env = drive_env(&PathName::new("mesh1.admin", "2").unwrap(), &b, &topology, b_dispatch.clone(), exits.clone(), &b_told);
     let b_drive = Drive::detached(build_id.clone());
     // Silence is not proof: A is unreachable, its departure is not proven, and the attempt it holds
     // is not claimed for another admin.
@@ -313,7 +313,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(b.builds.read_build(&build_id).await.unwrap().attempt, 1, "no attempt was claimed on silence");
     assert!(b_runner.ran.lock().unwrap().is_empty(), "nothing ran on silence");
     // The proof arrives: the exact runtime of A is inspected and exited.
-    proofs.exited.lock().unwrap().insert(a_birth.clone());
+    exits.exited.lock().unwrap().insert(a_birth.clone());
     assert_eq!(b_env.run(&b_drive).await, DriveEnd::Terminal);
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
@@ -354,13 +354,13 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(takeover.get("previous_executor"), Some(&format!("{:?}", Some(&a_birth))), "the takeover names the executor it follows: {takeover:?}");
     assert_eq!(takeover.get("operations"), Some(&format!("{:?}", [rdm_core::OperationId::location("node.create", &PathName::new("mesh1.admin", "1").unwrap()), rdm_core::OperationId::location("node.create", &PathName::new("mesh1.rpc", "3").unwrap())])));
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
-    let proven = all
+    let inspected = all
         .values()
-        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-departure-proven" && f.get("build_id").map(String::as_str) == Some(logged.as_str()))
+        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-executor-exited-or-os-stopped" && f.get("build_id").map(String::as_str) == Some(logged.as_str()))
         .map(|(_, f)| f)
         .collect::<Vec<_>>();
-    assert_eq!(proven.len(), 1, "the departure was proven once: {proven:?}");
-    assert_eq!(proven[0].get("executor").map(String::as_str), Some(a_birth.to_string().as_str()));
+    assert_eq!(inspected.len(), 1, "the departure was proven once: {inspected:?}");
+    assert_eq!(inspected[0].get("executor").map(String::as_str), Some(a_birth.to_string().as_str()));
     // The application's Build notices (fabric-node-hooks.md, Q256): A told it the Build started at the
     // claim of attempt 1; B's takeover (attempt 2) continues the Build in progress and sends no
     // on_build_started, and B, which recorded its Complete, sends the one on_build_ended.

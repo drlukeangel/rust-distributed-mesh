@@ -718,7 +718,7 @@ pub struct TerminalReceipt {
     /// The exact birth.
     pub incarnation_id: String,
     /// The runtime that exited, by fingerprint; `None` when the handle names no exact runtime.
-    pub runtime: Option<RuntimeProof>,
+    pub runtime: Option<RuntimeIdentity>,
     /// The exit code, when the provider's record proves one.
     pub exit_code: Option<i32>,
     /// An unreached birth's delete (node-recovery.md step 3): what the provider read of the runtime at
@@ -738,7 +738,7 @@ pub struct TerminalReceipt {
 /// An exact runtime by fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RuntimeProof {
+pub struct RuntimeIdentity {
     /// The deployment that ran the birth.
     pub deployment_id: String,
     /// The provider that ran it.
@@ -751,8 +751,8 @@ pub struct RuntimeProof {
     pub locator_fingerprint: String,
 }
 
-impl RuntimeProof {
-    /// The proof of `fact`.
+impl RuntimeIdentity {
+    /// The identity of `fact`'s runtime.
     pub fn of(fact: &RuntimeFact) -> Self {
         Self {
             deployment_id: fact.deployment_id.clone(),
@@ -1018,7 +1018,7 @@ pub(crate) enum Terminate {
 
 /// What a stop's wait step must have seen to complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StopProof {
+pub(crate) enum RequiredCompletion {
     /// Whatever the birth answered: the shutdown leg of a delete or a mesh leave member, which the
     /// provider's terminal proof judges.
     Lenient,
@@ -2103,7 +2103,7 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, req.operation.clone()).await?;
             let mut node = req.node.clone();
-            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Stop { publish_stopped: true }).await?;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, RequiredCompletion::Stopped, StopEnd::Stop { publish_stopped: true }).await?;
             // The `Complete` receipt opens the birth's stopped period: it commits the stop's
             // lifecycle op, the exact birth and the rafka-time it stopped at, which the stopped-node
             // garbage collector ages it from (node-identity-and-state.md §6.9 Age).
@@ -2326,7 +2326,7 @@ impl DeploymentPipeline<'_> {
             // The two halves of the shutdown leg are separate operations (lifecycles/node-connections-delete.md, node-stop.md):
             // node.connection.delete and its node.connections.deleted, then stop-node, its node-left reply and the provider's
             // terminal proof.
-            self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
+            self.stop_steps_with(&mut run, &mut node, handle, RequiredCompletion::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
         // An explicit delete of an unreached birth whose mesh's rows this executor does not write, read at the
         // write's instant: the lost final primary of a leaving mesh whose election named a surviving admin
@@ -2401,7 +2401,7 @@ impl DeploymentPipeline<'_> {
             };
             let op = self.step(&mut run, DeleteStep::NodeDeleting.name(), Box::pin(self.deleting_row(&node, op.clone(), false))).await?;
             self.lifecycle.deleting(&op).await;
-            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Lenient, StopEnd::Stop { publish_stopped: true }).await?;
+            self.stop_steps_with(&mut run, &mut node, &req.handle, RequiredCompletion::Lenient, StopEnd::Stop { publish_stopped: true }).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
             let op = self.step(&mut run, DeleteStep::NodeDeleted.name(), self.deleted_row(&node, op.clone(), false)).await?;
             self.lifecycle.deleted(&op).await;
@@ -2482,18 +2482,18 @@ impl DeploymentPipeline<'_> {
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
     /// connections delete), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
     /// `NodeStopped` from that matching reply, then, by `end`, the stopped process or the provider's
-    /// stop and inspection of the exact runtime, whose `Exited` alone is terminal proof. `proof` says
+    /// stop and inspection of the exact runtime, whose `Exited` alone is terminal proof. `required` says
     /// what the wait step must have seen to complete (a standalone
     /// stop fails it by name unless stop-node was admitted and the
     /// birth's `stopped` reply received).
     /// `end` says what follows: the process stops, or the provider ends it.
-    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
-        self.stop_steps_as(run, node, handle, proof, end, [DeleteStep::StopNode.name(), DeleteStep::AwaitNodeLeft.name()]).await
+    async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, required: RequiredCompletion, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
+        self.stop_steps_as(run, node, handle, required, end, [DeleteStep::StopNode.name(), DeleteStep::AwaitNodeLeft.name()]).await
     }
 
     /// [`Self::stop_steps_with`] whose two steps are receipted as `steps` (the send, the left reply):
     /// a replace stops two nodes in one operation, and each stop's receipts are its own.
-    async fn stop_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd, steps: [&'static str; 2]) -> Result<Option<TerminalReceipt>, PipelineError> {
+    async fn stop_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, required: RequiredCompletion, end: StopEnd, steps: [&'static str; 2]) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         let publish_stopped = matches!(end, StopEnd::Stop { publish_stopped: true } | StopEnd::Terminate { publish_stopped: true });
@@ -2514,7 +2514,7 @@ impl DeploymentPipeline<'_> {
                 if !admission.admitted() {
                     // A command the birth never held has no left reply to follow (node-stop.md): a
                     // standalone stop is not complete.
-                    if proof == StopProof::Stopped {
+                    if required == RequiredCompletion::Stopped {
                         return Err(StepFailure::coded(admission.code(), format!("{}: stop-node was not admitted ({admission:?}); no left reply can follow, the stop is not complete", node.node_id)));
                     }
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
@@ -2540,7 +2540,7 @@ impl DeploymentPipeline<'_> {
                         self.lifecycle.stopped(&op).await;
                     }
                 }
-                match (proof != StopProof::Lenient, &c) {
+                match (required != RequiredCompletion::Lenient, &c) {
                     (true, c) if *c != Completion::Received {} => Err(StepFailure::coded(if matches!(c, Completion::Deadline {}) { rdm_core::outcome::Code::DeadlineExceeded } else { rdm_core::outcome::Code::Unavailable }, format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.node_id))),
                     _ => Ok(c),
                 }
@@ -2576,7 +2576,7 @@ impl DeploymentPipeline<'_> {
                     node: name.clone(),
                     node_id: node.node_id.to_string(),
                     incarnation_id: node.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("path {name_path:?}, name {name_name:?} has no known birth: the receipt names no birth", name_path = &name.path, name_name = &name.name))?,
-                    runtime: handle.fact().as_ref().map(RuntimeProof::of),
+                    runtime: handle.fact().as_ref().map(RuntimeIdentity::of),
                     exit_code,
                     verdict: verdict.map(str::to_string),
                     data_dir: node.data_dir.clone(),

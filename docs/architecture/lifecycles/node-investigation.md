@@ -6,7 +6,7 @@ A primitive. Node investigation is the one function every caller uses on one exa
 one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its steps, in order:
 
 1. Read the by-destination connections index ([connections.md §3.1](../connections.md#31-declared-indexes)).
-   It names the peers to try; it never proves the node is reachable.
+   It names the peers to try; it never shows the node is reachable.
 2. [node.runtime.inspect](node-runtime-inspect.md). `exited` or `os-stopped` is the verdict; no tickle is sent.
 3. [node.tickle](node-tickle.md), direct.
 4. The same tickle via those peers. Unreached, the verdict is the inspect's answer: `running`, or `unproven` for `unavailable`.
@@ -28,7 +28,7 @@ The verdict is the one decision (Q111). Reached: the node is commanded back thro
 new node.id (Q110). Fabric recovery's backbone arm excepts `running`
 ([fabric recovery](fabric-recovery.md) step 3). A wrong verdict is fixed in the investigation.
 
-Nothing waits on a proof of termination: not node recovery, a primary change, a name's release,
+Nothing waits on the provider's `Exited`: not node recovery, a primary change, a name's release,
 node.delete or mesh.delete.
 
 Data dir: if the provider step finds the runtime exited, the re-created node takes the inherited data

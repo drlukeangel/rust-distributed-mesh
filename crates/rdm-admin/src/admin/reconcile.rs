@@ -186,8 +186,8 @@ impl ProviderDeparture {
 }
 
 #[async_trait::async_trait]
-impl crate::build_drive::DepartureProof for ProviderDeparture {
-    async fn proven(&self, executor: &rdm_core::framing::Birth) -> Result<(), String> {
+impl crate::build_drive::ExecutorInspection for ProviderDeparture {
+    async fn exited_or_os_stopped(&self, executor: &rdm_core::framing::Birth) -> Result<(), String> {
         let me = self.held_name();
         let held_row = self.digest_view.get(executor.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == executor.incarnation);
         // A newer incarnation or successor never supplies this birth's runtime evidence.

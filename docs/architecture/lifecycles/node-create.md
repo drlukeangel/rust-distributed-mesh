@@ -69,7 +69,7 @@ Only an accepted full report completes the deployment's bind/join waits. Provide
 launch, a listening socket, a digest, a timeout or an unanswered call is insufficient.
 Join acceptance does not complete start or bypass the hook. A typed refusal names
 its step; an uncertain answer is not Joined. Runtime exit requires independent exact
-provider proof, even for a deployment that never joined.
+the provider's inspect answer, even for a deployment that never joined.
 
 ## Command, completion and gossip messages
 
@@ -89,7 +89,7 @@ wire enum. A topology Digest cannot complete the caller's stream or the deployme
 ## Numbered end-to-end sequence
 
 Follow the [create steps](#bound-endpoint-and-join-admission), then the complete
-[start sequence](node-start.md#end-to-end-sequence). `node.created` proves creation;
+[start sequence](node-start.md#end-to-end-sequence). `node.created` shows creation;
 it does not claim the node is ready.
 
 ## Mermaid sequence diagram
@@ -165,7 +165,7 @@ sequenceDiagram
     A->>L: one bounded 0x01 Ping
     L-->>A: reply from live exact birth
     A->>D: one bounded 0x01 Ping
-    Note over A,D: no answer hands D to node recovery; it is not death proof
+    Note over A,D: no answer hands D to node recovery; it is not a sign the node is dead
     A->>D: node investigation: tickle
     A->>P: node.runtime.inspect
     P-->>A: verdict
@@ -181,7 +181,7 @@ sequenceDiagram
 
 ### Telemetry chain
 
-| Actor | Channel/op | Payload / proof | Span |
+| Actor | Channel/op | Payload / evidence | Span |
 |---|---|---|---|
 | Fabric-primary | accepted Build / node.create | same Build attempt; the mesh's MeshId | `rdm.node_admin.node.update.via-build`, `rdm.node_admin.deployment.update.via-pipeline` |
 | Joining node-admin → maker | JoinNode | [Join schema](../node-rpc-envelope.md#join-op-0x1d-rdm); exact deployed birth admitted | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.node_admin.node.update.via-join` |

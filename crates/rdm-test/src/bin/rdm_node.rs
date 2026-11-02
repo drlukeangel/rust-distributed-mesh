@@ -5,7 +5,7 @@
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = rdm_test::run_proof_launched().await {
+    if let Err(e) = rdm_test::run_test_node_launched().await {
         eprintln!("rdm-node: {e:#}");
         std::process::exit(3);
     }

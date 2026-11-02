@@ -1545,8 +1545,8 @@ mod tests {
     /// happen: a list of every runtime row searched for the one birth, or the two refusals as one.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn the_executor_departure_proof_point_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable() {
-        use crate::build_drive::DepartureProof as _;
+    async fn the_executor_inspection_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable() {
+        use crate::build_drive::ExecutorInspection as _;
         use crate::storage::NodesStorage as _;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-executor")).unwrap();
         let executor = digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready);
@@ -1570,11 +1570,11 @@ mod tests {
 
         let held = Arc::new(CountsRuntimeLists::default());
         held.put_runtime(&row).await.unwrap();
-        departure(held.clone()).proven(&executor_name).await.expect("the held row's runtime is proven exited");
+        departure(held.clone()).exited_or_os_stopped(&executor_name).await.expect("the held row's runtime is proven exited");
         let unwritten = Arc::new(CountsRuntimeLists::default());
-        let never = departure(unwritten.clone()).proven(&executor_name).await.unwrap_err();
+        let never = departure(unwritten.clone()).exited_or_os_stopped(&executor_name).await.unwrap_err();
         let refused = Arc::new(CountsRuntimeLists { point_refused: true, ..Default::default() });
-        let unread = departure(refused.clone()).proven(&executor_name).await.unwrap_err();
+        let unread = departure(refused.clone()).exited_or_os_stopped(&executor_name).await.unwrap_err();
 
         let lists = |s: &CountsRuntimeLists| s.lists.load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!((lists(&held), lists(&unwritten), lists(&refused)), (0, 0, 0), "the proof reads one row by its key, never the list of every row");
@@ -1603,8 +1603,8 @@ mod tests {
     /// happen: an os-stopped executor's attempt held, or a running or unproven one's taken.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn the_executor_departure_is_proven_on_exited_or_os_stopped_and_never_on_running_or_unproven() {
-        use crate::build_drive::DepartureProof as _;
+    async fn the_executor_inspection_answers_exited_or_os_stopped_and_never_running_or_unproven() {
+        use crate::build_drive::ExecutorInspection as _;
         use crate::deployment::provider::DeploymentStatus;
         let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-verdicts")).unwrap();
         let mut executor = digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, MemberStatus::Ready);
@@ -1615,7 +1615,7 @@ mod tests {
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
         let executor_name = rdm_core::framing::Birth { node_id: executor.node.node_id.clone(), incarnation: executor.node.incarnation.clone() };
-        for (status, verdict, proven) in [
+        for (status, verdict, exited) in [
             (DeploymentStatus::Exited { code: Some(137) }, "exited", true),
             (DeploymentStatus::OsStopped, "os-stopped", true),
             (DeploymentStatus::Running, "running", false),
@@ -1636,15 +1636,15 @@ mod tests {
                 provider: provider.clone(),
                 nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
             };
-            let answer = departure.proven(&executor_name).await;
+            let answer = departure.exited_or_os_stopped(&executor_name).await;
             assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 1, "{verdict}: the exact runtime is inspected once");
-            match (proven, &answer) {
+            match (exited, &answer) {
                 (true, Ok(())) => assert_eq!(refreshed.load(std::sync::atomic::Ordering::SeqCst), 1, "{verdict}: the view is projected again for the next attempt"),
                 (false, Err(why)) => {
                     assert!(why.contains(verdict), "{verdict}: the refusal names the verdict: {why}");
                     assert_eq!(refreshed.load(std::sync::atomic::Ordering::SeqCst), 0, "{verdict}: nothing is projected for an attempt that is held");
                 }
-                _ => panic!("{verdict}: the departure is {} but the proof answered {answer:?}", if proven { "proven" } else { "not proven" }),
+                _ => panic!("{verdict}: the departure is {} but the proof answered {answer:?}", if exited { "proven" } else { "not proven" }),
             }
         }
     }
@@ -3004,7 +3004,7 @@ mod tests {
     /// stored_nodes 5).
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn mesh_left_takes_the_primaries_of_every_birth_its_proof_set_names_off_its_record() {
+    async fn mesh_left_takes_the_primaries_of_every_birth_its_manifest_names_off_its_record() {
         use crate::storage::NodesStorage;
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let last = with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, MemberStatus::Leaving), "200000000000");

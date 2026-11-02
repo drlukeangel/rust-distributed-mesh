@@ -65,7 +65,7 @@ the same order starts the workflow again, resuming the attempt from its recorded
    Digest by name, and its mesh-primary decides it by its path.name and its atlas
    ([node investigation](node-investigation.md), Q207): its re-created birth is there, so it is reported
    and the fabric-primary terminates its runtime (Q110).
-   Nothing holds, and nothing waits for proof. From the backbone the re-create terminates nothing in the
+   Nothing holds, and nothing waits for evidence. From the backbone the re-create terminates nothing in the
    mesh. On `exited`, `os-stopped` or `unproven`, its node.delete of the exact lost birth writes that
    birth's row deleted with no `TerminateRuntime` and releases the name, then node.create at the
    path.name; a delete that finds another birth at the path writes nothing; a lost birth that comes back
@@ -127,14 +127,14 @@ sequenceDiagram
     FP->>P: restore own secondary admin
     Note over FP: own mesh stabilized before peer investigation
     FP->>O: probe via live connection into peer mesh; Ping / Forward ladder
-    opt ladder proves no admin
+    opt ladder shows no admin
         FP->>P: node.create of the peer mesh's first node-admin with its MeshId
     end
 ```
 
 ## Fabric recovery telemetry chain
 
-| Actor | Channel/op | Payload / proof | Span |
+| Actor | Channel/op | Payload / evidence | Span |
 |---|---|---|---|
 | Recovered fabric-primary | GetTopology to durable-map node | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); own mesh first, no maker calls | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |
 | Recovered own-mesh primary | Ping / node recovery | same own-mesh sweep and node investigation as a node-admin joining a live mesh | `rdm.node_rpc.request.update.via-call`, `rdm.node_admin.deployment.update.via-step` |

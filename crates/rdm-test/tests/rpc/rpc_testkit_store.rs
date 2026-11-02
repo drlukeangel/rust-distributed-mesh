@@ -1,4 +1,4 @@
-//! i143.e7.s3 process E2E: the testkit proof store on op `0x70`.
+//! i143.e7.s3 process E2E: the testkit testkit store on op `0x70`.
 //!
 //! From the typed objects, `rdm-rpc-probe` over real Node RPC and the estate's span evidence only:
 //! 1. Every op answers its typed result and names where it ran: node ID, separate path and name,
@@ -25,10 +25,10 @@ fn owner() -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-rpc".into(),
-        subfeature: "proof-store".into(),
+        subfeature: "evidence-store".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replacement".into(),
+        test: "the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replacement".into(),
     }
 }
 
@@ -44,7 +44,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replacement() {
+async fn the_testkit_store_survives_a_restart_and_a_recovery_and_never_a_replacement() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
@@ -107,7 +107,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let first_inc = first["incarnation_id"].clone();
     wait_for("the first birth's served calls are exported before its process is killed", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
+        let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
         let count = |op: &str, outcome: &str| served.iter().filter(|s| s["attributes"]["node_id"] == first["node_id"] && s["attributes"]["incarnation_id"] == first_inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).count();
         // Two gets served the value: one before the stop, and the restarted birth's after its start.
         (count("put", "stored") > 0 && count("compare-and-swap", "mismatch") > 0 && count("put", "too-large") > 0 && count("get", "value") >= 2).then_some(())
@@ -179,7 +179,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     estate.stop().await;
     // Every served call is a span on the executing birth, naming the op and its outcome.
     let spans = estate.spans();
-    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request");
     let on = |node: &Value, op: &str, outcome: &str| {
         served.iter().any(|s| s["attributes"]["node_id"] == node["node_id"] && s["attributes"]["incarnation_id"] == node["incarnation_id"] && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome)
     };

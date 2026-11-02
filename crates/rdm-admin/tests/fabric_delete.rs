@@ -31,12 +31,12 @@ use rdm_admin::admin::Records;
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_state::{AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::control_plane::ControlPlane;
-use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RuntimeProof, Timeouts, TopologySink};
+use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RuntimeIdentity, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::executor::{executor_for, role_move};
 use rdm_admin::fabric_storage::{FabricIdentity, FabricStorage, MemoryFabricStorage};
 use rdm_admin::join::Joins;
-use rdm_admin::mesh_delete::{accepted_roster, amend_roster, complete_fabric_delete, handoff_verdict, leaving_roster, manifest_reference, members_exited, mesh_left_proof, mesh_left_rows, operation, owner_resume, record_completion, roster_records, roster_rows_read, unanswered_mesh_delete, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, UnansweredMeshOutcome, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
+use rdm_admin::mesh_delete::{accepted_roster, amend_roster, complete_fabric_delete, handoff_verdict, leaving_roster, manifest_reference, members_exited, mesh_left_manifest, mesh_left_rows, operation, owner_resume, record_completion, roster_records, roster_rows_read, unanswered_mesh_delete, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, UnansweredMeshOutcome, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
 use rdm_admin::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rdm_admin::node_rows::{ClaimFor, Claimed, NodeRows};
 use rdm_admin::status_rpc::Declared;
@@ -282,7 +282,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let op_m2 = operation(&id2);
     let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
     let me_m2 = RosterBirth::of(&m2_a1).unwrap();
-    let rt_m2 = RuntimeProof::of(&handles[&m2_a1.node_id].fact().unwrap());
+    let rt_m2 = RuntimeIdentity::of(&handles[&m2_a1.node_id].fact().unwrap());
     let m2_records = vec![m2_a1.clone(), m2_r1.clone()];
     let roster_m2 = accepted_roster(&*builds, &key_m2, STEP_ACCEPTED_ROSTER, m1_a1.node_id.as_str(), &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
     let leaving_m2 = accepted_roster(&*builds, &key_m2, STEP_LEAVING_ROSTER, m2_a1.node_id.as_str(), &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
@@ -328,7 +328,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     });
     rows_m1.deleted(&m2_a1, &rdm_core::OperationId::node("node.delete", &m2_a1.node_id)).await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
-    let left_m2 = mesh_left_proof(&manifest_m2, &term_m2_a1).unwrap();
+    let left_m2 = mesh_left_manifest(&manifest_m2, &term_m2_a1).unwrap();
     mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, m1_a1.node_id.as_str(), &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
     builds
         .append_step_receipt(&BuildStepReceipt {
@@ -364,7 +364,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let op_m1 = operation(&id1);
     let key_m1 = MeshDeleteKey { mesh_id: id1.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m1.clone() };
     let me_m1 = RosterBirth::of(&m1_a1).unwrap();
-    let rt_m1 = RuntimeProof::of(&handles[&m1_a1.node_id].fact().unwrap());
+    let rt_m1 = RuntimeIdentity::of(&handles[&m1_a1.node_id].fact().unwrap());
     let m1_records = vec![m1_a1.clone(), m1_r1.clone()];
     let roster_m1 = accepted_roster(&*builds, &key_m1, STEP_ACCEPTED_ROSTER, m1_a1.node_id.as_str(), &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
     let leaving_m1 = accepted_roster(&*builds, &key_m1, STEP_LEAVING_ROSTER, m1_a1.node_id.as_str(), &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
@@ -429,7 +429,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         n.stopped = true;
     });
     rows_m1.deleted(&m1_a1, &rdm_core::OperationId::node("node.delete", &m1_a1.node_id)).await.unwrap();
-    let left_m1 = mesh_left_proof(&manifest_m1, &term_m1_a1).unwrap();
+    let left_m1 = mesh_left_manifest(&manifest_m1, &term_m1_a1).unwrap();
     mesh_left_rows(Some(&rows_m1), &mesh_storage, &Default::default(), &declared, m1_a1.node_id.as_str(), &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
 
     // Every node row is Deleted, both mesh rows are Dead in status.storage and mesh.storage, and
@@ -654,7 +654,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         let h_a2 = handle(53_003);
         let mut fleet = fleet;
         fleet.pids.insert(53_003, m2_a2.node_id.clone());
-        let rt_a2 = RuntimeProof::of(&h_a2.fact().unwrap());
+        let rt_a2 = RuntimeIdentity::of(&h_a2.fact().unwrap());
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
         view.write().await.nodes.retain(|n| n.name != m2_a1.name);
         view.write().await.nodes.push(m2_a2.clone());
@@ -707,7 +707,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             n.stopped = true;
         });
         rows_fp.deleted(&m2_a2, &rdm_core::OperationId::node("node.delete", &m2_a2.node_id)).await.unwrap();
-        let left = mesh_left_proof(&manifest, &term_a2).unwrap();
+        let left = mesh_left_manifest(&manifest, &term_a2).unwrap();
         mesh_left_rows(Some(&rows_fp), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key_m2, "mesh2", &left.receipts).await.unwrap();
 
         for n in [&m2_a1, &m2_r1, &m2_a2] {
@@ -1042,7 +1042,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let h_a2 = handle(54_099);
         let mut fleet = fleet;
         fleet.pids.insert(54_099, m2_a2.node_id.clone());
-        let rt_a2 = RuntimeProof::of(&h_a2.fact().unwrap());
+        let rt_a2 = RuntimeIdentity::of(&h_a2.fact().unwrap());
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
         observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
         observed.write().await.nodes.push(m2_a2.clone());
@@ -1114,7 +1114,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             n.stopped = true;
         });
         rows_fp.deleted(&m2_a2, &rdm_core::OperationId::node("node.delete", &m2_a2.node_id)).await.unwrap();
-        let left_m2 = mesh_left_proof(&manifest_m2, &term_a2).unwrap();
+        let left_m2 = mesh_left_manifest(&manifest_m2, &term_a2).unwrap();
         mesh_left_rows(Some(&rows_fp), &mesh_storage, &Default::default(), &declared, fp.node_id.as_str(), &key_m2, "mesh2", &left_m2.receipts)
             .await
             .unwrap();
@@ -1136,7 +1136,7 @@ fn fabric_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             operation: op_m1.clone(),
         };
         let me_m1 = RosterBirth::of(&fp).unwrap();
-        let rt_m1 = RuntimeProof::of(&handles[&fp.node_id].fact().unwrap());
+        let rt_m1 = RuntimeIdentity::of(&handles[&fp.node_id].fact().unwrap());
         let m1_records = vec![fp.clone(), m1_r1.clone()];
         let roster_m1 = accepted_roster(&*builds, &key_m1, STEP_ACCEPTED_ROSTER, fp.node_id.as_str(), &me_m1, &rt_m1, || live_roster(&m1_records))
             .await

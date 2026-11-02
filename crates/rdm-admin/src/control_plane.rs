@@ -83,7 +83,7 @@ pub struct ControlPlane {
     pub admission: Arc<tokio::sync::Mutex<()>>,
     /// The exact departure proof of a drift lane's claimant (build.md: "after exact departure proof"),
     /// set once the admin's drive is built; none proves nothing.
-    pub departure: std::sync::OnceLock<Arc<dyn crate::build_drive::DepartureProof>>,
+    pub departure: std::sync::OnceLock<Arc<dyn crate::build_drive::ExecutorInspection>>,
     /// The node rows (nodes.storage, every mesh's rows on the fabric's shared root), set once the admin
     /// opens them: a complete-topology request is compiled against what each row records of its
     /// executable (proposal executable-bindings-at-create.md rule 5, R4).
@@ -286,7 +286,7 @@ impl ControlPlane {
 
     async fn departure_of(&self, executor: &rdm_core::framing::Birth) -> bool {
         let Some(proof) = self.departure.get() else { return false };
-        proof.proven(executor).await.is_ok()
+        proof.exited_or_os_stopped(executor).await.is_ok()
     }
 
     /// On its committed executor birth's departure proof, release the in-flight row of the unfinished

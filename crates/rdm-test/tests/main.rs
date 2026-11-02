@@ -78,8 +78,8 @@ mod fabric_delete;
 mod fabric_atlas;
 #[path = "fabric/own_delete_matrix.rs"]
 mod own_delete_matrix;
-#[path = "rpc/proof_holder_lifecycle.rs"]
-mod proof_holder_lifecycle;
+#[path = "rpc/testkit_store_lifecycle.rs"]
+mod testkit_store_lifecycle;
 #[path = "runtime/manifest_replay.rs"]
 mod manifest_replay;
 #[path = "node/restart_canary_seed.rs"]
@@ -177,8 +177,8 @@ mod fabric_primary_handover;
 mod backbone;
 #[path = "gossip/digest_sequence.rs"]
 mod digest_sequence;
-#[path = "rpc/rpc_proof_store.rs"]
-mod rpc_proof_store;
+#[path = "rpc/rpc_testkit_store.rs"]
+mod rpc_testkit_store;
 #[path = "runtime/boot_trace.rs"]
 mod boot_trace;
 #[path = "runtime/container_kill.rs"]
@@ -254,7 +254,7 @@ mod common;
 mod container_pipeline;
 mod pre_node_ready;
 mod pre_node_ready_admin;
-mod proof_store;
+mod testkit_store;
 mod join_pre_node_ready;
 mod member_cert;
 mod member_cert_admin;

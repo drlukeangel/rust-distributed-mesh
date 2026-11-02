@@ -94,11 +94,11 @@ struct Provider(Arc<World>);
 
 /// The drive's departure proof over the estate: an executor's departure is proven by nothing here
 /// (the drive's executors in these cells never leave).
-struct WorldProofs;
+struct WorldExits;
 
 #[async_trait::async_trait]
-impl rdm_admin::build_drive::DepartureProof for WorldProofs {
-    async fn proven(&self, executor: &rdm_core::framing::Birth) -> Result<(), String> {
+impl rdm_admin::build_drive::ExecutorInspection for WorldExits {
+    async fn exited_or_os_stopped(&self, executor: &rdm_core::framing::Birth) -> Result<(), String> {
         Err(format!("{executor:?}'s runtime is not proven exited"))
     }
 }
@@ -467,7 +467,7 @@ impl Estate {
             door,
             dispatcher: self.dispatch.clone(),
             gate,
-            departure: Arc::new(WorldProofs),
+            departure: Arc::new(WorldExits),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
             notices: self.told.notices(),
             turns: rdm_admin::stop_gate::StopGate::new(),

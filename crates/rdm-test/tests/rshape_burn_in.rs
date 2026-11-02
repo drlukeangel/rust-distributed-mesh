@@ -16,7 +16,7 @@
 //! signal or remove a process themselves; a restart is `node.stop` then `node.start` over Node RPC. Every read and
 //! command goes to the admins over Node RPC through the estate's typed objects.
 //!
-//! The controller is `rdm-rpc-probe`, the generic proof-store caller of the testkit (op 0x70,
+//! The controller is `rdm-rpc-probe`, the generic testkit-store caller of the testkit (op 0x70,
 //! with 0x73 originate and 0x72 snapshot on the roles that originate), so every observed outcome is
 //! the typed `RpcOutcome` of a real Node RPC call.
 
@@ -470,7 +470,7 @@ fn probe_call(estate: &Estate, args: &[&str]) -> Call {
     let linked_to_call = |sp: &Value| sp["name"] == "rdm.node_rpc.connection.create.via-dial" && sp["links"].as_array().is_some_and(|ls| ls.iter().any(|l| s(&l["trace_id"]) == trace_id));
     let dial_traces: std::collections::BTreeSet<String> = spans.iter().filter(|sp| linked_to_call(sp)).map(|sp| s(&sp["trace_id"])).collect();
     assert!(spans.iter().all(|sp| s(&sp["trace_id"]) == trace_id || dial_traces.contains(&s(&sp["trace_id"]))), "one probe invocation is one trace and its dials' linked traces: {args:?}");
-    let root_exported = spans.iter().any(|sp| sp["name"] == "rdm.node_rpc.proof_store.resolve.via-probe");
+    let root_exported = spans.iter().any(|sp| sp["name"] == "rdm.node_rpc.evidence_store.resolve.via-probe");
     Call { args: args.iter().map(|a| a.to_string()).collect(), out, trace_id, started_ms, finished_ms, root_exported }
 }
 
@@ -1048,7 +1048,7 @@ impl RouteRun {
     }
 
     /// The spans of each leg: the call's trace holds the probe's call span, the server's request
-    /// span under it and the proof-store marker under that; carried legs hold one carried inner call;
+    /// span under it and the testkit-store marker under that; carried legs hold one carried inner call;
     /// the no-route and unknown legs hold no serve span at all.
     fn check_spans(&mut self, f: &Formed, spans: &[Value], inv: &mut Invariants) -> Vec<Value> {
         let _ = f;
@@ -1056,7 +1056,7 @@ impl RouteRun {
         for (leg, call) in self.legs.iter_mut().zip(self.calls.iter()) {
             let trace = call.trace_id.as_str();
             let in_trace: Vec<&Value> = spans.iter().filter(|sp| sp["trace_id"] == trace).collect();
-            let served: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.proof_store.serve.via-request").collect();
+            let served: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.evidence_store.serve.via-request").collect();
             let name = s(&leg["leg"]);
             let mut record = json!({"leg": name, "trace_id": trace, "spans_in_trace": in_trace.len(), "proof_store_serves": served.len()});
             let routes: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.route.resolve.via-connections").collect();
@@ -1073,11 +1073,11 @@ impl RouteRun {
                     let terminal = &leg["terminal"];
                     assert_eq!(marker["attributes"]["node_id"], terminal["executing_node"], "{name}: the handler that ran is the replying node");
                     assert_eq!(marker["attributes"]["incarnation_id"], terminal["incarnation_id"], "{name}");
-                    let request_spans: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.request.serve.via-direct" && sp["attributes"]["protocol"] == "proof-store").collect();
+                    let request_spans: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.request.serve.via-direct" && sp["attributes"]["protocol"] == "evidence-store").collect();
                     assert!(!request_spans.is_empty(), "{name}: the server's request span is in the trace");
                     let parent = spans.iter().find(|sp| sp["span_id"] == marker["parent_span_id"]).unwrap_or_else(|| panic!("{name}: the marker's parent span is missing"));
                     assert_eq!(parent["trace_id"], marker["trace_id"], "{name}: marker parent in the same trace");
-                    assert!(request_spans.iter().any(|r| r["span_id"] == parent["span_id"]), "{name}: the proof-store marker's parent is the server's request span ({})", parent["name"]);
+                    assert!(request_spans.iter().any(|r| r["span_id"] == parent["span_id"]), "{name}: the testkit-store marker's parent is the server's request span ({})", parent["name"]);
                     let transmitted = spans.iter().find(|x| x["span_id"] == parent["parent_span_id"] && x["trace_id"] == parent["trace_id"]);
                     assert!(transmitted.is_some(), "{name}: the server's request span is parented to the caller's span of the same trace (the transmitted context): {parent}");
                     record["request_span"] = parent["span_id"].clone();
@@ -1114,7 +1114,7 @@ impl RouteRun {
             }
             obs.push(record);
         }
-        inv.holds("each leg's trace carries its request span, one proof-store handler execution under it on the requested birth, and the carried or originated route span where the leg has one; no handler ran for the legs that sent nothing", true, json!({"legs": obs.len()}));
+        inv.holds("each leg's trace carries its request span, one testkit-store handler execution under it on the requested birth, and the carried or originated route span where the leg has one; no handler ran for the legs that sent nothing", true, json!({"legs": obs.len()}));
         // Every call span of the controller descends into the server's request span of its own trace.
         let _ = descends_from;
         obs
@@ -1298,7 +1298,7 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
     // The ledger algebra over the typed outcomes.
     let mut buckets: BTreeMap<Bucket, usize> = Bucket::ALL.iter().map(|b| (*b, 0)).collect();
     let mut seqs = BTreeSet::new();
-    let stored: Vec<&Value> = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").into_iter().filter(|sp| sp["attributes"]["op"] == "put" && sp["attributes"]["outcome"] == "stored").collect();
+    let stored: Vec<&Value> = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").into_iter().filter(|sp| sp["attributes"]["op"] == "put" && sp["attributes"]["outcome"] == "stored").collect();
     let mut operations = Vec::new();
     let mut outcomes = Vec::new();
     let mut indeterminate = Vec::new();
@@ -3366,12 +3366,12 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     let (kind, mesh, node_id, inc, endpoint) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["endpoint_id"]));
     let rt_before = exact_runtime(f, node).await;
     let gw = Estate::path(&format!("{mesh}.gateway"), "1");
-    // The canary: a value only this node's data dir holds. A node-admin serves no proof store (op 0x70
+    // The canary: a value only this node's data dir holds. A node-admin serves no testkit store (op 0x70
     // is a role-node protocol; its answer is `Unserved`), so its identity is proven by its view, its
     // runtime and its election role.
-    let serves_proof_store = kind != "node_admin";
+    let serves_testkit_store = kind != "node_admin";
     let (mut ckey, mut cval) = (String::new(), String::new());
-    if serves_proof_store {
+    if serves_testkit_store {
         let ci = op_to(f, a, &n, None, "canary", "before-restart");
         (ckey, cval) = (a.traffic.ops[ci].0.key.clone(), a.traffic.ops[ci].0.value.clone());
         assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node:?}: the canary was stored before the restart: {}", a.traffic.ops[ci].1.out);
@@ -3407,7 +3407,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     let b = f.set.bindings.iter().find(|b| b.launch_id == launch_id(node)).unwrap();
     assert_eq!(launched_path(&launch), b.executable, "{node:?}: the restarted birth runs the bound executable: {launch}");
     assert_eq!(launch["observed_sha256"], b.sha256.as_str(), "{node:?}: the restarted birth runs the bound bytes: {launch}");
-    if serves_proof_store {
+    if serves_testkit_store {
         // The same data dir: the canary survived the restart.
         let c = probe_call(&f.estate, &["get", "--target", &format!("exact:{node_id}"), "--key", &ckey]);
         assert_eq!(c.out["reply"]["result"], json!({"found": true, "value": cval}), "{node:?}: the value stored before the restart is held after it (same data dir): {}", c.out);
@@ -3458,7 +3458,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     let connections = converge_connections_after_restart(f, inv, &node_id).await;
     let rec = json!({
         "label": label, "node": node, "kind": kind, "node_id": node_id, "endpoint_id": endpoint, "incarnation_id": inc,
-        "runtimes": runtimes, "launch": launch, "canary_key": ckey, "serves_proof_store": serves_proof_store, "restart": ev, "routing": routing, "connections": connections,
+        "runtimes": runtimes, "launch": launch, "canary_key": ckey, "serves_testkit_store": serves_testkit_store, "restart": ev, "routing": routing, "connections": connections,
     });
     inv.holds(
         &format!("{label}: {node:?} ({kind}) restarted as the same logical node in the same exact birth on the same live runtime; the canary in its data dir survived; calls and connections converged back on that birth"),
@@ -4177,10 +4177,10 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let old_rt_record = deleted["runtime_before"].clone();
     assert_ne!(old_rt_record, rt_new.record(), "the successor runs in a new runtime");
     live_and_distinct(&victim, &exact_rt_from_record(&old_rt_record, &deleted), &rt_new);
-    // Fresh proof store, no inherited identity, no stale targeting.
+    // Fresh testkit store, no inherited identity, no stale targeting.
     let ckey = s(&deleted["canary_key"]);
     let c = probe_call(&f.estate, &["get", "--target", &format!("exact:{new_id}"), "--key", &ckey]);
-    assert_eq!((c.out["reply"]["result"].clone(), c.out["reply"]["executing_node"].clone()), (json!({"found": false}), json!(new_id)), "the successor's fresh proof store holds nothing of the deleted node's: {}", c.out);
+    assert_eq!((c.out["reply"]["result"].clone(), c.out["reply"]["executing_node"].clone()), (json!({"found": false}), json!(new_id)), "the successor's fresh testkit store holds nothing of the deleted node's: {}", c.out);
     f.actions.push(action_row(&c));
     let c2 = probe_call(&f.estate, &["get", "--target", &rdm_test::estate::path_target(&victim), "--key", &ckey]);
     assert_eq!((c2.out["reply"]["executing_node"].clone(), c2.out["reply"]["incarnation_id"].clone()), (json!(new_id), json!(new_inc)), "the path now resolves to the successor and only to it: {}", c2.out);
@@ -4203,7 +4203,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
         "path_name_successor": true,
     });
     inv.holds(
-        "C8 planned replacement: the deleted broker's NodeId, EndpointId, data dir and runtime are not the successor's; the successor's proof store is fresh; the deleted NodeId is not routable and the path resolves only to the successor; the mesh's gateway dropped its connection to the deleted node and holds one to the successor",
+        "C8 planned replacement: the deleted broker's NodeId, EndpointId, data dir and runtime are not the successor's; the successor's testkit store is fresh; the deleted NodeId is not routable and the path resolves only to the successor; the mesh's gateway dropped its connection to the deleted node and holds one to the successor",
         true,
         json!({"old_node_id": old_id, "new_node_id": new_id}),
     );
@@ -4222,7 +4222,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     // the canary's handler record off the evidence before it kills the process that holds it.
     let canary_trace = a.traffic.ops[ci].1.trace_id.clone();
     wait_for(&format!("{victim2:?}'s handler span of the canary is in the evidence before the kill"), Duration::from_secs(5), || async {
-        named(&f.estate.spans(), "rdm.node_rpc.proof_store.serve.via-request").into_iter().any(|sp| sp["trace_id"] == canary_trace.as_str() && sp["attributes"]["outcome"] == "stored").then_some(())
+        named(&f.estate.spans(), "rdm.node_rpc.evidence_store.serve.via-request").into_iter().any(|sp| sp["trace_id"] == canary_trace.as_str() && sp["attributes"]["outcome"] == "stored").then_some(())
     })
     .await;
     let rt2 = exact_runtime(&f, &victim2).await;
@@ -4341,7 +4341,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
 /// broker, and mints no Build: the attempt runs the Build's steps, the old birth's exact runtime is
 /// terminal as the provider reports it, its NodeId stays out of every admin's view for a full staleness
 /// window, and a call to it sends nothing. The same attempt creates a broker at the path.name: a new NodeId, a new
-/// EndpointId, a fresh data dir and a new runtime; its proof store holds nothing of the old node's, the
+/// EndpointId, a fresh data dir and a new runtime; its testkit store holds nothing of the old node's, the
 /// path resolves only to it, the mesh's gateway drops its connection to the deleted node and holds one to
 /// the successor. Then the exact runtime of a gateway is killed (acknowledged by the provider) and the
 /// rectifier proves the birth gone and re-births the path under the next attempt of the same Build,
@@ -4475,7 +4475,7 @@ fn rt_alive(rt: &Rt) -> bool {
     }
 }
 
-/// The typed refusal a node whose connections are being deleted gives ordinary work: a proof-store reply of
+/// The typed refusal a node whose connections are being deleted gives ordinary work: a testkit-store reply of
 /// `ConnectionsDeleting`, or a carrier that will not carry (`node is connections-deleting`). `None` for any other outcome.
 fn connections_deleting_refusal(out: &Value) -> Option<String> {
     match out["outcome"].as_str() {
@@ -6951,7 +6951,7 @@ async fn soak_run(cell: &str, story: Story) {
         .collect();
     let in_cut_lifecycle: Vec<(String, Vec<String>)> = cuts.iter().map(|(c, h, mesh)| (mesh.clone(), lifecycle_marks(&spans, *c, (*h).min(now_ns())))).filter(|(_, m)| !m.is_empty()).collect();
     // The path RAN.
-    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").len();
+    let served = named(&spans, "rdm.node_rpc.evidence_store.serve.via-request").len();
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
     let routes = route_rows(&spans);
     let mut route_classes: BTreeMap<String, usize> = BTreeMap::new();
@@ -7020,7 +7020,7 @@ async fn soak_run(cell: &str, story: Story) {
         "topology-initial.json": "the Day-0 view, the view after the Build birthed the shape, the requested shape and the provider state before launch",
         "topology-final.json": "the last node.get and fabric.get before the estate stopped",
         "actions.jsonl": "one row per executed round: the seeded action, the Node RPC calls it made, its convergence and the invariants that held at its checkpoint",
-        "operations.jsonl": "every issued proof-store operation with its target, key and intent, in issue order",
+        "operations.jsonl": "every issued testkit-store operation with its target, key and intent, in issue order",
         "outcomes.jsonl": "the ledger's classification of every operation (bucket, typed reason)",
         "primaries-history.jsonl": "the fabric-primary and mesh primaries after each action",
         "route-history.jsonl": "every route.resolve span of the run (route, carrier, target, outcome)",
@@ -7060,7 +7060,7 @@ async fn soak_run(cell: &str, story: Story) {
 
 /// CONTRACT (S1, routing, #2949): on the canonical twenty-node estate (node-admin / compute /
 /// gateway / broker = 2 / 2 / 3 / 3 x 2 meshes, born by one accepted Build on the consumer's four
-/// executables) continuous seeded proof-store traffic runs for RDM_RSHAPE_SOAK_SECONDS: exact-node
+/// executables) continuous seeded testkit-store traffic runs for RDM_RSHAPE_SOAK_SECONDS: exact-node
 /// calls from the controller and a quarter carried by a gateway, same-mesh and cross-mesh, each
 /// recorded in the operation ledger before it is sent and classified once from its typed outcome.
 /// Meanwhile the seeded generator draws only restarts, kills and holds of role nodes (compute,
@@ -7117,7 +7117,7 @@ async fn mock_soak_lifecycle_preserves_continuous_invariants() {
 /// CONTRACT (S6, floors, #2949; the demo surface plan §3 X2): the same estate, traffic and ledger,
 /// with the seeded draw limited to holds and cuts kept past the floors: a role node or a non-primary
 /// node-admin held (SIGSTOP, `docker pause`) and a mesh cut from the other, each kept for
-/// `RDM_HUNG_HOLD_FLOORS + 2` staleness floors after the view marked it, with proof-store traffic
+/// `RDM_HUNG_HOLD_FLOORS + 2` staleness floors after the view marked it, with testkit-store traffic
 /// on both sides meanwhile, then released or healed. While held, the provider reads the runtime
 /// `OsStopped`, which opens no R-FM1 hold (deployment-provider.md §2.5): the view keeps the one
 /// birth at the path unheard, nothing terminates it and nothing is born there; released, the same

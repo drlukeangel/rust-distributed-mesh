@@ -18,7 +18,7 @@
 use super::*;
 use crate::build_state::{BuildStepReceipt, StepOutcome};
 use crate::executor::RunEnd;
-use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
+use crate::deployment::pipeline::{RuntimeIdentity, TerminalReceipt};
 use crate::mesh_delete::{accepted_roster, manifest_reference, members_exited, Admitted, ExitManifest, MeshDeleteKey, MeshDeleter, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_DELETED, STEP_MESH_LEFT};
 use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
@@ -149,7 +149,7 @@ impl AdminRunner {
         // (its node.delete, executed by this fabric-primary, proves its exit through it).
         let (_, final_handle) = self.handle_for(&primary).await.map_err(|e| format!("{outer:?} is refused before {mesh} is dismantled: no provider proof path for its final primary: {e}"))?;
         let final_fact = final_handle.fact().ok_or_else(|| format!("{outer:?} is refused before {mesh} is dismantled: the final primary {} has no exact runtime handle", primary.node_id))?;
-        let (final_primary, final_runtime) = (RosterBirth::of(&primary)?, RuntimeProof::of(&final_fact));
+        let (final_primary, final_runtime) = (RosterBirth::of(&primary)?, RuntimeIdentity::of(&final_fact));
         let admitted = match recorded {
             Some(adm) => {
                 if adm.final_primary != final_primary {
@@ -309,12 +309,12 @@ impl AdminRunner {
 
     /// The exact runtime of the roster birth `b`, by fingerprint: its delete's `TerminateRuntime` receipt in
     /// `steps`, else the runtime this admin resolves for the birth (its digest, its durable runtime row).
-    async fn roster_birth_runtime(&self, b: &RosterBirth, steps: &[BuildStepReceipt]) -> Result<RuntimeProof, String> {
-        if let Some(proof) = crate::mesh_delete::exit_receipts(steps, std::slice::from_ref(b)).remove(&(b.node_id.clone(), b.incarnation_id.clone())).and_then(|t| t.runtime) {
-            return Ok(proof);
+    async fn roster_birth_runtime(&self, b: &RosterBirth, steps: &[BuildStepReceipt]) -> Result<RuntimeIdentity, String> {
+        if let Some(runtime) = crate::mesh_delete::exit_receipts(steps, std::slice::from_ref(b)).remove(&(b.node_id.clone(), b.incarnation_id.clone())).and_then(|t| t.runtime) {
+            return Ok(runtime);
         }
         let (_, handle) = self.handle_for(&b.record()?).await?;
-        handle.fact().map(|f| RuntimeProof::of(&f)).ok_or_else(|| format!("{} {} has no exact runtime handle", b.node_id, b.incarnation_id))
+        handle.fact().map(|f| RuntimeIdentity::of(&f)).ok_or_else(|| format!("{} {} has no exact runtime handle", b.node_id, b.incarnation_id))
     }
 
     /// The live member `n` of a mesh deleted in process: its ordinary node.delete (node.stop, the exact
@@ -475,7 +475,7 @@ impl AdminRunner {
                 }
             }
         }
-        crate::mesh_delete::resume_after_loss(&*self.builds, &*self.provider, row.as_ref(), key, &me.to_string(), adm, held, &RuntimeProof::of(&fact), || async move { self.delete_lost_birth(&key.build_id, key.attempt, &lost).await.map(|_| ()) }).await.map(|_| ())
+        crate::mesh_delete::resume_after_loss(&*self.builds, &*self.provider, row.as_ref(), key, &me.to_string(), adm, held, &RuntimeIdentity::of(&fact), || async move { self.delete_lost_birth(&key.build_id, key.attempt, &lost).await.map(|_| ()) }).await.map(|_| ())
     }
 
     /// The durable runtime row of the roster birth `b` (the lost final primary, or another
@@ -513,7 +513,7 @@ impl AdminRunner {
         };
         let store = self.records.contacts.get().ok_or_else(|| refused(format!("{} holds no durable runtime rows", self.node_id)))?;
         let row = self.roster_birth_row(&**store, b).await.map_err(|e| refused(e))?;
-        let runtime = row.as_ref().map(|r| RuntimeProof::of(&r.runtime)).ok_or_else(|| refused(format!("no durable runtime row of {} {} was ever written here", b.node_id, b.incarnation_id)))?;
+        let runtime = row.as_ref().map(|r| RuntimeIdentity::of(&r.runtime)).ok_or_else(|| refused(format!("no durable runtime row of {} {} was ever written here", b.node_id, b.incarnation_id)))?;
         crate::mesh_delete::predecessor_verdict(&*self.provider, row.as_ref(), b, &runtime).await.map_err(refused)?;
         self.delete_lost_birth(build_id, attempt, b).await.map(|_| ())
     }
@@ -628,7 +628,7 @@ impl AdminRunner {
     /// (a point read of the Build facts, [`crate::build_state::BuildStateAdapter::mesh_deleted_of`]),
     /// every birth of the mesh is now proven exited: the final birth's exact Exited receipt is read
     /// from the node.delete's own `TerminateRuntime` step receipt, the complete proof set is checked
-    /// ([`crate::mesh_delete::mesh_left_proof`]) and recorded as `MeshLeft`, and mesh-left is published.
+    /// ([`crate::mesh_delete::mesh_left_manifest`]) and recorded as `MeshLeft`, and mesh-left is published.
     /// Any other deleted birth names no completion and nothing happens. A refusal is spanned by name
     /// and leaves the node.delete as it is.
     pub(super) async fn mesh_left_after_delete(&self, op: &rdm_core::LifecycleOp) {
@@ -677,7 +677,7 @@ impl AdminRunner {
             .filter_map(|r| r.output.and_then(|v| serde_json::from_value::<crate::deployment::pipeline::TerminalReceipt>(v).ok()))
             .find(|t| t.node_id == op.node_id.as_str() && t.incarnation_id == op.incarnation.as_str())
             .ok_or_else(|| format!("{:?}: no exact Exited receipt of {} {} is held in {deleted_in}", op.operation, op.node_id, op.incarnation.as_str()))?;
-        let all = crate::mesh_delete::mesh_left_proof(&completion, &terminal).map_err(|e| format!("{operation:?}: the proof set is not complete: {e}"))?;
+        let all = crate::mesh_delete::mesh_left_manifest(&completion, &terminal).map_err(|e| format!("{operation:?}: the proof set is not complete: {e}"))?;
         let mesh_id = MeshId::parse(&completion.mesh_id).map_err(|e| format!("{operation:?}: the completion names the mesh id {:?}, which does not parse: {e}", completion.mesh_id))?;
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: operation.clone() };
         self.record_mesh_left(&key, &op.mesh, all).await?;
@@ -864,7 +864,7 @@ impl AdminRunner {
         let me = view.own(&self.node_id).cloned().ok_or_else(|| format!("{me_name} holds no view of itself"))?;
         let my_fact = self.held_runtime(&me).ok_or_else(|| format!("{} publishes no runtime fact: its own exact runtime cannot be named", me.node_id))?;
         let me_birth = RosterBirth::of(&me)?;
-        let my_runtime = RuntimeProof::of(&my_fact);
+        let my_runtime = RuntimeIdentity::of(&my_fact);
         // The roster the owner captured once, as its LeavingRoster receipt here, or, when this admin holds
         // none, what the owner admitted: the
         // roster amendments the fabric-primary recorded (a primary lost mid-leave) are read from the
@@ -1036,8 +1036,8 @@ impl AdminRunner {
             return unmatched("final_primary", format!("{} {}", admitted.final_primary.node_id, admitted.final_primary.incarnation_id), format!("{final_node_id} {}", final_incarnation.as_str()));
         }
         // The final primary's exact runtime, and this admin's provider access to it.
-        if RuntimeProof::of(final_runtime) != admitted.final_runtime {
-            return unmatched("final_runtime", format!("{:?}", admitted.final_runtime), format!("{:?}", RuntimeProof::of(final_runtime)));
+        if RuntimeIdentity::of(final_runtime) != admitted.final_runtime {
+            return unmatched("final_runtime", format!("{:?}", admitted.final_runtime), format!("{:?}", RuntimeIdentity::of(final_runtime)));
         }
         if let Err(refused) = crate::mesh_delete::adopt_final_runtime(&*self.provider, final_runtime, &me_name, &key) {
             return refused;
@@ -1313,7 +1313,7 @@ mod tests {
             node_id: final_id.to_string(),
             incarnation_id: final_inc.to_string(),
         };
-        let final_proof = RuntimeProof {
+        let final_runtime = RuntimeIdentity {
             deployment_id: "dep-final".into(),
             provider: "process".into(),
             control_domain_fingerprint: "dom-1".into(),
@@ -1325,7 +1325,7 @@ mod tests {
             mesh_id: mesh2_id.to_string(),
             roster: vec![final_birth.clone()],
             final_primary: final_birth.clone(),
-            final_runtime: Some(final_proof.clone()),
+            final_runtime: Some(final_runtime.clone()),
             receipts: Vec::new(),
         };
         let key = MeshDeleteKey {
@@ -1349,7 +1349,7 @@ mod tests {
             node: rdm_core::PathName::new("mesh2.admin", "1").unwrap(),
             node_id: final_id.to_string(),
             incarnation_id: final_inc.to_string(),
-            runtime: Some(final_proof),
+            runtime: Some(final_runtime),
             exit_code: Some(0),
             verdict: None,
             data_dir: None,
