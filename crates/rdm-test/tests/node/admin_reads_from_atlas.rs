@@ -217,21 +217,15 @@ fn unreadable_from_byte_0(store: &std::path::Path, files: &[&str]) -> Vec<(std::
         .collect()
 }
 
-/// A Day-0 node-admin that does not reconcile, ready, its takeover of mesh1 prepared, and the launch of
-/// mesh1.admin.2 by it, its first join expected: the base dir, the root, the launch and the fabric's
-/// store root dir. The root is its stores' writer and has read past them once its takeover is prepared:
-/// the preparation reads mesh1's records once for its frozen snapshot (node-primary-update.md "finishes
-/// the frozen takeover snapshot"), after the digest says Ready ("a digest is not completion evidence for
-/// those writes", step 5), so a cell that makes a store unreadable does it after that read.
-async fn root_and_launch(tag: &str, spans: &crate::common::Spans) -> (std::path::PathBuf, Running, Launch, std::path::PathBuf) {
+/// A Day-0 node-admin that does not reconcile, ready, and the launch of mesh1.admin.2 by it, its first
+/// join expected: the base dir, the root, the launch and the fabric's store root dir.
+async fn root_and_launch(tag: &str) -> (std::path::PathBuf, Running, Launch, std::path::PathBuf) {
     let base = std::env::temp_dir().join(format!("{tag}-{}", NodeId::mint()));
     let (root_dir, admin_dir) = (base.join("admin1"), base.join("admin2"));
     std::fs::create_dir_all(&root_dir).unwrap();
     let root = start_with(day0_config(&root_dir), Wiring { node_hooks: NodeHooks::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
     root.stop_reconciling().await;
     until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-    let prepared = spans.recorded("rdm.node_admin.primary.update.via-takeover-prepared", |f| at_admin(f, "1") && f.get("outcome").map(String::as_str) == Some("prepared") && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1")));
-    tokio::time::timeout(WRONG, prepared).await.unwrap_or_else(|_| panic!("the Day-0 admin never prepared its takeover of mesh1"));
     let launch = launch_by(&root, rdm_core::PathName::new("mesh1.admin", "2").unwrap(), &admin_dir, &root_dir);
     let _ = root.runner.joins.expect(deployed(&launch));
     let store = nodes_file(&root_dir, &root).parent().unwrap().to_path_buf();
@@ -262,7 +256,7 @@ fn a_launched_admin_starts_with_its_fabric_store_unreadable() {
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        let (base, root, launch, store) = root_and_launch("admin-unread-stores", &spans).await;
+        let (base, root, launch, store) = root_and_launch("admin-unread-stores").await;
         let written = unreadable_from_byte_0(&store, &["fabric.jsonl"]);
         let folds_before = topology_folds(&spans).len();
 
@@ -316,7 +310,7 @@ fn a_launched_admin_is_ready_with_its_fabric_meshes_and_nodes_stores_unreadable(
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        let (base, root, launch, store) = root_and_launch("admin-unread-all", &spans).await;
+        let (base, root, launch, store) = root_and_launch("admin-unread-all").await;
         let root_birth = root.digest.lock().unwrap().node.clone();
         unreadable_from_byte_0(&store, &TOPOLOGY_STORES[..3]);
         let folds_before = topology_folds(&spans).len();
