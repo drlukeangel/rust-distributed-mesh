@@ -187,7 +187,7 @@ impl FabricStates {
     /// runs on its own task.
     pub async fn change_step(self: &Arc<Self>, inputs: ChangeInputs<'_>) {
         let mut change = self.change.lock().await;
-        let heard_state = inputs.heard.and_then(|h| FabricState::parse(h).or_else(|| (h == "degraded").then_some(FabricState::Ready)));
+        let heard_state = inputs.heard.and_then(FabricState::parse);
         if !inputs.is_fabric_primary {
             // A non-primary serves the state the fabric-primary published and runs nothing.
             *change = Change::default();
@@ -507,8 +507,7 @@ impl FabricStates {
     /// republish). A checklist opens on its first step: its down op goes to every planned birth but this
     /// admin, and its checklist counts only the check-ins heard from then on. The mesh checklist's
     /// check-in is a planned birth's digest heard ready after the checklist began; the
-    /// fabric checklist's is a report from the CURRENT mesh primary's birth. The fabric-primary clears
-    /// `degraded` only on such a report, never on a topology reading.
+    /// fabric checklist's is a report from the CURRENT mesh primary's birth, never a topology reading.
     pub fn adopted_step(&self, awaiting: Announced, i: AdoptedInputs<'_>) -> Complete {
         let mut adopted = self.adopted.lock().unwrap();
         let me = self.held_name_in(i.view);
@@ -585,8 +584,7 @@ impl FabricStates {
             let missing = fabric_missing(&meshes, my_mesh_done, &reports);
             if missing.is_empty() {
                 let waited_ms = checklist.began.elapsed().as_millis() as u64;
-                let cleared = self.env.records.set_adopted_degraded(false);
-                tracing::info_span!("rdm.node_admin.fabric.update.via-checklist-complete", node_path = %me.path, node_name = %me.name, meshes = meshes.len(), waited_ms, degraded_cleared = cleared)
+                tracing::info_span!("rdm.node_admin.fabric.update.via-checklist-complete", node_path = %me.path, node_name = %me.name, meshes = meshes.len(), waited_ms)
                     .in_scope(|| tracing::info!("every mesh primary reported for this checklist"));
                 out.fabric = true;
             } else {
@@ -1080,10 +1078,10 @@ mod tests {
         n
     }
 
-    /// A degraded fabric of two meshes, holding `nodes`.
+    /// A ready fabric of two meshes, holding `nodes`.
     fn view(nodes: Vec<Node>) -> Topology {
         Topology {
-            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Degraded, provider: ProviderKind::Process },
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
             meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::Ready }).collect(),
             nodes,
         }
@@ -1225,27 +1223,26 @@ mod tests {
 
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn successor_fabric_primary_keeps_degraded_until_every_mesh_primary_reports_for_its_checklist() {
-        // The role moved to mesh2's primary while mesh1 was being recovered; the new primary adopted degraded.
+    async fn a_successor_fabric_primary_completes_its_checklist_only_on_the_current_mesh_primarys_report() {
+        // The role moved to mesh2's primary while mesh1 was being recovered; the new primary adopted the fabric's status.
         let (me, recovered) = (member(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, true), member(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, true, false));
         let v = view(vec![me.clone(), recovered.clone()]);
         let records = Arc::new(Records::default());
-        records.set_adopted_degraded(true);
         let digest_view = DigestView::default();
         let fabric_states = adopted_states_of(&me, v.clone(), records.clone()).await;
         let awaiting = Announced { mesh_awaiting_checklist: false, fabric_awaiting_checklist: true };
         let inputs = || AdoptedInputs { view: &v, planned: None, digest_view: &digest_view };
         // A ready primary of a newer birth is in the view; nobody has reported to this holder.
         let done = fabric_states.adopted_step(awaiting, inputs());
-        assert!(!done.fabric && records.adopted_degraded(), "the topology reading alone does not clear degraded");
+        assert!(!done.fabric, "the topology reading alone does not complete it");
         // A report from a birth that is not the primary now does not either.
         records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(rdm_core::framing::Birth { node_id: crate::model::NodeId::mint(), incarnation: IncarnationId::mint() }), Instant::now());
         let done = fabric_states.adopted_step(awaiting, inputs());
-        assert!(!done.fabric && records.adopted_degraded(), "a report of another birth is not the current primary's");
-        // The current primary re-declares to the new primary: the checklist is complete and degraded clears.
+        assert!(!done.fabric, "a report of another birth is not the current primary's");
+        // The current primary re-declares to the new primary: the checklist is complete.
         records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(recovered.birth().unwrap()), Instant::now());
         let done = fabric_states.adopted_step(awaiting, inputs());
-        assert!(done.fabric && !records.adopted_degraded(), "every mesh primary reported for this checklist");
+        assert!(done.fabric, "every mesh primary reported for this checklist");
     }
 
     /// CONTRACT (mesh-delete.md: the mesh row goes Dead at mesh.deleted, and its final primary's end is its
@@ -1261,7 +1258,6 @@ mod tests {
         let mut v = view(vec![me.clone(), other.clone(), last]);
         v.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh3".into(), status: ScopeStatus::Dead });
         let records = Arc::new(Records::default());
-        records.set_adopted_degraded(true);
         let digest_view = DigestView::default();
         let adopted = adopted_states_of(&me, v.clone(), records.clone()).await;
         let awaiting = Announced { mesh_awaiting_checklist: false, fabric_awaiting_checklist: true };

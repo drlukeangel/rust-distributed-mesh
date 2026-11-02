@@ -192,8 +192,8 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
 /// CONTRACT (node-status-heartbeat-connections.md §A.3: "the successor acquires the held member
 /// statuses and publishes a complete projection under its own revision before any delta"; fabric-authority.md
 /// §7: a successor mesh primary hydrates the lifecycle state that already exists, adopts that exact
-/// state and republishes the adopted projection, manufacturing no transition; mesh-investigation.md "A
-/// node-admin joins the live mesh" step 4): B, an admin of mesh1 whose view holds `mesh1.rpc.1`'s
+/// state and republishes the adopted projection, manufacturing no transition; node-create.md "A
+/// node-admin created into a live mesh" step 4): B, an admin of mesh1 whose view holds `mesh1.rpc.1`'s
 /// heartbeat and no status for it (an admin entering a live mesh: its topology read installs nothing,
 /// reenter.rs), takes mesh1's role. A, the primary before it, left a declared-state row for that exact
 /// birth saying Ready, and one for `mesh1.rpc.2`, whose heartbeat B hears only after it took

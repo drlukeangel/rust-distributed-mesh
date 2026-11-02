@@ -10,8 +10,7 @@ use tracing::instrument::WithSubscriber;
 /// probe, role binaries): a connection idles out after `staleness_floor()` (`RDM_STALENESS_MS`,
 /// 30 s by default) and is kept alive every `gossip_interval() / 2` (`RDM_GOSSIP_INTERVAL_MS`,
 /// 2 s by default, so 1 s). A pooled connection to a dead peer therefore closes within the
-/// staleness floor, before the peer-mesh investigation's second probe (four thirds of the floor
-/// unheard, `rdm_admin::investigate::Rungs::at`), so the second probe's dial fails
+/// staleness floor, before a node investigation of that peer at the floor, so its tickle's dial fails
 /// before writing.
 pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
     let idle = rdm_core::cadence::staleness_floor();

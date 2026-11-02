@@ -96,7 +96,7 @@ impl Capture {
 /// past the cut, so a stopped admin plans, publishes or calls out after it was cut.
 ///
 /// The executor is the turn held because its idle wait (`ReconcileWake::next`: a submitted Build, a
-/// view installed, a fabric state change, the peer-mesh investigation's move, a drive's end) touches no
+/// view installed, a fabric state change, a drive's end) touches no
 /// lock: woken by the cell's submit notification, it always reaches its turn and holds there, at the
 /// cell's writer. The hierarchy's idle wait reads the view on a view change (admin.rs, its
 /// `view_changed` branch), so a hierarchy woken by the install the cell's writer queued behind

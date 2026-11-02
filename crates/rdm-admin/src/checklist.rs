@@ -1,11 +1,10 @@
 //! The check-in checklist's readers (states.md, "The check-in checklist"): the planned births of the
-//! accepted Build, which of them have not checked in, which mesh primaries have not reported, and
-//! whether a mesh the fabric-primary decided to recover is back. The checklists that read them are
+//! accepted Build, which of them have not checked in, and which mesh primaries have not reported. The
+//! checklists that read them are
 //! [`crate::fabric_status::FabricStates`]'s.
 
 use crate::accepted::FabricTopology;
-use crate::admin::PeerRecovery;
-use crate::model::{IncarnationId, NodeKind, PathName};
+use crate::model::{NodeKind, PathName};
 use crate::status_rpc::MeshReport;
 use rdm_core::framing::Birth;
 use rdm_core::{MemberStatus, MeshDigest};
@@ -139,17 +138,10 @@ pub(crate) fn reports_of<'a>(declared: &crate::status_rpc::Declared, view: &crat
     meshes.filter_map(|m| declared.report_of(m, view.node_type_primary(m, NodeKind::NodeAdmin)).map(|r| (m.to_string(), r))).collect()
 }
 
-/// Whether the mesh a fabric-primary decided to recover is back: its current primary is a birth the
-/// decision did not find, it reported to this fabric-primary, and it reported after the decision.
-/// A ready primary of a newer birth that has not reported is not this.
-pub fn recovered(recovery: &PeerRecovery, primary: Option<&Birth>, report: Option<&MeshReport>) -> bool {
-    let (Some(primary), Some(report)) = (primary, report) else { return false };
-    !recovery.lost.contains(primary) && &report.birth == primary && report.at >= recovery.opened_at
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::IncarnationId;
     use rdm_core::{FabricId, MeshNode};
     use std::time::Instant;
 
@@ -252,28 +244,5 @@ mod tests {
         // The holder's own mesh counts only once its own checklist is finished.
         let m = fabric_missing(&meshes[..2], false, &reports);
         assert_eq!(m, vec![Missing { who: "mesh1".into(), why: "own-mesh-checklist-open" }]);
-    }
-
-    // @feature: node-lifecycle
-    #[test]
-    fn degraded_clears_only_on_the_current_primarys_report_after_the_decision() {
-        let (lost, recovered_id) = (birth(), birth());
-        let opened_at = Instant::now();
-        let recovery = PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(1), opened_at, lost: vec![lost.clone()] };
-        let later = opened_at + std::time::Duration::from_millis(5);
-        // A ready primary of a newer birth that has not reported does not clear it.
-        assert!(!recovered(&recovery, Some(&recovered_id), None));
-        // The birth the decision found never does, reported or not.
-        assert!(!recovered(&recovery, Some(&lost), Some(&report(&lost, later))));
-        // A report from a birth that is not the primary now is not the primary's.
-        assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&birth(), later))));
-        // A report received before the decision is not fresh.
-        assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&recovered_id, opened_at - std::time::Duration::from_millis(1)))));
-        assert!(!recovered(&recovery, None, Some(&report(&recovered_id, later))));
-        let same_incarnation = Birth { node_id: crate::model::NodeId::mint(), incarnation: recovered_id.incarnation.clone() };
-        assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&same_incarnation, later))));
-        let reused_incarnation = Birth { node_id: crate::model::NodeId::mint(), incarnation: lost.incarnation.clone() };
-        assert!(recovered(&recovery, Some(&reused_incarnation), Some(&report(&reused_incarnation, later))));
-        assert!(recovered(&recovery, Some(&recovered_id), Some(&report(&recovered_id, later))));
     }
 }

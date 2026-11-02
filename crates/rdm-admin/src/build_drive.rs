@@ -63,10 +63,11 @@ pub trait Gate: Send + Sync {
     async fn target_set(&self) {
         std::future::pending::<()>().await
     }
-    /// What the peer-mesh investigation holds of `mesh` now (`crate::investigate::Ladder::peer_mesh`),
-    /// read when asked: a node of a peer mesh held unheard is not claimed or dispatched for (R-D1),
-    /// except the mesh's first recovering node-admin once the investigation decided its recovery.
-    fn peer_mesh(&self, _mesh: &str) -> Option<crate::investigate::PeerMesh> {
+    /// How long the peer mesh `mesh` has gone unheard on the backbone, in milliseconds, once at or past
+    /// the staleness floor, read when asked: a node of a peer mesh held unheard is not claimed or
+    /// dispatched for (R-D1), except an unheard mesh-primary's own recovery
+    /// (`mesh_primary_recovery_admits`). `None` for a mesh heard within the floor.
+    fn mesh_unheard_ms(&self, _mesh: &str) -> Option<u64> {
         None
     }
     /// node.primary.update before an operation on a primary runs (R-MT1, Luke 2026-10-12: "only a
@@ -204,12 +205,6 @@ pub trait DepartureProof: Send + Sync {
     /// `Ok` when the provider reads the exact admitted birth `executor` exited or
     /// os-stopped; `Err` names why it is not.
     async fn proven(&self, executor: &rdm_core::framing::Birth) -> Result<(), String>;
-    /// The fabric primary has claimed attempt `attempt` of `build_id`, whose create of the first
-    /// node-admin of `mesh`, no member of which answers, was admitted (mesh-investigation.md step 5),
-    /// `from` being the instant before the claim: at that same moment it gives the
-    /// mesh a new node-admin and authors the fabric `degraded` (step 6, R-DG1), until the mesh's new
-    /// primary reports (step 7). A proof that holds no health records nothing.
-    async fn mesh_given_node_admin(&self, _mesh: &str, _build_id: &BuildId, _attempt: u32, _from: std::time::Instant) {}
 }
 
 /// Where the verdict an executor reported is recorded on the fabric-primary's own log, so the
@@ -345,7 +340,7 @@ pub struct RoleLoss {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum StallKey {
     Reason(String),
-    UnheardMesh { mesh: String, operation: rdm_core::OperationId, decided: bool },
+    UnheardMesh { mesh: String, operation: rdm_core::OperationId },
     NoOwner { operation: rdm_core::OperationId },
 }
 
@@ -989,16 +984,6 @@ impl Drives {
     }
 }
 
-/// Resolve an admitted operation's structured location or pinned node identity.
-fn node_of_key(key: &rdm_core::OperationId, topology: &crate::accepted::FabricTopology) -> Option<PathName> {
-    match key.subject.as_ref()? {
-        rdm_core::OperationSubject::Location(location) => Some(location.clone()),
-        rdm_core::OperationSubject::Node(node_id) => topology.pinned.iter().find(|(_, birth)| &birth.node_id == node_id).map(|(location, _)| location.clone()),
-        rdm_core::OperationSubject::Birth { node_id, incarnation } => topology.pinned.iter().find(|(_, birth)| &birth.node_id == node_id && &birth.incarnation == incarnation).map(|(location, _)| location.clone()),
-        _ => None,
-    }
-}
-
 /// What is left of `p` in view `t`: the plan, less every operation a run of the Build's current run
 /// completed whose executor reported the run's end ([`BuildProjection::reported_in_run`]), by its
 /// `Complete` receipt on this admin's log ([`BuildProjection::completed_in_run`]) or by the
@@ -1094,43 +1079,6 @@ fn changes_the_fabric(p: &BuildProjection) -> bool {
 /// check-in checklist").
 fn waits_for_the_fabric_change(p: &BuildProjection) -> bool {
     changes_the_fabric(p) && p.completed_at.is_none()
-}
-
-/// The node-admin of `mesh` the Build already carried across the R-D1 target: an operation on it has a
-/// step receipt in an attempt held by an admin outside `mesh`, later than the last attempt an admin of
-/// `mesh` held (a mesh that has executed its own work since stands on its own again). That admin is
-/// the mesh's first recovering node-admin (mesh-investigation.md step 6: the restore runs on the SAME
-/// accepted Build), read from the Build's facts whichever drive dispatched it and whichever admin
-/// outside the mesh held its attempt.
-pub(crate) fn crossed_admin(p: &BuildProjection, mesh: &str) -> Option<PathName> {
-    let holder = |attempt: u32| p.attempt_executor_meshes.get(&attempt);
-    let own = own_attempt(p, mesh);
-    let mut steps: Vec<&crate::build_state::BuildStepReceipt> = p.steps.iter().filter(|s| s.mesh.is_none() && s.attempt > own).collect();
-    steps.sort_by_key(|s| s.attempt);
-    steps.into_iter().find_map(|s| {
-        let node = node_of_key(&s.operation, &p.topology).filter(|n| p.topology.node_spec(n).is_some_and(|spec| spec.kind == NodeKind::NodeAdmin && spec.mesh == mesh))?;
-        holder(s.attempt).filter(|h| h.as_str() != mesh).map(|_| node)
-    })
-}
-
-/// The last attempt of the Build an admin of `mesh` held; `0` when none did. A completed attempt of
-/// the mesh's own lane its own admin ran (a section, Q250) is the mesh's own work at the fabric attempt
-/// the Build stood at when it was claimed.
-fn own_attempt(p: &BuildProjection, mesh: &str) -> u32 {
-    let fabric = p.attempt_executor_meshes.iter().filter(|(_, m)| m.as_str() == mesh).map(|(a, _)| *a).max().unwrap_or(0);
-    let lane = p.lanes.get(mesh).filter(|l| l.state == BuildState::Complete && l.attempt > 0 && l.executor_mesh.as_deref() == Some(mesh)).map(|l| l.at_fabric_attempt).unwrap_or(0);
-    fabric.max(lane)
-}
-
-/// The node-admin the connection-lost verdict of `mesh` still owes a node.create (mesh-investigation.md
-/// step 6), when the investigation decided the mesh's recovery: the node-admin the Build already carried
-/// across the target ([`crossed_admin`]) until its create completed since the mesh last executed its own
-/// work, and `first` (the mesh's first node-admin in path order) while the Build carried none.
-pub(crate) fn first_admin_owed(p: &BuildProjection, mesh: &str, first: &PathName) -> Option<PathName> {
-    let Some(crossed) = crossed_admin(p, mesh) else { return Some(first.clone()) };
-    let (own, key) = (own_attempt(p, mesh), rdm_core::OperationId::location("node.create", &crossed));
-    let created = p.steps.iter().any(|s| s.mesh.is_none() && s.attempt > own && s.operation == key && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete);
-    (!created).then_some(crossed)
 }
 
 enum Inner {
@@ -1279,82 +1227,38 @@ impl DriveEnv {
         drive.push(BuildReply::Blocked { build_id: drive.build_id.to_string(), attempt, operation: operation.clone(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
     }
 
-    /// What the peer-mesh investigation holds of the mesh of `op`'s node when that mesh is a peer
-    /// mesh it holds unheard (R-D1: loss of peer-mesh control-plane visibility targets lifecycle
-    /// mutation for every node in that mesh): the mesh, how long it is unheard, and whether its
-    /// recovery is decided. `None` for a mesh operation, a node of this admin's own mesh, or a mesh
-    /// the investigation does not hold unheard.
-    fn unheard_peer(&self, op: &BuildOperation) -> Option<(PathName, u64, bool)> {
+    /// The node of `op` and how long its mesh has gone unheard, when that mesh is a peer mesh held
+    /// unheard past the staleness floor (R-D1: loss of peer-mesh control-plane visibility targets
+    /// lifecycle mutation for every node in that mesh). `None` for a mesh operation, a node of this
+    /// admin's own mesh, or a mesh heard within the floor.
+    fn unheard_peer(&self, op: &BuildOperation) -> Option<(PathName, u64)> {
         let node = op.node()?;
         if op.mesh()? == self.me_mesh {
             return None;
         }
-        let peer = self.gate.peer_mesh(op.mesh()?)?;
-        Some((node.clone(), peer.unheard_ms?, peer.recovery_decided))
-    }
-
-    /// The restore the investigation's recovery verdict authorizes (R-D1; mesh-investigation.md steps
-    /// 5-6; Q221): `op` is the decision step's operation on a node-admin of a peer mesh held unheard, the
-    /// node.create of that node-admin on a decided recovery (connection-lost) or on the fully crashed
-    /// mesh's exited verdict ([`Self::crash_admits`]), and the Build carried no other admin of that mesh
-    /// across the target ([`crossed_admin`]); no other operation of the mesh is exempt. The
-    /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
-    /// included): it is the mesh's first recovering node-admin.
-    fn recovery_admits(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> bool {
-        mesh_primary_recovery_admits(p, op)
-            || self.unheard_peer(op).is_some_and(|(node, _, decided)| ((decided && op.created_node() == Some(&node)) || self.crash_admits(p, op, &node, crashed)) && op.kind() == Some(NodeKind::NodeAdmin) && crossed_admin(p, op.mesh().expect("node operation has mesh")).is_none_or(|crossed| crossed == node))
-    }
-
-    /// The node.create of the node-admin a mesh no member of which answers is owed (mesh-investigation.md
-    /// step 5, "No member answers"): `op` creates `node`, the mesh's first node-admin in path order (or
-    /// the one the Build already carried across the target, [`first_admin_owed`]), and `crashed` (this
-    /// pass's [`Self::unanswered_meshes`]) holds its mesh: the investigation's 60 s decision on it came
-    /// out `unreachable`. Nothing else of that mesh crosses the target, and the create's own target decides
-    /// the birth it finds at the path.
-    fn crash_admits(&self, p: &BuildProjection, op: &BuildOperation, node: &PathName, crashed: &HashSet<String>) -> bool {
-        op.created_node() == Some(node)
-            && crashed.contains(op.mesh().expect("node operation has mesh"))
-            && p.topology.meshes.get(op.mesh().expect("node operation has mesh")).and_then(|m| m.nodes_of_type(NodeKind::NodeAdmin).min()).and_then(|first| first_admin_owed(p, op.mesh().expect("node operation has mesh"), first)).as_ref() == Some(node)
-    }
-
-    /// The peer meshes of `p` no member of which answers (mesh-investigation.md step 5, "No member
-    /// answers"): each mesh the investigation decided `unreachable`. Its first node-admin's create may be
-    /// admitted on that verdict (Q111); the create's own target decides the birth at the path.
-    fn unanswered_meshes(&self, p: &BuildProjection) -> HashSet<String> {
-        p.topology.meshes.values().filter(|m| m.name != self.me_mesh && !m.nodes.is_empty() && self.gate.peer_mesh(&m.name).is_some_and(|pm| pm.unreachable_decided)).map(|m| m.name.clone()).collect()
+        Some((node.clone(), self.gate.mesh_unheard_ms(op.mesh()?)?))
     }
 
     /// The target on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
-    /// except the mesh's first recovering node-admin once the investigation decided its recovery
-    /// ([`Self::recovery_admits`]). `Some` names the
-    /// target.
-    fn peer_mesh_held(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> Option<(PathName, u64, bool)> {
-        if p.topology.meshes.is_empty() || self.recovery_admits(p, op, crashed) {
+    /// except an unheard mesh-primary's own recovery, the delete of its exact birth and the create over it
+    /// on node investigation's verdict ([`mesh_primary_recovery_admits`], Q335). `Some` names the target.
+    fn peer_mesh_held(&self, p: &BuildProjection, op: &BuildOperation) -> Option<(PathName, u64)> {
+        if p.topology.meshes.is_empty() || mesh_primary_recovery_admits(p, op) {
             return None;
         }
         self.unheard_peer(op)
     }
 
-    /// The drive stops at the target on `op` by name: once per mesh, operation and verdict on its own
-    /// span, never framed to the caller, and stalled until the investigation's state changes.
-    fn stop_at_peer_mesh_held(&self, me: &PathName, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool), crashed: &HashSet<String>) -> DriveEnd {
+    /// The drive stops at the target on `op` by name: once per mesh and operation on its own span, never
+    /// framed to the caller, and stalled until the mesh is heard again.
+    fn stop_at_peer_mesh_held(&self, me: &PathName, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms): (PathName, u64)) -> DriveEnd {
         let mesh = op.mesh().expect("node operation has mesh");
-        let unreachable = self.gate.peer_mesh(mesh).is_some_and(|m| m.unreachable_decided);
         let why = format!(
-            "path {me_path:?}, name {me_name:?}: operation {:?} acts on path {target_path:?}, name {target_name:?} of peer mesh {mesh}, which the peer-mesh investigation holds unheard ({unheard_ms} ms){}: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
+            "path {me_path:?}, name {me_name:?}: operation {:?} acts on path {target_path:?}, name {target_name:?} of peer mesh {mesh}, unheard on the backbone for {unheard_ms} ms: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
             op.key(),
-            if decided {
-                "; its decided recovery admits only the mesh's first recovering node-admin"
-            } else if unreachable && crashed.contains(mesh) {
-                "; its decision is unreachable: no member answers, which admits only the create of the mesh's first node-admin"
-            } else if unreachable {
-                "; its decision is unreachable and the accepted topology names no node of it, so nothing of it is admitted"
-            } else {
-                ", with no recovery decided"
-            },
             mesh = mesh, target_path = &node.path, target_name = &node.name, me_path = &me.path, me_name = &me.name);
-        if drive.stall_is_new(StallKey::UnheardMesh { mesh: mesh.to_owned(), operation: op.key(), decided }) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id.log(), attempt, node_path = %me.path, node_name = %me.name, operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().recipe_step, target_path = %node.path, target_name = %node.name, mesh = %mesh, unheard_ms, recovery_decided = decided)
+        if drive.stall_is_new(StallKey::UnheardMesh { mesh: mesh.to_owned(), operation: op.key() }) {
+            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id.log(), attempt, node_path = %me.path, node_name = %me.name, operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().recipe_step, target_path = %node.path, target_name = %node.name, mesh = %mesh, unheard_ms)
                 .in_scope(|| tracing::info!("the drive claims and dispatches nothing for a node of a peer mesh held unheard"));
         }
         DriveEnd::Stalled(why)
@@ -1369,15 +1273,12 @@ impl DriveEnv {
     /// the investigation. `Err` names the target on the first operation. With the plan, whether the run
     /// hands back at the hold for the fabric's change (Q154): the state it was planned on, which decides
     /// how its hand-back is read, whatever the fabric's state when the run ends.
-    fn plan_dispatch(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &rdm_core::framing::Birth, crashed: &HashSet<String>) -> Result<(RunPlan, bool), (BuildOperation, (PathName, u64, bool))> {
+    fn plan_dispatch(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &rdm_core::framing::Birth) -> Result<(RunPlan, bool), (BuildOperation, (PathName, u64))> {
         let ops = left(drive, p, t);
-        if let Some(op) = ops.first().filter(|op| executor == &self.door.birth() && self.recovery_admits(p, op, crashed)) {
-            return Ok((RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| self.door.node_id.clone()) }, false));
-        }
         let mut plan = run_of(&ops, t, &executor.node_id);
         let mut cut = None;
         for (i, op) in plan.operations.iter().enumerate() {
-            if let Some(f) = self.peer_mesh_held(p, op, crashed) {
+            if let Some(f) = self.peer_mesh_held(p, op) {
                 if i == 0 {
                     return Err((op.clone(), f));
                 }
@@ -1500,7 +1401,6 @@ impl DriveEnv {
             tracing::info_span!("rdm.node_admin.build.update.via-atlas-created", build_id = %id.log(), node_path = %me.path, node_name = %me.name, locations = ?created)
                 .in_scope(|| tracing::info!("the paths this Build's own creates hold in the atlas: never surplus"));
             *drive.created.lock().unwrap() = created;
-            let crashed = self.unanswered_meshes(&p);
             // The claim's holder was proven exited by this pass: the next attempt is claimed without
             // calling the lost primary again.
             let take_over = deleted.as_ref().is_some_and(|d| p.executor.as_ref() == Some(d));
@@ -1555,7 +1455,7 @@ impl DriveEnv {
                     Sections::Ran => continue,
                     Sections::End(end) => return end,
                 }
-                match self.claim_next(&me, drive, &p, handed_to.take(), &crashed).await {
+                match self.claim_next(&me, drive, &p, handed_to.take()).await {
                     Ok(c) => c,
                     Err(end) => return end,
                 }
@@ -1575,9 +1475,25 @@ impl DriveEnv {
             self.replay(drive, &p.steps, if fresh { 0 } else { first }, attempt).await;
             let (plan, held) = {
                 let t = self.topology.read().await.clone();
-                match self.plan_dispatch(&me, drive, &p, &t, &executor, &crashed) {
+                match self.plan_dispatch(&me, drive, &p, &t, &executor) {
                     Ok(plan) => plan,
-                    Err((op, f)) => return self.stop_at_peer_mesh_held(&me, drive, attempt, &op, f, &crashed),
+                    Err((op, f)) => {
+                        // An attempt this drive holds that stops on R-D1 in a mesh left with no node-admin
+                        // Ready for the election to name ends HandedOff, the existing hand-back (Q253):
+                        // nothing Failed, nothing framed to the caller. The node recovery owed to that
+                        // mesh's lost mesh-primary takes the mesh's next attempt on the freed in-flight row
+                        // (Q291; Q335 item 4: with no successor the fabric-primary recovers it), and this
+                        // Build resumes once the mesh is heard. Only while the claim record still names this
+                        // attempt and its executor: a drive resumed after a later attempt's claim writes
+                        // nothing of its superseded attempt (build.md, `StaleClaim`).
+                        let mesh = op.mesh().unwrap_or_default();
+                        let held = self.builds.read_build(&id).await.is_ok_and(|p| p.attempt == attempt && p.executor.as_ref() == Some(&executor));
+                        if held && !t.nodes_of_type(mesh, NodeKind::NodeAdmin).any(|n| n.status == crate::model::NodeStatus::Ready) {
+                            self.verdict(&me, &executor, BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: self.door.node_id.clone() } }, None).await;
+                            self.release_mesh(&id, attempt, &executor).await;
+                        }
+                        return self.stop_at_peer_mesh_held(&me, drive, attempt, &op, f);
+                    }
                 }
             };
             // A node.primary.update that precedes an operation of this run is acknowledged first,
@@ -1997,13 +1913,13 @@ impl DriveEnv {
 
     /// Claim the next attempt of `p` for the admin that runs what is left (or `forced`, the admin a
     /// run just handed off to), on this admin's own log.
-    async fn claim_next(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<rdm_core::NodeId>, crashed: &HashSet<String>) -> Result<(u32, rdm_core::framing::Birth, CallContext), DriveEnd> {
+    async fn claim_next(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<rdm_core::NodeId>) -> Result<(u32, rdm_core::framing::Birth, CallContext), DriveEnd> {
         let id = &drive.build_id;
         let attempt = p.attempt + 1;
         let view = self.topology.read().await.clone();
         let first = left(drive, p, &view).into_iter().next();
-        if let Some((op, f)) = first.as_ref().and_then(|op| self.peer_mesh_held(p, op, crashed).map(|f| (op, f))) {
-            return Err(self.stop_at_peer_mesh_held(me, drive, attempt, op, f, crashed));
+        if let Some((op, f)) = first.as_ref().and_then(|op| self.peer_mesh_held(p, op).map(|f| (op, f))) {
+            return Err(self.stop_at_peer_mesh_held(me, drive, attempt, op, f));
         }
         // A recovery owed to the mesh this attempt acts in, open in the mesh's lane and claimed by no one,
         // takes the mesh first: nothing is claimed here until it ran or its birth is no longer at its
@@ -2011,16 +1927,10 @@ impl DriveEnv {
         if let Some((mesh, owed, path)) = first.as_ref().and_then(|op| op.mesh()).and_then(|mesh| owed_recovery(p, mesh, &view).map(|(a, path)| (mesh.to_owned(), a, path))) {
             return Err(self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {id} acts in mesh {mesh}, where the recovery of path {recovery_path:?}, name {recovery_name:?} owed to it is attempt {owed} of its lane, open and claimed by no one: it runs first", recovery_path = &path.path, recovery_name = &path.name, me_path = &me.path, me_name = &me.name)));
         }
-        // The mesh's first recovering node-admin under the investigation's recovery verdict is this
-        // admin's to execute (R-D1). A run handed back to this admin (its own cut, or an executor whose
-        // view names this admin) is claimed for the admin this view names for what is left: an
-        // operation no admin executes waits for its mesh's own role, and one another admin executes is
-        // claimed for that admin, never for this one to hand on unrun.
-        let recover = first.as_ref().is_some_and(|op| self.recovery_admits(p, op, crashed));
-        // The create admitted for a mesh no member of which answers (not the ladder's decided recovery,
-        // which the ladder told when it decided): the mesh this claim gives a node-admin.
-        let crash_mesh = first.as_ref().filter(|op| recover && self.unheard_peer(op).is_some_and(|(_, _, decided)| !decided)).and_then(|op| op.mesh()).map(str::to_owned);
-        let from = std::time::Instant::now();
+        // A run handed back to this admin (its own cut, or an executor whose view names this admin) is
+        // claimed for the admin this view names for what is left: an operation no admin executes waits
+        // for its mesh's own role, and one another admin executes is claimed for that admin, never for
+        // this one to hand on unrun.
         // An unheard mesh-primary's recovery, its delete and the create over its birth, is claimed for the
         // admin its mesh elects in the birth's place once one is primary: "the fabric-primary opens the
         // attempt ...; the mesh-primary claims it through BuildClaim, and the fabric-primary calls
@@ -2049,7 +1959,6 @@ impl DriveEnv {
         .filter(|to| to != &self.door.node_id);
         let forced = match next_primary {
             Some(to) => Some(to),
-            None if recover => Some(self.door.node_id.clone()),
             None => forced.filter(|to| to != &self.door.node_id),
         };
         let lead = match forced {
@@ -2082,9 +1991,6 @@ impl DriveEnv {
         };
         match self.door.claim(&lead, id, attempt).await {
             BuildClaimReply::Won { context } => {
-                if let Some(mesh) = crash_mesh {
-                    self.departure.mesh_given_node_admin(&mesh, id, attempt, from).await;
-                }
                 self.started_if_opening(me, p, attempt, &context).await;
                 match crate::build_state::committed_claim(&*self.builds, id, None, attempt).await {
                     Ok(Some(claim)) => Ok((attempt, claim.executor, context)),

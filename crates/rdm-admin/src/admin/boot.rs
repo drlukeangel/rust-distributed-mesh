@@ -1740,7 +1740,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let _ = runner_slot.set(runner.clone());
                             let _ = heard_again_slot.set(Arc::new(crate::heard_again::HeardAgain { client: node_rpc.client.clone(), status_door: status_door.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone(), digest_view: topology_view.digest_view.clone(), on_node_investigated: on_node_investigated.clone() }));
                             // What the provider holds recorded at a path: the proof of a node the accepted topology names
-                            // that no view and no durable runtime row holds a birth of (mesh-investigation.md step 5).
+                            // that no view and no durable runtime row holds a birth of (node-recovery.md step 2, Q335).
                             records.set_path_probe(runner.clone());
                             // Gate 5's verdict on a delete of a birth neither stopped nor heard live (Q219).
                             let _ = control.investigation.set(runner.clone());
@@ -1767,9 +1767,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     gate: Arc::new(RoleGate { builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone() }),
                                     departure: Arc::new(ProviderDeparture {
                                         me: name.clone(),
-                                        topology: control.topology.clone(),
                                         refresh: refresh_view,
-                                        digest_view: digest_view.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
+                                        digest_view: digest_view.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone() }),
                                     verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
                                     notices: build_notices.clone(),
                                     turns: stop_gate.clone(),
@@ -3129,12 +3128,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if took_a_writing_role {
                                                     records.write_held_arrival_seeds().await;
                                                 }
-                                                // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
-                                                // new primary authors no ready on a topology reading.
-                                                if fabric_primary && !was_fabric_primary {
-                                                    let adopted = topology_view.fabric_status().is_some_and(|s| s.status == "degraded");
-                                                    records.set_adopted_degraded(adopted);
-                                                }
                                                 // The atlas covers the meshes this admin is primary for (Q207): every mesh its view and
                                                 // the current Build name as the fabric-primary, its own as a mesh-primary, none else;
                                                 // a mesh handed away is narrowed off. It holds no node record: each is read through the
@@ -3150,17 +3143,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if !taken.is_empty() || !handed.is_empty() {
                                                     tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-scope", node_path = %me.path, node_name = %me.name, meshes = %scope.iter().map(String::as_str).collect::<Vec<_>>().join(","), taken = %taken.join(","), handed = %handed.join(","), fabric_primary, mesh_primary, "otel.kind" = "internal")
                                                         .in_scope(|| tracing::info!("the atlas covers the meshes this admin is primary for"));
-                                                }
-                                                if fabric_primary {
-                                                    records.set_published_degraded(false);
-                                                    crate::investigate::restore_peer_recovery(&me, &records, &t);
-                                                } else {
-                                                    // The role is released in one place and one order: the published `degraded` is
-                                                    // held before the authority records it replaces are cleared, so no projection
-                                                    // between the two answers ready for a fabric the primary published degraded.
-                                                    records.set_published_degraded(topology_view.fabric_status().is_some_and(|s| s.status == "degraded"));
-                                                    records.clear_peer_recoveries();
-                                                    records.set_adopted_degraded(false);
                                                 }
                                                 was_fabric_primary = fabric_primary;
                                                 // The fabric-primary's change through the fabric states, one non-blocking step per turn
@@ -3179,24 +3161,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                                                 // A status is sent when it changed, never per turn (gossip.md §3.2).
                                                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                                                // The fabric's status as the live records state it: a checklist that just cleared the adopted
-                                                // degraded must not be answered by the older projection `t`.
                                                 // The fabric-primary publishes the state it holds now, not the projection's last refresh:
                                                 // every state the change enters is its own frame.
                                                 let held_state = records.fabric_state();
-                                                let fabric_status = |records: &Records| {
-                                                    let basis = if fabric_primary { held_state.scope() } else { t.fabric.status };
-                                                    match basis {
-                                                        crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::Ready => {
-                                                            status_of(if records.adopted_degraded() || records.peer_recovering() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::Ready })
-                                                        }
-                                                        other => status_of(other),
-                                                    }
-                                                };
-                                                let degraded_meshes = |records: &Records| -> Vec<(String, Option<u64>)> {
-                                                    records.peer_recoveries().into_iter().map(|r| (r.mesh, r.verdict_rafka_ms)).collect()
-                                                };
-                                                let mut announced = backbone.announce_statuses_with_degraded_meshes(&mesh_status, &fabric_status(&records), false, false, &degraded_meshes(&records)).await;
+                                                let fabric_status = status_of(if fabric_primary { held_state.scope() } else { t.fabric.status });
+                                                let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status, false, false).await;
                                                 // While the read of the accepted Build is owed, the checklist is neither counted from the facts
                                                 // held before it nor completed: the turn sends the read (or takes its answer) and counts on the
                                                 // next turn's read of the Build log, which then holds the fabric-primary's Build (Q276).
@@ -3220,7 +3189,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         // The checklist a new primary runs before it republishes the status it adopted (R-S3).
                                                         let done = fabric_states.adopted_step(announced, crate::fabric_status::AdoptedInputs { view: &t, planned, digest_view: &topology_view.digest_view });
                                                         if done.mesh || done.fabric {
-                                                            announced = backbone.announce_statuses_with_degraded_meshes(&mesh_status, &fabric_status(&records), done.mesh, done.fabric, &degraded_meshes(&records)).await;
+                                                            announced = backbone.announce_statuses(&mesh_status, &fabric_status, done.mesh, done.fabric).await;
                                                         }
                                                     }
                                                 } else {
@@ -3258,7 +3227,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         _ = async { match claimed.as_mut() { Some(c) => c.as_mut().await, None => std::future::pending().await } } => break,
                                                         _ = records.view_changed.notified() => {
                                                             let now = topology.read().await.clone();
-                                                            if decides(&now) != decided_on || announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist || records.peer_recovering() {
+                                                            if decides(&now) != decided_on || announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist {
                                                                 break;
                                                             }
                                                         }
@@ -3272,7 +3241,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // timer, never a step of the hierarchy's turn. It reads the view and the roles the
                                     // hierarchy decided, nothing else, so no store read or write of the turn (the
                                     // current Build, the exit rows, the view's installation, the change) delays
-                                    // it: a peer's t of this mesh (mesh-investigation.md) is the publication's own
+                                    // it: a peer's t of this mesh (`DigestView::mesh_unheard`) is the publication's own
                                     // interval, never the store's. While this admin is its mesh's primary it publishes
                                     // its mesh's members on the backbone (and puts the same source into its own mesh);
                                     // no admin publishes a live mesh on its behalf (R-RX4). While it is the fabric
@@ -3342,36 +3311,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    // The peer-mesh investigation (`crate::investigate`): while this admin is the fabric primary,
-                                    // a peer mesh it stops hearing on the backbone is probed through its own members and recovered
-                                    // only when one of them cannot reach its own node-admin. Its decision is what releases the
-                                    // drift check below to replace that mesh's node-admins.
-                                    let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::configured())));
                                     {
-                                        // The R-D1 target as the Build door and the drive read it: t from this admin's last direct
-                                        // backbone receipt of the mesh, whether or not the ladder has stepped the mesh yet.
-                                        let (ladder, digest_view) = (ladder.clone(), digest_view.clone());
-                                        let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().peer_mesh_unheard(mesh, digest_view.mesh_unheard(mesh, std::time::Instant::now()))));
-                                    }
-                                    {
-                                        let held = connections.held();
-                                        let watch = crate::investigate::Watch {
-                                            gate: stop_gate.clone(),
-                                            me: name.clone(),
-                                            me_id: node_id.clone(),
-                                            interval: rdm_transport::topology::backbone_gossip_interval(),
-                                            topology_view: topology_view.clone(),
-                                            topology: control.topology.clone(),
-                                            records: records.clone(),
-                                            settled: { let builds = builds_dyn.clone(); Arc::new(move || { let builds = builds.clone(); Box::pin(async move { builds.current().await.map(|c| c.is_some_and(|b| !matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running))).map_err(|e| e.to_string()) }) }) },
-                                            client: node_rpc.client.clone(),
-                                            connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rdm_core::connections::ConnectionState::Connected)),
-                                            ladder: ladder.clone(),
-                                            carriers: Mutex::new(BTreeMap::new()),
-                                            fabric_recovery: fabric_recovery.clone(),
-                                        };
-                                        // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
-                                        tasks.push(tokio::spawn(crate::investigate::run(watch)));
+                                        // The R-D1 target as the Build door, the drive and the drift check read it: how long a
+                                        // peer mesh has gone unheard on the backbone, once at or past the staleness floor (gossip.md:
+                                        // its mesh-primary is marked silent at the floor, as any birth).
+                                        let digest_view = digest_view.clone();
+                                        let _ = control.mesh_unheard.set(Arc::new(move |mesh: &str| {
+                                            digest_view.mesh_unheard(mesh, std::time::Instant::now()).filter(|unheard| *unheard >= digest_view.staleness_floor()).map(|unheard| unheard.as_millis() as u64)
+                                        }));
                                     }
                                     let executor;
                                     // The reconcile loop: the drift check, and the fabric-primary's drive of every active Build
@@ -3388,10 +3335,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (drives, drive_env) = (drives.clone(), drive_env.clone());
                                         let drift_time = rafka_time.clone();
                                         let drift_nodes = nodes_storage.clone();
-                                        let ladder = ladder.clone();
+                                        let mesh_unheard = control.mesh_unheard.get().cloned().expect("the R-D1 reader is set before the reconcile loop");
                                         let stop = stop_gate.clone();
                                         let drift_seam = wiring.drift_seam.take();
-                                        let mut wake = ReconcileWake::new(submitted, records.subscribe_view(), records.subscribe_fabric_state(), ladder.lock().unwrap().subscribe_moved(), drives.subscribe_ended(), deployer.exits());
+                                        let mut wake = ReconcileWake::new(submitted, records.subscribe_view(), records.subscribe_fabric_state(), drives.subscribe_ended(), deployer.exits());
                                         executor = tokio::spawn(async move {
                                             let mut started = HashSet::new();
                                             let mut held = HashSet::new();
@@ -3430,7 +3377,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // only by the drift's author, the fabric-primary (`reconcile_drift`); every other admin
                                                     // reads no record for it (Q227).
                                                     let moved = if now.is_fabric_primary(&me_id) { drift_control.moved_off_entries(&now).await } else { Default::default() };
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &digest_view, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh_unheard(mesh, digest_view.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (digest_view.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh), &moved).await;
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &digest_view, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, durable_rows, &mut started, &mut held, &|mesh| mesh_unheard(mesh), &moved).await;
                                                     // The attempt is planned from the view as it is now.
                                                     if opened.is_some() {
                                                         records.install_read(&me, &topology, &digest_view, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &digest_view, &records, reads)).await;

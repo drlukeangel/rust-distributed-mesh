@@ -88,13 +88,13 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<NodeId> {
         // executed by the exited birth's recoverer (node-recovery.md "Reconciler", R-ON8): a member's
         // mesh-primary; for a lost node-admin of a mesh with a live mesh-primary, that mesh-primary,
         // and a mesh primary's own recovery by the admin its mesh elects in its place
-        // (mesh-recovery.md:8-9). A mesh with no other live admin lost its mesh-primary: that is no
-        // node recovery, and no admin executes one. Its node-admin is created by a Build's node.create
-        // (below), the fabric-primary's once the mesh holds no admin that is not proven gone
-        // (mesh-investigation.md "A node-admin joins the live mesh").
+        // (mesh-recovery.md:8-9). A mesh-primary lost with no node-admin of its mesh Ready for the
+        // election to name is the fabric-primary's, the acting primary of a mesh with none (Q335 item 4,
+        // [`unheard_mesh_primary_executor`]).
         BuildOperation::DeleteLiveNode { node, exited: Some(_), .. } | BuildOperation::CreateNode { node, over: Some(_), .. } => {
             if op.kind()? == NodeKind::NodeAdmin {
-                node_admin_recoverer(node, op.mesh()?, t)
+                let mesh = op.mesh()?;
+                node_admin_recoverer(node, mesh, t).or_else(|| (!t.nodes_of_type(mesh, NodeKind::NodeAdmin).any(|n| n.name != *node && n.status == crate::model::NodeStatus::Ready)).then(fabric).flatten())
             } else {
                 mesh_executor(op.mesh()?, None, t)
             }
@@ -239,13 +239,14 @@ pub fn node_admin_recoverer(node: &PathName, mesh: &str, t: &Topology) -> Option
 /// acting primary of a mesh with no primary"), decided once, at the attempt's claim, from view `t`, the
 /// view its rows are written against: the mesh-primary the view names in the unheard birth's place,
 /// read from the election and not from liveness, as `mesh_executor` reads it; the fabric-primary,
-/// the acting primary, while the mesh holds no other node-admin that is not proven gone
-/// ([`held_admins`]); `None` while the view names no mesh-primary in its place and the mesh holds one:
-/// the election has not named it here yet.
+/// the acting primary, while the mesh holds no other node-admin the election can name, none Ready
+/// (elections §4.1: "the lowest Ready node-admin"; Q335 item 4: with no successor "the election names
+/// nobody", and the fabric-primary runs the recovery); `None` while the view names no mesh-primary in
+/// its place and the mesh holds a Ready node-admin: the election has not named it here yet.
 pub fn unheard_mesh_primary_executor(node: &PathName, mesh: &str, node_id: &crate::model::NodeId, t: &Topology) -> Option<NodeId> {
     match t.node_type_primary(mesh, NodeKind::NodeAdmin) {
         Some(p) if p.node_id != *node_id => Some(p.node_id.clone()),
-        _ if held_admins(mesh, Some(node), t).is_empty() => t.fabric_primary().map(|n| n.node_id.clone()),
+        _ if !t.nodes_of_type(mesh, NodeKind::NodeAdmin).any(|n| n.name != *node && n.status == crate::model::NodeStatus::Ready) => t.fabric_primary().map(|n| n.node_id.clone()),
         _ => None,
     }
 }
@@ -804,9 +805,9 @@ mod tests {
     /// member's recovery (its node.delete, then its node.create), a secondary node-admin's
     /// included, is executed by its own mesh's primary admin, never by the fabric-primary of another
     /// mesh. A mesh primary's own recovery is executed by the admin its mesh elects in its place, the
-    /// view still naming as primary the exited primary included. A node-admin with no other admin in its mesh is
-    /// no node recovery (its mesh lost its mesh-primary: its node-admin is created by the investigation's
-    /// node.create, never recovered), so no admin executes one.
+    /// view still naming as primary the exited primary included. A node-admin of a mesh with no other
+    /// node-admin Ready is recovered by the fabric-primary, the acting primary of a mesh with none (Q335
+    /// item 4: the election names nobody).
     /// Must NOT happen: a recovery's operation routed to the fabric-primary by a fall-through arm, or
     /// its create routed to the exited mesh primary the view still names.
     #[test]
@@ -823,7 +824,8 @@ mod tests {
         let t = mm(true);
         assert_eq!(recovered_by(PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, &t), expected(&t, &PathName::new("mesh2.admin", "1").unwrap()), "a member of mesh2 is recovered by mesh2's primary");
         assert_eq!(recovered_by(PathName::new("mesh1.rpc", "1").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode, &t), expected(&t, &PathName::new("mesh1.admin", "1").unwrap()), "a member of the fabric-primary's own mesh is recovered by that mesh's primary");
-        assert_eq!(recovered_by(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &t), "", "mesh2's only node-admin: its loss is mesh recovery, never node recovery");
+        let fabric_primary = t.fabric_primary().expect("a fabric-primary").node_id.to_string();
+        assert_eq!(recovered_by(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &t), fabric_primary, "mesh2's only node-admin: no successor, the fabric-primary recovers it (Q335)");
         let mut t3 = mm(true);
         t3.nodes.push(node(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false));
         t3.nodes.push(node(PathName::new("mesh1.admin", "2").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, false, false));
@@ -832,7 +834,7 @@ mod tests {
         assert_eq!(recovered_by(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &t3), expected(&t3, &PathName::new("mesh2.admin", "2").unwrap()), "a mesh primary's own recovery is executed by the admin its mesh elects in its place");
         let mut silent = t3.clone();
         silent.nodes.iter_mut().filter(|n| n.name.clone() == PathName::new("mesh2.admin", "1").unwrap()).for_each(|n| n.status = NodeStatus::PendingReconnect);
-        assert_eq!(recovered_by(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &silent), "", "no live node-admin of mesh2 is left to recover it: mesh recovery");
+        assert_eq!(recovered_by(PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, &silent), silent.fabric_primary().expect("a fabric-primary").node_id.to_string(), "no node-admin of mesh2 Ready: the fabric-primary, the acting primary of a mesh with none (Q335)");
     }
 
     #[test]

@@ -157,7 +157,7 @@ impl Topology {
     /// and no OTHER node-admin of its mesh is live, a live birth the view holds at its own path (a
     /// view that has not heard the mesh lost, or the exited birth a recovery creates over) never
     /// counting against it. The one rule of every node.create of a node-admin (e4.s11;
-    /// mesh-investigation.md "A node-admin joins the live mesh").
+    /// node-create.md "A node-admin created into a live mesh").
     pub fn first_admin_of(&self, node: &PathName, mesh: &str, kind: NodeKind) -> bool {
         kind == NodeKind::NodeAdmin && self.nodes_of_type(mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live())
     }

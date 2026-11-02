@@ -1229,7 +1229,7 @@ fn election_replaced(fp: &ControlPlane, t: &Topology, unheard: &PathName, named:
 /// the election's result as the view names it, the view the rows are written against. While the
 /// fabric-primary's view still names the unheard `mesh2.admin.1` mesh2's primary (its primaries already
 /// hold the election's record naming `mesh2.admin.2`, which the view has not taken yet) and mesh2 holds
-/// another node-admin (`mesh2.admin.2`, unheard in that view as all of mesh2 is), the view names no new
+/// another node-admin the election can name (`mesh2.admin.2`, Ready in that view), the view names no new
 /// mesh-primary: the open is refused by name, naming the mesh and the admin it waits for, and nothing is opened or claimed. Must NOT happen: an attempt claimed for the fabric-primary itself while mesh2
 /// holds another node-admin, whose rows mesh2's elected primary then writes (gate 45918ae5e: attempt 4
 /// claimed for mesh1.admin.1 at 977.238, its Deleted row refused `not-mesh-primary` at 977.620).
@@ -1241,7 +1241,9 @@ async fn the_fabric_primary_opens_no_recovery_of_an_unheard_mesh_primary_until_t
     let capture = Capture { exporter, pipeline };
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let (t, accepted_view) = unheard_mesh2_primary(true);
+    let (mut t, accepted_view) = unheard_mesh2_primary(true);
+    // The election's candidate is heard: Ready in this view (Q335: a successor is only what the election can name).
+    t.nodes.iter_mut().filter(|n| n.name == rdm_core::PathName::new("mesh2.admin", "2").unwrap()).for_each(|n| n.status = NodeStatus::Ready);
     let path: PathName = rdm_core::PathName::new("mesh2.admin", "1").unwrap();
     let unheard = t.node(&path).unwrap().clone();
     let (node_id, birth) = (unheard.node_id.clone(), unheard.incarnation_id.clone().unwrap());

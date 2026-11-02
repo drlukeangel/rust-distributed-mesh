@@ -249,7 +249,7 @@ fn span_row(sp: &Value, keys: &[&str]) -> Value {
 /// CONTRACT (#2784; Q4, as ruled for the process partition cell; Q111, Q122): on a real Docker estate of
 /// two meshes (two node-admins and two rpc nodes each), every container of the mesh that does not hold
 /// the fabric-primary is silenced against the rest of the estate (a packet filter in each container's
-/// own network namespace) past mesh investigation's decision step, then released. Throughout, every view
+/// own network namespace) past the staleness floor, then released. Throughout, every view
 /// sampled holds at most one primary per (mesh, node_type) and at most one fabric-primary, and the
 /// fabric-primary stays put. Recovery of the cut mesh's nodes follows node investigation's verdict: every
 /// recovery submitted for one of them names a verdict other than `reached`. After the release every
@@ -942,8 +942,8 @@ const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 /// fabric primary hears nothing of the mesh; its investigation asks the members, which cannot reach
 /// their own node-admin, and it keeps the role, opens a later attempt of the SAME accepted Build and
 /// runs the mesh-create flow for the lost mesh's first admin under its EXISTING MeshId. The second admin
-/// is created after the first, in the same accepted Build, by one of the two paths of mesh-investigation.md
-/// "A node-admin joins the live mesh": step 5, the new mesh primary's node recovery of the admin its sweep
+/// is created after the first, in the same accepted Build, by one of the two paths of node-create.md
+/// "A node-admin created into a live mesh": step 5, the new mesh primary's node recovery of the admin its sweep
 /// did not reach (an attempt of its mesh's lane, over the exited birth), or step 6, the fabric primary's
 /// claim of a missing secondary that the new mesh primary executes. The cell waits for every lane of the
 /// Build to end before it stops the estate. A mesh whose every container is gone has no member to say so and is
@@ -1072,7 +1072,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     assert_eq!(executor_of(first), primary_id, "the surviving fabric primary ran the first admin's birth");
     let (recovery_admin, recovery_admin_id) = (PathName::new(attr(first, "node_path"), attr(first, "node_name")).expect("the create names its location"), attr(first, "node_id").to_string());
     // The lost mesh's re-created admin adopts its mesh's held state from its maker's entry answer
-    // (mesh-investigation.md "A node-admin joins the live mesh" step 2; fabric-authority.md §7; Q56): the
+    // (node-create.md "A node-admin created into a live mesh" step 2; fabric-authority.md §7; Q56): the
     // EXISTING MeshId, answered by the surviving fabric primary. Pending is handed only to a mesh the
     // fabric primary holds no state for, and it holds this one's.
     let adopted = named(&spans, "rdm.node_admin.mesh.update.via-held-state-adopted")

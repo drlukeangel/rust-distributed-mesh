@@ -13,7 +13,6 @@ use rdm_admin::build_state::{
     AttemptOpened, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, LocalBuildLog, MemoryBuildStateAdapter,
 };
 use rdm_admin::control_plane::{ActionKind, ControlPlane, Refusal};
-use rdm_admin::investigate::PeerMesh;
 use rdm_admin::model::*;
 use rdm_admin::node_investigation::Finding;
 use rdm_admin::topology::Topology;
@@ -167,7 +166,7 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
 #[tokio::test]
 async fn a_step_on_no_node_is_refused_unknown_before_the_heard_gate() {
     let r = rig(view(NodeStatus::Ready)).await;
-    let _ = r.cp.peer_mesh.set(Arc::new(|m: &str| (m == "mesh2").then_some(PeerMesh { unheard_ms: Some(40_000), recovery_decided: false, unreachable_decided: false })));
+    let _ = r.cp.mesh_unheard.set(Arc::new(|m: &str| (m == "mesh2").then_some(40_000)));
     let steps = vec![rdm_core::build::Step::Stop { node: rdm_core::PathName::new("mesh2.rpc", "9").unwrap() }];
     let span = tracing::info_span!("gates-steps");
     let out = r.cp.open_steps_in(span, "gates-steps-unknown", steps).await;
@@ -407,7 +406,7 @@ async fn a_build_on_a_node_of_an_unheard_mesh_is_refused_at_acceptance() {
     let mut t = view(NodeStatus::Ready);
     t.nodes.push(node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, NodeStatus::Ready, false, false));
     let r = rig(t).await;
-    let _ = r.cp.peer_mesh.set(Arc::new(|m: &str| (m == "mesh2").then_some(PeerMesh { unheard_ms: Some(40_000), recovery_decided: false, unreachable_decided: false })));
+    let _ = r.cp.mesh_unheard.set(Arc::new(|m: &str| (m == "mesh2").then_some(40_000)));
     let before = r.builds.current().await.unwrap().map(|b| b.build_id);
     let out = delete_of(&r, &PathName::new("mesh2.rpc", "1").unwrap()).await;
     match &out {

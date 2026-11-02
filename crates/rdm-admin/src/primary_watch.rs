@@ -153,6 +153,25 @@ impl Looker {
         finding
     }
 
+    /// A node-admin `mesh` has left besides the birth `lost`: node investigation of each other node-admin
+    /// birth of the mesh, the first `reached` or inspected `running` (Q153: a runtime that runs but is not
+    /// reached is unreachable from here, not lost). `None`: the mesh has no node-admin left
+    /// (fabric-recovery.md "When the mesh has no node-admin left"; Q335 item 4). Named on its span. The
+    /// one check both the fabric-primary's recovery of a mesh-primary with no successor and fabric
+    /// recovery's backbone arm make.
+    pub async fn node_admin_left(&self, view: &Topology, mesh: &str, lost: &NodeId) -> Option<Node> {
+        let others: Vec<Node> = view.nodes_of_type(mesh, NodeKind::NodeAdmin).filter(|n| n.node_id != *lost && n.incarnation_id.is_some()).cloned().collect();
+        for n in others {
+            let finding = self.look(view, &n).await;
+            if matches!(finding, Finding::Reached { .. } | Finding::Running) {
+                tracing::info_span!("rdm.node_admin.node.resolve.via-node-admin-left", observer = %self.me_id, mesh, lost_node_id = %lost, subject_path = %n.name.path, subject_name = %n.name.name, subject_node_id = %n.node_id, finding = finding.name())
+                    .in_scope(|| tracing::info!("a node-admin of the mesh is left: the mesh's own election names it, and nothing is executed from here"));
+                return Some(n);
+            }
+        }
+        None
+    }
+
     /// The provider's inspection of `n`'s exact runtime (node.runtime.inspect), its span the evidence
     /// (node-runtime-inspect.md "Observability contract"), named by the path and name this admin holds.
     async fn inspect(&self, n: &Node) -> Finding {
@@ -237,16 +256,23 @@ pub async fn run(w: Watch) {
             }
         }
         let me = w.topology_view.digest_view.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
-        // The fabric-primary unheard past the floor (fabric-recovery.md step 2, its own mesh; Q122): its
-        // mesh's lowest Ready node-admin starts fabric recovery at the first tick after the mark,
-        // once the record has named the unheard birth for a floor in its own view (a record learned after a
-        // heal names a birth whose silence here began before it). It takes no primary role and needs no probe.
+        // The fabric-primary unheard past the floor (fabric-recovery.md step 2; Q122, Q335): its mesh's
+        // lowest Ready node-admin, or with none the lowest Ready mesh-primary on the backbone, starts fabric
+        // recovery at the first tick after the mark, once the record has named the unheard birth for a floor
+        // in its own view (a record learned after a heal names a birth whose silence here began before it).
+        // It takes no primary role; the workflow's node investigation of the lost birth decides.
         let held_a_floor = w.topology_view.primaries().fabric_held_for() >= w.topology_view.digest_view.staleness_floor();
-        w.fabric_recovery.start_if_mine(held_a_floor, false).await;
-        // An unheard mesh-primary: replaced by the election and unheard since (node-recovery.md step 2). One
-        // heard after it was replaced is one more node-admin of its mesh, its mesh-primary's to investigate.
+        w.fabric_recovery.start_if_mine(held_a_floor).await;
+        // An unheard mesh-primary: replaced by the election and unheard since (node-recovery.md step 2), or,
+        // with no successor named (no node-admin of its mesh Ready), the birth its mesh's primary record still
+        // names (Q335 item 4: the election names nobody). One heard after it was replaced is one more
+        // node-admin of its mesh, its mesh-primary's to investigate.
         let now = std::time::Instant::now();
-        let was_mesh_primary = |n: &Node| n.incarnation_id.as_ref().is_some_and(|i| w.topology_view.digest_view.unheard_since_replaced(&n.mesh, n.node_id.as_str(), i, now));
+        let was_mesh_primary = |n: &Node| {
+            n.incarnation_id.as_ref().is_some_and(|i| {
+                w.topology_view.digest_view.unheard_since_replaced(&n.mesh, n.node_id.as_str(), i, now) || w.topology_view.primaries().mesh(&n.mesh).is_some_and(|r| r.is_birth(&n.node_id, i))
+            })
+        };
         // The marks that stand (node-recovery.md step 1): a mesh-primary the fabric-primary marked for a
         // call whose attempts are spent, its own or one reported to it (Q338), is silent from the mark.
         let marks = crate::offline::held_marks(&w.records.unreachable, &view, &w.topology_view.digest_view, now);
@@ -293,9 +319,18 @@ pub async fn run(w: Watch) {
             // at once (node-recovery.md steps 2-3, Q111): nothing holds and nothing waits for a proof.
             // Submitted once per silence and owed until it is opened ([`submit_recovery`]). A recovery that
             // ends Failed is the drift pass's to open again.
+            let recovers = !matches!(finding, Finding::Reached { .. }) && w.recovery.is_some() && finding.inspected().is_some() && !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node));
+            // With no successor named (no other node-admin of its mesh Ready in this view, which a cut
+            // empties), the fabric-primary executes only when the mesh has no node-admin left (Q335 item 4;
+            // fabric-recovery.md "When the mesh has no node-admin left"; Q153): one with a node-admin left
+            // elects it, and it recovers the lost birth. Nothing is written here; the birth is not looked at
+            // again in this silence.
+            let no_successor = !view.nodes_of_type(&node.mesh, NodeKind::NodeAdmin).any(|n| n.node_id != node.node_id && n.status == NodeStatus::Ready);
+            let left = if recovers && no_successor { w.looker.node_admin_left(&view, &node.mesh, &node.node_id).await } else { None };
             let submitted = match (&finding, w.recovery.clone(), finding.inspected()) {
                 (Finding::Reached { .. }, _, _) => false,
-                (_, Some(recovery), Some(inspected)) if !node.is_fabric_primary && view.is_fabric_primary(&me_birth.0) && (node.is_primary || was_mesh_primary(&node)) => {
+                _ if left.is_some() => true,
+                (_, Some(recovery), Some(inspected)) if recovers => {
                     let (node, topology, me_id, digest_view) = (node.clone(), w.topology.clone(), me_birth.0.clone(), w.topology_view.digest_view.clone());
                     // Owed until opened, and ended at this admin's stop where it stands (the stop gate's
                     // `until_stopped`): a stopping node takes no new lifecycle step.

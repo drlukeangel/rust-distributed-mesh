@@ -389,48 +389,47 @@ mod tests {
         assert_eq!(tried, vec![PathName::new("mesh2.rpc", "3").unwrap(), PathName::new("mesh2.rpc", "4").unwrap(), PathName::new("mesh2.rpc", "1").unwrap(), PathName::new("mesh2.rpc", "2").unwrap()]);
     }
 
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:95
-    /// "The RPC chain uses `rdm.node_rpc.request.update.via-call` and
-    /// `rdm.node_rpc.request.serve.via-direct` for Ping and outer Forward."
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:178
-    /// "The node-admin that step 5 or step 6 creates joins mesh-x under mesh-x's own MeshId and never mints another.
-    /// The mesh is still in the accepted topology, so the attempt belongs to the SAME accepted Build."
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:185
-    /// "1. The node.create of step 6 opens an attempt of the SAME accepted Build and deploys the mesh's
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:111
+    /// "A node-admin that [node recovery](node-recovery.md) re-creates into a mesh that lost its node-admins
+    /// ... joins that mesh under the mesh's own MeshId and never mints another."
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:112
+    /// "The mesh is still in the accepted topology, so the attempt belongs to the SAME accepted Build."
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:118
+    /// "1. The recovery's node.create opens an attempt of the SAME accepted Build and deploys the mesh's
     /// first node-admin (its MeshId, seed and mesh-primary launch mode). It records the deployed birth;
     /// the node-admin binds port 0 and the OS assigns the port."
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:188
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:121
     /// "2. The node-admin calls JoinNode on its MAKER, the fabric-primary, then GetTopology on that
     /// maker. It installs complete topology snapshots and obtains its control/status context."
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:190
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:123
     /// "3. It calls GetTopology on a LOCAL node of its own mesh to obtain current topology; members
     /// can exit while the mesh has no node-admin. It installs complete snapshots and joins its mesh
     /// channel using member addresses (RDM's `get_topology` in `rdm-admin`'s reenter module)."
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:196
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:129
     /// "4. Before it is ready, it sends one bounded Ping, once, to every node IN ITS OWN MESH
     /// (a 2 s deadline each, at most 8 at once). A reply identifies a live exact birth; no reply
     /// is \"not yet reached\", never death."
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:205
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:138
     /// "5. Every node the sweep did not reach goes to [node recovery](node-recovery.md): the new
     /// mesh-primary's [node investigation](node-investigation.md), then recovery on its verdict.
     /// A missing Ping reply is the trigger, never the verdict."
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:208
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:141
     /// "6. The fabric-primary claims the creation of the missing secondary node-admin on its own log
     /// and calls the new mesh-primary with `build.attempt.run`; the executor adopts the won claim and
     /// runs it as an attempt of that same Build."
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:253
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:186
     /// "| Fabric-primary | accepted Build / node.create | same Build attempt; the mesh's MeshId | `rdm.node_admin.node.update.via-build`, `rdm.node_admin.deployment.update.via-pipeline` |"
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:254
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:187
     /// "| Joining node-admin → maker | JoinNode | [Join schema](../node-rpc-envelope.md#join-op-0x1d-rdm); exact deployed birth admitted | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.node_admin.node.update.via-join` |"
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:255
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:188
     /// "| Joining node-admin → maker / local node | GetTopology | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); complete meshes installed | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |"
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:256
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:189
     /// "| Mesh-primary → own members | Ping once | [Ping schema](../node-rpc-envelope.md#ping-op-0x01-core); exact-birth reply or non-answer | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` |"
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:257
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:190
     /// "| Mesh-primary / provider | node recovery | node investigation, one recovery attempt on its verdict | `rdm.node_admin.deployment.update.via-pipeline`, `rdm.node_admin.deployment.update.via-step` |"
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:258
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:191
     /// "| Fabric-primary → new mesh-primary | build.attempt.run | [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm); the fabric-primary claims on its own log, the executor adopts the won claim | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct` (op 0x20) |"
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:264
+    /// CONTRACT: docs/architecture/lifecycles/node-create.md:197
     /// "Joining composes deployment, topology reads, Ping, Build claims and readiness; it has no opcode of
     /// its own. A provider creates the process."
     /// CONTRACT (docs/architecture/lifecycles/fabric-recovery.md:98-100: "1. Load the durable topology and the
@@ -439,13 +438,13 @@ mod tests {
     /// before investigating peers."
     /// docs/architecture/lifecycles/fabric-recovery.md:101-102: "2. Obtain current own-mesh topology, join the
     /// mesh channel from its member addresses, recover control and become ready under the ordinary election."
-    /// docs/architecture/lifecycles/fabric-recovery.md:103-105: "3. Run the single bounded own-mesh Ping sweep
-    /// (a node-admin joins the live mesh steps 4–5); a non-answering member goes to node recovery."
-    /// docs/architecture/lifecycles/fabric-recovery.md:106-110: "4. Restore the own mesh's secondary admin as
+    /// docs/architecture/lifecycles/fabric-recovery.md:102-104: "3. Run the single bounded own-mesh Ping sweep
+    /// (a node-admin created into a live mesh steps 4–5); a non-answering member goes to node recovery."
+    /// docs/architecture/lifecycles/fabric-recovery.md:105-110: "4. Restore the own mesh's secondary admin as
     /// executor under that SAME accepted Build, with the claim the recovered fabric-primary's. Reach the other
-    /// meshes through mesh investigation: its decision step runs node.create of a node-admin into each mesh that
-    /// has none, under that mesh's own MeshId. Each such mesh-primary restores its own admin capacity and sweeps
-    /// only its own mesh."
+    /// meshes through node investigation of each lost mesh-primary: its verdict runs node recovery, a node-admin
+    /// re-created into each mesh that has none, under that mesh's own MeshId. Each such mesh-primary restores its
+    /// own admin capacity and sweeps only its own mesh."
     /// docs/architecture/lifecycles/fabric-recovery.md:139: "| Recovered fabric-primary | GetTopology to
     /// durable-map node | Topology schema; own mesh first, no maker calls | `rdm.node_rpc.request.update.via-call`,
     /// `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`,

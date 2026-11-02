@@ -1,5 +1,5 @@
-//! `fabric.delete` replaces `FabricShutdown` (i143.e12.s59; lifecycles/fabric-delete.md,
-//! lifecycles/mesh-investigation.md "During `fabric.delete`", R-FS1 revised).
+//! `fabric.delete` replaces `FabricShutdown` (i143.e12.s59; lifecycles/fabric-delete.md step 1,
+//! R-FS1 revised).
 //!
 //! 1. `crit:e12.s59.1`: `fabric.delete` of a two-mesh fabric runs `mesh.delete` on each mesh
 //!    leaf-inward (the fabric-primary's own mesh last, where the fabric-primary role stays put), deletes
@@ -448,16 +448,13 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let _ = std::fs::remove_dir_all(&data_root);
 }
 
-/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:290
-/// "While [fabric.delete](fabric-delete.md) runs, a mesh whose mesh-primary does not answer its
-/// mesh.delete is reached through this investigation. The same probes reach the unheard mesh: its
-/// exact mesh-primary first, then its other node-admins, each direct then via a peer. During
-/// fabric.delete the outcome is a delete, never a node.create of a node-admin:"
-/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:295
-/// "- a node-admin that answers runs that mesh's [mesh.delete](mesh-delete.md);"
-/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:296
-/// "- if no node-admin answers, the fabric-primary tickles each remaining node of the mesh directly,
-/// and on any successful connection runs [node.delete](node-delete.md) for that node, as executor."
+/// CONTRACT: docs/architecture/lifecycles/fabric-delete.md:31-38
+/// "A mesh whose mesh-primary does not answer its mesh.delete is reached the way an unheard mesh-primary
+/// is reached in a live fabric ([node investigation](node-investigation.md): its exact birth, direct then
+/// via peers of its mesh), and during fabric.delete the outcome is a delete, never a node.create of a
+/// node-admin: a node-admin that answers runs that mesh's [mesh.delete](mesh-delete.md); if no node-admin
+/// answers, the fabric-primary tickles each remaining node of the mesh directly and on any successful
+/// connection runs [node.delete](node-delete.md) for that node, as executor."
 /// crit:e12.s59.2 — An unanswered mesh during `fabric.delete` (R-FS1 revised; node-recovery.md step 3:
 /// any verdict but `reached` re-creates or deletes, nothing waits for a proof):
 /// 1. No member answers and none runs: every member is deleted by its node.delete (its node row
@@ -727,7 +724,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
 /// CONTRACT:
 /// - `docs/architecture/lifecycles/fabric-delete.md:15` — "Caller | Typed caller"
 /// - `docs/architecture/lifecycles/fabric-delete.md:17` — "Driver | The fabric-primary, one Build"
-/// - `docs/architecture/lifecycles/fabric-delete.md:27-33` — "1. Run [mesh.delete](mesh-delete.md) on each mesh, the fabric-primary's own mesh last. Each mesh.delete keeps its mesh-primary alive until every other member is deleted and it has reported mesh.deleted. On its own mesh the fabric-primary stays, because no other mesh is left to take it, so that mesh.delete skips its [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) step. A mesh whose mesh-primary does not answer is reached through [mesh investigation](mesh-investigation.md#during-fabricdelete), whose outcome during fabric.delete is the delete."
+/// - `docs/architecture/lifecycles/fabric-delete.md:27-38` — "1. Run [mesh.delete](mesh-delete.md) on each mesh, the fabric-primary's own mesh last. Each mesh.delete keeps its mesh-primary alive until every other member is deleted and it has reported mesh.deleted. On its own mesh the fabric-primary stays, because no other mesh is left to take it, so that mesh.delete skips its [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) step. A mesh whose mesh-primary does not answer its mesh.delete is reached the way an unheard mesh-primary is reached in a live fabric ([node investigation](node-investigation.md): its exact birth, direct then via peers of its mesh), and during fabric.delete the outcome is a delete, never a node.create of a node-admin ..."
 /// - `docs/architecture/lifecycles/fabric-delete.md:34-35` — "2. After each other mesh's mesh.deleted, run [node.delete](node-delete.md) of that mesh's mesh-primary. The fabric-primary is the executor and proves its exit."
 /// - `docs/architecture/lifecycles/fabric-delete.md:36-37` — "3. The fabric-primary, still alive, reports fabric.deleted. The primary runs the workflow needs are retained until it completes ([Elections](../fabric-node-lifecycle-elections.md))."
 /// - `docs/architecture/lifecycles/fabric-delete.md:38-40` — "4. A separate call from outside the fabric runs node.delete of the fabric-primary. Its node.deleted is its last reply, and the caller takes its word, because nobody is left in the fabric to record it. This is the one exception to the receipt."

@@ -1,10 +1,10 @@
 //! A mesh primary's mesh topology anti-entropy is a perpetual timer (gossip.md §3.2: "PERPETUAL TIMERS …
 //! mesh topology anti-entropy — the mesh primary on the backbone; a few seconds; also sent at once on a
 //! material change"). The fabric-primary reads a peer mesh's liveness from that publication alone:
-//! t is the time since its last direct backbone receipt from the mesh (mesh-investigation.md), and
-//! from the track rung (`investigate::Rungs::track`, twice the backbone interval) the mesh is held
-//! unheard and nothing of it is restarted, replaced or deleted (R-D1). A publisher that goes quiet
-//! for longer than that while it is live and serving targets its own mesh.
+//! t is the time since its last direct backbone receipt from the mesh (`DigestView::mesh_unheard`), and
+//! from the staleness floor the mesh is held unheard and nothing of it is restarted, replaced or
+//! deleted (R-D1). A publisher must never go quiet for longer than one publication missed beyond its
+//! jitter (twice the backbone interval, far inside the floor) while it is live and serving.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`), its mesh's primary, at the
 //! gate's cadence (`tools/test-runner` CADENCE, set by the binary's ctor in `tests/main.rs`), in a
@@ -21,7 +21,6 @@ use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_core::PathName;
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild, OwedExit};
-use rdm_admin::investigate::Rungs;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -164,9 +163,9 @@ impl Capture {
 }
 
 /// CONTRACT (gossip.md §3.2, the `MeshTopology` row: "on its anti-entropy timer and at once on a material
-/// change"; mesh-investigation.md: t from the last direct backbone receipt; R-D1): a mesh primary
+/// change"; R-D1: t from the last direct backbone receipt): a mesh primary
 /// whose reads of the shared store take three backbone intervals each goes on publishing its mesh
-/// on the backbone every interval. A peer mesh's t of it stays under the track rung the whole time
+/// on the backbone every interval. A peer mesh's t of it stays under two backbone intervals the whole time
 /// the store is held, so the fabric-primary never holds a live, serving mesh unheard. Must NOT
 /// happen: the publication waiting on a store read of the admin's publication (the current Build, the exit
 /// rows, the view's installation), so a held disk reads as a silent mesh.
@@ -176,7 +175,7 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }
-    let track = Rungs::configured().track;
+    let track = rdm_core::cadence::backbone_gossip_interval() * 2;
     let cap = capture();
     let (worst, held_reads, during) = cap.run(async {
         let dir = std::env::temp_dir().join(format!("backbone-anti-entropy-{}", NodeId::mint()));
@@ -250,10 +249,10 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
         .map(|s| (s["start_ns"].as_u64().unwrap_or(0), s["attributes"]["snapshot_id"].as_str().unwrap_or_default().to_string()))
         .collect();
     let held_spans = spans.iter().filter(|s| s["name"] == "cell.store.update.via-held-read").count();
-    println!("{cell}: worst t {worst:?} over {during} samples while the store was held ({held_reads} held reads ended, {held_spans} held-read spans); track rung {track:?}; backbone receipts at the peer {receipts:?}; spans in {}", artifact.display());
+    println!("{cell}: worst t {worst:?} over {during} samples while the store was held ({held_reads} held reads ended, {held_spans} held-read spans); bound (two backbone intervals) {track:?}; backbone receipts at the peer {receipts:?}; spans in {}", artifact.display());
     assert!(held_reads >= 1, "the store was never held for a whole read inside the window: the cell proved nothing");
     assert!(
         worst < track,
-        "the peer mesh's t of the publisher reached {worst:?} while the publisher's store reads were held, at or past the track rung {track:?}: the fabric-primary would hold a live, serving mesh unheard (R-D1). The mesh topology anti-entropy waited on the admin's store reads. Backbone receipts at the peer (start ns, snapshot id): {receipts:?}"
+        "the peer mesh's t of the publisher reached {worst:?} while the publisher's store reads were held, at or past two backbone intervals {track:?}: a live, serving mesh went quiet on the backbone, on its way to being held unheard (R-D1). The mesh topology anti-entropy waited on the admin's store reads. Backbone receipts at the peer (start ns, snapshot id): {receipts:?}"
     );
 }

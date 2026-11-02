@@ -432,7 +432,6 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     ] { golden(status, expected); }
     for (status, expected) in [
         (ScopeStatus::Pending, "00"), (ScopeStatus::Ready, "01"), (ScopeStatus::Leaving, "02"), (ScopeStatus::Dead, "03"),
-        (ScopeStatus::Degraded, "04"),
     ] { golden(status, expected); }
     golden(ProviderKind::Process, "00");
     golden(ProviderKind::Container, "01");

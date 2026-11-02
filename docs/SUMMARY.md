@@ -40,7 +40,6 @@
 - [fabric.ca.renew and fabric.root.update](architecture/lifecycles/fabric-ca-renew.md)
 - [Mesh create](architecture/lifecycles/mesh-create.md)
 - [Mesh delete](architecture/lifecycles/mesh-delete.md)
-- [Mesh investigation](architecture/lifecycles/mesh-investigation.md)
 - [mesh.issuer.renew](architecture/lifecycles/mesh-issuer-renew.md)
 - [Node create](architecture/lifecycles/node-create.md)
 - [Node start](architecture/lifecycles/node-start.md)

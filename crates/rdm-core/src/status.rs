@@ -150,7 +150,7 @@ pub enum StatusRequest {
         state: MeshState,
         /// The Rafka-time of the change, as the declaring primary's `MeshStatus` carries it: the
         /// instant the mesh entered `state`, which every later primary republishes unchanged
-        /// (mesh-investigation.md step 7); 0 when the declarer holds none.
+        /// (node-create.md "A node-admin created into a live mesh" step 4); 0 when the declarer holds none.
         changed_at_rafka_ms: u64,
     },
     /// Downward: an authority tells the exact birth to enter `state`.
@@ -185,8 +185,8 @@ pub enum StatusRequest {
         /// The state applied.
         state: MeshState,
         /// The Rafka-time of the change the fabric-primary holds for `state`: the receiving admin
-        /// holds its MeshStatus at that instant and republishes it unchanged (mesh-investigation.md
-        /// step 7); 0 when the fabric-primary holds none.
+        /// holds its MeshStatus at that instant and republishes it unchanged (node-create.md "A
+        /// node-admin created into a live mesh" step 4); 0 when the fabric-primary holds none.
         changed_at_rafka_ms: u64,
     },
     /// Downward: the fabric-primary applies a Fabric event at a mesh primary.

@@ -1613,7 +1613,7 @@ pub type MeshDeleterSlot = Arc<OnceLock<Arc<dyn MeshDeleter>>>;
 
 /// What an unanswered mesh (`mesh`, with no live `node-admin` primary in `view`) resolves to during
 /// `fabric.delete` (lifecycles/fabric-delete.md, "An unanswered mesh during `fabric.delete`";
-/// lifecycles/mesh-investigation.md, "During `fabric.delete`"; R-FS1 revised).
+/// R-FS1 revised).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnansweredMeshOutcome {
     /// Every node of the mesh was proven exited by the provider: rows are `Deleted`, mesh row is
@@ -1629,8 +1629,7 @@ pub enum UnansweredMeshOutcome {
     },
 }
 
-/// Resolve an unanswered mesh `mesh` during `fabric.delete` (R-FS1 revised; mesh-investigation.md,
-/// "During `fabric.delete`"): every node-admin of the mesh, and every ordinary member not live, is
+/// Resolve an unanswered mesh `mesh` during `fabric.delete` (R-FS1 revised; fabric-delete.md step 1): every node-admin of the mesh, and every ordinary member not live, is
 /// inspected from its durable runtime row ([`predecessor_verdict`]) and deleted by node.delete as an
 /// unreached birth (`delete`: this fabric-primary its executor, under the leave's Build and attempt,
 /// `TerminateRuntime` first when it runs), whose `TerminateRuntime` receipt under `node.delete` with an explicit node ID
@@ -1665,8 +1664,7 @@ where
 /// [`unanswered_mesh_delete`], where the live ordinary members `in_process` names were deleted already by
 /// their ordinary node.delete, this fabric-primary their executor, each with its terminal receipt: under an
 /// in-force fabric.delete no node-admin is created for the mesh, which is deleted in process at the
-/// executor (mesh-delete.md "Resume after the primary's loss" step 2, Q160; mesh-investigation.md "During
-/// fabric.delete").
+/// executor (mesh-delete.md "Resume after the primary's loss" step 2, Q160; fabric-delete.md step 1).
 #[allow(clippy::too_many_arguments)]
 pub async fn unanswered_mesh_delete_with<F, Fut>(
     builds: &dyn BuildStateAdapter,
@@ -1761,7 +1759,7 @@ where
 }
 
 /// The record of a mesh whose every birth was deleted in process by the fabric-primary's executor (an
-/// unanswered mesh during fabric.delete, mesh-investigation.md "During fabric.delete"; a mesh left with no
+/// unanswered mesh during fabric.delete, fabric-delete.md step 1; a mesh left with no
 /// node-admin under an in-force fabric.delete, mesh-delete.md "Resume after the primary's loss" step 2,
 /// Q160): every birth's row went Deleted inside its own node.delete, whose receipts are `all_receipts`;
 /// the mesh's rows left (mesh-left), mesh.deleted's completion receipt (`MeshDeleted`, its manifest every

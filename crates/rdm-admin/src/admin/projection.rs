@@ -598,19 +598,13 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         topology.nodes = members.into_iter().chain(predecessors).collect();
     }
     if topology.fabric_primary().is_some() {
-        // The fabric primary authors `degraded` from the investigation's recovery decision until the
-        // recovered mesh's primary reports for its checklist (`crate::investigate`), and a successor primary
-        // keeps an adopted `degraded` until every mesh primary reports (`crate::checklist`). An admin
-        // that holds no role serves the `degraded` the primary published.
-        let held = records.fabric_state();
-        let degraded = records.peer_recovering() || records.adopted_degraded() || records.published_degraded();
-        topology.fabric.status = if held == crate::fabric_state::FabricState::Ready && degraded { ScopeStatus::Degraded } else { held.scope() };
+        topology.fabric.status = records.fabric_state().scope();
     }
     let declared_meshes = records.declared.lock().unwrap().meshes.clone();
     for m in mesh_names {
         // A mesh becomes ready when every node of the mesh that is not stopped is (states.md:16, Q240); once heard
-        // ready it stays ready while it has a primary, because a lost node is a degraded fabric and
-        // a checklist for the primary that takes over, never a mesh gone back to pending.
+        // ready it stays ready while it has a primary, because a lost node is node recovery's and a
+        // checklist for the primary that takes over, never a mesh gone back to pending.
         let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some());
         let id = mesh_ids.get(&m).cloned();
         // A mesh past ready is the state its row holds (states.md: pending ->
@@ -621,15 +615,11 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         // mesh's status also states the Dead it heard, bound to this mesh id (never to a name).
         let row = id.as_ref().and_then(|id| declared_meshes.get(id).copied());
         let authored_here = records.me.get().is_some_and(|me| topology.node_type_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
-        let degraded = !authored_here
-            && (digest_view.statuses.mesh(&m).is_some_and(|s| s.status == "degraded")
-                || (records.peer_recovery_of(&m).is_some() && digest_view.statuses.mesh(&m).is_none()));
         let status = match row {
             Some(rdm_core::status::MeshState::Dead) => ScopeStatus::Dead,
             _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,
             _ if records.heard_dead(id.as_ref(), authored_here) => ScopeStatus::Dead,
             Some(rdm_core::status::MeshState::Leaving) => ScopeStatus::Leaving,
-            _ if degraded => ScopeStatus::Degraded,
             _ if ready => ScopeStatus::Ready,
             _ => ScopeStatus::Pending,
         };

@@ -80,19 +80,20 @@ async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
 }
 
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
-/// "Outside its mesh": "No answer from any of them by the decision step starts fabric recovery at the
-/// lowest Ready mesh-primary, exactly as in the own-mesh arm"; "It takes no primary role";
+/// "Outside its mesh": "a mesh-primary hears nothing of that mesh once its mesh topology stops, so it runs
+/// node investigation on the fabric-primary's birth. ... Any other verdict starts fabric recovery at the
+/// lowest Ready mesh-primary, exactly as in the own-mesh arm" (Q335); "It takes no primary role";
 /// step 4: the node at the fabric-primary's path.name, Ready, is restored as mesh-primary and
 /// fabric-primary): mesh1 is the fabric-primary's mesh. mesh2's admins cannot inspect mesh1's runtimes
-/// (the provider-unproven cut: their inspection answers `Unknown`), and every process of mesh1 is killed. mesh2's primary probes mesh1's admins,
-/// each `unreachable`. Fabric recovery does not start before the decision step (twice the floor); at
-/// it, mesh2's primary runs it from the backbone, its node investigation of the lost birth not
-/// `reached`, and the node re-created at mesh1.admin.1 is restored as mesh-primary and fabric-primary.
-/// Must NOT happen: fabric recovery started before the decision step, any node but the one at
-/// mesh1.admin.1 named fabric-primary, or fabric recovery run by another admin.
+/// (the provider-unproven cut: their inspection answers `Unknown`), and every process of mesh1 is killed.
+/// Fabric recovery does not start before the mark (the staleness floor); from it, mesh2's primary runs
+/// it from the backbone, its node investigation of the lost birth not `reached`, and the node
+/// re-created at mesh1.admin.1 is restored as mesh-primary and fabric-primary. Must NOT happen: fabric
+/// recovery started before the mark, any node but the one at mesh1.admin.1 named fabric-primary, or
+/// fabric recovery run by another admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from_the_backbone_at_the_decision_step() {
-    let test = "a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from_the_backbone_at_the_decision_step";
+async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from_the_backbone_on_the_investigations_verdict() {
+    let test = "a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from_the_backbone_on_the_investigations_verdict";
     let mut estate = estate_of(test, &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     let nodes = estate.node_values().await;
     let fp = &Estate::path("mesh1.admin", "1");
@@ -100,13 +101,14 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     assert_eq!(location(&primary), *fp, "the Day-0 admin holds the fabric-primary: {nodes:#?}");
     let old_node_id = s(&primary["node_id"]);
     let backbone_row = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] == true && n["kind"] == "node_admin").cloned().expect("mesh2's primary");
-    let (backbone, backbone_id) = (location(&backbone_row), s(&backbone_row["node_id"]));
+    let backbone = location(&backbone_row);
     estate.enter(&backbone).await;
     lose_mesh1_unproven(&estate, &nodes).await;
     let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
     let floor = rdm_transport::topology::staleness_floor();
-    let decision = floor * 2;
+    // Fabric recovery starts at the mark, at the staleness floor (fabric-recovery.md step 2, Q335).
+    let decision = floor;
     estate
         .until_view(&format!("the node re-created at {fp:?} is restored as mesh-primary and fabric-primary"), decision + floor * 20 + Duration::from_secs(120), |views| {
             let ns = Estate::values(views);
@@ -122,10 +124,8 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_recovered_from
     let ran: Vec<Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= killed_ns).cloned().collect();
     let run = ran.iter().find(|sp| rdm_test::estate::at_location(sp, &backbone) && attr(sp, "arm") == "backbone" && attr(sp, "outcome").starts_with("restored")).unwrap_or_else(|| panic!("{backbone:?} ran fabric recovery from the backbone and restored {fp:?}: {ran:#?}"));
     assert!(ran.iter().all(|sp| rdm_test::estate::at_location(sp, &backbone)), "nobody else ran it: {ran:#?}");
-    assert!(at(run) >= killed_ns + decision.as_nanos() as u64, "fabric recovery started before the decision step ({decision:?}): {run}");
-    assert_ne!(attr(run, "verdict"), "reached", "the lost birth was never reached: {run}");
-    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == backbone_id && sp["attributes"]["mesh"] == "mesh1" && at(sp) >= killed_ns).collect();
-    assert!(probes.len() >= 2 && probes.iter().all(|sp| sp["attributes"]["outcome"] != "admin-alive"), "{backbone:?} probed mesh1's admins twice, none answering, before the decision: {probes:#?}");
+    assert!(at(run) >= killed_ns + decision.as_nanos() as u64, "fabric recovery started before the mark ({decision:?}): {run}");
+    assert!(!attr(run, "verdict").is_empty() && attr(run, "verdict") != "reached", "the workflow's node investigation decided, the lost birth never reached: {run}");
     let restore = named(&spans, "rdm.node_admin.primary.update.via-fabric-recovery").into_iter().find(|sp| rdm_test::estate::at_location(sp, &backbone) && rdm_test::estate::names_location(sp, "to", fp) && attr(sp, "outcome") == "restored").cloned();
     assert!(restore.is_some(), "the workflow's call restored the node at {fp:?}");
     estate.record_trace_url(s(&run["trace_id"]).as_str());
@@ -251,8 +251,7 @@ async fn a_lost_meshs_node_admin_is_re_created_by_fabric_recovery_over_a_new_dir
     estate.record_trace_url(deleted[0].split(' ').next().unwrap_or("").trim_matches('"'));
 }
 
-/// CONTRACT (mesh-investigation.md step 5: "over the inherited data dir when the verdict is `exited`";
-/// node-recovery.md "Retained": "the inherited data dir and endpoint key when the verdict is
+/// CONTRACT (node-recovery.md "Retained": "the inherited data dir and endpoint key when the verdict is
 /// `exited`"): mesh1 holds the fabric-primary and is lost; mesh2's admin can inspect it, so the old birth's
 /// node.delete reads its runtime exited at its `TerminateRuntime`, and mesh2's primary re-creates
 /// mesh1.admin.1 over the old birth's data dir: a new node.id at mesh1.admin.1, ready, with
@@ -306,13 +305,12 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
     (status, name)
 }
 
-/// CONTRACT (fabric-recovery.md step 3, Q153: "On `running`, the investigation's report stands and the
-/// executor writes nothing: no row, no name release, no mark against the birth in its own view, no
-/// create. A runtime the executor can inspect running but cannot reach is unreachable from the
-/// executor, not lost"): mesh2's admin that is neither mesh2's primary nor the fabric-primary hears and is
+/// CONTRACT (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives": the backbone
+/// acts only "When the mesh has no node-admin left"; Q335; Q153: "A runtime the executor can inspect
+/// running but cannot reach is unreachable from the executor, not lost"): mesh2's admin that is neither mesh2's primary nor the fabric-primary hears and is
 /// heard by no node (all its UDP dropped) while the fabric-primary mesh1.admin.1 runs. The cut is held
-/// past mesh investigation's decision step on mesh1 and past the backbone arm's node investigation of
-/// the fabric-primary, which reads its runtime `running`, and two gossip intervals more. Throughout, the
+/// past the cut admin's mark of the fabric-primary and past the backbone arm's finding that the fabric-primary's
+/// mesh has a node-admin left (mesh1.admin.2 runs; Q335), so it starts no fabric recovery, and two gossip intervals more. Throughout, the
 /// store root holds the fabric-primary's row live and its name held by its node id; no view marks its
 /// birth deleted; nothing is opened for it; and within a floor of the heal every admin's view names
 /// mesh1's members ready and mesh1.admin.1, the same birth, mesh1's one primary and the one
@@ -320,7 +318,7 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
 /// written deleted or its name released, a `via-deleted-birth` / `via-node-deleted` for its birth, a
 /// re-create Build of it, or a view without it after the heal.
 ///
-/// The cut admin is kept to its decision step by the testkit's claimed-attempt cut on the fabric-primary:
+/// The cut admin is kept from being re-created by the testkit's claimed-attempt cut on the fabric-primary:
 /// mesh2's primary, which reaches it through no peer, reads its runtime `running` and submits its recovery
 /// at once (node-recovery.md step 3, Q111); the drift goes up and the fabric-primary opens the attempt
 /// (Q118), and its claim by mesh2's primary is held before its dispatch, so the cut admin is not re-created
@@ -328,8 +326,8 @@ fn stored_birth(root: &std::path::Path, _mesh: &str, node: &PathName, node_id: &
 /// nodes is the own-mesh arm's (Q111): with no fabric-primary in its view its recoveries fail by name
 /// (Q118). The views are read for mesh1 and the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothing() {
-    let test = "a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothing";
+async fn a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh_left_writes_nothing() {
+    let test = "a_backbone_executor_that_finds_a_node_admin_of_the_fabric_primarys_mesh_left_writes_nothing";
     let fp = &Estate::path("mesh1.admin", "1");
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     let mut estate = estate_of(test, &shape).await;
@@ -361,7 +359,7 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     // The cut admin judges mesh1 from direct backbone receipt only, and that receipt alone starts its
     // clock on mesh1 (gossip.md §3.2 "Peer-mesh silence uses direct backbone receipt at node-admins, never
-    // forwarded topology"; mesh-investigation.md: "Only that receipt starts or resets t"): mesh1 as its mesh
+    // forwarded topology"): mesh1 as its mesh
     // channel and its join's topology read hand it is topology, never silent. The cut follows its first
     // backbone install of mesh1.
     wait_for(&format!("{victim:?} holds mesh1 by direct backbone receipt before the cut"), floor * 2, || async {
@@ -381,17 +379,14 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
         Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
     };
     let cut_at = now_ns();
-    // Held past mesh investigation's decision step on mesh1, at the cut admin.
-    let decided = wait_for(&format!("{victim:?} reaches mesh investigation's decision step on mesh1 under the cut"), floor * 12 + Duration::from_secs(60), || async {
+    // Held past the cut admin's fabric recovery start, at the mark (fabric-recovery.md step 2, Q335).
+    let decided = cut_at;
+    // And past the backbone arm's check that the fabric-primary's mesh has a node-admin left
+    // (fabric-recovery.md step 2, "When the mesh has no node-admin left"; Q335): mesh1.admin.2 runs, so the
+    // cut admin starts no fabric recovery and writes nothing.
+    wait_for(&format!("{victim:?} finds a node-admin of mesh1 left and starts no fabric recovery"), floor * 12 + Duration::from_secs(60), || async {
         intact();
-        named(&estate.spans(), "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().find(|sp| at(sp) >= cut_at && rdm_test::estate::of_node(sp, &victim, &victim_id) && attr(sp, "mesh") == "mesh1" && attr(sp, "outcome") == "unreachable").map(at)
-    })
-    .await;
-    // And past the backbone arm's node investigation of the fabric-primary: its inspection first, then,
-    // unreached, the inspection's answer is the verdict (node-investigation.md, Q273).
-    wait_for(&format!("{victim:?}'s node investigation of {fp:?} reaches its verdict, unreached"), floor * 12 + Duration::from_secs(60), || async {
-        intact();
-        named(&estate.spans(), "rdm.node.tickle.returns-unknown.via-unreached").into_iter().find(|sp| at(sp) >= decided && attr(sp, "caller") == victim_id && attr(sp, "node_id") == fp_id && attr(sp, "next") == "verdict").map(|_| ())
+        named(&estate.spans(), "rdm.node_admin.node.resolve.via-node-admin-left").into_iter().find(|sp| at(sp) >= decided && attr(sp, "observer") == victim_id && attr(sp, "lost_node_id") == fp_id).map(|_| ())
     })
     .await;
     // Two gossip intervals more: the inspection's verdict, and whatever the executor does on it (the kept
@@ -407,12 +402,14 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
     let claimed = fp_door.wait_held("cut-admin-recovery").await;
     assert_eq!(s(&claimed["hit"]["executor"]["node_id"]), mesh2_primary_id, "the held claim is mesh2's primary's: {claimed}");
     let bare = |id: String| id.replace('-', "").trim_start_matches("bid_").to_string();
-    let spans_now = estate.spans();
-    let opened: Vec<&Value> = named(&spans_now, "rdm.node_admin.build.update.via-recovery")
-        .into_iter()
-        .filter(|sp| at(sp) >= cut_at && attr(sp, "node_id") == victim_id && bare(attr(sp, "build_id")) == bare(s(&claimed["hit"]["build_id"])) && attr(sp, "attempt") == claimed["hit"]["attempt"].to_string())
-        .collect();
-    assert!(!opened.is_empty(), "the held attempt is the recovery of {victim:?} the fabric-primary opened: {claimed}");
+    // The open's span is written once it closes: read until it is there.
+    wait_for(&format!("the held attempt is the recovery of {victim:?} the fabric-primary opened: {claimed}"), gossip * 10, || {
+        let found = named(&estate.spans(), "rdm.node_admin.build.update.via-recovery")
+            .into_iter()
+            .any(|sp| at(sp) >= cut_at && attr(sp, "node_id") == victim_id && bare(attr(sp, "build_id")) == bare(s(&claimed["hit"]["build_id"])) && attr(sp, "attempt") == claimed["hit"]["attempt"].to_string());
+        async move { found.then_some(()) }
+    })
+    .await;
     drop(cut);
     let healed = std::time::Instant::now();
     let healed_ns = now_ns();
@@ -432,13 +429,6 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
         })
         .await;
     }
-    // Within the same floor the cut admin's backbone arm hears the fabric-primary and ends; its span, read
-    // below, is written at that end, so the estate is not stopped before it.
-    let within = (floor + gossip).saturating_sub(healed.elapsed());
-    wait_for(&format!("{victim:?}'s backbone arm on {fp:?} ends within a floor of the heal"), within, || async {
-        named(&estate.spans(), "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().any(|sp| at(sp) >= cut_at && rdm_test::estate::at_location(sp, &victim)).then_some(())
-    })
-    .await;
     intact();
     // The teardown begins here: what its signals cause (an admin that outlives another submits its recovery)
     // is the teardown's work, not the executor's, so what is read below ends at this instant.
@@ -458,13 +448,13 @@ async fn a_backbone_executor_that_reads_the_fabric_primary_running_writes_nothin
         .filter(|sp| sp["attributes"].to_string().contains(&fp_id) || sp["attributes"].to_string().contains(&fp_inc))
         .collect();
     assert!(marks.is_empty(), "no view marks the running fabric-primary's birth: {marks:#?}");
-    // The backbone arm ran on the fabric-primary at the cut admin, and its verdict was `running`.
+    // The cut admin's backbone arm found mesh1 with a node-admin left and started no fabric recovery
+    // (fabric-recovery.md step 2, "When the mesh has no node-admin left"; Q335).
+    let left: Vec<&Value> = named(&spans, "rdm.node_admin.node.resolve.via-node-admin-left").into_iter().filter(|sp| at(sp) >= cut_at && attr(sp, "observer") == victim_id && attr(sp, "lost_node_id") == fp_id).collect();
+    assert!(!left.is_empty(), "{victim:?} found a node-admin of mesh1 left: {left:#?}");
     let ran: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= cut_at && rdm_test::estate::at_location(sp, &victim)).collect();
-    // The span's `verdict` is its last investigation's (after the heal, `reached`); each `running` read is
-    // an event of it.
-    let read_running = |sp: &Value| sp["events"].as_array().is_some_and(|ev| ev.iter().any(|e| s(&e["attributes"]["verdict"]) == "running" && rdm_test::estate::names_location(e, "subject", fp)));
-    assert!(ran.iter().any(|sp| attr(sp, "arm") == "backbone" && read_running(sp)), "{victim:?} ran fabric recovery's backbone arm on {fp:?} and read it running: {ran:#?}");
-    eprintln!("the cut held {held_ms} ms; {victim:?}'s backbone arm: {:?}", ran.iter().map(|sp| (attr(sp, "arm"), read_running(sp), attr(sp, "outcome"))).collect::<Vec<_>>());
+    assert!(ran.is_empty(), "{victim:?} started no fabric recovery: {ran:#?}");
+    eprintln!("the cut held {held_ms} ms; {victim:?} found {:?} left", left.iter().map(|sp| (attr(sp, "subject_path"), attr(sp, "subject_name"), attr(sp, "finding"))).collect::<Vec<_>>());
 
     // Q209 (node-recovery.md "Detection and the verdict": "After a retryable recovery-submit failure, that
     // exact birth becomes eligible again after a backoff doubling from the gossip interval to the staleness

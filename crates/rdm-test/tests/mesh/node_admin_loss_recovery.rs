@@ -69,7 +69,7 @@ async fn hand_fabric_primary_over(estate: &mut Estate, former: &PathName) -> Pat
 /// mesh loses every node-admin (exact SIGKILL of both admin runtimes) and, while it has
 /// no admin, one ordinary member dies as well (`rpc.3`). The fabric primary's verdict on the lost
 /// mesh opens an attempt of the SAME accepted Build that runs node.create of a node-admin into the
-/// live mesh (mesh-investigation.md steps 6-7): it joins under the mesh's EXISTING MeshId (no id is
+/// live mesh (node-create.md "A node-admin created into a live mesh"): it joins under the mesh's EXISTING MeshId (no id is
 /// minted) through its maker (JoinNode), adopts the mesh's held state as its successor primary (no
 /// Pending is handed: the mesh is not created again), and sweeps its own mesh once with a Ping: the
 /// two members that live answer, the one that died does not. The unreached member goes to
@@ -180,7 +180,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
 
     // The fabric primary's verdict on the lost mesh runs node.create of a node-admin into the live
-    // mesh (mesh-investigation.md step 6): an attempt of the accepted Build past the fault, which the
+    // mesh (node-create.md "A node-admin created into a live mesh" step 1): an attempt of the accepted Build past the fault, which the
     // fabric primary executes. The node-admin joins under the mesh's EXISTING MeshId and adopts the
     // mesh's held state (step 7); no Pending is handed to it.
     // The admin it created: the create in that attempt's own trace, at a location of the lost mesh's admins.

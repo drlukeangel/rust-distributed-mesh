@@ -48,8 +48,9 @@ struct Switch {
     target_tx: tokio::sync::watch::Sender<bool>,
     /// The primary the open primary record names (this birth's node ID), when the cell sets one.
     recorded_primary: Mutex<Option<NodeId>>,
-    /// What the peer-mesh investigation holds per mesh, when the cell sets it.
-    peer: Mutex<std::collections::HashMap<String, rdm_admin::investigate::PeerMesh>>,
+    /// How long each peer mesh has gone unheard past the staleness floor, in milliseconds, when the cell
+    /// sets it (R-D1).
+    peer: Mutex<std::collections::HashMap<String, u64>>,
     /// The meshes whose Mesh record is Dead, when the cell sets them.
     dead: Mutex<std::collections::HashSet<MeshId>>,
     /// The view the fixture's nodes live in: its rows ([`rows_of`]).
@@ -92,7 +93,7 @@ impl Gate for Switch {
     async fn target_set(&self) {
         let _ = self.target_tx.subscribe().wait_for(|f| *f).await;
     }
-    fn peer_mesh(&self, mesh: &str) -> Option<rdm_admin::investigate::PeerMesh> {
+    fn mesh_unheard_ms(&self, mesh: &str) -> Option<u64> {
         self.peer.lock().unwrap().get(mesh).copied()
     }
     async fn dead_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<MeshId>, String> {
@@ -465,20 +466,16 @@ impl OperationRunner for Recovered {
     }
 }
 
-/// CONTRACT (R-D1, Luke 10-08: "Loss of peer-mesh control-plane visibility targets lifecycle
-/// mutation for every node in that mesh ... Only the peer-mesh investigation may begin
-/// restoration of the mesh's first recovering node-admin; once mesh authority is restored, that mesh
-/// performs its own ordinary-node reconciliation"; mesh-investigation.md steps 5-6): mesh2's only
-/// node-admin is proven exited, so the fabric-primary of mesh1 is the executor of mesh2's work in
-/// its view, and the investigation holds mesh2 unheard. While no recovery is decided the drive claims
-/// nothing and dispatches nothing for mesh2, and says so on its own span naming the mesh, the
-/// operation and how long the mesh is unheard, never on the caller's stream (node-rpc-envelope.md:
-/// Blocked's only source is the subject's Status `Blocked`). Once the investigation decides the recovery, the
-/// mesh's first recovering node-admin, and only it, is claimed and run on the fabric-primary; the
-/// mesh's second admin and its ordinary node wait until the mesh is heard again, and are then run by
-/// mesh2's own primary.
+/// CONTRACT (R-D1: "Loss of peer-mesh control-plane visibility targets lifecycle mutation for every
+/// node in that mesh"; build.md §4.4: "The node's mesh is heard ... refused by name, naming the mesh and
+/// how long it has gone unheard"): mesh2's only node-admin is proven exited, so the fabric-primary of
+/// mesh1 is the executor of mesh2's work in its view, and mesh2 is unheard past the staleness floor.
+/// The drive claims nothing and dispatches nothing for mesh2, and says so on its own span naming the
+/// mesh, the operation and how long the mesh is unheard, never on the caller's stream
+/// (node-rpc-envelope.md: Blocked's only source is the subject's Status `Blocked`). Once mesh2 is heard
+/// again, the Build runs.
 #[tokio::test]
-async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_then_only_its_first_admin() {
+async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_it_is_heard_again() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
     let mut lost = node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false);
@@ -487,14 +484,13 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     t.nodes.push(node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, true, false));
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
     let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
-    let held = |recovery_decided: bool| rdm_admin::investigate::PeerMesh { unheard_ms: Some(31_000), recovery_decided, unreachable_decided: false };
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), 31_000);
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-unheard-mesh-drive");
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     let before = r.builds.read_build(&r.build).await.unwrap();
 
-    // Held unheard, no recovery decided: nothing is claimed or dispatched for mesh2.
+    // Held unheard: nothing is claimed or dispatched for mesh2.
     match r.env.run(&drive).await {
         DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("31000"), "the stall names the mesh and how long it is unheard: {why}"),
         other => panic!("the fabric-primary claims nothing for a peer mesh held unheard: {other:?}"),
@@ -505,147 +501,16 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     let targeted = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(targeted.len(), 1, "the target is named once: {targeted:?}");
     let a = &targeted[0].1;
-    assert_eq!((a.get("mesh").map(String::as_str), a.get("target_path").map(String::as_str), a.get("target_name").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin"), Some("1"), Some("31000"), Some("false")), "{a:?}");
+    assert_eq!((a.get("mesh").map(String::as_str), a.get("target_path").map(String::as_str), a.get("target_name").map(String::as_str), a.get("unheard_ms").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin"), Some("1"), Some("31000")), "{a:?}");
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {a:?}", targeted[0].0);
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the target on the unheard mesh is named on its span and frames no Blocked to the caller");
 
-    // The investigation decided the recovery: the first recovering node-admin, and only it, runs, on
-    // the fabric-primary.
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
-    match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()))) && why.contains("first recovering node-admin"), "the mesh's second admin waits for the mesh to be heard: {why}"),
-        other => panic!("mesh2's other nodes wait until the mesh is heard again: {other:?}"),
-    }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())], "only the first recovering node-admin ran");
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.admin", "1").await, before.attempt + 1)], "the restore ran on the fabric-primary");
-    assert!(r.proofs.given.lock().unwrap().is_empty(), "a recovery the ladder decided is told by the ladder, never by the proof of a fully crashed mesh");
-    let second = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
-    assert_eq!(second.len(), 2, "{second:?}");
-    assert_eq!((second[1].1.get("target_path").map(String::as_str), second[1].1.get("target_name").map(String::as_str), second[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin"), Some("2"), Some("true")), "{:?}", second[1].1);
-    eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", second[1].0, second[1].1);
-    assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the second admin's wait for the mesh frames no Blocked to the caller");
-
-    // Heard again: mesh2's own primary runs the rest of the mesh.
+    // Heard again: the Build runs, and mesh2's own primary runs the rest of the mesh.
     r.switch.peer.lock().unwrap().remove("mesh2");
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
     assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()), rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.rpc", "2").unwrap())]);
     let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
     assert_eq!(dispatched.last().map(|(x, _)| x), Some(&r.birth("mesh2.admin", "1").await), "the mesh reconciles its own nodes once heard: {dispatched:?}");
-}
-
-/// mesh2 has lost every node it had, both node-admins included, and the Build grows its rpc nodes to
-/// two; the investigation's state on mesh2 is the cell's.
-async fn crashed_rig() -> Rig {
-    let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
-    for (n, kind) in [(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), rdm_core::NodeKind::NodeAdmin), (rdm_core::PathName::new("mesh2.admin", "2").unwrap(), rdm_core::NodeKind::NodeAdmin), (rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), rdm_core::NodeKind::RpcNode)] {
-        let mut lost = node(n, "mesh2", kind, false, false);
-        lost.status = NodeStatus::Dead;
-        t.nodes.push(lost);
-    }
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
-    rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await
-}
-
-/// CONTRACT (mesh-investigation.md step 5, "Fully crashed": "The fabric-primary acts on the provider's
-/// exact exited verdict, never on silence, and creates mesh-x's node-admin in process"; R-D1): mesh2 has
-/// lost every node-admin and the investigation's 60 s decision on it came out `unreachable`, a hold.
-/// The drive reads the provider's exited verdict of every node of mesh2 the accepted topology names (its
-/// two node-admins, its lost rpc node and the rpc node the Build grows, not yet born) itself, and on
-/// that proof it runs the create of the mesh's first node-admin, and only it, on the fabric-primary; the mesh's
-/// second admin and its ordinary node still wait for the mesh to be heard. With no decision at all
-/// the target stands for the first admin too. Must NOT happen: the target refusing the one create the
-/// exited verdict admits (the mesh waiting for ever), or the hold releasing more than that create.
-#[tokio::test]
-async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does() {
-    let r = crashed_rig().await;
-    let exited: Vec<_> = r.env.topology.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").map(|n| rdm_core::framing::Birth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }).collect();
-    r.proofs.exited.lock().unwrap().extend(exited);
-    let held = |unreachable_decided: bool| rdm_admin::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: false, unreachable_decided };
-    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-crashed-mesh-drive");
-    let drive = Drive::detached(r.build.clone());
-    let before = r.builds.read_build(&r.build).await.unwrap();
-
-    // No decision: the target stands for the first admin.
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
-    match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap()))) && why.contains("no recovery decided"), "{why}"),
-        other => panic!("nothing is claimed for a held mesh with no decision: {other:?}"),
-    }
-    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
-
-    // The 60 s decision came out unreachable: the create of the first node-admin, and only it, runs on the fabric-primary.
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
-    match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()))) && why.contains("unreachable"), "the second admin waits for the mesh to be heard, and the stall names the decision: {why}"),
-        other => panic!("the mesh's other nodes wait until it is heard again: {other:?}"),
-    }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())], "only the mesh's first node-admin ran");
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![(r.birth("mesh1.admin", "1").await, before.attempt + 1)], "the create ran in process on the fabric-primary");
-    // R-DG1 (mesh-investigation.md steps 5-6): the fabric-primary gave the mesh a node-admin when it claimed the create, once.
-    assert_eq!(*r.proofs.given.lock().unwrap(), vec![("mesh2".to_string(), r.build.to_string(), before.attempt + 1)], "the claim of the fully crashed mesh's create told the proof the mesh was given a node-admin");
-    let targeted = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
-    assert_eq!(targeted.len(), 2, "the target is named for the undecided admin.1 and then for admin.2: {targeted:?}");
-    assert_eq!((targeted[1].1.get("target_path").map(String::as_str), targeted[1].1.get("target_name").map(String::as_str), targeted[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin"), Some("2"), Some("false")), "{:?}", targeted[1].1);
-    eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", targeted[1].0, targeted[1].1);
-}
-
-/// The R-D1 fixture: mesh2's only node-admin is proven exited (so the fabric-primary of mesh1 is
-/// the executor of mesh2's work in its view), mesh2 keeps its rpc node, the Build grows mesh2 to two
-/// admins and two rpc nodes, a restored `mesh2.admin.1` is primary as mesh2's primary, and the
-/// investigation holds mesh2 unheard with its recovery decided.
-async fn recovery_rig() -> Rig {
-    let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
-    let mut lost = node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false);
-    lost.status = NodeStatus::Dead;
-    t.nodes.push(lost);
-    t.nodes.push(node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, true, false));
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
-    let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), rdm_admin::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: true, unreachable_decided: false });
-    r
-}
-
-/// CONTRACT (R-D1; mesh-investigation.md step 6, "A recovery verdict starts the existing Mesh
-/// Recovery flow ... on the SAME accepted Build"; mesh-recovery.md step 2, the attempt "runs
-/// node.create for the mesh's first recovering node-admin"): which node-admin of a held mesh the
-/// recovery already admitted is a fact of the Build (the receipts of an attempt an admin outside the
-/// mesh held), not of the drive that dispatched it. After one drive restored `mesh2.admin.1` and
-/// stopped at the target on `mesh2.admin.2`, a second drive instance over the same Build admits no
-/// second admin, whether it finds the next attempt open or already claimed for another admin
-/// outside mesh2: nothing more runs, and it names the target on `mesh2.admin.2`.
-#[tokio::test]
-async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of_a_held_mesh() {
-    let r = recovery_rig().await;
-    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-second-drive");
-    let first = Drive::detached(r.build.clone());
-    match r.env.run(&first).await {
-        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()))), "the first drive stops at mesh2's second admin: {why}"),
-        other => panic!("the first drive restores one admin and stops: {other:?}"),
-    }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())]);
-    // A second drive instance (a drive replaced on the same fabric-primary) over the same Build.
-    let second = Drive::detached(r.build.clone());
-    match r.env.run(&second).await {
-        DriveEnd::Stalled(why) => assert!(why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap()))) && why.contains("first recovering node-admin"), "a second drive admits no second admin: {why}"),
-        other => panic!("a second drive over the same Build admits no second recovering admin: {other:?}"),
-    }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())], "no second admin of mesh2 crossed the target");
-    // The next attempt already claimed for another admin outside mesh2 when a third drive finds it.
-    let open = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
-    assert!(matches!(r.env.door.claim(&r.birth("mesh1.admin", "2").await.node_id, &r.build, open).await, rdm_core::build_claim::BuildClaimReply::Won { .. }));
-    let third = Drive::detached(r.build.clone());
-    let end = r.env.run(&third).await;
-    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains(&format!("{:?}", rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "2").unwrap())))), "a running attempt held by another admin admits no second admin either: {end:?}");
-    assert_eq!(*r.ran.0.lock().unwrap(), vec![rdm_core::OperationId::location("node.create", &rdm_core::PathName::new("mesh2.admin", "1").unwrap())], "no second admin of mesh2 crossed the target");
-    // Each drive names the target on mesh2's second admin once, on its own span.
-    let targeted = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
-    assert_eq!(targeted.len(), 3, "{targeted:?}");
-    for (trace, a) in &targeted {
-        assert_eq!((a.get("target_path").map(String::as_str), a.get("target_name").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin"), Some("2"), Some("true")), "{a:?}");
-        eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={trace} {a:?}");
-    }
 }
 
 /// CONTRACT (R-BI7 caveat 3: one attempt in flight per mesh, the mesh's in-flight row on the store
@@ -1444,7 +1309,7 @@ async fn mesh2_primary_becomes(r: &Rig, status: NodeStatus) {
 }
 
 /// CONTRACT (R-D1; mesh-delete.md, "Resume after the primary's loss": "A silent but unproven primary
-/// refuses the resume by name; silence is not death"): the peer-mesh investigation holds `mesh2`
+/// refuses the resume by name; silence is not death"): the fabric-primary holds `mesh2`
 /// unheard, every birth of it silent, and the leave of it ends incomplete because its primary is
 /// unproven. The hold targets restart, replace and delete of the mesh's births, never the shutdown's
 /// resume: the shutdown is dispatched on attempt 1, the Build stays in progress and nothing is claimed
@@ -1468,7 +1333,7 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
         for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2") {
             n.status = NodeStatus::PendingReconnect;
         }
-        r.switch.peer.lock().unwrap().insert("mesh2".into(), rdm_admin::investigate::PeerMesh { unheard_ms: Some(120_000), recovery_decided: false, unreachable_decided: false });
+        r.switch.peer.lock().unwrap().insert("mesh2".into(), 120_000);
         // The executor's run frames its progress on the call's stream, as an admin's does.
         r.dispatch.frames(&r.birth("mesh1.admin", "1").await.node_id);
         let drive = Drive::detached(r.build.clone());
@@ -3150,38 +3015,14 @@ async fn a_fabric_primary_whose_attempt_another_admin_superseded_mid_run_sends_n
     assert_eq!((read[0].1.get("attempt").map(String::as_str), read[0].1.get("current_attempt").map(String::as_str), read[0].1.get("to").map(String::as_str)), (Some("1"), Some("2"), Some(successor.node_id.as_str())), "{:?}", read[0].1);
 }
 
-/// CONTRACT (build.md §4.4 gate 6; Q221 X: "The one exception is the operation mesh-investigation.md's
-/// decision step names on a node-admin of the unheard mesh: connection-lost admits the same-Build
-/// node.create of a node-admin into that mesh ... nothing else in it is exempt"): mesh2 is held unheard
-/// with its recovery decided, and the Build accepted while it was heard deletes mesh2's second
-/// node-admin. That delete is an operation on a node-admin of the unheard mesh but not the decision
-/// step's create: the drive claims and dispatches nothing for it and names the hold.
-/// Must NOT happen: the decided recovery admitting any operation on a node-admin of the mesh.
-#[tokio::test]
-async fn a_decided_recovery_admits_no_delete_of_a_node_admin_of_the_held_mesh() {
-    let mut t = view();
-    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready });
-    t.nodes.push(node(rdm_core::PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, true, false));
-    t.nodes.push(node(rdm_core::PathName::new("mesh2.admin", "2").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, false, false));
-    t.nodes.push(node(rdm_core::PathName::new("mesh2.rpc", "1").unwrap(), "mesh2", rdm_core::NodeKind::RpcNode, false, false));
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)]) };
-    let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), rdm_admin::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: true, unreachable_decided: false });
-    let drive = Drive::detached(r.build.clone());
-    let end = r.env.run(&drive).await;
-    let delete = format!("{:?}", rdm_core::OperationId::node("node.delete", &r.birth("mesh2.admin", "2").await.node_id));
-    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains(&delete)), "the delete of mesh2's second admin waits for the mesh to be heard: {end:?}");
-    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing of the held mesh ran: {:?}", r.ran.0.lock().unwrap());
-}
-
 /// CONTRACT (node-recovery.md step 2: "For an unheard mesh-primary the fabric-primary runs it, without
 /// the half-floor wait, after the election has named the new mesh-primary"; "Execution": "the
 /// mesh-primary claims it ... the mesh-primary runs it"; node-identity-and-state.md: "The
 /// fabric-primary writes a row only as acting primary of a mesh with no primary"): the drive's claim of
 /// an unheard mesh-primary's recovery attempt, opened in the fabric lane and claimed by no one, follows
 /// the election's result as the claim at its open does. While the fabric-primary's view still names the
-/// unheard `mesh2.admin.1` mesh2's primary and mesh2 holds another node-admin (`mesh2.admin.2`, unheard
-/// in that view as all of mesh2 is), the drive claims nothing and stalls naming the mesh and that admin
+/// unheard `mesh2.admin.1` mesh2's primary and mesh2 holds another node-admin the election can name
+/// (`mesh2.admin.2`, Ready in that view; Q335), the drive claims nothing and stalls naming the mesh and that admin
 /// on its span, framing nothing to the caller (node-rpc-envelope.md: Blocked's only source is the
 /// subject's Status `Blocked`);
 /// once the view names `mesh2.admin.2` mesh2's primary, the attempt is claimed for it. Must NOT happen:
@@ -3204,8 +3045,9 @@ async fn the_drive_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary
     let end = r.env.run(&first).await;
     assert!(matches!(end, DriveEnd::Terminal), "the Build's own attempt ends: {end:?}");
 
-    // mesh2 goes unheard in the fabric-primary's view, its primary still named there.
-    r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2").for_each(|n| n.status = NodeStatus::PendingReconnect);
+    // mesh2's primary goes unheard in the fabric-primary's view, still named there; its second node-admin
+    // is heard, the election's candidate.
+    r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.name != rdm_core::PathName::new("mesh2.admin", "2").unwrap()).for_each(|n| n.status = NodeStatus::PendingReconnect);
     let unheard = r.env.topology.read().await.node(&rdm_core::PathName::new("mesh2.admin", "1").unwrap()).unwrap().clone();
     let attempt = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
     let action = AttemptAction::Recover { kind: rdm_core::NodeKind::NodeAdmin, mesh: "mesh2".to_owned(), path: unheard.name.clone(), node_id: unheard.node_id.clone(), from_incarnation: unheard.incarnation_id.clone().unwrap(), backbone: false };
@@ -3221,7 +3063,7 @@ async fn the_drive_claims_an_unheard_mesh_primarys_recovery_for_the_mesh_primary
     assert_eq!(blocked_of(&frames_now(&mut reader).await), Vec::<BuildReply>::new(), "the wait for the election's mesh-primary frames no Blocked to the caller");
     assert_eq!(claimed.get(&attempt), None, "nothing is claimed before the view names mesh2's primary: {claimed:?}");
 
-    // The election named mesh2.admin.2: the view names it mesh2's primary, still unheard here.
+    // The election named mesh2.admin.2: the view names it mesh2's primary.
     r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin).for_each(|n| n.is_primary = n.name == rdm_core::PathName::new("mesh2.admin", "2").unwrap());
     let named = Drive::detached(r.build.clone());
     let _ = tokio::time::timeout(Duration::from_secs(5), r.env.run(&named)).await.expect("the drive ends");
@@ -3813,17 +3655,14 @@ async fn a_primary_update_whose_attempt_is_not_claimed_stalls_the_drive_and_fram
 
 // The reconcile loop's wait (Q253, amended by Luke 2026-10-28: "I hate timers; make this event
 // driven", rdm#164): every pass of the fabric-primary's reconcile loop is woken by an event (a view
-// install, a Build submitted, a fabric state change, the peer-mesh investigation's move, a drive's
-// end), never by a tick. The loop below is the admin's (boot.rs): `wake.next()`, then one pass, whose
+// install, a Build submitted, a fabric state change, a drive's end), never by a tick. The loop below is the admin's (boot.rs): `wake.next()`, then one pass, whose
 // drive part is `ensure_active`.
 
 /// What wakes the loop under test, each the admin's own source: the control plane's
-/// `build_submitted`, the admin's records (a view installed, the fabric state), the peer-mesh
-/// investigation's ladder and the drives.
+/// `build_submitted`, the admin's records (a view installed, the fabric state) and the drives.
 struct Wakes {
     submitted: Arc<tokio::sync::Notify>,
     records: Arc<rdm_admin::admin::Records>,
-    ladder: Arc<Mutex<rdm_admin::investigate::Ladder>>,
     drives: Arc<rdm_admin::build_drive::Drives>,
     provider: Arc<dyn rdm_admin::deployment::provider::DeploymentProvider>,
 }
@@ -3835,16 +3674,11 @@ impl Wakes {
 
     /// The wakes of an admin whose provider is `provider`.
     fn on(provider: Arc<dyn rdm_admin::deployment::provider::DeploymentProvider>) -> Self {
-        Self { submitted: Arc::new(tokio::sync::Notify::new()), records: Arc::new(rdm_admin::admin::Records::default()), ladder: Arc::new(Mutex::new(rdm_admin::investigate::Ladder::new(Self::rungs()))), drives: Arc::new(rdm_admin::build_drive::Drives::default()), provider }
-    }
-
-    /// The ladder's rungs at the gate's cadence (3 s floor, 500 ms backbone interval).
-    fn rungs() -> rdm_admin::investigate::Rungs {
-        rdm_admin::investigate::Rungs::at(Duration::from_secs(3), Duration::from_millis(500))
+        Self { submitted: Arc::new(tokio::sync::Notify::new()), records: Arc::new(rdm_admin::admin::Records::default()), drives: Arc::new(rdm_admin::build_drive::Drives::default()), provider }
     }
 
     fn wake(&self) -> rdm_admin::admin::ReconcileWake {
-        rdm_admin::admin::ReconcileWake::new(self.submitted.clone(), self.records.subscribe_view(), self.records.subscribe_fabric_state(), self.ladder.lock().unwrap().subscribe_moved(), self.drives.subscribe_ended(), rdm_admin::deployment::provider::DeploymentProvider::exits(&*self.provider))
+        rdm_admin::admin::ReconcileWake::new(self.submitted.clone(), self.records.subscribe_view(), self.records.subscribe_fabric_state(), self.drives.subscribe_ended(), rdm_admin::deployment::provider::DeploymentProvider::exits(&*self.provider))
     }
 }
 
@@ -4000,36 +3834,6 @@ fn one_fabric_state_change_runs_one_reconcile_pass() {
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::FabricState], "one change, one pass; the same state again, none: {passes:?}");
-    assert_eq!(drive_passes(&spans, &trace_id), 2);
-}
-
-/// CONTRACT (Q253 amended: anything the 300 ms arm silently carried is carried by an event; the drift
-/// check and the drive read the peer-mesh investigation's hold and decision, R-D1): the ladder moving
-/// (a peer mesh tracked as unheard) runs exactly one pass.
-/// Must NOT happen: the investigation's move unseen until an unrelated event.
-#[test]
-fn a_move_of_the_peer_mesh_investigation_runs_one_reconcile_pass() {
-    use rdm_admin::admin::Woken;
-    let cap = crate::mesh_delete_resume::capture();
-    let (trace_id, passes) = cap.run(async {
-        let root = tracing::info_span!("cell.reconcile-peer-mesh-move-runs-one-pass");
-        let trace_id = crate::mesh_delete_resume::trace_id(&root);
-        let _in_root = root.enter();
-        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
-        let wakes = Wakes::new();
-        let (passes, task) = reconciler(&r.env, &wakes, None);
-        tokio::time::sleep(SETTLE).await;
-        let track = Wakes::rungs().track;
-        let steps = wakes.ladder.lock().unwrap().step("mesh2", track);
-        assert!(matches!(steps.as_slice(), [rdm_admin::investigate::Step::Track { .. }]), "the ladder tracks mesh2: {steps:?}");
-        tokio::time::sleep(SETTLE).await;
-        task.abort();
-        let passes = passes.lock().unwrap().clone();
-        (trace_id, passes)
-    });
-    let spans = cap.spans();
-    println!("trace_id={trace_id}");
-    assert_eq!(passes, vec![Woken::First, Woken::PeerMesh], "one move of the ladder, one pass: {passes:?}");
     assert_eq!(drive_passes(&spans, &trace_id), 2);
 }
 

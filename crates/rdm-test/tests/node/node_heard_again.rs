@@ -129,7 +129,7 @@ fn after(spans: &[Value], name: &str, node: &NodeView, since: u64) -> Vec<Value>
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:31
 /// "What follows: The caller's: on `unreached` the investigation's verdict is the inspect's answer, read
 ///  before the tickle; on `reached` for a node that is off its channel it commands
-///  [node.mesh.join](node-mesh-join.md); mesh investigation decides at 60 s"
+///  [node.mesh.join](node-mesh-join.md)"
 /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:32
 /// "Spans: ... `rdm.node_admin.node.update.via-mesh-join-commanded` when the caller commands the reached
 ///  node back through node.mesh.join, with the reply"

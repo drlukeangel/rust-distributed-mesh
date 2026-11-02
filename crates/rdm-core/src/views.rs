@@ -97,10 +97,6 @@ pub enum ScopeStatus {
     ///
     /// Position 3 on the wire; serialized as `dead`; `name()` is `dead`.
     Dead,
-    /// Degraded: the fabric primary has decided a peer mesh is re-born.
-    ///
-    /// Position 4 on the wire; serialized as `degraded`; `name()` is `degraded`.
-    Degraded,
 }
 
 /// The deployment provider that runs a fabric's nodes.

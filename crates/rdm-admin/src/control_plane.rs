@@ -45,10 +45,12 @@ pub struct ControlPlane {
     /// This admin's primary view: a node-admin it holds as its mesh's primary replaced by the election is
     /// an unheard mesh-primary, the fabric-primary's to recover (node-recovery.md step 2).
     pub primaries: std::sync::OnceLock<rdm_transport::topology::PrimaryView>,
-    /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
-    /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
-    /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.
-    pub peer_mesh: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<crate::investigate::PeerMesh> + Send + Sync>>,
+    /// How long a peer mesh has gone unheard on the backbone, in milliseconds, once at or past the
+    /// staleness floor (`DigestView::mesh_unheard`; gossip.md: its mesh-primary is marked silent at the
+    /// floor, as any birth): a node of a mesh held unheard is not restarted, stopped or deleted from
+    /// here (R-D1). `None` for a mesh heard within the floor or never heard on the backbone. Set once by
+    /// the admin that owns the digest view.
+    pub mesh_unheard: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>>,
     /// Node investigation of one exact birth (node-investigation.md; Q107 item 1), the one primitive:
     /// gate 5 admits a delete of a birth neither stopped nor heard live only on its `exited` verdict
     /// (build.md §4.4; Q219). Set once by the admin that runs it; unset, no verdict is held.
@@ -123,7 +125,7 @@ impl ControlPlane {
             view_now: std::sync::OnceLock::new(),
             connections: std::sync::OnceLock::new(),
             loads: std::sync::OnceLock::new(),
-            peer_mesh: std::sync::OnceLock::new(),
+            mesh_unheard: std::sync::OnceLock::new(),
             investigation: std::sync::OnceLock::new(),
             fabric_recovery: std::sync::OnceLock::new(),
             primaries: std::sync::OnceLock::new(),
@@ -533,7 +535,7 @@ impl ControlPlane {
             topology.pinned = pinned;
             // A peer mesh held unheard is held as a mesh (R-D1): its births under a silence mark are planned
             // as they stand, and gate 6 below reads what the request changes there.
-            let held: std::collections::BTreeSet<String> = topology.meshes.keys().filter(|m| observed.node(&self.me).is_none_or(|own| **m != own.mesh) && self.peer_mesh.get().and_then(|f| f(m)).is_some_and(|p| p.unheard_ms.is_some())).cloned().collect();
+            let held: std::collections::BTreeSet<String> = topology.meshes.keys().filter(|m| observed.node(&self.me).is_none_or(|own| **m != own.mesh) && self.mesh_unheard.get().and_then(|f| f(m)).is_some()).cloned().collect();
             let operations = crate::accepted::plan_holding(&topology, &observed, &held).operations;
             // A Build whose plan holds the fabric delete, the whole plan, is exempt from the
             // build-in-progress refusal, R-BI7 and R-PC1: it interrupts the Build in progress, and its own
@@ -571,7 +573,7 @@ impl ControlPlane {
                 let n = op.node()?;
                 let mesh = op.mesh()?;
                 if observed.node(&self.me).is_some_and(|own| own.mesh == mesh) { return None; }
-                let unheard_ms = self.peer_mesh.get().and_then(|f| f(mesh)).and_then(|p| p.unheard_ms)?;
+                let unheard_ms = self.mesh_unheard.get().and_then(|f| f(mesh))?;
                 Some(BuildReject::UnheardMesh { node: n.clone(), mesh: mesh.to_string(), unheard_ms })
             }) {
                 outer.in_scope(|| reject_span(route, &reject));
@@ -717,7 +719,7 @@ impl ControlPlane {
                 if let Some(held) = holding(&current, Some(mesh)) { return Err(Refusal::BuildInProgress(held)); }
                 let node = step.node();
                 if t.node(&self.me).is_none_or(|own| own.mesh != *mesh) {
-                    if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(mesh)).and_then(|p| p.unheard_ms) {
+                    if let Some(unheard_ms) = self.mesh_unheard.get().and_then(|f| f(mesh)) {
                         let reject = BuildReject::UnheardMesh { node: node.clone(), mesh: mesh.clone(), unheard_ms };
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
@@ -806,7 +808,7 @@ impl ControlPlane {
                 // A node of a peer mesh this fabric-primary holds unheard is not its to stop or delete:
                 // the mesh's own authority, once heard again, reconciles it (R-D1).
                 if mesh != t.node(&self.me).map(|n| n.mesh.as_str()).unwrap_or_default() {
-                    if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(&mesh)).and_then(|p| p.unheard_ms) {
+                    if let Some(unheard_ms) = self.mesh_unheard.get().and_then(|f| f(&mesh)) {
                         let reject = BuildReject::UnheardMesh { node: path.clone(), mesh: mesh.clone(), unheard_ms };
                         outer.in_scope(|| reject_span(route, &reject));
                         return Err(Refusal::Reject(reject));
@@ -1015,8 +1017,11 @@ impl ControlPlane {
             // fabric-primary runs its recovery "after the election has named the new mesh-primary"
             // (node-recovery.md step 2).
             let replaced = self.primaries.get().is_some_and(|primaries| primaries.replaced(rdm_core::PrimaryRole::MeshPrimary, &mesh, &incarnation));
+            // With no successor named (no node-admin of its mesh Ready, Q335 item 4), the birth its mesh's
+            // primary record still names, held off live in this view, is the unheard mesh-primary.
+            let recorded = self.primaries.get().is_some_and(|primaries| primaries.mesh(&mesh).is_some_and(|r| r.is_birth(&node_id, &incarnation))) && t.own(&node_id).is_none_or(|n| !n.status.is_live());
             let unheard_mesh_primary = fabric_recovery.is_some()
-                || (kind == crate::model::NodeKind::NodeAdmin && (replaced || t.node_type_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == node_id && p.incarnation_id.as_ref() == Some(&incarnation) && !p.status.is_live())));
+                || (kind == crate::model::NodeKind::NodeAdmin && (replaced || recorded || t.node_type_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == node_id && p.incarnation_id.as_ref() == Some(&incarnation) && !p.status.is_live())));
             let recoverer = if let Some(fr) = &fabric_recovery {
                 fr.executor.as_ref().map(|birth| birth.node_id.clone())
             } else if unheard_mesh_primary {
@@ -1116,7 +1121,7 @@ impl ControlPlane {
             // holds the mesh refuses here, before anything of this attempt is written.
             // An unheard mesh-primary is recovered by the fabric-primary from the fabric lane, as a lost
             // mesh's node-admin is (node-recovery.md, "for an unheard mesh-primary, the fabric-primary
-            // opens it"; mesh-investigation.md): the mesh's lane is written by its primary (build.md, the
+            // opens it", Q335): the mesh's lane is written by its primary (build.md, the
             // Build journal's writers), which is the unheard birth. The mesh's in-flight row still holds
             // the mesh.
             // Fabric recovery's re-create runs in its target mesh's lane: free while the fabric lane holds an

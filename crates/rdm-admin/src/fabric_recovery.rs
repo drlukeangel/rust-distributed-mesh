@@ -1,8 +1,7 @@
 //! Fabric recovery (fabric-recovery.md "The loss of the fabric-primary while a node-admin lives";
 //! elections §3, §4.1, §4.3; build.md §5.3; Q122). Unheard past the staleness floor, the fabric-primary is
 //! taken by nobody: the lowest Ready node-admin of its mesh, or when the mesh has none the
-//! lowest Ready mesh-primary on the backbone from mesh investigation's decision step, runs one
-//! workflow. It takes no primary role. Node investigation decides what becomes of the lost birth (Q111):
+//! lowest Ready mesh-primary on the backbone, runs one workflow, started at the mark on either arm. It takes no primary role. Node investigation decides what becomes of the lost birth (Q111):
 //! reached, it is commanded back through node.mesh.join; any other verdict, node recovery re-creates the
 //! node-admin at its path and name, an attempt of the current Build that names the lost birth, except from the
 //! backbone on `running`, where the report stands and nothing is written (Q153). When the node
@@ -314,13 +313,14 @@ impl FabricRecoveryDoor {
         of(&t, &crate::admin::incumbency_of(&self.digest_view, &self.records), &self.digest_view)
     }
 
-    /// Start the workflow when this admin runs it: in its own mesh at the first tick after the mark, once
-    /// the fabric record has named the unheard birth for a floor (`held_a_floor`); from the backbone at
-    /// mesh investigation's decision step (`decided`). Once per lost birth while it runs here.
-    pub async fn start_if_mine(self: &Arc<Self>, held_a_floor: bool, decided: bool) {
+    /// Start the workflow when this admin runs it, from its own mesh or from the backbone alike: at the
+    /// first tick after the mark, once the fabric record has named the unheard birth for a floor
+    /// (`held_a_floor`). The workflow's own node investigation of the lost birth is the verdict that
+    /// decides (fabric-recovery.md step 3, Q335). Once per lost birth while it runs here.
+    pub async fn start_if_mine(self: &Arc<Self>, held_a_floor: bool) {
         let Some(fr) = self.read().await else { return };
         let launched = fr.executor.is_none() && self.runs(&fr);
-        if !self.runs(&fr) || !(launched || if fr.own_mesh { held_a_floor } else { decided }) {
+        if !self.runs(&fr) || !(launched || held_a_floor) {
             return;
         }
         let target_birth = rdm_core::framing::Birth { node_id: fr.target.node_id.clone(), incarnation: fr.target.incarnation.clone() };
@@ -333,6 +333,16 @@ impl FabricRecoveryDoor {
         }
         let door = self.clone();
         tokio::spawn(async move {
+            // From the backbone the arm acts only "When the mesh has no node-admin left" (fabric-recovery.md
+            // step 2, Q335): node investigation of each other node-admin birth of the fabric-primary's mesh,
+            // once for this lost birth (`Looker::node_admin_left`); one left leaves the workflow to that
+            // mesh's own arm, and this admin starts nothing for the birth (it stays the one `running` here).
+            if !fr.own_mesh && fr.executor.is_some() {
+                let view = door.topology.read().await.clone();
+                if door.looker.node_admin_left(&view, &fr.target.mesh, &fr.target.node_id).await.is_some() {
+                    return;
+                }
+            }
             door.run(fr.target.clone()).await;
             let mut running = door.running.lock().unwrap();
             if running.as_ref() == Some(&target_birth) {

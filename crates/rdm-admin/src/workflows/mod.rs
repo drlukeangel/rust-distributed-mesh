@@ -6,7 +6,6 @@ pub mod fabric_delete;
 pub mod fabric_recovery;
 pub mod mesh_create;
 pub mod mesh_delete;
-pub mod mesh_investigation;
 pub mod node_config_update;
 pub mod node_connections_delete;
 pub mod node_create;

@@ -1,5 +1,6 @@
-//! i143.e4.s7 process E2E: mesh investigation of a mesh whose node-admins are lost while a Build runs
-//! (mesh-investigation.md steps 1-7, "A node-admin joins the live mesh"; PRD §12.2).
+//! i143.e4.s7 process E2E: node investigation and node recovery of the lost mesh-primary of a mesh
+//! whose node-admins are lost while a Build runs (node-recovery.md step 2, Q335; node-create.md "A
+//! node-admin created into a live mesh"; PRD §12.2).
 //!
 //! desired {mesh1, mesh2}; a Build B is active (growing mesh2, executed by mesh2's admin primary)
 //! when both of mesh2's node-admins and every birth B's first attempt launched are killed; the three
@@ -12,10 +13,11 @@
 //!   alive keep theirs;
 //! - mesh1 was never touched (every mesh1 node keeps its incarnation).
 //!
-//! Evidence: the fabric-primary's investigation of mesh2 finds, through a member of mesh2 that
-//! answers, that mesh2's node-admins cannot be reached (`connection-lost`), records the verdict,
-//! and only then runs node.create of mesh2's first node-admin (span `via-recovery`); a reconcile of
-//! B by a mesh1 admin names mesh2's admin primary as the previous executor.
+//! Evidence: the fabric-primary's primary watch runs node investigation on mesh2's lost mesh-primary
+//! (`rdm.node_admin.primary.update.via-investigation`), and on its verdict submits that birth's node
+//! recovery (`rdm.node_admin.build.update.via-node-recovery`): no node-admin of mesh2 is left for the
+//! election to name, so the fabric-primary executes it; a reconcile of B by a mesh1 admin names mesh2's
+//! admin primary as the previous executor.
 
 use rdm_core::PathName;
 use rdm_test::estate::location;
@@ -36,7 +38,7 @@ fn owner() -> Owner {
         subfeature: "mesh-investigation".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connection_lost_verdict_and_the_build_completes".into(),
+        test: "a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_by_the_fabric_primary_and_the_build_completes".into(),
     }
 }
 
@@ -63,18 +65,20 @@ fn shape(r2: u32) -> FabricDesired {
     FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, r2)])] }
 }
 
-/// CONTRACT (mesh-investigation.md step 5: "A node-admin is created into mesh-x in one of two cases
-/// only: Members live. The latest probe answers `connection-lost`: a mesh-x member reports that it
-/// cannot reach its own node-admin ... Record the verdict before opening the node.create attempt";
-/// step 6: "A connection-lost verdict runs node.create of a node-admin into mesh-x, on the SAME
-/// accepted Build and mesh-x's own MeshId: a node-admin joining a live mesh"; R-D1): mesh2 loses both
-/// node-admins mid-Build while three of its members live on. The fabric-primary (mesh1's primary)
-/// probes mesh2 through a member that answers, hears `connection-lost` for each node-admin,
-/// records the verdict, and only then runs node.create of mesh2's first node-admin under B; B
-/// completes. Must NOT happen: a node of mesh2 created by B before the verdict (the target holds), a
-/// new MeshId, a member that stayed alive born again, or mesh1 touched.
+/// CONTRACT: docs/architecture/lifecycles/node-recovery.md
+/// "(A mesh none of whose node-admins can be reached is this page's case with no successor named: the
+/// fabric-primary investigates the lost mesh-primary and re-creates it at its path.name, Q335.)"
+/// CONTRACT: docs/architecture/lifecycles/node-create.md "A node-admin created into a live mesh"
+/// "A node-admin that node recovery re-creates into a mesh that lost its node-admins ... joins that mesh
+/// under the mesh's own MeshId and never mints another. The mesh is still in the accepted topology, so
+/// the attempt belongs to the SAME accepted Build."
+/// CONTRACT (R-D1): mesh2 loses both node-admins mid-Build while three of its members live on. The
+/// fabric-primary (mesh1's primary) runs node investigation on mesh2's lost mesh-primary and, on its
+/// verdict, recovers it at its path.name; the re-created node-admin is mesh2's primary, recovers the
+/// rest of its mesh, and B completes. Must NOT happen: a node of mesh2 created by B before the
+/// recovery (the target holds), a new MeshId, a member that stayed alive born again, or mesh1 touched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connection_lost_verdict_and_the_build_completes() {
+async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_by_the_fabric_primary_and_the_build_completes() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile(&shape(3)).await;
     let before = estate.settles_to_named(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(15)).await;
@@ -101,7 +105,6 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     // A runtime's data dir is named by its node id: every birth B launched is mesh2's, so a runtime
     // whose id is neither mesh1's nor a kept member's is lost.
     let survivors: BTreeSet<String> = before.iter().filter(|n| n.mesh == "mesh1" || kept.contains(&n.name)).map(|n| n.node_id.to_string()).collect();
-    let kept_ids: BTreeSet<String> = before.iter().filter(|n| kept.contains(&n.name)).map(|n| n.node_id.to_string()).collect();
     estate.fabric_ready();
     for (dir, pid) in estate.live_runtimes() {
         let id = dir.file_name().unwrap().to_string_lossy().to_string();
@@ -146,25 +149,19 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
     let spans = estate.spans();
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
-    // The verdict: the fabric-primary's probes of mesh2 went through a member that answered and
-    // reported mesh2's node-admins lost, the latest probe decided, and the node.create opened.
-    let create = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().find(|r| attr(r, "mesh") == "mesh2" && attr(r, "node_path") == "mesh1.admin").unwrap_or_else(|| panic!("the node.create of mesh2's node-admin opened (via-recovery)")).clone();
-    let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "mesh") == "mesh2" && mesh1_admin_ids.contains(&attr(p, "node")) && at(p) > killed_ns && at(p) < at(&create)).collect();
-    let last = probes.iter().max_by_key(|p| at(p)).unwrap_or_else(|| panic!("mesh2 was probed by the fabric-primary before its verdict"));
-    assert_eq!(attr(last, "outcome"), "connection-lost", "the latest probe: a member of mesh2 cannot reach its node-admins: {probes:#?}");
-    assert!(kept_ids.contains(&attr(last, "carrier")), "the carrier is a member that stayed alive: {last}");
-    assert!(
-        named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").iter().any(|v| attr(v, "mesh") == "mesh2" && attr(v, "outcome") == "connection-lost" && at(v) <= at(&create)),
-        "the verdict was recorded before the node.create attempt opened"
-    );
-    // The target held: no node of mesh2 was created by B before the verdict.
+    // The verdict: the fabric-primary's node investigation of mesh2's lost mesh-primary, then that birth's
+    // node recovery on it (Q335).
+    let look = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().find(|sp| attr(sp, "suspect_node_id") == mesh2_primary.as_str() && attr(sp, "node_path") == "mesh1.admin" && at(sp) > killed_ns).cloned().unwrap_or_else(|| panic!("a mesh1 admin ran node investigation on mesh2's lost mesh-primary {mesh2_primary}"));
+    assert_ne!(attr(&look, "finding"), "reached", "the killed mesh-primary is not reached: {look}");
+    let create = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| attr(sp, "node_id") == mesh2_primary.as_str() && at(sp) >= at(&look)).cloned().unwrap_or_else(|| panic!("the fabric-primary submitted the node recovery of mesh2's lost mesh-primary on the verdict"));
+    // The target held: no node of mesh2 was created by B before the recovery.
     let early: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
         .filter(|c| attr(c, "build_id") == b && attr(c, "node_path").starts_with("mesh2.") && at(c) > killed_ns && at(c) < at(&create))
         .map(|c| format!("{}/{} attempt {} at {}", attr(c, "node_path"), attr(c, "node_name"), attr(c, "attempt"), at(c)))
         .collect();
-    assert!(early.is_empty(), "nothing of mesh2 is created before its verdict (via-recovery at {}): {early:?}", at(&create));
+    assert!(early.is_empty(), "nothing of mesh2 is created by B before its mesh-primary's recovery (at {}): {early:?}", at(&create));
     let accepting = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("a fabric-primary before the loss");
     let takeover = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
@@ -176,7 +173,10 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
         .clone();
     let attempt = takeover["attributes"]["attempt"].as_str().map(String::from).unwrap_or_else(|| takeover["attributes"]["attempt"].to_string());
     let decider = claim_decider(&spans, b.as_str(), &attempt).unwrap_or_else(|| panic!("the claim of takeover attempt {attempt} of {b} has its decision span"));
-    if decider == accepting {
+    if takeover["attributes"]["reason"] == "recovery" {
+        // The takeover is the lost mesh-primary's node recovery (Q335): its attempt is that recovery's story.
+        assert_eq!(takeover["trace_id"], create["trace_id"], "the recovery attempt that took B's mesh over shares the recovery submit's trace: {takeover}");
+    } else if decider == accepting {
         let accepted = named(&spans, "rdm.node_admin.build.create.via-accepted").into_iter().find(|sp| sp["attributes"]["build_id"] == b.as_str()).expect("B's request").clone();
         assert_eq!(takeover["trace_id"], accepted["trace_id"], "a takeover the accepting fabric-primary decided shares B's request trace");
     } else {
@@ -193,6 +193,6 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_connect
         let held = ready["attributes"]["runtime_facts_held"].as_u64().or_else(|| ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);
         assert!(held >= 5, "{} held {held} runtime facts before Ready: {ready}", admin["name"]);
     }
-    eprintln!("admins_lost_mid_build: node-admin create trace {} | latest probe trace {} | takeover trace {}", s(&create["trace_id"]), s(&last["trace_id"]), s(&takeover["trace_id"]));
+    eprintln!("admins_lost_mid_build: investigation trace {} | recovery trace {} | takeover trace {}", s(&look["trace_id"]), s(&create["trace_id"]), s(&takeover["trace_id"]));
     estate.record_trace_url(takeover["trace_id"].as_str().unwrap_or(""));
 }

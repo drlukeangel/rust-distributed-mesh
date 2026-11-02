@@ -167,9 +167,6 @@ pub struct Proofs {
     pub recorded: Mutex<std::collections::HashSet<Birth>>,
     /// How many times `proven` was called.
     pub calls: std::sync::atomic::AtomicUsize,
-    /// The meshes the drive told it had been given a node-admin on the proof of a fully crashed mesh,
-    /// with the Build and attempt that claimed the create.
-    pub given: Mutex<Vec<(String, String, u32)>>,
 }
 
 #[async_trait::async_trait]
@@ -182,9 +179,6 @@ impl DepartureProof for Proofs {
         } else {
             Err(format!("{executor}'s runtime is not proven exited"))
         }
-    }
-    async fn mesh_given_node_admin(&self, mesh: &str, build_id: &rdm_admin::build::BuildId, attempt: u32, _from: std::time::Instant) {
-        self.given.lock().unwrap().push((mesh.to_string(), build_id.to_string(), attempt));
     }
 }
 

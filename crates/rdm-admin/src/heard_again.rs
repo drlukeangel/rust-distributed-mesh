@@ -241,7 +241,7 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:31
     /// "What follows: The caller's: on `unreached` the investigation's verdict is the inspect's answer,
     ///  read before the tickle; on `reached` for a node that is off its channel it commands
-    ///  [node.mesh.join](node-mesh-join.md); mesh investigation decides at 60 s"
+    ///  [node.mesh.join](node-mesh-join.md)"
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:46
     /// "5. The caller acts on the result per its own page. Nothing on this page writes a row, changes a
     ///  primary or publishes a frame."

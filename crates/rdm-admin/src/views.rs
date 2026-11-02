@@ -57,7 +57,6 @@ fn scope_status(s: crate::model::ScopeStatus) -> ScopeStatus {
         S::Ready => ScopeStatus::Ready,
         S::Leaving => ScopeStatus::Leaving,
         S::Dead => ScopeStatus::Dead,
-        S::Degraded => ScopeStatus::Degraded,
     }
 }
 

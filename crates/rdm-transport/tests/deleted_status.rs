@@ -4,7 +4,7 @@
 //! The design (docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md R-RX1: no receiver
 //! refuses an input because of who sent it; fabric-authority.md §7: "A successor mesh primary
 //! reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally";
-//! R-ML2: the admin a mesh investigation creates is a node-admin joining a live mesh, which as successor
+//! R-ML2: the admin node recovery re-creates into a mesh that lost its node-admins is a node-admin created into a live mesh, which as successor
 //! primary adopts the mesh's held state). The held status orders a status by its `changed_at_rafka_ms`.
 //!
 //! The defect this cell pins (traces bec3d0cbaa59317b18f954c1d27fdb73, d2427d34ca338d823e76781c4c052624;

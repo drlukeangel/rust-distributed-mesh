@@ -337,13 +337,6 @@ pub struct Records {
     /// The births a command of this admin's executor never reached for a reachability reason, marked
     /// `PendingReconnect` at once (node-tickle.md step 1): read by the mesh primary's tick.
     pub unreachable: crate::offline::UnreachableMarks,
-    /// Per peer mesh the fabric primary gave a new node-admin (the investigation's connection-lost
-    /// verdict, or the fully crashed mesh's proof): the fabric is `degraded` from that moment until
-    /// each such mesh's new primary has reported its checklist.
-    pub(crate) peer_recovery: Mutex<BTreeMap<String, PeerRecovery>>,
-    /// The fabric-primary role was taken while the fabric was `degraded`: the new primary adopted
-    /// the status and keeps it until every mesh primary reports for its checklist (`crate::checklist`).
-    pub(crate) adopted_degraded: std::sync::atomic::AtomicBool,
     /// This admin, as its mesh's primary, may declare its Mesh ready: it holds no adopted status
     /// waiting for its checklist (`crate::checklist`). Withdrawn when the role ends.
     pub(crate) declare_gate: std::sync::atomic::AtomicBool,
@@ -353,9 +346,6 @@ pub struct Records {
     /// Poked each time the installed view changes: the hierarchy loop wakes on it to act on a
     /// role taken or a status that routing reads at once, not on its next checklist.
     pub view_changed: tokio::sync::Notify,
-    /// This admin does not hold the fabric-primary role and the last fabric status published is
-    /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
-    pub(crate) published_degraded: std::sync::atomic::AtomicBool,
     /// The topology view whose deleted births leave these records. Set once at start.
     pub(crate) digest_view: std::sync::OnceLock<DigestView>,
     /// This admin is entering an existing mesh and has not yet been told who holds the roles: it
@@ -399,8 +389,7 @@ pub struct Records {
     /// Moves each time a record the projection reads changes here, at its setter (Q254: each cause
     /// raises its own event at its source): a launch record published or removed, a mesh id held, a
     /// birth held true offline or no longer, the planned births, the meshes heard ready or dead, a
-    /// mesh deleted, the fabric state, a peer mesh's recovery, the adopted or published `degraded`,
-    /// the entry read answered. What the view rebuild waits on beside the digest view's routing watch
+    /// mesh deleted, the fabric state, the entry read answered. What the view rebuild waits on beside the digest view's routing watch
     /// and the primary records the election reads ([`crate::admin::ViewWake`]); nothing is sent.
     pub(crate) inputs: tokio::sync::watch::Sender<u64>,
     /// The writer of the node rows of each mesh this admin writes for (`crate::node_rows`): the
@@ -458,21 +447,6 @@ impl ServingDoor {
                 .in_scope(|| tracing::info!("the Status authority is filled and this admin's view holds its exact birth: the Node RPC router serves"));
         }
     }
-}
-
-/// A peer mesh the fabric primary gave a new node-admin: its connection-lost verdict's recovery
-/// (`crate::investigate`), or a fully crashed mesh's create on the provider's proof of every node.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerRecovery {
-    /// The mesh's name.
-    pub mesh: String,
-    /// The Rafka-time of the ladder's decision; `None` for a fully crashed mesh, which has no ladder
-    /// verdict (its create is admitted on the provider's proof).
-    pub verdict_rafka_ms: Option<u64>,
-    /// When this admin took the decision: a report counts as the mesh's proof only if it arrived after.
-    pub opened_at: std::time::Instant,
-    /// The node-admin births of the mesh the decision found.
-    pub lost: Vec<rdm_core::framing::Birth>,
 }
 
 impl Records {
@@ -690,81 +664,6 @@ impl Records {
         *self.fabric_blocker.lock().unwrap() = blocker;
     }
 
-    /// Every peer mesh the fabric primary gave a new node-admin that has not yet reported its checklist.
-    pub fn peer_recoveries(&self) -> Vec<PeerRecovery> {
-        self.peer_recovery.lock().unwrap().values().cloned().collect()
-    }
-
-    /// The recovery open for `mesh`, if one is.
-    pub fn peer_recovery_of(&self, mesh: &str) -> Option<PeerRecovery> {
-        self.peer_recovery.lock().unwrap().get(mesh).cloned()
-    }
-
-    /// Whether any peer mesh is being recovered: the fabric is `degraded` while one is.
-    pub fn peer_recovering(&self) -> bool {
-        !self.peer_recovery.lock().unwrap().is_empty()
-    }
-
-    /// Open the recovery of `recovery.mesh`: the fabric primary gave it a new node-admin. A recovery
-    /// already open for that mesh is replaced by this one; another mesh's is left as it is.
-    pub fn open_peer_recovery(&self, recovery: PeerRecovery) {
-        self.peer_recovery.lock().unwrap().insert(recovery.mesh.clone(), recovery);
-        self.inputs_moved();
-    }
-
-    /// The fabric primary `me` gives `recovery.mesh` a new node-admin and, at that same moment, authors
-    /// the fabric `degraded` (mesh-investigation.md step 6; R-DG1: on either arm), until that mesh's new
-    /// primary reports its checklist (step 7: [`crate::investigate::restore_peer_recovery`]). The one place
-    /// the recovery is opened and the one span that says so, `verdict` naming the arm:
-    /// `connection-lost` (the ladder's verdict, `replace`: a new decision replaces an earlier one's
-    /// recovery of the mesh) or `fully-crashed` (the create admitted on the provider's proof, which keeps
-    /// the recovery already open for the mesh: a later claim must not move `opened_at` past the report
-    /// it waits for). Answers whether it opened one.
-    pub fn open_mesh_recovery(&self, me: &PathName, recovery: PeerRecovery, verdict: &'static str, replace: bool) -> bool {
-        let (mesh, verdict_rafka_ms) = (recovery.mesh.clone(), recovery.verdict_rafka_ms);
-        {
-            let mut open = self.peer_recovery.lock().unwrap();
-            if !replace && open.contains_key(&mesh) {
-                return false;
-            }
-            open.insert(mesh.clone(), recovery);
-        }
-        self.inputs_moved();
-        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        tracing::info_span!("rdm.node_admin.mesh.create.via-recovery", node_path = %me.path, node_name = %me.name, mesh = %mesh, at, fabric_status = "degraded", verdict_rafka_ms = ?verdict_rafka_ms, verdict)
-            .in_scope(|| tracing::info!("the fabric primary gives the mesh a new node-admin and authors degraded"));
-        true
-    }
-
-    /// Close the recovery of `mesh`: its new primary reported its checklist.
-    pub fn close_peer_recovery(&self, mesh: &str) {
-        if self.peer_recovery.lock().unwrap().remove(mesh).is_some() {
-            self.inputs_moved();
-        }
-    }
-
-    /// Close every recovery: this admin no longer holds the fabric-primary role.
-    pub fn clear_peer_recoveries(&self) {
-        let held = std::mem::take(&mut *self.peer_recovery.lock().unwrap());
-        if !held.is_empty() {
-            self.inputs_moved();
-        }
-    }
-
-    /// The fabric is `degraded` because this admin took the fabric-primary role while it was.
-    pub fn adopted_degraded(&self) -> bool {
-        self.adopted_degraded.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Hold (or clear) the adopted `degraded`; whether the value changed.
-    pub fn set_adopted_degraded(&self, on: bool) -> bool {
-        let changed = self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on;
-        if changed {
-            self.inputs_moved();
-        }
-        changed
-    }
-
     /// The topology view whose deleted births leave these records (set once, at start).
     pub fn set_digest_view(&self, digest_view: DigestView) {
         let _ = self.digest_view.set(digest_view);
@@ -802,18 +701,6 @@ impl Records {
     /// Whether this admin has not yet been told who holds the roles (its entry read has not answered).
     pub fn is_entering(&self) -> bool {
         self.entering.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// A admin that is not the fabric-primary serves the `degraded` status the fabric-primary published.
-    pub fn published_degraded(&self) -> bool {
-        self.published_degraded.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Hold (or clear) the published `degraded`.
-    pub fn set_published_degraded(&self, on: bool) {
-        if self.published_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on {
-            self.inputs_moved();
-        }
     }
 
     /// May this admin declare its Mesh ready (see the field)?

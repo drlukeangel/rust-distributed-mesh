@@ -1643,7 +1643,7 @@ async fn a_hung_node_admin_member_is_investigated_by_its_mesh_primary_and_re_cre
 /// fabric lane: its node.delete terminates the exact runtime first; the deleted birth is gone from
 /// every role, the election names `mesh2.admin.2`, and `mesh2.admin.1` is re-created as a new birth,
 /// created by `mesh2.admin.2` (commands go down: the fabric-primary claims the create on its own log and
-/// the in its role mesh-primary executes it, mesh-investigation.md step 6). Must NOT happen: the hung
+/// the in its role mesh-primary executes it, node-create.md "A node-admin created into a live mesh" step 1). Must NOT happen: the hung
 /// mesh-primary held, the fabric-primary creating mesh2's new birth itself, or a second recovery of the
 /// hung birth in mesh2's lane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1690,7 +1690,7 @@ async fn a_hung_mesh_primary_is_terminated_and_recovered_at_once_by_the_fabric_p
         .find(|sp| sp["attributes"]["winner_node_id"] == standby_row["node_id"])
         .cloned()
         .expect("the election roles the standby once the hung birth is deleted");
-    // Commands go down (mesh-investigation.md step 6 and its messages: "the fabric-primary claims on its
+    // Commands go down (node-create.md "A node-admin created into a live mesh" step 1 and its messages: "the fabric-primary claims on its
     // own log, the executor adopts the won claim"): the delete is the fabric-primary's (R-FM1), and the
     // new birth at mesh2.admin.1 is created by the admin mesh2 roles in the hung birth's place, which
     // takes its join, its node.started and its member status. mesh2's lane opens no second recovery of

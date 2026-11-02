@@ -54,7 +54,7 @@ use tracing::Instrument;
 #[derive(Debug, Default)]
 pub struct DeclareWake {
     notify: tokio::sync::Notify,
-    /// Wakes the hierarchy and peer-mesh investigation loops when a Mesh's checklist-complete report arrives.
+    /// Wakes the hierarchy loop when a Mesh's checklist-complete report arrives.
     pub(crate) report_notify: tokio::sync::Notify,
     addressed: Mutex<BTreeSet<NodeId>>,
     /// The same down ops, counted for a `pre_node_ready` hook blocked on its authority's word.
@@ -549,7 +549,7 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
 #[allow(clippy::too_many_arguments)]
 /// `own_mesh_changed_at`: the Rafka-time of each state this admin's own MeshStatus holds for its mesh
 /// (its publisher's fact, 0 when it holds none), declared with the state so the fabric-primary holds it
-/// for a successor to republish unchanged (mesh-investigation.md step 7).
+/// for a successor to republish unchanged (node-create.md "A node-admin created into a live mesh" step 4).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &crate::model::IncarnationId, own: rdm_core::MemberStatus, mesh_checklist_done: bool, own_mesh_held: Option<MeshState>, own_mesh_changed_at: impl Fn(MeshState) -> u64, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, to its own mesh's primary, which sets its status from the report
@@ -581,7 +581,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
         if let (Some(mesh), Some(id)) = (view.meshes.iter().find(|m| m.name == subject.mesh), mesh_ids.get(&subject.mesh)) {
             // Declared with the instant its own MeshStatus holds for Ready, which its publisher stamps in
             // the same turn: until that fact is held there is no instant to declare, and its arrival is a
-            // view change that runs this again (mesh-investigation.md step 7).
+            // view change that runs this again (node-create.md "A node-admin created into a live mesh" step 4).
             let at = own_mesh_changed_at(MeshState::Ready);
             if mesh.status == crate::model::ScopeStatus::Ready && at > 0 {
                 d.owe(Key::Mesh(id.clone(), MeshState::Ready), Receiver::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::Ready, changed_at_rafka_ms: at });

@@ -1558,12 +1558,10 @@ mod tests {
         let row = crate::storage::RuntimeRow { kind: executor.node.kind, mesh: executor.node.mesh.clone(), node_id: executor.node.node_id.clone(), name: executor.node.name.clone(), incarnation_id: executor.node.incarnation.clone(), runtime: fact.clone(), data_dir: None };
         let departure = |nodes: Arc<CountsRuntimeLists>| ProviderDeparture {
             me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
-            topology: Arc::new(RwLock::new(view.clone())),
             refresh: Arc::new(|| Box::pin(async {})),
             digest_view: digest_view.clone(),
             provider: Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() }),
             nodes,
-            records: Arc::new(Records::default()),
         };
         let executor_name = rdm_core::framing::Birth { node_id: executor.node.node_id.clone(), incarnation: executor.node.incarnation.clone() };
         let birth = (executor.node.node_id.to_string(), executor.node.incarnation.to_string());
@@ -1627,7 +1625,6 @@ mod tests {
             let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status, inspected: Default::default() });
             let departure = ProviderDeparture {
                 me: rdm_core::PathName::new("mesh1.admin", "1").unwrap(),
-                topology: Arc::new(RwLock::new(view.clone())),
                 refresh: {
                     let refreshed = refreshed.clone();
                     Arc::new(move || {
@@ -1638,7 +1635,6 @@ mod tests {
                 digest_view: digest_view.clone(),
                 provider: provider.clone(),
                 nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
-                records: Arc::new(Records::default()),
             };
             let answer = departure.proven(&executor_name).await;
             assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 1, "{verdict}: the exact runtime is inspected once");
@@ -2388,84 +2384,6 @@ mod tests {
         assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::Ready, "heard ready: a node not ready does not take the mesh back to pending");
     }
 
-    /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the role to a recovered
-    /// mesh's admin while the fabric was degraded) answers `GET /api/fabric` with the status the fabric-primary
-    /// published, `degraded`, until the fabric-primary publishes ready. Must NOT happen: `ready`
-    /// because its own authority records (cleared with the role) are empty.
-    #[test]
-    fn a_secondary_projects_the_degraded_status_the_primary_published() {
-        use MemberStatus::*;
-        let digest_view = DigestView::default();
-        for d in [with_id(digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Ready), "200000000000"), with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Ready), "300000000000")] {
-            digest_view.record(d);
-        }
-        let records = Records::default();
-        records.set_fabric_state(crate::fabric_state::FabricState::Ready);
-        let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(t.fabric.status, ScopeStatus::Ready, "nothing published degraded: ready");
-        records.set_published_degraded(true);
-        let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(t.fabric.status, ScopeStatus::Degraded, "the fabric-primary published degraded and has not published ready");
-    }
-
-    /// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:65
-    /// "At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded (R-DG1)"
-    /// CONTRACT: docs/architecture/lifecycles/states.md:12
-    /// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
-    /// Readers (the topology view's mesh status, `fabric.get` and `mesh.get`) show `mesh-x` `degraded`
-    /// from the fabric-primary's `MeshStatus` `degraded` frame until the successor's first `MeshStatus`
-    /// frame (higher revision, preserved `changed_at_rafka_ms`) replaces it.
-    #[test]
-    fn readers_project_mesh_degraded_until_the_successors_frame_replaces_it() {
-        use MemberStatus::*;
-        use rdm_core::filter::Filter;
-        use rdm_core::status::StatusReply;
-        let digest_view = DigestView::default();
-        for d in [with_id(digest(PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin, Ready), "200000000000"), with_id(digest(PathName::new("mesh2.admin", "1").unwrap(), "mesh2", rdm_core::NodeKind::NodeAdmin, Ready), "300000000000")] {
-            digest_view.record(d);
-        }
-        let records = Records::default();
-        records.set_fabric_state(crate::fabric_state::FabricState::Ready);
-        let me: PathName = rdm_core::PathName::new("mesh1.admin", "1").unwrap();
-        let lost_birth = rdm_transport::envelope::Birth { fabric: fabric1(), node: NodeId::parse("300000000000").unwrap(), incarnation: IncarnationId::mint() };
-        let fp_birth = rdm_transport::envelope::Birth { fabric: fabric1(), node: NodeId::parse("200000000000").unwrap(), incarnation: IncarnationId::mint() };
-        let successor_birth = rdm_transport::envelope::Birth { fabric: fabric1(), node: NodeId::parse("300000000000").unwrap(), incarnation: IncarnationId::mint() };
-
-        // Lost primary's last MeshStatus at revision 2, t = 1_000.
-        let lost_ready = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }.authored(&lost_birth, 2, 1_000);
-        assert!(digest_view.statuses.take(&lost_ready, &fabric1()));
-        let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(t.mesh_view("mesh2").unwrap().status, ScopeStatus::Ready);
-
-        // Fabric-primary's MeshStatus degraded at mesh2's revision 2, verdict instant t = 61_000.
-        let degraded = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh2".into(), status: "degraded".into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 61_000 }.authored(&fp_birth, 2, 61_000);
-        assert!(digest_view.statuses.take(&degraded, &fabric1()));
-        records.set_me(NodeId::parse("200000000000").unwrap());
-        let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(t.mesh_view("mesh2").unwrap().status, ScopeStatus::Degraded, "the topology view shows mesh2 degraded");
-        let StatusReply::Meshes { meshes } = crate::views::meshes_answer(&me, &t, &Filter::default()) else { panic!("meshes reply") };
-        assert_eq!(meshes.iter().find(|m| m.name == "mesh2").unwrap().status, rdm_core::views::ScopeStatus::Degraded, "mesh.get shows mesh2 degraded");
-        let StatusReply::Fabrics { fabrics } = crate::views::fabric_answer(&me, &t, None, &Filter::default()) else { panic!("fabric reply") };
-        assert_eq!(fabrics[0].meshes.iter().find(|m| m.name == "mesh2").unwrap().status, rdm_core::views::ScopeStatus::Degraded, "fabric.get shows mesh2 degraded");
-
-        // R3: mesh2's own mesh-primary authors its own mesh's lifecycle; the fabric-primary's marker never feeds its publish input.
-        let own_records = Records::default();
-        own_records.set_fabric_state(crate::fabric_state::FabricState::Ready);
-        own_records.set_me(NodeId::parse("300000000000").unwrap());
-        let own_t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &own_records);
-        assert_eq!(own_t.mesh_view("mesh2").unwrap().status, ScopeStatus::Ready, "mesh2's own mesh-primary projects its own lifecycle, never the fabric-primary's degraded marker");
-
-        // Successor's first MeshStatus at revision 3, preserving changed_at = 1_000, replaces degraded.
-        let successor_ready = rdm_transport::topology::Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1_000 }.authored(&successor_birth, 3, 1_000);
-        assert!(digest_view.statuses.take(&successor_ready, &fabric1()));
-        let t = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records);
-        assert_eq!(t.mesh_view("mesh2").unwrap().status, ScopeStatus::Ready, "the successor's first frame clears degraded in the topology view");
-        let StatusReply::Meshes { meshes } = crate::views::meshes_answer(&me, &t, &Filter::default()) else { panic!("meshes reply") };
-        assert_eq!(meshes.iter().find(|m| m.name == "mesh2").unwrap().status, rdm_core::views::ScopeStatus::Ready, "mesh.get shows mesh2 ready again");
-        let StatusReply::Fabrics { fabrics } = crate::views::fabric_answer(&me, &t, None, &Filter::default()) else { panic!("fabric reply") };
-        assert_eq!(fabrics[0].meshes.iter().find(|m| m.name == "mesh2").unwrap().status, rdm_core::views::ScopeStatus::Ready, "fabric.get shows mesh2 ready again");
-    }
-
     /// CONTRACT (gossip.md §3.1 `NodeDeleted`: the birth is removed): a birth whose node.delete was
     /// heard leaves the view whatever its last digest said, so a mesh whose admins are all deleted has
     /// no primary admin. Must NOT happen: a deleted admin holds its mesh's role because its digest says
@@ -2487,8 +2405,7 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md "The mesh-primary is the reconciler for its own members";
-    /// mesh-investigation.md: a peer mesh unheard on the backbone is the fabric-primary's
-    /// investigation, counted from t since it last heard that mesh): a mesh-primary's offline tickle
+    /// node-recovery.md step 2: an unheard peer mesh-primary is the fabric-primary's to investigate): a mesh-primary's offline tickle
     /// watches the silent members of its own mesh and nothing of a peer mesh, its node-admins
     /// included. A peer mesh's node-admins are reached by the investigation's probes alone. Must NOT
     /// happen: a mesh-primary tickling, holding TRUE OFFLINE or writing a silence status for a peer
@@ -3779,7 +3696,7 @@ mod tests {
         assert_eq!(status("mesh3"), ScopeStatus::Ready, "a mesh whose row holds ready is projected from its members, as before");
     }
 
-    /// CONTRACT (#2805, rdm#175; mesh-investigation.md "A node-admin joins the live mesh"; fabric
+    /// CONTRACT (#2805, rdm#175; node-create.md "A node-admin created into a live mesh"; fabric
     /// primary §7; states.md: a mesh's state only moves forward): the state the fabric-primary hands a
     /// mesh's first admin is the state it holds for that mesh, and the mesh primary's declaration this
     /// admin applied (by the mesh's MeshId) is held, whatever its gossip view has heard yet. Pending
@@ -4437,7 +4354,7 @@ mod tests {
         rdm_transport::topology::Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: "100000000000".into(), forwarded_by: None, changed_at_rafka_ms: 10 }
     }
 
-    /// CONTRACT (i144 Q56; mesh-investigation.md "A node-admin joins the live mesh" step 2: the joining
+    /// CONTRACT (i144 Q56; node-create.md "A node-admin created into a live mesh" step 2: the joining
     /// admin "obtains its control/status context" from its maker; fabric-authority.md §7: the successor
     /// adopts the mesh's existing state exactly): the admin created into a lost mesh takes its mesh's
     /// held state from its maker's entry answer into its applied state, so its Ready gate holds its

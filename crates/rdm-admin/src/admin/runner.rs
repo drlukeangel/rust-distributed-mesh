@@ -30,7 +30,7 @@ pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, m
 /// lifecycle state is no state held.
 /// The Rafka-time this admin holds for `mesh` entering `state`: the held MeshStatus's changed_at when it
 /// names `state`, else the declaration's applied here by the mesh's MeshId; 0 when it holds neither
-/// (mesh-investigation.md step 7: the successor republishes the held MeshStatus, preserving changed_at).
+/// (node-create.md "A node-admin created into a live mesh" step 4: the successor republishes the held MeshStatus, preserving changed_at).
 pub(crate) fn held_mesh_changed_at(digest_view: &DigestView, records: &Records, mesh: &str, state: rdm_core::status::MeshState) -> u64 {
     let heard = digest_view.statuses.mesh(mesh).filter(|h| super::reconcile::mesh_state_of(&h.status).ok() == Some(state)).map(|h| h.changed_at_rafka_ms);
     let declared = || {
@@ -547,20 +547,6 @@ impl AdminRunner {
         out
     }
 
-    /// The open recovery of `prev`'s mesh, when `prev` is a node-admin birth its decision found and this
-    /// admin has had a direct backbone receipt from that mesh since the recovery opened
-    /// (mesh-investigation.md step 4: "Direct backbone receipt from mesh-x at any point cancels the
-    /// investigation"), with how long ago that receipt was. `None` otherwise.
-    fn recovery_heard_again(&self, prev: &Node) -> Option<(crate::admin::PeerRecovery, std::time::Duration)> {
-        let recovery = self.records.peer_recovery_of(&prev.mesh)?;
-        if !prev.birth().is_some_and(|birth| recovery.lost.contains(&birth)) {
-            return None;
-        }
-        let now = std::time::Instant::now();
-        let unheard = self.digest_view.mesh_unheard(&prev.mesh, now)?;
-        (unheard < now.saturating_duration_since(recovery.opened_at)).then_some((recovery, unheard))
-    }
-
     /// `Node: Pending -> Ready`, committed once the node reports ready.
     pub(crate) async fn bring_into_traffic(&self, node: &Node) -> Result<(), String> {
         let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::Ready };
@@ -628,16 +614,6 @@ impl AdminRunner {
             TargetOutcome::Clear { gone: Some(prev) } => {
                 if let Some(seam) = &self.target_seam {
                     seam.before_target_act(node, &prev.node_id).await;
-                }
-                // A direct backbone receipt from the mesh after its recovery opened cancels that recovery
-                // (mesh-investigation.md step 4): a recovery that has not yet acted does not act, and the
-                // target's verdict on a birth its decision found, `running` among them, writes nothing
-                // (Q325; fabric-recovery.md step 3, Q153).
-                if let Some((recovery, unheard)) = self.recovery_heard_again(&prev) {
-                    self.records.close_peer_recovery(&recovery.mesh);
-                    tracing::info_span!("rdm.node_admin.node.create.via-heard-again", build_id = %build_id.log(), attempt, mesh = %recovery.mesh, node_path = %node.path, node_name = %node.name, node_id = %prev.node_id, incarnation_id = %prev.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or_default(), unheard_ms = unheard.as_millis() as u64, opened_ms = recovery.opened_at.elapsed().as_millis() as u64)
-                        .in_scope(|| tracing::info!("the mesh was heard on the backbone again after its recovery opened: the recovery is cancelled, and nothing is written of the birth its decision found"));
-                    return Ok(());
                 }
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
@@ -850,8 +826,8 @@ impl AdminRunner {
         let (mesh, kind) = requested.map(|(req, _)| (req.mesh.clone(), req.kind)).unwrap_or_else(|| (exited.mesh.clone(), exited.kind));
         // A node-admin created into a mesh with no other live node-admin is that mesh's first admin, as
         // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
-        // Pending hand-off before it is asked to be Ready (e4.s11; mesh-investigation.md "A node-admin
-        // joins the live mesh").
+        // Pending hand-off before it is asked to be Ready (e4.s11; node-create.md "A node-admin
+        // created into a live mesh").
         let first_admin = {
             let t = self.topology.read().await;
             t.first_admin_of(node, &mesh, kind) && crate::executor::held_admins(&mesh, Some(node), &t).is_empty()

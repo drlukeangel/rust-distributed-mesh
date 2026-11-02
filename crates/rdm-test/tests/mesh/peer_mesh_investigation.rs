@@ -1,32 +1,26 @@
-//! i143.e4.s10 detection acceptance (rafka-v2 #2803; docs/architecture/lifecycles/mesh-investigation.md),
-//! PROCESS layer: run by
+//! Node investigation and node recovery of a lost mesh-primary, run by the fabric-primary
+//! (docs/architecture/lifecycles/node-investigation.md, docs/architecture/lifecycles/node-recovery.md;
+//! Q335: a mesh-primary is a node, one investigation and one recovery), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2803-detect-process`, which exports `I143_ACCEPTANCE_DIR`
 //! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans, feature `i143-2803-detect`).
 //!
-//! The estate: two meshes of two node-admins and three rpc nodes, settled through a Build. The
-//! peer mesh is the one whose admins do not hold the fabric-primary role. Time is the elapsed time since the
-//! fabric primary's last direct backbone receipt from the mesh, on the investigation's rungs
-//! (`Rungs::configured`, from the staleness floor `RDM_STALENESS_MS`): probe 1, the silent mark,
-//! probe 2 and the decision at 20 s, 30 s, 40 s and 60 s at the 30 s default floor.
+//! The estate: meshes settled through a Build. The peer mesh is the one whose admins do not hold the
+//! fabric-primary role. The election names the lost mesh-primary's successor at the staleness floor; the
+//! fabric-primary runs node investigation on the lost birth without the half-floor wait; `reached` is
+//! node.mesh.join, any other verdict node recovery at its path.name, the successor its executor, and with
+//! no successor the same with none named (node-recovery.md step 2).
 
 use rdm_core::PathName;
 use rdm_test::estate::location;
 use rdm_client::{NodeView, ScopeStatus};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
-use rdm_test::typed::fabric_view_of;
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
-/// The investigation's rungs as the estate runs them (the nodes read the same cadence environment):
-/// a cell waits on these, never a fixed number of milliseconds.
-fn rungs() -> rdm_admin::investigate::Rungs {
-    rdm_admin::investigate::Rungs::configured()
-}
 
 fn owner(test: &str) -> Owner {
     Owner {
@@ -63,13 +57,9 @@ fn values(views: &[NodeView]) -> Vec<Value> {
     views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
 }
 
-/// The fabric's lifecycle state as `fabric.get` words it (`ready`, `degraded`, ...).
+/// The fabric's lifecycle state as `fabric.get` words it (`pending`, `ready`).
 fn status_word(status: ScopeStatus) -> String {
     s(&serde_json::to_value(status).expect("a status serializes"))
-}
-
-fn births(nodes: &[Value]) -> BTreeMap<PathName, String> {
-    nodes.iter().map(|n| (location(&n), s(&n["incarnation_id"]))).collect()
 }
 
 /// Whether a checklist's `missing` names the birth at `at` whose node id is `node_id`.
@@ -77,33 +67,23 @@ fn names_missing(missing: &str, at: &PathName, node_id: &str) -> bool {
     missing.contains(&format!("node_id={node_id}")) || missing.contains(&format!("path={:?}, name={:?}", at.path, at.name))
 }
 
-fn signal(pid: u32, sig: &str) {
-    assert!(Command::new("kill").args([sig, &pid.to_string()]).status().unwrap().success(), "kill {sig} {pid}");
-}
-
 /// A settled estate and the peer mesh the fault will fall on.
 struct Fixture {
     estate: Estate,
-    accepted: String,
-    attempt_before: u64,
     fabric_primary: PathName,
     fabric_primary_id: String,
     lost: String,
-    lost_mesh_id: String,
     before: Vec<Value>,
 }
 
 async fn fixture(cell: &str) -> Fixture {
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    let built = estate.reconcile_shape("fabric1", &shape).await;
-    let accepted = built.build_id.to_string();
+    estate.reconcile_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
     let fabric_primary_row = before.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric primary");
     let (fabric_primary, fabric_primary_id) = (location(&fabric_primary_row), s(&fabric_primary_row["node_id"]));
     let lost = if fabric_primary.path.starts_with("mesh1.") { "mesh2" } else { "mesh1" }.to_string();
-    let lost_mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
-    let attempt_before = estate.attempt_of_build(&accepted).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
     estate.enter(&fabric_primary).await;
     // The fault falls on an established fabric, so the cells that assert the fabric stays ready start
@@ -119,7 +99,7 @@ async fn fixture(cell: &str) -> Fixture {
         async move { (sends >= 2).then_some(()) }
     })
     .await;
-    Fixture { estate, accepted, attempt_before, fabric_primary, fabric_primary_id, lost, lost_mesh_id, before }
+    Fixture { estate, fabric_primary, fabric_primary_id, lost, before }
 }
 
 impl Fixture {
@@ -137,14 +117,6 @@ impl Fixture {
         out
     }
 
-    fn lost_admins(&self) -> Vec<(PathName, u32)> {
-        self.runtimes(&format!("{}.admin", self.lost))
-    }
-
-    fn lost_members(&self) -> Vec<(PathName, u32)> {
-        self.runtimes(&format!("{}.rpc", self.lost))
-    }
-
     /// The node id settled at `at`.
     fn id_of(&self, at: &PathName) -> String {
         self.before.iter().find(|n| location(n) == *at).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("{at:?} is settled"))
@@ -154,49 +126,6 @@ impl Fixture {
     async fn admin_ids(&self, mesh: &str) -> std::collections::BTreeSet<String> {
         let now = self.estate.node_values().await;
         self.before.iter().chain(now.iter()).filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin").map(|n| s(&n["node_id"])).collect()
-    }
-
-    /// The unix nanoseconds of the last backbone receipt of the peer mesh the fabric primary
-    /// names in its first `via-unheard` span, as `at` (unix ms).
-    fn unheard_since_ms(&self, spans: &[Value]) -> Option<u64> {
-        named(spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && rdm_test::estate::of_node(sp, &self.fabric_primary, &self.fabric_primary_id)).filter_map(|sp| attr(sp, "at").parse::<u64>().ok()).min()
-    }
-
-    /// Stop the estate; the instant (unix ns) the cell's story ended, taken before the shutdown began.
-    /// The shutdown stops the peer mesh's members one by one, and a mesh it leaves unheard opens a new
-    /// unheard interval at the fabric primary (mesh-investigation.md step 4: "Direct backbone receipt
-    /// from mesh-x at any point cancels the investigation and resets the unheard interval"): what that
-    /// makes the fabric do is not the investigation the cell is about.
-    async fn stop(&mut self) -> u64 {
-        let end = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
-        self.estate.stop().await;
-        end
-    }
-
-    /// The probes of the lost mesh the fabric primary made before `end` ([`Self::stop`]).
-    fn probes_before<'a>(&self, spans: &'a [Value], end: u64) -> Vec<&'a Value> {
-        self.probes(spans).into_iter().filter(|p| at_ns(p) < end).collect()
-    }
-
-    fn probes<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
-        let mut p: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && rdm_test::estate::of_node(sp, &self.fabric_primary, &self.fabric_primary_id)).collect();
-        p.sort_by_key(|sp| at_ns(sp));
-        p
-    }
-
-    fn verdicts<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
-        let mut p: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && rdm_test::estate::of_node(sp, &self.fabric_primary, &self.fabric_primary_id)).collect();
-        p.sort_by_key(|sp| at_ns(sp));
-        p
-    }
-
-    /// The node.create of a node-admin into the lost mesh the fabric primary opened on a verdict.
-    fn admin_creates<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
-        named(spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && rdm_test::estate::of_node(sp, &self.fabric_primary, &self.fabric_primary_id)).collect()
-    }
-
-    async fn fabric_status(&self) -> String {
-        status_word(self.estate.fabric_view().await.status)
     }
 }
 
@@ -214,23 +143,13 @@ fn mesh_status_change_before(spans: &[Value], mesh: &str, before_ms: u64) -> Opt
 fn mesh_sends_after(spans: &[Value], mesh: &str, from_ms: u64) -> BTreeMap<(String, String), (usize, u64)> {
     let scope = format!("mesh:{mesh}");
     let mut out: BTreeMap<(String, String), (usize, u64)> = BTreeMap::new();
-    for sp in named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == scope && attr(sp, "status") != "degraded" && at_ns(sp) / 1_000_000 >= from_ms) {
+    for sp in named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "scope") == scope && at_ns(sp) / 1_000_000 >= from_ms) {
         let at = at_ns(sp) / 1_000_000;
         let e = out.entry((attr(sp, "node"), attr(sp, "changed_at_rafka_ms"))).or_insert((0, at));
         e.0 += 1;
         e.1 = e.1.min(at);
     }
     out
-}
-
-/// When the fabric left `degraded` on a completed checklist, in unix ms: the holder that decided the
-/// node.create of the mesh's node-admin clears it on the new mesh-primary's report; a successor
-/// holder that adopted `degraded` clears it when every mesh primary has reported.
-fn degraded_cleared_at(spans: &[Value], mesh: &str) -> Vec<u64> {
-    let mut at: Vec<u64> = named(spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().filter(|sp| attr(sp, "mesh") == mesh).map(|sp| at_ns(sp) / 1_000_000).collect();
-    at.extend(named(spans, "rdm.node_admin.fabric.update.via-checklist-complete").into_iter().filter(|sp| attr(sp, "degraded_cleared") == "true").map(|sp| at_ns(sp) / 1_000_000));
-    at.sort();
-    at
 }
 
 fn now_ms() -> u64 {
@@ -241,341 +160,6 @@ fn result(dir: &std::path::Path, v: Value) {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2803 detection, ruling 2026-10-08): a peer mesh loses both node-admins (exact SIGKILL)
-/// while its three rpc nodes live. The fabric primary hears nothing of the mesh on the backbone.
-/// At probe 1's rung (20 s unheard at the default floor) it sends probe 1 to each node-admin, the
-/// exact mesh-primary first: direct, then a Ping to the members and, through the member that
-/// answered, a Forward carrying `ProbeNodeState`; the member cannot reach its own node-admin and
-/// answers `connection-lost`. At the mark (30 s) the mesh is marked silent (nothing is sent), at
-/// probe 2's rung (40 s) probe 2 prefers another member and answers the same. At the decision (60 s)
-/// the latest probe being `connection-lost` is the verdict: the fabric primary authors
-/// FabricStatus `degraded` and runs node.create of a node-admin into the mesh, under the same Build and
-/// the existing MeshId; the fabric returns to ready when the mesh has its primary again. What must NOT
-/// happen: a node-admin created before the decision's rung, a new MeshId or Build id, a surviving member created again, a degraded fabric
-/// before the verdict.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes() {
-    let cell = "a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_connection_lost_verdict_after_two_probes";
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut f = fixture(cell).await;
-    let lost_births: BTreeMap<PathName, String> = births(&f.before).into_iter().filter(|(n, _)| n.path == format!("{}.admin", f.lost)).collect();
-    let survivors: Vec<PathName> = (1..=3).map(|i| Estate::path(&format!("{}.rpc", f.lost), &i.to_string())).collect();
-    let survivor_ids: Vec<String> = survivors.iter().map(|m| f.id_of(m)).collect();
-    let before_births = births(&f.before);
-
-    let admins = f.lost_admins();
-    assert_eq!(admins.len(), 2, "both admins of {} are running: {admins:?}", f.lost);
-    let fault_ms = now_ms();
-    for (_, pid) in &admins {
-        f.estate.kill_pid(*pid);
-    }
-    if f.lost == "mesh1" {
-        f.estate.kill_bootstrap();
-    }
-
-    let (accepted, attempt_before, lost_births_w) = (f.accepted.clone(), f.attempt_before, lost_births.clone());
-    let statuses = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, u64)>::new()));
-    let sampler = {
-        let (peers, entry, fabric_id, statuses) = (f.estate.peers().await, f.estate.entry().await, f.estate.fabric_id.clone(), statuses.clone());
-        tokio::spawn(async move {
-            loop {
-                if let Some(view) = fabric_view_of(&peers, &entry, &fabric_id).await {
-                    let st = status_word(view.status);
-                    let mut seen = statuses.lock().unwrap();
-                    if seen.last().map(|(l, _)| l != &st).unwrap_or(true) {
-                        seen.push((st, now_ms()));
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-    };
-    wait_for("the accepted Build is complete past the fault and a node-admin is created for the lost ones", Duration::from_secs(300), || {
-        let estate = &f.estate;
-        let (accepted, lost_births) = (accepted.clone(), lost_births_w.clone());
-        async move {
-            let b = estate.carrier().await.build(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get [id] of the accepted Build");
-            let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
-            let created = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
-            (later && created).then_some(b)
-        }
-    })
-    .await;
-    let after = values(&f.estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(90)).await);
-    wait_for("the fabric is ready again", Duration::from_secs(30), || async { (f.fabric_status().await == "ready").then_some(()) }).await;
-    // The sampler polls on its own cadence: stop it only once it has recorded the return to ready.
-    wait_for("the sampler records the return to ready", Duration::from_secs(10), || {
-        let seen = statuses.lock().unwrap().last().is_some_and(|(st, _)| st == "ready");
-        async move { seen.then_some(()) }
-    })
-    .await;
-    sampler.abort();
-    let statuses = statuses.lock().unwrap().clone();
-    // The return to ready is five sends a second apart, from the fabric primary for as long as it
-    // holds the role: the mesh, its node-admin created, can take the role (the election is the lowest ready NodeId), and
-    // a publisher that loses the role ends the sends still to come.
-    let degraded_ms = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or(0);
-    let (fp_for_sends, fp_for_sends_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
-    let role_lost_or_five = |spans: &[Value]| {
-        let sent = named(spans, "rdm.mesh.fabric.update.via-status-send")
-            .into_iter()
-            .filter(|sp| rdm_test::estate::of_node(sp, &fp_for_sends, &fp_for_sends_id) && attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms)
-            .count();
-        let any_sent = named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().any(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready" && at_ns(sp) / 1_000_000 > degraded_ms);
-        let role_lost = any_sent && named(spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().any(|sp| rdm_test::estate::of_node(sp, &fp_for_sends, &fp_for_sends_id) && attr(sp, "role") == "stop" && at_ns(sp) / 1_000_000 > degraded_ms);
-        (sent, role_lost)
-    };
-    wait_for("the return to ready is sent five times or the role moves", Duration::from_secs(30), || {
-        let (sent, role_lost) = role_lost_or_five(&f.estate.spans());
-        async move { (sent >= 5 || role_lost).then_some(()) }
-    })
-    .await;
-    let role_moved = role_lost_or_five(&f.estate.spans()).1;
-    assert_eq!(f.estate.accepted_build_id().await, f.accepted, "no new Build: the current build_id is unchanged");
-    assert_eq!(f.estate.mesh_view(&f.lost).await.id.expect("the lost mesh still has its id").to_string(), f.lost_mesh_id, "{} keeps its own MeshId", f.lost);
-    let new_births = births(&after);
-    for m in &survivors {
-        assert_eq!(new_births[m], before_births[m], "{m:?} answered the probes and is never created again");
-    }
-
-    let lost_admin_ids = f.admin_ids(&f.lost).await;
-    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
-    let story_end = f.stop().await;
-    let spans = f.estate.spans();
-    let last_heard_ms = f.unheard_since_ms(&spans).unwrap_or_else(|| panic!("{fp:?} tracked {} as unheard (via-unheard names the last backbone receipt)", f.lost));
-    let unheard = |sp: &Value| Duration::from_millis((at_ns(sp) / 1_000_000).saturating_sub(last_heard_ms));
-
-    let probes = f.probes_before(&spans, story_end);
-    assert_eq!(probes.len(), 2, "two probes, no more: {probes:#?}");
-    for (i, p) in probes.iter().enumerate() {
-        assert_eq!(attr(p, "probe"), (i + 1).to_string(), "probes are numbered in order");
-        // A member may still hold a pooled connection to the killed node-admin: a probe over it
-        // commits and loses its reply (`Indeterminate`, unreachable). Its next dial fails at the dial,
-        // which is the connection-lost answer. Probe 2 is the one that decides.
-        let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
-        assert!(attr(p, "outcome") == "connection-lost" || stale_pool, "the member cannot reach its own node-admin: {p:#?}");
-        assert!(attr(p, "member").split(',').all(|m| survivor_ids.contains(&m.to_string())) && survivor_ids.contains(&attr(p, "carrier")), "members of {} were asked and one carried it: {p:#?}", f.lost);
-        // iroh's local view of each node-admin asked is a diagnostic on the probe span (R-CK1:
-        // observation stays, separate from the decision); nothing decides on it.
-        for asked in attr(p, "target").split(',').filter_map(|t| t.split('=').next()) {
-            for field in ["iroh_known_addrs", "iroh_active_addrs"] {
-                assert!(attr(p, field).split(';').any(|v| v.starts_with(&format!("{asked}="))), "the probe span carries iroh's view of {asked} in {field}: {p:#?}");
-            }
-        }
-    }
-    assert!(unheard(probes[0]) >= rungs().probe1, "probe 1 fires at {:?} unheard, not before: {:?}", rungs().probe1, unheard(probes[0]));
-    assert!(unheard(probes[1]) >= rungs().probe2, "probe 2 fires at {:?} unheard, not before: {:?}", rungs().probe2, unheard(probes[1]));
-    assert_ne!(attr(probes[0], "carrier"), attr(probes[1], "carrier"), "probe 2 prefers another carrier");
-
-    let verdicts = f.verdicts(&spans);
-    let verdict = verdicts.iter().find(|v| attr(v, "outcome") == "connection-lost").unwrap_or_else(|| panic!("the verdict is connection-lost: {verdicts:#?}"));
-    assert!(unheard(verdict) >= rungs().decide, "the decision is at {:?} unheard, not before: {:?}", rungs().decide, unheard(verdict));
-    let creates = f.admin_creates(&spans);
-    assert_eq!(creates.len(), 1, "one node.create of a node-admin: {creates:#?}");
-    assert!(at_ns(creates[0]) >= at_ns(verdict), "the verdict is recorded before the node.create opens");
-
-    // R-D1: until the mesh is heard again the fabric primary holds it as a mesh. The ladder's decision
-    // releases the first recovering node-admin only: one attempt, for mesh node-admin 1. Every other node of the
-    // mesh is reconciled once the mesh is heard again (by its new mesh primary's own sweep or the drift pass).
-    // The window ends when the fabric primary hears the mesh again, or when it loses the role to the mesh's new
-    // mesh (its drift pass is then no one's but the new primary's). Heard again is its first direct backbone receipt
-    // of the mesh after the verdict (the snapshot installed off the backbone), the instant the R-D1 target reads
-    // (`Ladder::target` over `DigestView::mesh_unheard`); the ladder's own heard-again verdict comes on its next
-    // checklist, after it.
-    let heard_again = named(&spans, "rdm.mesh.topology.update.via-snapshot-installed")
-        .into_iter()
-        .filter(|sp| attr(sp, "mesh") == f.lost && rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "channel") == "backbone" && at_ns(sp) >= at_ns(verdict))
-        .map(at_ns)
-        .chain(named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "outcome") == "heard-again").map(at_ns))
-        .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(verdict)).map(at_ns))
-        .min()
-        .unwrap_or_else(|| panic!("{fp:?} heard {} again after its node-admin was created, or gave up the role", f.lost));
-    let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-connection-lost").into_iter().filter(|sp| attr(sp, "primary_node_id") == fp_id && attr(sp, "mesh") == f.lost).collect();
-    let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(verdict) && at_ns(sp) < heard_again).collect();
-    assert_eq!(while_unheard.len(), 1, "one attempt while {} is held unheard, for its first recovering node-admin: {while_unheard:#?}", f.lost);
-    assert!(rdm_test::estate::at_location(while_unheard[0], &Estate::path(&format!("{}.admin", f.lost), "1")) && attr(while_unheard[0], "action") == "steps" && attr(while_unheard[0], "reason") == "steps", "the verdict runs node.create of the first node-admin in path order, a single step of the same Build: {:#?}", while_unheard[0]);
-    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().all(|sp| !f.before.iter().filter(|n| n["mesh"] == f.lost.as_str()).any(|n| attr(sp, "scope").contains(&s(&n["node_id"])))), "the verdict is no proven drift: nothing of {} is repaired from an exited verdict", f.lost);
-
-    // FabricStatus: never degraded before the verdict; degraded from it; ready again after.
-    let degraded_at = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or_else(|| panic!("the fabric primary showed degraded: {statuses:?}"));
-    assert!(degraded_at >= at_ns(verdict) / 1_000_000 - 200, "degraded is authored at the verdict, not before: {statuses:?}");
-    assert!(statuses.last().is_some_and(|(st, _)| st == "ready"), "the fabric is ready again: {statuses:?}");
-
-    // The mark sends nothing and the fabric primary never authors the peer mesh's status; the
-    // fabric's two changes are five identical sends each.
-    // The marks of the story: the estate shutdown that follows it (`Fixture::stop`) stops the members of the
-    // mesh one by one and leaves it unheard, which opens a new interval and a new mark at the fabric primary.
-    let marks: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "mesh") == f.lost && attr(sp, "mark") == "true" && at_ns(sp) < story_end).collect();
-    assert_eq!(marks.len(), 1, "the silent mark is made once before the story ends: {marks:#?}");
-    assert!(unheard(marks[0]) >= rungs().mark, "the mark is at {:?} unheard, not before: {:?}", rungs().mark, unheard(marks[0]));
-    // A probe in flight never holds the ladder (R-CK1: a delayed tick never moves a threshold):
-    // the mark is stepped at its rung, before probe 2's, however long probe 1 runs.
-    assert!(unheard(marks[0]) < rungs().probe2, "the mark is stepped at its rung, before probe 2's at {:?}, not when probe 1 ends: {:?}", rungs().probe2, unheard(marks[0]));
-    let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
-    let authored_for_peer_before_verdict: Vec<&&Value> = sends.iter().filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "scope") == format!("mesh:{}", f.lost) && at_ns(sp) < at_ns(verdict)).collect();
-    assert!(authored_for_peer_before_verdict.is_empty(), "the fabric primary sends no MeshStatus for {} during probing: {authored_for_peer_before_verdict:#?}", f.lost);
-    let authored_for_peer: Vec<&&Value> = sends.iter().filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "scope") == format!("mesh:{}", f.lost)).collect();
-    assert!(!authored_for_peer.is_empty() && authored_for_peer.iter().all(|sp| attr(sp, "status") == "degraded"), "the fabric primary authors {}'s MeshStatus degraded at the verdict and no lifecycle status: {authored_for_peer:#?}", f.lost);
-    // Degraded is the fabric primary's alone. The return to ready is the primary's: the fabric
-    // primary's while it holds the role, else the admin that took it (the election is the lowest ready NodeId).
-    let sent_by = |status: &str, from_ms: u64, only_fp: bool| -> BTreeMap<(String, String), usize> {
-        let mut by_change: BTreeMap<(String, String), usize> = BTreeMap::new();
-        for sp in sends.iter().filter(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= from_ms && (!only_fp || rdm_test::estate::of_node(sp, &fp, &fp_id))) {
-            *by_change.entry((attr(sp, "node"), attr(sp, "changed_at_rafka_ms"))).or_default() += 1;
-        }
-        by_change
-    };
-    let degraded_sent = sent_by("degraded", last_heard_ms, true);
-    assert!(!degraded_sent.is_empty() && degraded_sent.values().all(|n| *n == 5), "degraded is one change sent five identical times: {degraded_sent:?}");
-    let ready_sent = sent_by("ready", degraded_ms, !role_moved);
-    assert!(!ready_sent.is_empty(), "the return to ready was sent: {ready_sent:?}");
-    if role_moved {
-        assert!(ready_sent.values().all(|n| (1..=5).contains(n)), "one change, sent while its author held the primary role: {ready_sent:?}");
-    } else {
-        assert!(ready_sent.values().all(|n| *n == 5), "ready is one change sent five identical times: {ready_sent:?}");
-    }
-    // Same status, fresh proof (R-S3): the new mesh primary adopts the mesh's existing status and does
-    // not stay silent. Once established it re-sends the SAME fact (the old changed_at, the lifecycle
-    // state did not change) five times, and the fabric stays degraded until that checklist-complete report.
-    let created_at = at_ns(creates[0]) / 1_000_000;
-    let status_before = mesh_status_change_before(&spans, &f.lost, fault_ms).unwrap_or_else(|| panic!("{} published its MeshStatus before the fault", f.lost));
-    let republished = mesh_sends_after(&spans, &f.lost, created_at);
-    assert!(!republished.is_empty(), "the new primary of {} sends the adopted MeshStatus once established (a new via-status-send for mesh:{}): none", f.lost, f.lost);
-    for ((sender, changed_at), (n, _)) in &republished {
-        assert!(lost_admin_ids.contains(sender), "the mesh's status is authored by its own primary, not {sender}");
-        assert_eq!(*changed_at, status_before, "the lifecycle state did not change: the republish keeps the old changed_at ({sender}, {n} sends)");
-    }
-    assert!(republished.values().any(|(n, _)| *n == 5), "the republished fact is five identical sends (R-S1): {republished:?}");
-    let first_republish_ms = republished.values().map(|(_, first)| *first).min().unwrap();
-    let checklist_complete_ms = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete")
-        .into_iter()
-        .filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_at)
-        .map(|sp| at_ns(sp) / 1_000_000)
-        .min()
-        .expect("the new primary's checklist completed");
-    assert!(first_republish_ms >= checklist_complete_ms, "the adopted status is republished only after the checklist completed: {first_republish_ms} vs {checklist_complete_ms}");
-    let cleared = degraded_cleared_at(&spans, &f.lost);
-    assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= checklist_complete_ms), "degraded clears only after the new primary's checklist completed, never on a ready primary of a newer birth alone: cleared at {cleared:?}, checklist complete at {checklist_complete_ms}");
-    result(
-        &dir,
-        json!({
-            "cell": cell, "fabric_id": f.estate.fabric_id, "mesh": f.lost, "mesh_id": f.lost_mesh_id, "accepted_build_id": f.accepted,
-            "fabric_primary": fp, "fault_unix_ms": fault_ms, "last_heard_unix_ms": last_heard_ms,
-            "probe_unheard_ms": probes.iter().map(|p| unheard(p).as_millis() as u64).collect::<Vec<_>>(), "verdict_unheard_ms": unheard(verdict).as_millis() as u64,
-            "fabric_statuses": statuses, "provider": f.estate.owner.provider,
-        }),
-    );
-}
-
-/// CONTRACT (#2803 detection): a node-admin that is ALIVE but unheard by the fabric primary is not
-/// given a new one. Every UDP path between the fabric primary's mesh and the peer mesh's node-admins is cut
-/// (netfault; the fabric primary still reaches the peer mesh's rpc nodes). The fabric primary
-/// pings a member, forwards `ProbeNodeState` through it, and the node-admin answers: probe 1 is
-/// `admin-alive`, the investigation stops, no node-admin is created, the fabric is never degraded and no
-/// second probe is sent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops() {
-    let cell = "an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops";
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut f = fixture(cell).await;
-    let side = |m: &str| -> Vec<PathName> { f.before.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin").map(|n| location(&n)).collect() };
-    let (mine, theirs) = (side(if f.lost == "mesh1" { "mesh2" } else { "mesh1" }), side(&f.lost));
-    let cut = match Partition::start(&udp_ports(&f.before, &mine), &udp_ports(&f.before, &theirs)) {
-        Ok(p) => p,
-        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
-            eprintln!("SKIPPED by name: the host cannot cut UDP between node-admins: {why}");
-            f.estate.stop().await;
-            return;
-        }
-        Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
-    };
-    let cut_ms = now_ms();
-    let first = wait_for("probe 1 answered", Duration::from_secs(120), || {
-        let spans = f.estate.spans();
-        let found = f.probes(&spans).first().map(|p| (*p).clone());
-        async move { found }
-    })
-    .await;
-    assert_eq!(attr(&first, "outcome"), "admin-alive", "the node-admin answered the carried probe: {first:#?}");
-    // The decision's elapsed time on from probe 1 (past probe 2 and the decision), the investigation is over.
-    tokio::time::sleep(rungs().decide).await;
-    let fabric = f.fabric_status().await;
-    drop(cut);
-    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
-    let story_end = f.stop().await;
-    let spans = f.estate.spans();
-    let probes = f.probes_before(&spans, story_end);
-    assert_eq!(probes.len(), 1, "an answering node-admin stops the investigation after probe 1: {probes:#?}");
-    assert!(f.admin_creates(&spans).is_empty(), "no node.create for a node-admin that answers");
-    assert_eq!(fabric, "ready", "the fabric is never degraded for an admin that is alive");
-    let verdicts = f.verdicts(&spans);
-    assert!(verdicts.iter().any(|v| attr(v, "outcome") == "admin-alive"), "the verdict names admin-alive: {verdicts:#?}");
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "cut_unix_ms": cut_ms, "probe": first["attributes"]}));
-}
-
-/// CONTRACT (#2803 detection; mesh-investigation.md step 4: "Direct backbone receipt from mesh-x at
-/// any point cancels the investigation and resets the unheard interval"): the peer mesh is heard
-/// again between the probes and the investigation is cancelled. Both node-admins of the peer mesh
-/// are frozen (SIGSTOP: no backbone word, no exit) until after probe 1's rung and before their own
-/// view passes the staleness floor, then continued: the fabric primary hears the mesh on the
-/// backbone again before probe 2's rung, records the cancel as the verdict `heard-again`, sends no
-/// second probe and creates nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
-    let cell = "peer_mesh_heard_again_between_probes_cancels_the_investigation";
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut f = fixture(cell).await;
-    let admins = f.lost_admins();
-    assert_eq!(admins.len(), 2, "{admins:?}");
-    for (_, pid) in &admins {
-        signal(*pid, "-STOP");
-    }
-    // When the admins are continued, from the cadence the estate runs:
-    // - after probe 1's rung: the fabric primary's t was already up to one backbone interval old at
-    //   the freeze, so probe 1 is asked by `probe1` after it;
-    // - before the frozen admins' own view passes the staleness floor (`mark`, the shared staleness
-    //   mark of step 2): each last heard a peer up to one gossip interval before the freeze, and a
-    //   node that hears no other member past the floor goes on unheard after it is continued, which a
-    //   resume at the mark raced;
-    // so halfway between `probe1` and `mark` less one gossip interval. Heard again at most one
-    //   backbone interval after the resume, the fabric primary's t is then below probe 2's rung.
-    let (r, gossip, backbone) = (rungs(), rdm_core::cadence::gossip_interval(), rdm_core::cadence::backbone_gossip_interval());
-    let resume = (r.probe1 + r.mark - gossip) / 2;
-    assert!(r.probe1 < resume && resume + gossip < r.mark && backbone + resume + backbone < r.probe2, "the cadence leaves no resume strictly between probe 1 and the cut-off with probe 2 still ahead: {r:?}, gossip {gossip:?}, backbone {backbone:?}");
-    tokio::time::sleep(resume).await;
-    for (_, pid) in &admins {
-        signal(*pid, "-CONT");
-    }
-    let verdict = wait_for("the cancel is recorded", Duration::from_secs(90), || {
-        let spans = f.estate.spans();
-        let found = f.verdicts(&spans).into_iter().find(|v| attr(v, "outcome") == "heard-again").cloned();
-        async move { found }
-    })
-    .await;
-    tokio::time::sleep(rungs().decide).await;
-    let fabric = f.fabric_status().await;
-    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
-    let story_end = f.stop().await;
-    let spans = f.estate.spans();
-    assert_eq!(f.probes_before(&spans, story_end).len(), 1, "a mesh heard again is not probed a second time: {:#?}", f.probes(&spans));
-    assert!(f.admin_creates(&spans).is_empty(), "no node.create for a mesh that is heard again");
-    assert_eq!(fabric, "ready");
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probes": f.probes(&spans).iter().map(|p| p["attributes"].clone()).collect::<Vec<_>>(), "verdict": verdict["attributes"]}));
-}
-
-/// A faulted-admin estate (every admin serves the fault door) of `shape`, born ready: its views.
-async fn faulted_estate(cell: &str, shape: &[(&str, u32, u32)]) -> (Estate, Vec<Value>) {
-    let sha = rdm_test::faults::candidate_sha();
-    let estate = Estate::bootstrap_on_with_env(owner(cell), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["rpc_node"], &[]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", shape).await;
-    let nodes = Estate::values(&estate.settles_to(shape, Duration::from_secs(60)).await);
-    estate.until_fabric_ready(Duration::from_secs(60)).await;
-    (estate, nodes)
-}
-
 /// The birth `node_id` as the fabric's shared store root holds it: its row's status, and the node id the
 /// path.name `node`'s name is held by (`None`: released).
 fn stored_birth(root: &std::path::Path, node: &PathName, node_id: &str) -> (Option<String>, Option<String>) {
@@ -584,38 +168,122 @@ fn stored_birth(root: &std::path::Path, node: &PathName, node_id: &str) -> (Opti
     (status, name)
 }
 
-/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md step 4
-/// "Direct backbone receipt from mesh-x at any point cancels the investigation and resets the
-/// unheard interval."
-/// CONTRACT (Q325; fabric-recovery.md step 3, Q153: "On `running`, the investigation's report stands and
-/// the executor writes nothing: no row, no name release, no mark against the birth in its own view, no
-/// create"): every UDP path between the fabric-primary's mesh and the peer mesh is cut while every
-/// process runs. At its decision step no member of the peer mesh answered, so the fabric-primary opens the
-/// recovery of the mesh (`fully-crashed`, the fabric `degraded`) and its create of the mesh's first
-/// node-admin targets the birth at that path: node investigation reads its runtime `running` and reaches
-/// it through no call. The testkit's path-target cut holds the create there, before it acts on that
-/// verdict; the cut is lifted and the fabric-primary hears the mesh on the backbone again (`heard-again`)
-/// while the create is held; then the create is released. The receipt cancels the pending recovery: the
-/// create does not act, and its `running` verdict writes nothing. The mesh's primary is the same birth,
-/// ready and its mesh's primary in every view, its row live and its name held by its node id on the
-/// store root, and the fabric is ready again. Must NOT happen: that birth's TerminateRuntime, its row
+/// The pid of the runtime of the birth `node_id`: a runtime's data dir is named by its birth's node id.
+fn runtime_of(estate: &Estate, node_id: &str) -> u32 {
+    estate.live_runtimes().into_iter().find(|(p, _)| p.file_name().is_some_and(|f| f.to_string_lossy() == node_id)).map(|(_, pid)| pid).unwrap_or_else(|| panic!("the runtime of {node_id} is running"))
+}
+
+/// The names of the spans of the second ladder Q335 removed: none is emitted.
+const REMOVED_SPANS: [&str; 5] = ["rdm.node_admin.mesh.update.via-probe", "rdm.node_admin.mesh.update.via-probe-verdict", "rdm.node_admin.mesh.update.via-unheard", "rdm.node_admin.mesh.create.via-recovery", "rdm.node_admin.mesh.update.via-recovered"];
+
+/// CONTRACT: docs/architecture/lifecycles/node-recovery.md step 2
+/// "For an unheard mesh-primary the fabric-primary runs it, without the half-floor wait, after the
+/// election has named the new mesh-primary ... with no ladder of its own (Q335)."
+/// CONTRACT: docs/architecture/lifecycles/node-recovery.md
+/// "(A mesh none of whose node-admins can be reached is this page's case with no successor named: the
+/// fabric-primary investigates the lost mesh-primary and re-creates it at its path.name, Q335.)"
+/// CONTRACT (Q335; states.md: "**Fabric:** `pending` -> `ready`."): a peer mesh has one node-admin, its
+/// mesh-primary, and it is killed (exact SIGKILL) while the mesh's rpc nodes live. The election names no
+/// successor. The fabric-primary's primary watch runs node investigation on the lost birth, reads its
+/// verdict (the runtime exited) and submits its node recovery; with no node-admin left in the mesh the
+/// fabric-primary executes it, and the node-admin is re-created at its path.name with a new node.id, the
+/// mesh's primary again. Must NOT happen: a probe round, a mesh recovery of its own, a `degraded` status,
+/// or the mesh given a node-admin anywhere but at the lost birth's path.name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by_the_fabric_primary() {
+    let cell = "a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by_the_fabric_primary";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let shape = [("mesh1", 2, 1), ("mesh2", 1, 2)];
+    let built = estate.reconcile_shape("fabric1", &shape).await;
+    let accepted = built.build_id.to_string();
+    let before = values(&estate.settled_views(&shape).await);
+    let fp_row = before.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric-primary");
+    let (fp, fp_id) = (location(&fp_row), s(&fp_row["node_id"]));
+    assert_eq!(fp_row["mesh"], "mesh1", "the fabric-primary is mesh1's: {fp_row}");
+    let lost = Estate::path("mesh2.admin", "1");
+    let lost_row = before.iter().find(|n| location(n) == lost).cloned().expect("mesh2's node-admin");
+    let (lost_id, lost_inc) = (s(&lost_row["node_id"]), s(&lost_row["incarnation_id"]));
+    assert_eq!(lost_row["is_primary"], true, "mesh2's one node-admin is its primary: {lost_row}");
+    let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 has its id").to_string();
+    estate.enter(&fp).await;
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
+    let attempt_before = estate.attempt_of_build(&accepted).await;
+    let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
+    let fault_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    estate.kill_pid(runtime_of(&estate, &lost_id));
+    let recreated = wait_for(&format!("{lost:?} re-created at its path.name, ready and mesh2's primary"), floor * 4 + Duration::from_secs(60), || {
+        let (estate, lost, lost_id) = (&estate, lost.clone(), lost_id.clone());
+        async move { estate.node_values().await.into_iter().find(|n| location(n) == lost && s(&n["node_id"]) != lost_id && n["status"] == "ready" && n["is_primary"] == true) }
+    })
+    .await;
+    wait_for("the fabric is ready", floor + gossip * 2, || async { estate.fabric_view_at(&fp).await.filter(|f| status_word(f.status) == "ready").map(|_| ()) }).await;
+    let mesh2_after = estate.mesh_view("mesh2").await;
+    let attempt_after = estate.attempt_of_build(&accepted).await;
+    let stop_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    estate.stop().await;
+    let spans = estate.spans();
+    let story = |sp: &&Value| at_ns(sp) >= fault_ns && at_ns(sp) < stop_ns;
+    let looked: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(story).filter(|sp| rdm_test::estate::of_node(sp, &fp, &fp_id) && attr(sp, "suspect_node_id") == lost_id).collect();
+    let look = looked.first().copied().unwrap_or_else(|| panic!("the fabric-primary ran node investigation on {lost:?}'s lost birth"));
+    assert_eq!(attr(look, "suspect_incarnation"), lost_inc, "the exact lost birth: {look}");
+    assert_ne!(attr(look, "finding"), "reached", "the killed birth is not reached: {look}");
+    let submitted: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(story).filter(|sp| attr(sp, "node_id") == lost_id && attr(sp, "submitter") == fp_id).collect();
+    assert!(!submitted.is_empty(), "the fabric-primary submitted the node recovery of {lost:?} on the verdict");
+    assert!(submitted.iter().all(|sp| at_ns(sp) >= at_ns(look)), "the recovery follows the investigation's verdict");
+    estate.record_trace_url(&s(&look["trace_id"]));
+    for name in REMOVED_SPANS {
+        assert!(named(&spans, name).is_empty(), "no span of the removed second ladder: {name}");
+    }
+    let degraded: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| attr(sp, "status") == "degraded").collect();
+    assert!(degraded.is_empty(), "no degraded status is sent: {degraded:#?}");
+    assert_eq!(mesh2_after.id.map(|id| id.to_string()), Some(mesh2_id.clone()), "mesh2 keeps its MeshId");
+    assert!(attempt_after > attempt_before, "the recovery is an attempt of the same Build: {attempt_before} -> {attempt_after}");
+    result(&dir, json!({"cell": cell, "fabric_primary": fp, "lost": lost, "lost_node_id": lost_id, "recreated_node_id": recreated["node_id"], "finding": attr(look, "finding"), "trace_id": look["trace_id"], "mesh_id": mesh2_id}));
+}
+
+/// Cut every UDP path between the nodes of `mine` and `theirs`; `None` (the estate stopped, named) when
+/// the host cannot and the run does not require it.
+async fn cut_between(estate: &mut Estate, nodes: &[Value], mine: &[PathName], theirs: &[PathName]) -> Option<Partition> {
+    match Partition::start(&udp_ports(nodes, mine), &udp_ports(nodes, theirs)) {
+        Ok(p) => Some(p),
+        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
+            eprintln!("SKIPPED by name: the host cannot cut UDP between the meshes: {why}");
+            estate.stop().await;
+            None
+        }
+        Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
+    }
+}
+
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
+/// CONTRACT: docs/architecture/lifecycles/node-recovery.md step 1
+/// "Each node's pruner marks a member `PendingReconnect` once it is unheard past the staleness floor.
+/// Nothing is sent; the mark comes from the digests not arriving. ... Silence is not death."
+/// CONTRACT (Q325 under Q335: heard again is node investigation's `reached`): every UDP path between the
+/// fabric-primary's mesh and the peer mesh is cut while every process runs, and the cut heals before the
+/// staleness floor. The fabric-primary never marks the peer mesh's primary silent: nothing investigates
+/// it, nothing submits its recovery, and nothing deletes it. The same birth is ready and its mesh's primary
+/// in every view, its row live and its name held by its node id on the store root, and the fabric is
+/// ready. Must NOT happen: an investigation or a recovery of that birth, its TerminateRuntime, its row
 /// written deleted, its name released, its `NodeDeleted`, or a node.create at its path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_peer_mesh_heard_again_before_its_recovery_acts_cancels_the_recovery_and_its_running_primary_is_not_written() {
-    let cell = "a_peer_mesh_heard_again_before_its_recovery_acts_cancels_the_recovery_and_its_running_primary_is_not_written";
-    let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    let (mut estate, nodes) = faulted_estate(cell, &shape).await;
-    let fp_row = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("one fabric-primary");
-    let (fp, fp_id) = (location(&fp_row), s(&fp_row["node_id"]));
-    let lost = if fp.path.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
-    // The recovery creates the peer mesh's first node-admin in path order (mesh-investigation.md step 5).
-    let first_row = nodes.iter().filter(|n| n["mesh"] == lost && n["kind"] == "node_admin").min_by_key(|n| location(n)).cloned().expect("the peer mesh's node-admins");
+async fn a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_nothing_deletes_it() {
+    let cell = "a_mesh_primary_heard_again_before_the_floor_is_never_investigated_and_nothing_deletes_it";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut f = fixture(cell).await;
+    let (fp, fp_id, lost) = (f.fabric_primary.clone(), f.fabric_primary_id.clone(), f.lost.clone());
+    let fp_mesh = if lost == "mesh1" { "mesh2" } else { "mesh1" };
+    let first_row = f.before.iter().find(|n| n["mesh"] == lost.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("the peer mesh's primary");
     let (first, first_id, first_inc) = (location(&first_row), s(&first_row["node_id"]), s(&first_row["incarnation_id"]));
-    assert_eq!(first_row["is_primary"], true, "the peer mesh's first node-admin is its primary: {first_row}");
-    let mine: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == fp_row["mesh"]).map(location).collect();
-    let theirs: Vec<PathName> = nodes.iter().filter(|n| n["mesh"] == lost).map(location).collect();
-    estate.enter(&fp).await;
-    let root = estate.fabric_store_root();
+    let mine: Vec<PathName> = f.before.iter().filter(|n| n["mesh"] == fp_mesh).map(location).collect();
+    let theirs: Vec<PathName> = f.before.iter().filter(|n| n["mesh"] == lost.as_str()).map(location).collect();
+    let root = f.estate.fabric_store_root();
     let intact = || {
         let (status, name) = stored_birth(&root, &first, &first_id);
         assert!(status.as_deref().is_some_and(|st| st != "deleted"), "{first:?}'s row stays live on the store root: {status:?}");
@@ -623,310 +291,48 @@ async fn a_peer_mesh_heard_again_before_its_recovery_acts_cancels_the_recovery_a
     };
     intact();
     let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
-    let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
-    let door = rdm_test::faults::Door::at(&estate, &fp).await;
-    door.arm("recovery-act", json!({"kind": "path-target", "node": first})).await;
-    let cut = match Partition::start(&udp_ports(&nodes, &mine), &udp_ports(&nodes, &theirs)) {
-        Ok(p) => p,
-        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
-            eprintln!("SKIPPED by name: the host cannot cut UDP between the meshes: {why}");
-            estate.stop().await;
-            return;
-        }
-        Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
-    };
+    let before = f.before.clone();
+    let Some(cut) = cut_between(&mut f.estate, &before, &mine, &theirs).await else { return };
     let cut_ns = now_ns();
-    // Under the cut: the decision, the recovery and the create's target on the peer mesh's primary, held
-    // before it acts.
-    let held = door.wait_held("recovery-act").await;
-    assert_eq!(s(&held["hit"]["node_id"]), first_id, "the create held is the one over {first:?}: {held}");
-    // The spans of what led to the hold, as the estate's span files carry them once written.
-    let (opened, target) = wait_for(&format!("{fp:?}'s recovery of {lost} and its create's target on {first:?}, under the cut"), Duration::from_secs(30), || {
-        let spans = estate.spans();
-        let opened = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().find(|sp| at_ns(sp) >= cut_ns && attr(sp, "mesh") == lost && rdm_test::estate::at_location(sp, &fp)).cloned();
-        let target = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().find(|sp| at_ns(sp) >= cut_ns && attr(sp, "node_id") == first_id).cloned();
-        async move { opened.zip(target) }
-    })
-    .await;
-    assert_eq!(attr(&opened, "verdict"), "fully-crashed", "no member of {lost} answered, so the recovery is the no-member-answers arm's: {opened}");
-    assert_eq!((attr(&target, "outcome"), attr(&target, "verdict")), ("unreached".to_string(), "running".to_string()), "node investigation read {first:?} running and reached it through no call: {target}");
-    intact();
+    // Healed well inside the floor: the last receipt before the cut is at most a backbone interval old.
+    tokio::time::sleep(floor / 3).await;
     drop(cut);
     let healed_ns = now_ns();
-    // Heard again on the backbone while the create is held.
-    let heard = wait_for(&format!("{fp:?} hears {lost} on the backbone again"), floor * 2 + Duration::from_secs(30), || {
-        let found = named(&estate.spans(), "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().find(|sp| at_ns(sp) >= healed_ns && attr(sp, "mesh") == lost && attr(sp, "outcome") == "heard-again" && rdm_test::estate::of_node(sp, &fp, &fp_id)).cloned();
-        async move { found }
-    })
-    .await;
-    assert_eq!(door.cut("recovery-act").await["held"], true, "the create is still held when {lost} is heard again");
-    let released_ns = now_ns();
-    door.release("recovery-act").await;
-    door.wait_released("recovery-act").await;
-    estate.record_trace_url(&s(&target["trace_id"]));
-    // The create ends: cancelled, or (the defect) the running birth deleted.
-    let ended = wait_for(&format!("{fp:?}'s create over {first:?} ends after the release"), floor * 2 + Duration::from_secs(30), || {
-        let spans = estate.spans();
-        let found = named(&spans, "rdm.node_admin.node.create.via-heard-again")
-            .into_iter()
-            .chain(named(&spans, "rdm.node_admin.node.delete.via-node-row"))
-            .find(|sp| at_ns(sp) >= released_ns && attr(sp, "node_id") == first_id)
-            .cloned();
-        async move { found }
-    })
-    .await;
-    assert_eq!(s(&ended["name"]), "rdm.node_admin.node.create.via-heard-again", "the receipt cancelled the recovery before it acted, and its running verdict wrote nothing: {ended}");
-    intact();
-    // The mesh's primary is the same birth, ready and its mesh's primary, in the fabric-primary's view and
-    // its own, and the fabric is ready again: the cancelled recovery leaves nothing degraded.
     for at in [&fp, &first] {
-        estate
-            .until_view_at(at, &format!("{at:?}'s view holds {first:?} as the same birth, ready and {lost}'s primary"), floor + gossip * 2, |v| {
+        f.estate
+            .until_view_at(at, &format!("{at:?}'s view holds {first:?} as the same birth, ready and {lost}'s primary"), floor * 2 + gossip * 4, |v| {
                 Estate::values(v).iter().any(|n| location(n) == first && s(&n["node_id"]) == first_id && s(&n["incarnation_id"]) == first_inc && n["is_primary"] == true && n["status"] == "ready").then_some(())
             })
             .await;
     }
-    wait_for("the fabric is ready again", floor + gossip * 2, || async { estate.fabric_view_at(&fp).await.filter(|f| status_word(f.status) == "ready").map(|_| ()) }).await;
+    wait_for("the fabric is ready", floor + gossip * 2, || async { f.estate.fabric_view_at(&fp).await.filter(|v| status_word(v.status) == "ready").map(|_| ()) }).await;
+    // Two floors more after the heal: a mark, an investigation or a recovery would have shown by now.
+    tokio::time::sleep(floor * 2).await;
     intact();
     let stop_at = now_ns();
-    estate.stop().await;
-    let spans = estate.spans();
-    let before_stop = |sp: &&Value| at_ns(sp) < stop_at && at_ns(sp) >= cut_ns;
-    let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(before_stop).filter(|sp| rdm_test::estate::at_location(sp, &first) && attr(sp, "step") == "TerminateRuntime").collect();
+    f.estate.stop().await;
+    let spans = f.estate.spans();
+    let story = |sp: &&Value| at_ns(sp) < stop_at && at_ns(sp) >= cut_ns;
+    let looked: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(story).filter(|sp| attr(sp, "suspect_node_id") == first_id).collect();
+    assert!(looked.is_empty(), "nothing investigated {first:?}: it was never marked silent: {looked:#?}");
+    let submitted: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(story).filter(|sp| attr(sp, "node_id") == first_id).collect();
+    assert!(submitted.is_empty(), "nothing submitted {first:?}'s recovery: {submitted:#?}");
+    let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(story).filter(|sp| rdm_test::estate::at_location(sp, &first) && attr(sp, "step") == "TerminateRuntime").collect();
     assert!(terminated.is_empty(), "{first:?}'s runtime was never terminated: {terminated:#?}");
     let marks: Vec<&Value> = spans
         .iter()
-        .filter(before_stop)
+        .filter(story)
         .filter(|sp| sp["name"].as_str().is_some_and(|n| n.ends_with(".via-deleted-birth") || n.ends_with(".via-node-deleted") || n.ends_with(".via-node-deleting") || n == "rdm.node_admin.node.delete.via-node-row"))
         .filter(|sp| sp["attributes"].to_string().contains(&first_id) || sp["attributes"].to_string().contains(&first_inc))
         .collect();
     assert!(marks.is_empty(), "nothing deleted or marked {first:?}'s birth: {marks:#?}");
-    // A create's claim of the path's row (`moment=claim`); its arrival reads (`moment=arrival`) write nothing.
-    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(before_stop).filter(|sp| rdm_test::estate::names_location(sp, "subject", &first) && attr(sp, "moment") == "claim").collect();
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(story).filter(|sp| rdm_test::estate::names_location(sp, "subject", &first) && attr(sp, "moment") == "claim").collect();
     assert!(creates.is_empty(), "no node.create claimed {first:?}'s row: {creates:#?}");
-    eprintln!("{fp:?}: recovery {} at {} ms after the cut, target {}, heard again {} ms after the heal, ended {}", attr(&opened, "verdict"), (at_ns(&opened) - cut_ns) / 1_000_000, target["attributes"], (at_ns(&heard) - healed_ns) / 1_000_000, ended["attributes"]);
-}
-
-/// CONTRACT (mesh-investigation.md step 5, "No member answers"; Q111; R-DG1): every runtime of the peer
-/// mesh (admins and rpc nodes) is frozen (SIGSTOP; the host has no root to cut the mesh's UDP, the frozen
-/// processes answer nothing and are not exited): both probes find no member that answers the Ping and the
-/// verdict at the decision's rung is `unreachable`. The fabric-primary runs node investigation on the
-/// mesh's node-admins, none is reached, and it creates the mesh's node-admin in process on that verdict;
-/// the fabric is marked degraded. Must NOT happen: a node.create before the decision, a third probe, or
-/// another mesh tickling the peer mesh's node-admins beside the investigation.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict() {
-    let cell = "a_peer_mesh_whose_members_all_stay_silent_gets_its_node_admin_created_on_the_investigation_verdict";
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut f = fixture(cell).await;
-    let all: Vec<(PathName, u32)> = f.lost_admins().into_iter().chain(f.lost_members()).collect();
-    assert_eq!(all.len(), 5, "every runtime of {}: {all:?}", f.lost);
-
-    for (_, pid) in &all {
-        signal(*pid, "-STOP");
+    for name in REMOVED_SPANS {
+        assert!(named(&spans, name).is_empty(), "no span of the removed second ladder: {name}");
     }
-    let verdict = wait_for("the verdict is recorded", Duration::from_secs(180), || {
-        let spans = f.estate.spans();
-        let found = f.verdicts(&spans).into_iter().find(|v| attr(v, "outcome") == "unreachable").cloned();
-        async move { found }
-    })
-    .await;
-    let created = wait_for("the fabric-primary creates the mesh's node-admin on the investigation's verdict", Duration::from_secs(60), || {
-        let spans = f.estate.spans();
-        let found = f.admin_creates(&spans).first().map(|sp| (*sp).clone());
-        async move { found }
-    })
-    .await;
-    let mut degraded = false;
-    for _ in 0..60 {
-        if f.fabric_status().await == "degraded" {
-            degraded = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    for (_, pid) in &all {
-        signal(*pid, "-CONT");
-    }
-    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
-    f.stop().await;
-    let spans = f.estate.spans();
-    // The investigation the verdict closed made two probes (mesh-investigation.md: probe 1 "At 20 s",
-    // probe 2 "At 40 s", the decision "At 60 s").
-    let probes: Vec<&Value> = f.probes_before(&spans, at_ns(&verdict) + 1);
-    assert_eq!(probes.len(), 2, "two probes before the verdict: {probes:#?}");
-    for p in &probes {
-        assert_eq!(attr(p, "outcome"), "unreachable", "{p:#?}");
-    }
-    assert!(at_ns(&created) >= at_ns(&verdict), "no node.create before the decision: {created:#?}");
-    assert!(degraded, "the fabric is marked degraded on the verdict (R-DG1)");
-    // One investigation reaches the peer mesh's node-admins: no other mesh's primary tickles them on a
-    // per-member clock beside it (node-identity-and-state.md §7.3, R-CK1).
-    let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.update.via-true-offline")
-        .into_iter()
-        .filter(|sp| attr(sp, "node_path") == format!("{}.admin", f.lost) && !f.before.iter().any(|n| n["mesh"] == f.lost.as_str() && attr(sp, "observer") == s(&n["node_id"])))
-        .collect();
-    assert!(tickled.is_empty(), "no other mesh tickles {}'s node-admins beside the investigation: {tickled:#?}", f.lost);
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "verdict": verdict["attributes"], "created": created["attributes"]}));
-}
-
-/// CONTRACT (#2803 detection): a probe that finds the node-admin cut off from its members and a later
-/// probe that finds it answering do not add up to a node.create: the latest probe decides. Both
-/// node-admins of the peer mesh are frozen (SIGSTOP: every member's dial to them fails, so probe 1 is
-/// `connection-lost`) while every UDP path between the fabric primary's mesh and the peer mesh's
-/// node-admins is cut (netfault; the mesh is unheard). After probe 1 the node-admins are continued:
-/// probe 2 reaches them through a member and they answer, `admin-alive`. No node.create, no degraded
-/// fabric, no third probe.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost() {
-    let cell = "an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_connection_lost";
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut f = fixture(cell).await;
-    let side = |m: &str| -> Vec<PathName> { f.before.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin").map(|n| location(&n)).collect() };
-    let (mine, theirs) = (side(if f.lost == "mesh1" { "mesh2" } else { "mesh1" }), side(&f.lost));
-    let cut = match Partition::start(&udp_ports(&f.before, &mine), &udp_ports(&f.before, &theirs)) {
-        Ok(p) => p,
-        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
-            eprintln!("SKIPPED by name: the host cannot cut UDP between node-admins: {why}");
-            f.estate.stop().await;
-            return;
-        }
-        Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
-    };
-    let admins = f.lost_admins();
-    for (_, pid) in &admins {
-        signal(*pid, "-STOP");
-    }
-    let first = wait_for("probe 1 is made", Duration::from_secs(120), || {
-        let spans = f.estate.spans();
-        let found = f.probes(&spans).first().map(|p| (*p).clone());
-        async move { found }
-    })
-    .await;
-    for (_, pid) in &admins {
-        signal(*pid, "-CONT");
-    }
-    let second = wait_for("probe 2 is made", Duration::from_secs(120), || {
-        let spans = f.estate.spans();
-        let found = f.probes(&spans).get(1).map(|p| (*p).clone());
-        async move { found }
-    })
-    .await;
-    tokio::time::sleep(rungs().decide).await;
-    let fabric = f.fabric_status().await;
-    drop(cut);
-    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
-    let story_end = f.stop().await;
-    let spans = f.estate.spans();
-    // A frozen node-admin keeps its sockets, so a member's pooled connection to it closes only when the
-    // connection idles out, a staleness floor after the admin's last packet (the endpoint's idle
-    // timeout): at the freeze, up to one backbone interval after the fabric-primary last heard it.
-    // Probe 1 is made at two thirds of the floor unheard and reaches the members once its direct
-    // contact has had its budget (two backbone intervals, `direct_budget`). Landing inside the floor
-    // whatever the freeze's moment, the member still holds the pooled connection, the carried probe
-    // commits over it and loses its reply (`unreachable`, `Indeterminate`); landing past the floor
-    // plus one interval, the member's dial to the frozen admin fails (`connection-lost`). In
-    // between (the test cadence: 2 s + 2 x 0.5 s at a 3 s floor) the freeze's moment decides, and
-    // either is the member's true answer.
-    let backbone = rdm_core::cadence::backbone_gossip_interval();
-    let carried_at = rungs().probe1 + backbone * 2;
-    let floor = rdm_core::cadence::staleness_floor();
-    let held = attr(&first, "outcome") == "unreachable" && attr(&first, "detail").contains("Indeterminate");
-    let lost = attr(&first, "outcome") == "connection-lost";
-    if carried_at < floor {
-        assert!(held, "a member still holds its pooled connection to the frozen node-admin at probe 1 (it lands at {carried_at:?}, inside the {floor:?} floor): {first:#?}");
-    } else if carried_at >= floor + backbone {
-        assert!(lost, "the member's pooled connection idled out before probe 1 (it lands at {carried_at:?}, past the {floor:?} floor and one {backbone:?} interval): {first:#?}");
-    } else {
-        assert!(held || lost, "probe 1 lands at {carried_at:?}, within one {backbone:?} interval of the {floor:?} floor: the member answers over its pooled connection (unreachable, Indeterminate) or its dial fails (connection-lost), nothing else: {first:#?}");
-    }
-    assert_eq!(attr(&second, "outcome"), "admin-alive", "continued, they answer the second probe: {second:#?}");
-    assert_eq!(f.probes_before(&spans, story_end).len(), 2, "no third probe: {:#?}", f.probes(&spans));
-    assert!(f.admin_creates(&spans).is_empty(), "the latest probe decides: no node.create");
-    assert!(f.verdicts(&spans).iter().any(|v| attr(v, "outcome") == "admin-alive"));
-    assert_eq!(fabric, "ready");
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probe_1": first["attributes"], "probe_2": second["attributes"]}));
-}
-
-/// CONTRACT (#2803 detection): two peer meshes that lose their node-admins at the same time are two
-/// investigations. The estate has three meshes of two node-admins and two rpc nodes; the node-admins
-/// of the two meshes the fabric primary does not belong to are killed together. Each mesh is
-/// probed twice by its own members, each decided `connection-lost` and given its node-admin once, under its own
-/// MeshId; neither is probed through the other's members.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin() {
-    let cell = "two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin";
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let shape = [("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)];
-    estate.reconcile_shape("fabric1", &shape).await;
-    let before = values(&estate.settled_views(&shape).await);
-    estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("one fabric primary");
-    let fp_mesh = fp.path.split('.').next().unwrap().to_string();
-    let lost: Vec<String> = ["mesh1", "mesh2", "mesh3"].iter().filter(|m| **m != fp_mesh).map(|m| m.to_string()).collect();
-    let mut mesh_ids = BTreeMap::new();
-    for m in &lost {
-        mesh_ids.insert(m.clone(), estate.mesh_view(m).await.id.expect("the mesh has its id").to_string());
-    }
-    estate.enter(&fp).await;
-    let old = births(&before);
-    // A runtime's data dir is named by its birth's node id.
-    let lost_admin_ids: Vec<String> = before.iter().filter(|n| n["kind"] == "node_admin" && lost.iter().any(|m| n["mesh"] == m.as_str())).map(|n| s(&n["node_id"])).collect();
-    for (path, pid) in estate.live_runtimes() {
-        if lost_admin_ids.contains(&path.file_name().unwrap().to_string_lossy().to_string()) {
-            estate.kill_pid(pid);
-        }
-    }
-    if lost.iter().any(|m| m == "mesh1") {
-        estate.kill_bootstrap();
-    }
-    wait_for("both meshes have a node-admin created", Duration::from_secs(300), || {
-        let (estate, old, lost) = (&estate, old.clone(), lost.clone());
-        async move {
-            let now = births(&estate.node_values().await);
-            lost.iter().all(|m| (1..=2).any(|i| { let n = Estate::path(&format!("{m}.admin"), &i.to_string()); now.get(&n).is_some_and(|inc| old.get(&n) != Some(inc)) })).then_some(())
-        }
-    })
-    .await;
-    let after = estate.settles_to(&shape, Duration::from_secs(120)).await;
-    for m in &lost {
-        assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} keeps its own MeshId");
-    }
-    // Every birth's node id by location, settled and after: a decider may be an admin created since.
-    let ids_at = |at: &PathName| -> Vec<String> { before.iter().filter(|n| location(n) == *at).map(|n| s(&n["node_id"])).chain(after.iter().filter(|n| n.name == *at).map(|n| n.node_id.to_string())).collect() };
-    estate.stop().await;
-    let spans = estate.spans();
-    for m in &lost {
-        // The fabric primary that decided the node.create probed the mesh: the role can move to a
-        // created admin while the other mesh is still unheard, and its ladder starts over from the role.
-        // A fabric primary that loses the role takes its ladder with it, so the next holder decides
-        // again for a mesh it has not yet heard: a mesh gets its node-admin at least once, from any one
-        // fabric primary at most once.
-        let creates: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();
-        assert!(!creates.is_empty(), "{m}: a node-admin created: {creates:#?}");
-        for r in &creates {
-            assert_eq!(creates.iter().filter(|o| (attr(o, "node_path"), attr(o, "node_name")) == (attr(r, "node_path"), attr(r, "node_name"))).count(), 1, "{m}: one node.create per fabric primary: {creates:#?}");
-        }
-        let first = creates.iter().min_by_key(|sp| at_ns(sp)).unwrap();
-        let decider = ids_at(&PathName::new(attr(first, "node_path"), attr(first, "node_name")).expect("a create names its decider's location"));
-        let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| decider.contains(&attr(sp, "node")) && attr(sp, "mesh") == *m && at_ns(sp) <= at_ns(first)).collect();
-        probes.sort_by_key(|sp| attr(sp, "probe"));
-        assert_eq!(probes.len(), 2, "{m}: two probes: {probes:#?}");
-        for (i, p) in probes.iter().enumerate() {
-            // A member may still hold a pooled connection to the killed node-admin: probe 1 over it
-            // commits and loses its reply (`Indeterminate`, unreachable). The node.create is decided only
-            // on the LATEST probe being connection-lost, so probe 2 must be.
-            let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
-            assert!(attr(p, "outcome") == "connection-lost" || stale_pool, "{m}: {p:#?}");
-            assert!(i == 0 || attr(p, "outcome") == "connection-lost", "{m}: the latest probe decides the node.create: {p:#?}");
-            assert!(before.iter().any(|n| n["mesh"] == m.as_str() && n["kind"] == "rpc_node" && attr(p, "carrier") == s(&n["node_id"])), "{m} is probed through its own members only: {p:#?}");
-        }
-    }
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "meshes": lost, "mesh_ids": mesh_ids}));
+    eprintln!("{fp:?} ({fp_id}): cut {} ms, {first:?} never marked", (healed_ns - cut_ns) / 1_000_000);
+    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": lost, "primary": first, "cut_ms": (healed_ns - cut_ns) / 1_000_000}));
 }
 
 /// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses its primary node-admin (exact SIGKILL)
@@ -1003,79 +409,4 @@ async fn elected_primary_holds_its_checklist_for_the_killed_primary_then_republi
         .collect();
     assert!(reports.iter().any(|at| *at >= complete_ms), "the fabric primary of the moment received a checklist-complete report from the mesh's primary after the checklist completed: {reports:?} vs {complete_ms}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "killed_primary": primary, "elected": survivor, "republisher": republisher, "changed_at": before, "held_ms": held_ms, "complete_ms": complete_ms, "first_send_ms": first_send_ms}));
-}
-
-/// CONTRACT (R-S3, same status, fresh proof; node-recovery.md: any verdict but `reached`, `os-stopped`
-/// included, is recovered at once, "Nothing holds"; Q188): a peer mesh loses both node-admins (exact
-/// SIGKILL) while its rpc nodes live, and one of those rpc nodes is frozen (SIGSTOP) so it never checks
-/// in. The mesh is given a node-admin under the same Build and MeshId; its new primary's checklist names
-/// the frozen planned birth as missing (a named hold, no timer), republishes nothing, and the fabric
-/// stays `degraded`. The frozen member is investigated `os-stopped` and re-created at its path.name; the
-/// re-created birth checks in, the checklist completes, the adopted status is republished and only then
-/// does the fabric clear degraded. Continued afterwards, the old birth is a deleted birth: its
-/// mesh-primary reports it. What must NOT happen: degraded cleared on the ready newer-birth primary
-/// alone, a republish while a planned birth is missing, the old birth taken back.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does() {
-    let cell = "a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does";
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut f = fixture(cell).await;
-    let frozen = Estate::path(&format!("{}.rpc", f.lost), "1");
-    let frozen_id = f.id_of(&frozen);
-    let (_, frozen_pid) = f.lost_members().into_iter().find(|(n, _)| *n == frozen).unwrap_or_else(|| panic!("{frozen:?} is running"));
-    let admins = f.lost_admins();
-    assert_eq!(admins.len(), 2, "both admins of {} are running: {admins:?}", f.lost);
-    for (_, pid) in &admins {
-        f.estate.kill_pid(*pid);
-    }
-    if f.lost == "mesh1" {
-        f.estate.kill_bootstrap();
-    }
-    // Frozen after the admins are gone: a member frozen while its parent dies is killed by the
-    // kernel (SIGHUP to a stopped, newly orphaned process group) and would exit, not stay silent.
-    signal(frozen_pid, "-STOP");
-    let lost = f.lost.clone();
-    wait_for("the new primary names the frozen planned birth as missing", Duration::from_secs(240), || {
-        let spans = f.estate.spans();
-        let held = named(&spans, "rdm.node_admin.mesh.update.via-checklist-held").into_iter().any(|sp| attr(sp, "mesh") == lost && names_missing(&attr(sp, "missing"), &frozen, &frozen_id));
-        async move { held.then_some(()) }
-    })
-    .await;
-    // The frozen member is recovered at once: a newer birth at its path.name, ready.
-    wait_for("the frozen member is re-created at its path.name and ready", Duration::from_secs(240), || {
-        let (estate, frozen, frozen_id) = (&f.estate, frozen.clone(), frozen_id.clone());
-        async move {
-            let nodes = estate.node_values().await;
-            nodes.iter().any(|n| location(&n) == frozen && n["status"] == "ready" && s(&n["node_id"]) != frozen_id).then_some(())
-        }
-    })
-    .await;
-    wait_for("the fabric is ready again", Duration::from_secs(120), || async { (f.fabric_status().await == "ready").then_some(()) }).await;
-    // Continued, the old birth comes back as a deleted birth: its mesh-primary reports it.
-    signal(frozen_pid, "-CONT");
-    wait_for("the continued old birth is reported as a deleted birth", Duration::from_secs(120), || {
-        let spans = f.estate.spans();
-        let reported = named(&spans, "rdm.node_admin.node.update.via-returned-reported").into_iter().any(|sp| attr(sp, "node_id") == frozen_id);
-        async move { reported.then_some(()) }
-    })
-    .await;
-    let (fp, fp_id) = (f.fabric_primary.clone(), f.fabric_primary_id.clone());
-    f.estate.stop().await;
-    let spans = f.estate.spans();
-    let created_ms = admin_created_at(&spans, &f.lost);
-    let rejoined = named(&spans, "rdm.mesh.topology.update.from-node-started").into_iter().filter(|sp| rdm_test::estate::names_location(sp, "member", &frozen) && attr(sp, "node_id") != frozen_id).map(|sp| at_ns(sp) / 1_000_000).min().expect("the re-created birth started");
-    let complete = named(&spans, "rdm.node_admin.mesh.update.via-checklist-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the new primary's checklist completed");
-    assert!(complete >= rejoined, "the checklist completes only after the re-created birth checks in: {complete} vs {rejoined}");
-    let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, created_ms).values().map(|(_, first)| *first).collect();
-    assert!(!republished.is_empty() && republished.iter().all(|at| *at >= complete), "nothing is republished while a planned birth is missing: {republished:?} vs complete at {complete}");
-    let cleared = degraded_cleared_at(&spans, &f.lost);
-    assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= complete), "degraded clears only on the checklist-complete report: {cleared:?} vs {complete}");
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "frozen": frozen, "frozen_node_id": frozen_id, "rejoined_ms": rejoined, "complete_ms": complete}));
-}
-
-/// The instant after which the new primary's sends of `mesh` count: the first node.create of a node-admin
-/// into the mesh (`via-recovery`; `u64::MAX` before it).
-fn admin_created_at(spans: &[Value], mesh: &str) -> u64 {
-    named(spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == mesh).map(|sp| at_ns(sp) / 1_000_000).min().unwrap_or(u64::MAX)
 }

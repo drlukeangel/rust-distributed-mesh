@@ -624,7 +624,7 @@ pub fn durable_births(view: &Topology, durable: &[crate::storage::RuntimeRow], p
 /// runtime row names (`durable_births`: never heard, never launched by this admin), which is node
 /// recovery driven by this mesh-primary like any other member's (mesh-recovery.md:8-9). The tickle
 /// ladder is the mesh-primary's for its own members (node-recovery.md); a peer mesh's node-admins
-/// are reached by the fabric-primary's investigation alone (`crate::investigate`).
+/// are reached by the fabric-primary's primary watch alone (`crate::primary_watch`).
 pub fn watched_births(view: &Topology, me_id: &NodeId, mesh: &str, durable: &[Node]) -> BTreeMap<String, Node> {
     view.members()
         .filter(|n| n.node_id != *me_id && n.mesh == mesh && matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead))

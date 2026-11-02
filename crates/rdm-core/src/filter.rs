@@ -114,7 +114,7 @@ pub const NODE_STATUSES: &[&str] = &[
     "connections-deleted", "stopping", "stopped", "deleting", "left",
 ];
 /// A mesh's or the fabric's lifecycle states, by their page names.
-pub const SCOPE_STATUSES: &[&str] = &["pending", "ready", "leaving", "dead", "degraded"];
+pub const SCOPE_STATUSES: &[&str] = &["pending", "ready", "leaving", "dead"];
 /// The node kinds, by their `(path, name)` segment.
 pub const KINDS: &[&str] = &["admin", "rpc", "broker", "gateway", "compute"];
 /// The deployment providers.
@@ -725,7 +725,7 @@ mod tests {
         for s in [S::Pending, S::Ready, S::ConnectionsDeleting, S::Leaving, S::PendingReconnect, S::Dead, S::Deleted, S::Starting, S::ConnectionsDeleted, S::Stopping, S::Stopped, S::Deleting, S::Left] {
             assert!(NODE_STATUSES.contains(&page_name(&s).unwrap().as_str()), "{s:?}");
         }
-        for s in [ScopeStatus::Pending, ScopeStatus::Ready, ScopeStatus::Leaving, ScopeStatus::Dead, ScopeStatus::Degraded] {
+        for s in [ScopeStatus::Pending, ScopeStatus::Ready, ScopeStatus::Leaving, ScopeStatus::Dead] {
             assert!(SCOPE_STATUSES.contains(&page_name(&s).unwrap().as_str()), "{s:?}");
         }
         for k in NodeKind::ALL {

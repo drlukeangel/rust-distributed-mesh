@@ -78,7 +78,6 @@ pub mod fabric_storage;
 pub mod control_plane;
 /// The control plane module (`control_plane`).
 pub use control_plane as control;
-pub mod investigate;
 pub mod lifecycle;
 pub mod mesh_claims;
 pub mod mesh_delete;

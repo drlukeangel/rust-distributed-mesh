@@ -94,7 +94,7 @@ pub struct Declared {
     /// Per mesh id.
     pub meshes: std::collections::HashMap<MeshId, MeshState>,
     /// Per mesh id held in `meshes`: the Rafka-time its state changed, as the declaration or the
-    /// hand-off carried it (mesh-investigation.md step 7: a successor republishes it unchanged).
+    /// hand-off carried it (node-create.md "A node-admin created into a live mesh" step 4: a successor republishes it unchanged).
     pub mesh_changed_at: std::collections::HashMap<MeshId, u64>,
     /// Per fabric id: the events applied, in order, each once.
     pub fabric: std::collections::HashMap<FabricId, Vec<String>>,
@@ -2384,7 +2384,7 @@ impl StatusDoor {
             // The hand-off's state is handed straight to this admin's own mesh StatusPublisher as its
             // adopted held fact at the instant it carries, never through the gossip receive view, so the
             // publisher republishes it with that changed_at once its checklist completes
-            // (mesh-investigation.md step 7: "republishes its held MeshStatus, preserving changed_at").
+            // (node-create.md "A node-admin created into a live mesh" step 4: "republishes its held MeshStatus, preserving changed_at").
             // A hand-off with no instant (a new mesh's first admin handed Pending) reaches the publisher
             // too: it is the mesh's first state, which the publisher stamps once (Q272).
             if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
@@ -2475,7 +2475,7 @@ impl StatusDoor {
     /// The admin with no upstream fabric-primary applies its own mesh's state (Q272): the Day-0 root its
     /// new mesh's `Pending`, with no instant (`at` 0), the mesh's first state; the adoption launch its
     /// Mesh record's state at its own instant, which its publisher adopts and republishes once its
-    /// checklist completes, as any successor's (mesh-investigation.md step 7). The applied state is held
+    /// checklist completes, as any successor's (node-create.md "A node-admin created into a live mesh" step 4). The applied state is held
     /// as this admin's MeshStatus, so its publisher holds what it sends.
     pub(crate) async fn self_apply_mesh(&self, mesh_id: &MeshId, state: MeshState, at: u64) -> StatusReply {
         let me_name = self.held_name().await;

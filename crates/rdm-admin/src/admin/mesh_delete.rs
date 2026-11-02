@@ -123,8 +123,7 @@ impl AdminRunner {
             None => {
                 // Under fabric.delete (its plan names no mesh), a mesh with no live node-admin gains none: it
                 // is deleted in process at this executor, which holds the fabric-primary's roles
-                // (mesh-delete.md "Resume after the primary's loss" step 2, Q160; mesh-investigation.md
-                // "During fabric.delete").
+                // (mesh-delete.md "Resume after the primary's loss" step 2, Q160; fabric-delete.md step 1).
                 if build.topology.meshes.is_empty() {
                     return self.delete_mesh_in_process(build_id, attempt, mesh, &key, &steps, &view).await;
                 }

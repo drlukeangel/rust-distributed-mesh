@@ -114,7 +114,7 @@ pub fn fabric_recovery_target<'a>(nodes: &[Node], inc: &'a Incumbency) -> Option
 /// Who runs fabric recovery for `target` in its own mesh (fabric-recovery.md step 2, Q122): the lowest
 /// Ready node-admin of `target`'s mesh other than the target's birth and the node at its
 /// path and name `at`, the one the workflow re-creates. `None` when the mesh has no such admin: the backbone
-/// arm, run from mesh investigation's decision step. The executor takes no primary role.
+/// arm, run on node investigation's verdict (Q335). The executor takes no primary role.
 pub fn fabric_recovery_executor<'a>(nodes: &'a [Node], inc: &Incumbency, target: &Primary, at: Option<&PathName>) -> Option<&'a Node> {
     let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == target.mesh && n.kind == NodeKind::NodeAdmin && n.node_id != target.node_id && Some(&n.name) != at).map(|(i, _)| i).collect();
     lowest_ready(nodes, &members, inc).map(|i| &nodes[i])

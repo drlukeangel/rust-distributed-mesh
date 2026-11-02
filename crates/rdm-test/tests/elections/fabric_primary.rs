@@ -26,12 +26,10 @@
 //! Evidence: the new fabric primary's election is announced as
 //! `rdm.mesh.election.resolve.via-fabric-recompute` (`election_level =
 //! fabric_primary`, the winner's NodeId, path and mesh) by a surviving mesh
-//! primary. The lost mesh is fully crashed (mesh-investigation.md step 5, "Fully crashed"): no member
-//! of it answers either probe of the new primary's peer-mesh investigation, so its
-//! `rdm.node_admin.mesh.update.via-probe-verdict` is `outcome = unreachable` and its drive stops at
-//! `rdm.node_admin.build.reject.via-unheard-mesh-drive` (`recovery_decided = false`) until then; on that
-//! decision (mesh-investigation.md step 5, "No member answers") the new fabric primary runs the create
-//! of that mesh's first node-admin in process, and nothing else of that mesh.
+//! primary. The lost mesh is fully crashed: from the backbone, the surviving mesh's primary runs fabric
+//! recovery at the mark, its node investigation of the lost fabric-primary's birth decides
+//! (fabric-recovery.md step 2 "Outside its mesh", Q335), and on that verdict the node-admin at the
+//! fabric-primary's path and name is re-created and restored.
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus, PathName};
 use rdm_test::elections::{advertised_fabric_primaries, primaries_as_expected};
@@ -59,8 +57,8 @@ fn location(row: &Value) -> PathName {
 }
 
 /// CONTRACT (Q122; fabric-recovery.md "The loss of the fabric-primary while a node-admin lives" step 2,
-/// "Outside its mesh"; mesh-investigation.md step 5): every process of the fabric-primary's mesh is
-/// killed. No member of it answers mesh investigation's probes, so at the decision step the lowest
+/// "Outside its mesh"; node-recovery.md step 2, Q335): every process of the fabric-primary's mesh is
+/// killed. No call reaches its birth, so on node investigation's verdict the lowest
 /// Ready mesh-primary on the backbone, mesh2's, runs fabric recovery, exactly as a node-admin
 /// of the lost mesh would: it takes no primary role, node investigation reads the lost birth (not
 /// `reached`), node recovery re-creates the node-admin at path mesh1.admin, name 1, and when that node is
@@ -117,16 +115,11 @@ async fn losing_the_fabric_primarys_whole_mesh_is_fabric_recovery_run_from_the_b
     let spans = estate.spans();
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
-    // No member answered: mesh2's primary decided the lost mesh unreachable.
-    let verdict = named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict")
-        .into_iter()
-        .find(|sp| attr(sp, "node") == backbone && attr(sp, "mesh") == "mesh1" && attr(sp, "outcome") == "unreachable" && at(sp) >= killed_ns)
-        .cloned()
-        .expect("mesh2's primary decided the lost mesh unreachable");
-    // At that decision it ran fabric recovery from the backbone and restored the node at path mesh1.admin, name 1.
+    // mesh2's primary ran fabric recovery from the backbone; its node investigation of the lost birth decided
+    // (Q335), and it restored the node at path mesh1.admin, name 1.
     let ran: Vec<Value> = named(&spans, "rdm.node_admin.fabric.update.via-fabric-recovery").into_iter().filter(|sp| at(sp) >= killed_ns).cloned().collect();
     let run = ran.iter().find(|sp| attr(sp, "node_path") == backbone_location.path && attr(sp, "node_name") == backbone_location.name && attr(sp, "arm") == "backbone" && attr(sp, "outcome").starts_with("restored")).unwrap_or_else(|| panic!("{backbone} ran fabric recovery from the backbone and restored {fp:?}: {ran:#?}"));
-    assert!(at(run) >= at(&verdict), "fabric recovery started at the decision: {run} {verdict}");
+    assert!(!attr(run, "verdict").is_empty() && attr(run, "verdict") != "reached", "the workflow's node investigation of the killed fabric-primary decided, not reached: {run}");
     assert!(ran.iter().all(|sp| attr(sp, "node_path") == backbone_location.path && attr(sp, "node_name") == backbone_location.name), "nobody else ran it: {ran:#?}");
     let restore = named(&spans, "rdm.node_admin.primary.update.via-fabric-recovery").into_iter().find(|sp| attr(sp, "node_path") == backbone_location.path && attr(sp, "node_name") == backbone_location.name && attr(sp, "to_node_id") == restored_id && attr(sp, "to_path") == fp.path && attr(sp, "to_name") == fp.name && attr(sp, "outcome") == "restored").cloned();
     assert!(restore.is_some(), "the workflow's call restored the node at {fp:?}");

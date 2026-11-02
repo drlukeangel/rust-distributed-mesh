@@ -292,7 +292,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
 }
 
 /// CONTRACT (Q272; fabric-primary.md §7: a takeover "adopts that exact state" and invents no
-/// transition; mesh-investigation.md step 7): a mesh's publisher sends only a state it holds. Holding
+/// transition; node-create.md "A node-admin created into a live mesh" step 4): a mesh's publisher sends only a state it holds. Holding
 /// nothing and hearing nothing it is silent, whatever its projection says; a heard state with an
 /// instant is adopted exactly and sent, that instant, when its checklist completes, whatever the
 /// projection says; a heard Pending with no instant is the mesh's first state, stamped once and sent
@@ -336,217 +336,14 @@ fn a_mesh_status_publisher_sends_only_a_state_it_holds() {
 
     let mut wordless = publisher();
     assert!(wordless.observe("ready", Some(fact("degraded", 50)), true, base, 400).is_none(), "only the four lifecycle words are adopted");
-
-    // A held `ready` with a heard `degraded` (mesh-investigation.md:65, 70; states.md:12; Q272):
-    // nothing is sent while the checklist is open, and when the checklist completes the frame sent is
-    // `ready` with the held `changed_at`, never `degraded`.
-    let mut held_ready = publisher();
-    assert!(held_ready.observe("ready", Some(fact("ready", 40)), false, base, 500).is_none(), "ready at 40 is adopted while the checklist is open");
-    assert!(held_ready.observe("degraded", Some(fact("degraded", 61_000)), false, base, 501).is_none(), "a heard degraded with a held ready sends nothing while the checklist is open");
-    let completed = held_ready.observe("ready", Some(fact("degraded", 61_000)), true, base, 502).expect("the completed checklist sends the held lifecycle status");
-    assert_eq!((status_of(&completed), ts(&completed)), ("ready", 40), "the frame on completion is ready with the held changed_at; degraded is never adopted");
-}
-
-/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:65
-/// "At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded (R-DG1), on either arm"
-/// CONTRACT: docs/architecture/lifecycles/states.md:12
-/// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
-/// CONTRACT: docs/architecture/gossip.md:472
-/// "| `rdm.mesh.status` | `P(revision) + \".\" + P(changed_at_rafka_ms)` from the Mesh row's `revision` |"
-/// The fabric-primary's `MeshStatus` `degraded` frame uses `mesh-x`'s revision `R` and the later
-/// verdict instant `verdict_ms > last_changed_at`, so its composite sequence `P(R).P(verdict_ms)` ranks
-/// above the lost primary's last `MeshStatus` (`P(R).P(last_changed_at)`) and below the successor's
-/// first `MeshStatus` (`P(R + 1).P(last_changed_at)`), even though the successor preserves the older
-/// `last_changed_at`.
-#[test]
-fn mesh_degraded_sequence_orders_above_the_lost_primary_and_below_the_successor() {
-    let fabric = FabricId::parse("fab000000001").unwrap();
-    let lost_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: NodeId::parse("0123456789aa").unwrap(), incarnation: IncarnationId::parse("yrz49j303yaa").unwrap() };
-    let fp_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: NodeId::parse("0123456789bb").unwrap(), incarnation: IncarnationId::parse("yrz49j303ybb").unwrap() };
-    let successor_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: NodeId::parse("0123456789cc").unwrap(), incarnation: IncarnationId::parse("yrz49j303ycc").unwrap() };
-    let base = Instant::now();
-    let fact = |status: &str, at: u64| rdm_transport::topology::StatusFact { status: status.into(), changed_at_rafka_ms: at };
-
-    // 1. Lost primary of mesh2 at revision 3 publishes ready at t = 1_000.
-    let mut lost_pub = StatusPublisher::new("mesh2.admin.1", StatusScope::Mesh("mesh2".into()));
-    lost_pub.set_role(true);
-    lost_pub.set_author(Some((lost_author, 3)));
-    let lost_last = lost_pub.observe("ready", Some(fact("ready", 1_000)), true, base, 1_000).expect("lost primary's ready frame");
-
-    // 2. Fabric-primary authors mesh2 degraded at mesh2's revision 3 and verdict instant t = 61_000.
-    let mut fp_peer_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh2".into()));
-    fp_peer_pub.set_role(true);
-    fp_peer_pub.set_author(Some((fp_author, 3)));
-    let degraded = fp_peer_pub.observe_degraded(base, 61_000).expect("fabric-primary's degraded frame");
-    for step in 1..STATUS_SENDS {
-        let repeat = fp_peer_pub.due(base + STATUS_EVERY * step as u32).expect("reinforcing send of degraded");
-        assert_eq!((status_of(&repeat), ts(&repeat), publisher_of(&repeat)), ("degraded", 61_000, "mesh1.admin.1"));
-        assert_eq!(repeat.context(), degraded.context(), "five identical sends on the 1 s schedule");
-    }
-    assert!(fp_peer_pub.due(base + STATUS_EVERY * STATUS_SENDS as u32).is_none());
-
-    // 3. Successor of mesh2 at revision 4 adopts the held ready (t = 1_000) and republishes after its checklist.
-    let mut successor_pub = StatusPublisher::new("mesh2.admin.1", StatusScope::Mesh("mesh2".into()));
-    successor_pub.set_role(true);
-    successor_pub.set_author(Some((successor_author, 4)));
-    assert!(successor_pub.observe("ready", Some(fact("ready", 1_000)), false, base, 62_000).is_none());
-    let successor_first = successor_pub.observe("ready", Some(fact("degraded", 61_000)), true, base, 62_500).expect("successor's first frame after checklist");
-    assert_eq!((status_of(&successor_first), ts(&successor_first)), ("ready", 1_000));
-
-    let seq = |f: &Frame| f.context().and_then(|c| c.sequence.clone()).expect("authored status sequence");
-    assert!(seq(&lost_last) < seq(&degraded), "lost primary's last frame ({}) < degraded frame ({})", seq(&lost_last), seq(&degraded));
-    assert!(seq(&degraded) < seq(&successor_first), "degraded frame ({}) < successor's first frame ({})", seq(&degraded), seq(&successor_first));
-
-    // StatusView admits lost_last -> degraded -> successor_first in order and refuses stale frames at each step.
-    let view = StatusView::default();
-    assert!(view.take(&lost_last, &fabric));
-    assert_eq!(view.mesh("mesh2").unwrap().status, "ready");
-    assert!(view.take(&degraded, &fabric), "degraded at (rev 3, t=61_000) replaces ready at (rev 3, t=1_000)");
-    assert_eq!(view.mesh("mesh2").unwrap().status, "degraded");
-    assert!(!view.take(&lost_last, &fabric), "the lost primary's older frame is refused behind degraded");
-    assert!(view.take(&successor_first, &fabric), "the successor's first frame at (rev 4, t=1_000) replaces degraded at (rev 3, t=61_000)");
-    assert_eq!(view.mesh("mesh2").unwrap().status, "ready");
-    assert_eq!(view.mesh("mesh2").unwrap().changed_at_rafka_ms, 1_000);
-    assert!(!view.take(&degraded, &fabric), "the degraded frame at rev 3 is refused behind the successor's rev 4");
-}
-
-/// CONTRACT: docs/architecture/lifecycles/mesh-investigation.md:69
-/// "The new mesh-primary adopts the held MeshStatus from the control/status context handed to it when it is created (Q272, not pending) and republishes it once its fresh planned-birth checklist completes, preserving changed_at_rafka_ms."
-/// CONTRACT: docs/architecture/lifecycles/states.md:12
-/// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
-/// A successor handed `Ready` at `X` (`StatusPublisher::adopt`) while the fabric-primary's `degraded`
-/// frame for its mesh is held in `StatusView` publishes nothing while its checklist is open, then
-/// `Ready` with `changed_at_rafka_ms = X`; the view then holds `Ready` (the successor's higher
-/// revision replaces `degraded`).
-#[test]
-fn successor_handed_ready_while_degraded_is_held_publishes_after_checklist_and_replaces_degraded() {
-    let fabric = FabricId::parse("fab000000001").unwrap();
-    let fp_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: NodeId::parse("0123456789bb").unwrap(), incarnation: IncarnationId::parse("yrz49j303ybb").unwrap() };
-    let successor_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: NodeId::parse("0123456789cc").unwrap(), incarnation: IncarnationId::parse("yrz49j303ycc").unwrap() };
-    let base = Instant::now();
-    let x = 1_000;
-    let fact = |status: &str, at: u64| rdm_transport::topology::StatusFact { status: status.into(), changed_at_rafka_ms: at };
-
-    // The fabric-primary's authored degraded frame for mesh2 (revision 3, t = 61_000) is held in the view.
-    let mut fp_peer_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh2".into()));
-    fp_peer_pub.set_role(true);
-    fp_peer_pub.set_author(Some((fp_author, 3)));
-    let degraded = fp_peer_pub.observe_degraded(base, 61_000).expect("fabric-primary's degraded frame");
-    let view = StatusView::default();
-    assert!(view.take(&degraded, &fabric));
-    assert_eq!(view.mesh("mesh2").unwrap().status, "degraded");
-
-    // The successor is handed Ready at X directly as its publisher's adopted fact.
-    let mut successor_pub = StatusPublisher::new("mesh2.admin.1", StatusScope::Mesh("mesh2".into()));
-    assert!(successor_pub.adopt(fact("ready", x)), "the successor adopts Ready at X");
-    successor_pub.set_role(true);
-    successor_pub.set_author(Some((successor_author, 4)));
-    assert_eq!(successor_pub.held(), Some(fact("ready", x)));
-
-    // While its checklist is open, it publishes nothing and keeps its adopted Ready at X.
-    let heard = || view.mesh("mesh2").map(|s| fact(&s.status, s.changed_at_rafka_ms));
-    assert!(successor_pub.observe("ready", heard(), false, base, 62_000).is_none(), "checklist open: nothing published");
-    assert_eq!(successor_pub.held(), Some(fact("ready", x)), "the held degraded frame in the view does not overwrite the adopted Ready");
-
-    // Once its checklist completes, it publishes Ready with changed_at = X, replacing degraded in the view.
-    let ready = successor_pub.observe("ready", heard(), true, base, 62_500).expect("checklist complete: Ready is published");
-    assert_eq!((status_of(&ready), ts(&ready), publisher_of(&ready)), ("ready", x, "mesh2.admin.1"));
-    assert!(view.take(&ready, &fabric), "the successor's revision 4 replaces degraded at revision 3");
-    assert_eq!(view.mesh("mesh2").unwrap(), rdm_transport::topology::MeshStatus { status: "ready".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: x });
 }
 
 /// CONTRACT: docs/architecture/lifecycles/node-mesh-join.md:59
 /// "the statuses it holds with their original authors and instants"
-/// CONTRACT: docs/architecture/lifecycles/states.md:12
-/// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
-/// CONTRACT: docs/architecture/fabric-primary.md §7
-/// A fabric-primary that marks `mesh2` `degraded` over a held `ready` frame (publisher `mesh2.admin.1`,
-/// `changed_at` `X`) answers a join with `mesh2`'s `ready` frame at `X`, its publisher unchanged, while
-/// its own gossip still sends `degraded` (and if it held no lifecycle frame for a mesh when it marked
-/// it, the join answer serves nothing for that mesh, never the marker); once the successor's frame
-/// replaces the marker, the join answer serves the successor's frame.
-#[test]
-fn fabric_primary_join_answer_serves_the_kept_lifecycle_frame_while_degraded_is_held_and_the_successors_frame_once_it_replaces_the_marker() {
-    use rdm_core::{Primary, PrimaryRole, PublisherId};
-    use rdm_transport::topology::{status_announcements, DigestView};
-    use std::collections::HashMap;
-
-    let fabric = FabricId::parse("fab000000001").unwrap();
-    let fp_node = NodeId::parse("0123456789bb").unwrap();
-    let fp_inc = IncarnationId::parse("yrz49j303ybb").unwrap();
-    let lost_node = NodeId::parse("0123456789aa").unwrap();
-    let lost_inc = IncarnationId::parse("yrz49j303yaa").unwrap();
-    let successor_node = NodeId::parse("0123456789cc").unwrap();
-    let successor_inc = IncarnationId::parse("yrz49j303ycc").unwrap();
-    let fp_pub = PublisherId { node_id: fp_node.clone(), incarnation: fp_inc.clone() };
-    let base = Instant::now();
-    let x = 1_000;
-
-    let digest_view = DigestView::default();
-    digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
-    digest_view.primaries.take(PrimaryRole::FabricPrimary, &Primary { mesh: "mesh1".into(), node_id: fp_node.clone(), incarnation: fp_inc.clone(), revision: 1 });
-    digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh2".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 3 });
-    digest_view.primaries.take(PrimaryRole::MeshPrimary, &Primary { mesh: "mesh3".into(), node_id: lost_node.clone(), incarnation: lost_inc.clone(), revision: 2 });
-
-    // mesh2 has a held ready frame (publisher mesh2.admin.1, changed_at X); mesh3 has none heard yet.
-    let lost_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: lost_node, incarnation: lost_inc };
-    let mesh2_ready = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: x }
-        .authored(&lost_author, 3, x);
-    assert!(digest_view.statuses.take(&mesh2_ready, &fabric));
-
-    let mut mesh_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Mesh("mesh1".into()));
-    let mut fabric_pub = StatusPublisher::new("mesh1.admin.1", StatusScope::Fabric(fabric.clone()));
-    let mut peer_pubs: HashMap<String, StatusPublisher> = HashMap::new();
-    mesh_pub.set_role(true);
-    fabric_pub.set_role(true);
-
-    // Baseline: mesh1 and fabric are ready.
-    for f in status_announcements(&fabric, &fp_pub, "mesh1", &digest_view, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, "ready", "ready", true, true, &[], base, 500).0 {
-        digest_view.statuses.take(&f, &fabric);
-    }
-
-    // Verdict at t = 61_000 marks mesh2 (held ready at X) and mesh3 (no lifecycle frame held) degraded.
-    let degraded_meshes = vec![("mesh2".to_string(), Some(61_000)), ("mesh3".to_string(), Some(61_000))];
-    let emitted = status_announcements(&fabric, &fp_pub, "mesh1", &digest_view, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, "ready", "degraded", false, false, &degraded_meshes, base + Duration::from_secs(60), 61_000).0;
-    for f in &emitted {
-        assert!(digest_view.statuses.take(f, &fabric));
-    }
-
-    // Gossip sends degraded for mesh2 (both on initial announce, reinforcing due, and gossip held_frames).
-    assert!(emitted.iter().any(|f| matches!(f.data(), Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms: 61_000, .. } if mesh == "mesh2" && status == "degraded" && publisher == fp_node.as_str())));
-    let due_mesh2 = peer_pubs.get_mut("mesh2").unwrap().due(base + Duration::from_secs(61)).expect("reinforcing gossip send for mesh2");
-    assert_eq!((status_of(&due_mesh2), ts(&due_mesh2), publisher_of(&due_mesh2)), ("degraded", 61_000, fp_node.as_str()));
-    assert_eq!(digest_view.statuses.mesh("mesh2").unwrap().status, "degraded");
-    assert_eq!(digest_view.statuses.mesh("mesh3").unwrap().status, "degraded");
-
-    // Join answer serves mesh2's kept ready frame at X (publisher mesh2.admin.1 unchanged) and nothing for mesh3 (never the marker).
-    let join_answer = digest_view.statuses.join_frames(&fabric, "mesh1.admin.1", &peer_pubs);
-    let join_mesh2 = join_answer.iter().find(|f| matches!(f.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).expect("join answer carries mesh2's kept lifecycle frame");
-    assert_eq!((status_of(join_mesh2), ts(join_mesh2), publisher_of(join_mesh2)), ("ready", x, "mesh2.admin.1"));
-    assert_eq!(join_mesh2.context(), mesh2_ready.context(), "original author context is kept");
-    assert!(join_answer.iter().all(|f| !matches!(f.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh3")), "mesh3 had no lifecycle frame when marked degraded: join answer serves nothing for mesh3, never the marker: {join_answer:?}");
-
-    // Once the successor's frame replaces the marker (revision 4), the join answer serves the successor's frame.
-    let successor_author = rdm_transport::envelope::Birth { fabric: fabric.clone(), node: successor_node, incarnation: successor_inc };
-    let successor_frame = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready".into(), publisher: "mesh2.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: x }
-        .authored(&successor_author, 4, x);
-    assert!(digest_view.statuses.take(&successor_frame, &fabric));
-    let _ = status_announcements(&fabric, &fp_pub, "mesh1", &digest_view, &mut mesh_pub, &mut fabric_pub, &mut peer_pubs, "ready", "ready", false, false, &[], base + Duration::from_secs(65), 65_000);
-    assert!(!peer_pubs.contains_key("mesh2"), "successor's frame replaced the marker: kept lifecycle frame is dropped");
-    let join_after = digest_view.statuses.join_frames(&fabric, "mesh1.admin.1", &peer_pubs);
-    let join_mesh2_after = join_after.iter().find(|f| matches!(f.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).expect("join answer carries successor's frame");
-    assert_eq!((status_of(join_mesh2_after), ts(join_mesh2_after), publisher_of(join_mesh2_after)), ("ready", x, "mesh2.admin.2"));
-    assert_eq!(join_mesh2_after.context(), successor_frame.context());
-}
-
-/// CONTRACT: docs/architecture/lifecycles/node-mesh-join.md:59
-/// "the statuses it holds with their original authors and instants"
-/// CONTRACT: docs/architecture/lifecycles/states.md:12
-/// "MeshStatus also carries a `degraded` health marker, set when a mesh is given a new node-admin by the fabric-primary (on either investigation arm, R-DG1) and cleared on the new mesh-primary's report; it is not a lifecycle status."
-/// The announce loop (`Backbone::announce_statuses_with_degraded_meshes` and its background
-/// reinforcement sender) and a join answer (`TopologyView::status_frames`) run together under a
-/// tokio multi-thread runtime for thousands of bounded iterations and both always finish without
-/// lock-order inversion or serving the `degraded` marker as a join lifecycle status.
+/// The announce loop (`Backbone::announce_statuses` and its background reinforcement sender) and a
+/// join answer (`TopologyView::status_frames`) run together under a tokio multi-thread runtime for
+/// thousands of bounded iterations and both always finish without lock-order inversion, the join
+/// answer serving each mesh's status with its original publisher.
 #[test]
 fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_always_finish() {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -588,12 +385,8 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
         let announce_bb = backbone.clone();
         let announce_task = tokio::spawn(async move {
             for i in 0..ITERATIONS {
-                let degraded = vec![("mesh2".to_string(), Some(2_000 + i))];
-                if i % 2 == 0 {
-                    announce_bb.announce_statuses_with_degraded_meshes("ready", "degraded", true, true, &degraded).await;
-                } else {
-                    announce_bb.announce_statuses_with_degraded_meshes("ready", "ready", true, true, &[]).await;
-                }
+                let fabric_status = if i % 2 == 0 { "pending" } else { "ready" };
+                announce_bb.announce_statuses("ready", fabric_status, true, true).await;
             }
         });
         let join_tv = topology_view.clone();
@@ -601,8 +394,8 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
             for _ in 0..ITERATIONS {
                 let frames = join_tv.status_frames(me);
                 assert!(
-                    frames.iter().all(|f| !matches!(f.data(), Frame::MeshStatus { status, .. } if status == "degraded")),
-                    "join answer never serves a degraded MeshStatus marker: {frames:?}"
+                    frames.iter().any(|f| matches!(f.data(), Frame::MeshStatus { mesh, publisher, .. } if mesh == "mesh2" && publisher == "mesh2.admin.1")),
+                    "the join answer serves mesh2's status with its original publisher: {frames:?}"
                 );
                 tokio::task::yield_now().await;
             }

@@ -2,7 +2,7 @@
 //!
 //! The one reach ladder over one exact birth: one probe direct, and if that fails the same probe
 //! through up to two live peers of the node's mesh, sent at once; `reached` with what the node said,
-//! or `unreached`, never dead. Run by node recovery, mesh investigation, the primary watch and the
+//! or `unreached`, never dead. Run by node recovery, the primary watch, fabric recovery and the
 //! successor ladder of node.primary.update, each over its own [`TickleCalls`].
 
 /// Reach ladder entry point, probe outcomes, and carrier selection (`docs/architecture/lifecycles/node-tickle.md`).

@@ -119,10 +119,6 @@ pub enum ScopeStatus {
     ///
     /// Serialized as `dead`; `name()` is `dead`.
     Dead,
-    /// The fabric primary has decided a peer mesh is re-born (`investigate`).
-    ///
-    /// Serialized as `degraded`; `name()` is `degraded`.
-    Degraded,
 }
 
 impl ScopeStatus {
@@ -133,7 +129,6 @@ impl ScopeStatus {
             Self::Ready => "ready",
             Self::Leaving => "leaving",
             Self::Dead => "dead",
-            Self::Degraded => "degraded",
         }
     }
 }

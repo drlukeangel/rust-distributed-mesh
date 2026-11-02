@@ -5437,7 +5437,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     assert_eq!(local1.out["call_outcome"], "reply", "mesh1 serves within itself under the cut: {}", local1.out);
     assert_eq!(local2.out["call_outcome"], "reply", "mesh2 serves within itself under the cut: {}", local2.out);
     assert!(cross.out["outcome"] == "Reply" && cross.out["call_outcome"] != "reply", "nothing crosses the cut: {}", cross.out);
-    // Held for two staleness floors more, past mesh investigation's decision step: every view an admin
+    // Held for two staleness floors more, past the mark and node investigation's verdict: every view an admin
     // answers holds at most one primary per (mesh, node type) and one fabric-primary. Which side's births
     // survive is not pinned (Q4): recovery follows node investigation's verdict.
     let views_during = one_primary_through(&f, &admin_names, cut_at, window * 2, "during the cut").await;
@@ -5715,7 +5715,7 @@ async fn control_run(cell: &str, shape: Shape) {
     events.push(json!({"event": "quiet-baseline", "window_ms": (quiet1 - quiet0) / 1_000_000, "status_sends": 0}));
 
     // Control loss: the victim hears and is heard by no node. Held from the cut for two repair windows less one
-    // backbone interval, below mesh investigation's decision step; its coverage goes stale and is re-fed in the first.
+    // backbone interval; its coverage goes stale and is re-fed in the first.
     let others: Vec<PathName> = everyone.iter().filter(|n| **n != vname).cloned().collect();
     // The observer is a gossip member too: the victim loses it as it loses every node, or gossip relays the
     // victim's words around the cut through it and no coverage ever goes stale.
@@ -5732,10 +5732,9 @@ async fn control_run(cell: &str, shape: Shape) {
     let cut_started = Instant::now();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "node": vname, "acknowledged": true}));
     // The cut's bound, measured from the cut and whatever the restart takes: two repair windows less one
-    // backbone interval. Mesh investigation's decision step opens at two floors of the victim's unheard
-    // (`investigate.rs` rungs: `decide: floor * 2`), counted from its last backbone frame, at most one
-    // backbone interval before the cut, so the cut is dropped below it and the victim never decides on a
-    // fabric that is alive.
+    // backbone interval. Past the floor the victim's own node investigations of the births it cannot hear
+    // read them running and unreached: it holds no fabric-primary role, so it submits no recovery, and
+    // from the backbone a `running` fabric-primary is written nothing (fabric-recovery.md step 3, Q153).
     let backbone = rdm_transport::topology::backbone_gossip_interval();
     let release_at = cut_started + window * 2 - backbone;
     // A role node restarts while the victim's coverage is stale (unheard for a floor): its request is made one
@@ -5994,7 +5993,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     .await;
     events.push(json!({"event": "near-add-under-cut", "node": added, "node_id": joined["node_id"], "build_id": spawn, "refused_while_in_flight": v}));
 
-    // Held for two staleness floors more, past mesh investigation's decision step (Q4).
+    // Held for two staleness floors more, past the mark and node investigation's verdict (Q4).
     let views = one_primary_through(&f, &admin_names, cut_at, window * 2, "during the cut").await;
 
     // C10, the cut is dropped: every path.name, the added gateway's included, holds one live birth, the same in
@@ -6148,7 +6147,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         }
     }
 
-    // Held for two staleness floors more, past mesh investigation's decision step (Q4).
+    // Held for two staleness floors more, past the mark and node investigation's verdict (Q4).
     let views = one_primary_through(&f, &admin_names, cut_at, window * 2, "during the cut").await;
 
     drop(cut);
