@@ -3059,9 +3059,9 @@ Landed from `047db41f7` to `9938fb9f5`, each through the fast gate:
   - the heard-again create-in-flight race (`heard_again.rs:96`, `sent=false outcome=create-in-flight`);
   - the peer_mesh_investigation and executables span cells.
 - **Store-root follow-ups:**
-  - container_proof and store_root_probe still prove R14 item 5's old guarantees;
+  - container_proof and store_root_probe still prove R14 item 5's old guarantees; (done 2026-11-02, 878960a1d, rdm#273: they prove item 5 as amended, R-SR3)
   - `demo/tests/connections.rs` is built only by the release gate;
-  - no cell covers a re-born node's connection facts;
+  - no cell covers a re-born node's connection facts; (covered, 2026-11-02, rdm#273: `connections_open::connection_history_is_scoped_by_source_id_and_explicit_writer`, `connections_restart::a_recovered_source_holds_no_connection_and_reads_none_back`)
   - no compaction.
 - **Rafka's, reported to 141:**
   - the ~100 ms broker read path;
