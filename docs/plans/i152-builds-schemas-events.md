@@ -110,6 +110,11 @@ lines, so a new mesh-primary always has a source for the Build work its mesh owe
   `NodeKind::RpcNode`); every type extends it: `node-admin` is RDM's, and each type the
   application declares on Fabrics overrides `node`'s defaults. `rpc-node` is not a type name.
 
+**Adoption takes no lock (Luke, 2026-11-02, "no lock"):** with no node-admin alive, nothing on the
+store orders two adoption launches; one launch at a time is the operator's. A launch that finds the
+lost birth reached or a node-admin answering exits NameHeld, as today. The only record left under
+`locks/` is the fabric name claim.
+
 **Re-read after s2:** rdm#295 (a reached mesh-primary re-marked every ~30 s and commanded back
 through node.mesh.join during a primary move): the repair path it ran through is rewritten by s2;
 its cell runs once with spans kept after s2 lands, and the root is fixed if it still happens.
