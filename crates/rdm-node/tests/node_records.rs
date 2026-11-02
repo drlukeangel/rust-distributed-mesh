@@ -6,7 +6,6 @@ use rdm_node::node_records::{
     RecordBirth,
 };
 use rdm_node::store_root::StoreRoot;
-use rdm_node::storage_error::StorageError;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn birth() -> RecordBirth {
@@ -403,12 +402,6 @@ struct LostAcknowledgement {
 
 #[async_trait::async_trait]
 impl NodeRecordsStorage for LostAcknowledgement {
-    async fn put_primary_records(&self, batch: &rdm_node::node_records::PrimaryRecordBatch) -> Result<(), StorageError> {
-        self.records.put_primary_records(batch).await
-    }
-    async fn primary_records(&self) -> Result<Vec<rdm_node::node_records::PrimaryRecordBatch>, StorageError> {
-        self.records.primary_records().await
-    }
 
     async fn put_properties(
         &self,

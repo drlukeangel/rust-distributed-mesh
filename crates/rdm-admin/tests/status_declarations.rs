@@ -770,12 +770,6 @@ struct RefusingRecords(rdm_node::node_records::MemoryNodeRecords);
 
 #[async_trait::async_trait]
 impl rdm_node::node_records::NodeRecordsStorage for RefusingRecords {
-    async fn put_primary_records(&self, batch: &rdm_node::node_records::PrimaryRecordBatch) -> Result<(), rdm_node::storage_error::StorageError> {
-        self.0.put_primary_records(batch).await
-    }
-    async fn primary_records(&self) -> Result<Vec<rdm_node::node_records::PrimaryRecordBatch>, rdm_node::storage_error::StorageError> {
-        self.0.primary_records().await
-    }
     async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), rdm_node::storage_error::StorageError> {
         Err(rdm_node::storage_error::StorageError::Io { file: format!("nodes/properties/{}", record.birth.node_id), reason: "disk refused the write".into() })
     }

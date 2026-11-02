@@ -226,14 +226,6 @@ struct NodeRecordsThroughHandle(Arc<NodeStorageHandle>);
 
 #[async_trait]
 impl crate::node_records::NodeRecordsStorage for NodeRecordsThroughHandle {
-    async fn put_primary_records(&self, batch: &crate::node_records::PrimaryRecordBatch) -> Result<(), crate::storage_error::StorageError> {
-        let w = self.0.current.write();
-        w.node_records.put_primary_records(batch).await
-    }
-    async fn primary_records(&self) -> Result<Vec<crate::node_records::PrimaryRecordBatch>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().node_records.primary_records().await
-    }
-
     async fn put_properties(&self, record: &crate::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
         let w = self.0.current.write();
         w.node_records.put_properties(record).await
