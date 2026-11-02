@@ -827,6 +827,11 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
 async fn door_at(key: &SecretKey, node: &ServedNode) -> rdm_admin::node_config::NodeConfigs {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
+    // A node-admin served here is the mesh-primary the command is sent down to: its role names it, as
+    // the topology feed names a primary (Q313).
+    if node.resolved.kind == NodeKind::NodeAdmin {
+        resolver.set_primary(Some(node.resolved.mesh.clone()), Some(node.resolved.node_id.clone()));
+    }
     let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     crate::bound_configs_on(node_records(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default())).await
 }
@@ -1076,6 +1081,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
     for r in resolves {
         resolver.insert(r.clone());
     }
+    name_primaries(&resolver, &*rig.topology.read().await);
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     let _ = status.atlas.set(atlas.clone());
     let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -1099,9 +1105,23 @@ async fn fabric_primary_door(rig: &Rig, resolves: &[ResolvedNode]) -> Arc<rdm_ad
     for r in resolves {
         resolver.insert(r.clone());
     }
+    name_primaries(&resolver, &*rig.topology.read().await);
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let _ = rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.door.caches.nodes.clone())).await));
     atlas
+}
+
+/// Name on `resolver` the primaries `view` holds, as the process's topology feed names them from the
+/// primary records (Q313): the fabric-primary and each mesh's mesh-primary.
+fn name_primaries(resolver: &StaticResolver, view: &rdm_admin::topology::Topology) {
+    for n in view.nodes.iter() {
+        if n.is_fabric_primary {
+            resolver.set_primary(None, Some(n.node_id.clone()));
+        }
+        if n.is_primary && n.kind == NodeKind::NodeAdmin {
+            resolver.set_primary(Some(n.mesh.clone()), Some(n.node_id.clone()));
+        }
+    }
 }
 
 /// `node.get [id: b]` at the rig's fabric-primary: the config its answer carries.
