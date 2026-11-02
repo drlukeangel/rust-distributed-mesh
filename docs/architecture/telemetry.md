@@ -87,7 +87,7 @@ These start a root of their own today:
 
 The per-operation chains are on their pages:
 - [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery-telemetry-chain);
-- [mesh investigation](lifecycles/mesh-investigation.md#telemetry-chain);
+- [a node-admin created into a live mesh](lifecycles/node-create.md#telemetry-chain);
 - [the fabric's ready](lifecycles/states.md#the-fabrics-ready).
 
 ## 6. Not carried today

@@ -292,7 +292,7 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
   `(path, name)`, at Day 0, idempotent for the same FabricId. At Day 0 the fabric-primary is its mesh's mesh-primary too and creates the fabric row and its own mesh's row, the latter as that mesh's primary; every other mesh's row is created by that mesh's primary. It writes its own members' `Node` rows; no other
   node-admin writes them (a secondary writes none, a WAL reset's rewrite included).
 - **A mesh outage moves no row.** The fabric-primary observes it
-  ([mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation)) and never writes the
+  ([node investigation](lifecycles/node-investigation.md) of its mesh-primary, Q335) and never writes the
   peer mesh's row; an unheard mesh is not dead.
 - **It carries tags** as its own property (mesh.tag.get / create / delete, the same shape as a node's tags), so an application selector resolves a mesh by tag before it
   submits mesh.delete or any other Build intent.
@@ -612,8 +612,8 @@ reachable serves again on return under its own identity. Only
 The offline verdict writes no application work of its own; what an application does on a node's
 release is the application's.
 A silent member is its mesh-primary's
-[node recovery](lifecycles/node-recovery.md); a peer mesh is the fabric-primary's
-[mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation).
+[node recovery](lifecycles/node-recovery.md); a peer mesh's lost mesh-primary is the fabric-primary's
+[node investigation](lifecycles/node-investigation.md) and [node recovery](lifecycles/node-recovery.md) (Q335).
 
 **What a mesh-primary records of a silent member** is on the node's record: the `PendingReconnect`
 and `Dead` marks ([States](lifecycles/states.md#states), node row silence marks), the

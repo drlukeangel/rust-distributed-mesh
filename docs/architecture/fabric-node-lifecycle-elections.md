@@ -140,11 +140,10 @@ There is no MeshId/name/age scoring and no separate fabric-election algorithm. T
 over by [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate);
 nothing else moves it. Unheard past the staleness floor, nobody takes it: the lowest Ready
 node-admin of its mesh, or when the mesh has none the lowest Ready mesh-primary on the
-backbone from [mesh investigation](lifecycles/mesh-investigation.md)'s decision step, runs
+backbone on [node investigation](lifecycles/node-investigation.md)'s verdict (Q335), runs
 [fabric recovery](lifecycles/fabric-recovery.md#the-loss-of-the-fabric-primary-while-a-node-admin-lives),
 the one mechanism in either case (Q122): the node-admin at the fabric-primary's path.name is re-created
-and is mesh-primary and fabric-primary again when it is Ready. The fabric is `degraded`
-meanwhile.
+and is mesh-primary and fabric-primary again when it is Ready.
 
 Only the elected fabric-primary may accept a Fabric topology change. The election chooses **who may
 write topology**; [the current Build](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)

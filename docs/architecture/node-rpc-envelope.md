@@ -1279,7 +1279,7 @@ and target node. Complete state installation is proof in addition to trace ances
 
 Uses: [node-admin create](lifecycles/node-create.md#ordinary-process-birth),
 [delta-gap top-up](lifecycles/node-topology-get.md#node-topology-top-up),
-[a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh)
+[a node-admin created into a live mesh](lifecycles/node-create.md#a-node-admin-created-into-a-live-mesh)
 and [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery).
 
 ## Build floor read (op `0x1F` reserved)

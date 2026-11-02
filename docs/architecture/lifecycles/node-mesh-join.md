@@ -11,7 +11,7 @@ completion `node.mesh.joined`. It is run by:
 - [node.start](node-start.md) step 2, and so the first start inside [node.create](node-create.md);
 - the mesh-primary, standalone, when a [tickle](node-tickle.md) reaches a node that is off its
   mesh: the node is commanded back on;
-- a node-admin entering an existing mesh ([mesh investigation](mesh-investigation.md#a-node-admin-joins-the-live-mesh), [mesh.create](mesh-create.md)).
+- a node-admin entering an existing mesh ([node create](node-create.md#a-node-admin-created-into-a-live-mesh), [mesh.create](mesh-create.md)).
 
 Those pages link here and restate nothing.
 

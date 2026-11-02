@@ -65,7 +65,7 @@ Identity creation order and durable publication order are not the same thing. Th
 
 This ordering removes circular identity discovery: a Mesh never has to discover its Fabric after mint, and a Node never has to discover its logical Fabric directly. Its Fabric follows from `Node.mesh_id -> Mesh.fabric`.
 
-Commands follow the same hierarchy, downward. The fabric-primary commands mesh-primaries. A mesh-primary commands its own mesh's nodes, writes their rows and announces their status: it is the owner of its nodes, always. A command the fabric-primary originates for a mesh's node reaches it as a forwarded command through its mesh-primary, never directly. No node commands its own primary, and nothing in a mesh commands the mesh-primary but the fabric-primary. A mesh-primary the fabric-primary cannot reach is [mesh investigation](lifecycles/mesh-investigation.md)'s case, which gives the mesh a new mesh-primary; the fabric-primary never acts on a mesh's nodes in its place.
+Commands follow the same hierarchy, downward. The fabric-primary commands mesh-primaries. A mesh-primary commands its own mesh's nodes, writes their rows and announces their status: it is the owner of its nodes, always. A command the fabric-primary originates for a mesh's node reaches it as a forwarded command through its mesh-primary, never directly. No node commands its own primary, and nothing in a mesh commands the mesh-primary but the fabric-primary. A mesh-primary the fabric-primary cannot reach is [node investigation](lifecycles/node-investigation.md)'s case and [node recovery](lifecycles/node-recovery.md)'s (Q335), which gives the mesh a new mesh-primary; the fabric-primary never acts on a mesh's nodes in its place.
 
 ---
 
@@ -330,7 +330,7 @@ Do not collapse these operations into one generic "re-entry" rule.
 | WAL reset | no | not inherently | yes, only through its explicit reset/re-entry contract | reset lifecycle path |
 | Mesh join | yes | yes/a new primary may appear | yes | Build + Mesh/Fabric lifecycle transition |
 | Mesh remove | yes | yes as estate changes | yes | Build + Mesh/Fabric lifecycle transition |
-| node-admin joins a live mesh whose node-admins are all lost | no | yes (it becomes the mesh's successor primary) | **not by the join itself** (§7) | Build (the [mesh investigation](lifecycles/mesh-investigation.md) connection-lost verdict runs node.create) + the election + hydration |
+| node-admin joins a live mesh whose node-admins are all lost | no | yes (it becomes the mesh's successor primary) | **not by the join itself** (§7) | Build ([node recovery](lifecycles/node-recovery.md) of the lost mesh-primary runs node.create, Q335) + the election + hydration |
 | Mesh replacement (mesh.delete, then a new mesh) | yes | yes | yes | Build + Mesh/Fabric lifecycle transition |
 | Day 0 | establishes the first accepted Build | the initial primaries | yes | lifecycle root + the election |
 

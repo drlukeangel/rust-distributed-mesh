@@ -27,10 +27,9 @@ Fabric recovery is one workflow, an attempt of the current Build, and one mechan
 (Q122). At the staleness floor each node-admin of the fabric-primary's mesh asks: am I a node-admin; am I
 the lowest Ready one; was the former mesh-primary also the fabric-primary? If not, it is
 mesh-primary now ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh)).
-If so, it takes no primary role: it runs fabric recovery and broadcasts it on the backbone, the fabric
-`degraded` with the workflow named (R-DG1). When the mesh has no node-admin left, the lowest
-Ready mesh-primary on the backbone, from [mesh investigation](mesh-investigation.md)'s decision
-step, does exactly the same. The workflow re-creates the node-admin at the fabric-primary's path.name
+If so, it takes no primary role: it runs fabric recovery and broadcasts it on the backbone with the workflow named. When the mesh has no node-admin left, the lowest
+Ready mesh-primary on the backbone, on [node investigation](node-investigation.md)'s verdict,
+does exactly the same. The workflow re-creates the node-admin at the fabric-primary's path.name
 ([node recovery](node-recovery.md), over the inherited data dir when the investigation's provider step
 found the old runtime exited, otherwise over a newly allocated one, R-FM2). When that node is
 Ready the workflow restores it as mesh-primary and fabric-primary (step 4) and completes. Nothing is
@@ -53,9 +52,9 @@ the same order starts the workflow again, resuming the attempt from its recorded
      record learned after a heal names a primary whose silence in this admin's view began before the
      record did. It takes no primary role. It needs no probe to know it is alive.
    - *Outside its mesh*: a mesh-primary hears nothing of that mesh once its mesh topology stops, so it runs
-     [mesh investigation](mesh-investigation.md)'s ladder on it: the fabric-primary first, then its other
-     node-admins. An answer from any of them ends the investigation and the fabric-primary stays in that
-     mesh. No answer from any of them by the decision step starts fabric recovery at the lowest
+     [node investigation](node-investigation.md) on the fabric-primary's birth. An answer from that
+     birth ends the investigation and the fabric-primary stays in that
+     mesh. Any other verdict starts fabric recovery at the lowest
      Ready mesh-primary, exactly as in the own-mesh arm.
 3. **The executor runs the standing playbook on the lost one**: [node investigation](node-investigation.md) decides (Q111). Reached, by the investigation's answer
    from the exact birth and nothing else, the lost birth is commanded back through [node.mesh.join](node-mesh-join.md) and runs its start sequence,
@@ -91,8 +90,8 @@ the same order starts the workflow again, resuming the attempt from its recorded
 | mark `PendingReconnect`, every admin | 30 s | 3 s |
 | its own mesh: fabric recovery starts, at the first tick after the mark | 30 to 32 s | 3 to 3.5 s |
 | its own mesh: the mesh's topology published again | by 34 s | by 4 s |
-| outside its mesh: probe 1, probe 2, decision ([mesh investigation](mesh-investigation.md)) | 20 s, 40 s, 60 s | 2 s, 4 s, 6 s |
-| outside its mesh: the row, when nobody in that mesh answered either probe | 60 s | 6 s |
+| outside its mesh: [node investigation](node-investigation.md) of the fabric-primary's birth | the ladder's own bounds ([node.tickle](node-tickle.md)) | the same |
+| outside its mesh: the row, on the verdict | at the verdict | at the verdict |
 | the workflow completes, when the node at the fabric-primary's path.name is Ready | — | — |
 
 1. Load the durable topology and the accepted Build map; bind port 0 and retain the OS-assigned
@@ -101,12 +100,13 @@ the same order starts the workflow again, resuming the attempt from its recorded
 2. Obtain current own-mesh topology, join the mesh channel from its member addresses, recover
    control and become ready under the ordinary election.
 3. Run the single bounded own-mesh Ping sweep
-   ([a node-admin joins the live mesh](mesh-investigation.md#a-node-admin-joins-the-live-mesh) steps 4–5); a
+   ([a node-admin created into a live mesh](node-create.md#a-node-admin-created-into-a-live-mesh) steps 4–5); a
    non-answering member goes to [node recovery](node-recovery.md).
 4. Restore the own mesh's secondary admin as executor under that SAME accepted Build, with the
    claim the recovered fabric-primary's. Reach the other meshes through
-   [mesh investigation](mesh-investigation.md): its decision step runs node.create of
-   a node-admin into each mesh that has none, under that mesh's own MeshId. Each such
+   [node investigation](node-investigation.md) of each lost mesh-primary: its verdict runs
+   [node recovery](node-recovery.md), a node-admin re-created into each mesh that has none, under
+   that mesh's own MeshId. Each such
    mesh-primary restores its own admin capacity and sweeps only its own mesh.
 
 ```mermaid

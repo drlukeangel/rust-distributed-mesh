@@ -29,8 +29,13 @@ itself is then deleted by a separate `node.delete`, called from outside the fabr
    reported mesh.deleted. On its own mesh the fabric-primary stays, because no other
    mesh is left to take it, so that mesh.delete skips its
    [node.fabric-primary.update](node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) step. A mesh whose mesh-primary does not
-   answer is reached through [mesh investigation](mesh-investigation.md#during-fabricdelete),
-   whose outcome during fabric.delete is the delete.
+   answer its mesh.delete is reached the way an unheard mesh-primary is reached in a live fabric
+   ([node investigation](node-investigation.md): its exact birth, direct then via peers of its
+   mesh), and during fabric.delete the outcome is a delete, never a node.create of a node-admin: a
+   node-admin that answers runs that mesh's [mesh.delete](mesh-delete.md); if no node-admin
+   answers, the fabric-primary tickles each remaining node of the mesh directly and on any
+   successful connection runs [node.delete](node-delete.md) for that node, as executor. Nothing of
+   the fabric's topology is left behind.
 2. After each other mesh's mesh.deleted, run [node.delete](node-delete.md) of that mesh's
    mesh-primary. The fabric-primary is the executor and proves its exit.
 3. The fabric-primary, still alive, reports fabric.deleted. The primary runs the workflow

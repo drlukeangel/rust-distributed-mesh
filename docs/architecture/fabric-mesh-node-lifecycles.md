@@ -73,7 +73,6 @@ What an operation is admitted against, gate by gate and the source each reads, i
 |---|---|
 | [mesh.issuer.renew](lifecycles/mesh-issuer-renew.md) | The fabric-primary re-minting a mesh's issuing cert at two thirds of its TTL and carrying it to that mesh's node-admins |
 | [mesh.create](lifecycles/mesh-create.md) | A mesh's first node-admin: the mesh-absent arm of node.create, the MeshId minted at acceptance, the channel, the first mesh-primary, the mesh's first states |
-| [Investigation](lifecycles/mesh-investigation.md) | Probing an unheard peer mesh and deciding whether to run node.create of a node-admin into it; the node-admin's join |
 | [mesh.delete](lifecycles/mesh-delete.md) | Deleting a mesh and its members |
 
 ## Node workflows
@@ -115,12 +114,7 @@ are explicit.
 
 | Op | Contract | Workflows |
 |---|---|---|
-| 0x01 Ping | [Ping](node-rpc-envelope.md#ping-op-0x01-core) | [Mesh investigation](lifecycles/mesh-investigation.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md) |
-| 0x1A Forward | [Forward](node-rpc-envelope.md#forward-op-0x1a-core) | [Mesh investigation](lifecycles/mesh-investigation.md) |
 | 0x1B Status | [Status](node-rpc-envelope.md#status-op-0x1b-rdm) | [node.cert.renew](lifecycles/node-cert-renew.md), [node.issuer.update](lifecycles/node-issuer-update.md), [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive), [Node status](lifecycles/node-status.md), [replace](lifecycles/node-replace.md), [delete](lifecycles/node-delete.md), [ready](lifecycles/states.md#the-fabrics-ready), [mesh.delete](lifecycles/mesh-delete.md), [start](lifecycles/node-start.md), [create](lifecycles/node-create.md), [node recovery](lifecycles/node-recovery.md), [stop](lifecycles/node-stop.md), [node.connection.delete](lifecycles/node-connections-delete.md) |
-| 0x1C BuildClaim | [BuildClaim](node-rpc-envelope.md#buildclaim-op-0x1c-rdm) | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) claim-and-dispatch, [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md) |
-| 0x1D JoinNode (node.mesh.join's report) | [Join](node-rpc-envelope.md#join-op-0x1d-rdm) | [node.mesh.join](lifecycles/node-mesh-join.md), [create](lifecycles/node-create.md), [replace](lifecycles/node-replace.md), [node recovery](lifecycles/node-recovery.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) |
-| 0x1E GetTopology (node.topology.get) | [Topology](node-rpc-envelope.md#topology-op-0x1e-rdm) | [Create](lifecycles/node-create.md), [replace](lifecycles/node-replace.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md), [node.topology.get and running reconnect](lifecycles/node-topology-get.md), [node recovery](lifecycles/node-recovery.md) |
 | 0x1F (reserved, Q292) | [Build floor read](node-rpc-envelope.md#build-floor-read-op-0x1f-reserved) | none: [node.start](lifecycles/node-start.md#end-to-end-sequence) step 4 and a primary taking its role ([states](lifecycles/states.md)) read the Build's committed records from the Build storage |
 | 0x20 build | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) | [Node create](lifecycles/node-create.md), [stop](lifecycles/node-stop.md), [start](lifecycles/node-start.md), [delete](lifecycles/node-delete.md); fabric-primary claim-and-dispatch of topology operations; mesh-primary claim-and-run of drift attempts; reattachment |
 | 0x21 PrimaryUpdate | [PrimaryUpdate](node-rpc-envelope.md#primaryupdate-op-0x21-rdm) | [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md), before a primary's [node.connection.delete](lifecycles/node-connections-delete.md), [stop](lifecycles/node-stop.md), replace or delete |

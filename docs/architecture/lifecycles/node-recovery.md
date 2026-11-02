@@ -7,19 +7,19 @@ accepted Build is the fabric's desired topology; a member at a path.name that
 [node investigation](node-investigation.md) did not reach is drift, and RDM puts it back. The
 mesh-primary is the reconciler for its own members, whatever their type: it tracks them, runs the
 investigation and starts the recovery. The app takes part only through the start hook of the new node.
-Recovery is not a caller op. (A mesh none of whose node-admins can be reached is
-[mesh investigation](mesh-investigation.md), driven by the fabric-primary; its decision step runs
-node.create of a node-admin into the live mesh.)
+Recovery is not a caller op. (A mesh none of whose node-admins can be reached is this page's case
+with no successor named: the fabric-primary investigates the lost mesh-primary and re-creates it at
+its path.name, Q335.)
 
 ## Operation summary
 
 | Field | Contract |
 |---|---|
-| Reconciler | The mesh-primary of the member's mesh; the fabric-primary for a mesh-primary (mesh investigation for a mesh with no reachable node-admin) |
+| Reconciler | The mesh-primary of the member's mesh; the fabric-primary for a mesh-primary, a mesh with no reachable node-admin included (Q335) |
 | Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a call to them was never sent for a reachability reason or ended with its attempts spent (step 1) |
 | Investigation | [node investigation](node-investigation.md): the by-destination connections index, node.runtime.inspect, node.tickle direct and via peers; one verdict |
 | Trigger | The verdict (Q111). Reached: commanded back through node.mesh.join. Any other verdict: re-created. Nothing waits on a proof of termination |
-| Execution | The mesh-primary reports the recovery up as `build.create { Change(Recover) }`; the fabric-primary opens it as the next attempt of the current Build at `(build_id, mesh, attempt)` in the mesh's lane and writes every Build record (the open, the claim, each receipt, the verdict) to the Build journal on the store root ([build.md §5.1](../build.md#51-rdm-adapters), Q118); the mesh-primary claims the attempt through BuildClaim on its mesh's in-flight row and runs it through its own executor, reporting each receipt and the verdict up the attempt's `build.attempt.run` stream (R-BI7). Two recoveries at once never meet: the fabric-primary's one writer turn orders their opens, each mesh's lane is numbered on its own, and a second recovery in one mesh is opened claimed by no one and claimed after the first ends (step 1). A mesh cut off from the fabric-primary is recovered once the cut heals (Q118). An unheard mesh-primary's recovery is the fabric-primary's ([mesh investigation](mesh-investigation.md)) |
+| Execution | The mesh-primary reports the recovery up as `build.create { Change(Recover) }`; the fabric-primary opens it as the next attempt of the current Build at `(build_id, mesh, attempt)` in the mesh's lane and writes every Build record (the open, the claim, each receipt, the verdict) to the Build journal on the store root ([build.md §5.1](../build.md#51-rdm-adapters), Q118); the mesh-primary claims the attempt through BuildClaim on its mesh's in-flight row and runs it through its own executor, reporting each receipt and the verdict up the attempt's `build.attempt.run` stream (R-BI7). Two recoveries at once never meet: the fabric-primary's one writer turn orders their opens, each mesh's lane is numbered on its own, and a second recovery in one mesh is opened claimed by no one and claimed after the first ends (step 1). A mesh cut off from the fabric-primary is recovered once the cut heals (Q118). An unheard mesh-primary's recovery is opened by the fabric-primary and run by the successor the election named (Q335) |
 | Steps | node.delete of the unheard instance, node.create at the same path.name; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
 | Retained | path.name, placement and storage (from the path's create spec, which a Build has applied to the row), config and tags (inherited from the deleted row) and the executable (seeded from the deleted row: a recovered node runs the bin its row records, never the recovering admin's) ; a row written before the executable field decodes with none, and node recovery of that birth is refused by name: the topology's entry is the target, not what the birth ran; the repair is a request naming that path's executable, the ordinary replacement ([build-deployment.md](../build-deployment.md)); the inherited data dir and endpoint key when the verdict is `exited` |
 | New | node.id, incarnation, OS-assigned port, exact runtime; a newly allocated data dir and endpoint key on any verdict but `exited`, and when the inherited data dir is absent (`R-FM2`) |
@@ -51,8 +51,8 @@ doubling from the gossip interval to the staleness floor.
    probes still running; one failed peer probe does not cancel the other; every probe names the same
    exact `(node.id, incarnation)`. For an unheard mesh-primary the fabric-primary runs it, without the
    half-floor wait, after the election has named the new mesh-primary
-   ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh)); outside its
-   mesh the ladder is [mesh investigation](mesh-investigation.md)'s.
+   ([elections §4.1](../fabric-node-lifecycle-elections.md#41-the-nodes-of-one-type-in-one-mesh)), with
+   no ladder of its own (Q335).
 3. **The verdict is the one decision (Q111).** `reached`: a held birth that answered, or that is heard
    again by its digest, is commanded back through [node.mesh.join](node-mesh-join.md) by the primary
    above it (its mesh-primary; the fabric-primary for a mesh-primary: every admin looks, one commands)

@@ -13,6 +13,11 @@ one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its ste
 
 Only an answer from the exact birth counts as `reached`.
 
+An unheard mesh-primary is investigated by the fabric-primary the same way, after the election has
+named its successor ([node recovery](node-recovery.md) step 2; Q335); a mesh with no node-admin
+left is the same case with no successor named, and the re-created node-admin is that mesh's primary
+by the same election.
+
 A node that does not answer a call is silent, whatever it gossips (Q182): a call whose attempts end
 unanswered marks its birth at the primary above it (the caller itself when it is that primary; any
 other caller reports the birth to it with Status `ReportCallFailed`), and the primary investigates

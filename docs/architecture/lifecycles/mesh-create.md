@@ -23,7 +23,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
 | Mesh states | `pending`, set by the node-admin that launched the mesh's first admin, one `ApplyMeshState(Pending)` after the launched birth answers Ping; `ready`, set by the fabric-primary on its mesh-primary's report that every planned birth is ready ([States](states.md)) |
 | Rows | The mesh row, written by the mesh-primary at creation; the node row, written by the fabric-primary until the mesh has a primary, then by the mesh-primary |
 | Completion | The node-admin's `node.created`; the mesh is in the topology from acceptance and in traffic from `ready` |
-| Not this | A node-admin created into a mesh that already exists and lost its node-admins is [mesh investigation](mesh-investigation.md#a-node-admin-joins-the-live-mesh): same MeshId, same Build, no mesh create |
+| Not this | A node-admin created into a mesh that already exists and lost its node-admins is [node recovery](node-recovery.md) ([node create](node-create.md#a-node-admin-created-into-a-live-mesh)): same MeshId, same Build, no mesh create |
 
 ## Numbered end-to-end sequence
 
@@ -177,7 +177,7 @@ A refused name claim (`NameHeld` by another MeshId) fails the create step by nam
 launched; a join refusal or a hook failure fails it as [node.create](node-create.md) states, and
 the next attempt of the same Build resumes from the receipts (R-BI4). A mesh whose first
 node-admin exits after creation is not re-created: it is a live mesh that lost its node-admins
-and [mesh investigation](mesh-investigation.md) gives it one under the same MeshId. Failures and
+and [node recovery](node-recovery.md) gives it one under the same MeshId (Q335). Failures and
 stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).
 
 ## Observability contract

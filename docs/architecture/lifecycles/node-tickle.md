@@ -9,8 +9,7 @@ a failure, a deadline included, proves nothing, and only [node.runtime.inspect](
 proves a runtime gone. It is run by:
 
 - the mesh-primary in [node recovery](node-recovery.md), on a member marked `PendingReconnect`;
-- the fabric-primary in [mesh investigation](mesh-investigation.md), on a mesh's primary and then
-  its other node-admins (probe 1 at 20 s, probe 2 at 40 s);
+- the fabric-primary in [node recovery](node-recovery.md) of an unheard mesh-primary (Q335);
 - [node investigation](node-investigation.md) of a silent primary ([elections](../fabric-node-lifecycle-elections.md));
 - the successor ladder of [node.primary.update](node-primary-update.md) after the row.
 
@@ -28,7 +27,7 @@ the primitive does not.
 | Ladder | Direct first. On failure, the same probe carried by [Forward](../node-rpc-envelope.md#forward-op-0x1a-core) through up to two eligible live peers of the node's mesh, both at once; one failed peer probe does not cancel the other |
 | Ends | Any answer from the node, under the probed incarnation, ends the ladder and cancels the probes still running |
 | Result | `reached { answer }`: the node is alive and said what it is; `unreached`: nobody reached it within the ladder. Unreached is never death |
-| What follows | The caller's: on `unreached` the investigation's verdict is the inspect's answer, read before the tickle; on `reached` for a node that is off its channel it commands [node.mesh.join](node-mesh-join.md); mesh investigation decides at 60 s |
+| What follows | The caller's: on `unreached` the investigation's verdict is the inspect's answer, read before the tickle; on `reached` for a node that is off its channel it commands [node.mesh.join](node-mesh-join.md) |
 | Spans | `rdm.node.tickle.resolve.via-direct` for the direct probe, `via-peer` per carrier, each with the answer or the failure; `rdm.node.tickle.returns-unknown.via-unreached` when the ladder ends with no answer; `rdm.node_admin.node.update.via-mesh-join-commanded` when the caller commands the reached node back through node.mesh.join, with the reply |
 
 ## Numbered end-to-end sequence

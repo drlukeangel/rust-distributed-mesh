@@ -115,7 +115,7 @@ receiving peer mesh primary
 Rules:
 - ordinary nodes never join the backbone;
 - only node-admins join the backbone;
-- the current mesh-primary, as the election names it, publishes its own mesh's topology on the backbone; a mesh with no primary goes unheard: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's MeshTopology projection; [mesh investigation](lifecycles/mesh-investigation.md) gives it a node-admin, and that new mesh-primary publishes once it is established (R-RX4);
+- the current mesh-primary, as the election names it, publishes its own mesh's topology on the backbone; a mesh with no primary goes unheard: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's MeshTopology projection; [node recovery](lifecycles/node-recovery.md) of its lost mesh-primary gives it a node-admin (Q335), and that new mesh-primary publishes once it is established (R-RX4);
 - only receiving peer mesh primaries forward remote mesh topologies locally;
 - lifecycle events are published by the executor on its own mesh channel and reach the backbone only inside MeshTopology.in_flight and MeshTopology.deleted;
 - ordinary nodes converge to all-mesh topology without a flat fabric-wide topology channel;
@@ -154,7 +154,7 @@ local Instant         silence and elapsed time                    (receiver-loca
 | [`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting and stopping reach peers as the member's status in its mesh-primary's projection (the `MeshTopology` and `MeshTopologyDelta` rows above); node.connection.deleted is a reply on the call, never gossip | — | — | — | — |
 | `NodeLeft { op: LifecycleOp, forwarded_by }` | reserved position; never published | none: a stopping node gossips nothing and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
 | [`NewFabricPrimary { primary, endpoint_id, transport_addr, admin_api_base }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: a primary change rides the successor's `Digest` and the mesh-primary's `MeshTopology` projection, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `MeshTopology` projection | — | — | — | — |
-| `MeshStatus { mesh, status, publisher, changed_at_rafka_ms }` | backbone and the author's own mesh channel; then each peer mesh channel | the mesh primary when its Mesh's status changes; the fabric-primary for `degraded` only, at a peer mesh's investigation verdict (on either arm, R-DG1; [mesh investigation](lifecycles/mesh-investigation.md)) | peer mesh primaries, unchanged | `(mesh, publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its publisher on a join, heal, refeed or top-up | the Mesh's status projection |
+| `MeshStatus { mesh, status, publisher, changed_at_rafka_ms }` | backbone and the author's own mesh channel; then each peer mesh channel | the mesh primary when its Mesh's status changes | peer mesh primaries, unchanged | `(mesh, publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its publisher on a join, heal, refeed or top-up | the Mesh's status projection |
 | `FabricStatus { fabric, status, publisher, changed_at_rafka_ms }` | backbone and the fabric primary's own mesh channel; then each peer mesh channel | the fabric primary only, when the Fabric's status changes | peer mesh primaries, unchanged | `(publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its publisher on a join, heal, refeed or top-up | the Fabric's status projection |
 | [`NodeRestarting { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#reserved-lifecycle-frame-positions) (position 7) | reserved position (Q183); never published | none: node.restart is removed; callers run node.stop then node.start, and the stop's stopped is published as [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
 | `NodeDeleting { op: LifecycleOp, forwarded_by, publisher, topology_version }` | executor's own mesh channel; backbone MeshTopology.in_flight | the mesh executor, once its own journal holds the adopted won claim for the attempt that carries the operation; seeing the Build, a hand-off receipt naming the operation or being the mesh-primary does not start it | peer mesh primaries, onto their mesh channels, unchanged | `(kind, build_id, attempt, operation)`; applied once however many copies arrive | not retained as a frame; the fact rides `MeshTopology.in_flight` until the operation completes | application routing stops selecting the node; the node stays `Found`. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
@@ -511,8 +511,8 @@ The backbone cadence is `RDM_BACKBONE_INTERVAL_MS`, default 5000 ms.
 
 The own-mesh silence window is derived from the heartbeat cadence and is longer than one tick.
 Peer-mesh silence uses direct backbone receipt at node-admins, never forwarded topology.
-The fabric-primary marks an unheard peer mesh silent at 30 s under the
-[peer-mesh investigation timeline](lifecycles/mesh-investigation.md#mesh-investigation).
+The fabric-primary marks an unheard peer mesh's mesh-primary silent at the staleness floor, as any
+birth ([node recovery](lifecycles/node-recovery.md) step 1).
 
 ### 3.3 Cross-Mesh topology inside a Mesh: deltas, full snapshots and the top-up
 
@@ -534,7 +534,7 @@ peer-mesh members as topology and never ages them to silent for lack of forwarde
 Remote liveness is judged only where it is heard: node-admins use direct backbone receipt,
 and any node uses its own call results and connection facts, including `connection-lost`.
 A forwarded frame refreshes nobody's liveness, node-admins included. Source versions order
-topology; they are not liveness receipts. See the [peer-mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation).
+topology; they are not liveness receipts.
 
 A delta is an optimization. It is never the fact and never the only recovery.
 
@@ -908,7 +908,7 @@ Safety comes from:
 - direct-answer fencing before destructive replacement;
 - failed reachability is not death.
 
-Heal path: [mesh investigation](lifecycles/mesh-investigation.md) owns it. On the gossip side,
+Heal path: [node recovery](lifecycles/node-recovery.md) owns it (Q335). On the gossip side,
 transport reachable again means held-member repair (§6) rejoins the stale peers, their current
 birth, RuntimeFact and runtime-metadata facts merge under the catalog's ordering, and the
 deterministic leadership converges on the merged facts; a mesh with no primary gets its
@@ -928,8 +928,8 @@ is the sole Build driver; it claims and calls the executor over the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm). Caller progress waits on
 no gossip receipt.
 
-For a mesh whose node-admins are unheard the sequence is [mesh investigation](lifecycles/mesh-investigation.md)
-for a mesh with no node-admin and [node recovery](lifecycles/node-recovery.md) for a member whose
+For a mesh whose node-admins are unheard the sequence is [node recovery](lifecycles/node-recovery.md)
+of its lost mesh-primary by the fabric-primary (Q335), and node recovery for a member whose
 mesh-primary is live; who claims and executes is [build.md](build.md). Gossip's part is fixed:
 canonical runtime and lifecycle evidence, never silence, establishes which births are gone; the
 current Build, read from `builds.storage`, establishes what should exist; a node-admin created into
