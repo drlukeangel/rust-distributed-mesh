@@ -701,8 +701,9 @@ async fn a_peer_mesh_heard_again_before_its_recovery_acts_cancels_the_recovery_a
         .filter(|sp| sp["attributes"].to_string().contains(&first_id) || sp["attributes"].to_string().contains(&first_inc))
         .collect();
     assert!(marks.is_empty(), "nothing deleted or marked {first:?}'s birth: {marks:#?}");
-    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(before_stop).filter(|sp| rdm_test::estate::names_location(sp, "subject", &first)).collect();
-    assert!(creates.is_empty(), "no node.create at {first:?}: {creates:#?}");
+    // A create's claim of the path's row (`moment=claim`); its arrival reads (`moment=arrival`) write nothing.
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(before_stop).filter(|sp| rdm_test::estate::names_location(sp, "subject", &first) && attr(sp, "moment") == "claim").collect();
+    assert!(creates.is_empty(), "no node.create claimed {first:?}'s row: {creates:#?}");
     eprintln!("{fp:?}: recovery {} at {} ms after the cut, target {}, heard again {} ms after the heal, ended {}", attr(&opened, "verdict"), (at_ns(&opened) - cut_ns) / 1_000_000, target["attributes"], (at_ns(&heard) - healed_ns) / 1_000_000, ended["attributes"]);
 }
 
