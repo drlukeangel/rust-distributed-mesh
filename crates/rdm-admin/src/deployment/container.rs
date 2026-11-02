@@ -76,6 +76,10 @@ pub struct ContainerDeploymentProvider {
     domain: String,
     /// The docker client every command runs through.
     docker: Docker,
+    /// Moves each time a container this provider started is seen to exit ([`DeploymentProvider::exits`]).
+    exits: std::sync::Arc<tokio::sync::watch::Sender<u64>>,
+    /// Dropped with the provider: every exit wait ([`Self::wait_exit`]) ends with it, its client killed.
+    provider_end: tokio::sync::watch::Sender<()>,
 }
 
 /// The docker client every command of this provider runs through ([`super::client`]): each
@@ -572,6 +576,8 @@ impl ContainerDeploymentProvider {
             ips: Mutex::new(NodeIps::default()),
             domain: format!("container:{}", daemon.trim()),
             docker,
+            exits: std::sync::Arc::new(tokio::sync::watch::Sender::new(0)),
+            provider_end: tokio::sync::watch::Sender::new(()),
         })
     }
 
@@ -653,6 +659,32 @@ impl ContainerDeploymentProvider {
             true => Found::Exited(None),
             false => Found::NeverLaunched,
         })
+    }
+
+    /// The one `docker wait` of container `id`, which this provider started (Q330, deployment-provider.md
+    /// §2.7 Exit): a client the provider owns, run with no deadline ([`super::deadline::Deadline::unbounded`]).
+    /// Its answer (the container exited) moves `exits`, and so does the daemon's answer that the
+    /// container is gone; the provider's end ends the wait and kills the client (`kill_on_drop`). A
+    /// client that fails moves nothing: its span names the failure, and nothing retries it. A
+    /// container this provider adopted ([`Self::find_by_name`]) gets no wait. The limit: an admin
+    /// killed by SIGKILL leaves its waits running until their containers exit.
+    fn wait_exit(&self, deployment: &crate::model::DeploymentId, id: &str) {
+        let (docker, domain, exits, mut provider_end) = (self.docker.clone(), self.domain.clone(), self.exits.clone(), self.provider_end.subscribe());
+        let (deployment, id) = (deployment.to_string(), id.to_string());
+        tokio::spawn(async move {
+            let on = On { deployment: Some(deployment.as_str()), container: Some(id.as_str()), ..On::default() };
+            let args = ["wait", id.as_str()];
+            tokio::select! {
+                waited = docker.run(Some(&domain), &args, super::deadline::Deadline::unbounded(), on, false) => match waited {
+                    // The exit is an event at its source: the reconcile loop wakes on it (Q254).
+                    Ok(_) => exits.send_modify(|v| *v += 1),
+                    Err(e) if e.says_absent() => exits.send_modify(|v| *v += 1),
+                    Err(_) => {}
+                },
+                // Nothing is ever sent: only the provider's drop closes it.
+                _ = provider_end.changed() => {}
+            }
+        });
     }
 
     fn launched_handles(&self) -> Vec<DeploymentHandle> {
@@ -791,6 +823,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             .await
             .map_err(|e| e.into_deploy(err))?;
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
+        self.wait_exit(&spec.deployment_id, &id);
         let pid = self
             .docker_text(&["inspect", "--format", "{{.State.Pid}}", &id], deadline, On { deployment: Some(deployment.as_str()), container: Some(&id), ..On::default() })
             .await
@@ -898,6 +931,10 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 
     fn launched(&self) -> Vec<DeploymentHandle> {
         self.launched_handles()
+    }
+
+    fn exits(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.exits.subscribe()
     }
 
     /// A container is given its own address on the fabric network before it starts (`--ip`): the

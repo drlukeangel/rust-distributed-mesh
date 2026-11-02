@@ -339,3 +339,51 @@ async fn a_missing_container_store_root_is_refused_without_creating_it() {
     assert!(err.to_string().contains("RDM_STORE_DIR") && err.to_string().contains(missing.to_str().unwrap()), "{err}");
     assert!(!missing.exists(), "the missing store namespace was not created");
 }
+
+/// The `docker wait` clients of container `id` running on this host, by their pids.
+fn wait_clients(id: &str) -> Vec<String> {
+    let o = std::process::Command::new("pgrep").args(["-f", &format!("docker wait {id}")]).output().unwrap();
+    String::from_utf8_lossy(&o.stdout).split_whitespace().map(str::to_string).collect()
+}
+
+/// CONTRACT (Q254, Luke 2026-10-28: the reconcile loop "wakes on events (... a provider exit)"; the
+/// process provider's reaper moves `DeploymentProvider::exits` as it records a child's exit): a
+/// container this provider started, killed from outside it, moves the provider's exit watch when the
+/// daemon ends it, through one `docker wait` of its exact id that the provider owns. Once that wait
+/// returns no client of it is left, and a provider dropped while its container runs leaves none.
+/// Must NOT happen: a container's exit unseen until an unrelated event (the watch never moving), or
+/// a `docker wait` client outliving its container or its provider.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_container_killed_outside_its_provider_moves_the_providers_exit_watch() {
+    let fabric = fabric_name("exit-watch");
+    let Some(p) = provider(&fabric).await else { return };
+    let _cleanup = Fabric(fabric.clone());
+    let mut exits = p.exits();
+    exits.borrow_and_update();
+    let h = p.spawn(&launch(&p, &fabric, 0), rdm_admin::deployment::deadline::Deadline::step()).await.expect("launch");
+    let id = container_id(&h);
+    assert_eq!(daemon_state(&id), "running");
+    assert!(!exits.has_changed().unwrap(), "nothing exited yet: the watch has not moved");
+    let killed = std::process::Command::new("docker").args(["kill", &id]).output().unwrap();
+    assert!(killed.status.success(), "docker kill {id}: {}", String::from_utf8_lossy(&killed.stderr));
+    let moved = tokio::time::timeout(std::time::Duration::from_secs(10), exits.changed()).await;
+    assert!(matches!(moved, Ok(Ok(()))), "the container's exit moved the provider's exit watch: {moved:?} (daemon state {})", daemon_state(&id));
+    assert!(matches!(p.inspect(&h, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the exit the watch announced is what inspect reads");
+    assert!(wait_clients(&id).is_empty(), "the wait returned with the exit and left no client: {:?}", wait_clients(&id));
+
+    // A provider dropped while its container runs ends its wait with it.
+    let second = p.spawn(&launch(&p, &fabric, 1), rdm_admin::deployment::deadline::Deadline::step()).await.expect("launch");
+    let second = container_id(&second);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while wait_clients(&second).is_empty() && std::time::Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(wait_clients(&second).len(), 1, "one docker wait of the running container, the provider's own");
+    drop(p);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !wait_clients(&second).is_empty() && std::time::Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(wait_clients(&second).is_empty(), "the dropped provider's wait client is ended with it: {:?}", wait_clients(&second));
+    assert_eq!(daemon_state(&second), "running", "ending the wait touches nothing of the container");
+}

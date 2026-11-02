@@ -9,7 +9,8 @@
 //! cancelled. Nothing here retries: the owning workflow's next attempt is the retry.
 //!
 //! One span per invocation, `rdm.node_admin.deployment.update.via-provider-command`: operation,
-//! deployment, exact container when known, control domain, deadline, elapsed, outcome, exit code,
+//! deployment, exact container when known, control domain, deadline (`unbounded` for the provider's
+//! own exit wait, [`Deadline::unbounded`]), elapsed, outcome, exit code,
 //! the client's kill and cleanup, and the tail of stderr with the call's secrets scrubbed and its
 //! truncation marked. Never the arguments or the environment.
 
@@ -122,8 +123,8 @@ pub async fn run(program: &str, domain: Option<&str>, call: &Invocation<'_>, dea
         deployment_id = call.deployment.unwrap_or(""),
         container = call.container.unwrap_or(""),
         domain = domain.unwrap_or(""),
-        deadline_ms = deadline.bound().as_millis() as u64,
-        remaining_ms = deadline.remaining().as_millis() as u64,
+        deadline_ms = tracing::field::Empty,
+        remaining_ms = tracing::field::Empty,
         mutation = call.mutation,
         elapsed_ms = tracing::field::Empty,
         outcome = tracing::field::Empty,
@@ -134,6 +135,11 @@ pub async fn run(program: &str, domain: Option<&str>, call: &Invocation<'_>, dea
         stderr = tracing::field::Empty,
         stderr_truncated = tracing::field::Empty,
     );
+    if deadline.is_unbounded() {
+        span.record("deadline_ms", "unbounded").record("remaining_ms", "unbounded");
+    } else {
+        span.record("deadline_ms", deadline.bound().as_millis() as u64).record("remaining_ms", deadline.remaining().as_millis() as u64);
+    }
     let mut record = Record { span: span.clone(), started: Instant::now(), ended: false };
     let secrets: Vec<(String, String)> = call.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let scrub = |bytes: &[u8]| super::declared::scrub(String::from_utf8_lossy(bytes).trim(), &secrets);

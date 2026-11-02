@@ -348,7 +348,7 @@ pub enum Inspected {
 /// instant is the provider's own deadline (Q304), so the provider ends the command it started.
 pub async fn inspect_runtime(provider: &dyn DeploymentProvider, fact: &RuntimeFact, data_dir: Option<&str>, incarnation: &str) -> Inspected {
     let deadline = super::deadline::Deadline::after(INSPECT_BOUND);
-    match tokio::time::timeout_at(deadline.at(), inspect_unbounded(provider, fact, data_dir, incarnation, deadline)).await {
+    match deadline.run(inspect_unbounded(provider, fact, data_dir, incarnation, deadline)).await {
         Ok(inspected) => inspected,
         Err(_) => Inspected::Unavailable(format!("deadline: the provider did not answer within {INSPECT_BOUND:?}")),
     }

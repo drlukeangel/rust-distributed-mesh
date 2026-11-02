@@ -3825,12 +3825,17 @@ struct Wakes {
     records: Arc<rdm_admin::admin::Records>,
     ladder: Arc<Mutex<rdm_admin::investigate::Ladder>>,
     drives: Arc<rdm_admin::build_drive::Drives>,
-    provider: Arc<rdm_admin::deployment::process::ProcessDeploymentProvider>,
+    provider: Arc<dyn rdm_admin::deployment::provider::DeploymentProvider>,
 }
 
 impl Wakes {
     fn new() -> Self {
-        Self { submitted: Arc::new(tokio::sync::Notify::new()), records: Arc::new(rdm_admin::admin::Records::default()), ladder: Arc::new(Mutex::new(rdm_admin::investigate::Ladder::new(Self::rungs()))), drives: Arc::new(rdm_admin::build_drive::Drives::default()), provider: Arc::new(rdm_admin::deployment::process::ProcessDeploymentProvider::new()) }
+        Self::on(Arc::new(rdm_admin::deployment::process::ProcessDeploymentProvider::new()))
+    }
+
+    /// The wakes of an admin whose provider is `provider`.
+    fn on(provider: Arc<dyn rdm_admin::deployment::provider::DeploymentProvider>) -> Self {
+        Self { submitted: Arc::new(tokio::sync::Notify::new()), records: Arc::new(rdm_admin::admin::Records::default()), ladder: Arc::new(Mutex::new(rdm_admin::investigate::Ladder::new(Self::rungs()))), drives: Arc::new(rdm_admin::build_drive::Drives::default()), provider }
     }
 
     /// The ladder's rungs at the gate's cadence (3 s floor, 500 ms backbone interval).
@@ -4181,6 +4186,44 @@ fn a_provider_exit_runs_one_reconcile_pass() {
     let spans = cap.spans();
     println!("trace_id={trace_id}");
     assert_eq!(passes, vec![Woken::First, Woken::ProviderExit], "one exit, one pass: {passes:?}");
+    assert_eq!(drive_passes(&spans, &trace_id), 2);
+}
+
+/// CONTRACT (Q254, as `a_provider_exit_runs_one_reconcile_pass`, under the container provider): a
+/// container the admin's provider started, killed from outside it with nothing else happening, runs
+/// exactly one reconcile pass, woken by the provider's exit.
+/// Must NOT happen: the container's exit unseen until an unrelated event (the pruner's stale mark).
+/// Opt-in with the container proof (`RDM_CONTAINER_PROOF=1`), as every cell that runs a container.
+#[test]
+fn a_container_exit_runs_one_reconcile_pass() {
+    use rdm_admin::admin::Woken;
+    use rdm_admin::deployment::provider::DeploymentProvider;
+    let cap = crate::mesh_delete_resume::capture();
+    let ran = cap.run(async {
+        let fabric = crate::container_proof::fabric_name("exit-pass");
+        let p = crate::container_proof::provider(&fabric).await?;
+        let _cleanup = crate::container_proof::Fabric(fabric.clone());
+        let root = tracing::info_span!("cell.reconcile-container-exit-runs-one-pass");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let (r, _mesh_deleter) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let spec = crate::container_proof::launch(&p, &fabric, 0);
+        let wakes = Wakes::on(Arc::new(p));
+        let h = wakes.provider.spawn(&spec, rdm_admin::deployment::deadline::Deadline::step()).await.expect("the container starts");
+        let (passes, task) = reconciler(&r.env, &wakes, None);
+        tokio::time::sleep(SETTLE).await;
+        let id = h.container.clone().expect("a container handle names its container");
+        let killed = std::process::Command::new("docker").args(["kill", &id]).output().unwrap();
+        assert!(killed.status.success(), "docker kill {id}: {}", String::from_utf8_lossy(&killed.stderr));
+        tokio::time::sleep(SETTLE).await;
+        task.abort();
+        let passes = passes.lock().unwrap().clone();
+        Some((trace_id, passes))
+    });
+    let Some((trace_id, passes)) = ran else { return };
+    let spans = cap.spans();
+    println!("trace_id={trace_id}");
+    assert_eq!(passes, vec![Woken::First, Woken::ProviderExit], "one container exit, one pass: {passes:?}");
     assert_eq!(drive_passes(&spans, &trace_id), 2);
 }
 

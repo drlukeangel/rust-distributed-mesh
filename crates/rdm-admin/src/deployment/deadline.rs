@@ -7,7 +7,9 @@
 //! enforces the deadline it is handed around its external I/O and chooses no timeout of its own: an
 //! expiry ends the client wait and is a named failure,
 //! [`DeployError::Deadline`](super::provider::DeployError::Deadline), which proves neither the
-//! cancellation of an external mutation nor the runtime's exit.
+//! cancellation of an external mutation nor the runtime's exit. The one exception is the provider's
+//! own wait for the exit of a runtime it started ([`Deadline::unbounded`]): it ends with that exit or
+//! with the provider.
 
 use std::time::Duration;
 use tokio::time::Instant;
@@ -20,17 +22,31 @@ pub const STEP_BOUND: Duration = Duration::from_secs(30);
 /// stays owned after that (rdm#241 §4).
 pub const CLEANUP_BOUND: Duration = Duration::from_secs(2);
 
-/// One absolute deadline and the bound it was taken from (the bound is what a span names).
+/// One absolute deadline and the bound it was taken from (the bound is what a span names), or none
+/// ([`Deadline::unbounded`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deadline {
-    at: Instant,
+    /// The instant it falls at; `None` for the unbounded wait.
+    at: Option<Instant>,
     bound: Duration,
 }
 
 impl Deadline {
     /// The deadline `bound` from now.
     pub fn after(bound: Duration) -> Self {
-        Self { at: Instant::now() + bound, bound }
+        Self { at: Some(Instant::now() + bound), bound }
+    }
+
+    /// No deadline: only the provider's own wait for the exit of a runtime it started (Q330,
+    /// deployment-provider.md §2), which ends with that exit or with the provider. Its span names
+    /// its bound as `unbounded`.
+    pub fn unbounded() -> Self {
+        Self { at: None, bound: Duration::MAX }
+    }
+
+    /// Whether this is the unbounded wait ([`Deadline::unbounded`]).
+    pub fn is_unbounded(&self) -> bool {
+        self.at.is_none()
     }
 
     /// A step's deadline: [`STEP_BOUND`] from now.
@@ -47,32 +63,32 @@ impl Deadline {
     /// The earlier of this deadline and `caller`'s: a caller's shorter budget wins, and nothing
     /// nested in it ever runs past it.
     pub fn within(self, caller: Option<Deadline>) -> Self {
-        match caller {
-            Some(c) if c.at < self.at => c,
+        match (caller, self.at) {
+            (Some(c), None) if c.at.is_some() => c,
+            (Some(c), Some(at)) if c.at.is_some_and(|c| c < at) => c,
             _ => self,
         }
     }
 
-    /// The instant the deadline falls at.
-    pub fn at(&self) -> Instant {
-        self.at
-    }
-
-    /// The bound the deadline was taken from.
+    /// The bound the deadline was taken from; [`Duration::MAX`] for the unbounded wait.
     pub fn bound(&self) -> Duration {
         self.bound
     }
 
-    /// What is left of it now; zero once it has passed.
+    /// What is left of it now; zero once it has passed; [`Duration::MAX`] for the unbounded wait.
     pub fn remaining(&self) -> Duration {
-        self.at.saturating_duration_since(Instant::now())
+        self.at.map_or(Duration::MAX, |at| at.saturating_duration_since(Instant::now()))
     }
 
     /// `work` until the deadline: `Err` with the time elapsed when it passes first. `work` is
-    /// dropped at the deadline, so what it owns is ended with it.
+    /// dropped at the deadline, so what it owns is ended with it. The unbounded wait runs `work` to
+    /// its end.
     pub async fn run<T>(&self, work: impl std::future::Future<Output = T>) -> Result<T, Duration> {
         let started = Instant::now();
-        tokio::time::timeout_at(self.at, work).await.map_err(|_| started.elapsed())
+        match self.at {
+            Some(at) => tokio::time::timeout_at(at, work).await.map_err(|_| started.elapsed()),
+            None => Ok(work.await),
+        }
     }
 }
 
@@ -88,6 +104,8 @@ mod tests {
         let long = Deadline::after(Duration::from_secs(600));
         assert_eq!(step.within(Some(long)), step, "a longer caller budget never extends the step's");
         assert_eq!(step.within(None), step);
+        assert_eq!(Deadline::unbounded().within(Some(step)), step, "any caller deadline bounds the unbounded wait");
+        assert_eq!(step.within(Some(Deadline::unbounded())), step, "the unbounded wait never extends a step's");
     }
 
     #[tokio::test]
