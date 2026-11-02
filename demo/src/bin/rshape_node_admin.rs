@@ -24,9 +24,10 @@ use rdm_admin::storage::NodeRecord;
 use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope};
 use rdm_admin::storage_error::StorageError;
 use rdm_admin::wiring::{BuildEndedCtx, BuildEndedNotice, BuildStartedCtx, BuildStartedNotice, FabricHooks, FabricReadyCtx, FabricReadyNotice, MeshReadyCtx, MeshReadyNotice, NodeInvestigatedCtx, NodeInvestigatedNext, NodeInvestigatedNotice, Wiring};
-use rshape_consumer::replica::{Records, RecordsReply, RecordsRequest};
+use rshape_consumer::replica::{ask_each_gateway, Asked, Records, RecordsRequest};
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
 
@@ -57,8 +58,26 @@ impl StorageBackend for ConsumerBackend {
 }
 
 /// What the started admin hands over (`rdm_admin::entry::run_on_started`): its Node RPC client, its
-/// topology view and its mesh, where `on_fabric_ready` finds a gateway and calls it.
-type Own = Arc<OnceLock<Started>>;
+/// topology view and its mesh, where `on_fabric_ready` finds a gateway and calls it. A watch, so a
+/// notice that comes before the admin is started waits for it.
+type Own = Arc<tokio::sync::watch::Sender<Option<Arc<Started>>>>;
+
+/// The started admin, once it is: waits for [`Own`] to be set.
+async fn wait_started(own: &Own) -> Option<Arc<Started>> {
+    own.subscribe().wait_for(Option::is_some).await.ok().and_then(|s| s.clone())
+}
+
+/// The ready gateways of the admin's mesh, node id and incarnation, in the topology's order.
+fn ready_gateways(started: &Started) -> Vec<(rdm_core::NodeId, rdm_core::IncarnationId)> {
+    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["gateway"]).eq("status", ["ready"]);
+    started.view.nodes_get(&filter).unwrap_or_default().into_iter().map(|d| (d.node.node_id, d.node.incarnation)).collect()
+}
+
+/// Ask `gateway` for `request` (op [`Records`]); RDM resends it ([`rdm_transport::Resend`]).
+async fn ask_gateway(started: &Started, gateway: rdm_core::NodeId, request: &RecordsRequest) -> Asked {
+    let (outcome, _) = started.client.call::<Records>(&rdm_transport::NodeTarget::ExactNode(gateway), request, &rdm_transport::CallOptions::default()).await;
+    Asked::of(outcome)
+}
 
 /// The started admin's handles the notices use.
 struct Started {
@@ -110,33 +129,37 @@ async fn talk_to_brokers(started: &Started) {
 }
 
 /// The day-0 work of `ready`: one record to the `system` topic through a Ready gateway of this admin's
-/// mesh, asked again until a gateway acknowledges it. The operation id is the ready Build's, so a
-/// repeat of the notice for one Build is the same record.
+/// mesh. Each ready gateway is asked once, in order ([`ask_each_gateway`]); a gateway whose call is
+/// spent is never asked it again. When no gateway produced it, the next round waits for the topology
+/// to change (`DigestView::heard_changes`: a member first held, a new birth or status, or heard again
+/// after silence), never a timer. The operation id is the ready Build's, so a repeat of the notice for
+/// one Build is the same record.
 async fn day_zero(own: Own, fabric_id: String, build_id: String) {
     let operation = format!("fabric-ready:{build_id}");
     let request = RecordsRequest::Produce { operation: operation.clone(), topic: "system".into(), record: format!("fabric {fabric_id} ready at Build {build_id}") };
+    let Some(started) = wait_started(&own).await else { return };
+    let mut heard = started.view.digest_view.heard_changes();
+    let mut spent = BTreeMap::new();
     loop {
-        if let Some(started) = own.get() {
-            let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["gateway"]).eq("status", ["ready"]);
-            if let Some(gateway) = started.view.nodes_get(&filter).ok().and_then(|g| g.into_iter().next()) {
-                let (outcome, _) = started.client.call::<Records>(&rdm_transport::NodeTarget::ExactNode(gateway.node.node_id.clone()), &request, &rdm_transport::CallOptions::default()).await;
-                if let rdm_core::outcome::RpcOutcome::Reply(reply) = outcome {
-                    if let RecordsReply::Produced { offset, .. } = reply.value() {
-                        tracing::info!(target: "rshape", %operation, gateway_path = %gateway.node.name.path, gateway_name = %gateway.node.name.name, offset, "on_fabric_ready: the day-0 record is produced through the gateway");
-                        return talk_to_brokers(started).await;
-                    }
-                }
+        // Marked seen before the view is read: a change after this read wakes the next round.
+        heard.borrow_and_update();
+        match ask_each_gateway(&ready_gateways(&started), &mut spent, |gateway| ask_gateway(&started, gateway, &request)).await {
+            Ok(offset) => {
+                tracing::info!(target: "rshape", %operation, offset, "on_fabric_ready: the day-0 record is produced through a gateway");
+                return talk_to_brokers(&started).await;
             }
+            Err(answers) => tracing::info!(target: "rshape", %operation, ?answers, "on_fabric_ready: no gateway produced the day-0 record; the next round waits for the topology to change"),
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        if heard.changed().await.is_err() {
+            return;
+        }
     }
 }
 
 /// `on_node_investigated`'s work on `recreate`: one record of the re-creation to the `system` topic,
-/// asked of each Ready gateway of this admin's mesh once, in the topology's order, until one produces
-/// it. Each call is RDM's to resend ([`rdm_transport::Resend`]); a gateway whose call ends unanswered
-/// is passed for the next. The operation id is the investigated birth's, so a repeated notice for one
-/// birth is the same record.
+/// one round of the ready gateways of this admin's mesh ([`ask_each_gateway`]): each asked once, in
+/// the topology's order, until one produces it. The operation id is the investigated birth's, so a
+/// repeated notice for one birth is the same record.
 async fn record_recreate(started: &Started, told: &NodeInvestigatedCtx) {
     let operation = format!("node-recreate:{}:{}", told.node_id, told.incarnation.as_str());
     let request = RecordsRequest::Produce {
@@ -144,21 +167,10 @@ async fn record_recreate(started: &Started, told: &NodeInvestigatedCtx) {
         topic: "system".into(),
         record: format!("path {:?}, name {:?}, node {} investigated ({}): re-created as a new node id", told.path, told.name, told.node_id, told.verdict.as_str()),
     };
-    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["gateway"]).eq("status", ["ready"]);
-    let mut last = String::from("no gateway of the mesh is ready");
-    for gateway in started.view.nodes_get(&filter).unwrap_or_default() {
-        let (outcome, _) = started.client.call::<Records>(&rdm_transport::NodeTarget::ExactNode(gateway.node.node_id.clone()), &request, &rdm_transport::CallOptions::default()).await;
-        match outcome {
-            rdm_core::outcome::RpcOutcome::Reply(reply) => match reply.into_value() {
-                RecordsReply::Produced { offset, .. } => {
-                    return tracing::info!(target: "rshape", %operation, gateway_path = %gateway.node.name.path, gateway_name = %gateway.node.name.name, offset, "on_node_investigated: the re-creation is recorded in the system topic");
-                }
-                other => last = format!("{:?}: {other:?}", gateway.node.name),
-            },
-            other => last = format!("{:?}: {} {}", gateway.node.name, other.name(), other.detail_name()),
-        }
+    match ask_each_gateway(&ready_gateways(started), &mut BTreeMap::new(), |gateway| ask_gateway(started, gateway, &request)).await {
+        Ok(offset) => tracing::info!(target: "rshape", %operation, offset, "on_node_investigated: the re-creation is recorded in the system topic"),
+        Err(answers) => tracing::warn!(target: "rshape", %operation, ?answers, "on_node_investigated: the re-creation is not recorded: no gateway produced it"),
     }
-    tracing::warn!(target: "rshape", %operation, %last, "on_node_investigated: the re-creation is not recorded: no gateway produced it");
 }
 
 /// The Fabric notices this admin registers (fabric-node-hooks.md): each is fire and forget and writes one
@@ -205,9 +217,8 @@ fn notices(own: Own) -> FabricHooks {
             // The work runs on its own, under the notice's span: a notice gates nothing.
             tokio::spawn(
                 async move {
-                    match own.get() {
-                        Some(started) => record_recreate(started, &told).await,
-                        None => tracing::warn!(target: "rshape", node_id = %told.node_id, "on_node_investigated: the admin is not started; the re-creation is not recorded"),
+                    if let Some(started) = wait_started(&own).await {
+                        record_recreate(&started, &told).await;
                     }
                 }
                 .instrument(tracing::Span::current()),
@@ -219,7 +230,7 @@ fn notices(own: Own) -> FabricHooks {
 
 #[tokio::main]
 async fn main() {
-    let own: Own = Arc::default();
+    let own: Own = Arc::new(tokio::sync::watch::channel(None).0);
     let started = own.clone();
     rdm_admin::entry::run_on_started(
         SERVICE,
@@ -235,7 +246,7 @@ async fn main() {
             };
             let (dialer, acceptor) = connections.split();
             tokio::spawn(answer(acceptor, birth.node_id.to_string()));
-            let _ = started.set(Started { client: running.node_rpc.client.clone(), view: running.topology_view.clone(), mesh: birth.mesh.clone(), node_id: birth.node_id.to_string(), dialer });
+            started.send_replace(Some(Arc::new(Started { client: running.node_rpc.client.clone(), view: running.topology_view.clone(), mesh: birth.mesh.clone(), node_id: birth.node_id.to_string(), dialer })));
         },
     )
     .await

@@ -337,15 +337,76 @@ impl PassedOver {
 /// The broker a forward asks, given the broker primary its topology holds, its mesh's ready brokers
 /// (node id and incarnation, in the topology's order) and the births passed over: the primary, unless
 /// it is passed over; then the first ready broker that is not, the next replica. No primary held:
-/// none, the forward waits for RDM's election. A birth the topology no longer names ready (stopped,
-/// re-created as a new node id, or started as a new incarnation) is passed over no more.
+/// none, the forward waits for RDM's election. A birth the topology no longer names ready is passed
+/// over no more ([`keep_ready`]).
 pub fn choose(primary: Option<NodeId>, ready: &[(NodeId, IncarnationId)], passed: &mut BTreeMap<NodeId, IncarnationId>) -> Option<NodeId> {
-    passed.retain(|id, incarnation| ready.iter().any(|(r, i)| r == id && i == incarnation));
+    keep_ready(passed, ready);
     let primary = primary?;
     if !passed.contains_key(&primary) {
         return Some(primary);
     }
     ready.iter().map(|(id, _)| id).find(|id| !passed.contains_key(*id)).cloned()
+}
+
+/// Keep in `passed` only the births `ready` still names (node id and incarnation): a birth stopped,
+/// re-created as a new node id, or started as a new incarnation is passed over no more.
+pub fn keep_ready(passed: &mut BTreeMap<NodeId, IncarnationId>, ready: &[(NodeId, IncarnationId)]) {
+    passed.retain(|id, incarnation| ready.iter().any(|(r, i)| r == id && i == incarnation));
+}
+
+/// What one gateway's answer to a forwarded `Produce` is to the node that asked it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asked {
+    /// The record is produced at `offset`.
+    Produced { offset: u64 },
+    /// The call ended unanswered, `NotSent` or `Indeterminate`: RDM resent it until its attempts were
+    /// spent (node-rpc.md §43). That gateway birth is never asked it again.
+    Spent(String),
+    /// Any other answer (not ready, busy, connections-deleting, no broker): the gateway keeps its turn.
+    Answered(String),
+}
+
+impl Asked {
+    /// What `outcome`, a gateway's answer to a `Produce`, is to its asker.
+    pub fn of(outcome: RpcOutcome<RecordsReply>) -> Self {
+        match outcome {
+            RpcOutcome::Reply(reply) => match reply.into_value() {
+                RecordsReply::Produced { offset, .. } => Self::Produced { offset },
+                other => Self::Answered(format!("{other:?}")),
+            },
+            spent @ (RpcOutcome::NotSent(_) | RpcOutcome::Indeterminate(_)) => Self::Spent(format!("{} {}", spent.name(), spent.detail_name())),
+            other => Self::Answered(format!("{} {}", other.name(), other.detail_name())),
+        }
+    }
+}
+
+/// One round of a `Produce` through the gateways: each gateway `ready` names (node id and
+/// incarnation, in the topology's order) that is not in `spent` is asked once, in order, by `ask`,
+/// until one produces it. A gateway whose call is spent goes into `spent` and is not asked again
+/// while the topology names that birth ready ([`keep_ready`]); one that answers keeps its turn for
+/// the next round. `Err` names each gateway's answer when none produced it.
+pub async fn ask_each_gateway<F, Fut>(ready: &[(NodeId, IncarnationId)], spent: &mut BTreeMap<NodeId, IncarnationId>, mut ask: F) -> Result<u64, Vec<String>>
+where
+    F: FnMut(NodeId) -> Fut,
+    Fut: std::future::Future<Output = Asked>,
+{
+    keep_ready(spent, ready);
+    let mut answers = Vec::new();
+    let unspent: Vec<_> = ready.iter().filter(|(id, _)| !spent.contains_key(id)).cloned().collect();
+    for (gateway, incarnation) in unspent {
+        match ask(gateway.clone()).await {
+            Asked::Produced { offset } => return Ok(offset),
+            Asked::Spent(why) => {
+                spent.insert(gateway.clone(), incarnation);
+                answers.push(format!("{gateway}: {why}, its attempts spent"));
+            }
+            Asked::Answered(why) => answers.push(format!("{gateway}: {why}")),
+        }
+    }
+    if answers.is_empty() {
+        answers.push(if ready.is_empty() { "no gateway of the mesh is ready".into() } else { "every ready gateway's call is spent".into() });
+    }
+    Err(answers)
 }
 
 /// The gateway's `on_call_failed` (fabric-node-hooks.md "on_call_failed"): a call of this node whose
@@ -502,5 +563,50 @@ mod tests {
         assert!(passed.0.borrow().contains_key(&receiver), "the spent call's receiver is passed over");
         passed.ask_again(&receiver.to_string());
         assert!(passed.0.borrow().is_empty(), "a broker that holds it primary sends the gateway back to it");
+    }
+
+    #[tokio::test]
+    async fn a_gateway_whose_call_is_spent_is_not_asked_again_and_the_next_gateway_is_asked() {
+        let (first, second, third) = (broker(), broker(), broker());
+        let ready = vec![first.clone(), second.clone(), third.clone()];
+        let mut spent = BTreeMap::new();
+        let mut asked = Vec::new();
+        // Round one: the first gateway's call is spent, the second answers not ready, the third's is spent.
+        let answers = ask_each_gateway(&ready, &mut spent, |g| {
+            asked.push(g.clone());
+            let answer = if g == second.0 { Asked::Answered("NotReady".into()) } else { Asked::Spent("NotSent connect-refused".into()) };
+            async move { answer }
+        })
+        .await;
+        assert!(answers.is_err(), "no gateway produced the record: {answers:?}");
+        assert_eq!(asked, vec![first.0.clone(), second.0.clone(), third.0.clone()], "each ready gateway asked once, in order");
+        assert!(spent.len() == 2 && spent.contains_key(&first.0) && spent.contains_key(&third.0), "the two spent gateways are passed over: {spent:?}");
+        // Round two (the topology changed): only the gateway that answered keeps its turn, and produces.
+        asked.clear();
+        let produced = ask_each_gateway(&ready, &mut spent, |g| {
+            asked.push(g.clone());
+            async move { Asked::Produced { offset: 7 } }
+        })
+        .await;
+        assert_eq!(produced, Ok(7));
+        assert_eq!(asked, vec![second.0.clone()], "a gateway whose call is spent is never asked again");
+        // Every ready gateway spent: none is asked until the topology names a new birth.
+        spent.insert(second.0.clone(), second.1.clone());
+        asked.clear();
+        let none = ask_each_gateway(&ready, &mut spent, |g| {
+            asked.push(g.clone());
+            async move { Asked::Produced { offset: 0 } }
+        })
+        .await;
+        assert_eq!(none, Err(vec!["every ready gateway's call is spent".to_string()]));
+        assert!(asked.is_empty(), "no spent gateway is asked: {asked:?}");
+        // The first gateway started as a new incarnation: that birth is asked.
+        let restarted = (first.0.clone(), IncarnationId::mint());
+        let produced = ask_each_gateway(&[restarted, second.clone(), third.clone()], &mut spent, |g| {
+            asked.push(g.clone());
+            async move { Asked::Produced { offset: 8 } }
+        })
+        .await;
+        assert_eq!((produced, asked), (Ok(8), vec![first.0.clone()]), "the new birth at the first gateway is asked");
     }
 }
