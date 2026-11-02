@@ -1,13 +1,15 @@
 //! Q209 (node-recovery.md "Detection and the verdict": "The mesh-primary runs one loop for its own members
 //! on every gossip interval, never on a timer of its own. After a retryable recovery-submit failure, that
 //! exact birth becomes eligible again after a backoff doubling from the gossip interval to the staleness
-//! floor."; "Execution": the mesh-primary reports the drift up and "While the mesh is cut from the
-//! fabric-primary, its recoveries fail by name and run after the heal", Q118).
+//! floor."; "Execution": "The mesh-primary reports the recovery up as `build.create { Change(Recover) }`",
+//! and a mesh the fabric-primary cannot reach "is recovered once the cut heals (Q118)"; lead decision
+//! D22, 2026-11-02: a mesh-primary behind a cut fails its recovery by name and recovers after the heal).
 //!
 //! CONTRACT: in a two-mesh estate (two node-admins and two rpc nodes each, the fabric-primary mesh1.admin.1)
 //! every UDP path between mesh2's primary and mesh1's nodes is dropped (mesh2's other nodes still reach both
 //! sides, so no mesh is unheard), and the provider kills mesh2.rpc.1's runtime. Mesh2's primary's submits of
-//! that birth's recovery fail while the cut holds; each failed submit records its backoff (the gossip
+//! that birth's recovery fail while the cut holds, each by name: its outcome names the report of the birth's
+//! drift to the fabric-primary that did not go through; each failed submit records its backoff (the gossip
 //! interval, doubling, at most the staleness floor) and the next submit of the birth starts no earlier than
 //! that backoff after the failed one ended. The cut is dropped: the next submit starts within the staleness
 //! floor and a tick of the last failed one, and completes: one new birth at mesh2.rpc.1 under a
@@ -127,6 +129,11 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_wit
     // Each failed submit is paced by its backoff, capped at the floor.
     let failed: Vec<&Value> = submits.iter().take_while(|sp| !completed(sp)).collect();
     assert!(failed.len() >= 5, "five submits failed under the cut: {failed:#?}");
+    // Each fails by name: the report of the birth's drift to the fabric-primary did not go through.
+    for sp in &failed {
+        let outcome = s(&sp["attributes"]["outcome"]);
+        assert!(outcome.contains(&victim_id) && outcome.contains("drift to"), "a failed submit under the cut names the report of {victim:?}'s drift that did not go through: {}", line(sp));
+    }
     let backoff = |sp: &Value| -> u64 { s(&sp["attributes"]["backoff_ms"]).parse().unwrap_or_else(|_| panic!("a failed submit of {victim:?} records its backoff: {}", line(sp))) };
     for sp in &failed {
         assert!(Duration::from_millis(backoff(sp)) <= floor, "the backoff is at most the staleness floor ({floor:?}): {}", line(sp));
