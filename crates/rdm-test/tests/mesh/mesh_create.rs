@@ -225,7 +225,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let written = |mesh: &str, id: &str| {
         claims
             .iter()
-            .find(|c| c["attributes"]["mesh"] == mesh && s(&c["attributes"]["mesh_id"]) == id && c["attributes"]["moment"] == "claim" && c["attributes"]["outcome"] == "row-written")
+            .find(|c| c["attributes"]["mesh"] == mesh && s(&c["attributes"]["mesh_id"]) == id && c["attributes"]["moment"] == "write" && c["attributes"]["outcome"] == "row-written")
             .copied()
             .unwrap_or_else(|| panic!("{mesh}'s name is claimed, its row written: {claims:?}"))
     };
@@ -252,7 +252,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let fabric_claims = named(&spans, "rdm.node_admin.fabric.create.via-fabric-row");
     let first = fabric_claims
         .iter()
-        .filter(|c| s(&c["attributes"]["fabric_id"]) == fabric_id && c["attributes"]["moment"] == "claim")
+        .filter(|c| s(&c["attributes"]["fabric_id"]) == fabric_id && c["attributes"]["moment"] == "write")
         .min_by_key(|c| c["start_unix_nano"].as_u64())
         .unwrap_or_else(|| panic!("the fabric-primary claims the fabric's name: {fabric_claims:?}"));
     assert_eq!(first["attributes"]["outcome"], "row-written", "{first}");

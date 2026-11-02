@@ -287,7 +287,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // MeshId, before the recreated mesh2.admin.1's row is claimed, by the same
     // writer. No mesh's claim conflicts with itself across creation and a re-claim.
     let claims = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
-    let claim_of = |id: &str| claims.iter().find(|sp| sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["mesh_id"]) == id && sp["attributes"]["moment"] == "claim" && sp["attributes"]["outcome"] == "row-written").copied();
+    let claim_of = |id: &str| claims.iter().find(|sp| sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["mesh_id"]) == id && sp["attributes"]["moment"] == "write" && sp["attributes"]["outcome"] == "row-written").copied();
     let old_claim = claim_of(&mesh_ids["mesh2"]).unwrap_or_else(|| panic!("the removed mesh2's name was claimed: {claims:?}"));
     assert_eq!(old_claim["attributes"]["outcome"], "row-written", "{old_claim}");
     assert!(
