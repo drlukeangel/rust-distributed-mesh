@@ -134,7 +134,7 @@ export interface TimelineEvent {
   node_path: string | null;
   node_name: string | null;
   node_id: string | null;
-  /// The process that wrote it (`<bin>.<pid>` of its span file), or `ui`.
+  /// The process that wrote it (its span file's name before `.spans.jsonl`), or `ui`.
   process: string;
   name: string;
   summary: string;

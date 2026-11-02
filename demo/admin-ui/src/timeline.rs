@@ -27,7 +27,7 @@ pub struct Event {
     pub node_name: Option<String>,
     /// The id of the node that recorded it, when its spans name one.
     pub node_id: Option<String>,
-    /// The process that wrote it, `<bin>.<pid>` of its span file, or `ui`.
+    /// The process that wrote it, its span file's name before `.spans.jsonl`, or `ui`.
     pub process: String,
     /// The span name, or `ui.…` for an action the UI took.
     pub name: String,
@@ -97,7 +97,7 @@ impl SpanNode {
 
 /// The event one span record makes, or `None` for a line that is not a span. A span that carries
 /// no node field names `file_node`, the node its process file's spans named; `process` is that
-/// file's `<bin>.<pid>`.
+/// file's name before `.spans.jsonl`.
 pub fn event_of(span: &Value, file_node: &SpanNode, process: &str) -> Option<Event> {
     let name = span.get("name")?.as_str()?.to_string();
     let ts_ns = span.get("start_unix_nano")?.as_u64()?;
@@ -243,7 +243,7 @@ mod tests {
         let node = |e: &Event| (e.node_path.clone(), e.node_name.clone(), e.node_id.clone());
         assert_eq!(node(&shown[0]), (Some("mesh1.broker".into()), Some("1".into()), Some("0123456789ab".into())));
         assert_eq!(node(&shown[1]), (Some("mesh1.admin".into()), Some("1".into()), None), "a span's own `path`/`name` names it, never mixed with its file's node");
-        assert_eq!(shown[0].process, "rdm-rpc-node.1");
+        assert_eq!(shown[0].process, "rdm-rpc-node.1-1", "the span file's name before `.spans.jsonl`");
         let (all, _) = e.newest(&[], true, 10);
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].name, "rdm.mesh.topology.update.via-snapshot-installed", "newest first across the toggle");
