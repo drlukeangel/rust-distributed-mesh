@@ -542,7 +542,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             if let Some(own) = own_row.as_ref().filter(|own| own.name != *name) {
                 return Err(format!("refusing to start: {}: the adoption launch at path {:?}, name {:?} is on the data dir of {}: an inherited data dir is the lost birth's own", cfg.data_dir.display(), name.path, name.name, own.node_id));
             }
-            let a = match super::adoption::read(name, &cfg.mesh, &cfg.fabric_id, &cfg.store_dir, cfg.spawn_type.as_deref(), &*fabric_storage, &*mesh_storage, &*nodes_storage, &*topology_storage.node_records(), &*journal).await {
+            let a = match super::adoption::read(name, &cfg.mesh, &cfg.fabric_id, &cfg.store_dir, cfg.spawn_type.as_deref(), &*fabric_storage, &*mesh_storage, &*nodes_storage, &*journal).await {
                 Ok(a) => a,
                 Err(e) => {
                     let e = format!("refusing to start: {e}");
@@ -1199,10 +1199,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // The recorded primaries: an election input this admin enters with (elections §3), its own
                 // included. A launched admin reads no store (Q227): its mesh-primary's hydration sync serves
                 // them (`Primaries`, node.topology.get), a lost birth's record marked gone. A start with no
-                // launcher, the re-born fabric-primary with nobody to pull from, reads the election's results
-                // persisted in the node records of the fabric's store root. A record older than one held changes nothing.
+                // launcher, the re-born fabric-primary with nobody to pull from, reads them off the node
+                // records of the fabric's store root. A record older than one held changes nothing.
                 if cfg.launch.is_none() {
-                    crate::admin::rows_writer::take_recorded_primaries(&*topology_storage.node_records(), topology_view.primaries()).await.map_err(storage_err)?;
+                    crate::admin::rows_writer::take_recorded_primaries(&*mesh_storage, &*nodes_storage, &cfg.mesh, topology_view.primaries()).await.map_err(storage_err)?;
                 }
                 if let Some(own) = &inherited {
                     topology_view.digest_view.primaries.mark_gone(own.incarnation_id.clone());
@@ -1856,6 +1856,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         endpoint_id: d.node.endpoint_id.clone(),
                                         transport_addr: d.node.transport_addr,
                                         listeners: Vec::new(),
+                                        is_primary: None,
+                                        is_fabric_primary: None,
                                         // The provider the handle writes now, set by the handle.
                                         topology_storage_provider: None,
                                     })
@@ -1872,8 +1874,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             let (writes_tx, writes) = tokio::sync::watch::channel(std::collections::BTreeSet::<String>::new());
                             let contacts_task = {
                                 let (digest_view, fabric_id) = (topology_view.digest_view.clone(), cfg.fabric_id.clone());
-                                let elections = super::rows_writer::ElectionResults::new(topology_storage.node_records(), rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() });
-                                let writer = MeshRowsWriter::new(&node_id.to_string(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone(), records.caches.clone(), elections);
+                                let writer = MeshRowsWriter::new(&node_id.to_string(), &cfg.mesh, mesh_id.clone(), nodes_storage.clone(), mesh_storage.clone(), records.caches.clone());
                                 let stop = stop_gate.clone();
                                 tokio::spawn(super::rows_writer::keep_mesh_rows(writer, digest_view, fabric_id, writes, stop, commands.clone()))
                             };

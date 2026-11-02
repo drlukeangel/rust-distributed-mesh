@@ -317,6 +317,8 @@ impl Prepared {
                 endpoint_id: EndpointId(key.public().to_string()),
                 transport_addr: "127.0.0.1:1".parse().unwrap(),
                 listeners: Vec::new(),
+                is_primary: None,
+                is_fabric_primary: None,
                 topology_storage_provider: None,
             };
             rdm_admin::storage::FileNodesStorage::put_own_in(&data_dir, &incarnation, &own).await.unwrap();
@@ -824,25 +826,18 @@ fn attr_of(s: &serde_json::Value, k: &str) -> String {
 }
 
 impl Prepared {
-    /// [`Prepared::at`] as a fabric whose one admin, the fabric-primary, is lost: the election's persisted
-    /// results name its birth its mesh's primary and the fabric-primary, and the Fabric record names its
-    /// provider, `process`.
+    /// [`Prepared::at`] as a fabric whose one admin, the fabric-primary, is lost: its birth's row records
+    /// it its mesh's primary and the fabric-primary, and the Fabric record names its provider, `process`.
     fn adoptable(name: &str) -> Self {
         let root = Self::at(name);
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let store = rdm_admin::store_root::StoreRoot::open(&root.store, &root.fabric_id).unwrap();
             let writer = rdm_admin::model::IncarnationId::mint();
             let nodes = rdm_admin::storage::FileNodesStorage::open(&root.dir.join("fixture"), &store, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
-            let row = nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap().expect("the lost birth's row");
-            let birth = row.births.last().unwrap();
-            // The election's results name the lost birth its mesh's primary and the fabric-primary.
-            {
-                use rdm_node::node_records::NodeRecordsStorage as _;
-                let records = rdm_node::node_records::FileNodeRecords::open(&store).await.unwrap();
-                let lost = rdm_core::Primary { mesh: "mesh1".into(), node_id: row.node_id.clone(), incarnation: birth.incarnation_id.clone(), revision: 1 };
-                let batch = rdm_node::node_records::PrimaryRecordBatch { fabric_id: root.fabric_id.clone(), writer: rdm_node::node_records::RecordBirth { node_id: row.node_id.clone(), incarnation_id: birth.incarnation_id.clone() }, records: vec![(rdm_core::PrimaryRole::MeshPrimary, lost.clone()), (rdm_core::PrimaryRole::FabricPrimary, lost)] };
-                records.put_primary_records(&batch).await.unwrap();
-            }
+            let mut row = nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap().expect("the lost birth's row");
+            let birth = row.births.last_mut().unwrap();
+            (birth.is_primary, birth.is_fabric_primary) = (Some(1), Some(1));
+            nodes.write_record(&row).await.unwrap();
             use rdm_admin::fabric_storage::FabricStorage as _;
             let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&store, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
             let mut record = fabric.fabric().await.unwrap().expect("the Fabric record");
@@ -1054,7 +1049,7 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         (nodes.record_at(&rdm_core::PathName::new("mesh1.admin", "1").unwrap()).await.unwrap(), meshes.in_flight("mesh1").await.unwrap(), journal.facts().await.unwrap())
     });
     let row = row.expect("the live fabric-primary's row");
-    assert!(row.node_id.to_string() == live_id && row.status != rdm_admin::model::NodeStatus::Deleted && row.newest_birth().is_some(), "the live fabric-primary's row is intact: {row:?}");
+    assert!(row.node_id.to_string() == live_id && row.status != rdm_admin::model::NodeStatus::Deleted && row.newest_birth().is_some_and(|b| b.is_fabric_primary.is_some()), "the live fabric-primary's row is intact: {row:?}");
     assert!(in_flight.as_ref().is_none_or(|r| r.attempt.to_string() != attr_of(&claim, "attempt") || r.build_id.log().to_string() != attr_of(&claim, "build_id")), "the claimed attempt's in-flight row is released: {in_flight:?}");
     let closed = facts.iter().any(|f| matches!(f, rdm_admin::build_state::BuildFact::Attempt(r) if r.build_id.log().to_string() == attr_of(&claim, "build_id") && r.attempt.to_string() == attr_of(&claim, "attempt") && r.mesh.as_deref() == Some("mesh1") && matches!(r.outcome, rdm_admin::build_state::AttemptOutcome::Failed { .. })));
     assert!(closed, "the claimed attempt reads Failed on the journal: {facts:?}");

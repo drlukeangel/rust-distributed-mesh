@@ -85,7 +85,6 @@ pub async fn read(
     fabric: &dyn crate::fabric_storage::FabricStorage,
     meshes: &dyn crate::storage::MeshStorage,
     nodes: &dyn crate::storage::NodesStorage,
-    node_records: &dyn rdm_node::node_records::NodeRecordsStorage,
     builds: &dyn BuildStateAdapter,
 ) -> Result<Adoptable, String> {
     let root = store.join(fabric_id.to_string());
@@ -130,22 +129,12 @@ pub async fn read(
         Some(m) => return Err(format!("{of}: mesh {} ({}) is Dead: a dead mesh is never adopted", mesh_name, m.mesh_id)),
         None => return Err(format!("{of}: the store root {} holds no row of mesh {}", root.display(), mesh_name)),
     };
-    // The fabric-primary the election's persisted results name (node-primary-update.md step 5), of a
-    // live node, the result that supersedes every other by the one supersede rule: the lost birth the
-    // launch is at the path and name of.
+    // The fabric-primary the node rows record (`is_fabric_primary` on a birth, the newest revision): the
+    // lost birth the launch is at the path and name of.
     let rows = crate::storage::records(meshes, nodes, &mesh_name).await.map_err(|e| format!("{of}: nodes.storage could not read the node rows: {e}"))?;
-    let results = node_records.primary_records().await.map_err(|e| format!("{of}: the node records on the store root {} could not be read for the election's results: {e}", root.display()))?;
-    let recorded = results
-        .iter()
-        .flat_map(|batch| batch.records.iter())
-        .filter(|(role, _)| *role == rdm_core::PrimaryRole::FabricPrimary)
-        .filter_map(|(_, p)| rows.iter().find(|r| r.node_id == p.node_id && r.status != NodeStatus::Deleted).and_then(|r| r.birth(&p.incarnation).map(|b| (p, r, b))))
-        .fold(None, |held: Option<(&rdm_core::Primary, _, _)>, (p, r, b)| match held {
-            Some(h) if !p.supersedes(h.0) => Some(h),
-            _ => Some((p, r, b)),
-        });
+    let recorded = rows.iter().filter(|r| r.status != NodeStatus::Deleted).filter_map(|r| r.newest_birth().and_then(|b| b.is_fabric_primary.map(|rev| (rev, r, b)))).max_by_key(|(rev, _, _)| *rev);
     let Some((_, row, birth)) = recorded else {
-        return Err(format!("{of}: the node records on the store root {} hold no fabric-primary result of a live node: an adoption launch is at the lost fabric-primary's (path, name)", root.display()));
+        return Err(format!("{of}: the node rows on the store root {} record no fabric-primary: an adoption launch is at the lost fabric-primary's (path, name)", root.display()));
     };
     match &delete {
         None if row.name != *name => {
@@ -174,6 +163,8 @@ pub async fn read(
         endpoint_id: birth.endpoint_id.clone().unwrap_or_else(|| EndpointId(String::new())),
         transport_addr: birth.transport_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0))),
         listeners: birth.listeners.clone(),
+        is_primary: birth.is_primary,
+        is_fabric_primary: birth.is_fabric_primary,
         topology_storage_provider: None,
     };
     let current = match &delete {
@@ -699,7 +690,6 @@ mod tests {
             let fabric_store = MemoryFabricStorage::default();
             let mesh_store = MemoryMeshStorage::default();
             let nodes_store = MemoryNodesStorage::default();
-            let records_store = rdm_node::node_records::MemoryNodeRecords::default();
             let builds_store = MemoryBuildStateAdapter::default();
             let contexts = crate::build_claim::AttemptContexts::in_memory();
 
@@ -711,7 +701,6 @@ mod tests {
                 &fabric_store,
                 &mesh_store,
                 &nodes_store,
-                &records_store,
                 &builds_store,
             )
             .await
@@ -733,7 +722,6 @@ mod tests {
                 &fabric_store,
                 &mesh_store,
                 &nodes_store,
-                &records_store,
                 &builds_store,
             )
             .await
@@ -754,15 +742,10 @@ mod tests {
             let lost_inc = IncarnationId::mint();
             let mut row = NodeRow::new(path.clone(), "mesh1", rdm_core::NodeKind::NodeAdmin, lost_id.clone(), NodeStatus::Ready);
             row.mesh_id = Some(mesh_id.clone());
-            row.birth_mut(&lost_inc, &path);
+            let b = row.birth_mut(&lost_inc, &path);
+            b.is_primary = Some(1);
+            b.is_fabric_primary = Some(1);
             nodes_store.write_record(&row).await.unwrap();
-            // The election's results name the lost birth mesh-primary and fabric-primary at revision 1.
-            {
-                use rdm_node::node_records::NodeRecordsStorage;
-                let lost = rdm_core::Primary { mesh: "mesh1".into(), node_id: lost_id.clone(), incarnation: lost_inc.clone(), revision: 1 };
-                let batch = rdm_node::node_records::PrimaryRecordBatch { fabric_id: fabric_id.clone(), writer: rdm_node::node_records::RecordBirth { node_id: lost_id.clone(), incarnation_id: lost_inc.clone() }, records: vec![(rdm_core::PrimaryRole::MeshPrimary, lost.clone()), (rdm_core::PrimaryRole::FabricPrimary, lost)] };
-                records_store.put_primary_records(&batch).await.unwrap();
-            }
 
             let build_id = BuildId::mint();
             crate::build_state::accept(
@@ -787,7 +770,6 @@ mod tests {
                 &fabric_store,
                 &mesh_store,
                 &nodes_store,
-                &records_store,
                 &builds_store,
             )
             .await
@@ -818,7 +800,6 @@ mod tests {
                 &fabric_store,
                 &mesh_store,
                 &nodes_store,
-                &records_store,
                 &builds_store,
             )
             .await
@@ -871,7 +852,6 @@ mod tests {
                 &fabric_store,
                 &mesh_store,
                 &nodes_store,
-                &records_store,
                 &builds_store,
             )
             .await
