@@ -2087,3 +2087,47 @@ fn a_resumed_deleted_births_own_record_write_is_ignored_on_read() {
         eprintln!("trace {}: rdm.node_admin.node.reject.via-deleted-birth read={} writer={writer:?} outcome=ignored", s["trace_id"].as_str().unwrap_or(""), s["attributes"]["read"].as_str().unwrap_or(""));
     }
 }
+
+/// CONTRACT (node-identity-and-state.md: "A current-pair lookup reads the node records by their path
+/// and name"; node-name-update.md, "Check and move": "one write of the node's record at its node.id
+/// carrying the destination pair and `renamed_from`: the name move is that one write"; build.md §5.3:
+/// the store root holds its store files and the `layout` marker): on the file store, a record written
+/// at a path and name another live node's record holds is refused `NameHeld` naming that node, read
+/// from the records; a rename is one write of the node's record carrying `renamed_from`, after which
+/// the old pair is free; and the root holds no `locks/` directory. Must NOT happen: a name kept as a
+/// lock file beside the records, or a rename that writes, then releases, a claim.
+#[test]
+fn on_the_file_store_a_held_name_is_refused_from_the_records_and_a_rename_is_one_record_write() {
+    let cap = capture();
+    let at = rdm_core::PathName::new("mesh1.rpc", "1").unwrap();
+    let to = rdm_core::PathName::new("mesh1.rpc", "9").unwrap();
+    let t = view();
+    let rpc = t.node(&at).unwrap().clone();
+    let (dir, root_dir, refused, renamed, lines, old_free, held_old) = cap.run(async {
+        let dir = std::env::temp_dir().join(format!("rdm-node-rows-names-{}", NodeId::mint()));
+        std::fs::create_dir_all(dir.join("store")).unwrap();
+        let root = rdm_admin::store_root::StoreRoot::open(&dir.join("store"), &FabricId::mint()).unwrap();
+        let storage: Arc<dyn NodesStorage> = Arc::new(rdm_admin::storage::FileNodesStorage::open(&dir.join("own"), &root, "mesh1", &rdm_admin::store_log::LogWriter::mint()).await.unwrap());
+        let me: PathName = rdm_core::PathName::new("mesh1.admin", "2").unwrap();
+        let me_id = t.node(&me).unwrap().node_id.clone();
+        let rows = NodeRows::new(me, me_id, Arc::new(RwLock::new(t.clone())), storage.clone());
+        rdm_admin::node_rows::write_record(&*storage, &row_of(&rpc)).await.unwrap().expect("the name is free");
+        let other = NodeRow { node_id: NodeId::mint(), ..row_of(&rpc) };
+        let refused = rdm_admin::node_rows::write_record(&*storage, &other).await.unwrap().map_err(|h| (h.name, h.by));
+        let file = root.dir().join(rdm_admin::store_root::NODES_FILE);
+        let before = std::fs::read_to_string(&file).unwrap().lines().count();
+        let renamed = rows.rename_row(&rpc, &to).await.expect("the rename is written");
+        let lines = std::fs::read_to_string(&file).unwrap().lines().count() - before;
+        let old_free = storage.record_at(&at).await.unwrap();
+        let held_old = rdm_admin::node_rows::write_record(&*storage, &other).await.unwrap().map_err(|h| (h.name, h.by));
+        (dir, root.dir().to_path_buf(), refused, renamed, lines, old_free, held_old)
+    });
+    assert_eq!(refused, Err((at.clone(), rpc.node_id.clone())), "the held pair is refused NameHeld naming its holder");
+    assert_eq!((renamed.name.clone(), renamed.renamed_from.clone()), (to, Some(at)), "the record carries the destination pair and renamed_from");
+    assert_eq!(lines, 1, "the rename is one write of the node's record");
+    assert_eq!(old_free, None, "after the rename no record holds the old pair");
+    assert_eq!(held_old, Ok(()), "the old pair is free for another node at once");
+    let entries: Vec<String> = std::fs::read_dir(&root_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!entries.iter().any(|e| e == "locks"), "the store root holds no locks/ directory: {entries:?}");
+}

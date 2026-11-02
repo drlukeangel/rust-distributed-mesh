@@ -393,6 +393,12 @@ async fn a_customer_changes_topology_storage_without_restarting_members() {
     assert_eq!(subject_after.config, record_config, "mesh2.rpc.1 carries the config its last property record on {TOPOLOGY_STORAGE_TARGET} names");
     let old = store_lines(&file_root);
     history_carried(&old, &store_lines(&target_root));
+    // storage.md §2 step 3, "Switch": the fabric-primary appends the change's `rdm.storage.committed`
+    // event to the new provider's events store; the commit is that event, never a lock file.
+    let events = std::fs::read_to_string(target_root.join(rdm_admin::store_root::EVENTS_FILE)).unwrap_or_default();
+    let committed: Vec<&str> = events.lines().filter(|l| l.contains("\"rdm.storage.committed\"") && l.contains(&build_id)).collect();
+    assert_eq!(committed.len(), 1, "the new provider's events store holds the change's one rdm.storage.committed event: {events}");
+    assert!(!target_root.join("locks").join("commit").exists(), "the commit is no lock file on {TOPOLOGY_STORAGE_TARGET}");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(store_lines(&file_root), old, "the previous provider is written no more");
 

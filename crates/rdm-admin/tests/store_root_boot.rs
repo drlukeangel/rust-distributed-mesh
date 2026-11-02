@@ -239,6 +239,13 @@ fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_befor
     };
     let row = row.expect("the store root holds the row at mesh1.admin.1");
     assert_eq!(row.node_id.to_string(), node_id, "mesh1.admin.1 is held by the Day-0 admin's node.id: {row:?}");
+    // build.md §5.3 ("`FabricIdentity { fabric_id, name }`, written once"), node-identity-and-state.md
+    // ("A current-pair lookup reads the node records by their path and name"): a name is the records',
+    // never a lock. Day 0 leaves no claim of the fabric's name above the roots and no name lock in its root.
+    let entries = |d: &std::path::Path| std::fs::read_dir(d).map(|r| r.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>()).unwrap_or_default();
+    let root_dir = day0.store.join(fabric_id.to_string());
+    assert!(!entries(&day0.store).iter().any(|e| e == "fabrics"), "the store dir holds no fabrics/ name index: {:?}", entries(&day0.store));
+    assert!(!entries(&root_dir.join("locks")).iter().any(|e| e == "name"), "the root holds no locks/name/: {:?}", entries(&root_dir.join("locks")));
     println!("trace_id={}", boot["trace_id"].as_str().unwrap_or(""));
 }
 

@@ -1211,7 +1211,12 @@ mod tests {
         };
         check(&MemoryMeshStorage::default(), "memory").await;
         check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")), &crate::store_log::LogWriter::mint()).await.unwrap(), "file").await;
+        // The name is the records' (node-identity-and-state.md: the fabric-primary checks a mesh's name
+        // against its records), never a lock: the file store's root holds no locks/name/.
+        let names = d.join("root").join("locks").join("name");
+        let held = names.exists();
         let _ = std::fs::remove_dir_all(&d);
+        assert!(!held, "the file store keeps no mesh name lock at {}", names.display());
     }
 
     /// CONTRACT: docs/architecture/storage.md:86
