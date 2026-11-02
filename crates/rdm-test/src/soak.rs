@@ -999,8 +999,8 @@ const LADDER_VERDICT: &str = "rdm.node_admin.mesh.update.via-probe-verdict";
 /// the fabric-primary role: `Backbone::set_fabric_primary(live && holds_fabric_role)`.
 const FABRIC_ROLE: &str = "rdm.mesh.fabric.update.via-status-publisher";
 
-/// The peer mesh the fabric-primary `fp_name` (of `fp_mesh`) holds unheard at `now` (ns), if any,
-/// with why, read from the node-admins' `spans` in start order: the mesh its investigation ladder
+/// The peer mesh the fabric-primary at `fp` with node id `fp_id` (of `fp_mesh`) holds unheard at `now`
+/// (ns), if any, with why, read from the node-admins' `spans` in start order: the mesh its investigation ladder
 /// tracks, marked silent, or decided, until its `heard-again` verdict (mesh-investigation.md; the
 /// Build door refuses every action on a node of such a mesh, `unheard-mesh`, control_plane.rs). A
 /// tracked mesh with no later row past the mark rung was heard again before its first probe: the
@@ -1019,9 +1019,15 @@ const FABRIC_ROLE: &str = "rdm.mesh.fabric.update.via-status-publisher";
 /// ended tenure. At `b6695529` the floors soak's mesh1.admin.1 decided mesh2 `unreachable` during
 /// the cut, lost the role to mesh2.admin.1's takeover (Q89), took it back at the hand-back (Q107)
 /// after the heal, and the driver waited 150 s on that verdict.
-fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, spans: &[Value]) -> Option<String> {
+///
+/// A row is the fabric-primary's whichever way it names it ([`crate::estate::of_node`]): the ladder's
+/// role row and probe verdict name it by its node id (`node`), its tracked and silent marks and its
+/// `heard-again` cancel by its path and name (`node_path`, `node_name`). At `ea5666c8f` the four plan
+/// soaks read the node id alone, never saw the `heard-again` 1 to 3 ms after an `admin-alive` verdict,
+/// and each waited 150 s on that verdict.
+fn held_unheard_by(fp: &PathName, fp_id: &str, fp_mesh: &str, floor: Duration, now: u64, spans: &[Value]) -> Option<String> {
     let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
-    let of_fp = |sp: &&Value| sp["attributes"]["node"] == fp_name;
+    let of_fp = |sp: &&Value| crate::estate::of_node(sp, fp, fp_id);
     let tenure = spans.iter().filter(of_fp).filter(|sp| sp["name"] == FABRIC_ROLE && sp["attributes"]["role"] == "start").map(start).max().unwrap_or(0);
     let mut last: BTreeMap<String, &Value> = BTreeMap::new();
     for sp in spans.iter().filter(of_fp).filter(|sp| start(sp) >= tenure && matches!(sp["name"].as_str(), Some(LADDER_UNHEARD | LADDER_VERDICT))) {
@@ -1038,15 +1044,15 @@ fn held_unheard_by(fp_name: &str, fp_mesh: &str, floor: Duration, now: u64, span
             Some(LADDER_UNHEARD) => {
                 let marked = a["mark"] == true || a["mark"] == "true";
                 if marked {
-                    return Some(format!("{fp_name} holds {mesh} unheard: marked silent at {unheard_ms} ms, no heard-again verdict yet"));
+                    return Some(format!("{fp_id} holds {mesh} unheard: marked silent at {unheard_ms} ms, no heard-again verdict yet"));
                 }
                 if age < floor + Duration::from_secs(2) {
-                    return Some(format!("{fp_name} holds {mesh} unheard: tracked at {unheard_ms} ms {} ms ago, the mark rung not yet passed", age.as_millis()));
+                    return Some(format!("{fp_id} holds {mesh} unheard: tracked at {unheard_ms} ms {} ms ago, the mark rung not yet passed", age.as_millis()));
                 }
             }
             Some(LADDER_VERDICT) => {
                 if a["outcome"] != "heard-again" {
-                    return Some(format!("{fp_name} holds {mesh} unheard: the investigation's verdict is {} at {unheard_ms} ms, no heard-again verdict yet", a["outcome"]));
+                    return Some(format!("{fp_id} holds {mesh} unheard: the investigation's verdict is {} at {unheard_ms} ms, no heard-again verdict yet", a["outcome"]));
                 }
             }
             _ => {}
@@ -1162,7 +1168,7 @@ impl Driver {
     /// this is `None`.
     fn held_unheard(&mut self, nodes: &[Value]) -> Option<String> {
         let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true && n["status"] == "ready")?;
-        held_unheard_by(&s(&fp["node_id"]), &s(&fp["mesh"]), self.cfg.floor, now_ns(), self.ladder.poll())
+        held_unheard_by(&location(fp), &s(&fp["node_id"]), &s(&fp["mesh"]), self.cfg.floor, now_ns(), self.ladder.poll())
     }
 
     /// What a panicking run has done so far; read it after a join error.
@@ -2488,7 +2494,7 @@ mod tests {
     /// ended tenure, which no `heard-again` can follow.
     #[test]
     fn a_verdict_of_an_ended_fabric_primary_tenure_holds_no_peer_mesh() {
-        let held = |now: u64| held_unheard_by("mesh1.admin.1", "mesh1", FLOOR, now, &floors_rows(now));
+        let held = |now: u64| held_unheard_by(&PathName::new("mesh1.admin", "1").unwrap(), "mesh1.admin.1", "mesh1", FLOOR, now, &floors_rows(now));
         assert!(held(1792619530 * S).is_some_and(|why| why.contains("\"unreachable\" at 10284 ms")), "its own tenure's verdict holds mesh2");
         assert_eq!(held(1792619546 * S), None, "the role handed back, the earlier tenure's verdict holds nothing");
         assert_eq!(held(1792619606 * S), None, "the wedge at at_s 102 acts on mesh2");
@@ -2499,7 +2505,7 @@ mod tests {
     /// `heard-again`.
     #[test]
     fn a_fabric_primary_tenure_holds_what_its_own_ladder_says() {
-        let held = |now: u64| held_unheard_by("mesh2.admin.1", "mesh2", FLOOR, now, &floors_rows(now));
+        let held = |now: u64| held_unheard_by(&PathName::new("mesh2.admin", "1").unwrap(), "mesh2.admin.1", "mesh2", FLOOR, now, &floors_rows(now));
         assert!(held(1792619516 * S).is_some_and(|why| why.contains("marked silent at 12099 ms")), "{:?}", held(1792619516 * S));
         assert!(held(1792619530 * S).is_some_and(|why| why.contains("\"unreachable\" at 20302 ms")), "{:?}", held(1792619530 * S));
         assert_eq!(held(1792619542 * S), None, "heard again");
@@ -2529,9 +2535,42 @@ mod tests {
             .filter(|sp| sp["start_unix_nano"].as_u64().unwrap() <= now)
             .collect()
         };
-        let held = |now: u64| held_unheard_by(m1, "mesh1", FLOOR, now, &rows(now));
+        let held = |now: u64| held_unheard_by(&PathName::new("mesh1.admin", "1").unwrap(), m1, "mesh1", FLOOR, now, &rows(now));
         assert!(held(1792624350 * S).is_some_and(|why| why.contains("\"unreachable\" at 10030 ms")), "{:?}", held(1792624350 * S));
         assert_eq!(held(1792624380 * S), None, "the role taken again, the rows written before hold nothing");
+    }
+
+    /// CONTRACT (mesh-investigation.md step 4: "If the node-admin answers either probe ... stop the
+    /// investigation. Direct backbone receipt from mesh-x at any point cancels the investigation and
+    /// resets the unheard interval"): the fabric-primary's ladder rows are read whichever way a row names
+    /// it, by its node id (`node`: the role row, the probe verdict) or by its path and name (`node_path`,
+    /// `node_name`: the tracked and silent marks, the `heard-again` cancel), as every cell reads an admin's
+    /// spans (`estate::of_node`). The rows are the authority soak's fabric-primary mesh1.admin.1
+    /// (`16spk58tvhsh`) at `ea5666c8f` (seed 1431101, step 5, wedge mesh2.admin.2): its probe 1 found
+    /// mesh2.admin.1 `admin-alive` and mesh2 was heard 1.2 ms after the verdict; read by node id alone,
+    /// the `heard-again` row was not seen and the driver waited 150 s on the `admin-alive` verdict.
+    #[test]
+    fn an_admin_alive_verdict_holds_the_peer_mesh_until_the_heard_again_after_it() {
+        let row = |start: u64, name: &str, attributes: Value| json!({ "name": name, "start_unix_nano": start, "attributes": attributes });
+        let (fp, fp_id) = (PathName::new("mesh1.admin", "1").unwrap(), "16spk58tvhsh");
+        let rows = |now: u64| -> Vec<Value> {
+            vec![
+                row(1793609885200803943, ROLE, json!({ "node": fp_id, "fabric": "8z9gnv4bbyfe", "role": "start" })),
+                row(1793609924787838428, UNHEARD, json!({ "node_path": "mesh1.admin", "node_name": "1", "mesh": "mesh2", "mark": "false", "unheard_ms": "1002" })),
+                row(1793609926787305129, UNHEARD, json!({ "node_path": "mesh1.admin", "node_name": "1", "mesh": "mesh2", "mark": "true", "unheard_ms": "3001" })),
+                row(1793609927281396086, VERDICT, json!({ "node": fp_id, "mesh": "mesh2", "outcome": "admin-alive", "unheard_ms": "2001" })),
+                row(1793609927282567198, VERDICT, json!({ "node_path": "mesh1.admin", "node_name": "1", "mesh": "mesh2", "outcome": "heard-again", "probes": "1", "unheard_ms": "7" })),
+            ]
+            .into_iter()
+            .filter(|sp| sp["start_unix_nano"].as_u64().unwrap() <= now)
+            .collect()
+        };
+        let held = |now: u64| held_unheard_by(&fp, fp_id, "mesh1", FLOOR, now, &rows(now));
+        // Read at each moment: tracked, marked silent, between the verdict and the heard-again, after it,
+        // and at the end of step 5's 150 s wait.
+        let read: Vec<Option<String>> = [1793609925 * S, 1793609927 * S, 1793609927281500000, 1793609928 * S, 1793610050 * S].into_iter().map(held).collect();
+        let says = |i: usize, what: &str| read[i].as_deref().is_some_and(|why| why.contains(what));
+        assert!(says(0, "tracked at 1002 ms") && says(1, "marked silent at 3001 ms") && says(2, "\"admin-alive\" at 2001 ms") && read[3].is_none() && read[4].is_none(), "{read:#?}");
     }
 
     /// The Build as the driver reads it in the floors soak on `b6695529` (seed 1431101, step 33):
