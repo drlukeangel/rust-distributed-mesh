@@ -154,11 +154,15 @@ pub(crate) fn released_by(addr: SocketAddr, transport: SlotTransport, exited_pid
 /// names the `/proc` table or directory that could not be read. A blocking call: run it on the
 /// blocking pool.
 pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> Result<String, String> {
-    let holders = port_holders(addr, transport)?;
+    Ok(holders_in_words(&port_holders(addr, transport)?))
+}
+
+/// `holders`, in words; `no socket` when there are none.
+fn holders_in_words(holders: &[PortHolder]) -> String {
     if holders.is_empty() {
-        return Ok("no socket".to_string());
+        return "no socket".to_string();
     }
-    Ok(holders
+    holders
         .iter()
         .map(|h| {
             format!(
@@ -172,7 +176,7 @@ pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> Result<String,
             )
         })
         .collect::<Vec<_>>()
-        .join("; "))
+        .join("; ")
 }
 
 /// Every socket on `addr`'s port for `transport`, with its holder (see [`port_holder`]).
@@ -316,7 +320,9 @@ mod tests {
     }
 
     /// CONTRACT: a TCP port this process listens on is named as held by this process (listen
-    /// state, our pid); a port nobody holds is "no socket".
+    /// state, our pid); a port nobody holds is "no socket". The free port is read from a table
+    /// that lists no socket on it: a port this process frees in the host's own table is free for
+    /// any other process on the host to bind.
     #[test]
     fn port_holder_names_this_process_for_its_own_listener_and_no_socket_for_a_free_port() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -325,8 +331,12 @@ mod tests {
         assert!(who.contains("listen"), "{who}");
         assert!(who.contains(&format!("pid {} ", std::process::id())), "{who}");
         drop(l);
-        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        assert_eq!(port_holder(free, SlotTransport::Tcp).unwrap(), "no socket");
+        let dir = crate::test_support::tempdir("port-holder-free");
+        let tcp = dir.join("tcp");
+        std::fs::write(&tcp, "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n").unwrap();
+        let free: SocketAddr = "127.0.0.1:4242".parse().unwrap();
+        let holders = port_holders_in(&[tcp.as_path()], std::path::Path::new("/proc"), free).unwrap();
+        assert_eq!(holders_in_words(&holders), "no socket");
     }
 
     /// CONTRACT: a port another live process listens on is released by the exited runtime (its
