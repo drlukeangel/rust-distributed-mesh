@@ -16,11 +16,11 @@
 //!
 //! ```
 //! use rdm_core::filter::{Entity, Filter};
-//! use rdm_core::{NodeKind, PathName};
+//! use rdm_core::PathName;
 //!
-//! // A node's path and name: its mesh, its kind's segment and its ordinal.
-//! let name: PathName = crate::PathName::new("mesh1.rpc", "2").expect("a path and name");
-//! assert_eq!((name.mesh.as_str(), name.kind), ("mesh1", NodeKind::RpcNode));
+//! // A node's path and name: two separate values; neither encodes the node's mesh or kind.
+//! let name = PathName::new("mesh1.rpc", "2").expect("a path and name");
+//! assert_eq!((name.path.as_str(), name.name.as_str()), ("mesh1.rpc", "2"));
 //!
 //! // `node.get` of mesh1's ready rpc nodes: AND across pairs, any-of within a pair.
 //! let filter = Filter::new().eq("mesh", ["mesh1"]).eq("kind", ["rpc"]).eq("status", ["ready"]);
