@@ -299,7 +299,8 @@ store root; Rafka binds it to its `<system_org>.ops.meshes`).
 
 - **Its lifecycle states and who declares each are defined only in [States](lifecycles/states.md#states).** Each status has a virtual topic, so "which meshes are ready" is one filtered read.
 
-The row is `MeshRecord` (`rdm-admin/src/storage.rs`: `mesh_id`, `name`, `dead`); `Node.mesh_id`
+The row is `MeshRecord` (`rdm-admin/src/storage.rs`: `mesh_id`, `name`, `state`, one of `pending`,
+`ready`, `deleting` or `deleted`; each move is also an event in the events store); `Node.mesh_id`
 holds the minted `MeshId`. The mesh's channel is derived from its MeshId and its status is its
 mesh-primary's `MeshStatus`. Who is primary in the mesh is the [election](fabric-node-lifecycle-elections.md)'s
 result; the mesh-primary records it as `is_primary` on each node's row and `is_fabric_primary` on its
@@ -351,7 +352,8 @@ node in one mesh is a fabric of one mesh.
   [fabric.create](lifecycles/fabric-create.md).
 - **It is written at Day 0.** The fabric-primary writes the
   fabric's row to the fabric store at Day 0. See [States](lifecycles/states.md#states). The identity
-  is never written again; the record is rewritten whole with each fabric event, by the fabric-primary.
+  is never written again; the record holds one `state` (`pending` or `ready`), rewritten whole by the
+  fabric-primary, and each move is an event in the events store.
 - **Every node holds it through gossip.** The fabric row lives in `topology-nodes` (§2.6), filled from gossip only;
   no node hydrates it from the broker. node-admin's spawn records (`spawned_meta`) carry the fabric each spawned node
   belongs to, as they carry its mesh.

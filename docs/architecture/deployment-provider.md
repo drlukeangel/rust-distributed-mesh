@@ -278,7 +278,7 @@ A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop
 
 ## 4. Storage policy and the data dir
 
-A node's storage and placement are typed properties of its create spec (`storage: StorageMeta`, `placement: PlacementMeta`; [build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)); `config` is the application's map, which RDM never reads. `Tag` is an extrinsic annotation with no execution semantics. The pipeline interprets the storage and placement and resolves concrete storage actions against exact locators; the provider interprets neither.
+A node's storage is a typed property of its Nodes schema (`storage_persistence`, its type's when the node states none; [build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)); `config` is the application's map, which RDM never reads. `Tag` is an extrinsic annotation with no execution semantics. The pipeline interprets the storage and resolves concrete storage actions against exact locators; the provider interprets neither.
 
 Persistence belongs to the logical `path.name`, not its incarnation: Ephemeral storage is fresh for a new node; Persistent storage survives stop and start, and a new node created over an inherited data dir keeps it. Delete releases no storage; `Preserve` issues no release action.
 
@@ -287,7 +287,7 @@ Persistence belongs to the logical `path.name`, not its incarnation: Ephemeral s
 - **Gone.** The inherited directory itself is absent (`NotFound` on the directory). When it stays absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2, to ride out a remount), the mesh-primary records `data-dir-lost { path, since }` on the exited birth and the same recovery creates the node at the same `path.name` over a fresh `data_dir` beside the old path with a newly minted endpoint key (the old key is never re-minted: the key belongs to the data dir), and `pre_node_ready` runs with `inherited = false` (`RDM_INHERITED_DATA_DIR=0`; the application resyncs).
 - **Broken.** The directory exists but `node-key` is missing, unreadable or corrupt. `PrepareStorage` fails by name without minting a key, records `data-dir-unreadable { path, cause }` on the exited birth, and the mesh-primary holds the recovery (not due while the fact stands) until the key reads again, then proceeds with `inherited = true`.
 
-RDM deletes nothing on disk, ever. Rafka's per-kind defaults (broker and node-admin Persistent, gateway and compute Ephemeral) belong to Rafka's ingress adapter; the three-state `StorageMeta` contract is RDM law. Normalization happens before Build acceptance; an accepted Build carries explicit per-path config, and neither pipeline nor provider applies hidden defaults.
+RDM deletes nothing on disk, ever. Rafka's per-kind defaults (broker and node-admin Persistent, gateway and compute Ephemeral) belong to Rafka's ingress adapter; the three-state `StoragePersistence` contract is RDM law. Normalization happens before Build acceptance; an accepted Build carries explicit per-path config, and neither pipeline nor provider applies hidden defaults.
 
 ## 5. What the provider never does
 

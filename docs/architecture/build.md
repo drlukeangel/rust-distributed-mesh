@@ -85,7 +85,7 @@ locality may change execution location, never topology or the election.
 
 RDM may carry an opaque or typed node class required by generic algorithms, but MUST NOT
 require a closed Rafka Broker/Gateway/Compute taxonomy as its generic abstraction. Rafka
-owns its role vocabulary and ingress policy. Generic `StorageMeta` validity and pipeline
+owns its role vocabulary and ingress policy. Generic `StoragePersistence` validity and pipeline
 interpretation remain RDM-owned; `default_for(RafkaRole)` and product storage-default choices
 belong downstream. This is an embedding requirement; it is not a new wire schema.
 
@@ -400,6 +400,8 @@ What happened while executing a Build is also the events store's: one append-onl
 | `rdm.build.ended` | the fabric-primary | none | `build_id`, `state` (`complete` or `failed { step, reason, code }`) |
 | `rdm.node.investigated` | the primary above the node | node.id | `incarnation`, `path`, `name`, `verdict`, `next` |
 | `rdm.storage.started`, `rdm.storage.committed`, `rdm.storage.ended` | the fabric-primary | none | `change_id`, `topology_storage_provider`, and for the ending its `state` |
+| `rdm.mesh.pending`, `rdm.mesh.ready`, `rdm.mesh.deleting`, `rdm.mesh.deleted` | the mesh's mesh-primary (the fabric-primary while the mesh has none) | none | `mesh_id`, `mesh` |
+| `rdm.fabric.pending`, `rdm.fabric.ready` | the fabric-primary | none | `fabric_id` |
 
 The store answers three reads: by event.id, the events of one Build (by `data.build_id`, in event.id order) and the events of one node (by `subject`, in event.id order).
 

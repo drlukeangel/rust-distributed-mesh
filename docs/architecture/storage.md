@@ -26,7 +26,7 @@ The two columns are two questions. Ephemeral is about births: the node's storage
 to the next one. The disposition is about storage that did survive, once the node is gone, and only
 exists for storage that was kept. Ephemeral is therefore not a disposition, and the three states are
 the three that mean something ([deployment-provider.md §4](deployment-provider.md): "the three-state
-`StorageMeta` contract is RDM law").
+`StoragePersistence` contract is RDM law").
 
 Rules:
 
