@@ -2,6 +2,8 @@
 
 ## i150 dependency — node-owned properties (2026-10-31)
 
+### i150 e6: Rafka on the RDM tip (after i151; the i141 lead, in rafka-v2): two stories, [i150 PRD e6](i150-node-writes-lifecyle-updates.md) — Rafka stays pinned at `21272b3db` until i151's last landing, then moves once
+
 ### i151 (queued: starts after i150 lands) — one `Resend` for every Node RPC call, `on_node_investigated`
 
 PRD: [i151-resend-and-call-failed.md](i151-resend-and-call-failed.md) (approved by Luke 2026-11-01; cut to five stories on Q322, only what the rulings say). Ruled Q311 to Q316 (Luke, 2026-11-01: one `Resend` the caller owns, attempts per resolved birth for a primary-addressed call, `on_call_failed` at the caller and `on_node_investigated` at the primary, no application exception in RDM). Nothing is broken today; built after i150 lands. Proposal: [151-consolidate-event-callers-add-investigation-hook.md](proposal/151-consolidate-event-callers-add-investigation-hook.md). No i151 code in i150.
