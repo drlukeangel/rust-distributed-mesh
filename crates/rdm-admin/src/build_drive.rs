@@ -409,6 +409,10 @@ pub struct Drive {
     /// fabric run they were sent in (`BuildProjection::opened`): done in that run only, as a reported
     /// fabric-lane run's are ([`left`]); a later run (a recovery of the same Build) plans from the world.
     section_done: Mutex<HashSet<(u32, rdm_core::OperationId)>>,
+    /// The duplicate applies a plan of this drive recognized ([`crate::build::BuildPlan::already_applied`]),
+    /// each by the attempt it was planned in and its node: recorded once per attempt ([`left`]), never
+    /// at each planning pass.
+    repeats_recorded: Mutex<HashSet<(u32, crate::model::NodeId)>>,
 }
 
 /// Replay identity retains each operation field without string encoding or parsing.
@@ -435,7 +439,7 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), created: Mutex::new(Default::default()), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), recorded: Mutex::new(None), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), created: Mutex::new(Default::default()), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()), repeats_recorded: Mutex::new(HashSet::new()) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
@@ -1062,6 +1066,14 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     let atlas = drive.atlas.lock().unwrap().clone();
     let created = drive.created.lock().unwrap().clone();
     let plan = crate::accepted::plan_for_build_created(p, t, drive.recorded.lock().unwrap().as_ref(), atlas.as_ref(), &created);
+    // The duplicate apply the plan recognized, once per attempt (i150 § OTLP span-assertion bar): the
+    // node's own record holds this Build's entry application, and its entry is not planned again.
+    for (node_id, path) in &plan.already_applied {
+        if drive.repeats_recorded.lock().unwrap().insert((p.attempt, node_id.clone())) {
+            tracing::info_span!("rdm.node.record.update.via-already-applied", node_id = %node_id, build_id = %p.build_id, attempt = p.attempt, entry_path = %path.path, entry_name = %path.name, recognized_by = rdm_transport::service_instance_id().unwrap_or_default(), outcome = "already-applied", "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the node's property record holds this Build's application: its entry is not planned again"));
+        }
+    }
     let sections: HashSet<rdm_core::OperationId> = drive.section_done.lock().unwrap().iter().filter(|(run, _)| *run == p.opened).map(|(_, key)| key.clone()).collect();
     plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a)) && !sections.contains(&op.key())).collect()
 }

@@ -647,6 +647,12 @@ pub struct ExitedBirth {
 pub struct BuildPlan {
     /// The operations, in execution order.
     pub operations: Vec<BuildOperation>,
+    /// The nodes, with their entry's path, whose own property record holds this Build's application
+    /// of their entry while their config or tags differ since: the duplicate apply this plan
+    /// recognized and does not plan (node-config-update.md "Build application"). Planning output only,
+    /// never on the wire; its drive records each once per attempt.
+    #[serde(skip)]
+    pub already_applied: Vec<(NodeId, PathName)>,
 }
 
 /// A create specification inconsistent with its indexed location or containing mesh.

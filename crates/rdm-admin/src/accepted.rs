@@ -1092,7 +1092,15 @@ pub(crate) fn replacement_pins(replacements: &[BuildOperation], pinned: &[(PathN
 /// Q305). A write the node or a caller makes after it stands until the next Build. A path `planned` creates, or whose executable the row does not record, is the create's or
 /// the replacement's, whose claim writes its properties. A node with no property record yet has none
 /// ([`recorded_executables`]): its entry's are owed as any differing ones are.
+#[cfg(test)]
 fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation]) -> Vec<BuildOperation> {
+    properties_recognizing(build_id, topology, recorded, steps, planned, &mut Vec::new())
+}
+
+/// [`properties_owed`], each node whose record holds the Build's application of its entry while what
+/// differs since is the node's or a caller's later write added to `already_applied` with its path:
+/// the duplicate apply recognized, not planned ([`crate::build::BuildPlan::already_applied`]).
+fn properties_recognizing(build_id: &crate::build::BuildId, topology: &FabricTopology, recorded: &Recorded, steps: &[crate::build_state::BuildStepReceipt], planned: &[BuildOperation], already_applied: &mut Vec<(NodeId, PathName)>) -> Vec<BuildOperation> {
     let receipted = |operation: &rdm_core::OperationId, step: &str| steps.iter().any(|r| r.operation == *operation && r.step == step && r.outcome == crate::build_state::StepOutcome::Complete);
     // The node this Build's create at `path` minted (its AllocateIdentity receipt's output).
     let minted = |path: &PathName| {
@@ -1126,6 +1134,11 @@ fn properties_owed(build_id: &crate::build::BuildId, topology: &FabricTopology, 
             continue;
         }
         let applied = row.applied.contains(&rdm_core::properties::PropertyApplication::entry(build_id, path));
+        if applied && (row.config.as_ref().is_some_and(|c| *c != spec.config) || row.tags.as_ref().is_some_and(|t| *t != spec.tags)) {
+            // The duplicate apply recognized as this Build's plan is read: the node's own record holds
+            // its entry's application, and what differs since is the node's or a caller's later write.
+            already_applied.push((row.node_id.clone(), path.clone()));
+        }
         let config = (!applied && row.config.as_ref().is_some_and(|c| *c != spec.config)) || row.storage_persistence.is_some_and(|s| s != spec.storage_persistence) || row.placement.is_some_and(|p| p != spec.placement);
         let mut owed = Vec::new();
         if config {
@@ -1432,7 +1445,7 @@ fn plan_with(
         if !progress.finished {
             ops.push(BuildOperation::TerminateNode { kind: *kind, mesh: mesh.clone(), node: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() });
         }
-        return BuildPlan { operations: ops };
+        return BuildPlan { operations: ops, already_applied: Vec::new() };
     }
     // A standalone connections delete or stop is its one operation and nothing else: the topology is unchanged,
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
@@ -1472,7 +1485,7 @@ fn plan_with(
                 _ => BuildOperation::StopNode { kind: *kind, mesh: mesh.clone(), node, node_id, from_incarnation },
             });
         }
-        return BuildPlan { operations: ops };
+        return BuildPlan { operations: ops, already_applied: Vec::new() };
     }
     // A recovery is its two operations of the exited birth, in order (node-recovery.md "Steps"):
     // node.delete of the exited instance, then node.create at the same path and name over its data dir,
@@ -1490,7 +1503,7 @@ fn plan_with(
         if done < RecoveryProgress::Recovered {
             ops.push(BuildOperation::CreateNode { kind: *kind, mesh: mesh.clone(), node: path.clone(), over: Some(exited), executable: None, entry: None });
         }
-        return BuildPlan { operations: ops };
+        return BuildPlan { operations: ops, already_applied: Vec::new() };
     }
     // Steps are planned in order, each its op's own operation, until the receipts say each is done.
     // The topology is unchanged, the generic loop plans nothing beside them, and no other member is
@@ -1507,7 +1520,7 @@ fn plan_with(
             }
             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-unknown-node", reason = %e).in_scope(|| tracing::info!("the Build's steps name a node no step can act on: nothing is planned")),
         }
-        return BuildPlan { operations: ops };
+        return BuildPlan { operations: ops, already_applied: Vec::new() };
     }
     // fabric.delete (lifecycles/fabric-delete.md): run mesh.delete on each mesh leaf-inward (every
     // other mesh in name order first, the fabric-primary's own mesh last), run node.delete of each
@@ -1580,7 +1593,7 @@ fn plan_with(
         if !steps.iter().any(|r| r.operation == del_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete) {
             ops.push(del_op);
         }
-        return BuildPlan { operations: ops };
+        return BuildPlan { operations: ops, already_applied: Vec::new() };
     }
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
     // A replacing attempt (no action) owes its replacements after the topology's creates; a path whose
@@ -1588,6 +1601,7 @@ fn plan_with(
     // replacement, over that predecessor's data dir, never by the generic create below. Every create
     // launches the path's entry's executable.
     let replacements = replacements.filter(|_| action.is_none());
+    let mut already_applied = Vec::new();
     let creates_owed = replacements.map(|(_, recorded, steps)| replacement_creates_owed(topology, steps, recorded)).unwrap_or_default();
     for (name, m) in &topology.meshes {
         if !mesh_exists(name) {
@@ -1619,7 +1633,7 @@ fn plan_with(
     }
     if let Some((build_id, recorded, steps)) = replacements {
         ops.extend(replacements_owed(topology, observed, recorded, steps));
-        let applied = properties_owed(build_id, topology, recorded, steps, &ops);
+        let applied = properties_recognizing(build_id, topology, recorded, steps, &ops, &mut already_applied);
         ops.extend(applied);
     }
     // A live or stopped node of a kept mesh that the topology no longer names is deleted
@@ -1684,7 +1698,7 @@ fn plan_with(
             ops.push(BuildOperation::FinishStorage { change: change.clone() });
         }
     }
-    BuildPlan { operations: ops }
+    BuildPlan { operations: ops, already_applied }
 }
 
 /// The Fabric identity as this admin holds it: the identity row in `fabric.storage`, or, while the
