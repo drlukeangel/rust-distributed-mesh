@@ -51,6 +51,8 @@ pending and state-sync): "no seat move before RFT".**
 
 # R-BI1 — a node joining or leaving is a topology change and mints its own Build; workflows that leave the topology unchanged are attempts of the accepted Build (Luke 2026-10-12)
 
+**Superseded in part by i152 (Q342), 2026-11-02:** the first bullet stands (a node joining or leaving is its own Build); the second (stop, start and recovery as attempts of the accepted Build) goes: they are node commands and the primary's own workflow, never part of a Build.
+
 **Ruling (Luke 2026-10-12, on build.md:156 "every workflow gets its own build_id" vs :169/:279 "never mint a Build for restart, authority
 movement or drift against unchanged topology": "a node leaving is a topology change").**
 - Its own Build (its own build_id; `Fabric.build_id` moves when it is accepted):
