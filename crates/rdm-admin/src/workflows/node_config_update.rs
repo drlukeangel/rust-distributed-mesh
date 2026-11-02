@@ -41,8 +41,8 @@ pub(crate) mod tests {
                 reason: "simulated disk refusal".into(),
             })
         }
-        async fn node_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.0.node_at(name).await
+        async fn records_at(&self, name: &PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.records_at(name).await
         }
     }
 

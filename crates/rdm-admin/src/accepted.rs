@@ -1733,7 +1733,7 @@ impl AcceptedStore {
     /// Build. Fixtures: what a Day 0 plus one converged Build leaves behind.
     pub async fn seeded(builds: &dyn BuildStateAdapter, fabric_id: crate::model::FabricId, topology: FabricTopology, me: &rdm_core::framing::Birth, me_mesh: &str) -> Result<Arc<Self>, BuildStateError> {
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
-        crate::fabric_storage::claim_identity(&*storage, &FabricIdentity { fabric_id, name: topology.fabric.clone() })
+        crate::fabric_storage::write_identity(&*storage, &FabricIdentity { fabric_id, name: topology.fabric.clone() })
             .await.map_err(|e| BuildStateError::Io(e.to_string()))?
             .map_err(|held| BuildStateError::Io(held.to_string()))?;
         let store = Arc::new(Self::new(storage, me.node_id.as_str()));

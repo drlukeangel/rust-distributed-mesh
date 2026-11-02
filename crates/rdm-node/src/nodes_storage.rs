@@ -411,45 +411,9 @@ pub trait NodeRowsStorage: Send + Sync {
     /// The record of `node_id`: a point read of its key, a `Withdrawn` one included; `None` when none
     /// was ever written.
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
-    /// The record that holds `name` ([`holds_its_name`]): the one live record standing at that path
-    /// and name, read from the records (node-identity-and-state.md: "A current-pair lookup reads the
-    /// node records by their path and name"). `None` when none does (a `Deleted` record frees its
-    /// pair); two live records at one pair are refused by name, never answered as either.
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
-}
-
-/// Whether `row` holds its path and name: it is neither `Deleted` (a delete frees the pair,
-/// node-delete.md) nor `Withdrawn` (a create withdrawn before its node ran).
-pub fn holds_its_name(row: &NodeRow) -> bool {
-    !matches!(row.status, crate::model::NodeStatus::Deleted | crate::model::NodeStatus::Withdrawn)
-}
-
-/// The births re-created at their path and name among `records`: each predecessor a record names, with
-/// the node that names it (the re-created birth).
-pub fn re_created(records: &[NodeRow]) -> std::collections::HashMap<BirthRef, NodeId> {
-    records.iter().filter_map(|r| r.predecessor.clone().map(|p| (p, r.node_id.clone()))).collect()
-}
-
-/// The node that re-created `row`'s node, when `row`'s version was written by its own birth and a record
-/// of `re_created` names that birth its predecessor (Q109, build.md: a deleted birth's writes every reader
-/// refuses): that version is not the node's record.
-pub fn superseded<'a>(row: &NodeRow, re_created: &'a std::collections::HashMap<BirthRef, NodeId>) -> Option<&'a NodeId> {
-    row.writer.as_ref().filter(|w| w.node_id == row.node_id).and_then(|w| re_created.get(w))
-}
-
-/// The one record of `rows` that holds `name`, folded as every reader folds them: a version a
-/// re-created birth's own birth wrote ([`superseded`]) is not a record, and a record holds its name
-/// while [`holds_its_name`]. Two that hold it are refused by name (`file` the store they were read
-/// from), never answered as either.
-pub fn record_holding(rows: impl IntoIterator<Item = NodeRow>, name: &PathName, file: &str) -> Result<Option<NodeRow>, StorageError> {
-    let at: Vec<NodeRow> = rows.into_iter().filter(|r| r.name == *name).collect();
-    let re_created = re_created(&at);
-    let mut holding = at.into_iter().filter(|r| holds_its_name(r) && superseded(r, &re_created).is_none());
-    let first = holding.next();
-    if let (Some(a), Some(b)) = (&first, holding.next()) {
-        return Err(StorageError::Unrecognised { file: file.to_string(), reason: format!("two live records hold path {:?}, name {:?}: nodes {} and {}", name.path, name.name, a.node_id, b.node_id) });
-    }
-    Ok(first)
+    /// Every node's latest record standing at the path and name `name`, in any status: persistence
+    /// only, the reader folds them ([`crate::pair_record::resolve`], Q109).
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError>;
 }
 
 /// A node's record in `nodes.jsonl`, at its node id.
@@ -500,9 +464,9 @@ impl NodeRowsStorage for FileNodeRows {
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
         self.records.latest(RECORD_KIND, node_id.as_str()).await?.map(|l| l.decode(self.records.path())).transpose()
     }
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
         let rows = self.records.latest_of(RECORD_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect::<Result<Vec<NodeRow>, _>>()?;
-        record_holding(rows, name, &self.records.path().display().to_string())
+        Ok(rows.into_iter().filter(|r| r.name == *name).collect())
     }
 }
 
@@ -533,8 +497,8 @@ impl NodeRowsStorage for FileNodeRowsOnFirstRead {
     async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
         self.rows().await?.node(node_id).await
     }
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        self.rows().await?.node_at(name).await
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
+        self.rows().await?.records_at(name).await
     }
 }
 
@@ -563,8 +527,8 @@ pub trait NodesStorage: Send + Sync {
     /// The node's own part of the record of `node_id`, its latest line; `None` when the node has
     /// written none.
     async fn properties(&self, node_id: &NodeId) -> Result<Option<crate::node_records::NodeProperties>, StorageError>;
-    /// The record that holds `name`, read from the records ([`NodeRowsStorage::node_at`]).
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError>;
+    /// Every node's latest record standing at `name`, in any status ([`NodeRowsStorage::records_at`]).
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError>;
 }
 
 /// A nodes store held in memory.
@@ -605,8 +569,8 @@ impl NodesStorage for MemoryNodesStorage {
     async fn properties(&self, node_id: &NodeId) -> Result<Option<crate::node_records::NodeProperties>, StorageError> {
         Ok(self.properties.lock().unwrap().get(node_id).cloned())
     }
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        record_holding(self.records.lock().unwrap().values().cloned(), name, "nodes.storage (memory)")
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
+        Ok(self.records.lock().unwrap().values().filter(|r| r.name == *name).cloned().collect())
     }
 }
 
@@ -687,8 +651,8 @@ impl NodesStorage for FileNodesStorage {
     async fn properties(&self, node_id: &NodeId) -> Result<Option<crate::node_records::NodeProperties>, StorageError> {
         self.records.latest(PROPERTIES_KIND, node_id.as_str()).await?.map(|l| l.decode(self.records.path())).transpose()
     }
-    async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
-        NodeRowsStorage::node_at(&self.rows, name).await
+    async fn records_at(&self, name: &PathName) -> Result<Vec<NodeRow>, StorageError> {
+        NodeRowsStorage::records_at(&self.rows, name).await
     }
 }
 
@@ -715,11 +679,12 @@ impl From<PathName> for IdOrName {
 }
 
 impl IdOrName {
-    /// The row `rows` holds at this id or name: [`NodeRowsStorage::node`] or [`NodeRowsStorage::node_at`].
+    /// The row `rows` holds at this id or name: [`NodeRowsStorage::node`], or the records at the name
+    /// folded by [`crate::pair_record::resolve`].
     pub async fn read(&self, rows: &dyn NodeRowsStorage) -> Result<Option<NodeRow>, StorageError> {
         match self {
             Self::Id(id) => rows.node(id).await,
-            Self::Name(name) => rows.node_at(name).await,
+            Self::Name(name) => crate::pair_record::resolve(rows.records_at(name).await?, name),
         }
     }
 }

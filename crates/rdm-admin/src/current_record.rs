@@ -82,7 +82,7 @@ impl CurrentRecords<'_> {
     /// The current-pair lookup: the live record standing at `name`, read from the node records by their
     /// path and name (node-identity-and-state.md §2). `Ok(None)` when none does.
     pub async fn row_at(&self, name: &PathName) -> Result<Option<NodeRow>, String> {
-        let Some(at) = self.nodes.node_at(name).await.map_err(|e| format!("the record at path {:?}, name {:?} could not be read: {e}", name.path, name.name))? else {
+        let Some(at) = crate::node_rows::record_at(self.nodes, name).await.map_err(|e| format!("the record at path {:?}, name {:?} could not be read: {e}", name.path, name.name))? else {
             return Ok(None);
         };
         Ok(self.row(&at.node_id).await?.filter(|r| r.name == *name))

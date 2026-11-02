@@ -304,8 +304,8 @@ impl NodesStorage for LostAcknowledgement {
     async fn put_node(&self, row: &NodeRow) -> Answer<()> {
         self.records.put_node(row).await
     }
-    async fn node_at(&self, name: &PathName) -> Answer<Option<NodeRow>> {
-        self.records.node_at(name).await
+    async fn records_at(&self, name: &PathName) -> Answer<Vec<NodeRow>> {
+        self.records.records_at(name).await
     }
 
     async fn put_properties(

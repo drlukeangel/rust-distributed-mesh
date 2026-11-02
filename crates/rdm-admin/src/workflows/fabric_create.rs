@@ -6,4 +6,4 @@
 
 pub use crate::fabric_status::FabricStates;
 pub use crate::fabric_state::FabricState;
-pub use crate::fabric_storage::{FabricClaim, FabricIdentity, FabricStorage, MemoryFabricStorage};
+pub use crate::fabric_storage::{FabricWritten, FabricIdentity, FabricStorage, MemoryFabricStorage};

@@ -98,8 +98,8 @@ impl NodesStorage for Rows {
     async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node(row).await
     }
-    async fn node_at(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
-        self.inner.node_at(name).await
+    async fn records_at(&self, name: &rdm_admin::model::PathName) -> Result<Vec<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.records_at(name).await
     }
 }
 
@@ -785,8 +785,8 @@ impl rdm_admin::storage::NodesStorage for RefusingRecords {
     async fn put_node(&self, row: &rdm_admin::storage::NodeRow) -> Answer<()> {
         self.0.put_node(row).await
     }
-    async fn node_at(&self, name: &PathName) -> Answer<Option<rdm_admin::storage::NodeRow>> {
-        self.0.node_at(name).await
+    async fn records_at(&self, name: &PathName) -> Answer<Vec<rdm_admin::storage::NodeRow>> {
+        self.0.records_at(name).await
     }
     async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), rdm_node::storage_error::StorageError> {
         Err(rdm_node::storage_error::StorageError::Io { file: format!("nodes/properties/{}", record.birth.node_id), reason: "disk refused the write".into() })
@@ -2379,7 +2379,7 @@ fn a_replace_successor_takes_its_entrys_properties_keeps_its_later_updates_on_a_
         assert_eq!((succ_row.node_id.clone(), seeded_from), (succ.node.node_id.clone(), Some(pred.node.node_id.clone())), "the claim's admitted provenance names the predecessor");
         let snapshot = succ_row.initial_properties.clone().expect("the claim retains the launch snapshot");
         assert_eq!((&snapshot.config, &snapshot.tags), (&entry_cfg, &labels(&["rabbit", "red"])), "the successor's snapshot is its entry's, never the predecessor's {{zone: a}}");
-        assert_eq!(rig.nodes.node_at(&base_name).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "a current-pair lookup selects the successor's ID");
+        assert_eq!(rig.nodes.record_at(&base_name).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()), "a current-pair lookup selects the successor's ID");
         let retained = rig.nodes.record_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.rpc.2-old");
         assert_eq!((retained.node_id.clone(), retained.inherited_by.clone()), (pred.node.node_id.clone(), Some(succ.node.node_id.clone())));
         assert_eq!(props(&rig, &pred.node.node_id).await, (pred_cfg.clone(), labels(&["rabbit", "red"])), "the predecessor's tags remain in its own record");

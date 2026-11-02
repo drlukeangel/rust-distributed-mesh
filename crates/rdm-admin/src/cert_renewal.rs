@@ -927,8 +927,8 @@ mod tests {
             }
             self.inner.put_node(row).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_at(name).await
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.records_at(name).await
         }
     }
 
@@ -1053,7 +1053,7 @@ mod tests {
         let nodes_store = Arc::new(crate::storage::MemoryNodesStorage::default());
         let fabric_store = Arc::new(crate::fabric_storage::MemoryFabricStorage::default());
         let identity = crate::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
-        crate::fabric_storage::claim_identity(&*fabric_store, &identity).await.unwrap().unwrap();
+        crate::fabric_storage::write_identity(&*fabric_store, &identity).await.unwrap().unwrap();
         let caches = crate::record_cache::Caches::default();
         caches.update_fabric(&*fabric_store, &fabric_id, Some(crate::fabric_storage::FabricRecord::new(identity)), |_| {}).await.unwrap();
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

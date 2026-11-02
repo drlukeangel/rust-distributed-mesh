@@ -195,7 +195,7 @@ async fn admin(root: &std::path::Path, birth: &rdm_core::framing::Birth) -> Admi
         .unwrap();
     // As a started admin: its fabric.storage holds the Fabric record, and it holds no Build yet.
     let storage = Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new());
-    rdm_admin::fabric_storage::claim_identity(&*storage, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
+    rdm_admin::fabric_storage::write_identity(&*storage, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     // Its Build journal as its file backend opens it, on the fabric's store root.
     let scope = rdm_admin::storage_backend::StorageScope { data_dir: rdm_admin::deployment::node_data_dir(root, &birth.node_id), fabric_id: fabric1(), own_mesh: "mesh1".into(), writer: birth.incarnation.clone(), node_id: birth.node_id.clone() };

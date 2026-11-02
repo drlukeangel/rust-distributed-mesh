@@ -32,7 +32,7 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
 /// writer ladder, node-identity-and-state.md §4.3: a mesh row and its members' rows are that mesh's
 /// primary's), and by the fabric-primary for the members of a mesh with no primary, as it writes their
 /// records (R13, `crate::node_rows::writes_for`). A sweep that writes no mesh writes nothing. The first
-/// sweep that writes its own mesh claims the mesh's name ([`crate::storage::claim_mesh`]) and
+/// sweep that writes its own mesh claims the mesh's name ([`crate::storage::write_mesh`]) and
 /// writes the Mesh row (node-identity-and-state.md §2.7): nothing else of the mesh is written until the
 /// claim wins, and a name another mesh's live row holds leaves the mesh's rows unwritten for the tenure,
 /// named. Then each member birth's endpoint, address and the primaries the view holds for it are
@@ -52,12 +52,12 @@ pub(crate) struct MeshRowsWriter {
     /// The claim of the mesh's name this role tenure decided: `None` outside a tenure or before the
     /// store answered it; `Some(Ok)` once it won; `Some(Err)` when it was refused (another mesh's
     /// live row holds the name, or this mesh is Dead): the mesh's rows stay unwritten for the tenure.
-    pub(crate) claim: Option<Result<(), crate::storage::MeshClaimRefused>>,
+    pub(crate) written: Option<Result<(), crate::storage::MeshRefused>>,
 }
 
 impl MeshRowsWriter {
     pub(crate) fn new(me: &str, mesh: &str, mesh_id: MeshId, nodes: Arc<dyn crate::storage::NodesStorage>, meshes: Arc<dyn crate::storage::MeshStorage>, caches: crate::record_cache::Caches) -> Self {
-        Self { me: me.to_string(), mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, claim: None }
+        Self { me: me.to_string(), mesh: mesh.to_string(), mesh_id, nodes, meshes, caches, written: None }
     }
 
     /// One sweep over the births `held` (every birth of the fabric this admin holds, itself
@@ -70,15 +70,15 @@ impl MeshRowsWriter {
     /// primary change.
     pub(crate) async fn sweep(&mut self, held: &[MeshDigest], writes: &std::collections::BTreeSet<String>, deleted: impl Fn(&NodeId) -> bool) -> bool {
         if !writes.contains(&self.mesh) {
-            self.claim = None;
-        } else if self.claim.is_none() {
+            self.written = None;
+        } else if self.written.is_none() {
             // A store that did not answer decides nothing: the next sweep asks again.
-            self.claim = claim_mesh_name(&*self.meshes, &self.caches, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
-            if self.claim.is_none() {
+            self.written = write_mesh_row(&*self.meshes, &self.caches, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
+            if self.written.is_none() {
                 return true;
             }
         }
-        let own = matches!(self.claim, Some(Ok(())));
+        let own = matches!(self.written, Some(Ok(())));
         let mut owed = false;
         // Another mesh whose mesh-primary this admin's view holds is that primary's to write (one writer per
         // record, storage-whole-records.md): the writing set comes from a view that can still show it with
@@ -241,19 +241,19 @@ pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: 
 }
 
 /// mesh.create's claim of the mesh's name at its key (node-identity-and-state.md §2.7)
-/// ([`crate::storage::claim_mesh`]), made by `me`: the
+/// ([`crate::storage::write_mesh`]), made by `me`: the
 /// fabric-primary at CreateMesh, as the writer of a mesh with no primary (R13), the mesh's first
 /// durable write; and the mesh's primary when its role tenure starts, which finds the mesh's own row
 /// (the same MeshId re-claiming, idempotent). The Mesh row written, or this mesh's own row found
 /// standing, or refused by name. One `rdm.node_admin.mesh.create.via-mesh-row` span, `moment`
 /// `claim`. `Err`: the store did not answer, and nothing is decided.
-pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, String> {
+pub(crate) async fn write_mesh_row(meshes: &dyn crate::storage::MeshStorage, caches: &crate::record_cache::Caches, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<Result<crate::storage::MeshWritten, crate::storage::MeshRefused>, String> {
     let span = tracing::info_span!(
         "rdm.node_admin.mesh.create.via-mesh-row",
         node = %me,
         mesh = %mesh,
         mesh_id = %mesh_id,
-        moment = "claim",
+        moment = "write",
         outcome = tracing::field::Empty,
         holder = tracing::field::Empty,
         detail = tracing::field::Empty,
@@ -262,7 +262,7 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, ca
     // The record this writer holds of the mesh (read when it holds none: the claim is its writing's
     // first act), live under its name: the claim writes it whole.
     let _one = caches.meshes.lock(mesh_id).await;
-    let claimed: Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, String> = async {
+    let claimed: Result<Result<crate::storage::MeshWritten, crate::storage::MeshRefused>, String> = async {
         let held = match caches.meshes.get(mesh_id) {
             Some(r) => Some(r),
             None => meshes.mesh(mesh_id).await.map_err(|e| format!("{me}: mesh.storage did not answer the read of {mesh}'s record (mesh {mesh_id}): {e}"))?,
@@ -270,7 +270,7 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, ca
         let mut record = held.clone().unwrap_or_else(|| crate::storage::MeshRecord::new(mesh_id.clone(), mesh));
         record.name = mesh.to_string();
         record.dead = false;
-        let claimed = crate::storage::claim_mesh(&*meshes, held.as_ref(), &record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"))?;
+        let claimed = crate::storage::write_mesh(&*meshes, held.as_ref(), &record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"))?;
         if claimed.is_ok() {
             caches.meshes.hold(mesh_id.clone(), record);
         }
@@ -278,15 +278,15 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, ca
     }
     .await;
     match &claimed {
-        Ok(Ok(crate::storage::MeshClaim::Written)) => {
+        Ok(Ok(crate::storage::MeshWritten::Written)) => {
             span.record("outcome", "row-written");
         }
-        Ok(Ok(crate::storage::MeshClaim::Held)) => {
+        Ok(Ok(crate::storage::MeshWritten::Held)) => {
             span.record("outcome", "row-held-by-mesh");
         }
         Ok(Err(refused)) => {
             span.record("outcome", refused.outcome()).record("detail", refused.to_string().as_str());
-            if let crate::storage::MeshClaimRefused::NameHeld { by, .. } = refused {
+            if let crate::storage::MeshRefused::NameHeld { by, .. } = refused {
                 span.record("holder", tracing::field::display(by));
             }
         }
@@ -332,7 +332,7 @@ pub(crate) fn hold_mesh_id(records: &Records, mesh: &str, mesh_id: &MeshId) {
 /// idempotent. A refused claim fails the operation by name, holding nothing of the mesh: the Build runs
 /// no create of its nodes, so no node row of the mesh is claimed.
 pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<MeshId, CreateMeshError> {
-    match claim_mesh_name(meshes, &records.caches, me, mesh, mesh_id).await {
+    match write_mesh_row(meshes, &records.caches, me, mesh, mesh_id).await {
         Ok(Ok(_)) => {
             // The won claim's id is the mesh's: it replaces any id held for the name before (a
             // removed mesh's), so no launch of this mesh carries another.
@@ -419,26 +419,26 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
 }
 
 /// fabric.create's claim of the fabric's name (node-identity-and-state.md §2.8)
-/// ([`crate::fabric_storage::claim_identity`]): Day 0's first write of
+/// ([`crate::fabric_storage::write_identity`]): Day 0's first write of
 /// the fabric, and the fabric-primary's row writer's before it writes anything else to `fabric/`. One
 /// `rdm.node_admin.fabric.create.via-fabric-row` span, `moment` `claim`, names the outcome
 /// (`row-written`, `row-held-by-fabric`, `name-held` with the holder, `row-refused`).
-pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::FabricStorage, identity: &crate::fabric_storage::FabricIdentity, node_id: &NodeId) -> Result<Result<crate::fabric_storage::FabricClaim, crate::fabric_storage::FabricNameHeld>, String> {
+pub(crate) async fn write_fabric_row(storage: &dyn crate::fabric_storage::FabricStorage, identity: &crate::fabric_storage::FabricIdentity, node_id: &NodeId) -> Result<Result<crate::fabric_storage::FabricWritten, crate::fabric_storage::FabricIdentityHeld>, String> {
     let span = tracing::info_span!(
         "rdm.node_admin.fabric.create.via-fabric-row",
         node_id = %node_id,
         fabric = %identity.name,
         fabric_id = %identity.fabric_id,
-        moment = "claim",
+        moment = "write",
         outcome = tracing::field::Empty,
         holder = tracing::field::Empty,
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let claimed = crate::fabric_storage::claim_identity(&*storage, identity).await.map_err(|e| format!("fabric.storage did not answer the claim of the fabric name {} for Fabric {}: {e}", identity.name, identity.fabric_id));
+    let claimed = crate::fabric_storage::write_identity(&*storage, identity).await.map_err(|e| format!("fabric.storage did not answer the claim of the fabric name {} for Fabric {}: {e}", identity.name, identity.fabric_id));
     match &claimed {
-        Ok(Ok(crate::fabric_storage::FabricClaim::Written)) => span.record("outcome", "row-written"),
-        Ok(Ok(crate::fabric_storage::FabricClaim::Held)) => span.record("outcome", "row-held-by-fabric"),
+        Ok(Ok(crate::fabric_storage::FabricWritten::Written)) => span.record("outcome", "row-written"),
+        Ok(Ok(crate::fabric_storage::FabricWritten::Held)) => span.record("outcome", "row-held-by-fabric"),
         Ok(Err(held)) => span.record("outcome", "name-held").record("holder", tracing::field::display(&held.by)).record("detail", held.to_string().as_str()),
         Err(e) => span.record("outcome", "row-refused").record("detail", e.as_str()),
     };
@@ -461,12 +461,12 @@ pub(crate) struct FabricRowsWriter {
     pub(crate) storage: Arc<dyn crate::fabric_storage::FabricStorage>,
     /// The claim of the fabric's name: `None` before the store answered it; `Some(Ok)` once it won;
     /// `Some(Err)` when another Fabric's identity holds the key (a held identity is never rewritten).
-    pub(crate) claim: Option<Result<(), crate::fabric_storage::FabricNameHeld>>,
+    pub(crate) written: Option<Result<(), crate::fabric_storage::FabricIdentityHeld>>,
 }
 
 impl FabricRowsWriter {
     pub(crate) fn new(me: (NodeId, IncarnationId), identity: crate::fabric_storage::FabricIdentity, storage: Arc<dyn crate::fabric_storage::FabricStorage>) -> Self {
-        Self { me, identity, storage, claim: None }
+        Self { me, identity, storage, written: None }
     }
 
     /// One sweep on the primary records `roles` holds: while the fabric-primary role names this birth, the claim
@@ -476,9 +476,9 @@ impl FabricRowsWriter {
             return;
         }
         let (storage, identity) = (&self.storage, &self.identity);
-        if self.claim.is_none() {
+        if self.written.is_none() {
             // A store that did not answer decides nothing: the next sweep asks again.
-            self.claim = claim_fabric_name(&**storage, identity, &self.me.0).await.ok().map(|c| c.map(|_| ()));
+            self.written = write_fabric_row(&**storage, identity, &self.me.0).await.ok().map(|c| c.map(|_| ()));
         }
     }
 }

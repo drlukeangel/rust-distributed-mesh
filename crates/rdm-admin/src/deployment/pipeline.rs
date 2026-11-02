@@ -212,7 +212,7 @@ impl LeaveStep {
 /// The steps of creating a mesh (`create-mesh:<mesh>`, node-identity-and-state.md §2.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateMeshStep {
-    /// The mesh's name is claimed at its key ([`crate::storage::claim_mesh`]). Receipted only when the claim is
+    /// The mesh's name is claimed at its key ([`crate::storage::write_mesh`]). Receipted only when the claim is
     /// refused: a won claim, or the mesh's own row found standing, ends in `Complete`.
     ClaimMeshName,
     /// The name is claimed and the mesh's id is held for its launches: the operation is done.

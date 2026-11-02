@@ -24,7 +24,7 @@ pub use rdm_core::model::FabricIdentity;
 
 /// What a write of the fabric's identity row did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FabricClaim {
+pub enum FabricWritten {
     /// The identity row was written: the root held none.
     Written,
     /// This Fabric's own identity row stands: nothing is written (Day 0's write met again by the
@@ -35,27 +35,27 @@ pub enum FabricClaim {
 /// The root holds another Fabric's identity row: nothing is written, and a held identity is never
 /// rewritten (a root is one fabric's, `<store_dir>/<fabric_id>/`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FabricNameHeld {
+pub struct FabricIdentityHeld {
     /// The fabric name written.
     pub name: String,
     /// The Fabric whose identity row the root holds.
     pub by: FabricId,
 }
 
-impl std::fmt::Display for FabricNameHeld {
+impl std::fmt::Display for FabricIdentityHeld {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "the fabric store holds the identity row of Fabric {}, so the identity of the fabric {} is not written: a held identity is never rewritten", self.by, self.name)
     }
 }
 
-impl std::error::Error for FabricNameHeld {}
+impl std::error::Error for FabricIdentityHeld {}
 
 /// What a write of `identity` meets in `held`, the identity row the root holds.
-fn claim_fabric_against(held: Option<&FabricIdentity>, identity: &FabricIdentity) -> Result<FabricClaim, FabricNameHeld> {
+fn identity_against(held: Option<&FabricIdentity>, identity: &FabricIdentity) -> Result<FabricWritten, FabricIdentityHeld> {
     match held {
-        None => Ok(FabricClaim::Written),
-        Some(h) if h.fabric_id == identity.fabric_id => Ok(FabricClaim::Held),
-        Some(h) => Err(FabricNameHeld { name: identity.name.clone(), by: h.fabric_id.clone() }),
+        None => Ok(FabricWritten::Written),
+        Some(h) if h.fabric_id == identity.fabric_id => Ok(FabricWritten::Held),
+        Some(h) => Err(FabricIdentityHeld { name: identity.name.clone(), by: h.fabric_id.clone() }),
     }
 }
 
@@ -65,14 +65,14 @@ pub use crate::storage_error::StorageError as FabricStorageError;
 /// Keep `identity` as the Fabric's identity row (node-identity-and-state.md §2.8; build.md §5.3:
 /// "`FabricIdentity { fabric_id, name }`, written once"): the writer reads the row the root holds (Q109:
 /// the storage decides nothing). A root holding none takes the row (`Written`); this Fabric's own row
-/// there writes nothing (`Held`); another Fabric's row: `FabricNameHeld` naming that Fabric, and nothing
+/// there writes nothing (`Held`); another Fabric's row: `FabricIdentityHeld` naming that Fabric, and nothing
 /// is written.
-pub async fn claim_identity(storage: &dyn FabricStorage, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
-    let own = match claim_fabric_against(storage.fabric().await?.map(|r| r.identity()).as_ref(), identity) {
+pub async fn write_identity(storage: &dyn FabricStorage, identity: &FabricIdentity) -> Result<Result<FabricWritten, FabricIdentityHeld>, FabricStorageError> {
+    let own = match identity_against(storage.fabric().await?.map(|r| r.identity()).as_ref(), identity) {
         Ok(c) => c,
         Err(held) => return Ok(Err(held)),
     };
-    if own == FabricClaim::Written {
+    if own == FabricWritten::Written {
         storage.put_fabric(&FabricRecord::new(identity.clone())).await?;
     }
     Ok(Ok(own))
@@ -265,7 +265,7 @@ mod tests {
         let d = tempdir();
         let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::store_log::LogWriter::mint()).await.unwrap();
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
-        assert_eq!(crate::fabric_storage::claim_identity(&s, &fabric).await.unwrap(), Ok(FabricClaim::Written));
+        assert_eq!(crate::fabric_storage::write_identity(&s, &fabric).await.unwrap(), Ok(FabricWritten::Written));
         let mut ready = FabricRecord::new(fabric.clone());
         ready.events.push("ready".into());
         s.put_fabric(&ready).await.unwrap();
@@ -291,9 +291,9 @@ mod tests {
         for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::store_log::LogWriter::mint()).await.unwrap())] {
             let first = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             let other = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
-            assert_eq!(crate::fabric_storage::claim_identity(&*s, &first).await.unwrap(), Ok(FabricClaim::Written));
-            assert_eq!(crate::fabric_storage::claim_identity(&*s, &first).await.unwrap(), Ok(FabricClaim::Held), "the same Fabric claiming again writes nothing");
-            assert_eq!(crate::fabric_storage::claim_identity(&*s, &other).await.unwrap(), Err(FabricNameHeld { name: "fabric1".into(), by: first.fabric_id.clone() }), "another Fabric's claim is refused naming the holder");
+            assert_eq!(crate::fabric_storage::write_identity(&*s, &first).await.unwrap(), Ok(FabricWritten::Written));
+            assert_eq!(crate::fabric_storage::write_identity(&*s, &first).await.unwrap(), Ok(FabricWritten::Held), "the same Fabric claiming again writes nothing");
+            assert_eq!(crate::fabric_storage::write_identity(&*s, &other).await.unwrap(), Err(FabricIdentityHeld { name: "fabric1".into(), by: first.fabric_id.clone() }), "another Fabric's claim is refused naming the holder");
             assert_eq!(s.fabric().await.unwrap().map(|r| r.identity()), Some(first.clone()), "the held identity is never rewritten");
         }
     }
@@ -314,7 +314,7 @@ mod tests {
         for f in [&a, &b] {
             let root = crate::store_root::StoreRoot::open(&store, &f.fabric_id).unwrap();
             let s = FileFabricStorage::open(&root, &crate::store_log::LogWriter::mint()).await.unwrap();
-            assert_eq!(crate::admin::claim_fabric_name(&s, f, &crate::model::NodeId::mint()).await, Ok(Ok(FabricClaim::Written)), "Fabric {} writes its own identity", f.fabric_id);
+            assert_eq!(crate::admin::write_fabric_row(&s, f, &crate::model::NodeId::mint()).await, Ok(Ok(FabricWritten::Written)), "Fabric {} writes its own identity", f.fabric_id);
             assert_eq!(s.fabric().await.unwrap().map(|r| r.identity()), Some(f.clone()), "the root holds its own fabric's identity");
         }
         let mut beside: Vec<String> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();

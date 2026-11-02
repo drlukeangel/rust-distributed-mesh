@@ -610,9 +610,9 @@ macro_rules! nodes_through {
                 let r = self.0.current.read();
                 $nodes(&r.stores().boundaries)?.properties(node_id).await
             }
-            async fn node_at(&self, name: &PathName) -> Result<Option<crate::storage::NodeRow>, StorageError> {
+            async fn records_at(&self, name: &PathName) -> Result<Vec<crate::storage::NodeRow>, StorageError> {
                 let r = self.0.current.read();
-                $nodes(&r.stores().boundaries)?.node_at(name).await
+                $nodes(&r.stores().boundaries)?.records_at(name).await
             }
         }
     };
@@ -998,7 +998,7 @@ mod tests {
         assert_eq!(fabric.fabric().await.unwrap().map(|f| f.name), Some("fabricafter".to_string()), "fabric.storage reads the new provider");
         assert_eq!(meshes.mesh_named("meshafter").await.unwrap(), Some(mesh.clone()), "mesh.storage reads the new provider");
         assert_eq!(nodes.node(&row.node_id).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "nodes.storage reads the new provider");
-        assert_eq!(nodes.node_at(&row.name).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "and the record at its path and name");
+        assert_eq!(crate::node_rows::record_at(&*nodes, &row.name).await.unwrap().map(|r| r.node_id), Some(row.node_id.clone()), "and the record at its path and name");
         assert_eq!(nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "and its runtime rows");
         assert_eq!(builds.read_build(&build.build_id).await.unwrap().build_id, build.build_id, "the Build journal reads the new provider");
         assert!(seen.lock().unwrap().contains(&build.build_id), "the derivation installed before the change runs over the new journal's facts");

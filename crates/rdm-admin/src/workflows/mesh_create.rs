@@ -111,7 +111,7 @@ mod tests {
             .await
             .unwrap();
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
-        crate::fabric_storage::claim_identity(
+        crate::fabric_storage::write_identity(
             &*storage,
             &crate::fabric_storage::FabricIdentity {
                 fabric_id: fabric_id.clone(),
@@ -361,7 +361,7 @@ mod tests {
         // primary, after which mesh2.admin.1 writes mesh2's node rows.
         let meshes_held = MemoryMeshStorage::default();
         let other_id = MeshId::mint();
-        crate::storage::claim_mesh(
+        crate::storage::write_mesh(
             &meshes_held,
             None,
             &MeshRecord::new(other_id.clone(), "mesh2"),
@@ -412,7 +412,7 @@ mod tests {
         .await
         .expect("free mesh name is claimed");
         // Mesh-primary (`mesh2.admin.1`) re-claiming the same MeshId at role take is idempotent (`Held`).
-        let primary_claim = crate::admin::claim_mesh_name(
+        let primary_claim = crate::admin::write_mesh_row(
             &meshes_free,
             &records.caches,
             "mesh2.admin.1",
@@ -422,7 +422,7 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(primary_claim, crate::storage::MeshClaim::Held);
+        assert_eq!(primary_claim, crate::storage::MeshWritten::Held);
 
         // Node rows (line 24): written by the fabric-primary for mesh2.admin.1 while mesh2 has no
         // primary, then by mesh2.admin.1 for mesh2.rpc.1.
@@ -750,7 +750,7 @@ mod tests {
             crate::election::ElectionLog::new(m2_node.node_id.clone()).observe(&*top.read().await);
             let meshes_store = MemoryMeshStorage::default();
             let records = Records::default();
-            let claim_res = crate::admin::claim_mesh_name(
+            let claim_res = crate::admin::write_mesh_row(
                 &meshes_store,
                 &records.caches,
                 "mesh2.admin.1",
@@ -760,7 +760,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-            assert_eq!(claim_res, crate::storage::MeshClaim::Written);
+            assert_eq!(claim_res, crate::storage::MeshWritten::Written);
 
             let _ = router.shutdown().await;
             fp_ep.close().await;

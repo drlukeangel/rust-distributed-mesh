@@ -460,7 +460,7 @@ impl AdminRunner {
 
     /// Resolve a not-yet-pinned location through the live record standing there, then use ID.
     async fn current_node_at(&self, location: &PathName) -> Result<Option<Node>, String> {
-        let Some(node_id) = self.nodes_storage.node_at(location).await
+        let Some(node_id) = crate::node_rows::record_at(&*self.nodes_storage, location).await
             .map_err(|error| format!("path {:?}, name {:?}: the record there could not be read: {error}", location.path, location.name))?.map(|r| r.node_id) else { return Ok(None) };
         if let Some(node) = self.topology.read().await.own(&node_id).cloned() { return Ok(Some(node)); }
         // The record at `location` is this node's: the cached runtime's record at its current pair.

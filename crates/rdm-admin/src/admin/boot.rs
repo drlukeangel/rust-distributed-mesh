@@ -1312,14 +1312,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         };
                                         // The fabric-primary claims the Fabric's identity at Day 0 (node-identity-and-state.md
                                         // §2.8; fabric-create.md).
-                                        if let Err(held) = claim_fabric_name(&*fabric_storage, &fabric_identity, &node_id).await? {
+                                        if let Err(held) = write_fabric_row(&*fabric_storage, &fabric_identity, &node_id).await? {
                                             return Err(format!("refusing to start: this admin is configured for Fabric {}: {held}", cfg.fabric_id));
                                         }
                                         // At Day 0 the fabric-primary is its mesh's primary too and creates its own mesh's
                                         // row as that mesh's primary (node-identity-and-state.md §2.7): the claim of the
                                         // mesh's name is the mesh's first durable write, so nothing of the mesh (its states
                                         // included) is written before it wins.
-                                        match claim_mesh_name(&*mesh_storage, &caches, &node_id.to_string(), &cfg.mesh, &mesh_id).await {
+                                        match write_mesh_row(&*mesh_storage, &caches, &node_id.to_string(), &cfg.mesh, &mesh_id).await {
                                             Ok(Ok(_)) => {}
                                             Ok(Err(refused)) => return Err(format!("refusing to start: this admin's mesh {} (mesh {mesh_id}) cannot claim its name: {refused}", cfg.mesh)),
                                             Err(e) => return Err(format!("refusing to start: {e}")),

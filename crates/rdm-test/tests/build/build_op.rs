@@ -1102,9 +1102,8 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let held = door.wait_held("cut").await;
     assert_eq!(s(&held["hit"]["build_id"]), build_id.as_str(), "{held}");
-    // The claim landed before the executor was lost: mesh2's row is on the store root.
-    let name_claim: Value = serde_json::from_slice(&std::fs::read(root.join("locks/name/mesh2")).expect("the fabric-primary's claim of mesh2 wrote its name claim to the store root")).unwrap();
-    let row: Value = rdm_admin::store_log::read_record(&root.join(rdm_admin::store_root::MESHES_FILE), "mesh-record", Some(&s(&name_claim["record"]["mesh_id"]))).expect("the fabric-primary's claim of mesh2 wrote its record to the store root");
+    // The row write landed before the executor was lost: mesh2's row is on the store root.
+    let row: Value = rdm_admin::store_log::latest_in(&root.join(rdm_admin::store_root::MESHES_FILE)).unwrap().into_iter().find(|((kind, _), l)| kind == "mesh-record" && l.record["name"] == "mesh2").map(|(_, l)| serde_json::json!({"record": l.record})).expect("the fabric-primary's write of mesh2's row landed on the store root");
     let claimed = s(&row["record"]["mesh_id"]);
     assert!(!claimed.is_empty() && row["record"]["name"] == "mesh2", "{row}");
     // The receipt is on the store before the fabric-primary is lost: the fabric's Build records, which the
@@ -1155,7 +1154,7 @@ async fn create_mesh_receipts(lost: &Lost) -> Vec<(u32, String, bool)> {
 /// The trace of `create-mesh:mesh2` in `spans`: each claim of mesh2's name and each receipt step, by node
 /// and outcome. The flame of the cell, never its assertion. The trace id of the restored fabric-primary's span.
 fn create_mesh_flame(spans: &[Value], lost: &Lost) -> Option<String> {
-    let claims = spans_named(spans, "rdm.node_admin.mesh.create.via-mesh-row").into_iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && c["attributes"]["moment"] == "claim");
+    let claims = spans_named(spans, "rdm.node_admin.mesh.create.via-mesh-row").into_iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && c["attributes"]["moment"] == "write");
     let steps = spans_named(spans, "rdm.node_admin.mesh.create.via-receipt").into_iter().filter(|c| c["attributes"]["mesh"] == "mesh2");
     let mut restored = Vec::new();
     for c in claims.chain(steps) {

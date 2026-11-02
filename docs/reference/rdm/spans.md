@@ -63,7 +63,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.node.create.via-catalog-built` | `crates/rdm-node/src/node.rs` | 593 |
 | `rdm.mesh.node.create.via-connections-opened` | `crates/rdm-node/src/node.rs` | 508 |
 | `rdm.mesh.node.create.via-deployment` | `crates/rdm-admin/src/entry.rs` | 70 |
-| `rdm.mesh.node.create.via-deployment` | `crates/rdm-node/src/lib.rs` | 224 |
+| `rdm.mesh.node.create.via-deployment` | `crates/rdm-node/src/lib.rs` | 225 |
 | `rdm.mesh.node.create.via-deployment` | `crates/rdm-test/src/bin/rdm_rpc_node.rs` | 26 |
 | `rdm.mesh.node.create.via-deployment` | `crates/rdm-test/src/lib.rs` | 341 |
 | `rdm.mesh.node.create.via-deployment` | `demo/src/lib.rs` | 46 |
@@ -74,13 +74,13 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.node.create.via-identity-minted` | `crates/rdm-admin/src/admin/boot.rs` | 451 |
 | `rdm.mesh.node.create.via-identity-minted` | `crates/rdm-node/src/node.rs` | 466 |
 | `rdm.mesh.node.delete.via-pre-node-ready-failed` | `crates/rdm-admin/src/entry.rs` | 122 |
-| `rdm.mesh.node.delete.via-pre-node-ready-failed` | `crates/rdm-node/src/lib.rs` | 261 |
+| `rdm.mesh.node.delete.via-pre-node-ready-failed` | `crates/rdm-node/src/lib.rs` | 262 |
 | `rdm.mesh.node.delete.via-pre-node-ready-failed` | `crates/rdm-test/src/lib.rs` | 387 |
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-admin/src/entry.rs` | 95 |
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-admin/src/entry.rs` | 141 |
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-admin/src/entry.rs` | 147 |
-| `rdm.mesh.node.delete.via-signal` | `crates/rdm-node/src/lib.rs` | 243 |
-| `rdm.mesh.node.delete.via-signal` | `crates/rdm-node/src/lib.rs` | 265 |
+| `rdm.mesh.node.delete.via-signal` | `crates/rdm-node/src/lib.rs` | 244 |
+| `rdm.mesh.node.delete.via-signal` | `crates/rdm-node/src/lib.rs` | 266 |
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-test/src/bin/rdm_rpc_node.rs` | 80 |
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-test/src/bin/rdm_rpc_node.rs` | 110 |
 | `rdm.mesh.node.delete.via-signal` | `crates/rdm-test/src/lib.rs` | 368 |
@@ -524,8 +524,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.create.via-leaving-mesh` | `crates/rdm-admin/src/admin/mesh_delete.rs` | 382 |
 | `rdm.node_admin.node.create.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 591 |
 | `rdm.node_admin.node.create.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 942 |
-| `rdm.node_admin.node.create.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 1449 |
-| `rdm.node_admin.node.create.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 1465 |
+| `rdm.node_admin.node.create.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 1450 |
+| `rdm.node_admin.node.create.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 1466 |
 | `rdm.node_admin.node.create.via-stopped-held` | `crates/rdm-admin/src/admin/runner.rs` | 602 |
 | `rdm.node_admin.node.create.via-workflow` | `crates/rdm-core/src/names.rs` | 87 |
 | `rdm.node_admin.node.delete.via-build` | `crates/rdm-admin/src/admin/runner.rs` | 1394 |
@@ -535,7 +535,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.delete.via-exit-for-writer` | `crates/rdm-admin/src/deployment/pipeline.rs` | 2341 |
 | `rdm.node_admin.node.delete.via-node-deleted` | `crates/rdm-admin/src/admin/runner.rs` | 231 |
 | `rdm.node_admin.node.delete.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 829 |
-| `rdm.node_admin.node.delete.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 1383 |
+| `rdm.node_admin.node.delete.via-node-row` | `crates/rdm-admin/src/node_rows.rs` | 1384 |
 | `rdm.node_admin.node.delete.via-os-stopped` | `crates/rdm-admin/src/deployment/pipeline.rs` | 2710 |
 | `rdm.node_admin.node.delete.via-own-runtime` | `crates/rdm-admin/src/admin/runner.rs` | 1298 |
 | `rdm.node_admin.node.delete.via-stopped-ttl` | `crates/rdm-admin/src/stopped_gc.rs` | 386 |
@@ -622,7 +622,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.node.update.via-fabric-primary` | `crates/rdm-admin/src/node_properties.rs` | 41 |
 | `rdm.node_admin.node.update.via-forward` | `crates/rdm-admin/src/node_config.rs` | 355 |
 | `rdm.node_admin.node.update.via-held-types` | `crates/rdm-admin/src/admin/boot.rs` | 2126 |
-| `rdm.node_admin.node.update.via-inherited-row` | `crates/rdm-admin/src/node_rows.rs` | 1313 |
+| `rdm.node_admin.node.update.via-inherited-row` | `crates/rdm-admin/src/node_rows.rs` | 1314 |
 | `rdm.node_admin.node.update.via-join` | `crates/rdm-admin/src/join.rs` | 378 |
 | `rdm.node_admin.node.update.via-joined-frame` | `crates/rdm-core/src/names.rs` | 224 |
 | `rdm.node_admin.node.update.via-leaving-aggregate` | `crates/rdm-node/src/node_self.rs` | 1221 |

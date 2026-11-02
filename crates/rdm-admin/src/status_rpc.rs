@@ -3601,8 +3601,8 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             self.inner.put_node(row).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_at(name).await
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.records_at(name).await
         }
     }
 
@@ -4451,7 +4451,7 @@ mod tests {
         let declare = StatusRequest::DeclareNodeState { node_id: current.node_id.clone(), incarnation: current.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None };
         assert_eq!(door.apply(Some(current.clone()), &declare).await, R::Applied);
         use crate::storage::NodesStorage as _;
-        assert_eq!(status.node_at(&current.name).await.unwrap().map(|r| r.node_id), Some(current.node_id.clone()), "the current birth's record holds the (path, name)");
+        assert_eq!(crate::node_rows::record_at(&*status, &current.name).await.unwrap().map(|r| r.node_id), Some(current.node_id.clone()), "the current birth's record holds the (path, name)");
         // This admin's view still holds the predecessor's digest (its deletion never applied here), and
         // holds nothing of the current birth yet.
         let digest_view = rdm_transport::topology::DigestView::default();

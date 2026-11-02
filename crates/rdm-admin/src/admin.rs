@@ -621,8 +621,8 @@ mod tests {
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.put_node(row).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.0.node_at(name).await
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.records_at(name).await
         }
     }
 
@@ -667,8 +667,8 @@ mod tests {
             self.acknowledged.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_at(name).await
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.records_at(name).await
         }
     }
 
@@ -946,7 +946,7 @@ mod tests {
         let records = Records::default();
         let holder = MeshId::mint();
         let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false, states: Default::default() };
-        assert_eq!(crate::storage::claim_mesh(&meshes, None, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written)));
+        assert_eq!(crate::storage::write_mesh(&meshes, None, &theirs).await, Ok(Ok(crate::storage::MeshWritten::Written)));
         // The ids the two operations carry, minted when each mesh entered the accepted topology.
         let (carried, mesh3_carried) = (MeshId::mint(), MeshId::mint());
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-claim");
@@ -1137,7 +1137,7 @@ mod tests {
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let (build_id, op) = build_creating_mesh2(&builds).await;
         let holder = MeshId::mint();
-        crate::storage::claim_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), dead: false, states: Default::default() }).await.unwrap().unwrap();
+        crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), dead: false, states: Default::default() }).await.unwrap().unwrap();
         let records = Records::default();
         let refused = create_mesh_step(&records, &meshes, &builds, &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect_err("mesh2's name is held by another mesh");
         assert!(refused.contains("create-mesh:mesh2") && refused.contains(&holder.to_string()), "{refused}");
@@ -1456,8 +1456,8 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_node(row).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.0.node_at(name).await
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.0.records_at(name).await
         }
     }
 
@@ -1500,8 +1500,8 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_at(name).await
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.records_at(name).await
         }
     }
 
@@ -1862,7 +1862,7 @@ mod tests {
             crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { mesh: None, build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
         ]).await;
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
-        crate::fabric_storage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
+        crate::fabric_storage::write_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
         // The exited birth's node record stays in the store, Deleted (a delete appends its status, never removes it).
         let nodes_storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let row = crate::storage::NodeRow { replacement_from: None, kind: NodeKind::RpcNode, mesh: "mesh2".into(), initial_properties: None, topology_storage_provider: None, name: path.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, allocated: None, renamed_from: None, inherited_by: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, placement: None, writer: None };
@@ -2954,7 +2954,7 @@ mod tests {
             if case == "surviving-primary-wrote-dead" {
                 // mesh2's primary committed Dead at mesh.deleted on mesh2's record, the record Dead with
                 // it (R-MD1 item 1; admin/leave.rs, mesh.deleted).
-                crate::storage::claim_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), dead: true, states: [rdm_core::status::MeshState::Dead].into() }).await.unwrap().unwrap();
+                crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), dead: true, states: [rdm_core::status::MeshState::Dead].into() }).await.unwrap().unwrap();
             }
             let capture = crate::span_capture::Capture::new(&format!("i143-3068-r-md1-{case}"));
             {
@@ -3900,8 +3900,8 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_at(name).await
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.records_at(name).await
         }
     }
 
@@ -4410,8 +4410,8 @@ mod tests {
         async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node(row).await
         }
-        async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node_at(name).await
+        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
+            self.inner.records_at(name).await
         }
     }
 

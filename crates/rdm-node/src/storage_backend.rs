@@ -218,8 +218,8 @@ impl NodeRowsStorage for NodeRowsThroughHandle {
     async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
         self.0.current.read().stores().node_rows.node(node_id).await
     }
-    async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().node_rows.node_at(name).await
+    async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        self.0.current.read().stores().node_rows.records_at(name).await
     }
 }
 
@@ -265,8 +265,8 @@ impl crate::nodes_storage::NodesStorage for NodesThroughHandle {
     async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::node_records::NodeProperties>, crate::storage_error::StorageError> {
         self.0.current.read().stores().nodes.properties(node_id).await
     }
-    async fn node_at(&self, name: &crate::model::PathName) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
-        crate::nodes_storage::NodesStorage::node_at(&*self.0.current.read().stores().nodes, name).await
+    async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+        crate::nodes_storage::NodesStorage::records_at(&*self.0.current.read().stores().nodes, name).await
     }
 }
 
@@ -278,7 +278,7 @@ impl NodeRowsStorage for NoNodeRows {
     async fn node(&self, _: &crate::model::NodeId) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
         Err(no_node_rows())
     }
-    async fn node_at(&self, _: &crate::model::PathName) -> Result<Option<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
+    async fn records_at(&self, _: &crate::model::PathName) -> Result<Vec<crate::nodes_storage::NodeRow>, crate::storage_error::StorageError> {
         Err(no_node_rows())
     }
 }

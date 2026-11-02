@@ -311,9 +311,9 @@ impl Prepared {
             let root = rdm_admin::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
             let fabric = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_core::NodeId::mint(), &incarnation)).await.unwrap();
             let identity = rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
-            rdm_admin::fabric_storage::claim_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is free");
+            rdm_admin::fabric_storage::write_identity(&fabric, &identity).await.unwrap().expect("the fabric's name is free");
             let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
-            rdm_admin::storage::claim_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), dead: false, states: Default::default() }).await.unwrap().expect("mesh1's name is free");
+            rdm_admin::storage::write_mesh(&meshes, None, &rdm_admin::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), dead: false, states: Default::default() }).await.unwrap().expect("mesh1's name is free");
             let nodes = rdm_admin::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
             let own = rdm_admin::storage::NodeRecord { mesh: "mesh1".into(),
                 node_id: node_id.clone(),

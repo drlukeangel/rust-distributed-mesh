@@ -742,7 +742,7 @@ mod tests {
             assert!(err.contains("MESH_SPAWN_TYPE=container and the Fabric record names provider process"), "{err}");
 
             // Populate live mesh1 record and lost fabric-primary row at mesh1.admin.1, plus current Build.
-            crate::storage::claim_mesh(
+            crate::storage::write_mesh(
                 &mesh_store,
                 None,
                 &MeshRecord::new(mesh_id.clone(), "mesh1"),

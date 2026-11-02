@@ -81,8 +81,8 @@ impl NodesStorage for Recorded {
     async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
         self.inner.put_node(row).await
     }
-    async fn node_at(&self, name: &rdm_core::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, StorageError> {
-        self.inner.node_at(name).await
+    async fn records_at(&self, name: &rdm_core::PathName) -> Result<Vec<rdm_admin::storage::NodeRow>, StorageError> {
+        self.inner.records_at(name).await
     }
 }
 

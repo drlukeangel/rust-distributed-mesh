@@ -713,7 +713,7 @@ pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str
     }
     let mut ops = Vec::new();
     for (path, births) in at.into_iter().filter(|(_, b)| b.len() > 1) {
-        let Ok(Some(holder)) = storage.node_at(&path).await.map(|r| r.map(|r| r.node_id)) else { continue };
+        let Ok(Some(holder)) = crate::node_rows::record_at(storage, &path).await.map(|r| r.map(|r| r.node_id)) else { continue };
         if !births.iter().any(|b| b.node_id == holder) {
             continue;
         }
@@ -1056,7 +1056,7 @@ mod superseded_tests {
         assert_eq!(ops.iter().map(|o| (o.node_id.clone(), o.operation.clone())).collect::<Vec<_>>(), vec![(second.node_id.clone(), rdm_core::OperationId::node("node.delete", &second.node_id))], "only the second birth is answered");
         assert_eq!(storage.node(&second.node_id).await.unwrap().unwrap().status, NodeStatus::Deleted, "the second birth's row is written deleted");
         assert_eq!(storage.node(&first.node_id).await.unwrap().unwrap().status, NodeStatus::Ready, "the record's birth stands");
-        assert_eq!(storage.node_at(&first.name).await.unwrap().map(|r| r.node_id), Some(first.node_id.clone()), "the name stays the first birth's");
+        assert_eq!(crate::node_rows::record_at(&storage, &first.name).await.unwrap().map(|r| r.node_id), Some(first.node_id.clone()), "the name stays the first birth's");
         let (one, other, holder) = (birth(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), birth(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode), birth(PathName::new("mesh1.rpc", "2").unwrap(), "mesh1", rdm_core::NodeKind::RpcNode));
         storage.put_node(&NodeRow::new(holder.name.clone(), holder.mesh.clone(), holder.kind, holder.node_id.clone(), holder.status)).await.unwrap();
         assert!(superseded_births(&me, &view(vec![one, other]), "mesh1", &storage, &written, "b1").await.is_empty(), "a path whose live record names neither birth answers nothing");

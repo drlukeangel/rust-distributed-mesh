@@ -895,13 +895,13 @@ pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, cach
     let mut row = held.clone().unwrap_or_else(|| crate::storage::MeshRecord::new(mesh_id.clone(), mesh));
     row.dead = true;
     row.states.insert(rdm_core::status::MeshState::Dead);
-    match crate::storage::claim_mesh(meshes, held.as_ref(), &row).await {
-        Ok(Ok(crate::storage::MeshClaim::Written { .. })) => {
+    match crate::storage::write_mesh(meshes, held.as_ref(), &row).await {
+        Ok(Ok(crate::storage::MeshWritten::Written { .. })) => {
             caches.meshes.hold(mesh_id.clone(), row);
             Ok("dead-written")
         }
-        Ok(Ok(crate::storage::MeshClaim::Held)) => Ok("already-dead"),
-        Ok(Err(crate::storage::MeshClaimRefused::NameHeld { .. })) => Ok("name-held"),
+        Ok(Ok(crate::storage::MeshWritten::Held)) => Ok("already-dead"),
+        Ok(Err(crate::storage::MeshRefused::NameHeld { .. })) => Ok("name-held"),
         Ok(Err(refused)) => Err(format!("mesh.storage refused the Dead record of {mesh} ({mesh_id}): {refused}")),
         Err(e) => Err(format!("mesh.storage could not write the Dead record of {mesh} ({mesh_id}): {e}")),
     }
@@ -2141,7 +2141,7 @@ mod tests {
         let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: rdm_core::OperationId::unscoped("mesh.delete:m") };
         let mut boot = MeshRecord::new(key.mesh_id.clone(), "mesh2");
         boot.states.insert(MeshState::Pending);
-        crate::storage::claim_mesh(&meshes, None, &boot).await.unwrap().unwrap();
+        crate::storage::write_mesh(&meshes, None, &boot).await.unwrap().unwrap();
         // The copy this fabric-primary took before mesh2's primary wrote Ready.
         caches.meshes.hold(key.mesh_id.clone(), boot.clone());
         let mut ready = boot.clone();
