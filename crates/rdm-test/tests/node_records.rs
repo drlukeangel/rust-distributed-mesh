@@ -639,48 +639,71 @@ async fn takeover_survives_mesh_primary_restart() {
 /// CONTRACT (i150 R8, e4; node-config-update.md "Build application": "`ApplyNodeProperties` persists
 /// config, tags and `PropertyApplication(build_id, semantic entry operation)` in one durable put";
 /// "Resolve the exact durable application before repeating an uncertain Build effect"): Build A applies
-/// `mesh1.rpc` / `2`'s entry, its property record holding A's application; the node then updates its
-/// own config; it is killed and recovered at the pair. Replaying Build A leaves the node's identity,
-/// its later own config and A's tags as they stand. The node records A's repeat as already applied.
-/// Must NOT happen: the replay writing A's map over the later update.
+/// `mesh1.rpc` / `2`'s entry and the node's reply is lost (the faulted mesh-primary's `properties-reply`
+/// cut holds it, then loses it): the node's property record holds A's application while its
+/// mesh-primary never heard it. Meanwhile the node updates its own config. The attempt ends Failed,
+/// naming the lost reply, and the caller resubmits Build A (build.md "A failed Build is skipped ...
+/// a caller resubmits it"; node-config-update.md "A later attempt of the same Build recognizes the
+/// application and preserves subsequent node or caller changes"): it completes, and the node keeps its
+/// identity, its later own config and A's tags, durable on its own record. A's repeat is recorded as
+/// already applied. Must NOT happen: the repeat writing A's map over the later update.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_applied_build_update_survives_node_restart() {
     let test = "an_applied_build_update_survives_node_restart";
-    let mut estate = estate_at(Estate::bootstrap(owner_of(test, "applied-build"), "fabric1", "mesh1").await, &[("mesh1", 1, 2)]).await;
+    let sha = rdm_test::faults::candidate_sha();
+    let estate = Estate::bootstrap_on(owner_of(test, "applied-build"), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = estate_at(estate, &[("mesh1", 1, 2)]).await;
     let subject = pair("mesh1.rpc", "2");
-    let stream = estate
-        .submit_named("Build A applies the node's entry properties", |current, _| {
-            current.topology.values().flat_map(|mesh| mesh.values()).cloned().map(|mut spec| {
-                if spec.path == subject {
-                    spec.config = [("entry".into(), "build-a".into())].into();
-                    spec.tags = ["build-a".into()].into();
-                }
-                spec
-            }).collect()
-        })
-        .await;
-    let applied = estate.follow(stream).await;
     let first = estate.node_view(&subject).await;
-    assert_eq!((first.config.clone(), first.tags.clone()), ([("entry".into(), "build-a".into())].into(), ["build-a".into()].into()), "Build A applied");
-    let application = rdm_core::properties::PropertyApplication::entry(&applied.build_id, &subject);
-    wait_for("the property record holds Build A's application", Duration::from_secs(30), || async { estate.node_properties(&first.node_id).filter(|p| p.applied.contains(&application)) }).await;
-    own_update(&estate, &first, "listener.data=127.0.0.1:45005");
+    let door = rdm_test::faults::Door::at(&estate, &pair("mesh1.admin", "1")).await;
+    door.arm("reply-lost", json!({"kind": "properties-reply", "node_id": first.node_id})).await;
+    let entry: BTreeMap<String, String> = [("entry".into(), "build-a".into())].into();
+    let tags: BTreeSet<String> = ["build-a".into()].into();
     let own: BTreeMap<String, String> = [("listener.data".into(), "127.0.0.1:45005".into())].into();
-    estate.kill_node(&subject).await;
-    let recovered = estate.until_node(&subject, "a recovered node is ready at the pair", crate::node_recovery_due(), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != first.node_id).cloned()).await;
-    assert_eq!(recovered.config, own, "the recovered node carries the later own update");
-    let again = estate.carrier().await.reattach(&applied.build_id).await.expect("Build A reattaches");
+    let applying = async {
+        let stream = estate
+            .submit_named("Build A applies the node's entry properties", |current, _| {
+                current.topology.values().flat_map(|mesh| mesh.values()).cloned().map(|mut spec| {
+                    if spec.path == subject {
+                        spec.config = entry.clone();
+                        spec.tags = tags.clone();
+                    }
+                    spec
+                }).collect()
+            })
+            .await;
+        let build_id = stream.build_id().clone();
+        let ended = estate.carrier().await.follow(stream).await.unwrap_or_else(|e| panic!("Build {build_id} is followed to its terminal: {e}"));
+        (build_id, ended.frames)
+    };
+    let lost = async {
+        let held = door.wait_held("reply-lost").await;
+        let build_id = held["hit"]["build_id"].as_str().expect("the held reply names its Build").to_string();
+        let application = rdm_core::properties::PropertyApplication { build_id: build_id.clone(), location: subject.clone() };
+        let applied = wait_for("the node's record holds Build A's application while its reply is held", Duration::from_secs(30), || async { estate.node_properties(&first.node_id).filter(|p| p.applied.contains(&application)) }).await;
+        assert_eq!((&applied.config, &applied.tags), (&entry, &tags), "the node applied Build A's entry before its reply was lost");
+        own_update(&estate, &first, "listener.data=127.0.0.1:45005");
+        door.release("reply-lost").await;
+        build_id
+    };
+    let ((applied, frames), build_id) = tokio::join!(applying, lost);
+    assert_eq!(applied.to_string(), build_id, "the held reply was Build A's");
+    match frames.last() {
+        Some(rdm_client::BuildFrame::Failed { reason, .. }) => assert!(reason.contains("was lost on its way back"), "the attempt ends Failed naming the lost reply: {reason}"),
+        other => panic!("the attempt whose reply was lost ends Failed, naming it: {other:?} ({frames:?})"),
+    }
+    let again = estate.carrier().await.reattach(&applied).await.expect("the caller resubmits Build A");
     estate.follow(again.stream).await;
     let after = estate.node_view(&subject).await;
-    assert_eq!((&after.node_id, &after.config, &after.tags), (&recovered.node_id, &own, &first.tags), "replaying the applied Build keeps the node's identity, its later config and A's tags");
+    assert_eq!((&after.node_id, &after.incarnation_id, &after.config, &after.tags), (&first.node_id, &first.incarnation_id, &own, &tags), "the Build that lost its reply keeps the node's identity, its later own config and A's tags");
     assert_eq!(estate.node_properties(&after.node_id).expect("the node's own record").config, own, "the durable record keeps the later config");
-    estate.artifact("applied-build.json", &json!({"build_id": applied.build_id, "first": first, "recovered": recovered, "after": after}));
+    estate.artifact("applied-build.json", &json!({"build_id": build_id, "first": first, "after": after, "cut": door.cut("reply-lost").await}));
     estate.stop().await;
     let spans = estate.spans();
     let repeat = named(&spans, "rdm.node.record.update.via-already-applied")
         .into_iter()
-        .find(|sp| attr(sp, "build_id") == applied.build_id.as_str())
-        .unwrap_or_else(|| panic!("the node records Build {}'s repeat as already applied, naming its exact target and the original operation identity (i150 OTLP table, rdm.node.record.update.via-already-applied)", applied.build_id));
+        .find(|sp| attr(sp, "build_id") == build_id && attr(sp, "node_id") == first.node_id.as_str())
+        .unwrap_or_else(|| panic!("Build {build_id}'s repeat is recorded as already applied, naming its exact target and the original operation identity (i150 OTLP table, rdm.node.record.update.via-already-applied)"));
     estate.record_trace_url(repeat["trace_id"].as_str().unwrap());
 }
 
