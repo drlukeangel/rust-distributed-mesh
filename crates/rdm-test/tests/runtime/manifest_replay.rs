@@ -338,9 +338,11 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     assert!(services.contains("rshape-node-admin"), "the demo's admin ran: {services:?}");
     assert!(!services.contains("rdm-node-admin"), "no built-in node-admin ran: {services:?}");
     // Every restart was an operation of the Build rectifier: the REST call that opened the attempt,
-    // the executor's reconcile of that attempt, the node's update under the reconcile and the
-    // deployment steps under that. The reconcile is the child of the restart call's request span: the
-    // fabric-primary's claim returns the context the call left on the attempt.
+    // the executor's reconcile that ran the node's node.stop, the node's update under the reconcile and
+    // the deployment steps under that. The reconcile is the child of the restart call's request span: the
+    // fabric-primary's claim returns the context the call left on the attempt. A target that is a primary
+    // hands over first by node.primary.update (node-stop.md, Primary) in the attempt the call opened, which
+    // ends HandedOff; its node.stop runs in the Build's next attempt, under the same request span.
     let mut chains = Vec::new();
     for r in &restarts {
         let node: PathName = serde_json::from_value(r["node"].clone()).expect("structured location");
@@ -348,7 +350,8 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|s| s["attributes"]["node_path"] == node.path && s["attributes"]["node_name"] == node.name && s["attributes"]["build_id"] == r["stop_build_id"] && s["attributes"]["attempt"].as_str().and_then(|v| v.parse::<u64>().ok()) == r["stop_attempt"].as_u64()).cloned().unwrap_or_else(|| panic!("{node:?}: no build.update.via-node-rpc span for the restart call"));
         // A restart is node.stop then node.start on the stopped process (Q183): the chain is the stop's.
         let op = rdm_core::OperationId::node("node.stop", &node_id.parse().unwrap());
-        let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|s| s["attributes"]["build_id"] == rest["attributes"]["build_id"] && s["attributes"]["attempt"] == rest["attributes"]["attempt"] && s["parent_span_id"] == rest["span_id"]).cloned().unwrap_or_else(|| panic!("{node:?}: no reconcile executed {op:?}"));
+        let op_text = format!("{op:?}");
+        let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|s| s["attributes"]["build_id"] == rest["attributes"]["build_id"] && s["parent_span_id"] == rest["span_id"] && s["attributes"]["operations"].as_str().is_some_and(|o| o.contains(&op_text))).cloned().unwrap_or_else(|| panic!("{node:?}: no reconcile executed {op:?}"));
         let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|s| s["attributes"]["node_id"] == node_id && descends_from(&spans, s, &reconcile)).cloned().unwrap_or_else(|| panic!("{node:?}: no node.update.via-build under the reconcile"));
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| descends_from(&spans, s, &update)).collect();
         assert!(!steps.is_empty(), "{node:?}: deployment steps ran under its node update");
