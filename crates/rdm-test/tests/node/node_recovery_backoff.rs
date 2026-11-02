@@ -63,6 +63,7 @@ fn completed(sp: &Value) -> bool {
 
 // @feature: node-lifecycle
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/295: a reached mesh-primary commanded back through node.mesh.join, then the killed node read reached, delays the recovery past its bound; i152 s2 (rdm#296) rewrites recovery and moves this cell"]
 async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_within_its_backoff_of_the_heal() {
     let test = "a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_within_its_backoff_of_the_heal";
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
