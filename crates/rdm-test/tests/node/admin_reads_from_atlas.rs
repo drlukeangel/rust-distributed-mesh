@@ -105,14 +105,17 @@ fn nodes_file(store: &std::path::Path, root: &Running) -> std::path::PathBuf {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT (Q227, Q234; node-topology-get.md): a Day-0 node-admin (mesh1.admin.1, the fabric-primary
-/// and mesh1's mesh-primary) and mesh1.admin.2, launched by it, both ready. The fabric's nodes store
-/// then ends in an object another writer has not finished writing (an unended final line, as the
-/// gate's store held it). mesh1.admin.2 reads the topology of its mesh-primary, every mesh and then
-/// mesh1 alone (the rafka-time read's shape): each is served whole, with the primaries and the
-/// rafka-time, from what the primary holds, and with the reader's own whole row from the primary's
-/// atlas, the row its start's hydration sync already gave it. Must NOT happen: a topology read refused `not-ready`
-/// because the store could not be read, or any read of the store by the serving door.
+/// CONTRACT (Q227, Q234; node-topology-get.md; node-rpc-envelope.md Topology: "OwnRow is served from
+/// the node's record (Q237, Q323)"): a Day-0 node-admin (mesh1.admin.1, the fabric-primary and mesh1's
+/// mesh-primary) and mesh1.admin.2, launched by it, both ready. mesh1.admin.2 reads the topology of its
+/// mesh-primary while the nodes store reads: its own row is answered, read from its record. The
+/// fabric's nodes store then ends in an object another writer has not finished writing (an unended
+/// final line, as the gate's store held it). mesh1.admin.2 reads the topology of its mesh-primary,
+/// every mesh and then mesh1 alone (the rafka-time read's shape): each is served whole, with the
+/// primaries and the rafka-time, from what the primary holds. The own row is not asserted there: it is
+/// the node's record in the nodes store (Q331), and the mesh-primary's next append after the unended
+/// object makes that object a line that refuses every read of the store (store_log.rs, R-SR3/R-SR4).
+/// Must NOT happen: a topology read refused `not-ready` because the store could not be read.
 #[test]
 fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
     let cell = "a_mesh_primary_serves_a_topology_read_with_its_store_unreadable";
@@ -138,12 +141,19 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
         // Its start's hydration sync carried its own whole row from its mesh-primary's atlas (Q234).
         let own = admin.topology_view.own_row().expect("mesh1.admin.2 holds its own row from its hydration sync");
         assert_eq!((own.node_id.clone(), own.name.clone()), (launch.node_id.clone(), launch.name.clone()), "the row held is the node's own: {own:?}");
+        let target = rdm_transport::NodeTarget::ExactNode(root_digest.node.node_id.clone());
+        // While the nodes store reads, its mesh-primary answers the reader its own row, read from its record.
+        let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, launch.node_id.as_str(), Some("mesh1"), None))
+            .await
+            .expect("the read ends")
+            .unwrap_or_else(|e| panic!("the mesh-primary refused the read of mesh1: {e}"));
+        let own = read.own_row.as_ref().expect("its mesh-primary answers the reader its own row");
+        assert_eq!(own.node_id, launch.node_id, "the own row is the reader's: {own:?}");
 
         // The store's tail: an object another writer is still writing, never ended.
         let file = nodes_file(&root_dir, &root);
         std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(br#"{"v":1,"kind":"record","key":"unended","record":{"name":{"path":"mesh1.rpc","name":"9""#).unwrap();
 
-        let target = rdm_transport::NodeTarget::ExactNode(root_digest.node.node_id.clone());
         for mesh in [None, Some("mesh1")] {
             let read = tokio::time::timeout(WRONG, rdm_admin::topology_read::read_topology(&admin.node_rpc.client, &target, launch.node_id.as_str(), mesh, None))
                 .await
@@ -151,8 +161,6 @@ fn a_mesh_primary_serves_a_topology_read_with_its_store_unreadable() {
                 .unwrap_or_else(|e| panic!("the mesh-primary refused the read of {mesh:?} with its store unreadable: {e}"));
             assert!(read.installed.iter().any(|m| m.mesh == "mesh1"), "mesh1 is served whole ({mesh:?}): {:?}", read.installed.iter().map(|m| &m.mesh).collect::<Vec<_>>());
             assert!(read.rafka_time.is_some() && !read.primaries.is_empty(), "the rafka-time and the primaries are served ({mesh:?})");
-            let own = read.own_row.as_ref().unwrap_or_else(|| panic!("its mesh-primary answers the reader its own row ({mesh:?})"));
-            assert_eq!(own.node_id, launch.node_id, "the own row is the reader's ({mesh:?}): {own:?}");
         }
         let served: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.topology.serve.via-read" && at_admin(f, "1")).map(|(_, _, f)| f.clone()).collect();
         assert!(!served.is_empty() && served.iter().all(|f| f.get("outcome").map(String::as_str) == Some("served")), "every read the primary served was served: {served:?}");
