@@ -87,7 +87,6 @@ async fn main() -> Result<()> {
         me_id: admin.node_id.clone(),
         me: admin.node_id.to_string(),
         connections: None,
-        commands: None,
     };
 
     let provider = ProcessDeploymentProvider::new();

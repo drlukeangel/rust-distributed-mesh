@@ -94,7 +94,6 @@ async fn main() -> Result<()> {
         me_id: admin.node_id.clone(),
         me: admin.node_id.to_string(),
         connections: None,
-        commands: None,
     };
 
     match tickle(target, &view, &calls).await.map_err(|e| anyhow!(e))? {
