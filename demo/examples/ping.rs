@@ -11,7 +11,7 @@
 //! Run against a live estate (`scripts/demo-estate.sh up`):
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/ping [<path.name>]
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/ping [<path> <name>]
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
@@ -33,15 +33,17 @@ async fn main() -> Result<()> {
 
     let all = nodes.get(&Filter::new()).await?;
     peers.learn(&all);
-    let target: PathName = match std::env::args().nth(1) {
-        Some(arg) => arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?,
-        None => all
+    let mut args = std::env::args().skip(1);
+    let target: PathName = match (args.next(), args.next()) {
+        (Some(path), Some(name)) => PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?,
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage ping [<path> <name>]")),
+        _ => all
             .iter()
             .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };
-    let row = all.iter().find(|n| n.name == target).ok_or_else(|| anyhow!("no row holds {target}"))?;
+    let row = all.iter().find(|n| n.name == target).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
 
     let req_admin = PingRequest::Ping { payload: b"ping-admin".to_vec() };
     let (out_admin, _) = carrier
@@ -49,15 +51,17 @@ async fn main() -> Result<()> {
         .call::<Ping>(&NodeTarget::CurrentPath(entry.clone()), &req_admin, &CallOptions::default())
         .await;
     let RpcOutcome::Reply(reply_admin) = out_admin else {
-        return Err(anyhow!("Ping to {entry} failed: {out_admin:?}"));
+        return Err(anyhow!("Ping to path {:?}, name {:?} failed: {out_admin:?}", entry.path, entry.name));
     };
     let PingReply::Pong { payload: pong_admin } = reply_admin.into_value() else {
-        return Err(anyhow!("unexpected PingReply from {entry}"));
+        return Err(anyhow!("unexpected PingReply from path {:?}, name {:?}", entry.path, entry.name));
     };
     assert_eq!(pong_admin, b"ping-admin");
     println!(
-        "Ping (0x{:02x}) to admin {entry}: Pong({:?})",
+        "Ping (0x{:02x}) to admin path {:?}, name {:?}: Pong({:?})",
         Ping::OP,
+        entry.path,
+        entry.name,
         String::from_utf8_lossy(&pong_admin)
     );
 
@@ -67,16 +71,17 @@ async fn main() -> Result<()> {
         .call::<Ping>(&NodeTarget::ExactNode(row.node_id.clone()), &req_member, &CallOptions::default())
         .await;
     let RpcOutcome::Reply(reply_member) = out_member else {
-        return Err(anyhow!("Ping to {} failed: {out_member:?}", row.name));
+        return Err(anyhow!("Ping to path {:?}, name {:?} failed: {out_member:?}", row.name.path, row.name.name));
     };
     let PingReply::Pong { payload: pong_member } = reply_member.into_value() else {
-        return Err(anyhow!("unexpected PingReply from {}", row.name));
+        return Err(anyhow!("unexpected PingReply from path {:?}, name {:?}", row.name.path, row.name.name));
     };
     assert_eq!(pong_member, b"ping-member");
     println!(
-        "Ping (0x{:02x}) to member {} ({}): Pong({:?})",
+        "Ping (0x{:02x}) to member path {:?}, name {:?} ({}): Pong({:?})",
         Ping::OP,
-        row.name,
+        row.name.path,
+        row.name.name,
         row.node_id,
         String::from_utf8_lossy(&pong_member)
     );

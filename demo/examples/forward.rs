@@ -2,7 +2,7 @@
 //! reachable from the caller (node-rpc-envelope.md, Forward).
 //!
 //! Every typed call that names a route takes a `RouteChoice`: `Direct` dials the receiver's own
-//! endpoint; `ViaPeer { carrier, path }` sends the call to the carrier, which makes the inner call to the
+//! endpoint; `ViaPeer { carrier }` sends the call to the carrier, which makes the inner call to the
 //! receiver and carries its answer back. The route is executed exactly as chosen: nothing switches
 //! routes for the caller. So the caller decides: here it calls `Direct` first and, when that ends
 //! `NotSent` (the request provably reached no handler, so sending it again cannot run it twice), sends
@@ -11,13 +11,13 @@
 //!
 //! The call is `node.config.update`: the node's whole config, sent to the fabric-primary for the node's
 //! exact birth. The carrier is a node the caller reaches and that reaches the receiver; here, by
-//! default, a node-admin of another mesh. `--via <path.name>` skips the direct attempt and names the
+//! default, a node-admin of another mesh. `--via <path> <name>` skips the direct attempt and names the
 //! carrier.
 //!
 //! Build: `cargo build --example forward` in `demo/`. Run against a live estate:
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/forward <path.name> <key>=<value> [--via <path.name>]
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/forward <path> <name> <key>=<value> [--via <path> <name>]
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{CallEnd, ExactBirth, Fabrics, Filter, MeshNode, NodeRpc, NodeView, Nodes, PathName, Peers};
@@ -31,27 +31,28 @@ async fn enter() -> Result<(Peers, PathName)> {
 }
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("{} has no live birth", n.name))?;
+    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.name.path, n.name.name))?;
     Ok(ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation })
 }
 
-/// The route through `carrier`: its node id and its `path.name`. The carrier is dialled by its node id,
-/// so a carrier replaced since the read is refused rather than another process substituted.
+/// The route through `carrier`: its node id. The carrier is dialled by its node id, so a carrier
+/// replaced since the read is refused rather than another process substituted.
 fn via(carrier: &NodeView) -> RouteChoice {
-    RouteChoice::ViaPeer { carrier: carrier.node_id.clone(), path: carrier.name.clone() }
+    RouteChoice::ViaPeer { carrier: carrier.node_id.clone() }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry("example-forward");
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (Some(node), Some(pair)) = (args.first(), args.get(1)) else { return Err(anyhow!("usage: forward <path.name> <key>=<value> [--via <path.name>]")) };
-    let node: PathName = node.parse().map_err(|e| anyhow!("{node}: {e}"))?;
+    const USAGE: &str = "usage: forward <path> <name> <key>=<value> [--via <path> <name>]";
+    let (Some(path), Some(name), Some(pair)) = (args.first(), args.get(1), args.get(2)) else { return Err(anyhow!(USAGE)) };
+    let node = PathName::new(path, name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
     let (key, value) = pair.split_once('=').ok_or_else(|| anyhow!("{pair}: not key=value"))?;
-    let forced: Option<PathName> = match (args.get(2).map(String::as_str), args.get(3)) {
-        (Some("--via"), Some(c)) => Some(c.parse().map_err(|e| anyhow!("{c}: {e}"))?),
-        (None, _) => None,
-        _ => return Err(anyhow!("usage: forward <path.name> <key>=<value> [--via <path.name>]")),
+    let forced: Option<PathName> = match (args.get(3).map(String::as_str), args.get(4), args.get(5)) {
+        (Some("--via"), Some(path), Some(name)) => Some(PathName::new(path, name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?),
+        (None, _, _) => None,
+        _ => return Err(anyhow!(USAGE)),
     };
 
     let (peers, entry) = enter().await?;
@@ -59,12 +60,12 @@ async fn main() -> Result<()> {
     let fabric = Fabrics::new(carrier.clone()).get(&Filter::new()).await?.into_iter().next().ok_or_else(|| anyhow!("fabric.get answered no fabric"))?;
     let rows = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
     peers.learn(&rows);
-    let row = rows.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds {node}"))?;
+    let row = rows.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {path:?}, name {name:?}"))?;
     let receiver = rows.iter().find(|n| n.is_fabric_primary).ok_or_else(|| anyhow!("no row names the fabric-primary"))?;
     // A carrier: the one named, else a ready node-admin of another mesh than the fabric-primary's.
     let ready_admin_elsewhere = |n: &&NodeView| n.kind == NodeKind::NodeAdmin && n.mesh != receiver.mesh && n.incarnation_id.is_some() && !n.stopped;
     let carrier_row = match &forced {
-        Some(c) => rows.iter().find(|n| &n.name == c).ok_or_else(|| anyhow!("no row holds {c}"))?,
+        Some(c) => rows.iter().find(|n| &n.name == c).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", c.path, c.name))?,
         None => rows.iter().find(ready_admin_elsewhere).ok_or_else(|| anyhow!("{} holds no node-admin outside {} to carry the call", fabric.name, receiver.mesh))?,
     };
 
@@ -85,12 +86,12 @@ async fn main() -> Result<()> {
             Ok(reply) => reply,
             // Provably not sent: the same call through a carrier cannot run it twice.
             Err(e) if matches!(e.downcast_ref::<CallEnd>(), Some(CallEnd::NotSent { .. })) => {
-                println!("direct to {}: {e}; carried by {}", receiver.name, carrier_row.name);
+                println!("direct to path {:?}, name {:?}: {e}; carried by path {:?}, name {:?}", receiver.name.path, receiver.name.name, carrier_row.name.path, carrier_row.name.name);
                 send(via(carrier_row)).await?
             }
             Err(e) => return Err(e),
         }
     };
-    println!("node.config.update {key}={value} on {node} at {}: {reply:?}", receiver.name);
+    println!("node.config.update {key}={value} on path {path:?}, name {name:?} at path {:?}, name {:?}: {reply:?}", receiver.name.path, receiver.name.name);
     Ok(())
 }

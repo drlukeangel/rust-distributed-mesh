@@ -7,12 +7,12 @@
 //! version answers `Unchanged` for that mesh instead of the snapshot. That is the read an application
 //! makes after it reconnects: one call says whether what it holds is still current.
 //!
-//! The target is a node by its current `path.name`; any node answers from its own view.
+//! The target is a node by its current `(path, name)`; any node answers from its own view.
 //!
 //! Build: `cargo build --example node_topology_get` in `demo/`. Run against a live estate:
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_topology_get <path.name>
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_topology_get <path> <name>
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{Filter, MeshNode, NodeRpc, Nodes, PathName, Peers};
@@ -29,11 +29,14 @@ async fn enter() -> Result<(Peers, PathName)> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry("example-node-topology-get");
-    let node = std::env::args().nth(1).ok_or_else(|| anyhow!("usage: node_topology_get <path.name>"))?;
-    let node: PathName = node.parse().map_err(|e| anyhow!("{node}: {e}"))?;
+    let (path, name) = match (std::env::args().nth(1), std::env::args().nth(2)) {
+        (Some(path), Some(name)) => (path, name),
+        _ => return Err(anyhow!("usage: node_topology_get <path> <name>")),
+    };
+    let node = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
     let (peers, entry) = enter().await?;
     let carrier = peers.carrier_at(entry);
-    // The node's birth, so the call by its path.name resolves.
+    // The node's birth, so the call by its (path, name) resolves.
     peers.learn(&Nodes::new(carrier.clone()).get(&Filter::new()).await?);
     let rpc = NodeRpc::new(carrier.client());
     let target = NodeTarget::CurrentPath(node.clone());
@@ -43,7 +46,7 @@ async fn main() -> Result<()> {
     for frame in rpc.topology_get(&target, None, None, &CallOptions::default()).await? {
         match frame {
             TopologyReply::Snapshot { mesh, publisher, topology_version, chunk_index, chunk_count, digests, .. } => {
-                let nodes: Vec<String> = digests.into_iter().map(MeshDigest::from).map(|d| format!("{} {:?}", d.node.name, d.status)).collect();
+                let nodes: Vec<String> = digests.into_iter().map(MeshDigest::from).map(|d| format!("path {:?}, name {:?} {:?}", d.node.name.path, d.node.name.name, d.status)).collect();
                 println!("{mesh} v{topology_version} from {publisher} (chunk {}/{chunk_count}): {nodes:?}", chunk_index + 1);
                 if chunk_index == 0 {
                     held.push((mesh, SourceVersion { publisher, topology_version }));

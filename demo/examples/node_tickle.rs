@@ -62,47 +62,51 @@ async fn main() -> Result<()> {
         nodes: model_nodes.clone(),
     };
 
-    let admin = model_nodes.iter().find(|n| n.name == entry).ok_or_else(|| anyhow!("missing {entry}"))?;
-    let target = match std::env::args().nth(1) {
-        Some(arg) => {
-            let name: PathName = arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?;
-            model_nodes.iter().find(|n| n.name == name).ok_or_else(|| anyhow!("missing {name}"))?
+    let admin = model_nodes.iter().find(|n| n.name == entry).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", entry.path, entry.name))?;
+    let mut args = std::env::args().skip(1);
+    let target = match (args.next(), args.next()) {
+        (Some(path), Some(name)) => {
+            let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
+            model_nodes.iter().find(|n| n.name == name).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", name.path, name.name))?
         }
-        None => model_nodes
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_tickle [<path> <name>]")),
+        _ => model_nodes
             .iter()
-            .find(|n| n.mesh == entry.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
-            .ok_or_else(|| anyhow!("no ready role node in {}", entry.mesh))?,
+            .find(|n| n.mesh == admin.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .ok_or_else(|| anyhow!("no ready role node in {}", admin.mesh))?,
     };
     let inc = target.incarnation_id.as_ref().ok_or_else(|| anyhow!("missing incarnation_id"))?;
 
     let carriers: Vec<_> = eligible_carriers(&view, target, Some(&admin.node_id))
-        .map(|c| c.name.to_string())
+        .map(|c| format!("path {:?}, name {:?}", c.name.path, c.name.name))
         .collect();
     println!(
-        "ladder budget={:?}, fanout={}, eligible carriers for {}: [{}]",
+        "ladder budget={:?}, fanout={}, eligible carriers for path {:?}, name {:?}: [{}]",
         tickle_ladder_at_default_budget(),
         VIA_PEER_TICKLE_FANOUT,
-        target.name,
-        carriers.join(", ")
+        target.name.path,
+        target.name.name,
+        carriers.join("; ")
     );
 
     let calls = TickleClient {
         client: Arc::new(carrier.client().clone()),
         me_id: admin.node_id.clone(),
-        me: admin.name.to_string(),
+        me: admin.node_id.to_string(),
         connections: None,
         commands: None,
     };
 
     match tickle(target, &view, &calls).await.map_err(|e| anyhow!(e))? {
         Tickle::Reached { answer, carrier } => println!(
-            "direct tickle {}: reached(answer={}, carrier={:?}, birth_answered={})",
-            target.name,
+            "direct tickle path {:?}, name {:?}: reached(answer={}, carrier={:?}, birth_answered={})",
+            target.name.path,
+            target.name.name,
             answer.name(),
             carrier,
             birth_answered(Some(&answer), &target.node_id, inc)
         ),
-        Tickle::Unreached(u) => println!("direct tickle {}: unreached({})", target.name, u.direct.name()),
+        Tickle::Unreached(u) => println!("direct tickle path {:?}, name {:?}: unreached({})", target.name.path, target.name.name, u.direct.name()),
     }
 
     let peer_carrier = eligible_carriers(&view, target, Some(&admin.node_id))
@@ -118,9 +122,11 @@ async fn main() -> Result<()> {
         _ => false,
     };
     println!(
-        "via-peer tickle {} through {}: end={} birth_answered={}",
-        target.name,
-        peer_carrier.name,
+        "via-peer tickle path {:?}, name {:?} through path {:?}, name {:?}: end={} birth_answered={}",
+        target.name.path,
+        target.name.name,
+        peer_carrier.name.path,
+        peer_carrier.name.name,
         via_end.name(),
         via_ok
     );

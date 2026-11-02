@@ -16,7 +16,7 @@
 //! Build: `cargo build --example node_mesh_leave` in `demo/`. Run against a live estate:
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_mesh_leave <path.name>
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_mesh_leave <path> <name>
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{Filter, Frame, MeshNode, Nodes, PathName, Peers, WorkflowStream};
@@ -45,16 +45,19 @@ async fn finish(what: &str, mut w: WorkflowStream) -> Result<()> {
 
 /// The node's row as the entry admin reads it now.
 async fn row(nodes: &Nodes, node: &PathName) -> Result<String> {
-    let rows = nodes.get(&Filter::new().eq("mesh", [node.mesh.clone()])).await?;
-    let n = rows.iter().find(|n| &n.name == node).ok_or_else(|| anyhow!("no row holds {node}"))?;
+    let rows = nodes.get(&Filter::new().eq("path", [node.path()]).eq("name", [node.name()])).await?;
+    let n = rows.iter().find(|n| &n.name == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
     Ok(format!("{:?}, stopped {}, node id {}, incarnation {:?}", n.status, n.stopped, n.node_id, n.incarnation_id.as_ref().map(|i| i.to_string())))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry("example-node-mesh-leave");
-    let node = std::env::args().nth(1).ok_or_else(|| anyhow!("usage: node_mesh_leave <path.name>"))?;
-    let node: PathName = node.parse().map_err(|e| anyhow!("{node}: {e}"))?;
+    let (path, name) = match (std::env::args().nth(1), std::env::args().nth(2)) {
+        (Some(path), Some(name)) => (path, name),
+        _ => return Err(anyhow!("usage: node_mesh_leave <path> <name>")),
+    };
+    let node = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
     let (peers, entry) = enter().await?;
     let nodes = Nodes::new(peers.carrier_at(entry));
     println!("before: {}", row(&nodes, &node).await?);
@@ -63,8 +66,8 @@ async fn main() -> Result<()> {
     println!("left: {}", row(&nodes, &node).await?);
 
     // Back onto the mesh: stopped, then started as the same birth.
-    finish(&format!("node.stop {node}"), nodes.stop(&node).await?).await?;
-    finish(&format!("node.start {node}"), nodes.start(&node).await?).await?;
+    finish(&format!("node.stop path {:?}, name {:?}", node.path, node.name), nodes.stop(&node).await?).await?;
+    finish(&format!("node.start path {:?}, name {:?}", node.path, node.name), nodes.start(&node).await?).await?;
     println!("after: {}", row(&nodes, &node).await?);
     Ok(())
 }

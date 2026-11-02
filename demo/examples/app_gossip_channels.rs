@@ -45,8 +45,8 @@ fn main() -> Result<()> {
             let rows = Nodes::new(peers.carrier_at(birth.name)).get(&Filter::new()).await?;
             let first = rows.first().ok_or_else(|| anyhow!("node.get returned no rows"))?;
             println!(
-                "live estate node {}: types={:?} held={:?} held_hash={:?}",
-                first.name, first.types, first.held, first.held_hash
+                "live estate node path {:?}, name {:?}: types={:?} held={:?} held_hash={:?}",
+                first.name.path, first.name.name, first.types, first.held, first.held_hash
             );
         }
 
@@ -67,10 +67,13 @@ fn main() -> Result<()> {
         fact.write_record(&broker_dir).map_err(|e| anyhow!(e))?;
         let key = rdm_node::node::load_or_mint_key(&broker_dir).map_err(|e| anyhow!(e))?;
         let launch = rdm_core::launch::Launch {
+            initial_properties: Default::default(),
             topology_storage_provider: rdm_core::launch::TOPOLOGY_STORAGE_FILE.into(),
             fabric: config(&root_dir).fabric,
             fabric_id: d.fabric_id.clone(),
-            name: "mesh1.broker.1".parse().unwrap(),
+            mesh: "mesh1".into(),
+            kind: rdm_core::NodeKind::Broker,
+            name: rdm_core::PathName::new("mesh1.broker", "1").unwrap(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
@@ -79,6 +82,7 @@ fn main() -> Result<()> {
             declared: Vec::new(),
             seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
             launcher: Some(rdm_core::launch::Launcher {
+                mesh: d.node.mesh.clone(),
                 name: d.node.name.clone(),
                 node_id: d.node.node_id.clone(),
                 incarnation: d.node.incarnation.clone(),
@@ -91,6 +95,8 @@ fn main() -> Result<()> {
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
+            mesh: launch.mesh.clone(),
+            kind: launch.kind,
             listeners: Vec::new(),
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),

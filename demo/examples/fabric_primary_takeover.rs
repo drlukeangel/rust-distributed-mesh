@@ -64,20 +64,21 @@ async fn main() -> Result<()> {
         build_id.log()
     );
 
-    let fp_carrier = peers.carrier_at(before_fp.clone());
+    let fp_carrier = peers.carrier_for(before_fp.clone());
     let to_id = match Nodes::new(fp_carrier).fabric_primary_update(&before.name, &before_fp, &build_id, attempt).await? {
         NodePrimaryUpdateReply::PrimaryUpdated { revisions } | NodePrimaryUpdateReply::AlreadyApplied { revisions } => {
             revisions.iter().find(|(t, _, _, _)| t == rdm_core::handover::FABRIC).map(|(_, _, to, _)| to.node_id.clone()).ok_or_else(|| anyhow!("no fabric entry in revisions"))?
         }
         other => return Err(anyhow!("node.fabric-primary.update at {before_fp}: {other:?}")),
     };
-    let after_fp = rows
+    let after_name = rows
         .iter()
         .find(|n| n.node_id == to_id)
         .map(|n| n.name.clone())
         .ok_or_else(|| anyhow!("no row holds successor {to_id}"))?;
+    let after_fp = to_id;
 
-    let succ_carrier = peers.carrier_at(after_fp.clone());
+    let succ_carrier = peers.carrier_for(after_fp.clone());
     let after = Fabrics::new(succ_carrier.clone())
         .fact("successor fabric-primary hydrated complete view", Duration::from_secs(30), |f| {
             f.fabric_primary.as_ref() == Some(&after_fp) && f.status == ScopeStatus::Ready
@@ -91,7 +92,9 @@ async fn main() -> Result<()> {
         .collect();
     let missing: BTreeSet<String> = expected.difference(&observed).cloned().collect();
     println!(
-        "after takeover at {}: fabric_id={} (same={}), Build={:?} (same={}), status={:?}",
+        "after takeover at path {:?}, name {:?} ({}): fabric_id={} (same={}), Build={:?} (same={}), status={:?}",
+        after_name.path,
+        after_name.name,
         after_fp,
         after.id,
         after.id == before.id,
@@ -108,7 +111,7 @@ async fn main() -> Result<()> {
     let _ = Nodes::new(succ_carrier)
         .fabric_primary_update(&before.name, &after_fp, &build_id, attempt)
         .await?;
-    let restored = Fabrics::new(peers.carrier_at(before_fp.clone()))
+    let restored = Fabrics::new(peers.carrier_for(before_fp.clone()))
         .fact("fabric-primary returned to initial node-admin", Duration::from_secs(30), |f| {
             f.fabric_primary.as_ref() == Some(&before_fp) && f.status == ScopeStatus::Ready
         })

@@ -28,12 +28,14 @@ use rdm_core::{ConnectionId, IncarnationId, NodeKind};
 
 fn to_end(n: &NodeView) -> Result<ConnectionEnd> {
     Ok(ConnectionEnd {
+        mesh: n.mesh.clone(),
+        kind: n.kind,
         name: n.name.clone(),
         node_id: n.node_id.clone(),
         incarnation: Some(
             n.incarnation_id
                 .clone()
-                .ok_or_else(|| anyhow!("{} has no incarnation_id", n.name))?,
+                .ok_or_else(|| anyhow!("path {:?}, name {:?} has no incarnation_id", n.name.path, n.name.name))?,
         ),
     })
 }
@@ -66,7 +68,7 @@ async fn main() -> Result<()> {
     let alpn = rshape_consumer::data_alpn().name;
 
     let mut held = ConnectionsHeld::new();
-    held.set_own_source(src.name.clone());
+    held.set_own_source(src.node_id.clone());
     held.mark_complete();
 
     let failed_1 = first_failure_for(
@@ -99,12 +101,14 @@ async fn main() -> Result<()> {
     assert!(due(&plan_1, item_1.due_ms - 1).is_empty());
     assert_eq!(due(&plan_1, item_1.due_ms).len(), 1);
     println!(
-        "ordinal 1 ({} -> {}): round={} backoff={}ms jitter={}ms due_ms={}",
-        src.name,
-        dst.name,
+        "ordinal 1 (path {:?}, name {:?} -> path {:?}, name {:?}): round={} backoff={}ms jitter={}ms due_ms={}",
+        src.name.path,
+        src.name.name,
+        dst.name.path,
+        dst.name.name,
         item_1.recovery.recovery_round,
         reconnect_backoff(1),
-        deterministic_jitter(&src.name, &dst.name, 1),
+        deterministic_jitter(&src.node_id, &dst.node_id, 1),
         item_1.due_ms
     );
 
@@ -113,12 +117,14 @@ async fn main() -> Result<()> {
     let plan_2 = reconnect_plan(&held, |_| Some(dst_inc.clone()));
     let item_2 = &plan_2[0];
     println!(
-        "ordinal 2 ({} -> {}): round={} backoff={}ms jitter={}ms due_ms={}",
-        src.name,
-        dst.name,
+        "ordinal 2 (path {:?}, name {:?} -> path {:?}, name {:?}): round={} backoff={}ms jitter={}ms due_ms={}",
+        src.name.path,
+        src.name.name,
+        dst.name.path,
+        dst.name.name,
         item_2.recovery.recovery_round,
         reconnect_backoff(2),
-        deterministic_jitter(&src.name, &dst.name, 2),
+        deterministic_jitter(&src.node_id, &dst.node_id, 2),
         item_2.due_ms
     );
 

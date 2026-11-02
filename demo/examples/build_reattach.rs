@@ -16,7 +16,7 @@
 //! Build: `cargo build --example build_reattach` in `demo/`. Run against a live estate:
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/build_reattach <path.name>
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/build_reattach <path> <name>
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{BuildFrame, MeshNode, Nodes, PathName, Peers};
@@ -31,8 +31,8 @@ async fn enter() -> Result<(Peers, PathName)> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry("example-build-reattach");
-    let node = std::env::args().nth(1).ok_or_else(|| anyhow!("usage: build_reattach <path.name>"))?;
-    let node: PathName = node.parse().map_err(|e| anyhow!("{node}: {e}"))?;
+    let (Some(path), Some(name)) = (std::env::args().nth(1), std::env::args().nth(2)) else { return Err(anyhow!("usage: build_reattach <path> <name>")) };
+    let node = PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
     let (peers, entry) = enter().await?;
     let carrier = peers.carrier_at(entry);
 
@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
     let (ours, earlier): (Vec<_>, Vec<_>) = again.receipts.iter().partition(|r| r.attempt >= accepted.attempt);
     println!("reattached: {} receipt(s) of earlier attempts, {} of this one", earlier.len(), ours.len());
     for r in ours {
-        println!("receipt: attempt {} {} {} {:?}", r.attempt, r.operation, r.step, r.result);
+        println!("receipt: attempt {} {:?} {} {:?}", r.attempt, r.operation, r.step, r.result);
     }
     // Follow it to its end; a break on the way is reattached the same way.
     let followed = carrier.follow(again.stream).await?;

@@ -10,7 +10,7 @@
 //! (`scripts/demo-estate.sh up`):
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_tags <path.name> <label>
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_tags <path> <name> <label>
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{ExactBirth, Filter, MeshNode, NodeView, Nodes, PathName, Peers};
@@ -29,7 +29,7 @@ async fn enter() -> Result<(Peers, PathName)> {
 
 /// A call to a node is for its exact birth: the node id and the incarnation its row holds.
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("{} has no live birth", n.name))?;
+    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.name.path, n.name.name))?;
     Ok(ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation })
 }
 
@@ -37,25 +37,25 @@ fn exact(n: &NodeView) -> Result<ExactBirth> {
 async fn main() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry("example-node-tags");
     let mut args = std::env::args().skip(1);
-    let (Some(node), Some(label)) = (args.next(), args.next()) else { return Err(anyhow!("usage: node_tags <path.name> <label>")) };
-    let node: PathName = node.parse().map_err(|e| anyhow!("{node}: {e}"))?;
+    let (Some(path), Some(name), Some(label)) = (args.next(), args.next(), args.next()) else { return Err(anyhow!("usage: node_tags <path> <name> <label>")) };
+    let node = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
     let (peers, entry) = enter().await?;
     let nodes = Nodes::new(peers.carrier_at(entry));
 
-    // The node's row and its mesh-primary's, from one read of its mesh.
-    let mesh = nodes.get(&Filter::new().eq("mesh", [node.mesh.clone()])).await?;
-    peers.learn(&mesh);
-    let row = mesh.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds {node}"))?;
-    let primary = mesh.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", node.mesh))?;
+    // The node's row and its mesh-primary's (of the mesh the node's row names), from one read.
+    let all = nodes.get(&Filter::new()).await?;
+    peers.learn(&all);
+    let row = all.iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", node.path, node.name))?;
+    let primary = all.iter().find(|n| n.mesh == row.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary).ok_or_else(|| anyhow!("no row names {}'s primary", row.mesh))?;
 
     let labels = BTreeSet::from([label.clone()]);
     let created = nodes.tags_create(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &labels).await?;
-    println!("node.tag.create {label} on {node}: {created:?}");
+    println!("node.tag.create {label} on path {:?}, name {:?}: {created:?}", node.path, node.name);
 
     let tagged = nodes.get(&Filter::new().eq("tags", [label.clone()])).await?;
-    println!("node.get [tags: {label}]: {:?}", tagged.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
+    println!("node.get [tags: {label}]: {:?}", tagged.iter().map(|n| (&n.name.path, &n.name.name)).collect::<Vec<_>>());
 
     let deleted = nodes.tags_delete(&exact(row)?, &primary.node_id, &RouteChoice::Direct, &TagScope::Labels(labels)).await?;
-    println!("node.tag.delete {label} on {node}: {deleted:?}");
+    println!("node.tag.delete {label} on path {:?}, name {:?}: {deleted:?}", node.path, node.name);
     Ok(())
 }

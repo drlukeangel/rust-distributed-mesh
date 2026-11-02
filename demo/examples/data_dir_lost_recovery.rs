@@ -47,15 +47,16 @@ async fn main() -> Result<()> {
     let rows = nodes.get(&Filter::new()).await?;
     peers.learn_known(&rows);
 
-    let before = match std::env::args().nth(1) {
-        Some(arg) => {
-            let name: PathName = arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?;
+    let before = match (std::env::args().nth(1), std::env::args().nth(2)) {
+        (Some(path), Some(name)) => {
+            let node = PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
             rows.iter()
-                .find(|n| n.name == name && n.status == NodeStatus::Ready)
-                .ok_or_else(|| anyhow!("no ready row for {name}"))?
+                .find(|n| n.name == node && n.status == NodeStatus::Ready)
+                .ok_or_else(|| anyhow!("no ready row for path {path:?}, name {name:?}"))?
                 .clone()
         }
-        None => rows
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage: data_dir_lost_recovery [<path> <name>]")),
+        _ => rows
             .iter()
             .find(|n| n.kind != NodeKind::NodeAdmin && !n.is_primary && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready secondary role node in the estate"))?
@@ -70,8 +71,8 @@ async fn main() -> Result<()> {
     let provider = ProcessDeploymentProvider::new();
     let handle = adopt(&provider, &fact).map_err(|e| anyhow!(e))?;
     println!(
-        "before: {} node_id={} inc={:?} endpoint={:?} data_dir={}",
-        before.name, before.node_id, before.incarnation_id, before.endpoint_id, old_dir
+        "before: path {:?}, name {:?} node_id={} inc={:?} endpoint={:?} data_dir={}",
+        before.name.path, before.name.name, before.node_id, before.incarnation_id, before.endpoint_id, old_dir
     );
 
     provider
@@ -79,9 +80,9 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| anyhow!("{e}"))?;
     std::fs::remove_dir_all(&old_dir)?;
-    println!("terminated {} and removed {}; awaiting recovery over fresh data_dir", before.name, old_dir);
+    println!("terminated path {:?}, name {:?} and removed {}; awaiting recovery over fresh data_dir", before.name.path, before.name.name, old_dir);
 
-    let filter = Filter::new().eq("mesh", [target_name.mesh.clone()]);
+    let filter = Filter::new().eq("mesh", [before.mesh.clone()]);
     let old_id = before.node_id.clone();
     let recovered = await_fact(
         "node",
@@ -97,18 +98,19 @@ async fn main() -> Result<()> {
         |list| {
             list.iter()
                 .find(|n| n.name == target_name)
-                .map(|n| format!("{} {:?} ({})", n.name, n.status, n.node_id))
-                .unwrap_or_else(|| format!("no {target_name}"))
+                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.name.path, n.name.name, n.status, n.node_id))
+                .unwrap_or_else(|| format!("no path {:?}, name {:?}", target_name.path, target_name.name))
         },
     )
     .await?;
     let after = recovered
         .iter()
         .find(|n| n.name == target_name)
-        .ok_or_else(|| anyhow!("missing {target_name}"))?;
+        .ok_or_else(|| anyhow!("missing path {:?}, name {:?}", target_name.path, target_name.name))?;
     println!(
-        "after:  {} node_id={} inc={:?} endpoint={:?} data_dir={:?} (new_dir={})",
-        after.name,
+        "after:  path {:?}, name {:?} node_id={} inc={:?} endpoint={:?} data_dir={:?} (new_dir={})",
+        after.name.path,
+        after.name.name,
         after.node_id,
         after.incarnation_id,
         after.endpoint_id,

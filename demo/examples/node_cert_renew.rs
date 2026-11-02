@@ -13,7 +13,7 @@
 //! Run against a live estate (`scripts/demo-estate.sh up`):
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_cert_renew [<path.name>]
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_cert_renew [<path> <name>]
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_admin::cert_renewal::{dates_of, installed_dates, stalled};
@@ -40,26 +40,28 @@ async fn main() -> Result<()> {
     let all = Nodes::new(carrier.clone()).get(&Filter::new()).await?;
     peers.learn(&all);
 
-    let admin_row = all.iter().find(|n| n.name == entry).ok_or_else(|| anyhow!("no row for {entry}"))?;
-    let target_name: PathName = match std::env::args().nth(1) {
-        Some(arg) => arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?,
-        None => all
+    let admin_row = all.iter().find(|n| n.name == entry).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", entry.path, entry.name))?;
+    let mut args = std::env::args().skip(1);
+    let target_name: PathName = match (args.next(), args.next()) {
+        (Some(path), Some(name)) => PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?,
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_cert_renew [<path> <name>]")),
+        _ => all
             .iter()
-            .find(|n| n.mesh == entry.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh == birth.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
-            .ok_or_else(|| anyhow!("no Ready role member in {}", entry.mesh))?,
+            .ok_or_else(|| anyhow!("no Ready role member in {}", birth.mesh))?,
     };
-    let member = all.iter().find(|n| n.name == target_name).ok_or_else(|| anyhow!("no row for {target_name}"))?;
-    let before_cert = member.cert.as_ref().ok_or_else(|| anyhow!("{target_name} has no cert view"))?;
+    let member = all.iter().find(|n| n.name == target_name).ok_or_else(|| anyhow!("no row for path {:?}, name {:?}", target_name.path, target_name.name))?;
+    let before_cert = member.cert.as_ref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no cert view", target_name.path, target_name.name))?;
     println!(
-        "before renewal on {}: issued_at={} expires_at={:?} issuer_expires_at={:?}",
-        member.name, before_cert.issued_at, before_cert.expires_at, before_cert.issuer_expires_at
+        "before renewal on path {:?}, name {:?}: issued_at={} expires_at={:?} issuer_expires_at={:?}",
+        member.name.path, member.name.name, before_cert.issued_at, before_cert.expires_at, before_cert.issuer_expires_at
     );
 
     let admin_dir = Path::new(admin_row.data_dir.as_deref().ok_or_else(|| anyhow!("no admin data_dir"))?);
-    let choice = CertChoice::from_material(admin_dir, &entry.mesh, false, |_| None).map_err(|e| anyhow!(e))?;
+    let choice = CertChoice::from_material(admin_dir, &birth.mesh, false, |_| None).map_err(|e| anyhow!(e))?;
     let time = RafkaTime::unadopted();
-    adopt_own_clock(&tracing::Span::none(), &time, &entry.to_string(), "example");
+    adopt_own_clock(&tracing::Span::none(), &time, &birth.node_id.to_string(), "example");
     let _ = time.observe(time.now_rafka_ms() + 2_000);
     let issuer = choice.issuer(admin_dir, false, time).map_err(|e| anyhow!(e))?;
 
@@ -96,8 +98,9 @@ async fn main() -> Result<()> {
     assert!(!stalled(&dates, dates.renew_at + floor_ms, floor_ms));
     assert!(stalled(&dates, dates.renew_at + floor_ms + 1, floor_ms));
     println!(
-        "CertRenewed on {}: issued_at={} renew_at={} expires_at={expires_at} stalled_past_floor={}",
-        member.name,
+        "CertRenewed on path {:?}, name {:?}: issued_at={} renew_at={} expires_at={expires_at} stalled_past_floor={}",
+        member.name.path,
+        member.name.name,
         dates.issued_at,
         dates.renew_at,
         stalled(&dates, dates.renew_at + floor_ms + 1, floor_ms)

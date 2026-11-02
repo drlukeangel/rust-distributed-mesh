@@ -20,7 +20,7 @@
 //!
 //! ```text
 //! RDM_EXECUTABLE_DIRS=<dir> RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" \
-//!     target/debug/examples/executable_dirs <path.name> <dir>/<executable>
+//!     target/debug/examples/executable_dirs <path> <name> <dir>/<executable>
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{BuildFrame, BuildId, CallEnd, Change, Fabrics, Filter, MeshNode, Nodes, PathName, Peers};
@@ -60,8 +60,8 @@ fn inside(executable: &Path, dirs: &[PathBuf]) -> Result<bool> {
 async fn main() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry("example-executable-dirs");
     let mut args = std::env::args().skip(1);
-    let (Some(node), Some(executable)) = (args.next(), args.next()) else { return Err(anyhow!("usage: executable_dirs <path.name> <executable>")) };
-    let node: PathName = node.parse().map_err(|e| anyhow!("{node}: {e}"))?;
+    let (Some(path), Some(name), Some(executable)) = (args.next(), args.next(), args.next()) else { return Err(anyhow!("usage: executable_dirs <path> <name> <executable>")) };
+    let node = PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
     let executable = PathBuf::from(executable);
     let dirs = executable_dirs()?;
     if !inside(&executable, &dirs)? {
@@ -84,19 +84,19 @@ async fn main() -> Result<()> {
             spec.config = row.config.clone();
         }
     }
-    let spec = nodes.iter_mut().find(|s| s.path == node).ok_or_else(|| anyhow!("the current Build names no {node}"))?;
+    let spec = nodes.iter_mut().find(|s| s.path == node).ok_or_else(|| anyhow!("the current Build names no path {path:?}, name {name:?}"))?;
     let image = spec.executable.as_ref().and_then(|b| b.image.clone());
-    spec.executable = Some(Binding { launch_id: node.kind.name().into(), executable: executable.clone(), sha256, image });
+    spec.executable = Some(Binding { launch_id: spec.kind.name().into(), executable: executable.clone(), sha256, image });
 
     let stream = match carrier.create(Change::Reconcile { based_on, nodes, topology_storage_provider: None }).await {
         Ok(s) => s,
         Err(CallEnd::Rejected { reason, detail }) => return Err(anyhow!("refused {reason}: {detail}")),
         Err(e) => return Err(e.into()),
     };
-    println!("replacing {node} onto {}: Build {}", executable.display(), stream.build_id().log());
+    println!("replacing path {path:?}, name {name:?} onto {}: Build {}", executable.display(), stream.build_id().log());
     let followed = carrier.follow(stream).await?;
     match followed.frames.last() {
-        Some(BuildFrame::Complete { .. }) => println!("{node} runs {}", executable.display()),
+        Some(BuildFrame::Complete { .. }) => println!("path {path:?}, name {name:?} runs {}", executable.display()),
         other => return Err(anyhow!("the Build ended {other:?}")),
     }
     Ok(())

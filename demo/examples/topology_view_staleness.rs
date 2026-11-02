@@ -14,7 +14,7 @@
 //! Run against a live estate (`scripts/demo-estate.sh up`):
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/topology_view_staleness [<path.name>]
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/topology_view_staleness [<path> <name>]
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{await_fact, Filter, MeshNode, NodeStatus, NodeView, Nodes, PathName, Peers};
@@ -43,9 +43,11 @@ async fn main() -> Result<()> {
     let nodes = Nodes::new(peers.carrier_at(entry.clone()));
 
     let all = nodes.get(&Filter::new()).await?;
-    let target: PathName = match std::env::args().nth(1) {
-        Some(arg) => arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?,
-        None => all
+    let mut args = std::env::args().skip(1);
+    let target: PathName = match (args.next(), args.next()) {
+        (Some(path), Some(name)) => PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?,
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage topology_view_staleness [<path> <name>]")),
+        _ => all
             .iter()
             .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
@@ -54,17 +56,17 @@ async fn main() -> Result<()> {
     let before: NodeView = all
         .into_iter()
         .find(|n| n.name == target)
-        .ok_or_else(|| anyhow!("no row holds {target}"))?;
-    let data_dir = before.data_dir.as_deref().ok_or_else(|| anyhow!("{target} has no data_dir"))?;
+        .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
+    let data_dir = before.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no data_dir", target.path, target.name))?;
     let fact = RuntimeFact::read_record(Path::new(data_dir))
         .ok_or_else(|| anyhow!("no runtime.json in {data_dir}"))?
         .map_err(|e| anyhow!(e))?;
     let RuntimeLocator::Process { pid, .. } = fact.locator else {
-        return Err(anyhow!("{target} is not a host process runtime"));
+        return Err(anyhow!("path {:?}, name {:?} is not a host process runtime", target.path, target.name));
     };
     println!(
-        "before: node={} node_id={} incarnation={:?} status={:?} pid={pid}",
-        before.name, before.node_id, before.incarnation_id, before.status
+        "before: path={:?} name={:?} node_id={} incarnation={:?} status={:?} pid={pid}",
+        before.name.path, before.name.name, before.node_id, before.incarnation_id, before.status
     );
 
     // The member goes silent: its runtime ends through the deployment provider, as an application's own
@@ -79,7 +81,7 @@ async fn main() -> Result<()> {
     let wait_bound = staleness_floor() * 3 + Duration::from_secs(15);
     let stale_res = await_fact(
         "node",
-        &entry.to_string(),
+        &birth.node_id.to_string(),
         "member marked PendingReconnect past staleness_floor",
         wait_bound,
         || async {
@@ -90,7 +92,7 @@ async fn main() -> Result<()> {
                 .find(|n| n.name == target)
                 .ok_or_else(|| rdm_client::CallEnd::NotFound {
                     read: "node.get",
-                    detail: format!("no row for {target}"),
+                    detail: format!("no row for path {:?}, name {:?}", target.path, target.name),
                 })
         },
         |n| n.status == NodeStatus::PendingReconnect,
@@ -99,13 +101,13 @@ async fn main() -> Result<()> {
     .await;
     let stale = stale_res?;
     println!(
-        "stale past staleness_floor: node={} node_id={} incarnation={:?} status={:?}",
-        stale.name, stale.node_id, stale.incarnation_id, stale.status
+        "stale past staleness_floor: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
+        stale.name.path, stale.name.name, stale.node_id, stale.incarnation_id, stale.status
     );
 
     let resumed = await_fact(
         "node",
-        &entry.to_string(),
+        &birth.node_id.to_string(),
         "the silent member's path is Ready again as a new birth (node recovery)",
         wait_bound,
         || async {
@@ -116,7 +118,7 @@ async fn main() -> Result<()> {
                 .find(|n| n.name == target)
                 .ok_or_else(|| rdm_client::CallEnd::NotFound {
                     read: "node.get",
-                    detail: format!("no row for {target}"),
+                    detail: format!("no row for path {:?}, name {:?}", target.path, target.name),
                 })
         },
         |n| n.status == NodeStatus::Ready && n.node_id != before.node_id,
@@ -124,8 +126,8 @@ async fn main() -> Result<()> {
     )
     .await?;
     println!(
-        "recovered after the silence: node={} node_id={} incarnation={:?} status={:?}",
-        resumed.name, resumed.node_id, resumed.incarnation_id, resumed.status
+        "recovered after the silence: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
+        resumed.name.path, resumed.name.name, resumed.node_id, resumed.incarnation_id, resumed.status
     );
     Ok(())
 }

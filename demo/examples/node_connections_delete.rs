@@ -18,7 +18,7 @@
 //! Run against a live estate (`scripts/demo-estate.sh up`):
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_connections_delete [<path.name>]
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_connections_delete [<path> <name>]
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_client::{
@@ -30,7 +30,7 @@ use rdm_core::NodeKind;
 use rdm_transport::{NodeTarget, RouteChoice};
 
 fn exact(n: &NodeView) -> Result<ExactBirth> {
-    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("{} has no live birth", n.name))?;
+    let incarnation = n.incarnation_id.clone().ok_or_else(|| anyhow!("path {:?}, name {:?} has no live birth", n.name.path, n.name.name))?;
     Ok(ExactBirth {
         target: NodeTarget::ExactNode(n.node_id.clone()),
         node_id: n.node_id.clone(),
@@ -52,24 +52,28 @@ async fn main() -> Result<()> {
 
     let all = nodes.get(&Filter::new()).await?;
     peers.learn(&all);
-    let target: PathName = match std::env::args().nth(1) {
-        Some(arg) => arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?,
-        None => all
+    let mut args = std::env::args().skip(1);
+    let target: PathName = match (args.next(), args.next()) {
+        (Some(path), Some(name)) => PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?,
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_connections_delete [<path> <name>]")),
+        _ => all
             .iter()
             .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
             .map(|n| n.name.clone())
             .ok_or_else(|| anyhow!("no Ready role node found in estate"))?,
     };
-    let row = all.iter().find(|n| n.name == target).ok_or_else(|| anyhow!("no row holds {target}"))?;
+    let row = all.iter().find(|n| n.name == target).ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.path, target.name))?;
     let primary = all
         .iter()
-        .find(|n| n.mesh == target.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary)
-        .ok_or_else(|| anyhow!("no row names {}'s mesh-primary", target.mesh))?;
+        .find(|n| n.mesh == row.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary)
+        .ok_or_else(|| anyhow!("no row names {}'s mesh-primary", row.mesh))?;
     let birth_target = exact(row)?;
 
     let held_before = connections.get(&birth_target, &Filter::new()).await?;
     println!(
-        "node.connection.get on {target} ({}): {} held entries",
+        "node.connection.get on path {:?}, name {:?} ({}): {} held entries",
+        target.path,
+        target.name,
         row.node_id,
         held_before.connections.len()
     );
@@ -92,7 +96,7 @@ async fn main() -> Result<()> {
             &ConnectionScope::All,
         )
         .await?;
-    println!("node.connection.delete {{ All }} via mesh-primary {}: {cut:?}", primary.name);
+    println!("node.connection.delete {{ All }} via mesh-primary path {:?}, name {:?}: {cut:?}", primary.name.path, primary.name.name);
 
     let mut stream = nodes.delete_connections(&target).await?;
     let mut saw_deleted_event = false;
@@ -114,13 +118,13 @@ async fn main() -> Result<()> {
         .await?
         .into_iter()
         .find(|n| n.name == target)
-        .ok_or_else(|| anyhow!("no row for {target} after node.connection.delete"))?;
+        .ok_or_else(|| anyhow!("no row for path {:?}, name {:?} after node.connection.delete", target.path, target.name))?;
     assert_eq!(after.status, NodeStatus::ConnectionsDeleted);
     assert_eq!(after.node_id, row.node_id);
     assert_eq!(after.incarnation_id, row.incarnation_id);
     println!(
-        "after node.connection.delete: node={} node_id={} incarnation={:?} status={:?}",
-        after.name, after.node_id, after.incarnation_id, after.status
+        "after node.connection.delete: path={:?} name={:?} node_id={} incarnation={:?} status={:?}",
+        after.name.path, after.name.name, after.node_id, after.incarnation_id, after.status
     );
     Ok(())
 }

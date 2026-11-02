@@ -43,15 +43,15 @@ async fn main() -> Result<()> {
         carrier.client(),
         &NodeTarget::CurrentPath(entry.clone()),
         "example-rafka-time",
-        Some(&entry.mesh),
+        Some(&birth.mesh),
         None,
     )
     .await
     .map_err(|e| anyhow!("{e:?}"))?;
     let fp_time = fp_read.rafka_time.ok_or_else(|| anyhow!("fabric-primary served no rafka_time"))?;
     println!(
-        "live fabric-primary {entry} served rafka_time: ms={} kind={:?}",
-        fp_time.ms, fp_time.kind
+        "live fabric-primary path {:?}, name {:?} served rafka_time: ms={} kind={:?}",
+        entry.path, entry.name, fp_time.ms, fp_time.kind
     );
 
     let member = all
@@ -69,10 +69,11 @@ async fn main() -> Result<()> {
     .map_err(|e| anyhow!("{e:?}"))?;
     let member_time = member_read
         .rafka_time
-        .ok_or_else(|| anyhow!("{} served no rafka_time", member.name))?;
+        .ok_or_else(|| anyhow!("path {:?}, name {:?} served no rafka_time", member.name.path, member.name.name))?;
     println!(
-        "live member {} served rafka_time: ms={} kind={:?} cert_issued_at={:?}",
-        member.name,
+        "live member path {:?}, name {:?} served rafka_time: ms={} kind={:?} cert_issued_at={:?}",
+        member.name.path,
+        member.name.name,
         member_time.ms,
         member_time.kind,
         member.cert.as_ref().map(|c| c.issued_at)
@@ -86,7 +87,7 @@ async fn main() -> Result<()> {
         &clock,
         Puller::MeshPrimary,
         "mesh2.admin.1",
-        Served { via: "get-topology", served_by: &member.name.to_string(), ms: member_time.ms, kind: member_time.kind },
+        Served { via: "get-topology", served_by: member.node_id.as_str(), ms: member_time.ms, kind: member_time.kind },
     )
     .unwrap_err();
     assert_eq!(replica_refusal, Refusal::ServedByAReplica);
@@ -105,7 +106,7 @@ async fn main() -> Result<()> {
         &clock,
         Puller::MeshPrimary,
         "mesh2.admin.1",
-        Served { via: "get-topology", served_by: &entry.to_string(), ms: fp_time.ms, kind: fp_time.kind },
+        Served { via: "get-topology", served_by: birth.node_id.as_str(), ms: fp_time.ms, kind: fp_time.kind },
     )
     .map_err(|e| anyhow!("{e}"))?;
     let t0 = clock.now_rafka_ms();

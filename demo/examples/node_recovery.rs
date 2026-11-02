@@ -5,21 +5,21 @@
 //! `PendingReconnect` at the staleness floor, runs the reach ladder `node.tickle` half a floor later
 //! (`tickle_ladder_at_default_budget()`, direct then `VIA_PEER_TICKLE_FANOUT` live peers at once), and
 //! on `unreached` inspects the birth's runtime (`node.runtime.inspect`). On `exited`, the mesh-primary
-//! opens a recovery attempt of the current Build on its mesh's rows and runs `node.delete:<path.name>`
-//! followed by `node.create:<path.name>` over the inherited `data_dir`, minting a new `node_id` and
+//! opens a recovery attempt of the current Build on its mesh's rows and runs `node.delete` of the exited
+//! node id followed by `node.create` at the same `(path, name)` over the inherited `data_dir`, minting a new `node_id` and
 //! `incarnation_id` while the current Build stays `Complete`.
 //!
 //! Build: `cargo build --example node_recovery` in `demo/`. Run against a live estate:
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_recovery [<path.name>]
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/node_recovery [<path> <name>]
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use rdm_admin::deployment::provider::{adopt, inspect_runtime, DeploymentProvider, TerminationMode};
 use rdm_admin::workflows::node_recovery::{tickle_ladder_at_default_budget, VIA_PEER_TICKLE_FANOUT};
 use rdm_client::{await_fact, Builds, Filter, MeshNode, NodeStatus, Nodes, PathName, Peers};
-use rdm_core::{NodeKind, RuntimeFact};
+use rdm_core::{NodeKind, OperationSubject, RuntimeFact};
 use std::path::Path;
 use std::time::Duration;
 
@@ -46,15 +46,17 @@ async fn main() -> Result<()> {
     let rows = nodes.get(&Filter::new()).await?;
     peers.learn_known(&rows);
 
-    let target = match std::env::args().nth(1) {
-        Some(arg) => {
-            let name: PathName = arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?;
+    let mut args = std::env::args().skip(1);
+    let target = match (args.next(), args.next()) {
+        (Some(path), Some(name)) => {
+            let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
             rows.iter()
                 .find(|n| n.name == name)
-                .ok_or_else(|| anyhow!("no row holds {name}"))?
+                .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", name.path, name.name))?
                 .clone()
         }
-        None => rows
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_recovery [<path> <name>]")),
+        _ => rows
             .iter()
             .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready role node in the estate"))?
@@ -63,11 +65,11 @@ async fn main() -> Result<()> {
     let dir = target
         .data_dir
         .as_deref()
-        .ok_or_else(|| anyhow!("{} carries no data_dir", target.name))?;
+        .ok_or_else(|| anyhow!("path {:?}, name {:?} carries no data_dir", target.name.path, target.name.name))?;
     let incarnation = target
         .incarnation_id
         .as_ref()
-        .ok_or_else(|| anyhow!("{} carries no incarnation", target.name))?;
+        .ok_or_else(|| anyhow!("path {:?}, name {:?} carries no incarnation", target.name.path, target.name.name))?;
     let fact = RuntimeFact::read_record(Path::new(dir))
         .ok_or_else(|| anyhow!("no runtime.json in {dir}"))?
         .map_err(|e| anyhow!(e))?;
@@ -75,8 +77,8 @@ async fn main() -> Result<()> {
     let handle = adopt(&provider, &fact).map_err(|e| anyhow!(e))?;
     let before_inspect = inspect_runtime(&provider, &fact, Some(dir), incarnation.as_str()).await;
     println!(
-        "before: {} {:?}, node_id {}, incarnation {}, data_dir {dir}, inspect {before_inspect:?}",
-        target.name, target.status, target.node_id, incarnation
+        "before: path {:?}, name {:?} {:?}, node_id {}, incarnation {}, data_dir {dir}, inspect {before_inspect:?}",
+        target.name.path, target.name.name, target.status, target.node_id, incarnation
     );
 
     provider
@@ -84,10 +86,10 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let after_inspect = inspect_runtime(&provider, &fact, Some(dir), incarnation.as_str()).await;
-    println!("terminated {}: inspect is now {after_inspect:?}; awaiting node recovery", target.name);
+    println!("terminated path {:?}, name {:?}: inspect is now {after_inspect:?}; awaiting node recovery", target.name.path, target.name.name);
 
     let (target_name, old_id) = (target.name.clone(), target.node_id.clone());
-    let filter = Filter::new().eq("mesh", [target_name.mesh.clone()]);
+    let filter = Filter::new().eq("mesh", [target.mesh.clone()]);
     let recovered = await_fact(
         "node",
         "fabric-primary",
@@ -102,18 +104,19 @@ async fn main() -> Result<()> {
         |list| {
             list.iter()
                 .find(|n| n.name == target_name)
-                .map(|n| format!("{} {:?} ({})", n.name, n.status, n.node_id))
-                .unwrap_or_else(|| format!("no {target_name}"))
+                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.name.path, n.name.name, n.status, n.node_id))
+                .unwrap_or_else(|| format!("no path {:?}, name {:?}", target_name.path, target_name.name))
         },
     )
     .await?;
     let row = recovered
         .iter()
         .find(|n| n.name == target.name)
-        .ok_or_else(|| anyhow!("no row holds {}", target.name))?;
+        .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", target.name.path, target.name.name))?;
     println!(
-        "recovered: {} {:?}, new node_id {}, incarnation {:?}, inherited data_dir {:?} (same={})",
-        row.name,
+        "recovered: path {:?}, name {:?} {:?}, new node_id {}, incarnation {:?}, inherited data_dir {:?} (same={})",
+        row.name.path,
+        row.name.name,
         row.status,
         row.node_id,
         row.incarnation_id,
@@ -126,10 +129,15 @@ async fn main() -> Result<()> {
         let ops: Vec<String> = b
             .steps
             .iter()
-            .filter(|s| s.operation.ends_with(&format!(":{}", target.name)) && s.step == "Complete")
-            .map(|s| format!("attempt {} {}", s.attempt, s.operation))
+            .filter(|s| s.step == "Complete")
+            .filter(|s| match &s.operation.subject {
+                Some(OperationSubject::Location(at)) => at == &target.name,
+                Some(OperationSubject::Node(id)) | Some(OperationSubject::Birth { node_id: id, .. }) => id == &old_id || id == &row.node_id,
+                _ => false,
+            })
+            .map(|s| format!("attempt {} {:?}", s.attempt, s.operation))
             .collect();
-        println!("current Build {} ({:?}): receipts for {}: {ops:?}", b.build_id.log(), b.phase, target.name);
+        println!("current Build {} ({:?}): receipts for path {:?}, name {:?}: {ops:?}", b.build_id.log(), b.phase, target.name.path, target.name.name);
     }
     Ok(())
 }

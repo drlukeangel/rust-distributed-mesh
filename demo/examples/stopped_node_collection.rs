@@ -60,15 +60,17 @@ async fn main() -> Result<()> {
     let rows = nodes.get(&Filter::new()).await?;
     peers.learn_known(&rows);
 
-    let target = match std::env::args().nth(1) {
-        Some(arg) => {
-            let name: PathName = arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?;
+    let mut args = std::env::args().skip(1);
+    let target = match (args.next(), args.next()) {
+        (Some(path), Some(name)) => {
+            let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
             rows.iter()
                 .find(|n| n.name == name)
-                .ok_or_else(|| anyhow!("no row holds {name}"))?
+                .ok_or_else(|| anyhow!("no row holds path {:?}, name {:?}", name.path, name.name))?
                 .clone()
         }
-        None => rows
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage stopped_node_collection [<path> <name>]")),
+        _ => rows
             .iter()
             .find(|n| {
                 n.kind != NodeKind::NodeAdmin
@@ -79,21 +81,21 @@ async fn main() -> Result<()> {
             .clone(),
     };
     println!(
-        "before stop: {} status={:?} stopped={} node_id={}",
-        target.name, target.status, target.stopped, target.node_id
+        "before stop: path {:?}, name {:?} status={:?} stopped={} node_id={}",
+        target.name.path, target.name.name, target.status, target.stopped, target.node_id
     );
 
-    finish(&format!("node.stop {}", target.name), nodes.stop(&target.name).await?).await?;
+    finish(&format!("node.stop path {:?}, name {:?}", target.name.path, target.name.name), nodes.stop(&target.name).await?).await?;
     let stopped_rows = nodes.get(&Filter::new().eq("mesh", [target.mesh.clone()])).await?;
     if let Some(s) = stopped_rows.iter().find(|n| n.name == target.name) {
         println!(
-            "after stop:  {} status={:?} stopped={} inc={:?}",
-            s.name, s.status, s.stopped, s.incarnation_id
+            "after stop:  path {:?}, name {:?} status={:?} stopped={} inc={:?}",
+            s.name.path, s.name.name, s.status, s.stopped, s.incarnation_id
         );
     }
 
     let target_name = target.name.clone();
-    let filter = Filter::new().eq("mesh", [target_name.mesh.clone()]);
+    let filter = Filter::new().eq("mesh", [target.mesh.clone()]);
     await_fact(
         "node",
         "fabric-primary",
@@ -104,8 +106,8 @@ async fn main() -> Result<()> {
         |list| {
             list.iter()
                 .find(|n| n.name == target_name)
-                .map(|n| format!("{} {:?} (stopped={})", n.name, n.status, n.stopped))
-                .unwrap_or_else(|| format!("{target_name} collected"))
+                .map(|n| format!("path {:?}, name {:?} {:?} (stopped={})", n.name.path, n.name.name, n.status, n.stopped))
+                .unwrap_or_else(|| format!("path {:?}, name {:?} collected", target_name.path, target_name.name))
         },
     )
     .await?;
@@ -113,8 +115,9 @@ async fn main() -> Result<()> {
     let all_builds = builds.get(&Filter::new()).await?;
     let gc_build = all_builds.last().ok_or_else(|| anyhow!("no builds"))?;
     println!(
-        "collected {}: latest build={} phase={:?}",
-        target_name,
+        "collected path {:?}, name {:?}: latest build={} phase={:?}",
+        target_name.path,
+        target_name.name,
         gc_build.build_id.log(),
         gc_build.phase
     );

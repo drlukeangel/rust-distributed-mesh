@@ -32,12 +32,14 @@ async fn main() -> Result<()> {
     let rows = nodes.get(&Filter::new()).await?;
     peers.learn_known(&rows);
 
-    let target = match std::env::args().nth(1) {
-        Some(arg) => {
-            let name: PathName = arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?;
-            rows.iter().find(|n| n.name == name).ok_or_else(|| anyhow!("missing {name}"))?
+    let mut args = std::env::args().skip(1);
+    let target = match (args.next(), args.next()) {
+        (Some(path), Some(name)) => {
+            let name = PathName::new(path.as_str(), name.as_str()).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
+            rows.iter().find(|n| n.name == name).ok_or_else(|| anyhow!("missing path {:?}, name {:?}", name.path, name.name))?
         }
-        None => rows
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage node_runtime_inspect [<path> <name>]")),
+        _ => rows
             .iter()
             .find(|n| n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no ready role node in the estate"))?,
@@ -50,7 +52,7 @@ async fn main() -> Result<()> {
 
     let provider = ProcessDeploymentProvider::new();
     let live = inspect_runtime(&provider, &fact, Some(dir), inc.as_str()).await;
-    println!("live member {} ({}): {:?}", target.name, inc, live);
+    println!("live member path {:?}, name {:?} ({}): {:?}", target.name.path, target.name.name, inc, live);
 
     let mut foreign = fact.clone();
     foreign.control_domain = "process:foreign-boot:0".to_string();

@@ -19,7 +19,7 @@
 use anyhow::{anyhow, Result};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::launch::DeclaredListeners;
-use rdm_core::{NodeKind, PathName};
+use rdm_core::NodeKind;
 use tokio::io::AsyncWriteExt;
 
 const SERVICE: &str = "example-named-listeners";
@@ -38,12 +38,12 @@ async fn gateway() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry(SERVICE);
     let launch = rdm_node::launch_for(rdm_node::Role { kind: NodeKind::Gateway })?;
     let running = rdm_node::node::start_pre_node_ready(&launch, rdm_node::node_hooks::NodeHooks::none(), |b, _| b).await?;
-    let (_, bound) = running.listeners().iter().find(|(name, _)| name == CLIENT).ok_or_else(|| anyhow!("{} was launched without its {CLIENT} listener", launch.name))?;
+    let (_, bound) = running.listeners().iter().find(|(name, _)| name == CLIENT).ok_or_else(|| anyhow!("path {:?}, name {:?} was launched without its {CLIENT} listener", launch.name.path, launch.name.name))?;
     let std_listener = bound.try_clone()?;
     std_listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(std_listener)?;
-    tracing::info!(target: "example", node = %launch.name, addr = %listener.local_addr()?, "serving on the {CLIENT} listener");
-    let greeting = format!("hello from {}\n", launch.name);
+    tracing::info!(target: "example", path = %launch.name.path, name = %launch.name.name, addr = %listener.local_addr()?, "serving on the {CLIENT} listener");
+    let greeting = format!("hello from path {:?}, name {:?}\n", launch.name.path, launch.name.name);
     tokio::spawn(async move {
         while let Ok((mut conn, _)) = listener.accept().await {
             let greeting = greeting.clone();
@@ -59,10 +59,10 @@ async fn gateway() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let launched_as = std::env::var("RDM_NODE_NAME").ok().and_then(|n| n.parse::<PathName>().ok());
+    let launched_as = std::env::var(rdm_core::launch::ENV_NODE_KIND).ok().and_then(|k| NodeKind::ALL.into_iter().find(|kind| kind.name() == k));
     match launched_as {
-        Some(name) if name.kind == NodeKind::Gateway => gateway().await,
-        Some(name) if name.kind != NodeKind::NodeAdmin => Err(anyhow!("{name}: this example runs node-admins and gateways only")),
+        Some(NodeKind::Gateway) => gateway().await,
+        Some(kind) if kind != NodeKind::NodeAdmin => Err(anyhow!("{}: this example runs node-admins and gateways only", kind.name())),
         _ => {
             rdm_admin::entry::run_with(SERVICE, |cfg| Wiring {
                 listeners: listeners(),

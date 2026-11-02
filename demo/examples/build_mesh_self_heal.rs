@@ -14,7 +14,7 @@
 //! Run against a live estate (`scripts/demo-estate.sh up`):
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" RDM_STORE_DIR=<root>/store target/debug/examples/build_mesh_self_heal [<path.name>]
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" RDM_STORE_DIR=<root>/store target/debug/examples/build_mesh_self_heal [<path> <name>]
 //! ```
 use anyhow::{anyhow, Context, Result};
 use rdm_admin::build::BuildId;
@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
         .context("set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed")?;
     let birth: MeshNode = serde_json::from_str(&json).context("RDM_NODE_ADMIN_BIRTH is not a birth")?;
     let entry = birth.name.clone();
+    let at = format!("path {:?}, name {:?}", entry.path, entry.name);
     let peers = Peers::at(&birth).await.map_err(|e| anyhow!(e))?;
     let carrier = peers.carrier_at(entry.clone());
     let nodes = Nodes::new(carrier.clone());
@@ -69,14 +70,15 @@ async fn main() -> Result<()> {
     let build_id = before_build.build_id.clone();
 
     let all = nodes.get(&Filter::new()).await?;
-    let target = match std::env::args().nth(1) {
-        Some(arg) => {
-            let name: PathName = arg.parse().map_err(|e| anyhow!("{arg}: {e}"))?;
-            all.into_iter().find(|n| n.name == name).ok_or_else(|| anyhow!("no row holds {name}"))?
+    let target = match (std::env::args().nth(1), std::env::args().nth(2)) {
+        (Some(path), Some(name)) => {
+            let node = PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
+            all.into_iter().find(|n| n.name == node).ok_or_else(|| anyhow!("no row holds path {path:?}, name {name:?}"))?
         }
-        None => all
+        (Some(path), None) => return Err(anyhow!("path {path:?} names no name: usage: build_mesh_self_heal [<path> <name>]")),
+        _ => all
             .into_iter()
-            .find(|n| n.mesh != entry.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
+            .find(|n| n.mesh != birth.mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
             .ok_or_else(|| anyhow!("no Ready role node in peer mesh"))?,
     };
     let mesh = target.mesh.clone();
@@ -87,7 +89,7 @@ async fn main() -> Result<()> {
         before_build.build_id, before_build.phase, before_build.attempt, mesh, before_lane_attempt
     );
 
-    let dir = target.data_dir.as_deref().ok_or_else(|| anyhow!("{} has no data_dir", target.name))?;
+    let dir = target.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} has no data_dir", target.name.path, target.name.name))?;
     let fact = RuntimeFact::read_record(Path::new(dir))
         .ok_or_else(|| anyhow!("no runtime.json in {dir}"))?
         .map_err(|e| anyhow!(e))?;
@@ -98,8 +100,8 @@ async fn main() -> Result<()> {
         .await
         .map_err(|e| anyhow!("{e}"))?;
     println!(
-        "terminated {} ({}) in peer mesh {}; awaiting mesh-primary self-heal attempt on Build {}",
-        target.name, target.node_id, mesh, before_build.build_id
+        "terminated path {:?}, name {:?} ({}) in peer mesh {}; awaiting mesh-primary self-heal attempt on Build {}",
+        target.name.path, target.name.name, target.node_id, mesh, before_build.build_id
     );
 
     let old_id = target.node_id.clone();
@@ -107,7 +109,7 @@ async fn main() -> Result<()> {
     let filter = Filter::new().eq("path", [target_name.path()]).eq("name", [target_name.name()]);
     let _ = await_fact(
         "node",
-        &entry.to_string(),
+        &at,
         "peer mesh member self-healed Ready with new node_id",
         Duration::from_secs(90),
         || nodes.get(&filter),
@@ -118,7 +120,7 @@ async fn main() -> Result<()> {
 
     let after_proj = await_fact(
         "build log",
-        &entry.to_string(),
+        &at,
         "mesh drift lane attempt completed on current Build",
         Duration::from_secs(30),
         || read_projection(&records, &build_id),
@@ -139,7 +141,7 @@ async fn main() -> Result<()> {
         .steps
         .iter()
         .filter(|r| r.attempt == lane.attempt)
-        .map(|r| format!("{}:{}", r.operation, r.step))
+        .map(|r| format!("{:?}:{}", r.operation, r.step))
         .collect();
     println!(
         "after self-heal: build_id={} (unchanged) phase={:?} lane({})_attempt={} executor={:?} reason={} steps={}",

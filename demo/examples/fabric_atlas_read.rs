@@ -43,10 +43,10 @@ async fn main() -> Result<()> {
     // The atlas, at the fabric-primary.
     let fabric_primary = fabric.fabric_primary.clone().ok_or_else(|| anyhow!("fabric.get names no fabric-primary"))?;
     peers.learn(&Nodes::new(carrier).get(&Filter::new()).await?);
-    let atlas = Fabrics::new(peers.carrier_at(fabric_primary)).atlas_get().await?;
+    let atlas = Fabrics::new(peers.carrier_for(fabric_primary)).atlas_get().await?;
     for n in &atlas.nodes {
-        let pending = n.accepted.as_deref().map(|op| format!(", {op} running")).unwrap_or_default();
-        println!("  {} {:?}{}{pending} (gossip view: {:?})", n.name, n.status, if n.stopped { " stopped" } else { "" }, n.observed);
+        let pending = n.accepted.as_ref().map(|op| format!(", {op:?} running")).unwrap_or_default();
+        println!("  path {:?}, name {:?} {:?}{}{pending} (gossip view: {:?})", n.name.path, n.name.name, n.status, if n.stopped { " stopped" } else { "" }, n.observed);
     }
     Ok(())
 }

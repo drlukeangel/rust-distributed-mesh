@@ -58,12 +58,12 @@ async fn main() -> Result<()> {
         match frame? {
             BuildFrame::Step { attempt, operation, step } => {
                 step_count += 1;
-                if step == "mesh.deleted" || step == "fabric.deleted" || operation.starts_with("mesh.delete:") {
-                    println!("  step #{step_count} (attempt {attempt}): {operation} -> {step}");
+                if step == "mesh.deleted" || step == "fabric.deleted" || operation.action == "mesh.delete" {
+                    println!("  step #{step_count} (attempt {attempt}): {operation:?} -> {step}");
                 }
             }
             BuildFrame::Blocked { attempt, operation, step, reason } => {
-                println!("  blocked (attempt {attempt}): {operation}/{step} ({reason})");
+                println!("  blocked (attempt {attempt}): {operation:?}/{step} ({reason})");
             }
             BuildFrame::Complete { attempt } => {
                 println!(
@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
     while let Some(frame) = del_stream.next().await {
         match frame {
             Ok(f) => {
-                println!("node.delete {entry} frame: {f:?}");
+                println!("node.delete path {:?}, name {:?} frame: {f:?}", entry.path, entry.name);
                 if f == Frame::Event(NodeEvent::Deleted) {
                     deleted = true;
                 }
@@ -92,12 +92,12 @@ async fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                println!("node.delete {entry} stream closed after final reply: {e}");
+                println!("node.delete path {:?}, name {:?} stream closed after final reply: {e}", entry.path, entry.name);
                 break;
             }
         }
     }
     assert!(deleted, "fabric-primary must emit NodeEvent::Deleted as its final reply");
-    println!("fabric-primary {entry} deleted: fabric teardown complete");
+    println!("fabric-primary path {:?}, name {:?} deleted: fabric teardown complete", entry.path, entry.name);
     Ok(())
 }

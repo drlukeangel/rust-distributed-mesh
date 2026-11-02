@@ -14,7 +14,7 @@
 //! (`scripts/demo-estate.sh up`):
 //!
 //! ```text
-//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/build_config_update <path.name>
+//! RDM_NODE_ADMIN_BIRTH="$(cat <root>/birth.json)" target/debug/examples/build_config_update <path> <name>
 //! ```
 
 use anyhow::{anyhow, Context, Result};
@@ -45,7 +45,7 @@ async fn build(carrier: &BuildCarrier, node: &PathName, change: impl FnOnce(&mut
             spec.config = row.config.clone();
         }
     }
-    let spec = nodes.iter_mut().find(|s| s.path == *node).ok_or_else(|| anyhow!("the current Build names no {node}"))?;
+    let spec = nodes.iter_mut().find(|s| s.path == *node).ok_or_else(|| anyhow!("the current Build names no path {:?}, name {:?}", node.path, node.name))?;
     change(&mut spec.config);
     let config = spec.config.clone();
     let stream = match carrier.create(Change::Reconcile { based_on, nodes, topology_storage_provider: None }).await {
@@ -53,7 +53,7 @@ async fn build(carrier: &BuildCarrier, node: &PathName, change: impl FnOnce(&mut
         Err(CallEnd::Rejected { reason, detail }) => return Err(anyhow!("refused {reason}: {detail}")),
         Err(e) => return Err(e.into()),
     };
-    println!("Build {}: {node} config {config:?}", stream.build_id().log());
+    println!("Build {}: path {:?}, name {:?} config {config:?}", stream.build_id().log(), node.path, node.name);
     match carrier.follow(stream).await?.frames.last() {
         Some(BuildFrame::Complete { .. }) => Ok(()),
         other => Err(anyhow!("the Build ended {other:?}")),
@@ -62,15 +62,15 @@ async fn build(carrier: &BuildCarrier, node: &PathName, change: impl FnOnce(&mut
 
 /// `node`'s config as its row holds it.
 async fn stored(carrier: &BuildCarrier, node: &PathName) -> Result<BTreeMap<String, String>> {
-    let rows = Nodes::new(carrier.clone()).get(&current().eq("name", [node.to_string()])).await?;
-    Ok(rows.into_iter().next().ok_or_else(|| anyhow!("node.get answered no current {node}"))?.config)
+    let rows = Nodes::new(carrier.clone()).get(&current().eq("path", [node.path.clone()]).eq("name", [node.name.clone()])).await?;
+    Ok(rows.into_iter().next().ok_or_else(|| anyhow!("node.get answered no current path {:?}, name {:?}", node.path, node.name))?.config)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let _telemetry = rdm_transport::init_evidence_telemetry("example-build-config-update");
-    let node = std::env::args().nth(1).ok_or_else(|| anyhow!("usage: build_config_update <path.name>"))?;
-    let node: PathName = node.parse().map_err(|e| anyhow!("{node}: {e}"))?;
+    let (Some(path), Some(name)) = (std::env::args().nth(1), std::env::args().nth(2)) else { return Err(anyhow!("usage: build_config_update <path> <name>")) };
+    let node = PathName::new(&path, &name).map_err(|e| anyhow!("path {path:?}, name {name:?}: {e}"))?;
     let (peers, entry) = enter().await?;
     let carrier = peers.carrier_at(entry);
 
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
         c.insert("tier".into(), "gold".into());
     })
     .await?;
-    println!("after the first Build: {node} stores {:?}", stored(&carrier, &node).await?);
+    println!("after the first Build: path {:?}, name {:?} stores {:?}", node.path, node.name, stored(&carrier, &node).await?);
 
     // The second Build changes one key; the rows it is composed from carry the rest, so `tier` stays.
     build(&carrier, &node, |c| {
@@ -87,9 +87,9 @@ async fn main() -> Result<()> {
     })
     .await?;
     let after = stored(&carrier, &node).await?;
-    println!("after the second Build: {node} stores {after:?}");
+    println!("after the second Build: path {:?}, name {:?} stores {after:?}", node.path, node.name);
     if after.get("zone").map(String::as_str) != Some("b") || after.get("tier").map(String::as_str) != Some("gold") {
-        return Err(anyhow!("{node} stores {after:?}, not zone=b with tier=gold"));
+        return Err(anyhow!("path {:?}, name {:?} stores {after:?}, not zone=b with tier=gold", node.path, node.name));
     }
     Ok(())
 }

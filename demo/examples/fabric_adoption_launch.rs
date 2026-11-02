@@ -3,11 +3,12 @@
 //! data directory is gone too (`rdm_admin::AdminConfig::from_env`, `AdminConfig::adopt`).
 //!
 //! When no node-admin lives, a person or a script launches one node-admin at the lost fabric-primary's
-//! `path.name` with no launcher (`RDM_NODE_ID` and `RDM_LAUNCHER` unset), given `RDM_NODE_NAME`,
-//! `RDM_FABRIC_ID`, `RDM_MESH` and `RDM_STORE_DIR`. `AdminConfig::from_env` tells that adoption launch
-//! from Day 0 by `RDM_NODE_NAME` alone: it sets `adopt: Some(<path.name>)`, reuses the fabric id
-//! `RDM_FABRIC_ID` names without minting one, and mints a fresh `node_id` for the new birth. A recovery
-//! flag (`RDM_FABRIC_PRIMARY`, `RDM_MESH_PRIMARY`) or a non-admin `path.name` is refused by name.
+//! `(path, name)` with no launcher (`RDM_NODE_ID` and `RDM_LAUNCHER` unset), given `RDM_NODE_PATH`,
+//! `RDM_NODE_NAME`, `RDM_FABRIC_ID`, `RDM_MESH` and `RDM_STORE_DIR`. `AdminConfig::from_env` tells that
+//! adoption launch from Day 0 by `RDM_NODE_NAME` alone: it sets `adopt: Some((path, name))`, reuses the
+//! fabric id `RDM_FABRIC_ID` names without minting one, and mints a fresh `node_id` for the new birth. A
+//! recovery flag (`RDM_FABRIC_PRIMARY`, `RDM_MESH_PRIMARY`) or a non-admin `RDM_NODE_KIND` is refused by
+//! name.
 //!
 //! Build: `cargo build --example fabric_adoption_launch` in `demo/`. Run against a live estate:
 //!
@@ -51,24 +52,25 @@ async fn main() -> Result<()> {
         .and_then(|d| Path::new(d).parent())
         .map(|root| root.join("store"))
         .unwrap_or_else(|| std::env::temp_dir().join("rdm-store"));
-    let fresh_data_dir = std::env::temp_dir().join(format!("adopt-{}", fp.name));
+    let fresh_data_dir = std::env::temp_dir().join(format!("adopt-{}-{}", fp.name.path, fp.name.name));
 
     let base: BTreeMap<&str, String> = BTreeMap::from([
         ("RDM_FABRIC", fabric.name.clone()),
         ("RDM_FABRIC_ID", fabric.id.to_string()),
         ("RDM_MESH", fp.mesh.clone()),
-        ("RDM_NODE_NAME", fp.name.to_string()),
+        ("RDM_NODE_PATH", fp.name.path.clone()),
+        ("RDM_NODE_NAME", fp.name.name.clone()),
         ("RDM_STORE_DIR", store_dir.display().to_string()),
         ("RDM_DATA_DIR", fresh_data_dir.display().to_string()),
     ]);
     let cfg = AdminConfig::from_env(|k| base.get(k).cloned()).map_err(|e| anyhow!(e))?;
     println!(
-        "live fabric {} ({}): lost fabric-primary {} (old node_id {})",
-        fabric.name, fabric.id, fp.name, fp.node_id
+        "live fabric {} ({}): lost fabric-primary path {:?}, name {:?} (old node_id {})",
+        fabric.name, fabric.id, fp.name.path, fp.name.name, fp.node_id
     );
     println!(
         "adoption launch config: adopt={:?}, fabric_id={} (named={}), mesh={}, new node_id={}",
-        cfg.adopt.as_ref().map(|p| p.to_string()),
+        cfg.adopt.as_ref().map(|p| (&p.path, &p.name)),
         cfg.fabric_id,
         cfg.fabric_id_named,
         cfg.mesh,
@@ -83,12 +85,12 @@ async fn main() -> Result<()> {
         Ok(_) => return Err(anyhow!("expected RDM_FABRIC_PRIMARY with RDM_NODE_NAME to be refused")),
     }
 
-    // A non-admin path.name in RDM_NODE_NAME is refused by name.
+    // A non-admin kind in RDM_NODE_KIND is refused by name: the kind is explicit, never read off the path.
     let mut non_admin = base;
-    non_admin.insert("RDM_NODE_NAME", format!("{}.broker.1", fp.mesh));
+    non_admin.insert("RDM_NODE_KIND", rdm_core::NodeKind::Broker.name().into());
     match AdminConfig::from_env(|k| non_admin.get(k).cloned()) {
-        Err(refusal) => println!("with non-admin RDM_NODE_NAME: refused ({refusal})"),
-        Ok(_) => return Err(anyhow!("expected non-admin RDM_NODE_NAME to be refused")),
+        Err(refusal) => println!("with non-admin RDM_NODE_KIND: refused ({refusal})"),
+        Ok(_) => return Err(anyhow!("expected non-admin RDM_NODE_KIND to be refused")),
     }
     Ok(())
 }

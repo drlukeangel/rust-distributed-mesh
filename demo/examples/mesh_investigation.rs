@@ -37,10 +37,10 @@ async fn enter() -> Result<(Peers, PathName)> {
 }
 
 async fn terminate_birth(provider: &ProcessDeploymentProvider, row: &NodeView) -> Result<u32> {
-    let dir = row.data_dir.as_deref().ok_or_else(|| anyhow!("{} carries no data_dir", row.name))?;
+    let dir = row.data_dir.as_deref().ok_or_else(|| anyhow!("path {:?}, name {:?} carries no data_dir", row.name.path, row.name.name))?;
     let fact = RuntimeFact::read_record(Path::new(dir)).ok_or_else(|| anyhow!("no runtime.json in {dir}"))?.map_err(|e| anyhow!(e))?;
     let handle = adopt(provider, &fact).map_err(|e| anyhow!(e))?;
-    let pid = handle.pid.ok_or_else(|| anyhow!("{} has no pid", row.name))?;
+    let pid = handle.pid.ok_or_else(|| anyhow!("path {:?}, name {:?} has no pid", row.name.path, row.name.name))?;
     provider.terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.map_err(|e| anyhow!("{e}"))?;
     Ok(pid)
 }
@@ -83,11 +83,11 @@ async fn main() -> Result<()> {
         .filter(|n| n.mesh == peer_mesh && n.kind == NodeKind::NodeAdmin)
         .cloned()
         .collect();
-    let carriers: Vec<String> = rows
+    let carriers: Vec<PathName> = rows
         .iter()
         .filter(|n| n.mesh == peer_mesh && n.kind != NodeKind::NodeAdmin && n.status == NodeStatus::Ready)
         .take(3)
-        .map(|n| n.name.to_string())
+        .map(|n| n.name.clone())
         .collect();
 
     let provider = ProcessDeploymentProvider::new();
@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
     for admin in &peer_admins {
         let pid = terminate_birth(&provider, admin).await?;
         old_ids.insert(admin.name.clone(), admin.node_id.clone());
-        println!("terminated {} (node_id {}, pid {pid}); live carriers in {peer_mesh}: {carriers:?}", admin.name, admin.node_id);
+        println!("terminated path {:?}, name {:?} (node_id {}, pid {pid}); live carriers in {peer_mesh}: {carriers:?}", admin.name.path, admin.name.name, admin.node_id);
     }
 
     let fp_carrier = peers.carrier_at(fp.name.clone());
@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
     let filter = Filter::new().eq("mesh", [peer_mesh.clone()]);
     let recovered = await_fact(
         "node",
-        &fp.name.to_string(),
+        &format!("path {:?}, name {:?}", fp.name.path, fp.name.name),
         "peer-mesh node-admins re-created and ready",
         Duration::from_secs(120),
         || fp_nodes.get(&filter),
@@ -115,14 +115,14 @@ async fn main() -> Result<()> {
         |list| {
             list.iter()
                 .filter(|n| n.kind == NodeKind::NodeAdmin)
-                .map(|n| format!("{} {:?} ({})", n.name, n.status, n.node_id))
+                .map(|n| format!("path {:?}, name {:?} {:?} ({})", n.name.path, n.name.name, n.status, n.node_id))
                 .collect::<Vec<_>>()
                 .join(", ")
         },
     )
     .await?;
     for n in recovered.iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
-        println!("recovered {}: {:?}, new node_id {}, incarnation {:?}, is_primary {}", n.name, n.status, n.node_id, n.incarnation_id, n.is_primary);
+        println!("recovered path {:?}, name {:?}: {:?}, new node_id {}, incarnation {:?}, is_primary {}", n.name.path, n.name.name, n.status, n.node_id, n.incarnation_id, n.is_primary);
     }
 
     let fabric = Fabrics::new(fp_carrier)
