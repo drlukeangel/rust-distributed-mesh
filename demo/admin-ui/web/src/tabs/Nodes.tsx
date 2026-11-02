@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type TopologyNode } from "../api";
+import { api, comparePathName, pathNameText, type PathName, type TopologyNode } from "../api";
+import { NodeName } from "../NodeName";
 
 const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -13,25 +14,25 @@ export function Nodes() {
     return () => clearInterval(id);
   }, []);
 
-  const act = async (what: string, name: string, f: () => Promise<{ build_id: string; attempt: number }>) => {
+  const act = async (what: string, node: PathName, f: () => Promise<{ build_id: string; attempt: number }>) => {
     try {
       const r = await f();
-      setMsg(`${what} ${name}: build ${r.build_id} attempt ${r.attempt}`);
+      setMsg(`${what} ${pathNameText(node)}: build ${r.build_id} attempt ${r.attempt}`);
     } catch (e) {
-      setMsg(`${what} ${name} refused: ${reason(e)}`);
+      setMsg(`${what} ${pathNameText(node)} refused: ${reason(e)}`);
     }
     load();
   };
 
   if (nodes.length === 0) return <div className="card muted">no nodes yet</div>;
-  const sorted = [...nodes].sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = [...nodes].sort((a, b) => comparePathName(a.name, b.name));
   return (
     <div>
       {msg && <div className="card mono" style={{ marginBottom: 8 }}>{msg}</div>}
       <div className="grid grid-cards">
         {sorted.map((n) => (
-          <div key={n.name} className="card">
-            <div className="mono" style={{ color: n.kind === "node_admin" ? "#e3b341" : "#c9d1d9", fontWeight: 600 }}>{n.name}</div>
+          <div key={n.node_id} className="card">
+            <div className="mono" style={{ color: n.kind === "node_admin" ? "#e3b341" : "#c9d1d9", fontWeight: 600 }}><NodeName node={n.name} /></div>
             <div className="muted mono" style={{ fontSize: 11, marginTop: 4 }}>
               kind: {n.kind}<br />
               mesh: {n.mesh}<br />

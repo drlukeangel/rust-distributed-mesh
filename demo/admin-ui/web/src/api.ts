@@ -2,6 +2,16 @@ export type ManagedKind = "rpc_node" | "node_admin" | "gateway" | "compute" | "b
 /// A mesh's desired counts, as node-admin's Build takes them.
 export type MeshShape = { name: string; node_admin: number; rpc_node?: number; gateway?: number; compute?: number; broker?: number };
 
+/// A node's two properties, its path and its name: never joined into one string.
+export interface PathName {
+  path: string;
+  name: string;
+}
+export const samePathName = (a: PathName, b: PathName) => a.path === b.path && a.name === b.name;
+export const comparePathName = (a: PathName, b: PathName) => a.path.localeCompare(b.path) || a.name.localeCompare(b.name);
+/// A node's path and name as text, for a message or an option.
+export const pathNameText = (n: PathName) => `path ${n.path}, name ${n.name}`;
+
 export interface BuildAccepted {
   build_id: string;
   attempt: number;
@@ -12,7 +22,10 @@ export interface FabricInfo {
   status: string;
   provider: string;
   build_id: string | null;
-  fabric_primary: string | null;
+  /// The fabric-primary's path and name, when node-admin's view holds its row.
+  fabric_primary: PathName | null;
+  /// The fabric-primary's node id, as `fabric.get` names it.
+  fabric_primary_id: string | null;
 }
 export interface MeshInfo {
   name: string;
@@ -37,7 +50,7 @@ export interface Overview {
 }
 
 export interface TopologyNode {
-  name: string;
+  name: PathName;
   kind: string;
   mesh: string;
   status: string;
@@ -57,6 +70,7 @@ export interface Connection {
   carrier: string | null;
   reason: string | null;
   logged_at_ms: number;
+  /// The node id of the node that answered the fact.
   reported_by: string;
 }
 export interface Topology {
@@ -88,10 +102,15 @@ export interface Builds {
   builds: BuildView[];
 }
 
+/// What a fault, a cut or a heal is aimed at.
+export type Target =
+  | { scope: "node"; path: string; name: string }
+  | { scope: "mesh"; mesh: string }
+  | { scope: "cut"; cut: number };
 export interface FaultRecord {
   id: number;
   ts_ms: number;
-  target: string;
+  target: Target;
   action: string;
   outcome: "applied" | "refused";
   detail: unknown;
@@ -99,19 +118,24 @@ export interface FaultRecord {
 export interface Cut {
   id: number;
   scope: string;
-  target: string;
+  target: Target;
   ports: number[];
   since_ms: number;
 }
 export interface ChaosState {
-  fabric_primary: string | null;
+  fabric_primary: PathName | null;
   faults: FaultRecord[];
   cuts: Cut[];
 }
 
 export interface TimelineEvent {
   ts_ms: number;
-  node: string;
+  /// The node the event's span names: its path and name, and its id, each when carried.
+  node_path: string | null;
+  node_name: string | null;
+  node_id: string | null;
+  /// The process that wrote it (`<bin>.<pid>` of its span file), or `ui`.
+  process: string;
   name: string;
   summary: string;
   high_volume: boolean;
@@ -153,30 +177,33 @@ const post = (body?: unknown): RequestInit => ({
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 
+/// The UI's route of one node: `/api/nodes/{path}/{name}`.
+const nodeRoute = (n: PathName) => `/api/nodes/${encodeURIComponent(n.path)}/${encodeURIComponent(n.name)}`;
+
 export const api = {
   overview: () => call<Overview>("/api/overview"),
   topology: () => call<Topology>("/api/topology"),
   builds: () => call<Builds>("/api/builds"),
   chaos: () => call<ChaosState>("/api/chaos"),
-  fault: (node: string, action: "kill" | "stop" | "continue") =>
-    call<FaultRecord>("/api/chaos/fault", post({ node, action })),
-  cut: (scope: "node" | "mesh", target: string) =>
-    call<FaultRecord>("/api/chaos/cut", post({ scope, target })),
+  fault: (node: PathName, action: "kill" | "stop" | "continue") =>
+    call<FaultRecord>("/api/chaos/fault", post({ path: node.path, name: node.name, action })),
+  cut: (target: Exclude<Target, { scope: "cut" }>) =>
+    call<FaultRecord>("/api/chaos/cut", post(target)),
   heal: (id: number) => call<FaultRecord>("/api/chaos/heal", post({ id })),
   timeline: (all: boolean) => call<Timeline>(`/api/timeline?all=${all ? 1 : 0}&limit=400`),
-  bootWaterfall: (node: string) =>
-    call<BootWaterfallResponse>(`/api/boot-trace?service=${encodeURIComponent(node)}`),
+  bootWaterfall: (node_id: string, kind: string) =>
+    call<BootWaterfallResponse>(`/api/boot-trace?node_id=${encodeURIComponent(node_id)}&kind=${encodeURIComponent(kind)}`),
   bootstrap: (meshes?: MeshShape[]) => call<BuildAccepted>("/api/bootstrap", meshes ? post({ meshes }) : { method: "POST" }),
   spawn: (kind: ManagedKind, mesh: string) =>
     call<BuildAccepted>("/api/nodes/spawn", post({ mesh, kind })),
-  stop: (name: string) =>
-    call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/stop`, { method: "POST" }),
-  start: (name: string) =>
-    call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/start`, { method: "POST" }),
-  remove: (name: string) =>
-    call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}`, { method: "DELETE" }),
-  replace: (name: string, executable: string) =>
-    call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/replace`, post({ executable })),
+  stop: (node: PathName) =>
+    call<BuildAccepted>(`${nodeRoute(node)}/stop`, { method: "POST" }),
+  start: (node: PathName) =>
+    call<BuildAccepted>(`${nodeRoute(node)}/start`, { method: "POST" }),
+  remove: (node: PathName) =>
+    call<BuildAccepted>(nodeRoute(node), { method: "DELETE" }),
+  replace: (node: PathName, executable: string) =>
+    call<BuildAccepted>(`${nodeRoute(node)}/replace`, post({ executable })),
   resubmit: () => call<BuildAccepted>("/api/builds/resubmit", { method: "POST" }),
   createMesh: (shape: MeshShape) => call<BuildAccepted>("/api/meshes", post(shape)),
   removeMesh: (name: string) =>

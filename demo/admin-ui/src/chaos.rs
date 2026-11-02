@@ -12,8 +12,9 @@
 
 use rdm_test::netfault::Partition;
 use rdm_test::estate::FabricReady;
+use rdm_core::PathName;
 use rdm_test::process_faults::{ExactRuntime, Fault};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Mutex;
@@ -21,8 +22,8 @@ use std::sync::Mutex;
 /// What a fault needs to know of one node, from node-admin's view of it.
 #[derive(Debug, Clone)]
 pub struct NodeFacts {
-    /// The node's `path.name`.
-    pub name: String,
+    /// The node's `(path, name)`.
+    pub name: PathName,
     /// The mesh it belongs to.
     pub mesh: String,
     /// It holds the fabric-primary role.
@@ -33,6 +34,36 @@ pub struct NodeFacts {
     pub transport_port: Option<u16>,
 }
 
+/// What a fault, a cut or a heal is aimed at: one node by its path and name, every node of a
+/// mesh, or a cut in force. As JSON, `{"scope": "node", "path", "name"}`, `{"scope": "mesh",
+/// "mesh"}` or `{"scope": "cut", "cut"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum Target {
+    /// One node.
+    Node(PathName),
+    /// Every node of the mesh.
+    Mesh {
+        /// The mesh's name.
+        mesh: String,
+    },
+    /// The cut in force with this id.
+    Cut {
+        /// The cut's id.
+        cut: u64,
+    },
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Node(n) => write!(f, "path {:?}, name {:?}", n.path, n.name),
+            Self::Mesh { mesh } => write!(f, "mesh {mesh:?}"),
+            Self::Cut { cut } => write!(f, "cut {cut}"),
+        }
+    }
+}
+
 /// One fault or cut, with its typed outcome.
 #[derive(Debug, Clone, Serialize)]
 pub struct FaultRecord {
@@ -40,8 +71,8 @@ pub struct FaultRecord {
     pub id: u64,
     /// When (ms since the Unix epoch).
     pub ts_ms: u64,
-    /// The node or mesh aimed at.
-    pub target: String,
+    /// The node, mesh or cut aimed at.
+    pub target: Target,
     /// `kill`, `stop`, `continue`, `cut-node`, `cut-mesh` or `heal`.
     pub action: String,
     /// `applied` or `refused`.
@@ -58,7 +89,7 @@ pub struct Cut {
     /// `node` or `mesh`.
     pub scope: String,
     /// The node or mesh cut from the rest.
-    pub target: String,
+    pub target: Target,
     /// The UDP ports on the cut side.
     pub ports: Vec<u16>,
     /// When it was made.
@@ -81,8 +112,8 @@ fn now_ms() -> u64 {
 }
 
 impl Chaos {
-    fn record(&self, target: &str, action: &str, outcome: &'static str, detail: Value) -> FaultRecord {
-        let r = FaultRecord { id: self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1, ts_ms: now_ms(), target: target.into(), action: action.into(), outcome, detail };
+    fn record(&self, target: &Target, action: &str, outcome: &'static str, detail: Value) -> FaultRecord {
+        let r = FaultRecord { id: self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1, ts_ms: now_ms(), target: target.clone(), action: action.into(), outcome, detail };
         let mut log = self.log.lock().unwrap();
         log.push(r.clone());
         if log.len() > 200 {
@@ -105,7 +136,8 @@ impl Chaos {
     /// is `refused` when the node is the fabric-primary, unknown, or the kit refuses, and a kill is
     /// refused `fabric-not-ready` unless `fabric` (the status `fabric.get` answered) is ready:
     /// a death during fabric start is not exercised (Q74).
-    pub async fn fault(&self, nodes: &[NodeFacts], target: &str, action: &str, fabric: Option<rdm_client::ScopeStatus>) -> FaultRecord {
+    pub async fn fault(&self, nodes: &[NodeFacts], node: &PathName, action: &str, fabric: Option<rdm_client::ScopeStatus>) -> FaultRecord {
+        let target = &Target::Node(node.clone());
         let fault = match action {
             "kill" => match fabric.and_then(FabricReady::read) {
                 Some(r) => Fault::Kill(r),
@@ -115,8 +147,8 @@ impl Chaos {
             "continue" => Fault::Continue,
             other => return self.record(target, other, "refused", json!({"refusal": "unknown-action", "reason": format!("`{other}` is not kill, stop or continue")})),
         };
-        let Some(node) = nodes.iter().find(|n| n.name == target) else {
-            return self.record(target, action, "refused", json!({"refusal": "unknown-node", "reason": format!("node-admin's view holds no node `{target}`")}));
+        let Some(node) = nodes.iter().find(|n| &n.name == node) else {
+            return self.record(target, action, "refused", json!({"refusal": "unknown-node", "reason": format!("node-admin's view holds no node at {target}")}));
         };
         if node.is_fabric_primary {
             return self.record(target, action, "refused", json!({"refusal": FABRIC_PRIMARY_REFUSAL, "reason": format!("{target} holds the fabric-primary role; a fault is never aimed at it")}));
@@ -132,20 +164,20 @@ impl Chaos {
         }
     }
 
-    /// Cut `target` (a node, or with `scope == "mesh"` every node of that mesh) from the rest of
-    /// the fabric. A mesh that holds the fabric-primary is never cut.
-    pub async fn cut(&self, nodes: &[NodeFacts], scope: &str, target: &str) -> FaultRecord {
-        let action = format!("cut-{scope}");
-        let side: Vec<&NodeFacts> = match scope {
-            "node" => nodes.iter().filter(|n| n.name == target).collect(),
-            "mesh" => nodes.iter().filter(|n| n.mesh == target).collect(),
-            other => return self.record(target, &action, "refused", json!({"refusal": "unknown-scope", "reason": format!("`{other}` is not node or mesh")})),
+    /// Cut `target` (a node, or every node of a mesh) from the rest of the fabric. A mesh that
+    /// holds the fabric-primary is never cut.
+    pub async fn cut(&self, nodes: &[NodeFacts], target: &Target) -> FaultRecord {
+        let (scope, side): (&str, Vec<&NodeFacts>) = match target {
+            Target::Node(node) => ("node", nodes.iter().filter(|n| &n.name == node).collect()),
+            Target::Mesh { mesh } => ("mesh", nodes.iter().filter(|n| &n.mesh == mesh).collect()),
+            Target::Cut { .. } => return self.record(target, "cut", "refused", json!({"refusal": "unknown-scope", "reason": "a cut is aimed at a node or a mesh"})),
         };
+        let action = format!("cut-{scope}");
         if side.is_empty() {
-            return self.record(target, &action, "refused", json!({"refusal": "unknown-target", "reason": format!("node-admin's view holds no {scope} `{target}`")}));
+            return self.record(target, &action, "refused", json!({"refusal": "unknown-target", "reason": format!("node-admin's view holds no {target}")}));
         }
         if let Some(fp) = side.iter().find(|n| n.is_fabric_primary) {
-            return self.record(target, &action, "refused", json!({"refusal": FABRIC_PRIMARY_REFUSAL, "reason": format!("{} holds the fabric-primary role; the side holding it is never cut", fp.name)}));
+            return self.record(target, &action, "refused", json!({"refusal": FABRIC_PRIMARY_REFUSAL, "reason": format!("path {:?}, name {:?} holds the fabric-primary role; the side holding it is never cut", fp.name.path, fp.name.name)}));
         }
         let ports = |ns: Vec<&NodeFacts>| ns.iter().filter_map(|n| n.transport_port).collect::<Vec<u16>>();
         let a = ports(side.clone());
@@ -157,7 +189,7 @@ impl Chaos {
         let started = tokio::task::spawn_blocking(move || Partition::start(&pa, &pb)).await;
         match started {
             Ok(Ok(partition)) => {
-                let cut = Cut { id: self.next.load(std::sync::atomic::Ordering::SeqCst) + 1, scope: scope.into(), target: target.into(), ports: a, since_ms: now_ms() };
+                let cut = Cut { id: self.next.load(std::sync::atomic::Ordering::SeqCst) + 1, scope: scope.into(), target: target.clone(), ports: a, since_ms: now_ms() };
                 self.cuts.lock().unwrap().push((cut.clone(), partition));
                 self.record(target, &action, "applied", json!({"cut": cut.id, "ports": cut.ports}))
             }
@@ -177,7 +209,7 @@ impl Chaos {
                 let _ = tokio::task::spawn_blocking(move || drop(partition)).await;
                 self.record(&cut.target, "heal", "applied", json!({"cut": id}))
             }
-            None => self.record(&format!("cut {id}"), "heal", "refused", json!({"refusal": "no-such-cut", "reason": format!("no network cut {id} is in force")})),
+            None => self.record(&Target::Cut { cut: id }, "heal", "refused", json!({"refusal": "no-such-cut", "reason": format!("no network cut {id} is in force")})),
         }
     }
 }

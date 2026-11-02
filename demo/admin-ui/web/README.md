@@ -10,9 +10,10 @@ for:
 
 - reading the fabric, meshes, nodes, connections, and Builds (`/api/overview`, `/api/topology`,
   `/api/nodes`, `/api/builds`, `/api/timeline`),
-- submitting node, mesh, and fabric lifecycle operations and Builds (`/api/nodes/:name/stop`,
-  `/api/nodes/:name/start`, `/api/nodes/:name/replace`, `/api/nodes/:name/delete`, `/api/nodes`,
-  `/api/meshes`, `/api/fabric/bootstrap`), and
+- submitting node, mesh, and fabric lifecycle operations and Builds, a node named by its path and
+  its name (`/api/nodes/{path}/{name}/stop`, `/api/nodes/{path}/{name}/start`,
+  `/api/nodes/{path}/{name}/replace`, `DELETE /api/nodes/{path}/{name}`, `/api/nodes/spawn`,
+  `/api/meshes`, `/api/bootstrap`), and
 - driving process and network fault injection on the demo estate (`/api/chaos/*`).
 
 ## Building the static bundle

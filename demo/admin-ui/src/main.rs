@@ -9,12 +9,13 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rdm_admin_ui::chaos::{Chaos, FABRIC_PRIMARY_REFUSAL};
+use rdm_admin_ui::chaos::{Chaos, Target, FABRIC_PRIMARY_REFUSAL};
 use rdm_admin_ui::control::{self, BuildEvents};
 use rdm_admin_ui::timeline::{Event, Evidence};
 use rdm_admin_ui::view;
 use rdm_admin_ui::admin::Admin;
 use rdm_client::BuildId;
+use rdm_core::PathName;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -43,8 +44,10 @@ struct AppState {
 }
 
 impl AppState {
-    fn ui_event(&self, name: &str, node: &str, summary: String) {
-        self.ui_events.lock().unwrap().push(Event { ts_ms: now_ms(), node: node.into(), name: name.into(), summary, high_volume: false, source: "ui" });
+    /// An action the UI took, on `node` when it was aimed at one.
+    fn ui_event(&self, name: &str, node: Option<&PathName>, summary: String) {
+        let (node_path, node_name) = node.map_or((None, None), |n| (Some(n.path.clone()), Some(n.name.clone())));
+        self.ui_events.lock().unwrap().push(Event { ts_ms: now_ms(), node_path, node_name, node_id: None, process: "ui".into(), name: name.into(), summary, high_volume: false, source: "ui" });
     }
 }
 
@@ -53,7 +56,7 @@ impl BuildEvents for Submitted {
     fn submitted(&self, what: &str, build_id: &BuildId, node: Option<&rdm_core::PathName>, mesh: Option<&str>) {
         self.0.submitted.lock().unwrap().push(build_id.to_string());
         let (path, name) = node.map_or(("-", "-"), |n| (n.path.as_str(), n.name.as_str()));
-        self.0.ui_event("ui.build.create.via-node-admin", "ui", format!("{what} path={path} name={name} mesh={} build_id={build_id}", mesh.unwrap_or("-")));
+        self.0.ui_event("ui.build.create.via-node-admin", node, format!("{what} path={path} name={name} mesh={} build_id={build_id}", mesh.unwrap_or("-")));
     }
 }
 
@@ -94,13 +97,16 @@ async fn chaos_state(State(s): State<AppState>) -> Response {
         Ok(n) => n,
         Err(e) => return unreachable(e),
     };
+    // The fabric-primary's `{path, name}`.
     let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| n["name"].clone());
     Json(json!({"fabric_primary": fp, "faults": s.chaos.faults(), "cuts": s.chaos.cuts()})).into_response()
 }
 
+/// A fault aimed at the node at `path`, `name`.
 #[derive(Deserialize)]
 struct FaultBody {
-    node: String,
+    path: String,
+    name: String,
     action: String,
 }
 
@@ -112,30 +118,29 @@ fn answer(record: rdm_admin_ui::chaos::FaultRecord) -> Response {
 
 async fn chaos_fault(State(s): State<AppState>, Json(b): Json<FaultBody>) -> Response {
     let Some(admin) = &s.admin else { return no_node_admin() };
+    let node = match PathName::new(b.path, b.name) {
+        Ok(n) => n,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid-request", "detail": e.to_string()}))).into_response(),
+    };
     let nodes = match view::nodes(admin).await {
         Ok(n) => view::facts(&n),
         Err(e) => return unreachable(e),
     };
     let fabric = admin.fabric().await.ok().map(|f| f.status);
-    let r = s.chaos.fault(&nodes, &b.node, &b.action, fabric).await;
-    s.ui_event(&format!("ui.chaos.fault.{}", r.outcome), &b.node, format!("{} {}: {}", b.action, b.node, r.detail));
+    let r = s.chaos.fault(&nodes, &node, &b.action, fabric).await;
+    s.ui_event(&format!("ui.chaos.fault.{}", r.outcome), Some(&node), format!("{} {}: {}", b.action, r.target, r.detail));
     answer(r)
 }
 
-#[derive(Deserialize)]
-struct CutBody {
-    scope: String,
-    target: String,
-}
-
-async fn chaos_cut(State(s): State<AppState>, Json(b): Json<CutBody>) -> Response {
+/// A cut of one node (`{"scope": "node", "path", "name"}`) or of a mesh (`{"scope": "mesh", "mesh"}`).
+async fn chaos_cut(State(s): State<AppState>, Json(b): Json<Target>) -> Response {
     let Some(admin) = &s.admin else { return no_node_admin() };
     let nodes = match view::nodes(admin).await {
         Ok(n) => view::facts(&n),
         Err(e) => return unreachable(e),
     };
-    let r = s.chaos.cut(&nodes, &b.scope, &b.target).await;
-    s.ui_event(&format!("ui.chaos.cut.{}", r.outcome), &b.target, format!("{} {}: {}", r.action, b.target, r.detail));
+    let r = s.chaos.cut(&nodes, &b).await;
+    s.ui_event(&format!("ui.chaos.cut.{}", r.outcome), target_node(&b), format!("{} {}: {}", r.action, b, r.detail));
     answer(r)
 }
 
@@ -146,8 +151,16 @@ struct HealBody {
 
 async fn chaos_heal(State(s): State<AppState>, Json(b): Json<HealBody>) -> Response {
     let r = s.chaos.heal(b.id).await;
-    s.ui_event(&format!("ui.chaos.heal.{}", r.outcome), &r.target, r.detail.to_string());
+    s.ui_event(&format!("ui.chaos.heal.{}", r.outcome), target_node(&r.target), format!("{}: {}", r.target, r.detail));
     answer(r)
+}
+
+/// The node a fault, cut or heal was aimed at, when it was one node.
+fn target_node(t: &Target) -> Option<&PathName> {
+    match t {
+        Target::Node(n) => Some(n),
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -181,9 +194,13 @@ async fn timeline(State(s): State<AppState>, Query(q): Query<TimelineQuery>) -> 
     }
 }
 
+/// The node whose boot trace is asked for, by its id, and its kind (the built-in service name
+/// Jaeger is searched under when the evidence holds no boot span).
 #[derive(Deserialize)]
 struct BootQuery {
-    service: String,
+    node_id: String,
+    #[serde(default)]
+    kind: String,
 }
 
 /// The node's boot trace, from Jaeger: by the trace id of the node's own boot span in the estate's
@@ -193,11 +210,11 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
     let from_evidence = match s.evidence_dir.clone() {
         Some(dir) => {
             let evidence = s.evidence.clone();
-            let node = q.service.clone();
+            let node_id = q.node_id.clone();
             tokio::task::spawn_blocking(move || {
                 let mut e = evidence.lock().unwrap();
                 let _ = e.refresh(&dir);
-                e.boot_trace_of(&node)
+                e.boot_trace_of(&node_id)
             })
             .await
             .ok()
@@ -208,8 +225,8 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
     let url = match from_evidence {
         Some(trace) => format!("{}/api/traces/{trace}", s.jaeger_url),
         None => {
-            let service = if q.service.contains(".admin.") { "rdm-node-admin" } else { "rdm-rpc-node" };
-            let tags = serde_json::to_string(&json!({"node": q.service})).unwrap_or_default();
+            let service = if q.kind == "node_admin" { "rdm-node-admin" } else { "rdm-rpc-node" };
+            let tags = serde_json::to_string(&json!({"node_id": q.node_id})).unwrap_or_default();
             format!("{}/api/traces?service={service}&operation=rdm.mesh.node.update.via-ready&limit=1&lookback=2h&tags={}", s.jaeger_url, urlencoding::encode(&tags))
         }
     };
@@ -217,7 +234,7 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
         Ok(r) => match r.json::<Value>().await {
             Ok(body) => match body["data"].as_array().and_then(|a| a.first()) {
                 Some(first) => Json(json!({"data": [first]})).into_response(),
-                None => (StatusCode::BAD_GATEWAY, Json(json!({"error": "no-boot-trace", "detail": format!("Jaeger at {} holds no boot trace for {}", s.jaeger_url, q.service)}))).into_response(),
+                None => (StatusCode::BAD_GATEWAY, Json(json!({"error": "no-boot-trace", "detail": format!("Jaeger at {} holds no boot trace for node {}", s.jaeger_url, q.node_id)}))).into_response(),
             },
             Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({"error": "jaeger-undecodable", "detail": e.to_string()}))).into_response(),
         },

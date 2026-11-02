@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type Timeline as T } from "../api";
+import { api, type Timeline as T, type TimelineEvent } from "../api";
+import { NodeName } from "../NodeName";
 
 const colourOf = (name: string): string => {
   if (name.startsWith("ui.chaos")) return "var(--err)";
@@ -8,6 +9,13 @@ const colourOf = (name: string): string => {
   if (name.includes("connection")) return "var(--ok)";
   return "var(--fg-dim)";
 };
+
+/// The node an event's span names, by its path and name, else its id, else the process that wrote it.
+function EventNode({ e }: { e: TimelineEvent }) {
+  if (e.node_path && e.node_name) return <NodeName node={{ path: e.node_path, name: e.node_name }} />;
+  if (e.node_id) return <span className="mono"><span className="muted">id</span> {e.node_id}</span>;
+  return <span className="mono muted">{e.process}</span>;
+}
 
 export function Timeline() {
   const [all, setAll] = useState(false);
@@ -37,7 +45,7 @@ export function Timeline() {
               <span className="muted mono" style={{ width: 100, flexShrink: 0 }}>
                 {new Date(e.ts_ms).toLocaleTimeString([], { hour12: false })}.{String(e.ts_ms % 1000).padStart(3, "0")}
               </span>
-              <span className="mono" style={{ width: 130, flexShrink: 0 }}>{e.node}</span>
+              <span style={{ width: 230, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={e.node_id ?? e.process}><EventNode e={e} /></span>
               <span className="mono" style={{ width: 330, flexShrink: 0, color: colourOf(e.name), overflow: "hidden", textOverflow: "ellipsis" }}>{e.name}</span>
               <span className="mono muted" style={{ flex: 1 }}>{e.summary}</span>
             </div>

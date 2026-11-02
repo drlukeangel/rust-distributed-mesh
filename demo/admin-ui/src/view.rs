@@ -31,7 +31,7 @@ pub fn facts(nodes: &[Value]) -> Vec<NodeFacts> {
         .iter()
         .filter_map(|n| {
             Some(NodeFacts {
-                name: text(n, "name")?,
+                name: serde_json::from_value(n.get("name")?.clone()).ok()?,
                 mesh: text(n, "mesh")?,
                 is_fabric_primary: n["is_fabric_primary"].as_bool().unwrap_or(false),
                 data_dir: text(n, "data_dir"),
@@ -67,8 +67,10 @@ pub async fn overview(admin: &Admin) -> Value {
         },
         None => None,
     };
+    // `fabric.get` names the fabric-primary by its node id; the header shows its path and name.
+    let fabric_primary = nodes.iter().find(|n| !fabric["fabric_primary"].is_null() && n["node_id"] == fabric["fabric_primary"]).map_or(Value::Null, |n| n["name"].clone());
     json!({
-        "fabric": {"name": fabric["name"], "status": fabric["status"], "provider": fabric["provider"], "build_id": fabric["build_id"], "fabric_primary": fabric["fabric_primary"]},
+        "fabric": {"name": fabric["name"], "status": fabric["status"], "provider": fabric["provider"], "build_id": fabric["build_id"], "fabric_primary": fabric_primary, "fabric_primary_id": fabric["fabric_primary"]},
         "meshes": meshes,
         "nodes_total": nodes.len(),
         "build": build,
@@ -108,7 +110,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
     for n in views.iter() {
         match admin.connections(n).await {
             Some(Ok(c)) => {
-                let by = json!(n.name);
+                let by = json!(n.node_id);
                 for e in serde_json::to_value(&c).unwrap_or(Value::Null)["connections"].as_array().into_iter().flatten() {
                     let mut e = e.clone();
                     e["reported_by"] = by.clone();

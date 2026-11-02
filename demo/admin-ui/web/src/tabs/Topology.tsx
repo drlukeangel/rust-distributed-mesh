@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import ReactFlow, { Background, Controls, MarkerType, type Edge as FlowEdge, type Node as FlowNode } from "reactflow";
-import { api, type Connection, type Topology as Topo, type TopologyNode } from "../api";
+import { api, comparePathName, pathNameText, type Connection, type Topology as Topo, type TopologyNode } from "../api";
+import { NodeName } from "../NodeName";
 
 const KIND_COLOR: Record<string, string> = { node_admin: "#e3b341", rpc_node: "#8b949e", gateway: "#58a6ff", compute: "#3fb950", broker: "#d2a8ff" };
 const MESH_COLORS = ["#58a6ff", "#bc8cff", "#f0883e", "#56d4dd", "#ff7b72"];
@@ -13,7 +14,7 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
   const out: FlowNode[] = [];
   const W = 560, H = 460, GAP = 620;
   meshes.forEach((m, i) => {
-    const members = nodes.filter((n) => n.mesh === m).sort((a, b) => a.name.localeCompare(b.name));
+    const members = nodes.filter((n) => n.mesh === m).sort((a, b) => comparePathName(a.name, b.name));
     out.push({
       id: `group-${m}`,
       type: "group",
@@ -34,17 +35,18 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
       const ang = (2 * Math.PI * idx) / Math.max(1, members.length) - Math.PI / 2;
       const r = 165;
       const c = KIND_COLOR[n.kind] ?? "#8b949e";
+      // A node is its id on the canvas: a connection names its source and destination by node id.
       out.push({
-        id: n.name,
+        id: n.node_id,
         parentNode: `group-${m}`,
         extent: "parent",
         position: { x: W / 2 + r * Math.cos(ang) - 85, y: H / 2 + r * Math.sin(ang) - 46 },
         data: {
           label: (
-            <div style={{ textAlign: "center", lineHeight: 1.2 }} data-testid={`node-${n.name}`}>
-              <div className="mono" style={{ fontSize: 11, color: "#c9d1d9" }}>{n.name}</div>
+            <div style={{ textAlign: "center", lineHeight: 1.2 }} data-testid={`node-${n.name.path}-${n.name.name}`}>
+              <div className="mono" style={{ fontSize: 11, color: "#c9d1d9" }}><NodeName node={n.name} /></div>
               <div style={{ fontSize: 10, color: "#8b949e" }}>{n.kind} · {n.status}</div>
-              {n.role && <div style={{ fontSize: 10, color: "#e3b341" }} data-testid={`role-${n.name}`}>{n.role}</div>}
+              {n.role && <div style={{ fontSize: 10, color: "#e3b341" }} data-testid={`role-${n.name.path}-${n.name.name}`}>{n.role}</div>}
             </div>
           ),
         },
@@ -55,7 +57,12 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
   return out;
 }
 
-function flowEdges(connections: Connection[]): FlowEdge[] {
+function flowEdges(connections: Connection[], nodes: TopologyNode[]): FlowEdge[] {
+  // A proxy's carrier is named by its node id; the label shows its path and name.
+  const carrier = (id: string | null) => {
+    const n = id ? nodes.find((x) => x.node_id === id) : undefined;
+    return n ? pathNameText(n.name) : (id ?? "?");
+  };
   return connections.map((e, i) => {
     const colour = bad(e) ? "#f85149" : e.kind === "direct" ? "#3fb950" : "#58a6ff";
     return {
@@ -63,7 +70,7 @@ function flowEdges(connections: Connection[]): FlowEdge[] {
       type: "straight",
       source: e.source,
       target: e.destination,
-      label: e.kind === "proxy" ? `proxy via ${e.carrier ?? "?"}${bad(e) ? ` (${e.state})` : ""}` : bad(e) ? e.state : undefined,
+      label: e.kind === "proxy" ? `proxy via ${carrier(e.carrier)}${bad(e) ? ` (${e.state})` : ""}` : bad(e) ? e.state : undefined,
       labelStyle: { fill: colour, fontSize: 10, fontFamily: "ui-monospace, monospace" },
       labelBgStyle: { fill: "#0d1117" },
       style: { stroke: colour, strokeWidth: 2, strokeDasharray: e.kind === "proxy" ? "7 5" : undefined },
@@ -82,7 +89,7 @@ export function Topology() {
     return () => clearInterval(id);
   }, []);
   const nodes = useMemo(() => layout(data.nodes), [data.nodes]);
-  const edges = useMemo(() => flowEdges(data.connections), [data.connections]);
+  const edges = useMemo(() => flowEdges(data.connections, data.nodes), [data.connections, data.nodes]);
 
   if (err) return <div className="card">topology load failed: {err}</div>;
   if (data.nodes.length === 0) return <div className="card muted">no nodes yet — press <b>bootstrap 2+3</b> above.</div>;

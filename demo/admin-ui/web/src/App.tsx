@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Overview } from "./api";
 import { SpawnBar } from "./SpawnBar";
+import { NodeName } from "./NodeName";
 import { Topology } from "./tabs/Topology";
 import { Nodes } from "./tabs/Nodes";
 import { Builds } from "./tabs/Builds";
@@ -39,7 +40,7 @@ function Header({ o }: { o: Overview | null }) {
       </span>
       <span>{o.meshes.map((m) => `${m.name}: ${m.nodes} nodes, ${m.status}`).join(" · ") || "no meshes"}</span>
       <span>{o.nodes_total} nodes total</span>
-      <span className="muted">provider {f.provider} · fabric primary {f.fabric_primary ?? "—"}</span>
+      <span className="muted">provider {f.provider} · fabric primary {f.fabric_primary ? <NodeName node={f.fabric_primary} /> : (f.fabric_primary_id ?? "—")}</span>
     </div>
   );
 }

@@ -149,13 +149,15 @@ example() {
   ROOT=${ROOT:-$(cat "$CURRENT")}
   # shellcheck disable=SC1091
   . "$ROOT/names"
-  local ui acc n; ui=$(cat "$ROOT/ui_bind")
-  for n in "$M2.broker.3" "$M2.compute.1"; do
+  local ui acc node path name; ui=$(cat "$ROOT/ui_bind")
+  # Each node by its path and name: the UI's route is /api/nodes/{path}/{name}/replace.
+  for node in "$M2.broker 3" "$M2.compute 1"; do
+    read -r path name <<< "$node"
     for _ in $(seq 1 120); do
-      acc=$(curl -s -X POST "http://$ui/api/nodes/$n/replace" -H 'content-type: application/json' -d "{\"executable\":\"$BIN/rshape-example\"}")
+      acc=$(curl -s -X POST "http://$ui/api/nodes/$path/$name/replace" -H 'content-type: application/json' -d "{\"executable\":\"$BIN/rshape-example\"}")
       echo "$acc" | grep -q '"build-in-progress"' || break; sleep 1
     done
-    echo "replace $n onto rshape-example: $acc"
+    echo "replace path $path, name $name onto rshape-example: $acc"
   done
   echo "the example's lines (target rshape) are in each node's stderr.log under $ROOT/<path.name>-<node id>/"
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, type ManagedKind } from "./api";
+import { api, pathNameText, type ManagedKind } from "./api";
 
 /// What node-admin manages. Each button submits one Build to node-admin; the
 /// UI never starts or stops a runtime itself.
@@ -55,9 +55,11 @@ export function SpawnBar() {
         resubmit
       </button>
       <button disabled={busy === "replace"} onClick={() => {
-          const node = window.prompt("replace the executable of node (path.name)");
-          const executable = node ? window.prompt(`the executable file ${node} runs next`) : null;
-          if (node && executable) run("replace", `replace ${node}'s executable`, () => api.replace(node, executable));
+          const path = window.prompt("replace the executable of the node at path");
+          const name = path ? window.prompt(`and name (path ${path})`) : null;
+          const node = path && name ? { path, name } : null;
+          const executable = node ? window.prompt(`the executable file ${pathNameText(node)} runs next`) : null;
+          if (node && executable) run("replace", `replace ${pathNameText(node)}'s executable`, () => api.replace(node, executable));
         }}
         title="Replace a node's executable: node.delete then node.create at its path, on the file named">
         replace executable

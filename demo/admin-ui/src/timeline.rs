@@ -5,6 +5,10 @@
 //! of each file, keeps the meaningful events (status changes, node-rpc calls and serves with their
 //! outcomes, role moves, Build steps, connection observations, fabric status sends) and counts
 //! the high-volume ones (topology snapshots and the like) behind a toggle.
+//!
+//! An event names its node by the fields its span carries: `node_path` and `node_name`, or `path`
+//! and `name`, and `node_id`. A span that carries none of them names the node its process file's
+//! spans named.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -17,8 +21,14 @@ use std::path::{Path, PathBuf};
 pub struct Event {
     /// When it happened (ms since the Unix epoch).
     pub ts_ms: u64,
-    /// The node that recorded it (its `path.name`), or the UI.
-    pub node: String,
+    /// The path of the node that recorded it, when its spans name one.
+    pub node_path: Option<String>,
+    /// The name of the node that recorded it, when its spans name one.
+    pub node_name: Option<String>,
+    /// The id of the node that recorded it, when its spans name one.
+    pub node_id: Option<String>,
+    /// The process that wrote it, `<bin>.<pid>` of its span file, or `ui`.
+    pub process: String,
     /// The span name, or `ui.…` for an action the UI took.
     pub name: String,
     /// The span's own attributes that tell the story, in a fixed order.
@@ -55,18 +65,51 @@ pub fn is_meaningful(name: &str) -> bool {
     MEANINGFUL.iter().any(|p| name.starts_with(p)) && !HIGH_VOLUME.contains(&name)
 }
 
-/// The event one span record makes, or `None` for a line that is not a span.
-pub fn event_of(span: &Value, fallback_node: &str) -> Option<Event> {
+/// The node a span names: its path and name (`node_path` and `node_name`, else `path` and
+/// `name`) and its id (`node_id`), each `None` when the span does not carry it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpanNode {
+    /// The node's path and name, when the span carries both.
+    pub pair: Option<(String, String)>,
+    /// The node's id.
+    pub node_id: Option<String>,
+}
+
+impl SpanNode {
+    /// The node `span`'s attributes name.
+    pub fn of(span: &Value) -> Self {
+        let attrs = span.get("attributes").and_then(Value::as_object);
+        let attr = |k: &str| attrs.and_then(|a| a.get(k)).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
+        let both = |p: &str, n: &str| attr(p).zip(attr(n));
+        SpanNode { pair: both("node_path", "node_name").or_else(|| both("path", "name")), node_id: attr("node_id") }
+    }
+
+    /// Whether the span carries none of the fields.
+    fn is_empty(&self) -> bool {
+        self.pair.is_none() && self.node_id.is_none()
+    }
+
+    /// Each field this does not carry, taken from `other`.
+    fn or(self, other: &SpanNode) -> Self {
+        SpanNode { pair: self.pair.or_else(|| other.pair.clone()), node_id: self.node_id.or_else(|| other.node_id.clone()) }
+    }
+}
+
+/// The event one span record makes, or `None` for a line that is not a span. A span that carries
+/// no node field names `file_node`, the node its process file's spans named; `process` is that
+/// file's `<bin>.<pid>`.
+pub fn event_of(span: &Value, file_node: &SpanNode, process: &str) -> Option<Event> {
     let name = span.get("name")?.as_str()?.to_string();
     let ts_ns = span.get("start_unix_nano")?.as_u64()?;
     let attrs = span.get("attributes").and_then(Value::as_object);
     let attr = |k: &str| attrs.and_then(|a| a.get(k)).and_then(Value::as_str).filter(|v| !v.is_empty());
-    let node = attr("node").or_else(|| attr("observer")).unwrap_or(fallback_node).to_string();
+    let node = Some(SpanNode::of(span)).filter(|n| !n.is_empty()).unwrap_or_else(|| file_node.clone());
+    let (node_path, node_name) = node.pair.map_or((None, None), |(p, n)| (Some(p), Some(n)));
     let mut parts: Vec<String> = KEYS.iter().filter_map(|k| attr(k).map(|v| format!("{k}={}", clip(v, 90)))).collect();
     if let Some(msg) = span.get("events").and_then(Value::as_array).and_then(|e| e.first()).and_then(|e| e.get("name")).and_then(Value::as_str) {
         parts.push(format!("“{}”", clip(msg, 100)));
     }
-    Some(Event { ts_ms: ts_ns / 1_000_000, node, high_volume: !is_meaningful(&name), name, summary: parts.join(" "), source: "span" })
+    Some(Event { ts_ms: ts_ns / 1_000_000, node_path, node_name, node_id: node.node_id, process: process.to_string(), high_volume: !is_meaningful(&name), name, summary: parts.join(" "), source: "span" })
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -81,12 +124,13 @@ fn clip(s: &str, n: usize) -> String {
 #[derive(Default)]
 pub struct Evidence {
     offsets: HashMap<PathBuf, u64>,
-    /// The node each process file belongs to, learned from the first span in it that names one.
-    owners: HashMap<PathBuf, String>,
+    /// The node each process file belongs to: its path and name from the first span in it that
+    /// carries them, its id from the first that carries one.
+    owners: HashMap<PathBuf, SpanNode>,
     meaningful: Vec<Event>,
     high_volume: Vec<Event>,
     high_volume_seen: usize,
-    /// Each node's boot trace (`rdm.mesh.node.create.via-deployment`), by `path.name`: the trace the
+    /// Each node's boot trace (`rdm.mesh.node.create.via-deployment`), by its node id: the trace the
     /// boot waterfall asks Jaeger for by id, so the UI never guesses a node's service name.
     boot_traces: HashMap<String, String>,
 }
@@ -117,19 +161,21 @@ impl Evidence {
             let complete = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
             let stem = file.splitn(3, '.').take(2).collect::<Vec<_>>().join(".");
             let parsed: Vec<Value> = buf[..complete].split(|b| *b == b'\n').filter(|l| !l.is_empty()).filter_map(|l| serde_json::from_slice(l).ok()).collect();
-            if !self.owners.contains_key(&path) {
-                if let Some(n) = parsed.iter().find_map(|v| v["attributes"]["node"].as_str().filter(|n| !n.is_empty())) {
-                    self.owners.insert(path.clone(), n.to_string());
+            let owner = self.owners.entry(path.clone()).or_default();
+            for v in &parsed {
+                if owner.pair.is_some() && owner.node_id.is_some() {
+                    break;
                 }
+                *owner = std::mem::take(owner).or(&SpanNode::of(v));
             }
-            let label = self.owners.get(&path).cloned().unwrap_or(stem);
+            let owner = owner.clone();
             for v in parsed {
                 if v["name"].as_str() == Some(BOOT_SPAN) {
-                    if let (Some(node), Some(trace)) = (v["attributes"]["node"].as_str().filter(|n| !n.is_empty()), v["trace_id"].as_str()) {
-                        self.boot_traces.insert(node.to_string(), trace.to_string());
+                    if let (Some(node_id), Some(trace)) = (SpanNode::of(&v).node_id, v["trace_id"].as_str()) {
+                        self.boot_traces.insert(node_id, trace.to_string());
                     }
                 }
-                let Some(ev) = event_of(&v, &label) else { continue };
+                let Some(ev) = event_of(&v, &owner, &stem) else { continue };
                 if ev.high_volume {
                     self.high_volume_seen += 1;
                     self.high_volume.push(ev);
@@ -144,12 +190,12 @@ impl Evidence {
         Ok(files)
     }
 
-    /// The newest `limit` events, newest first, across every node and the UI's own `ui` events.
-    /// The trace id of `node`'s boot span, once its process has written it.
-    pub fn boot_trace_of(&self, node: &str) -> Option<String> {
-        self.boot_traces.get(node).cloned()
+    /// The trace id of the boot span of the node `node_id`, once its process has written it.
+    pub fn boot_trace_of(&self, node_id: &str) -> Option<String> {
+        self.boot_traces.get(node_id).cloned()
     }
 
+    /// The newest `limit` events, newest first, across every node and the UI's own `ui` events.
     pub fn newest(&self, ui: &[Event], all: bool, limit: usize) -> (Vec<Event>, usize) {
         let mut out: Vec<Event> = self.meaningful.iter().chain(ui.iter()).cloned().collect();
         if all {
@@ -181,9 +227,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tl-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let lines = [
-            span("rdm.node_rpc.request.update.via-call", 3_000_000_000, json!({"node": "mesh1.broker.1", "op": "27", "outcome": "Reply"})),
-            span("rdm.mesh.topology.update.via-snapshot-installed", 4_000_000_000, json!({"node": "mesh1.broker.1"})),
-            span("rdm.node_admin.status.update.via-declare", 1_000_000_000, json!({"node": "mesh1.admin.1", "outcome": "applied"})),
+            span("rdm.node_rpc.request.update.via-call", 3_000_000_000, json!({"node_path": "mesh1.broker", "node_name": "1", "node_id": "0123456789ab", "op": "27", "outcome": "Reply"})),
+            span("rdm.mesh.topology.update.via-snapshot-installed", 4_000_000_000, json!({"node": "0123456789ab"})),
+            span("rdm.node_admin.status.update.via-declare", 1_000_000_000, json!({"path": "mesh1.admin", "name": "1", "outcome": "applied"})),
         ];
         std::fs::write(dir.join("rdm-rpc-node.1-1.spans.jsonl"), lines.join("\n") + "\n").unwrap();
         let mut e = Evidence::default();
@@ -192,17 +238,24 @@ mod tests {
         assert_eq!(shown.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["rdm.node_rpc.request.update.via-call", "rdm.node_admin.status.update.via-declare"]);
         assert_eq!(hidden, 1);
         assert!(shown[0].summary.contains("outcome=Reply") && shown[0].summary.contains("op=27"), "{}", shown[0].summary);
+        // Each event names its node by the fields its span carries: `node_path`/`node_name` or
+        // `path`/`name`, and `node_id`.
+        let node = |e: &Event| (e.node_path.clone(), e.node_name.clone(), e.node_id.clone());
+        assert_eq!(node(&shown[0]), (Some("mesh1.broker".into()), Some("1".into()), Some("0123456789ab".into())));
+        assert_eq!(node(&shown[1]), (Some("mesh1.admin".into()), Some("1".into()), None), "a span's own `path`/`name` names it, never mixed with its file's node");
+        assert_eq!(shown[0].process, "rdm-rpc-node.1");
         let (all, _) = e.newest(&[], true, 10);
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].name, "rdm.mesh.topology.update.via-snapshot-installed", "newest first across the toggle");
+        assert_eq!(node(&all[0]), (Some("mesh1.broker".into()), Some("1".into()), Some("0123456789ab".into())), "a span naming no node is its process file's node");
         // A second refresh reads only what was appended, and never a half-written line.
         let mut f = std::fs::OpenOptions::new().append(true).open(dir.join("rdm-rpc-node.1-1.spans.jsonl")).unwrap();
         use std::io::Write;
-        write!(f, "{}\n{{\"name\":\"half", span("rdm.mesh.election.resolve.via-mesh-primary", 5_000_000_000, json!({"observer": "mesh1.admin.2"}))).unwrap();
+        write!(f, "{}\n{{\"name\":\"half", span("rdm.mesh.election.resolve.via-mesh-primary", 5_000_000_000, json!({"node_path": "mesh1.admin", "node_name": "2", "node_id": "123456789abc"}))).unwrap();
         e.refresh(&dir).unwrap();
         let (shown, _) = e.newest(&[], false, 10);
         assert_eq!(shown[0].name, "rdm.mesh.election.resolve.via-mesh-primary");
-        assert_eq!(shown[0].node, "mesh1.admin.2");
+        assert_eq!(node(&shown[0]), (Some("mesh1.admin".into()), Some("2".into()), Some("123456789abc".into())));
         assert_eq!(shown.len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
