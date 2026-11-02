@@ -562,8 +562,8 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     let last = std::sync::Mutex::new(None::<Value>);
     let recorded = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let row = estate.own_lifecycle_record(&h_id);
-            if let Some(b) = row.as_ref().map(|r| r["record"].clone()).filter(|b| b["is_primary"] == true && b["is_fabric_primary"] == true) {
+            let row = estate.node_record(&h_id);
+            if let Some(b) = row.as_ref().and_then(|r| r["record"]["births"].as_array().and_then(|b| b.last()).cloned()).filter(|b| b["is_primary"].as_u64().is_some() && b["is_fabric_primary"].as_u64().is_some()) {
                 break b;
             }
             *last.lock().unwrap() = row;
@@ -571,7 +571,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("{h_name:?} records is_primary and is_fabric_primary on its own lifecycle record within 30 s; its record last read: {:?}", last.lock().unwrap()));
+    .unwrap_or_else(|_| panic!("{h_name:?} records is_primary and is_fabric_primary on its own row within 30 s; its row in nodes.jsonl last read: {:?}", last.lock().unwrap()));
     estate.stop().await;
     let spans = estate.spans();
     let one = |name: &str, f: &dyn Fn(&Value) -> bool| -> Value {
@@ -659,7 +659,7 @@ async fn a_planned_hand_over_makes_the_same_mesh_successor_both_primaries_on_its
     }
     assert!(won.values().all(|w| w.len() == 1), "conflicting winners: {won:#?}");
     assert!(made.values().all(|c| *c == 1), "a birth made twice: {made:#?}");
-    eprintln!("{h_name:?}'s own lifecycle record records both primaries: {recorded}");
+    eprintln!("{h_name:?}'s own row records both primaries on its newest birth: {recorded}");
     estate.record_trace_url(updating["trace_id"].as_str().unwrap_or(""));
 }
 

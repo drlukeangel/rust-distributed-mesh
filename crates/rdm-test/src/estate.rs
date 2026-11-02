@@ -896,17 +896,6 @@ impl Estate {
         Some(properties)
     }
 
-    /// The latest lifecycle record `node_id` writes of itself in the root's node records (its key
-    /// `<node>/<writer node>/<writer incarnation>` with the node its own writer: a mesh-primary's record
-    /// of itself, node-primary-update.md "The record"), as `{"format", "key", "record"}`; `None` while
-    /// there is none, or while the file cannot be read whole.
-    pub fn own_lifecycle_record(&self, node_id: &str) -> Option<serde_json::Value> {
-        let lines = rdm_node::store_log::read_file(&self.fabric_store_root().join(rdm_node::node_records::NODE_RECORDS_FILE)).ok()?;
-        let own = format!("{node_id}/{node_id}/");
-        let l = lines.into_iter().rev().find(|l| l.kind() == "node-lifecycle" && l.key.starts_with(&own))?;
-        Some(serde_json::json!({ "format": l.format, "key": l.key, "record": l.record }))
-    }
-
     /// The latest record of `node_id` in the root's `nodes.jsonl` (R-SR1), as
     /// `{"format", "key", "record"}`; `None` while there is none, or while the file cannot be read whole.
     pub fn node_record(&self, node_id: &str) -> Option<serde_json::Value> {
