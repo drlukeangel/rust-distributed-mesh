@@ -53,8 +53,8 @@ A caller reads it as a field of the node's row, `node.get [storage_persistence: 
 
 ## 2. `topology_storage_provider`: where RDM's records go
 
-RDM's records have six storage boundaries: `fabric.storage`, `mesh.storage`, `nodes.storage`,
-`connections.storage`, `builds.storage` and `node-records` (`NodeRecordsStorage`) ([build.md §5.3](build.md#53-node-admin-storage-boundaries)).
+RDM's records have five storage boundaries: `fabric.storage`, `mesh.storage`, `nodes.storage`,
+`connections.storage` and `builds.storage` ([build.md §5.3](build.md#53-node-admin-storage-boundaries)).
 They hold the fabric's topology and its history, what `fabric.get`, `mesh.get`, `node.get`,
 `node.connection.get` and `build.get` read: every record whole, every write appended, nothing ever
 removed, one writer per key ([node-identity-and-state.md §2.5](node-identity-and-state.md), R14). A
@@ -70,7 +70,7 @@ registered in its wiring by name:
 
 | provider | registered by | where the records go |
 |---|---|---|
-| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `node-records.jsonl`, with the `layout` marker and the `locks/` of the name claims and in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
+| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, with the `layout` marker and the `locks/` of the name claims and in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
 | the application's | the application's binaries, at `start_on` | its own stores; Rafka binds the traits to its system topics |
 
 A provider is one set of stores for the fabric, reached by every node that writes: a node's own record is written by the node and read by its primaries. A backend that keeps its stores in one process, the testkit's `memory` backend, serves a single-process fabric only.

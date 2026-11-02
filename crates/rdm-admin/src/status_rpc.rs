@@ -1310,7 +1310,7 @@ impl StatusDoor {
                 let Some(node_records) = self.configs.get().and_then(|c| c.records()) else {
                     return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} holds no node records yet; {} is refused", req.op(), me_name_path = &me_name.path, me_name_name = &me_name.name));
                 };
-                let records = crate::current_record::CurrentRecords { claims: &*self.nodes_storage, meshes: &*self.meshes_storage, records: &**node_records };
+                let records = crate::current_record::CurrentRecords { claims: &*self.nodes_storage, records: &**node_records };
                 return match atlas.view(paths, &records, &*self.builds, &view).await {
                     Ok(atlas) => StatusReply::within_reply_bound(StatusReply::Atlas { atlas }, req.op()),
                     Err(e) => rdm_core::reply::status::bounded_source_failed("nodes.storage", req.op(), &e),
@@ -1621,7 +1621,7 @@ impl StatusDoor {
                 // Each record through the reader (query.md §1): the name claims and the Mesh records this
                 // admin's stores hold, the lifecycle and property records its node records hold.
                 let records = self.configs.get().and_then(|c| c.records());
-                let current = records.map(|r| crate::current_record::CurrentRecords { claims: &*self.nodes_storage, meshes: &*self.meshes_storage, records: &**r });
+                let current = records.map(|r| crate::current_record::CurrentRecords { claims: &*self.nodes_storage, records: &**r });
                 crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &planned, &read.filter, &amend, current).await
             }
             Entity::Meshes => {
@@ -1647,7 +1647,7 @@ impl StatusDoor {
                 // named, never answered as no expiry.
                 let mut certs = None;
                 if let (Some(atlas), Some(records)) = (self.atlas.get(), self.configs.get().and_then(|c| c.records())) {
-                    let reader = crate::current_record::CurrentRecords { claims: &*self.nodes_storage, meshes: &*self.meshes_storage, records: &**records };
+                    let reader = crate::current_record::CurrentRecords { claims: &*self.nodes_storage, records: &**records };
                     let scope = atlas.meshes();
                     let mut rows = Vec::new();
                     for n in view.births().filter(|n| scope.contains(&n.mesh)) {

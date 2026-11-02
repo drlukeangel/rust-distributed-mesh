@@ -53,14 +53,14 @@ async fn answer(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admi
 }
 
 /// The reply of `node.get` with `filter` over `view`, each record read through the reader: every record
-/// `status` holds is written as a lifecycle record under its mesh's writer in `view`
-/// ([`crate::write_lifecycles`]), its properties the node's own ([`properties`]).
+/// `status` holds is read at its node id, each mesh in `view` given its Mesh record
+/// ([`crate::write_meshes`]), its properties the node's own ([`properties`]).
 async fn reply(view: &Topology, status: &MemoryNodesStorage, planned: &rdm_admin::views::Planned, filter: &Filter) -> StatusReply {
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     let meshes = rdm_admin::storage::MemoryMeshStorage::default();
-    crate::write_lifecycles(status, view, &meshes, properties()).await;
-    let current = rdm_admin::current_record::CurrentRecords { claims: status, meshes: &meshes, records: properties() };
+    crate::write_meshes(view, &meshes).await;
+    let current = rdm_admin::current_record::CurrentRecords { claims: status, records: properties() };
     rdm_admin::views::nodes_answer_with_status(&path("mesh1.admin", "1"), view, &loads, &atlas, planned, filter, &|_| {}, Some(current)).await
 }
 
@@ -263,51 +263,6 @@ async fn a_retained_predecessors_labels_stay_at_its_own_id_and_the_current_pair_
     assert_eq!(ids(answer(&view, &status, &planned, Filter::new().eq("path", ["mesh1.rpc"]).eq("name", ["1"])).await), [successor.node_id.clone()], "the current pair selects the successor");
 }
 
-/// A nodes store that fails every call, read or write, and counts them: a read answered while it is
-/// the admin's store read nothing of it.
-#[derive(Default)]
-struct Unreadable {
-    calls: std::sync::atomic::AtomicUsize,
-}
-
-impl Unreadable {
-    fn fail<T>(&self, what: &str) -> Result<T, rdm_admin::storage_error::StorageError> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/{what}"), reason: "the nodes store fails every read".into() })
-    }
-}
-
-#[async_trait::async_trait]
-impl rdm_admin::storage::NodesStorage for Unreadable {
-    async fn put_runtime(&self, _: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.fail("runtimes")
-    }
-    async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
-        self.fail("runtimes")
-    }
-    async fn runtime(&self, _: &NodeId, _: &IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
-        self.fail("runtimes")
-    }
-    async fn node(&self, _: &NodeId) -> Result<Option<NodeRow>, rdm_admin::storage_error::StorageError> {
-        self.fail("records")
-    }
-    async fn nodes(&self, _: &str) -> Result<Vec<NodeRow>, rdm_admin::storage_error::StorageError> {
-        self.fail("records")
-    }
-    async fn put_node(&self, _: &NodeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.fail("records")
-    }
-    async fn name_claim(&self, _: &PathName) -> Result<Option<NodeId>, rdm_admin::storage_error::StorageError> {
-        self.fail("names")
-    }
-    async fn claim_node_name(&self, _: &PathName, _: &NodeId) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::storage_error::StorageError> {
-        self.fail("names")
-    }
-    async fn release_node_name(&self, _: &PathName, _: &NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.fail("names")
-    }
-}
-
 /// The fabric-primary `me`'s Status door over `view`, its atlas `atlas`, its nodes store
 /// `nodes_storage`, its mesh store `meshes` and its node records `records` (its config door bound to
 /// them, as boot binds it); every other store in memory.
@@ -363,17 +318,14 @@ fn get(entity: rdm_core::filter::Entity, filter: Filter) -> rdm_core::status::Re
 }
 
 /// CONTRACT (query.md §1: "Node rows and property maps are not copied into an atlas to serve
-/// `node.get` or acceptance"; "point-reads the lifecycle record under that writer's node ID and
-/// incarnation. Properties are read separately at the subject node ID"; fabric-certs.md §Tracking): at
-/// a fabric-primary whose nodes store fails every call, `node.get` answers every node matching the
-/// filter, its cert included, from each node's lifecycle record under its mesh's current writer (a
-/// birth the view holds is read by its node ID, never through a name claim), and `fabric.get` answers
-/// the fabric with its `next_expiry`, the soonest member cert expiry the records hold; neither makes
-/// one call to the nodes store. Must NOT happen: a read refused or answered short because the nodes
-/// store failed, the cert summary read from the nodes store (and silently dropped when it fails), or
-/// any call to the nodes store at all.
+/// `node.get` or acceptance"; Q331: one node store, each node's record at its node id in it;
+/// fabric-certs.md §Tracking): at a fabric-primary, `node.get` answers every node matching the filter,
+/// its cert included, from each node's record in the nodes store (a birth the view holds is read by its
+/// node ID, never through a name claim), and `fabric.get` answers the fabric with its `next_expiry`, the
+/// soonest member cert expiry the records hold. Must NOT happen: a read answered short, or a cert taken
+/// from anywhere but the node's record.
 #[tokio::test]
-async fn nodes_get_and_fabrics_get_answer_from_the_records_while_the_nodes_store_fails_every_read() {
+async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
     let (mut admin, gw) = (node(rdm_core::PathName::new("mesh1.admin", "1").unwrap(), "mesh1", rdm_core::NodeKind::NodeAdmin), node(rdm_core::PathName::new("mesh1.gateway", "1").unwrap(), "mesh1", rdm_core::NodeKind::Gateway));
     admin.kind = rdm_core::NodeKind::NodeAdmin;
     admin.is_primary = true;
@@ -383,7 +335,7 @@ async fn nodes_get_and_fabrics_get_answer_from_the_records_while_the_nodes_store
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
         nodes: vec![admin.clone(), gw.clone()],
     };
-    let records = MemoryNodesStorage::default();
+    let records = Arc::new(MemoryNodesStorage::default());
     let expiries = [(&admin, 9_000_000u64), (&gw, 7_000_000u64)];
     for (n, expires_at) in expiries {
         let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), n.kind, n.node_id.clone(), NodeStatus::Ready);
@@ -392,34 +344,32 @@ async fn nodes_get_and_fabrics_get_answer_from_the_records_while_the_nodes_store
     }
     let atlas = Arc::new(rdm_admin::atlas::Atlas::default());
     atlas.scope(["mesh1".to_string()].into());
-    // Each record a lifecycle record under mesh1's writer, the fabric-primary (query.md §1).
+    // Each record read at its node id in the nodes store (query.md §1).
     let meshes = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let node_records = Arc::new(rdm_node::node_records::MemoryNodeRecords::default());
-    crate::write_lifecycles(&records, &view, &*meshes, &*node_records).await;
+    crate::write_meshes(&view, &*meshes).await;
     for n in [&admin, &gw] {
         own(&n.node_id, BTreeMap::new(), Default::default()).await;
         use rdm_node::node_records::NodeRecordsStorage as _;
         let own = properties().properties(&n.node_id).await.unwrap().expect("the node's own property record");
         node_records.put_properties(&own).await.unwrap();
     }
-    let store = Arc::new(Unreadable::default());
-    let fp = fabric_primary_at(&admin, view, atlas, store.clone(), meshes, node_records).await;
+    let fp = fabric_primary_at(&admin, view, atlas, records.clone(), meshes, node_records).await;
 
     match fp.read_rows(&get(rdm_core::filter::Entity::Nodes, Filter::new().eq("mesh", ["mesh1"]))).await {
         Ok(rdm_core::read::Rows::Nodes(nodes)) => {
             assert_eq!(nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), [path("mesh1.admin", "1"), path("mesh1.gateway", "1")], "{nodes:#?}");
-            assert_eq!(nodes[1].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the lifecycle record's");
+            assert_eq!(nodes[1].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the node's record's");
         }
-        other => panic!("node.get answers from the records while the nodes store fails every read, not {other:?}"),
+        other => panic!("node.get answers from the nodes' records, not {other:?}"),
     }
     match fp.read_rows(&get(rdm_core::filter::Entity::Fabrics, Filter::new())).await {
         Ok(rdm_core::read::Rows::Fabrics(fabrics)) => {
             assert_eq!(fabrics.len(), 1, "{fabrics:#?}");
             assert_eq!(fabrics[0].next_expiry, Some(7_000_000), "the soonest cert expiry the atlas's records hold: {fabrics:#?}");
         }
-        other => panic!("fabric.get answers from the atlas while the nodes store fails every read, not {other:?}"),
+        other => panic!("fabric.get answers from the nodes' records, not {other:?}"),
     }
-    assert_eq!(store.calls.load(std::sync::atomic::Ordering::SeqCst), 0, "neither read called the nodes store");
 }
 
 /// CONTRACT (Q233, states.md "Who sets each state": "A query answers the state the row last took from

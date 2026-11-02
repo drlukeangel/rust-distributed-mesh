@@ -1,12 +1,13 @@
-//! i150 storage contract: node properties and writer-birth lifecycle records.
+//! i150 storage contract: the property records the nodes write, beside their records in the nodes store.
 
-use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, NodeKind};
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rdm_node::node_records::{
-    FileNodeRecords, MemoryNodeRecords, NodeLifecycle, NodeProperties, NodeRecordsStorage,
+    FileNodeRecords, MemoryNodeRecords, NodeProperties, NodeRecordsStorage,
     RecordBirth,
 };
+use rdm_node::nodes_storage::{FileNodesStorage, MemoryNodesStorage, NodeRow, NodesStorage};
 use rdm_node::store_root::StoreRoot;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 fn birth() -> RecordBirth {
     RecordBirth {
@@ -26,69 +27,47 @@ fn properties() -> NodeProperties {
         held: ["example.record".into()].into(),
     }
 }
-fn lifecycle(node_id: NodeId, mesh_id: MeshId) -> NodeLifecycle {
-    NodeLifecycle { replacement_from: None,
-        initial_properties: None,
-        node_id,
-        path: "mesh1.rpc".into(),
-        name: "north".into(),
-        kind: NodeKind::RpcNode,
-        node_type: "application-worker".into(),
-        fabric_id: FabricId::mint(),
-        mesh_id,
-        incarnation_id: IncarnationId::mint(),
-        status: rdm_node::model::NodeStatus::Ready,
-        declared: BTreeSet::new(),
-        operations: vec![],
-        silence: None,
-        data_dir_lost: None,
-        data_dir_unreadable: None,
-        cert: None,
-        signing_cert: None,
-        is_primary: false,
-        is_fabric_primary: false,
-        executable: None,
-        storage_persistence: None,
-        placement: None,
-        topology_storage_provider: Some("file".into()),
-        allocated: None,
-        predecessor: None,
-        renamed_from: None,
-        inherited_by: None,
-    }
+fn record(node_id: NodeId, mesh: &str) -> NodeRow {
+    let name = PathName::new(&format!("{mesh}.rpc"), "north").unwrap();
+    let mut row = NodeRow::new(name.clone(), mesh, NodeKind::RpcNode, node_id, rdm_node::model::NodeStatus::Ready);
+    row.birth_mut(&IncarnationId::mint(), &name);
+    row.topology_storage_provider = Some("file".into());
+    row
 }
+
 fn root(tag: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!("node-records-{tag}-{}", NodeId::mint()));
     std::fs::create_dir_all(&root).unwrap();
     root
 }
 
-async fn latest_line_contract(store: &dyn NodeRecordsStorage) {
+async fn latest_line_contract(store: &dyn NodesStorage) {
     let node = NodeId::mint();
-    let mesh = MeshId::mint();
-    let first = lifecycle(node.clone(), mesh.clone());
+    let first = record(node.clone(), "mesh1");
     let mut later = first.clone();
     later.status = rdm_node::model::NodeStatus::Stopped;
-    // Two writers append the node's record: its id is the key, the latest line is current.
-    store.put_lifecycle(&first, &birth()).await.unwrap();
-    store.put_lifecycle(&later, &birth()).await.unwrap();
-    let unrelated = lifecycle(NodeId::mint(), MeshId::mint());
-    store.put_lifecycle(&unrelated, &birth()).await.unwrap();
-    assert_eq!(store.lifecycle(&node).await.unwrap(), Some(later), "the latest line is the node's record");
-    assert_eq!(store.lifecycle(&NodeId::mint()).await.unwrap(), None, "a node with no record has none yet");
-    assert_eq!(store.lifecycles(&mesh).await.unwrap().len(), 1, "one record per node");
-    assert!(store.lifecycles(&MeshId::mint()).await.unwrap().is_empty());
+    // Two writes append the node's record: its id is the key, the latest line is current.
+    store.put_node(&first).await.unwrap();
+    store.put_node(&later).await.unwrap();
+    let unrelated = record(NodeId::mint(), "mesh2");
+    store.put_node(&unrelated).await.unwrap();
+    assert_eq!(store.node(&node).await.unwrap(), Some(later), "the latest line is the node's record");
+    assert_eq!(store.node(&NodeId::mint()).await.unwrap(), None, "a node with no record has none yet");
+    assert_eq!(store.nodes("mesh1").await.unwrap().len(), 1, "one record per node");
+    assert!(store.nodes("mesh3").await.unwrap().is_empty());
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R4, Q323): one node record keyed by node id, append-only, the latest line current;
-/// no writer is in its key. Must NOT happen: a read selecting a record by its writer, or two records of
-/// one node.
+/// CONTRACT (i150 R4, Q323, Q331): one node record keyed by node id in the nodes store, append-only,
+/// the latest line current; no writer is in its key. Must NOT happen: a read selecting a record by its
+/// writer, or two records of one node.
 #[tokio::test]
 async fn a_nodes_record_is_its_latest_line_at_its_node_id() {
-    latest_line_contract(&MemoryNodeRecords::default()).await;
+    latest_line_contract(&MemoryNodesStorage::default()).await;
     let dir = root("latest-line");
-    let store = FileNodeRecords::open(&StoreRoot::at(&dir)).await.unwrap();
+    let fabric = FabricId::mint();
+    let store_root = StoreRoot::open(&dir, &fabric).unwrap();
+    let store = FileNodesStorage::open(&dir, &store_root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.unwrap();
     latest_line_contract(&store).await;
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
@@ -326,18 +305,6 @@ impl NodeRecordsStorage for LostAcknowledgement {
     ) -> Result<Option<NodeProperties>, rdm_node::storage_error::StorageError> {
         self.records.properties(node).await
     }
-    async fn put_lifecycle(&self, record: &NodeLifecycle, writer: &RecordBirth) -> Result<(), rdm_node::storage_error::StorageError> {
-        self.records.put_lifecycle(record, writer).await
-    }
-    async fn lifecycle(&self, node: &NodeId) -> Result<Option<NodeLifecycle>, rdm_node::storage_error::StorageError> {
-        self.records.lifecycle(node).await
-    }
-    async fn lifecycles(
-        &self,
-        mesh: &MeshId,
-    ) -> Result<Vec<NodeLifecycle>, rdm_node::storage_error::StorageError> {
-        self.records.lifecycles(mesh).await
-    }
 }
 
 // @feature: node-records
@@ -411,8 +378,8 @@ async fn a_complete_entry_is_one_put_and_a_later_entry_replaces_both_fields_whol
 }
 
 // @feature: node-records
-/// CONTRACT (i150 R13): migration copies complete properties and both lifecycle ownership
-/// keys. A fresh provider instance returns every value unchanged.
+/// CONTRACT (i150 R13, Q331): migration copies the complete property record and the node's record in
+/// the nodes store. A fresh provider instance returns every value unchanged.
 #[tokio::test]
 async fn a_provider_copy_preserves_both_record_kinds() {
     use rdm_node::node_records::NodePropertyWriter;
@@ -435,12 +402,13 @@ async fn a_provider_copy_preserves_both_record_kinds() {
         .await
         .unwrap()
         .record;
-    let mesh = MeshId::mint();
-    let previous = lifecycle(initial.birth.node_id.clone(), mesh.clone());
+    let nodes = FileNodesStorage::open(&source_dir, &root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.unwrap();
+    let previous = record(initial.birth.node_id.clone(), "mesh1");
     let mut current = previous.clone();
     current.status = rdm_node::model::NodeStatus::Stopped;
-    records.put_lifecycle(&previous, &birth()).await.unwrap();
-    records.put_lifecycle(&current, &birth()).await.unwrap();
+    nodes.put_node(&previous).await.unwrap();
+    nodes.put_node(&current).await.unwrap();
+    nodes.finish_issued_writes().await;
     let from = FileProviderLines::open("file", &source_dir, &fabric)
         .await
         .unwrap();
@@ -455,16 +423,20 @@ async fn a_provider_copy_preserves_both_record_kinds() {
     };
     copy(&run, &from, &to).await.unwrap();
     drop(to);
-    let reopened = FileNodeRecords::open(&StoreRoot::open(&destination_dir, &fabric).unwrap())
+    let destination_root = StoreRoot::open(&destination_dir, &fabric).unwrap();
+    let reopened = FileNodeRecords::open(&destination_root)
         .await
         .unwrap();
+    let reopened_nodes = FileNodesStorage::open(&destination_dir, &destination_root, "mesh1", &rdm_node::store_log::LogWriter::mint()).await.unwrap();
     assert_eq!(
         reopened.properties(&initial.birth.node_id).await.unwrap(),
         Some(written)
     );
-    assert_eq!(reopened.lifecycle(&initial.birth.node_id).await.unwrap(), Some(current), "the copy carries the node's latest line");
-    assert_eq!(reopened.lifecycles(&mesh).await.unwrap().len(), 1);
+    assert_eq!(reopened_nodes.node(&initial.birth.node_id).await.unwrap(), Some(current), "the copy carries the node's latest line");
+    assert_eq!(reopened_nodes.nodes("mesh1").await.unwrap().len(), 1);
     let _ = previous;
+    drop(reopened_nodes);
+    drop(nodes);
     drop(reopened);
     drop(from);
     drop(writer);

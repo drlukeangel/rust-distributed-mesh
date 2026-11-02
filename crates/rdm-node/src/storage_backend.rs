@@ -236,16 +236,6 @@ impl crate::node_records::NodeRecordsStorage for NodeRecordsThroughHandle {
     async fn properties(&self, node: &crate::model::NodeId) -> Result<Option<crate::node_records::NodeProperties>, crate::storage_error::StorageError> {
         self.0.current.read().stores().node_records.properties(node).await
     }
-    async fn put_lifecycle(&self, record: &crate::node_records::NodeLifecycle, writer: &crate::node_records::RecordBirth) -> Result<(), crate::storage_error::StorageError> {
-        let w = self.0.current.write();
-        w.node_records.put_lifecycle(record, writer).await
-    }
-    async fn lifecycle(&self, node: &crate::model::NodeId) -> Result<Option<crate::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().node_records.lifecycle(node).await
-    }
-    async fn lifecycles(&self, mesh: &crate::model::MeshId) -> Result<Vec<crate::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().node_records.lifecycles(mesh).await
-    }
 }
 
 /// The nodes' rows of a process that holds none: every read is refused by name.

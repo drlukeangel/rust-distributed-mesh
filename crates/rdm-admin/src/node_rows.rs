@@ -38,7 +38,7 @@
 //!   ([`NodeRows::arrivals`]); an admin that takes a mesh's role writes every member's row of that
 //!   mesh, its own included, and a row a node already holds is never overwritten.
 
-use crate::model::{FabricId, IncarnationId, MeshId, Node, NodeId, NodeKind, NodeStatus, PathName};
+use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::storage::{Allocation, NameHeld, NodeRow, NodesStorage};
 use crate::topology::Topology;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -75,47 +75,6 @@ pub struct NodeRows {
     to_fill: Mutex<Vec<String>>,
 }
 
-/// The lifecycle record of `row`'s current birth (its newest birth's, else its claim's allocated
-/// incarnation), persisted at the row's node id (Q323): the row's lifecycle facts (proposal
-/// node-record.md R-NR3), `flags` its boolean role flags. `None` when the row names no birth or no mesh
-/// id is known for it: nothing is invented for a record.
-pub fn lifecycle_record(row: &NodeRow, fabric_id: &FabricId, mesh_id: Option<&MeshId>, node_type: String, flags: (bool, bool)) -> Option<rdm_node::node_records::NodeLifecycle> {
-    let birth = row.newest_birth();
-    let incarnation_id = birth.map(|b| b.incarnation_id.clone()).or_else(|| row.allocated.as_ref().map(|a| a.incarnation.clone()))?;
-    let mesh_id = row.mesh_id.clone().or_else(|| mesh_id.cloned())?;
-    let record_birth = |b: &crate::storage::BirthRef| rdm_node::node_records::RecordBirth { node_id: b.node_id.clone(), incarnation_id: b.incarnation_id.clone() };
-    Some(rdm_node::node_records::NodeLifecycle {
-        node_id: row.node_id.clone(),
-        path: row.name.path.clone(),
-        name: row.name.name.clone(),
-        kind: row.kind,
-        node_type,
-        fabric_id: fabric_id.clone(),
-        mesh_id,
-        incarnation_id,
-        status: row.status,
-        declared: birth.map(|b| b.declared.clone()).unwrap_or_default(),
-        operations: birth.map(|b| b.operations.clone()).unwrap_or_default(),
-        silence: birth.and_then(|b| b.silence),
-        data_dir_lost: birth.and_then(|b| b.data_dir_lost.clone()),
-        data_dir_unreadable: birth.and_then(|b| b.data_dir_unreadable.clone()),
-        cert: birth.and_then(|b| b.cert.clone()),
-        signing_cert: birth.and_then(|b| b.signing_cert.clone()),
-        is_primary: flags.0,
-        is_fabric_primary: flags.1,
-        executable: row.executable.clone(),
-        storage_persistence: row.storage_persistence.clone(),
-        placement: row.placement.clone(),
-        topology_storage_provider: row.topology_storage_provider.clone(),
-        allocated: row.allocated.clone(),
-        initial_properties: row.initial_properties.clone(),
-        predecessor: row.predecessor.as_ref().map(record_birth),
-        renamed_from: row.renamed_from.as_ref().map(|r| (r.path.clone(), r.name.clone())),
-        replacement_from: row.replacement_from.clone(),
-        inherited_by: row.inherited_by.clone(),
-    })
-}
-
 /// The node records this admin writes, as it holds them (storage-whole-records.md, "The rule"): per
 /// node, the whole record it last wrote or found the node holding, the copy every write of that node's
 /// record starts from. The writer of a mesh's rows, its config door, its status authority, its offline
@@ -145,67 +104,6 @@ pub struct WrittenRows {
     /// another birth (`crate::admin::projection::RowNames`). What the view rebuild waits on
     /// ([`Self::subscribe_names`]); nothing is sent.
     names: tokio::sync::watch::Sender<u64>,
-    /// Where this writer's lifecycle records are persisted, set once its node records are open
-    /// ([`Self::writes_lifecycle_to`]): every put of a record persists its lifecycle record there, at
-    /// the node's id (Q323). Unset: no lifecycle record is written.
-    lifecycle: std::sync::OnceLock<LifecycleWrites>,
-}
-
-/// The id of a mesh by its name, as the admin holds its Mesh records: the mesh id of a record that
-/// carries none of its own.
-pub type MeshIds = Arc<dyn Fn(&str) -> Option<MeshId> + Send + Sync>;
-
-/// The serialized lifecycle writer's one put of `record` (its subject's own lock held by the caller),
-/// appended by `writer`, the writing admin's birth (the store log's line names it; the record does
-/// not, Q323). One `rdm.node_admin.node.update.via-lifecycle-record` span, a child of the caller's,
-/// spans the put: the subject, the writer birth, the backend and the completion (`durable` or
-/// `failed`, its cause named), so a delayed put is read from its start and end (i150 § OTLP
-/// span-assertion bar). No status, config or other value of the record is logged.
-pub(crate) async fn put_lifecycle_record(records: &dyn rdm_node::node_records::NodeRecordsStorage, record: &rdm_node::node_records::NodeLifecycle, writer: &rdm_node::node_records::RecordBirth) -> Result<(), crate::storage_error::StorageError> {
-    use tracing::Instrument as _;
-    let span = tracing::info_span!(
-        "rdm.node_admin.node.update.via-lifecycle-record",
-        subject_path = %record.path, subject_name = %record.name, node_id = %record.node_id, mesh_id = %record.mesh_id,
-        writer_node_id = %writer.node_id, writer_incarnation_id = %writer.incarnation_id.as_str(),
-        backend = %records.provider(), outcome = tracing::field::Empty, cause = tracing::field::Empty, "otel.kind" = "internal",
-    );
-    let put = records.put_lifecycle(record, writer).instrument(span.clone()).await;
-    match &put {
-        Ok(()) => span.record("outcome", "durable"),
-        Err(e) => span.record("outcome", "failed").record("cause", e.to_string()),
-    };
-    put
-}
-
-/// Where a writer's lifecycle records are persisted, and the election result their boolean role flags
-/// are recorded from (node-primary-update.md step 5: "The lifecycle writer records the election result
-/// as boolean role flags under its own writer birth").
-pub struct LifecycleWrites {
-    records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>,
-    primaries: rdm_transport::topology::PrimaryView,
-    fabric_id: FabricId,
-    meshes: MeshIds,
-}
-
-impl std::fmt::Debug for LifecycleWrites {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LifecycleWrites").field("fabric_id", &self.fabric_id).finish_non_exhaustive()
-    }
-}
-
-impl LifecycleWrites {
-    /// `row`'s boolean role flags `(is_primary, is_fabric_primary)` as the election result holds its
-    /// newest birth: its node type's primary in its mesh (the mesh-primary for a node-admin), and the
-    /// fabric-primary. A record that names no birth holds neither.
-    fn flags(&self, row: &NodeRow) -> (bool, bool) {
-        let Some(birth) = row.newest_birth() else { return (false, false) };
-        let is = |p: Option<rdm_core::Primary>| p.is_some_and(|p| p.node_id == row.node_id && p.incarnation == birth.incarnation_id);
-        let primary = match row.kind {
-            NodeKind::NodeAdmin => self.primaries.mesh(&row.mesh),
-            kind => self.primaries.node_type_primary(&row.mesh, kind),
-        };
-        (is(primary), is(self.primaries.fabric()))
-    }
 }
 
 impl WrittenRows {
@@ -224,32 +122,6 @@ impl WrittenRows {
     /// The birth this admin writes as, once its boot set it.
     pub fn writer(&self) -> Option<&crate::storage::BirthRef> {
         self.birth.get()
-    }
-
-    /// Persist the lifecycle record of every record this writer puts from now on to `records` of
-    /// `fabric_id`, its role flags as `primaries` holds the election result, a record with no mesh id
-    /// of its own given its mesh's id from `meshes`. The first call stands.
-    pub fn writes_lifecycle_to(&self, records: Arc<dyn rdm_node::node_records::NodeRecordsStorage>, primaries: rdm_transport::topology::PrimaryView, fabric_id: FabricId, meshes: MeshIds) {
-        let _ = self.lifecycle.set(LifecycleWrites { records, primaries, fabric_id, meshes });
-    }
-
-    /// The lifecycle record of `row`, the record this writer puts, persisted at the row's node id
-    /// (Q323; build.md §5.3), with the election result's boolean role flags. Nothing is written while
-    /// no lifecycle target is set. A record whose mesh id is unknown (neither on the record nor among
-    /// the admin's Mesh records) is not written: one `rdm.node_admin.node.update.via-lifecycle-record`
-    /// span names it, and its next put writes it once the mesh's id is known.
-    async fn put_lifecycle(&self, row: &NodeRow) -> Result<(), crate::storage_error::StorageError> {
-        let (Some(target), Some(writer)) = (self.lifecycle.get(), self.birth.get()) else { return Ok(()) };
-        let mesh_id = (target.meshes)(&row.mesh);
-        let node_type = self.node_type_of(&row.node_id).unwrap_or_else(|| row.node_type().to_string());
-        match lifecycle_record(row, &target.fabric_id, mesh_id.as_ref(), node_type, target.flags(row)) {
-            Some(record) => put_lifecycle_record(&*target.records, &record, &rdm_node::node_records::RecordBirth { node_id: writer.node_id.clone(), incarnation_id: writer.incarnation_id.clone() }).await,
-            None => {
-                tracing::info_span!("rdm.node_admin.node.update.via-lifecycle-record", subject_path = %row.name.path, subject_name = %row.name.name, node_id = %row.node_id, mesh = %row.mesh, writer_node_id = %writer.node_id, writer_incarnation_id = %writer.incarnation_id.as_str(), outcome = "unkeyed", "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the record names no birth or no mesh id is known for it: no lifecycle record is keyed for it"));
-                Ok(())
-            }
-        }
     }
 
     /// `read`, a version of a node's record a read of storage answered, as this writer folds it
@@ -413,15 +285,13 @@ impl WrittenRows {
         self.update(storage, &node.node_id, Some(base), |r| change(r.birth_mut(incarnation, &node.name))).await
     }
 
-    /// The one write of `row`, its node's lock held by the caller: its lifecycle record under this
-    /// writer's birth ([`Self::put_lifecycle`]), then the whole record written (it carries no revision:
-    /// node-identity-and-state.md §2.5), the copy replaced once storage answers both.
+    /// The one write of `row`, its node's lock held by the caller: the whole record written (it carries
+    /// no revision: node-identity-and-state.md §2.5), the copy replaced once storage answers.
     pub async fn put(&self, storage: &dyn NodesStorage, row: &NodeRow) -> Result<(), crate::storage_error::StorageError> {
         let previous = self.row_of(&row.node_id);
         let mut row = row.clone();
         row.writer = self.birth.get().cloned();
         let row = &row;
-        self.put_lifecycle(row).await?;
         storage.put_node(row).await?;
         self.hold(row);
         if previous.as_ref().is_none_or(|p| p.name != row.name || released_its_name(p) != released_its_name(row)) {

@@ -577,14 +577,8 @@ mod tests {
             };
 
             let atlas = Atlas::default();
-            // Each record is a lifecycle record under mesh1's writer, its mesh-primary (query.md §1).
+            // Each node's record is at its node id in the nodes store, written by mesh1's mesh-primary (query.md §1).
             let claims = crate::storage::MemoryNodesStorage::default();
-            let meshes = crate::storage::MemoryMeshStorage::default();
-            let mesh_id = view.meshes[0].id.clone().unwrap();
-            use crate::storage::MeshStorage as _;
-            meshes.put_mesh(&crate::storage::MeshRecord::new(mesh_id.clone(), "mesh1".to_string())).await.unwrap();
-            let writer = crate::storage::BirthRef { node_id: admin_id.clone(), incarnation_id: admin_inc.clone() };
-            let fabric_id = view.fabric.id.clone();
             let mut admin_row = NodeRow::new(me.clone(), "mesh1", NodeKind::NodeAdmin, admin_id.clone(), ModelNodeStatus::Ready);
             admin_row.births.push(BirthFacts::new(admin_inc.clone(), me.clone()));
 
@@ -614,16 +608,15 @@ mod tests {
             pred_row.inherited_by = Some(rpc_succ_id.clone());
             pred_row.births.push(BirthFacts::new(rpc_pred_inc.clone(), rpc_pred_path.clone()));
             for row in [&admin_row, &succ_row, &pred_row] {
-                let record = crate::node_rows::lifecycle_record(row, &fabric_id, Some(&mesh_id), row.node_type().to_string(), (false, false)).expect("each record names its birth and mesh");
-                properties.put_lifecycle(&record, &rdm_node::node_records::RecordBirth { node_id: writer.node_id.clone(), incarnation_id: writer.incarnation_id.clone() }).await.unwrap();
+                crate::storage::NodesStorage::put_node(&claims, row).await.unwrap();
             }
 
             let loads: Loads = Arc::new(BTreeMap::new);
 
             // 1. A tag query reads each node's own labels: the successor and the retained predecessor both carry tier-a.
             let read = |filter: Filter| {
-                let (me, view, loads, atlas, properties, claims, meshes) = (&me, &view, &loads, &atlas, &properties, &claims, &meshes);
-                let current = crate::current_record::CurrentRecords { claims, meshes, records: properties };
+                let (me, view, loads, atlas, properties, claims) = (&me, &view, &loads, &atlas, &properties, &claims);
+                let current = crate::current_record::CurrentRecords { claims, records: properties };
                 async move { nodes_answer_with_status(me, view, loads, atlas, &Ok(BTreeMap::new()), &filter, &|_| {}, Some(current)).await }
             };
             let tag_reply = read(Filter::new().eq("tags", ["tier-a"])).await;

@@ -210,38 +210,24 @@ pub async fn bind_records(cp: &rdm_admin::control_plane::ControlPlane, views: &[
 }
 
 /// Bind on `cp` the records its acceptance and name lookups read (query.md §1: the pair's name claim,
-/// then the lifecycle record at the node id): `rows`, the nodes store its name claims are read from,
-/// and, for every record `rows` holds of a mesh `t` names, its lifecycle record, each mesh given its
-/// Mesh record in `cp`'s mesh store. Called again after a fixture rewrites a record in `rows`, it writes
-/// that record's lifecycle record again.
+/// then the record at the node id): `rows`, the nodes store the claims and records are read from, each
+/// mesh `t` names given its Mesh record in `cp`'s mesh store.
 pub async fn bind_store(cp: &rdm_admin::control_plane::ControlPlane, rows: std::sync::Arc<rdm_admin::storage::MemoryNodesStorage>, t: &rdm_admin::topology::Topology) {
     let _ = cp.node_rows.set(rows.clone());
-    let records = cp.node_records.get_or_init(|| std::sync::Arc::new(rdm_node::node_records::MemoryNodeRecords::default()) as std::sync::Arc<dyn rdm_node::node_records::NodeRecordsStorage>).clone();
-    write_lifecycles(&rows, t, &*cp.claims, &*records).await;
+    let _ = cp.node_records.get_or_init(|| std::sync::Arc::new(rdm_node::node_records::MemoryNodeRecords::default()) as std::sync::Arc<dyn rdm_node::node_records::NodeRecordsStorage>);
+    write_meshes(t, &*cp.claims).await;
 }
 
-/// For every record `rows` holds of a mesh `t` names, its lifecycle record written to `records` at its
-/// node id, each mesh given its Mesh record and name claim in `meshes` (the one `meshes` holds by name,
-/// else `t`'s id for it, else a minted one): the records a reader (`current_record::CurrentRecords`)
-/// reads over `rows`' name claims.
-pub async fn write_lifecycles(rows: &rdm_admin::storage::MemoryNodesStorage, t: &rdm_admin::topology::Topology, meshes: &dyn rdm_admin::storage::MeshStorage, records: &dyn rdm_node::node_records::NodeRecordsStorage) {
-    use rdm_admin::storage::NodesStorage as _;
+/// Every mesh `t` names given its Mesh record and name claim in `meshes` (the one `meshes` holds by name,
+/// else `t`'s id for it, else a minted one): the Mesh records a reader (`current_record::CurrentRecords`)
+/// reads beside the nodes' records.
+pub async fn write_meshes(t: &rdm_admin::topology::Topology, meshes: &dyn rdm_admin::storage::MeshStorage) {
     let names: std::collections::BTreeSet<String> = t.nodes.iter().map(|n| n.mesh.clone()).chain(t.meshes.iter().map(|m| m.name.clone())).collect();
-    let writer = rdm_node::node_records::RecordBirth { node_id: rdm_admin::model::NodeId::mint(), incarnation_id: rdm_admin::model::IncarnationId::mint() };
     for mesh in names {
-        let mesh_id = match meshes.mesh_named(&mesh).await.expect("the mesh store reads") {
-            Some(m) => m.mesh_id,
-            None => {
-                let id = t.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone()).unwrap_or_else(rdm_admin::model::MeshId::mint);
-                meshes.put_mesh(&rdm_admin::storage::MeshRecord::new(id.clone(), mesh.clone())).await.expect("the Mesh record is written");
-                meshes.claim_mesh_name(&mesh, &id).await.expect("the mesh store writes").expect("the mesh's name is free");
-                id
-            }
-        };
-        for row in rows.nodes(&mesh).await.expect("the nodes store reads") {
-            if let Some(record) = rdm_admin::node_rows::lifecycle_record(&row, &t.fabric.id, Some(&mesh_id), row.node_type().to_string(), (false, false)) {
-                records.put_lifecycle(&record, &writer).await.expect("the lifecycle record is written");
-            }
+        if meshes.mesh_named(&mesh).await.expect("the mesh store reads").is_none() {
+            let id = t.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone()).unwrap_or_else(rdm_admin::model::MeshId::mint);
+            meshes.put_mesh(&rdm_admin::storage::MeshRecord::new(id.clone(), mesh.clone())).await.expect("the Mesh record is written");
+            meshes.claim_mesh_name(&mesh, &id).await.expect("the mesh store writes").expect("the mesh's name is free");
         }
     }
 }

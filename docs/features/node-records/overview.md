@@ -25,7 +25,7 @@ acknowledged properties. A replacement takes its entry's.
 **Primaries.** Leadership is as main has it (Q322). The successor installs the election's result that
 the call carries, and its mesh-primary records the role flags. There is no takeover step.
 
-**Storage.** `NodeRecordsStorage` keeps the property record and the lifecycle record of every node.
-The file backend writes them to `node-records.jsonl`, and a provider move copies both.
+**Storage.** `NodesStorage` keeps every node's record.
+The file backend writes it to `nodes.jsonl`, and a provider move copies it.
 
 See the [how-to](how-to.md) for integration and the [runbook](runbook.md) for diagnosis.

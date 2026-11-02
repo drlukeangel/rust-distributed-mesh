@@ -279,30 +279,7 @@ struct MeshNameClaim {
 }
 
 #[cfg(feature = "file-backend")]
-/// A lock's content (R-SR5): the claim, in its format, and the birth that took it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LockClaim<T> {
-    format: String,
-    record: T,
-    /// The birth that took the lock: its node id and incarnation.
-    by: (String, String),
-}
-
-#[cfg(feature = "file-backend")]
-/// `claim` as the content of a lock taken by `by`.
-fn lock_content<T: Serialize>(format: &str, claim: &T, by: &crate::store_log::LogWriter) -> Vec<u8> {
-    serde_json::to_vec(&LockClaim { format: format.to_string(), record: claim, by: (by.node_id.to_string(), by.incarnation_id.to_string()) }).expect("a lock's claim encodes")
-}
-
-#[cfg(feature = "file-backend")]
-/// The claim a lock's content holds, refused by name when it is not a `format` claim.
-fn lock_claim<T: serde::de::DeserializeOwned>(file: &Path, bytes: &[u8], format: &str) -> Result<T, StorageError> {
-    let held: LockClaim<T> = serde_json::from_slice(bytes).map_err(|e| StorageError::Unrecognised { file: file.display().to_string(), reason: e.to_string() })?;
-    if held.format != format {
-        return Err(StorageError::Unrecognised { file: file.display().to_string(), reason: format!("a lock in format {:?}, this build reads {format:?} here", held.format) });
-    }
-    Ok(held.record)
-}
+use crate::store_log::{lock_claim, lock_content};
 
 #[cfg(feature = "file-backend")]
 /// The mesh name locks under `locks/name/`.
@@ -533,203 +510,27 @@ pub fn fold_declared<'a>(records: impl IntoIterator<Item = &'a NodeRow>) -> Hash
     out
 }
 
-/// The durable record of the nodes: each node's record at its id with its name claim, through which a
-/// `(path, name)` resolves to its node, and every birth's runtime row. Nothing is removed (R-SR2): a
-/// create withdrawn before its node ran leaves its record `Withdrawn`.
-#[async_trait]
-pub trait NodesStorage: Send + Sync {
-    /// Keep the runtime of one birth (a blind put of its own row).
-    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError>;
-    /// Every birth's runtime row the store holds; folded by the reader.
-    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
-    /// The runtime row of the exact birth `(node_id, incarnation)`: a point read by its key.
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError>;
-    /// The record of `node_id`: a point read of its key, a `Withdrawn` one included; `None` when none
-    /// was ever written.
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
-    /// Every node record of `mesh`, a `Withdrawn` one skipped.
-    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError>;
-    /// Write `row` whole at its node id, as given (Q109: storage stores and returns what it is given).
-    /// Durable before it answers (Q54).
-    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError>;
-    /// The node whose name claim holds `name`, if one does.
-    async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError>;
-    /// Claim `name` for `node_id`: an insert of the claim's key. A claim this node already holds
-    /// answers `Ok`; another node's answers `NameHeld` naming it, and nothing is written.
-    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError>;
-    /// Release `name`'s claim while `node_id` holds it; another node's claim there is left as it is.
-    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError>;
-}
-
-/// A nodes store held in memory.
-#[derive(Debug, Default)]
-pub struct MemoryNodesStorage {
-    runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
-    records: Mutex<BTreeMap<NodeId, NodeRow>>,
-    /// The name claims.
-    claims: Mutex<BTreeMap<PathName, NodeId>>,
-}
-
-#[async_trait]
-impl NodesStorage for MemoryNodesStorage {
-    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
-        self.runtimes.lock().unwrap().insert(row.key(), row.clone());
-        Ok(())
-    }
-    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
-        Ok(self.runtimes.lock().unwrap().values().cloned().collect())
-    }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.as_str())).cloned())
-    }
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
-        Ok(self.records.lock().unwrap().get(node_id).cloned())
-    }
-    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
-        Ok(self.records.lock().unwrap().values().filter(|r| r.mesh == mesh && r.status != crate::model::NodeStatus::Withdrawn).cloned().collect())
-    }
-    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
-        self.records.lock().unwrap().insert(row.node_id.clone(), row.clone());
-        Ok(())
-    }
-    async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError> {
-        Ok(self.claims.lock().unwrap().get(name).cloned())
-    }
-    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> {
-        let mut claims = self.claims.lock().unwrap();
-        Ok(match claims.get(name) {
-            Some(by) if by != node_id => Err(NameHeld { name: name.clone(), by: by.clone() }),
-            Some(_) => Ok(()),
-            None => {
-                claims.insert(name.clone(), node_id.clone());
-                Ok(())
-            }
-        })
-    }
-    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError> {
-        let mut claims = self.claims.lock().unwrap();
-        if claims.get(name) == Some(node_id) {
-            claims.remove(name);
-        }
-        Ok(())
-    }
-}
-
 #[cfg(feature = "file-backend")]
-/// The format of the admin's own row in its data dir ([`FileNodesStorage::own_in`]).
+/// The format of the admin's own row in its data dir ([`own_in`]).
 const NODE_FORMAT: &str = "node-record/4";
-#[cfg(feature = "file-backend")]
-use rdm_node::nodes_storage::{read_name_claim, NameClaim, NAME_CLAIM_FORMAT, RECORD_KIND, RECORD_FORMAT, RUNTIME_FORMAT, RUNTIME_KIND};
 
 #[cfg(feature = "file-backend")]
-/// The nodes' records and their runtime rows, each write one line of the
-/// root's `nodes.jsonl` (R-SR1, R-SR2), appended straight to the file: a record at its node id, written by its mesh's writer, durable before the answer
-/// (Q54); a runtime row at `<node id>--<incarnation>`, written once by its birth's launching admin, the
-/// durable map a successor proves exits from, as durable as when it stood in the launcher's data dir.
-/// A `(path, name)` resolves through its name claim. Each name claim is the
-/// lock `locks/name/<composite location index>` of the root (R-SR5). The admin's own row stays its own seed in its
-/// data dir, `nodes/self.json` ([`Self::own_in`]).
-#[derive(Debug)]
-pub struct FileNodesStorage {
-    /// The records and the runtime rows, and their point reads.
-    rows: rdm_node::nodes_storage::FileNodeRows,
-    /// The rows' file, appended to.
-    records: crate::store_log::StoreLog,
-    log_writer: crate::store_log::LogWriter,
-    /// The name claims: `locks/name/<composite location index>`.
-    locks: crate::store_log::StoreLocks,
+/// The admin's own row in `own_data_dir`, read before the store opens: a restarting admin's row
+/// names the Fabric whose store root it opens and the mesh whose nodes it opens on.
+pub async fn own_in(own_data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
+    FileRecords::open(own_data_dir, "nodes", writer).await?.read("self", NODE_FORMAT).await
 }
 
 #[cfg(feature = "file-backend")]
-impl FileNodesStorage {
-    /// Open the store on the fabric's store `root`, written by `writer`. `own_data_dir` and `own_mesh`
-    /// are this admin's (its own row is read from the one, [`Self::own_in`]); the store is the
-    /// fabric's, every mesh's nodes in one file.
-    pub async fn open(own_data_dir: &Path, root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
-        let _ = (own_data_dir, own_mesh);
-        let rows = rdm_node::nodes_storage::FileNodeRows::open(root).await?;
-        let records = rows.log().clone();
-        Ok(Self { rows, records, log_writer: writer.clone(), locks: crate::store_log::StoreLocks::at(root.dir(), writer) })
-    }
-
-    /// The admin's own row in `own_data_dir`, read before the store opens: a restarting admin's row
-    /// names the Fabric whose store root it opens and the mesh whose nodes it opens on.
-    pub async fn own_in(own_data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
-        FileRecords::open(own_data_dir, "nodes", writer).await?.read("self", NODE_FORMAT).await
-    }
-
-    /// Keep `record` as the admin's own row in `own_data_dir`, where [`Self::own_in`] reads it, written
-    /// by the process born as `writer`.
-    pub async fn put_own_in(own_data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
-        FileRecords::open(own_data_dir, "nodes", writer).await?.write("self", NODE_FORMAT, record).await
-    }
-
-    /// Finishes every write of the node records and the runtime rows this store has
-    /// issued (node-primary-update.md step 3); a name lock is taken or removed before its call answers.
-    pub async fn finish_issued_writes(&self) {
-        self.records.finish_issued_writes().await;
-    }
-
-    fn name_lock(&self, name: &PathName) -> std::path::PathBuf {
-        self.locks.path(crate::store_log::LockKind::Name, &name.physical_index_key())
-    }
-
+/// Keep `record` as the admin's own row in `own_data_dir`, where [`own_in`] reads it, written
+/// by the process born as `writer`.
+pub async fn put_own_in(own_data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
+    FileRecords::open(own_data_dir, "nodes", writer).await?.write("self", NODE_FORMAT, record).await
 }
 
+pub use rdm_node::nodes_storage::{MemoryNodesStorage, NodesStorage};
 #[cfg(feature = "file-backend")]
-#[async_trait]
-impl NodesStorage for FileNodesStorage {
-    /// A blind put of the birth's own row: one append, nothing read first (its one writer is the admin
-    /// that launched the birth, build.md §5.3).
-    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
-        self.records.append(&self.log_writer, RUNTIME_FORMAT, &row.key(), row).await
-    }
-    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
-        self.records.latest_of(RUNTIME_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect()
-    }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        self.records.latest(RUNTIME_KIND, &format!("{}--{}", node_id, incarnation.as_str())).await?.map(|l| l.decode(self.records.path())).transpose()
-    }
-    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
-        rdm_node::nodes_storage::NodeRowsStorage::node(&self.rows, node_id).await
-    }
-    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
-        let mut out = Vec::new();
-        for l in self.records.latest_of(RECORD_KIND).await? {
-            let row: NodeRow = l.decode(self.records.path())?;
-            if row.mesh == mesh && row.status != crate::model::NodeStatus::Withdrawn {
-                out.push(row);
-            }
-        }
-        Ok(out)
-    }
-    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
-        self.records.append(&self.log_writer, RECORD_FORMAT, row.node_id.as_str(), row).await
-    }
-    async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError> {
-        match self.locks.read(crate::store_log::LockKind::Name, &name.physical_index_key()).await? {
-            Some(bytes) => Ok(Some(read_name_claim(&self.name_lock(name), &bytes, name)?.node_id)),
-            None => Ok(None),
-        }
-    }
-    /// The claim is the lock `locks/name/<composite location index>`, taken create-exclusive (R-SR5): a lock this node
-    /// holds answers `Ok`, another node's `NameHeld` naming it.
-    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> {
-        let claim = NameClaim { path: name.path.clone(), name: name.name.clone(), node_id: node_id.clone() };
-        match self.locks.take(crate::store_log::LockKind::Name, &name.physical_index_key(), &lock_content(NAME_CLAIM_FORMAT, &claim, &self.log_writer)).await? {
-            crate::store_log::LockTaken::Won => Ok(Ok(())),
-            crate::store_log::LockTaken::Held(bytes) => {
-                let held = read_name_claim(&self.name_lock(name), &bytes, name)?;
-                Ok(if held.node_id == *node_id { Ok(()) } else { Err(NameHeld { name: name.clone(), by: held.node_id }) })
-            }
-        }
-    }
-    /// The lock goes under the name's reclamation mutex, only while it still names `node_id` (R-SR5).
-    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError> {
-        let (file, node_id, location) = (self.name_lock(name), node_id.clone(), name.clone());
-        self.locks.release(crate::store_log::LockKind::Name, &name.physical_index_key(), move |b| read_name_claim(&file, b, &location).is_ok_and(|held| held.node_id == node_id)).await.map(|_| ())
-    }
-}
+pub use rdm_node::nodes_storage::FileNodesStorage;
 
 // ---------------------------------------------------------------- connections.storage
 
@@ -986,9 +787,9 @@ mod tests {
         c.remove_connection(&down.index()).await.unwrap();
         assert!(c.connections().await.unwrap().is_empty());
         // The own row is the admin's own seed in its data dir, read before any store opens.
-        assert_eq!(FileNodesStorage::own_in(&d, &w).await.unwrap(), None);
-        FileNodesStorage::put_own_in(&d, &w, &own).await.unwrap();
-        assert_eq!(FileNodesStorage::own_in(&d, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the own row is read back by the next process");
+        assert_eq!(own_in(&d, &w).await.unwrap(), None);
+        put_own_in(&d, &w, &own).await.unwrap();
+        assert_eq!(own_in(&d, &IncarnationId::mint()).await.unwrap(), Some(own.clone()), "the own row is read back by the next process");
         assert_eq!(own.gossip_addr().map(|a| a.id.to_string()), Some(own.endpoint_id.0.clone()));
         let op = crate::store_log::Op { node_id: "n".into(), incarnation_id: "i".into(), seq: 1 };
         std::fs::OpenOptions::new().append(true).open(root.dir().join(crate::store_root::MESHES_FILE)).and_then(|mut f| std::io::Write::write_all(&mut f, &crate::store_log::encode_line(&op, "mesh-record/9", mesh.mesh_id.as_str(), b"{}"))).unwrap();
@@ -1431,10 +1232,10 @@ mod tests {
         let declared = fold_declared([&row]);
         assert_eq!(declared.get(&(node_id.clone(), inc.clone())), Some(&(NodeState::Stopped, name.clone())));
 
-        // 3. `FileNodesStorage::own_in` and `put_own_in` round-trip the admin's own row in its data dir.
+        // 3. `own_in` and `put_own_in` round-trip the admin's own row in its data dir.
         let d = crate::test_support::tempdir("storage-own-in");
         let writer = IncarnationId::mint();
-        assert_eq!(FileNodesStorage::own_in(&d, &writer).await.unwrap(), None);
+        assert_eq!(own_in(&d, &writer).await.unwrap(), None);
         let secret = iroh::SecretKey::from_bytes(&[11u8; 32]);
         let own_record = NodeRecord { mesh: "mesh1".to_owned(),
             node_id: node_id.clone(),
@@ -1449,8 +1250,8 @@ mod tests {
             is_fabric_primary: Some(1),
             topology_storage_provider: Some("file".into()),
         };
-        FileNodesStorage::put_own_in(&d, &writer, &own_record).await.unwrap();
-        assert_eq!(FileNodesStorage::own_in(&d, &writer).await.unwrap(), Some(own_record));
+        put_own_in(&d, &writer, &own_record).await.unwrap();
+        assert_eq!(own_in(&d, &writer).await.unwrap(), Some(own_record));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

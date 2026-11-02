@@ -106,7 +106,7 @@ fn a_node_admin_answers_the_plural_reads_by_property_and_its_connections_over_no
                 // Its record at its node id, read through the reader (query.md §1).
                 let row_ready = match (running.control.node_rows.get(), running.control.node_records.get()) {
                     (Some(claims), Some(records)) => {
-                        let reader = rdm_admin::current_record::CurrentRecords { claims: &**claims, meshes: &*running.control.claims, records: &**records };
+                        let reader = rdm_admin::current_record::CurrentRecords { claims: &**claims, records: &**records };
                         reader.row(&me.node.node_id).await.ok().flatten().is_some_and(|r| r.status == rdm_admin::model::NodeStatus::Ready)
                     }
                     _ => false,

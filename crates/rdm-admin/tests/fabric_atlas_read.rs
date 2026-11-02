@@ -18,7 +18,6 @@ use rdm_transport::{
     CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth,
     ServerBuilder,
 };
-use rdm_node::node_records::NodeRecordsStorage as _;
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -159,11 +158,6 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         // What fabric.atlas.get reads (query.md §1): each row's lifecycle record at its node id, written by
         // mesh1's mesh-primary, mesh1's Mesh record, and the node records bound on the config door.
         let node_records: Arc<dyn rdm_node::node_records::NodeRecordsStorage> = Arc::new(rdm_node::node_records::MemoryNodeRecords::default());
-        let writer = rdm_node::node_records::RecordBirth { node_id: admin_id.clone(), incarnation_id: admin_inc.clone() };
-        for row in [&admin_row, &rpc_row, &deleted_row] {
-            let record = rdm_admin::node_rows::lifecycle_record(row, &fabric_id, Some(&mesh_id), row.node_type().to_string(), (false, false)).expect("a keyed record");
-            node_records.put_lifecycle(&record, &writer).await.unwrap();
-        }
         let meshes_storage = Arc::new(MemoryMeshStorage::default());
         rdm_admin::storage::MeshStorage::put_mesh(&*meshes_storage, &rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")).await.unwrap();
         let configs = crate::bound_configs_over(node_records.clone(), rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(admin_ep.clone(), Arc::new(LiveNodeResolver::default()))), Default::default())).await;

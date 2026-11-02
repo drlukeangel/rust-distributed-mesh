@@ -321,7 +321,7 @@ impl Prepared {
                 is_fabric_primary: None,
                 topology_storage_provider: None,
             };
-            rdm_admin::storage::FileNodesStorage::put_own_in(&data_dir, &incarnation, &own).await.unwrap();
+            rdm_admin::storage::put_own_in(&data_dir, &incarnation, &own).await.unwrap();
             let mut runtime = rdm_core::RuntimeFact::of_this_process(&rdm_admin::model::DeploymentId::mint().to_string()).unwrap();
             runtime.locator = rdm_core::runtime::RuntimeLocator::Process { pid: 1, start: u64::MAX };
             nodes

@@ -58,6 +58,29 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// A lock's content (R-SR5): the claim, in its format, and the birth that took it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LockClaim<T> {
+    format: String,
+    record: T,
+    /// The birth that took the lock: its node id and incarnation.
+    by: (String, String),
+}
+
+/// The claim a lock's content holds, refused by name when it is not a `format` claim.
+pub fn lock_claim<T: DeserializeOwned>(file: &Path, bytes: &[u8], format: &str) -> Result<T, StorageError> {
+    let held: LockClaim<T> = serde_json::from_slice(bytes).map_err(|e| StorageError::Unrecognised { file: file.display().to_string(), reason: e.to_string() })?;
+    if held.format != format {
+        return Err(StorageError::Unrecognised { file: file.display().to_string(), reason: format!("a lock in format {:?}, this build reads {format:?} here", held.format) });
+    }
+    Ok(held.record)
+}
+
+/// `claim` as the content of a lock taken by `by`.
+pub fn lock_content<T: Serialize>(format: &str, claim: &T, by: &LogWriter) -> Vec<u8> {
+    serde_json::to_vec(&LockClaim { format: format.to_string(), record: claim, by: (by.node_id.to_string(), by.incarnation_id.to_string()) }).expect("a lock's claim encodes")
+}
+
 /// The span the first fold of a store file from byte 0 records: at its open for a store opened to
 /// fold ([`StoreLog::open`]), at its first read or first append for one opened on its first read
 /// ([`StoreLog::open_on_first_read`], rdm#89, Q227), under the span that read or append runs in. It

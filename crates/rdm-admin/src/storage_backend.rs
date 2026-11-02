@@ -136,11 +136,11 @@ impl StorageBackend for FileBackend {
     }
 
     async fn own_row(&self, data_dir: &Path, writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
-        crate::storage::FileNodesStorage::own_in(data_dir, writer).await
+        crate::storage::own_in(data_dir, writer).await
     }
 
     async fn put_own_row(&self, data_dir: &Path, writer: &IncarnationId, record: &NodeRecord) -> Result<(), StorageError> {
-        crate::storage::FileNodesStorage::put_own_in(data_dir, writer, record).await
+        crate::storage::put_own_in(data_dir, writer, record).await
     }
 
     async fn delete_fabric(&self, data_dir: &Path, fabric_id: &FabricId) -> Result<(), String> {
@@ -537,16 +537,6 @@ impl rdm_node::node_records::NodeRecordsStorage for Through {
     }
     async fn properties(&self, node: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
         self.0.current.read().stores().boundaries.node_records.properties(node).await
-    }
-    async fn put_lifecycle(&self, record: &rdm_node::node_records::NodeLifecycle, writer: &rdm_node::node_records::RecordBirth) -> Result<(), crate::storage_error::StorageError> {
-        let w = self.0.current.write();
-        w.boundaries.node_records.put_lifecycle(record, writer).await
-    }
-    async fn lifecycle(&self, node: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().boundaries.node_records.lifecycle(node).await
-    }
-    async fn lifecycles(&self, mesh: &crate::model::MeshId) -> Result<Vec<rdm_node::node_records::NodeLifecycle>, crate::storage_error::StorageError> {
-        self.0.current.read().stores().boundaries.node_records.lifecycles(mesh).await
     }
 }
 

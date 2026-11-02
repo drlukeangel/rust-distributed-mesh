@@ -1,15 +1,17 @@
 //! `nodes.storage`'s rows (storage-whole-records.md, "The objects"): each node's record at its node id,
 //! written whole by its mesh-primary, and every birth's runtime row, and the point reads of a node's
 //! record by its id or by its `(path, name)` through the name claim (query.md §1, Q237). The node-admin
-//! writes them (`rdm_admin::storage::NodesStorage`); any node reads another node's row here, the store
-//! opened on its first read and never at its start, join or create (Q227).
+//! writes them ([`NodesStorage`]); any node reads another node's row here, the store opened on its
+//! first read and never at its start, join or create (Q227).
 
 use crate::model::{EndpointId, IncarnationId, MeshId, NodeId, PathName};
 use crate::storage_error::StorageError;
 use async_trait::async_trait;
 use rdm_core::status::NodeState;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
+pub use rdm_client::NameHeld;
 
 /// A row written before `topology_storage_provider` was recorded reads as `file`, the one backend there
 /// was.
@@ -559,6 +561,186 @@ impl NodeRowsStorage for FileNodeRowsOnFirstRead {
     }
     async fn node_at(&self, name: &PathName) -> Result<Option<NodeRow>, StorageError> {
         self.rows().await?.node_at(name).await
+    }
+}
+
+/// The durable record of the nodes: each node's record at its id with its name claim, through which a
+/// `(path, name)` resolves to its node, and every birth's runtime row. Nothing is removed (R-SR2): a
+/// create withdrawn before its node ran leaves its record `Withdrawn`.
+#[async_trait]
+pub trait NodesStorage: Send + Sync {
+    /// Keep the runtime of one birth (a blind put of its own row).
+    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError>;
+    /// Every birth's runtime row the store holds; folded by the reader.
+    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
+    /// The runtime row of the exact birth `(node_id, incarnation)`: a point read by its key.
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError>;
+    /// The record of `node_id`: a point read of its key, a `Withdrawn` one included; `None` when none
+    /// was ever written.
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
+    /// Every node record of `mesh`, a `Withdrawn` one skipped.
+    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError>;
+    /// Write `row` whole at its node id, as given (Q109: storage stores and returns what it is given).
+    /// Durable before it answers (Q54).
+    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError>;
+    /// The node whose name claim holds `name`, if one does.
+    async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError>;
+    /// Claim `name` for `node_id`: an insert of the claim's key. A claim this node already holds
+    /// answers `Ok`; another node's answers `NameHeld` naming it, and nothing is written.
+    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError>;
+    /// Release `name`'s claim while `node_id` holds it; another node's claim there is left as it is.
+    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError>;
+}
+
+/// A nodes store held in memory.
+#[derive(Debug, Default)]
+pub struct MemoryNodesStorage {
+    runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
+    records: Mutex<BTreeMap<NodeId, NodeRow>>,
+    /// The name claims.
+    claims: Mutex<BTreeMap<PathName, NodeId>>,
+}
+
+#[async_trait]
+impl NodesStorage for MemoryNodesStorage {
+    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
+        self.runtimes.lock().unwrap().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
+        Ok(self.runtimes.lock().unwrap().values().cloned().collect())
+    }
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
+        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.as_str())).cloned())
+    }
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
+        Ok(self.records.lock().unwrap().get(node_id).cloned())
+    }
+    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
+        Ok(self.records.lock().unwrap().values().filter(|r| r.mesh == mesh && r.status != crate::model::NodeStatus::Withdrawn).cloned().collect())
+    }
+    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
+        self.records.lock().unwrap().insert(row.node_id.clone(), row.clone());
+        Ok(())
+    }
+    async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError> {
+        Ok(self.claims.lock().unwrap().get(name).cloned())
+    }
+    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> {
+        let mut claims = self.claims.lock().unwrap();
+        Ok(match claims.get(name) {
+            Some(by) if by != node_id => Err(NameHeld { name: name.clone(), by: by.clone() }),
+            Some(_) => Ok(()),
+            None => {
+                claims.insert(name.clone(), node_id.clone());
+                Ok(())
+            }
+        })
+    }
+    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError> {
+        let mut claims = self.claims.lock().unwrap();
+        if claims.get(name) == Some(node_id) {
+            claims.remove(name);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "file-backend")]
+/// The nodes' records and their runtime rows, each write one line of the
+/// root's `nodes.jsonl` (R-SR1, R-SR2), appended straight to the file: a record at its node id, written by its mesh's writer, durable before the answer
+/// (Q54); a runtime row at `<node id>--<incarnation>`, written once by its birth's launching admin, the
+/// durable map a successor proves exits from, as durable as when it stood in the launcher's data dir.
+/// A `(path, name)` resolves through its name claim. Each name claim is the
+/// lock `locks/name/<composite location index>` of the root (R-SR5). The admin's own row stays its own seed in its
+/// data dir, `nodes/self.json` (`rdm_admin::storage::own_in`).
+#[derive(Debug)]
+pub struct FileNodesStorage {
+    /// The records and the runtime rows, and their point reads.
+    rows: FileNodeRows,
+    /// The rows' file, appended to.
+    records: crate::store_log::StoreLog,
+    log_writer: crate::store_log::LogWriter,
+    /// The name claims: `locks/name/<composite location index>`.
+    locks: crate::store_log::StoreLocks,
+}
+
+#[cfg(feature = "file-backend")]
+impl FileNodesStorage {
+    /// Open the store on the fabric's store `root`, written by `writer`. `own_data_dir` and `own_mesh`
+    /// are the opening admin's (its own row is read from the one, `rdm_admin::storage::own_in`); the store is the
+    /// fabric's, every mesh's nodes in one file.
+    pub async fn open(own_data_dir: &std::path::Path, root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
+        let _ = (own_data_dir, own_mesh);
+        let rows = FileNodeRows::open(root).await?;
+        let records = rows.log().clone();
+        Ok(Self { rows, records, log_writer: writer.clone(), locks: crate::store_log::StoreLocks::at(root.dir(), writer) })
+    }
+
+    /// Finishes every write of the node records and the runtime rows this store has
+    /// issued (node-primary-update.md step 3); a name lock is taken or removed before its call answers.
+    pub async fn finish_issued_writes(&self) {
+        self.records.finish_issued_writes().await;
+    }
+
+    fn name_lock(&self, name: &PathName) -> std::path::PathBuf {
+        self.locks.path(crate::store_log::LockKind::Name, &name.physical_index_key())
+    }
+
+}
+
+#[cfg(feature = "file-backend")]
+#[async_trait]
+impl NodesStorage for FileNodesStorage {
+    /// A blind put of the birth's own row: one append, nothing read first (its one writer is the admin
+    /// that launched the birth, build.md §5.3).
+    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
+        self.records.append(&self.log_writer, RUNTIME_FORMAT, &row.key(), row).await
+    }
+    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
+        self.records.latest_of(RUNTIME_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect()
+    }
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
+        self.records.latest(RUNTIME_KIND, &format!("{}--{}", node_id, incarnation.as_str())).await?.map(|l| l.decode(self.records.path())).transpose()
+    }
+    async fn node(&self, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
+        NodeRowsStorage::node(&self.rows, node_id).await
+    }
+    async fn nodes(&self, mesh: &str) -> Result<Vec<NodeRow>, StorageError> {
+        let mut out = Vec::new();
+        for l in self.records.latest_of(RECORD_KIND).await? {
+            let row: NodeRow = l.decode(self.records.path())?;
+            if row.mesh == mesh && row.status != crate::model::NodeStatus::Withdrawn {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+    async fn put_node(&self, row: &NodeRow) -> Result<(), StorageError> {
+        self.records.append(&self.log_writer, RECORD_FORMAT, row.node_id.as_str(), row).await
+    }
+    async fn name_claim(&self, name: &PathName) -> Result<Option<NodeId>, StorageError> {
+        match self.locks.read(crate::store_log::LockKind::Name, &name.physical_index_key()).await? {
+            Some(bytes) => Ok(Some(read_name_claim(&self.name_lock(name), &bytes, name)?.node_id)),
+            None => Ok(None),
+        }
+    }
+    /// The claim is the lock `locks/name/<composite location index>`, taken create-exclusive (R-SR5): a lock this node
+    /// holds answers `Ok`, another node's `NameHeld` naming it.
+    async fn claim_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<Result<(), NameHeld>, StorageError> {
+        let claim = NameClaim { path: name.path.clone(), name: name.name.clone(), node_id: node_id.clone() };
+        match self.locks.take(crate::store_log::LockKind::Name, &name.physical_index_key(), &crate::store_log::lock_content(NAME_CLAIM_FORMAT, &claim, &self.log_writer)).await? {
+            crate::store_log::LockTaken::Won => Ok(Ok(())),
+            crate::store_log::LockTaken::Held(bytes) => {
+                let held = read_name_claim(&self.name_lock(name), &bytes, name)?;
+                Ok(if held.node_id == *node_id { Ok(()) } else { Err(NameHeld { name: name.clone(), by: held.node_id }) })
+            }
+        }
+    }
+    /// The lock goes under the name's reclamation mutex, only while it still names `node_id` (R-SR5).
+    async fn release_node_name(&self, name: &PathName, node_id: &NodeId) -> Result<(), StorageError> {
+        let (file, node_id, location) = (self.name_lock(name), node_id.clone(), name.clone());
+        self.locks.release(crate::store_log::LockKind::Name, &name.physical_index_key(), move |b| read_name_claim(&file, b, &location).is_ok_and(|held| held.node_id == node_id)).await.map(|_| ())
     }
 }
 

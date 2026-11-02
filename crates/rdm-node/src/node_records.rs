@@ -1,7 +1,5 @@
-//! Node-owned properties and lifecycle records selected by the writing primary's birth (i150).
-//!
-//! The store persists records at their explicit keys; it does not elect a primary or infer that
-//! one record supersedes another. Callers resolve the current primary before reading lifecycle.
+//! The property record each node writes itself (i150): its config, tags, bound addresses and join
+//! declaration, at its node id. The store persists records at their explicit keys; it decides nothing.
 
 use crate::storage_error::StorageError;
 use async_trait::async_trait;
@@ -297,71 +295,7 @@ impl NodePropertyWriter {
     }
 }
 
-/// Lifecycle state for one node, at its node id: append-only, the latest line current (Q323). Its
-/// mesh-primary writes it; no writer is in its key or its fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeLifecycle {
-    /// The node.
-    pub node_id: NodeId,
-    /// The subject's path, independent of its mesh and node type.
-    pub path: String,
-    /// The subject's name within that path.
-    pub name: String,
-    /// The runtime kind selected by its executable binding.
-    pub kind: rdm_core::NodeKind,
-    /// The immutable declared node type, never inferred from path or name.
-    pub node_type: String,
-    /// The fabric to which the node belongs.
-    pub fabric_id: rdm_core::FabricId,
-    /// The mesh to which the node belongs.
-    pub mesh_id: rdm_core::MeshId,
-    /// The subject incarnation.
-    pub incarnation_id: IncarnationId,
-    /// The primary's lifecycle status for the subject.
-    pub status: crate::model::NodeStatus,
-    /// Self-declarations accepted by the lifecycle workflow.
-    pub declared: BTreeSet<rdm_core::status::NodeState>,
-    /// Committed operation effects, preserving their exact Build identities.
-    pub operations: Vec<crate::nodes_storage::NodeOperation>,
-    /// Observer-inferred silence, never proof of exit.
-    pub silence: Option<crate::model::NodeStatus>,
-    /// An inherited data directory is absent.
-    pub data_dir_lost: Option<crate::nodes_storage::DataDirLost>,
-    /// An inherited data directory cannot be read.
-    pub data_dir_unreadable: Option<crate::nodes_storage::DataDirUnreadable>,
-    /// Issued member certificate dates.
-    pub cert: Option<crate::nodes_storage::CertDates>,
-    /// Issued admin signing certificate dates.
-    pub signing_cert: Option<crate::nodes_storage::SigningCertDates>,
-    /// The election's node-type primary result; this is a flag, not a counter.
-    pub is_primary: bool,
-    /// The election's fabric-primary result; this is a flag, not a counter.
-    pub is_fabric_primary: bool,
-    /// The executable selected by the Build or retained for recovery.
-    pub executable: Option<rdm_core::binding::Binding>,
-    /// The node's data retention policy.
-    pub storage_persistence: Option<rdm_core::meta::StorageMeta>,
-    /// The placement selected by the Build.
-    pub placement: Option<rdm_core::meta::PlacementMeta>,
-    /// The registered topology backend used by the node.
-    pub topology_storage_provider: Option<String>,
-    /// Prerequisites allocated at creation, before runtime launch.
-    pub allocated: Option<crate::nodes_storage::Allocation>,
-    /// The exact immutable property snapshot selected by this create claim.
-    pub initial_properties: Option<rdm_core::launch::InitialProperties>,
-    /// The previous birth named by recovery.
-    pub predecessor: Option<RecordBirth>,
-    /// The path/name pair moved by a rename, if any.
-    pub renamed_from: Option<(String, String)>,
-    /// The original pair of this exact retained predecessor, independent of the pending name
-    /// claim release; preserved across name edits and cleared only by exact rollback.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replacement_from: Option<rdm_core::PathName>,
-    /// The successor that replaced this instance.
-    pub inherited_by: Option<NodeId>,
-}
-
-/// The common persistence boundary for node properties and lifecycle records.
+/// The persistence boundary of the property records the nodes write.
 ///
 /// Successful writes are durable. Implementations return the requested exact key; they never
 /// select a primary, substitute an earlier writer, or treat an I/O error as absence.
@@ -381,21 +315,12 @@ pub trait NodeRecordsStorage: Send + Sync {
     async fn put_properties(&self, record: &NodeProperties) -> Result<(), StorageError>;
     /// Read the property record at an exact node ID.
     async fn properties(&self, node: &NodeId) -> Result<Option<NodeProperties>, StorageError>;
-    /// Persist the node's lifecycle record at its node ID; `writer` is the birth appending it (the
-    /// store log's own write sequence), never part of the record or its key.
-    async fn put_lifecycle(&self, record: &NodeLifecycle, writer: &RecordBirth) -> Result<(), StorageError>;
-    /// Read the latest lifecycle record at an exact node ID.
-    async fn lifecycle(&self, node: &NodeId) -> Result<Option<NodeLifecycle>, StorageError>;
-    /// The latest lifecycle record of every node of a mesh.
-    async fn lifecycles(&self, mesh: &rdm_core::MeshId)
-        -> Result<Vec<NodeLifecycle>, StorageError>;
 }
 
 /// In-memory adapter for fixtures and backends without restart survival.
 #[derive(Default)]
 pub struct MemoryNodeRecords {
     properties: std::sync::Mutex<BTreeMap<NodeId, NodeProperties>>,
-    lifecycle: std::sync::Mutex<BTreeMap<NodeId, NodeLifecycle>>,
 }
 
 #[async_trait]
@@ -413,36 +338,14 @@ impl NodeRecordsStorage for MemoryNodeRecords {
     async fn properties(&self, node: &NodeId) -> Result<Option<NodeProperties>, StorageError> {
         Ok(self.properties.lock().unwrap().get(node).cloned())
     }
-    async fn put_lifecycle(&self, record: &NodeLifecycle, _writer: &RecordBirth) -> Result<(), StorageError> {
-        self.lifecycle.lock().unwrap().insert(record.node_id.clone(), record.clone());
-        Ok(())
-    }
-    async fn lifecycle(&self, node: &NodeId) -> Result<Option<NodeLifecycle>, StorageError> {
-        Ok(self.lifecycle.lock().unwrap().get(node).cloned())
-    }
-    async fn lifecycles(
-        &self,
-        mesh: &rdm_core::MeshId,
-    ) -> Result<Vec<NodeLifecycle>, StorageError> {
-        Ok(self
-            .lifecycle
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|r| r.mesh_id == *mesh)
-            .cloned()
-            .collect())
-    }
 }
 
-/// The shared log containing the two record kinds.
+/// The log of the property records.
 #[cfg(feature = "file-backend")]
 pub use crate::store_root::NODE_RECORDS_FILE;
 
 #[cfg(feature = "file-backend")]
 const PROPERTIES_FORMAT: &str = "node-properties/1";
-#[cfg(feature = "file-backend")]
-const LIFECYCLE_FORMAT: &str = "node-lifecycle/1";
 
 /// File adapter using the existing checksummed, durable store log.
 #[cfg(feature = "file-backend")]
@@ -455,8 +358,7 @@ impl FileNodeRecords {
     /// Open without reading the log; reads and writes fold it at their own boundary.
     pub async fn open(root: &crate::store_root::StoreRoot) -> Result<Self, StorageError> {
         let formats = crate::store_log::Formats::new()
-            .with::<NodeProperties>(PROPERTIES_FORMAT)
-            .with::<NodeLifecycle>(LIFECYCLE_FORMAT);
+            .with::<NodeProperties>(PROPERTIES_FORMAT);
         Ok(Self {
             log: root.log(NODE_RECORDS_FILE, formats).await?,
         })
@@ -493,27 +395,5 @@ impl NodeRecordsStorage for FileNodeRecords {
             .await?
             .map(|l| l.decode(self.log.path()))
             .transpose()
-    }
-    async fn put_lifecycle(&self, record: &NodeLifecycle, writer: &RecordBirth) -> Result<(), StorageError> {
-        let writer = crate::store_log::LogWriter::new(&writer.node_id, &writer.incarnation_id);
-        self.log.append(&writer, LIFECYCLE_FORMAT, record.node_id.as_str(), record).await
-    }
-    async fn lifecycle(&self, node: &NodeId) -> Result<Option<NodeLifecycle>, StorageError> {
-        self.log.latest("node-lifecycle", node.as_str()).await?.map(|l| l.decode(self.log.path())).transpose()
-    }
-    async fn lifecycles(
-        &self,
-        mesh: &rdm_core::MeshId,
-    ) -> Result<Vec<NodeLifecycle>, StorageError> {
-        self.log
-            .latest_of("node-lifecycle")
-            .await?
-            .into_iter()
-            .map(|l| l.decode::<NodeLifecycle>(self.log.path()))
-            .filter_map(|r| match r {
-                Ok(r) if r.mesh_id != *mesh => None,
-                other => Some(other),
-            })
-            .collect()
     }
 }

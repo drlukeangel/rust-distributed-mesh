@@ -171,10 +171,10 @@ impl History {
         b.append(&fp2, "build-record/1", &format!("{build}/opened/1"), &json!({"seq": 3, "fact": "opened", "attempt": 1})).await.unwrap();
         b.append(&fp2, "build-record/1", &format!("{build}/opened/2"), &json!({"seq": 4, "fact": "opened", "attempt": 2})).await.unwrap();
 
-        // Both i150 record kinds are history too, even when an old writer is no longer primary.
+        // The property records the nodes write are history too, each at its node id.
         let records = log(&root, rdm_node::node_records::NODE_RECORDS_FILE).await;
         records.append(&mp1, "node-properties/1", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
-        records.append(&mp2, "node-lifecycle/1", second.as_str(), &json!({"node_id": second, "status": "ready", "owed": {"config": {"setting": APP_SETTING}}})).await.unwrap();
+        records.append(&mp2, "node-properties/1", second.as_str(), &json!({"node_id": second, "config": {"setting": APP_SETTING}})).await.unwrap();
 
         Self { store_dir, root, fabric, fp1, fp2, gone, live, first, second }
     }

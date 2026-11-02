@@ -453,10 +453,10 @@ No Build is current before it is recoverably durable.
 
 ### 5.3 Node-admin storage boundaries
 
-Control-plane state has six boundaries on the fabric's shared store root: fabric, meshes, nodes,
-connections, Builds and node-records (`NodeRecordsStorage`). On the file backend these live under
+Control-plane state has five boundaries on the fabric's shared store root: fabric, meshes, nodes,
+connections and Builds. On the file backend these live under
 `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl,
-builds.jsonl, node-records.jsonl, locks/}`. Copy every boundary, current values and history, in source
+builds.jsonl, locks/}`. Copy every boundary, current values and history, in source
 order together with held claims and in-flight operations.
 
 The fabric-primary writes the Fabric record, accepted Build definitions, Build-attempt records,
