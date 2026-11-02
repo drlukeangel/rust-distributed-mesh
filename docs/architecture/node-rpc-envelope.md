@@ -37,7 +37,7 @@ Ack      { sender: Birth, delivery_seq: u64 }                                   
 `Birth` is the sending node's exact `(node.id, incarnation)`; a `DeliveryId` is `(sender, delivery_seq)`.
 
 A frame's delivery identity is `(sender, delivery_seq)`, minted by its sender, the same on every resend
-([node-rpc.md §43](node-rpc.md#43-owed-messages-delivery-is-the-runtimes)): `delivery_seq` is a
+([node-rpc.md §43](node-rpc.md#43-resend-delivery-is-the-runtimes)): `delivery_seq` is a
 per-receiver sequence the sending birth never reuses. Every frame carries the sender's
 `forget_below`, the lowest `delivery_seq` it still holds unacked toward that receiver and a promise
 never to resend anything below it; the receiver forgets duplicate state only below that watermark or
@@ -296,7 +296,7 @@ success event follows it.
 
 Transport uncertainty is NotSent before the request commit cut and Indeterminate
 after it; both are statements about execution certainty, and under either the runtime keeps
-delivering the same invocation ([node-rpc.md §43](node-rpc.md#43-owed-messages-delivery-is-the-runtimes)),
+delivering the same invocation ([node-rpc.md §43](node-rpc.md#43-resend-delivery-is-the-runtimes)),
 which authorises no new execution. A broken stream proves neither step failure nor completion. The Build's
 only durable step outcomes are Complete and Failed { step, reason }. build.get [id: build_id] is a read for reattachment, never a resume. The caller resubmits the
 same build_id to the fabric-primary under the [Build carrier](#build-op-0x20-rdm). Reissuing a naturally
@@ -819,6 +819,10 @@ pub enum StatusRequest {
     GetAtlas,
     Get { entity: Entity, node: Option<(NodeId, IncarnationId)>, filter: Filter }, // position 33: reserved: every entity is read on 0x23 (Q285), refused here by name
     Reserved34 {}, // removed upward property-copy route; never sent
+    UpdateRoots { node_id: NodeId, incarnation: IncarnationId, roots: Vec<String>, phase: RootsPhase, secret: Option<RootSecretHex> }, // position 35
+    UpdateRoot { secret: RootSecretHex }, // position 36
+    ApplyNodeProperties { node_id: NodeId, incarnation: IncarnationId, entry: EntryProperties }, // position 37
+    ReportCallFailed { sender: ReportedBirth, receiver: ReportedBirth, reason: String }, // position 38: a caller's report that its call to the exact birth `receiver` ended with its attempts spent and no answer (node-rpc.md §43); answered `Applied`, or `RejectedNotPrimary { why: SubjectUnknown }` by a receiver that is not the primary above that birth; a report is itself never reported
 }
 
 // The reads (one read per entity): fabric.get, mesh.get, node.get and node.connection.get { node }.

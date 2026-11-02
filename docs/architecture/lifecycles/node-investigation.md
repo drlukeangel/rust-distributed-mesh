@@ -13,9 +13,10 @@ one verdict: `reached`, `running`, `os-stopped`, `exited` or `unproven`. Its ste
 
 Only an answer from the exact birth counts as `reached`.
 
-A node that does not answer a command is silent, whatever it gossips (Q182): an owed command it
-leaves unanswered past the staleness floor starts node investigation on its birth as silence does,
-and a tickle answered by a birth that has left a command unanswered past the floor is not `reached`.
+A node that does not answer a call is silent, whatever it gossips (Q182): a call whose attempts end
+unanswered marks its birth at the primary above it (the caller itself when it is that primary; any
+other caller reports the birth to it with Status `ReportCallFailed`), and the primary investigates
+that birth as it investigates silence ([node recovery](node-recovery.md) step 2).
 
 The verdict is the one decision (Q111). Reached: the node is commanded back through
 [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path.name with a

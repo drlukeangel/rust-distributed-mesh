@@ -24,7 +24,7 @@ work, never a timer. An unreachable target schedules no report. The exact-instan
 status and does not manufacture a transition or a new change timestamp.
 
 A node reports to its mesh's primary, which sets its status. A report is an owed message
-([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes)) and names the operation that
+([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes)) and names the operation that
 produced the state when one did ([DeclaredOperation](../node-rpc-envelope.md#status-op-0x1b-rdm)): a stop's
 `Stopped`, from which the mesh-primary publishes NodeStopped ([node.stop](node-stop.md) step 5), and a
 start's `Pending` and `Ready`.

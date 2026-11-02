@@ -865,28 +865,19 @@ Admission is capacity control, never deduplication.
 
 ## 34. Deadlines and cancellation
 
-The generic API supports three budget shapes:
+Every call carries one `Resend { attempts, time_limit }`, set by whoever opens the call (Q315).
+`attempts` is how many sends the call makes in all, the first included: three by default (the
+tickle's probes are one, node-recovery.md step 2). `TimeLimit` is how long one attempt may take:
+resolve, dial and the complete request and, once the request is acked, its reply counted from the
+ack; ten seconds by default, the receiver's own bound plus ten seconds where it has one. An unacked
+attempt waits for its ack until the next send, and the last attempt until its time limit. A stream
+op's frames carry no time limit while its stream lives.
 
-```text
-Overall { deadline }
-Split {
-    request_send_deadline
-    reply_budget_after_commit
-}
-Owed
-```
+The [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) runs its outer and inner streams with no overall deadline, bounded by the transport idle timeout and keepalive. A carried call's inner time limit is the `remaining_ms` the source stamps ([Forward](node-rpc-envelope.md#forward-op-0x1a-core)).
 
-Overall is the default: one absolute deadline covers resolve -> route/pool -> dial/open -> complete request frame sent, and resent until acked -> reply/stream. Node RPC does not quietly reset it between phases.
+Before the complete request frame is sent, deadline/cancellation/send failure is NotSent/499. After that cut, reply timeout is Indeterminate absent stronger no-dispatch evidence. A call's `Resend` is its owner's bound: when its attempts are spent the request is resent no longer and the call ends as §43 says. For a stream op of the Build family (the Build carrier, build.get's watch, the handover), closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: its owner declared the connection its bound and reattaches by its own rule, above this layer. For any other call, connection loss alone does not cancel the invocation: an unacked request is resent within its attempts, and a stream that loses its connection is held for its time limit while the responder resends its frames, then ends Indeterminate.
 
-Split exists for domains such as writer ingress that already have a stronger request-send certainty bound followed by a separate post-commit reply budget. The reply budget begins only after the complete-send certainty cut.
-
-Owed has no send or reply deadline. An Owed call ends only on its reply, on the runtime's proof that the receiver is gone (exited, removed or superseded), or when its owner drops it; the resend schedule of §43 runs unchanged underneath it. It is for a report or completion its owner owes with no bound of its own: a member's state check-in, the mesh-primary's check-in, a node's owed declaration. A command with an owner's bound keeps a finite budget; Owed is never a default.
-
-The [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) runs its outer and inner streams with no overall deadline, bounded by the transport idle timeout and keepalive. A carried call's inner budget is the `remaining_ms` the source stamps ([Forward](node-rpc-envelope.md#forward-op-0x1a-core)).
-
-Before the complete request frame is sent, deadline/cancellation/send failure is NotSent/499. After that cut, reply timeout is Indeterminate absent stronger no-dispatch evidence. A call's budget is its owner's bound: when it lapses the request is owed no longer (§43); an Owed call has no bound and lapses never; it ends as §43 says. For Budget::Stream, closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: the owner of such a call (the Build carrier, build.get's watch, the handover) declared the connection its bound and reattaches by its own rule, above this layer. For other budgets, connection loss alone does not cancel the invocation; owed delivery continues within the owner's bound.
-
-The caller budget is not a generic remote execution deadline. After dispatch, a streaming handler's sink answers `CallerGone` when the caller ends the invocation or the runtime disappears; a lost connection is no cancellation: the response is owed (§43). The owning protocol decides whether to stop, finish or detach durable work.
+The caller's time limit is not a generic remote execution deadline. After dispatch, a streaming handler's sink answers `CallerGone` when the caller ends the invocation or the runtime disappears; a lost connection is no cancellation: the response is held for resend (§43). The owning protocol decides whether to stop, finish or detach durable work.
 
 Node RPC never rolls back domain mutations and never pretends cancellation proves non-execution.
 
@@ -1013,18 +1004,24 @@ request later is the domain's decision.
 
 ---
 
-## 43. Owed messages: delivery is the runtime's
+## 43. Resend: delivery is the runtime's
 
-Retry automatically in Node RPC. Send immediately. Without an ack, resend the same message with the
-same delivery id: first retry at the publish cadence, then exponential backoff with jitter, capped at
-the staleness floor; one attempt in flight per message. The receiver suppresses duplicate delivery ids, including duplicates received while the
+Every call carries one `Resend` (§34). Send immediately. Without an ack, resend the same message
+with the same delivery id: the next attempt at the publish cadence, then doubling with jitter, capped
+at the staleness floor; one attempt in flight per message. The receiver suppresses duplicate delivery ids, including duplicates received while the
 original invocation is executing. Before recoverable acceptance, duplicates remain pending without an
-ack. After that boundary, duplicates are acked again without invoking the handler again. Retry stops on the ack, on the receiver's re-creation or accepted removal, or on
-explicit cancellation or retargeting by the owning workflow; never on a timer, never on absence from a
-view, never on a newer message of its kind.
+ack. After that boundary, duplicates are acked again without invoking the handler again. Resending stops on the ack, on the receiver's re-creation or accepted removal, on explicit
+cancellation by the owning workflow, or when the attempts are spent: the call then ends to its owner
+by name (`NotSent` when no attempt crossed the commit cut, `Indeterminate` otherwise), the calling
+node's `on_call_failed` is told ([hooks](fabric-node-hooks.md#on_call_failed)), and the birth is
+recorded unanswered at the primary above it ([node investigation](lifecycles/node-investigation.md)).
+A receiver absent from the view spends an attempt, never a wait; a newer message of its kind never
+stops it. The owner never resends a call. A call's receiver is resolved again at each attempt, and a
+call addressed to a primary counts its attempts per birth the view names for the role, three per
+birth, and ends `ReceiverGone` when the role has no birth (Q313).
 A node's declarations to its mesh-primary are delivered in the order they were owed: one in flight,
 the next sent on the previous one's answer by name, a refusal included.
-The owner of an Owed request chooses its route policy: the one receiver it is owed to and the carriers it
+The owner of a call chooses its route policy: the one receiver it is sent to and the carriers it
 may travel through (§45). The request's first attempt goes direct; once an attempt sends nothing, each
 resend takes the route the policy answers then, a carried resend keeping the request's delivery id toward
 the same receiver. A carrier's failure ends that attempt, never the request.
@@ -1087,7 +1084,7 @@ sequenceDiagram
 
 `B` authenticates `P`. It never treats an origin id copied into the request as authenticated identity.
 
-The carrier never chooses another carrier and never forwards twice. The route projection, not Node RPC, owns the durable Proxy that selected P. For an Owed request the owner chooses the route policy and Node RPC executes it on every resend (§43).
+The carrier never chooses another carrier and never forwards twice. The route projection, not Node RPC, owns the durable Proxy that selected P. For every call the owner chooses the route policy and Node RPC executes it on every resend (§43).
 
 ---
 

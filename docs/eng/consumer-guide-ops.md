@@ -158,7 +158,7 @@ async fn serve(peer: rdm_transport::PeerContext, request: ShuffleRequest) -> Res
 }
 ```
 
-- **Recoverable acceptance** ([node-rpc.md §43](../architecture/node-rpc.md#43-owed-messages-delivery-is-the-runtimes)):
+- **Recoverable acceptance** ([node-rpc.md §43](../architecture/node-rpc.md#43-resend-delivery-is-the-runtimes)):
   the runtime resends an unacknowledged request and suppresses duplicates by delivery id, but the ack
   proves receipt, never execution, and it is sent only once the accepted work is recoverable. A
   handler that mutates anything records what it accepted first, then calls

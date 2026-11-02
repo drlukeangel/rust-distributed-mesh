@@ -78,7 +78,7 @@ and recording it are separate for every type.
   step 4 and the role is the election's, not the write's: a named error is handled as every storage
   error is, named on its span and surfaced, it fails nothing already completed, and the successor stays
   what the election names it. The row is owed by its writer: the mesh-primary retries the write of the
-  row's current state under the one backoff rule ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes))
+  row's current state under the one backoff rule ([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes))
   until the store acknowledges it, on its own clock, never waiting for a digest, a birth or a primary
   change, and marks the row written only on that acknowledgement, while it is the writer. A write that
   never succeeds is surfaced as a stalled row; it blocks and reverses nothing. A writer dying before the rename changes nothing:

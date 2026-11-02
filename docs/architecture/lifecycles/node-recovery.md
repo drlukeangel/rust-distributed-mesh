@@ -16,7 +16,7 @@ node.create of a node-admin into the live mesh.)
 | Field | Contract |
 |---|---|
 | Reconciler | The mesh-primary of the member's mesh; the fabric-primary for a mesh-primary (mesh investigation for a mesh with no reachable node-admin) |
-| Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a command to them was never sent for a reachability reason (step 1) |
+| Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a call to them was never sent for a reachability reason or ended with its attempts spent (step 1) |
 | Investigation | [node investigation](node-investigation.md): the by-destination connections index, node.runtime.inspect, node.tickle direct and via peers; one verdict |
 | Trigger | The verdict (Q111). Reached: commanded back through node.mesh.join. Any other verdict: re-created. Nothing waits on a proof of termination |
 | Execution | The mesh-primary reports the recovery up as `build.create { Change(Recover) }`; the fabric-primary opens it as the next attempt of the current Build at `(build_id, mesh, attempt)` in the mesh's lane and writes every Build record (the open, the claim, each receipt, the verdict) to the Build journal on the store root ([build.md §5.1](../build.md#51-rdm-adapters), Q118); the mesh-primary claims the attempt through BuildClaim on its mesh's in-flight row and runs it through its own executor, reporting each receipt and the verdict up the attempt's `build.attempt.run` stream (R-BI7). Two recoveries at once never meet: the fabric-primary's one writer turn orders their opens, each mesh's lane is numbered on its own, and a second recovery in one mesh is opened claimed by no one and claimed after the first ends (step 1). A mesh cut off from the fabric-primary is recovered once the cut heals (Q118). An unheard mesh-primary's recovery is the fabric-primary's ([mesh investigation](mesh-investigation.md)) |
@@ -38,7 +38,9 @@ doubling from the gossip interval to the staleness floor.
    (`first_seen`), so a node-admin that becomes mesh-primary mid-window continues the window already
    running. The mesh-primary also marks a member `PendingReconnect` at once when a command to it was
    never sent for a reachability reason (the connect refused, timed out or failed; the endpoint
-   unresolved). The mark is an observer mark: it never replaces a lifecycle state the node reported and
+   unresolved), and when a call to it ends with its attempts spent: its own call, or one another
+   caller reports with Status `ReportCallFailed` ([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes)).
+   The mark is an observer mark: it never replaces a lifecycle state the node reported and
    the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`), and it ends when a digest
    of the exact birth arrives after it, when the birth answers its tickle, or when the view no longer
    holds that birth. A birth heard again runs its `pre_node_ready` hook again before it is
