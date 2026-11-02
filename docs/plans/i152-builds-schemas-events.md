@@ -56,7 +56,7 @@ from a read put back values a node had changed since (Q202).
      and as the values a repair re-creates the node with. Diagnostics carry node.id with `path` and
      `name` as two fields, for the reader, never keyed on the joined form. The joined `path.name`
      token (125 uses on 24 pages) and the operation strings built from it go in s6.
-   - `type`: RDM ships `node-admin` and `node`; the application declares its own types on
+   - `type` (`node.type`; Luke, 2026-11-02, "its jus type node.type"): RDM ships `node-admin` and `node`; the application declares its own types on
      Fabrics, each overriding the node's defaults (`storage_persistence`, `executable`). `NodeKind`,
      its Rafka kinds and `StorageMeta::for_kind` go. `placement` (an empty type) goes.
    - Meshes and Fabrics hold one `state`; `MeshRecord.dead`, `MeshRecord.states` and
