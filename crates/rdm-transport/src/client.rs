@@ -361,6 +361,7 @@ impl NodeRpcClient {
                     addr: node.transport_addr,
                     failpoint: None,
                     opened: None,
+                    closed: None,
                     admission,
                     delivery: Some(delivery),
                 };
@@ -565,6 +566,11 @@ impl NodeRpcClient {
             // The dial that opens the connection reports it, once, whoever is waiting for it.
             opened: match (self.observer.clone(), node.observed.clone()) {
                 (Some(o), Some(n)) => Some(Arc::new(move || o.direct_connected(&n)) as Arc<dyn Fn() + Send + Sync>),
+                _ => None,
+            },
+            // The same connection's close, told once, whether or not a call rides it then.
+            closed: match (self.observer.clone(), node.observed.clone()) {
+                (Some(o), Some(n)) => Some(Arc::new(move || o.direct_broken(&n, "connection lost")) as Arc<dyn Fn() + Send + Sync>),
                 _ => None,
             },
             admission: self.admission.clone(),
@@ -1508,6 +1514,7 @@ impl Attempts {
                 addr: node.addr,
                 failpoint: None,
                 opened: None,
+                closed: None,
                 admission: self.client.admission.clone(),
                 delivery: Some(self.client.delivery.clone()),
             };

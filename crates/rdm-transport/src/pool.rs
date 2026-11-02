@@ -154,6 +154,10 @@ pub(crate) struct DialSpec {
     pub failpoint: Option<Arc<Failpoint>>,
     /// Told once, when the dial's connection enters the pool, whoever is or is not waiting for it.
     pub opened: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Told once, when a connection whose opening `opened` reported closes while it is still pooled
+    /// (connections.md §1.3 "Ended": `Disconnected` when the connection closes), whether or not a
+    /// call rides it then: the pool removes it, and the next call dials afresh.
+    pub closed: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The client's admission block: read before a dial starts or is joined, and again before the
     /// connection it opens is pooled.
     pub admission: Admission,
@@ -401,6 +405,7 @@ impl Pool {
                 if let Some(opened) = &spec.opened {
                     opened();
                 }
+                self.on_close(key, &c, spec.closed.clone());
             }
             return Ok((c, true));
         }
@@ -541,19 +546,44 @@ impl Pool {
         }
         if let Some(opened) = &spec.opened {
             opened();
+            self.on_close(key, &conn, spec.closed.clone());
         }
         Ok(conn)
+    }
+
+    /// Watch the pooled connection `conn` under `key` without keeping it open: when it closes and is
+    /// still the one pooled under `key`, remove it and tell `closed`, once. A connection the pool
+    /// already removed (a hard cut, a call's own [`Self::broken`], a superseded birth) tells nothing.
+    fn on_close(&self, key: &PoolKey, conn: &Connection, closed: Option<Arc<dyn Fn() + Send + Sync>>) {
+        let Some(closed) = closed else { return };
+        let (pool, key, id, ended) = (self.clone(), key.clone(), conn.stable_id(), conn.weak_handle().closed());
+        let watch = async move {
+            ended.await;
+            if pool.remove_pooled(&key, id) {
+                closed();
+            }
+        };
+        match tracing::dispatcher::get_default(|d| d.clone()) {
+            d if d.is::<tracing::subscriber::NoSubscriber>() => drop(tokio::spawn(watch)),
+            d => drop(tokio::spawn(watch.with_subscriber(d))),
+        }
+    }
+
+    /// Remove the connection pooled under `key` if it is the one whose stable id is `id`. `true` when
+    /// this call removed it.
+    fn remove_pooled(&self, key: &PoolKey, id: usize) -> bool {
+        let mut conns = self.inner.conns.lock().unwrap();
+        if conns.get(key).is_some_and(|p| p.conn.stable_id() == id) {
+            conns.remove(key);
+            return true;
+        }
+        false
     }
 
     /// A structural failure (open, write or read on the connection): evict now. `true` when this
     /// call removed the pooled connection.
     pub fn broken(&self, key: &PoolKey, conn: &Connection) -> bool {
-        let mut conns = self.inner.conns.lock().unwrap();
-        if conns.get(key).is_some_and(|p| p.conn.stable_id() == conn.stable_id()) {
-            conns.remove(key);
-            return true;
-        }
-        false
+        self.remove_pooled(key, conn.stable_id())
     }
 }
 
@@ -678,6 +708,7 @@ mod tests {
                 addr,
                 failpoint: None,
                 opened: None,
+                closed: None,
                 admission: Admission::default(),
                 delivery: None,
             };
@@ -804,5 +835,86 @@ mod tests {
                 spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// CONTRACT: docs/architecture/connections.md §1.3 "Ended"
+    /// "`Disconnected` when the connection closes or is deleted (node.connection.delete)"
+    /// A pooled connection whose opening was reported and which the peer then closes, with no call riding
+    /// it, leaves the pool and is told closed once; one the pool closes itself (a hard cut) is told nothing.
+    #[test]
+    fn a_pooled_connection_the_peer_closes_leaves_the_pool_and_is_told_closed_once() {
+        let dir = std::env::temp_dir().join(format!("pool-close-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let capture = crate::EvidenceCapture::start(&dir, "pool-close").unwrap();
+        capture.run(1, async {
+            let bind = || crate::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap());
+            let client_ep = bind().await.unwrap();
+            let peer_ep = bind().await.unwrap();
+            let (peer_key, peer_addr) = (peer_ep.secret_key().public(), peer_ep.bound_sockets()[0]);
+            let (to_close, mut accepted) = tokio::sync::mpsc::unbounded_channel();
+            let p = peer_ep.clone();
+            let accept = tokio::spawn(async move {
+                while let Some(inc) = p.accept().await {
+                    if let Ok(connecting) = inc.accept() {
+                        if let Ok(c) = connecting.await {
+                            let _ = to_close.send(c);
+                        }
+                    }
+                }
+            });
+            let node = ResolvedNode { kind: rdm_core::NodeKind::RpcNode, mesh: "mesh1".into(),
+                node_id: NodeId::mint(),
+                name: PathName::new("mesh1.rpc", "1").unwrap(),
+                incarnation: IncarnationId::mint(),
+                endpoint_id: peer_key,
+                transport_addr: peer_addr,
+            };
+            let resolver = Arc::new(StaticResolver::new());
+            resolver.insert(node.clone());
+            let key = PoolKey { scope: None, peer: peer_key, incarnation: Some(node.incarnation.clone()) };
+            let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let spec = || DialSpec {
+                endpoint: client_ep.clone(),
+                resolver: resolver.clone(),
+                target: Some(NodeTarget::ExactNode(node.node_id.clone())),
+                addr: peer_addr,
+                failpoint: None,
+                opened: Some(Arc::new(|| {})),
+                closed: Some({
+                    let told = told.clone();
+                    Arc::new(move || {
+                        told.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    })
+                }),
+                admission: Admission::default(),
+                delivery: None,
+            };
+            let pool = Pool::default();
+            let deadline = || Instant::now() + Duration::from_secs(5);
+
+            // The peer closes the pooled connection: it leaves the pool and is told closed, once.
+            pool.get_or_dial(&key, spec(), deadline()).await.unwrap();
+            assert_eq!(pool.keys(), vec![key.clone()]);
+            accepted.recv().await.unwrap().close(0u32.into(), b"peer closed");
+            let until = Instant::now() + Duration::from_secs(5);
+            while told.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                assert!(Instant::now() < until, "the peer's close was never told");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(pool.keys().is_empty(), "the closed connection left the pool");
+
+            // A connection the pool closes itself is told nothing: its closer names why.
+            let (_, reused) = pool.get_or_dial(&key, spec(), deadline()).await.unwrap();
+            assert!(!reused, "the next call dials afresh");
+            let _peer_side = accepted.recv().await.unwrap();
+            assert_eq!(pool.close_all(b"hard cut"), 1);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(told.load(std::sync::atomic::Ordering::SeqCst), 1, "a hard cut is no close to tell");
+
+            accept.abort();
+            client_ep.close().await;
+            peer_ep.close().await;
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
