@@ -43,7 +43,7 @@ per-receiver sequence the sending birth never reuses. Every frame carries the se
 never to resend anything below it; the receiver forgets duplicate state only below that watermark or
 on the sender birth's re-creation or accepted removal, never by time elapsed. Until then a resend keeps
 its identity and cannot dispatch again. A carried call keeps its origin's identity: the duplicate
-window is per origin birth, never per carrier. An Owed request's carried attempt is a Forward of its own
+window is per origin birth, never per carrier. A resent request's carried attempt is a Forward of its own
 toward the carrier, with a new identity each attempt, and names the request's identity in `owed`, which
 the inner call keeps; a carrier that answered one attempt carries the next. A request's
 `invocation_id` is its own delivery identity, derived and never stored a second time; every response
@@ -1380,7 +1380,7 @@ run in process at the fabric-primary and feed the same outer stream
 
 Every progress frame (Step, Blocked) carries the receipt key
 `(build_id, attempt, operation, step)` and receivers drop duplicates by that key. A caller
-watching a Build whose connection closes (`Budget::Stream`'s one end) reattaches by `build_id`:
+watching a Build whose connection closes (a Build stream ends with its connection, `StreamingProtocol::ENDS_WITH_ITS_CONNECTION`) reattaches by `build_id`:
 `build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the receipts; the break is
 never a defect and never a new execution (Node RPC §34, §43).
 

@@ -156,11 +156,11 @@ are separate facts.
 - A primary taking its role reads the accepted Build's committed records from the Build storage (Q292) before it counts its fresh checklist; a read that fails is made again on its backoff until it answers, and the checklist is neither counted from facts held before the read nor completed while the read is unanswered (Q204, Q276).
 - A member leaves the checklist only through the accepted removal or its re-creation,
   never by a timer.
-- A check-in is a message the member owes its primary ([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes),
-  under `Budget::Owed`): delivered until the primary answers it, ended only by that answer, the
-  primary's re-creation or accepted removal, or the member dropping it; re-owed to the new primary
-  when the primary changes; never ended by a timer. The primary counts a check-in once per
-  (state, birth) and answers a repeat `AlreadyApplied`.
+- A check-in is a message the member owes its primary, sent on `Resend` ([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes)):
+  delivered until the primary answers it, ended only by that answer, its attempts spent (then
+  marked or reported as every spent call is, Q332), the primary's re-creation or accepted removal,
+  or the member dropping it; re-owed to the new primary when the primary changes. The primary
+  counts a check-in once per (state, birth) and answers a repeat `AlreadyApplied`.
 - A primary counts only check-ins that arrive after it receives this state's command.
 
 ## Resize and executable replacement
