@@ -66,6 +66,14 @@ the cells it ran with their results, and the Jaeger links of the traces that sho
   and launches at once.
 - **A lane's work reaches the lead lane only through `lane-land.sh`**; nothing commits to the lead
   lane's branch by hand while seats are rebasing on it.
+- **A lane's state is written only by the verbs** (`lane-prep.sh`, `lane-dispatch.sh`,
+  `lane-retarget.sh`). `scripts/lane-retarget.sh <lane> --base <lead lane>` points a finished unit at
+  another lead lane while keeping its branch, as when a unit stacked on a lane that its branch now
+  carries lands the whole stack on the lead lane.
+- **The lead's session enforces these rules** with a PreToolUse hook
+  (`$HOME/lane-queue/i143-lead/lane-guard.py`, in the main checkout's `.claude/settings.local.json`). It
+  refuses three things: a seat launch from outside its lane, a command running two different verbs or
+  piping one into `tail`/`head`, and a hand write to a lane's state files.
 
 ### 1.1 A unit on a lead lane
 
