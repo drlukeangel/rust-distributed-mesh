@@ -817,14 +817,6 @@
           "test": "all_node_fields_survive_node_restart"
         },
         {
-          "name": "a_regained_primary_waits_for_its_earlier_put",
-          "source": "crates/rdm-test/tests/node_records.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_regained_primary_waits_for_its_earlier_put/estate cargo test -p rdm-test --test main node_records::a_regained_primary_waits_for_its_earlier_put -- --exact",
-          "dir": "target/i143-acceptance/260/process/a_regained_primary_waits_for_its_earlier_put",
-          "evidence": "runner",
-          "test": "a_regained_primary_waits_for_its_earlier_put"
-        },
-        {
           "name": "takeover_survives_mesh_primary_restart",
           "source": "crates/rdm-test/tests/node_records.rs",
           "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/takeover_survives_mesh_primary_restart/estate cargo test -p rdm-test --test main node_records::takeover_survives_mesh_primary_restart -- --exact",

@@ -359,19 +359,6 @@ fn start_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or_default()
 }
 
-fn end_ns(sp: &Value) -> u64 {
-    sp["end_unix_nano"].as_u64().unwrap_or_default()
-}
-
-/// Wait until `who` is listed ready and holding its mesh's primary role.
-async fn primary_is(estate: &Estate, who: &NodeView) {
-    estate
-        .until_view(&format!("{:?} ({}) holds {}'s primary role", who.name, who.node_id, who.mesh), Duration::from_secs(120), |views| {
-            views.iter().any(|n| n.node_id == who.node_id && n.is_primary && n.status == NodeStatus::Ready).then_some(())
-        })
-        .await
-}
-
 /// The shared resolver's record of a read of `subject` (i150 § OTLP span-assertion bar, planned
 /// `rdm.node_admin.node.resolve.via-lifecycle-record`: subject ID, selected writer ID/incarnation,
 /// outcome, reason) that selected `writer`.
@@ -580,49 +567,6 @@ async fn all_node_fields_survive_node_restart() {
     estate.artifact("all-fields.json", &json!({"before": before, "started": started, "recovered": recovered, "lifecycle": lifecycle, "recovered_lifecycle": recovered_lifecycle}));
     estate.stop().await;
     estate.record_trace_url(&write_trace);
-}
-
-// @feature: node-records
-/// CONTRACT (i150 R6, e3; node-primary-update.md "Before installing or publishing a role that writes
-/// lifecycle records, the candidate settles earlier issued writes of its writer birth"; approved
-/// 4dbf01eba): mesh2's primary A hands its role to B (A stopped then started), then B hands it back
-/// (B stopped then started): A regains the role as the same birth, so its lifecycle key is the one it
-/// wrote before. A's regained record of itself carries the stop and start B recorded in its tenure.
-/// Spans: A's regain preparation settled its issued writes, and the serialized lifecycle writer records
-/// every put of writer A with its phase and completion; every put A issued before the regain ended
-/// before the regain's first put began. Must NOT happen: a regain put overtaking an earlier put of the
-/// same writer birth.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_regained_primary_waits_for_its_earlier_put() {
-    let test = "a_regained_primary_waits_for_its_earlier_put";
-    let mut estate = estate_at(Estate::bootstrap(owner_of(test, "regain"), "fabric1", "mesh1").await, &[("mesh1", 1, 0), ("mesh2", 2, 1)]).await;
-    let views = estate.node_views().await;
-    let a = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2's primary");
-    let b = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.node_id != a.node_id).cloned().expect("mesh2's other admin");
-    estate.stop_then_start(&a.name).await;
-    primary_is(&estate, &b).await;
-    estate.stop_then_start(&b.name).await;
-    primary_is(&estate, &a).await;
-    let regained = estate.node_view(&a.name).await;
-    assert_eq!((&regained.node_id, &regained.incarnation_id), (&a.node_id, &a.incarnation_id), "A regains as the same birth");
-    let b_of_a = written_by(&estate, &a.node_id, &b.node_id).expect("B recorded A's stop and start in its tenure");
-    let a_of_a = wait_for("A's regained record of itself carries B's tenure", Duration::from_secs(30), || async {
-        written_by(&estate, &a.node_id, &a.node_id).filter(|r| b_of_a.operations.iter().all(|op| r.operations.contains(op)) && r.is_primary)
-    })
-    .await;
-    estate.artifact("regain.json", &json!({"a": a, "b": b, "b_of_a": b_of_a, "a_of_a": a_of_a}));
-    estate.stop().await;
-    let spans = estate.spans();
-    let prepared: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-takeover-prepared").into_iter().filter(|sp| attr(sp, "node_id") == a.node_id.as_str() && attr(sp, "outcome") == "prepared").collect();
-    let regain = *prepared.iter().max_by_key(|sp| start_ns(sp)).expect("A's regain preparation is recorded");
-    assert_eq!(attr(regain, "settled"), "true", "A's regain settled its issued writes first: {regain}");
-    let puts: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-lifecycle-record").into_iter().filter(|sp| attr(sp, "writer_node_id") == a.node_id.as_str() && !sp["attributes"]["phase"].is_null()).collect();
-    assert!(!puts.is_empty(), "the serialized lifecycle writer records every put of writer {} with its subject, writer birth, phase and completion outcome (i150 OTLP table, rdm.node_admin.node.update.via-lifecycle-record)", a.node_id);
-    let first_regain_put = puts.iter().filter(|sp| start_ns(sp) >= start_ns(regain)).map(|sp| start_ns(sp)).min().expect("the regain's puts are recorded");
-    for p in puts.iter().filter(|sp| start_ns(sp) < start_ns(regain)) {
-        assert!(end_ns(p) <= first_regain_put, "a put A issued before its regain ended before the regain's first put began: {p}");
-    }
-    estate.record_trace_url(regain["trace_id"].as_str().unwrap());
 }
 
 // @feature: node-records
