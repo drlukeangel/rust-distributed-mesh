@@ -812,9 +812,16 @@ impl NodeRpcClient {
             if let Ok(Err(WriteError::ConnectionLost(_))) = &written {
                 self.pool.broken(&key, &conn);
             }
+            // The unfinished request is reset with 499, so the receiver dispatches no partial frame.
+            // The attempt sent nothing, and it is not the owner's cut: it is resent while the call has
+            // attempts left, and told once they are spent (node-rpc.md §43).
             let _ = send.reset(frame_not_sent);
-            let (_, out) = pre.cut_before_finish();
-            return Phase::Done(out);
+            let why = match written {
+                Ok(Err(e)) => e.to_string(),
+                _ => "its send bound passed".to_string(),
+            };
+            tracing::info!(step = "write-incomplete", reason = %why, "the request write did not complete: the attempt sent nothing");
+            return Phase::Done(pre.not_sent(NotSentReason::Connection(format!("the request write did not complete: {why}"))));
         }
         evidence.lock().unwrap().committed = true;
         Phase::Committed(Opened { send, recv, key, conn }, frame.len())

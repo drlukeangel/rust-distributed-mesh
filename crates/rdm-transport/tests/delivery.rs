@@ -1798,3 +1798,43 @@ async fn a_reconnect_after_the_terminal_frame_delivers_no_old_admission() {
     assert!(stream.next().await.is_none());
     assert_eq!(get(&client.delivery().stats().responses_of_completed), 1);
 }
+
+/// Records each spent call its client tells it, by its stored end.
+#[derive(Default)]
+struct Told(Mutex<Vec<String>>);
+
+impl rdm_transport::CallFailedObserver for Told {
+    fn call_failed(&self, _receiver: Option<&ResolvedNode>, reason: rdm_transport::CallFailedReason) {
+        self.0.lock().unwrap().push(format!("{reason:?}"));
+    }
+}
+
+/// CONTRACT (node-rpc.md §43; fabric-node-hooks.md "on_call_failed"): a request whose write does not
+/// complete sent nothing: here its receiver never reads it, so a request larger than the stream's
+/// receive window passes its attempt's send bound mid-frame. It is resent with its identity within its
+/// attempts and, once they are spent, ends `NotSent` and is told to the call-failed observer once.
+/// Must NOT happen: the call ending at its first attempt as the owner's cut (`FrameNotSent`), untold.
+#[tokio::test]
+async fn a_request_write_lost_mid_frame_is_resent_within_its_attempts_and_told_once_spent() {
+    let r = raw().await;
+    let (client, _) = client_of(&[&r.node]).await;
+    let told = Arc::new(Told::default());
+    let client = client.with_call_failed_observer(told.clone());
+    let opts = CallOptions { resend: Resend { attempts: 3, time_limit: TimeLimit(Duration::from_millis(300)) }, ..CallOptions::default() };
+    let payload = vec![0u8; 8 << 20];
+    let (out, _) = client
+        .invoke_raw::<CommandReply, _>(&NodeTarget::ExactNode(r.node.node_id.clone()), Command::OP, payload, 1024, &opts, |d| match d {
+            rdm_transport::Decode::Committed(c, bytes) => c.reply::<Command>(bytes),
+            rdm_transport::Decode::Early(e, bytes) => e.reply::<Command>(bytes),
+        })
+        .await;
+    match &out {
+        RpcOutcome::NotSent(n) => assert!(!matches!(n.reason(), rdm_core::outcome::NotSentReason::FrameNotSent), "a lost write is not the owner's cut: {out:?}"),
+        other => panic!("nothing crossed the commit cut, so the call ends NotSent: {other:?}"),
+    }
+    assert_eq!(get(&client.delivery().stats().resends), 2, "the request is resent within its three attempts");
+    eventually("the spent call is told", Duration::from_secs(3), || told.0.lock().unwrap().len() == 1).await;
+    let told = told.0.lock().unwrap().clone();
+    assert!(told[0].starts_with("NotSent"), "told by its stored end: {told:?}");
+    drop(r);
+}
