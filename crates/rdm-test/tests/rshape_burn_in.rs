@@ -4039,8 +4039,9 @@ impl Drop for Held {
     }
 }
 
-/// The send bound of a stop-node command (`rdm_admin::node_commands`, `Budget::Split { send: 5 s, .. }`): a
-/// held runtime leaves the stop the executor sent unanswered until then.
+/// A bound inside the stop-node command's first attempt (`rdm_admin::node_commands`: its resolve, dial and
+/// send are bounded by `rdm_transport::TRANSPORT_LIMIT`, 10 s): a held runtime leaves the stop the executor
+/// sent unanswered until then.
 const STOP_NODE_SEND_BOUND: Duration = Duration::from_secs(5);
 
 /// A held node is re-created at its path (node-recovery.md step 3, Q111): while its exact runtime is held a

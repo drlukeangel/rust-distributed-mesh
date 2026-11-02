@@ -258,7 +258,7 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
 
 /// What a `build.attempt.run` sent to `to` for `attempt` answers, whole: the refusal, or the first frame.
 /// CONTRACT (i146; build.md: "a live run is reattached, never re-claimed"; Q22: the reattach after a
-/// `Budget::Stream` connection closes is the owner's; node-rpc-envelope.md "Frames, durable receipts and
+/// Build stream's connection closes is the owner's (`StreamingProtocol::ENDS_WITH_ITS_CONNECTION`); node-rpc-envelope.md "Frames, durable receipts and
 /// reattachment": "`build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the
 /// receipts"): a watched Build whose connection closes mid-stream is reattached by its build id, each
 /// reattachment a `build.get [id]` and then the outer stream again, and ends `Complete`, the run it watched
