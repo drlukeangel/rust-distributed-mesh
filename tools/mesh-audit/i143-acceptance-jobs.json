@@ -841,6 +841,14 @@
           "test": "an_applied_build_update_survives_node_restart"
         },
         {
+          "name": "a_start_preserves_a_newer_owed_update",
+          "source": "crates/rdm-test/tests/node_records.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/a_start_preserves_a_newer_owed_update/estate cargo test -p rdm-test --test main node_records::a_start_preserves_a_newer_owed_update -- --exact",
+          "dir": "target/i143-acceptance/260/process/a_start_preserves_a_newer_owed_update",
+          "evidence": "runner",
+          "test": "a_start_preserves_a_newer_owed_update"
+        },
+        {
           "name": "current_node_reads_survive_fabric_primary_restart",
           "source": "crates/rdm-test/tests/node_records.rs",
           "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/260/process/current_node_reads_survive_fabric_primary_restart/estate cargo test -p rdm-test --test main node_records::current_node_reads_survive_fabric_primary_restart -- --exact",

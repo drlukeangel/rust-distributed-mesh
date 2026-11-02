@@ -267,6 +267,14 @@ async fn fabric_primary(estate: &Estate) -> NodeId {
     estate.node_views().await.into_iter().find(|n| n.is_fabric_primary).expect("the view names a fabric-primary").node_id
 }
 
+/// node.config.update of `v`'s exact birth, sent to the fabric-primary, which sends it down through the
+/// node's mesh-primary (node-config-update.md "A caller's update" step 1).
+async fn config_update(estate: &Estate, v: &NodeView, config: BTreeMap<String, String>) -> rdm_core::status::StatusReply {
+    let fp = fabric_primary(estate).await;
+    let carrier = estate.carrier().await;
+    rdm_client::NodeRpc::new(carrier.client()).config_update(&fp, &rdm_transport::RouteChoice::Direct, &birth_of(v), config, &rdm_transport::CallOptions::default()).await.unwrap_or_else(|e| panic!("node.config.update of {:?} at the fabric-primary: {e:?}", v.name))
+}
+
 /// node.tag.create of `labels` on `v`'s exact birth, sent to the fabric-primary (commands go down, Q203).
 async fn tags_create(estate: &Estate, v: &NodeView, labels: &BTreeSet<String>) -> rdm_core::status::StatusReply {
     let fp = fabric_primary(estate).await;
@@ -730,6 +738,51 @@ async fn an_applied_build_update_survives_node_restart() {
         .find(|sp| attr(sp, "build_id") == build_id && attr(sp, "node_id") == first.node_id.as_str())
         .unwrap_or_else(|| panic!("Build {build_id}'s repeat is recorded as already applied, naming its exact target and the original operation identity (i150 OTLP table, rdm.node.record.update.via-already-applied)"));
     estate.record_trace_url(repeat["trace_id"].as_str().unwrap());
+}
+
+// @feature: node-records
+/// CONTRACT (i150 R9, e4; node-config-update.md "Deferred application and startup": "A stopped process
+/// remains alive with its Node RPC endpoint bound and applies an update as a running node does ...
+/// Existing durable properties and application recognition survive startup; an older environment must
+/// not overwrite them"): `mesh1.rpc` / `2` is stopped and update A is acknowledged; its start is held
+/// at its Ready declaration (the faulted admin's cut) and update B is acknowledged meanwhile; the cut
+/// is released. The node is ready as the same birth with B, and its property record holds B. Must NOT
+/// happen: the start's Ready erasing the newer acknowledged update.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_start_preserves_a_newer_owed_update() {
+    let test = "a_start_preserves_a_newer_owed_update";
+    let sha = rdm_test::faults::candidate_sha();
+    let estate = Estate::bootstrap_on(owner_of(test, "owed-update"), "fabric1", "mesh1", &rdm_test::faults::binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let mut estate = estate_at(estate, &[("mesh1", 1, 2)]).await;
+    let subject = pair("mesh1.rpc", "2");
+    let before = estate.node_view(&subject).await;
+    Estate::complete(&mut estate.nodes_obj().await.stop(&subject).await.expect("the stop is accepted")).await;
+    estate.until_stopped_at_the_fabric_primary(&subject).await;
+    let a: BTreeMap<String, String> = [("owed".into(), "a".into())].into();
+    let reply = config_update(&estate, &before, a).await;
+    assert_eq!(reply.name(), "config-updated", "the stopped process applies update A: {reply:?}");
+    let door = rdm_test::faults::Door::at(&estate, &pair("mesh1.admin", "1")).await;
+    door.arm("ready-held", json!({"kind": "declaration", "node_id": before.node_id, "state": "Ready"})).await;
+    let starting = {
+        let nodes = estate.nodes_obj().await;
+        let subject = subject.clone();
+        tokio::spawn(async move { Estate::complete(&mut nodes.start(&subject).await.expect("the start is accepted")).await })
+    };
+    door.wait_held("ready-held").await;
+    let b: BTreeMap<String, String> = [("owed".into(), "b".into())].into();
+    let reply = config_update(&estate, &before, b.clone()).await;
+    assert_eq!(reply.name(), "config-updated", "update B is acknowledged during the start: {reply:?}");
+    door.release("ready-held").await;
+    starting.await.expect("the start completes");
+    let after = estate.until_node(&subject, "the node is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::Ready).cloned()).await;
+    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth starts");
+    assert_eq!(after.config, b, "the start's Ready keeps the newer acknowledged update");
+    assert_eq!(estate.node_properties(&before.node_id).expect("the node's own record").config, b, "the durable record holds update B");
+    estate.artifact("owed-update.json", &json!({"before": before, "after": after}));
+    estate.stop().await;
+    let spans = estate.spans();
+    let applied = named(&spans, "rdm.node_admin.node.update.via-apply-node-config").into_iter().filter(|sp| attr(sp, "node") == before.node_id.as_str()).max_by_key(|sp| start_ns(sp)).expect("the node applied B");
+    estate.record_trace_url(applied["trace_id"].as_str().unwrap());
 }
 
 // @feature: node-records
