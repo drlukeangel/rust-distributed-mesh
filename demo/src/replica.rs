@@ -7,10 +7,13 @@
 //!   other broker answers `NotPrimary` naming the primary it holds. A `Fetch` reads the answering
 //!   broker's own log.
 //! - The **gateway** serves the same op to its callers and forwards each request to its mesh's broker
-//!   primary, found from RDM's topology (`TopologyView::primaries`). A `NotPrimary`, an unreached
-//!   primary or a call that was never sent is asked again of the primary the gateway then holds, for
-//!   up to [`FORWARD_FOR`]: when RDM elects the next broker primary, the gateway follows it. A
-//!   `Produce` whose answer was lost is asked again under the same operation id, never as a new record.
+//!   primary, found from RDM's topology (`TopologyView::primaries`). A `NotPrimary` or a broker not
+//!   ready yet is asked again of the primary the gateway then holds, for up to [`FORWARD_FOR`]: when
+//!   RDM elects the next broker primary, the gateway follows it. RDM resends each call itself
+//!   ([`Resend`]); a call whose attempts are spent is told to the gateway's `on_call_failed`
+//!   ([`PassOver`]), which passes that broker birth over, and the gateway asks the next replica: the
+//!   next ready broker of its mesh. A `Produce` whose answer was lost is asked again under the same
+//!   operation id, never as a new record.
 //!
 //! What the application does is a log line (target `rshape`) under RDM's own call and serve spans, as
 //! in [`crate::consumer_example`].
@@ -18,7 +21,9 @@
 use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::outcome::{Code, MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
-use rdm_core::{NodeId, NodeKind, PathName};
+use rdm_core::filter::Filter;
+use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
+use rdm_node::node_hooks::{CallFailedCtx, OnCallFailed};
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded};
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{Resend, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
@@ -33,6 +38,8 @@ use std::time::Duration;
 pub const OWNER: &str = crate::consumer_example::OWNER;
 /// How long a gateway keeps asking for its mesh's broker primary before it answers `NoBroker`.
 pub const FORWARD_FOR: Duration = Duration::from_secs(30);
+/// How long a gateway waits between two asks of one forward.
+const ASK_EVERY: Duration = Duration::from_millis(250);
 
 /// A request of [`Records`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,12 +278,89 @@ pub struct Node {
     pub name: PathName,
     /// The node's own mesh, as its launch names it (never read from the `(path, name)`).
     pub mesh: String,
+    /// The broker births the gateway's `on_call_failed` passed over (a gateway's; empty on a broker).
+    pub passed: PassedOver,
 }
 
 impl Node {
     /// The node id of its mesh's broker primary, as its topology holds it now.
     fn broker_primary(&self) -> Option<NodeId> {
         self.view.get()?.primaries().node_type_primary(&self.mesh, NodeKind::Broker).map(|p| p.node_id)
+    }
+
+    /// The broker a forward asks now ([`choose`]): the broker primary its topology holds, or, once
+    /// `on_call_failed` passed that birth over, the next ready broker of its mesh.
+    fn broker_to_ask(&self) -> Option<NodeId> {
+        let view = self.view.get()?;
+        let ready: Vec<(NodeId, IncarnationId)> = view
+            .nodes_get(&Filter::new().eq("mesh", [self.mesh.clone()]).eq("kind", [NodeKind::Broker.segment()]).eq("status", ["ready"]))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| (d.node.node_id, d.node.incarnation))
+            .collect();
+        let primary = self.broker_primary();
+        let mut chosen = None;
+        self.passed.0.send_modify(|passed| chosen = choose(primary, &ready, passed));
+        chosen
+    }
+}
+
+/// The broker births a gateway passed over, each with its incarnation: written by its
+/// `on_call_failed` ([`PassOver`]), read when a forward chooses the broker to ask ([`choose`]).
+#[derive(Clone)]
+pub struct PassedOver(Arc<tokio::sync::watch::Sender<BTreeMap<NodeId, IncarnationId>>>);
+
+impl Default for PassedOver {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(BTreeMap::new()).0))
+    }
+}
+
+impl PassedOver {
+    /// Wait until `broker` is passed over, at most `limit`: a spent call's notice runs on a task of
+    /// its own, after the call has ended to the forward.
+    async fn until_passed(&self, broker: &NodeId, limit: Duration) {
+        let mut passed = self.0.subscribe();
+        let _ = tokio::time::timeout(limit, passed.wait_for(|p| p.contains_key(broker))).await;
+    }
+
+    /// A broker answered that it holds `primary` as its broker primary: that birth is asked again.
+    fn ask_again(&self, primary: &str) {
+        self.0.send_if_modified(|passed| {
+            let before = passed.len();
+            passed.retain(|id, _| id.to_string() != primary);
+            passed.len() != before
+        });
+    }
+}
+
+/// The broker a forward asks, given the broker primary its topology holds, its mesh's ready brokers
+/// (node id and incarnation, in the topology's order) and the births passed over: the primary, unless
+/// it is passed over; then the first ready broker that is not, the next replica. No primary held:
+/// none, the forward waits for RDM's election. A birth the topology no longer names ready (stopped,
+/// re-created as a new node id, or started as a new incarnation) is passed over no more.
+pub fn choose(primary: Option<NodeId>, ready: &[(NodeId, IncarnationId)], passed: &mut BTreeMap<NodeId, IncarnationId>) -> Option<NodeId> {
+    passed.retain(|id, incarnation| ready.iter().any(|(r, i)| r == id && i == incarnation));
+    let primary = primary?;
+    if !passed.contains_key(&primary) {
+        return Some(primary);
+    }
+    ready.iter().map(|(id, _)| id).find(|id| !passed.contains_key(*id)).cloned()
+}
+
+/// The gateway's `on_call_failed` (fabric-node-hooks.md "on_call_failed"): a call of this node whose
+/// attempts are spent passes its receiver's birth over, so the gateway's forwards ask the next
+/// replica. A receiver that is not a ready broker of its mesh is dropped at the next choice.
+pub struct PassOver(pub PassedOver);
+
+#[async_trait::async_trait]
+impl OnCallFailed for PassOver {
+    async fn on_call_failed(&self, ctx: &CallFailedCtx) {
+        let Some(receiver) = &ctx.receiver else { return };
+        tracing::info!(target: "rshape", receiver_path = %receiver.name.path, receiver_name = %receiver.name.name, receiver_node_id = %receiver.node_id, outcome = ctx.reason.name(), "on_call_failed: a call's attempts are spent; its receiver is passed over and the next replica is asked");
+        self.0 .0.send_modify(|passed| {
+            passed.insert(receiver.node_id.clone(), receiver.incarnation.clone());
+        });
     }
 }
 
@@ -333,32 +417,90 @@ pub fn register_gateway(b: ServerBuilder, client: Arc<NodeRpcClient>, node: Node
     })
 }
 
-/// `request` at the broker primary `node` holds, asked again of the primary it then holds until a
-/// broker answers it or [`FORWARD_FOR`] passed.
+/// `request` at the broker `node` asks now ([`Node::broker_to_ask`]), asked again on a domain answer
+/// (`NotPrimary`, not ready) until a broker answers it or [`FORWARD_FOR`] passed. A call whose attempts
+/// are spent is never asked again of that broker by the forward: the gateway's `on_call_failed` passes
+/// the birth over, and the next turn asks the next replica.
 async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) -> RecordsReply {
     let until = tokio::time::Instant::now() + FORWARD_FOR;
     let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() };
     let mut last = String::from("no broker primary is held");
     loop {
-        if let Some(primary) = node.broker_primary() {
-            let (outcome, _) = client.call::<Records>(&NodeTarget::ExactNode(primary.clone()), request, &options).await;
+        let mut spent = None;
+        if let Some(broker) = node.broker_to_ask() {
+            let (outcome, _) = client.call::<Records>(&NodeTarget::ExactNode(broker.clone()), request, &options).await;
             last = match outcome {
                 RpcOutcome::Reply(reply) => match reply.into_value() {
-                    RecordsReply::NotPrimary { primary: held } => format!("{primary} is not the broker primary (it holds {held:?})"),
-                    RecordsReply::NotReady { reason } | RecordsReply::Busy { reason } | RecordsReply::ConnectionsDeleting { reason } => format!("{primary}: {reason}"),
+                    RecordsReply::NotPrimary { primary: held } => {
+                        node.passed.ask_again(&held);
+                        format!("{broker} is not the broker primary (it holds {held:?})")
+                    }
+                    RecordsReply::NotReady { reason } | RecordsReply::Busy { reason } | RecordsReply::ConnectionsDeleting { reason } => format!("{broker}: {reason}"),
                     answered => {
-                        tracing::info!(target: "rshape", path = %node.name.path, name = %node.name.name, broker = %primary, "a request forwarded to the broker primary answered");
+                        tracing::info!(target: "rshape", path = %node.name.path, name = %node.name.name, %broker, "a request forwarded to a broker answered");
                         return answered;
                     }
                 },
-                // Never dispatched, or its answer lost: asked again (a Produce under the same
-                // operation id, so a record is never appended twice).
-                other => format!("{primary}: {} {}", other.name(), other.detail_name()),
+                // Never answered: when its attempts are spent (RDM resent it), `on_call_failed` passes
+                // the broker over, and the next turn asks the next replica.
+                outcome @ (RpcOutcome::NotSent(_) | RpcOutcome::Indeterminate(_)) => {
+                    spent = Some(broker.clone());
+                    format!("{broker}: {} {}", outcome.name(), outcome.detail_name())
+                }
+                other => format!("{broker}: {} {}", other.name(), other.detail_name()),
             };
         }
         if tokio::time::Instant::now() >= until {
             return RecordsReply::NoBroker { reason: format!("path {:?}, name {:?}: {last}", node.name.path, node.name.name) };
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        match spent {
+            Some(broker) => node.passed.until_passed(&broker, ASK_EVERY).await,
+            None => tokio::time::sleep(ASK_EVERY).await,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn broker() -> (NodeId, IncarnationId) {
+        (NodeId::mint(), IncarnationId::mint())
+    }
+
+    #[test]
+    fn a_forward_asks_the_broker_primary_until_on_call_failed_passes_it_over_then_the_next_replica() {
+        let (primary, other) = (broker(), broker());
+        let ready = vec![primary.clone(), other.clone()];
+        let mut passed = BTreeMap::new();
+        assert_eq!(choose(Some(primary.0.clone()), &ready, &mut passed), Some(primary.0.clone()), "nothing passed over: the broker primary");
+        passed.insert(primary.0.clone(), primary.1.clone());
+        assert_eq!(choose(Some(primary.0.clone()), &ready, &mut passed), Some(other.0.clone()), "the primary passed over: the next ready broker");
+        passed.insert(other.0.clone(), other.1.clone());
+        assert_eq!(choose(Some(primary.0.clone()), &ready, &mut passed), None, "every ready broker passed over: none is asked");
+        assert_eq!(choose(None, &ready, &mut BTreeMap::new()), None, "no broker primary held: the forward waits for RDM's election");
+    }
+
+    #[test]
+    fn a_birth_the_topology_no_longer_names_ready_is_passed_over_no_more() {
+        let (primary, other) = (broker(), broker());
+        let mut passed = BTreeMap::from([primary.clone(), other.clone()]);
+        // The primary started as a new incarnation; the other broker left the ready set.
+        let started = (primary.0.clone(), IncarnationId::mint());
+        assert_eq!(choose(Some(primary.0.clone()), &[started], &mut passed), Some(primary.0.clone()), "its new birth is asked");
+        assert!(passed.is_empty(), "both marks dropped: {passed:?}");
+    }
+
+    #[tokio::test]
+    async fn on_call_failed_passes_its_receiver_over_and_a_broker_naming_it_primary_sends_the_gateway_back() {
+        let passed = PassedOver::default();
+        let (receiver, _) = broker();
+        let birth = |node_id: NodeId| rdm_node::node_hooks::CallFailedBirth { node_id, incarnation: IncarnationId::mint(), name: PathName::numbered("mesh1", NodeKind::Broker, 1) };
+        let reason = rdm_transport::CallFailedReason::NotSent(rdm_core::outcome::NotSentReason::Deadline);
+        PassOver(passed.clone()).on_call_failed(&CallFailedCtx { sender: birth(NodeId::mint()), receiver: Some(birth(receiver.clone())), reason }).await;
+        passed.until_passed(&receiver, Duration::from_secs(1)).await;
+        assert!(passed.0.borrow().contains_key(&receiver), "the spent call's receiver is passed over");
+        passed.ask_again(&receiver.to_string());
+        assert!(passed.0.borrow().is_empty(), "a broker that holds it primary sends the gateway back to it");
     }
 }

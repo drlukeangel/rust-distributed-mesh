@@ -7,8 +7,11 @@
 //! product's own backend (Rafka's topic-backed one) takes the file backend's place. A product's work on
 //! a node's way into traffic enters only through the Fabric and node hooks (`pre_node_ready`,
 //! `on_node_ready`, `on_mesh_ready`, `on_fabric_ready`, `on_build_started`, `on_build_ended`; build.md §9).
-//! This admin registers the four Fabric notices ([`notices`]), each one log line (target `rshape`) with
+//! This admin registers the five Fabric notices ([`notices`]), each one log line (target `rshape`) with
 //! what it was told: the notices gate nothing, and a product puts its own work where the line is.
+//! `on_node_investigated` also acts on `recreate`, as Rafka's node-admin takes a re-created broker out
+//! of its topics' write sets: the admin records the re-creation in the replica's `system` topic through
+//! a gateway, under an operation id of the investigated birth, so a repeated notice appends nothing twice.
 //! `on_fabric_ready` also does the replica's own day-0 work, as Rafka's does its system creations: it
 //! produces one record to the `system` topic through a gateway ([`rshape_consumer::replica`]), under
 //! an operation id of the ready Build, so a notice repeated for one Build appends nothing twice; then
@@ -20,11 +23,12 @@ use rdm_admin::model::{IncarnationId, ProviderKind};
 use rdm_admin::storage::NodeRecord;
 use rdm_admin::storage_backend::{StorageBackend, StorageBoundaries, StorageScope};
 use rdm_admin::storage_error::StorageError;
-use rdm_admin::wiring::{BuildEndedCtx, BuildEndedNotice, BuildStartedCtx, BuildStartedNotice, FabricHooks, FabricReadyCtx, FabricReadyNotice, MeshReadyCtx, MeshReadyNotice, Wiring};
+use rdm_admin::wiring::{BuildEndedCtx, BuildEndedNotice, BuildStartedCtx, BuildStartedNotice, FabricHooks, FabricReadyCtx, FabricReadyNotice, MeshReadyCtx, MeshReadyNotice, NodeInvestigatedCtx, NodeInvestigatedNext, NodeInvestigatedNotice, Wiring};
 use rshape_consumer::replica::{Records, RecordsReply, RecordsRequest};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tracing::Instrument;
 
 const SERVICE: &str = "rshape-node-admin";
 
@@ -128,10 +132,41 @@ async fn day_zero(own: Own, fabric_id: String, build_id: String) {
     }
 }
 
+/// `on_node_investigated`'s work on `recreate`: one record of the re-creation to the `system` topic,
+/// asked of each Ready gateway of this admin's mesh once, in the topology's order, until one produces
+/// it. Each call is RDM's to resend ([`rdm_transport::Resend`]); a gateway whose call ends unanswered
+/// is passed for the next. The operation id is the investigated birth's, so a repeated notice for one
+/// birth is the same record.
+async fn record_recreate(started: &Started, told: &NodeInvestigatedCtx) {
+    let operation = format!("node-recreate:{}:{}", told.node_id, told.incarnation.as_str());
+    let request = RecordsRequest::Produce {
+        operation: operation.clone(),
+        topic: "system".into(),
+        record: format!("path {:?}, name {:?}, node {} investigated ({}): re-created as a new node id", told.path, told.name, told.node_id, told.verdict.as_str()),
+    };
+    let filter = rdm_core::filter::Filter::new().eq("mesh", [started.mesh.clone()]).eq("kind", ["gateway"]).eq("status", ["ready"]);
+    let mut last = String::from("no gateway of the mesh is ready");
+    for gateway in started.view.nodes_get(&filter).unwrap_or_default() {
+        let (outcome, _) = started.client.call::<Records>(&rdm_transport::NodeTarget::ExactNode(gateway.node.node_id.clone()), &request, &rdm_transport::CallOptions::default()).await;
+        match outcome {
+            rdm_core::outcome::RpcOutcome::Reply(reply) => match reply.into_value() {
+                RecordsReply::Produced { offset, .. } => {
+                    return tracing::info!(target: "rshape", %operation, gateway_path = %gateway.node.name.path, gateway_name = %gateway.node.name.name, offset, "on_node_investigated: the re-creation is recorded in the system topic");
+                }
+                other => last = format!("{:?}: {other:?}", gateway.node.name),
+            },
+            other => last = format!("{:?}: {} {}", gateway.node.name, other.name(), other.detail_name()),
+        }
+    }
+    tracing::warn!(target: "rshape", %operation, %last, "on_node_investigated: the re-creation is not recorded: no gateway produced it");
+}
+
 /// The Fabric notices this admin registers (fabric-node-hooks.md): each is fire and forget and writes one
-/// log line naming what it was told. `on_mesh_ready` is called by a mesh-primary once its mesh is ready;
+/// log line naming what it was told. `on_mesh_ready` is called by a mesh-primary once its mesh is ready,
+/// `on_node_investigated` by a mesh-primary once it records a node investigation's verdict;
 /// `on_fabric_ready`, `on_build_started` and `on_build_ended` by the fabric-primary.
 fn notices(own: Own) -> FabricHooks {
+    let own_investigated = own.clone();
     let on_mesh_ready: MeshReadyNotice = Arc::new(|ready: MeshReadyCtx| {
         Box::pin(async move { tracing::info!(target: "rshape", fabric_id = %ready.fabric_id, mesh = %ready.mesh, mesh_id = %ready.mesh_id, "on_mesh_ready: the mesh is ready") })
     });
@@ -160,7 +195,26 @@ fn notices(own: Own) -> FabricHooks {
             }
         })
     });
-    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended) }
+    let on_node_investigated: NodeInvestigatedNotice = Arc::new(move |told: NodeInvestigatedCtx| {
+        let own = own_investigated.clone();
+        Box::pin(async move {
+            tracing::info!(target: "rshape", fabric_id = %told.fabric_id, mesh_id = %told.mesh_id, node_id = %told.node_id, node_path = %told.path, node_name = %told.name, verdict = told.verdict.as_str(), next = told.next.as_str(), "on_node_investigated: a node investigation's verdict is recorded");
+            if told.next != NodeInvestigatedNext::Recreate {
+                return;
+            }
+            // The work runs on its own, under the notice's span: a notice gates nothing.
+            tokio::spawn(
+                async move {
+                    match own.get() {
+                        Some(started) => record_recreate(started, &told).await,
+                        None => tracing::warn!(target: "rshape", node_id = %told.node_id, "on_node_investigated: the admin is not started; the re-creation is not recorded"),
+                    }
+                }
+                .instrument(tracing::Span::current()),
+            );
+        })
+    });
+    FabricHooks { on_mesh_ready: Some(on_mesh_ready), on_fabric_ready: Some(on_fabric_ready), on_build_started: Some(on_build_started), on_build_ended: Some(on_build_ended), on_node_investigated: Some(on_node_investigated) }
 }
 
 #[tokio::main]

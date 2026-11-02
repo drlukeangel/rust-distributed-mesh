@@ -57,12 +57,18 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     // The replica (Q296): the broker's records log, opened before the node serves; the gateway
     // forwards to the broker primary its topology names, the view handed over once the node is up.
     let view = std::sync::Arc::new(std::sync::OnceLock::new());
-    let replica_node = replica::Node { view: view.clone(), me: launch.node_id.clone(), name: launch.name.clone(), mesh: launch.mesh.clone() };
+    let replica_node = replica::Node { view: view.clone(), me: launch.node_id.clone(), name: launch.name.clone(), mesh: launch.mesh.clone(), passed: replica::PassedOver::default() };
+    // The gateway's `on_call_failed`: a forward whose attempts are spent passes that broker over, and
+    // the gateway asks the next replica (fabric-node-hooks.md "on_call_failed").
+    let node_hooks = match role.kind {
+        NodeKind::Gateway => rdm_node::node_hooks::NodeHooks::none().with_on_call_failed(std::sync::Arc::new(replica::PassOver(replica_node.passed.clone()))),
+        _ => rdm_node::node_hooks::NodeHooks::none(),
+    };
     let broker = match role.kind {
         NodeKind::Broker => Some(replica::Broker::open(&launch.data_dir.join("replica")).await.map_err(|e| anyhow!("refusing to start: the records log: {e}"))?),
         _ => None,
     };
-    let (running, mut acceptor) = node::start_with_seams_and_alpn(&launch, data_alpn(), |b, seams| {
+    let (running, mut acceptor) = node::start_pre_node_ready_with_alpn(&launch, node_hooks, data_alpn(), |b, seams| {
         let client = seams.client.clone();
         let b = oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone(), &seams.name);
         let b = match (role.kind, broker) {
