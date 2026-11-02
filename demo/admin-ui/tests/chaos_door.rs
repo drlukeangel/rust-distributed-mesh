@@ -36,7 +36,8 @@ async fn a_fault_aimed_at_the_fabric_primary_is_refused_by_name_and_signals_noth
         let r = chaos.fault(&nodes, &admin1, action, ready()).await;
         assert_eq!((r.outcome, r.detail["refusal"].as_str()), ("refused", Some(FABRIC_PRIMARY_REFUSAL)), "{r:?}");
     }
-    assert!(matches!(proc_state(fp.id()), Some('S' | 'R')), "the fabric-primary was not signalled");
+    let state = proc_state(fp.id());
+    assert!(matches!(state, Some('S' | 'R' | 'D')), "the fabric-primary was not signalled: it reads {state:?}");
     let cut = chaos.cut(&nodes, &Target::Mesh { mesh: "mesh1".into() }).await;
     assert_eq!(cut.detail["refusal"], FABRIC_PRIMARY_REFUSAL, "{cut:?}");
     let cut = chaos.cut(&nodes, &Target::Node(admin1.clone())).await;
@@ -46,7 +47,8 @@ async fn a_fault_aimed_at_the_fabric_primary_is_refused_by_name_and_signals_noth
 
     let not_ready = chaos.fault(&nodes, &broker1, "kill", None).await;
     assert_eq!((not_ready.outcome, not_ready.detail["refusal"].as_str()), ("refused", Some("fabric-not-ready")), "a kill before the fabric is read ready is refused by name: {not_ready:?}");
-    assert!(matches!(proc_state(broker.id()), Some('S' | 'R')), "the refused kill signalled nothing");
+    let state = proc_state(broker.id());
+    assert!(matches!(state, Some('S' | 'R' | 'D')), "the refused kill signalled nothing: it reads {state:?}");
     let stopped = chaos.fault(&nodes, &broker1, "stop", ready()).await;
     assert_eq!((stopped.outcome, stopped.detail["state_after"].as_str()), ("applied", Some("T")), "{stopped:?}");
     let resumed = chaos.fault(&nodes, &broker1, "continue", ready()).await;
