@@ -53,8 +53,8 @@ A caller reads it as a field of the node's row, `node.get [storage_persistence: 
 
 ## 2. `topology_storage_provider`: where RDM's records go
 
-RDM's records have five storage boundaries: `fabric.storage`, `mesh.storage`, `nodes.storage`,
-`connections.storage` and `builds.storage` ([build.md §5.3](build.md#53-node-admin-storage-boundaries)).
+RDM's records have six storage boundaries: `fabric.storage`, `mesh.storage`, `nodes.storage`,
+`connections.storage`, `builds.storage` and `events.storage` ([build.md §5.3](build.md#53-node-admin-storage-boundaries)).
 They hold the fabric's topology and its history, what `fabric.get`, `mesh.get`, `node.get`,
 `node.connection.get` and `build.get` read: every record whole, every write appended, nothing ever
 removed, one writer per key ([node-identity-and-state.md §2.5](node-identity-and-state.md), R14). A

@@ -21,12 +21,9 @@ During a change the two differ; that difference is the change's progress. Cell:
 `a_customer_reads_each_nodes_topology_provider` (both read on a two-mesh fabric, beside
 `storage_persistence`, a separate property of the node: [storage.md §1](../../architecture/storage.md#1-storage_persistence-a-nodes-own-storage)).
 
-The five stores are `fabric.storage`, `mesh.storage`, `nodes.storage`, `connections.storage` and `builds.storage`.
-A node's record, its mesh-primary's part and its own, is in `nodes.storage` and belongs to the same migration inventory.
-An application's own rows, events and data dirs
-are not among these stores. [i150](../../plans/i150-node-writes-lifecyle-updates.md) tracks removal
-of the old combined node rows and full application-provider acceptance; the five-store copy
-substrate alone does not establish that the lifecycle transition is complete.
+The six stores are `fabric.storage`, `mesh.storage`, `nodes.storage`, `connections.storage`,
+`builds.storage` and `events.storage`. A node's record, its mesh-primary's part and its own, is in
+`nodes.storage`. An application's own rows, events and data dirs are not among these stores.
 
 ## Providers and registration
 
@@ -46,7 +43,7 @@ one backend are two names. A node moves only between providers its own executabl
 | `rdm-client` | `Fabrics::update_storage`, `FabricView`, `NodeView`, `CallEnd` | what a caller sends and reads |
 
 `file` is registered by every RDM binary: one append-only JSONL file per store under the fabric's
-root in `RDM_STORE_DIR` (`<store dir>/<fabric id>/`), with its `layout` marker and `locks/`. A name
+root in `RDM_STORE_DIR` (`<store dir>/<fabric id>/`), with its `layout` marker. A name
 an executable does not register refuses that executable's start by name (`RDM_TOPOLOGY_STORAGE_PROVIDER
 names topology storage provider `<name>`, which this executable does not register (it registers:
 ...)`).
@@ -103,7 +100,7 @@ node, the block and unblock as node commands on op `0x22` (`BlockMesh`, `Unblock
 
 The wire of the move is on [node-rpc-envelope.md, NodeCommand op 0x22](../../architecture/node-rpc-envelope.md#nodecommand-op-0x22-rdm).
 Cell: `a_customer_changes_topology_storage_without_restarting_members` (the four steps on one trace,
-every line carried in source order, the deleted birth's and the deleted mesh's included).
+every line carried in source order, the deleted node's and the deleted mesh's included).
 
 ## The persistence path
 
@@ -139,7 +136,7 @@ every line carried in source order, the deleted birth's and the deleted mesh's i
 | the new provider holds a line the old one does not | the copy is refused by name, nothing switches; the change fails once no `rdm.storage.committed` event is read, and every mesh-primary is sent `UnblockMesh` on the old provider; the Fabric row unchanged | `a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider` |
 | a provider that does not answer | the copy and the switch read it again until it answers; the block holds; no timer ends it | none (see the [runbook](runbook.md#an-unavailable-provider)) |
 | a node that refuses its move (lead decision D1) | its mesh-primary's node recovery re-creates it at its `path` and `name` on the new provider, never part of the change, and the mesh-primary replies `unblocked` once every node moved or was re-created | `a_node_that_refuses_its_move_is_recreated_on_the_new_provider` |
-| a node that never answers its move | the same: re-created on the new provider once its move is unanswered past the staleness floor | `a_node_that_never_unblocks_is_recreated_on_the_new_provider` |
+| a node that never answers its move | the same: re-created on the new provider once its move call is unanswered with its `Send` spent | `a_node_that_never_unblocks_is_recreated_on_the_new_provider` |
 | a mesh-primary that does not reply `blocked` or `unblocked` | a lost node: [node investigation](../../architecture/lifecycles/node-investigation.md), and on any verdict but `reached` node recovery re-creates it at its `path` and `name`, the primary's own workflow, never part of the change | none |
 | a node killed while its mesh-primary is blocked | re-created at its `path` and `name` over the same data dir once its mesh-primary issues commands again, writing only the provider the `rdm.storage.committed` event decided | `topology_storage_state_survives_role_node_restart` |
 | a command of an older change | refused by name, `rejected-stale-change`, naming the change the node acted on | `an_old_change_cannot_unblock_writes_for_a_new_change` |
@@ -160,14 +157,20 @@ every line carried in source order, the deleted birth's and the deleted mesh's i
 
 | span | attributes | outcome |
 |---|---|---|
+| `rdm.node_admin.storage.update.via-caller` | `node_id`, `provider`, `change_id`, `reason` | `fabric.storage.updated`, or the refusal's name |
 | `rdm.node_admin.build.reject.via-topology-storage-provider-not-registered` | `detail` names the provider and the registered ones | the refusal at acceptance |
-| `rdm.node_admin.mesh.update.via-block` | `change_id`, `mesh`, `node_id`, `in_flight` | `blocked` |
-| `rdm.node_admin.build.update.via-storage-copy` | `change_id`, `source`, `destination`, `source_position`, `copied`, `cause` | `copied`, `refused`, `indeterminate` |
-| `rdm.node_admin.build.update.via-storage-switch` | `change_id`, `provider`, `commit_found`, `reason` | `inserted`, `found`, `not-switched`, `no-answer` |
-| `rdm.node_admin.mesh.update.via-unblock` | `change_id`, `mesh`, `node_id`, `provider`, `moved`, `recreated` | `unblocked` |
-| `rdm.node_admin.node.update.via-storage-move-lost` | `change_id`, `mesh`, `node`, `node_id`, `incarnation_id`, `provider`, `reason`, `error` | `recreated`, `not-recreated` |
-| `rdm.node.build.update.via-storage-move` | `change_id`, `node_id`, `provider`, `reason`, `held` | `moved`, `refused`, `rejected-stale-change` |
-| `rdm.node_admin.build.update.via-storage-open` | `change_id`, `node_id`, `provider` | `opened`, `refused: <why>` |
+| `rdm.node_admin.build.reject.via-topology-storage-provider-not-opened` | `detail` names why | the refusal at acceptance |
+| `rdm.node_admin.storage.update.via-open` | `node_id`, `provider` | `opened`, or why not |
+| `rdm.node_admin.storage.update.via-started` | `change_id`, `from`, `to`, `node_id` | `written`, `resumed`, `no-answer` |
+| `rdm.node_admin.storage.update.via-mesh-command` | `change_id`, `mesh`, `command` (`BlockMesh`, `UnblockMesh`), `mesh_primary`, `reason` | `blocked`, `unblocked`, `no-answer`, or the reply's name |
+| `rdm.node_admin.mesh.update.via-block` | `change_id`, `mesh`, `node_id`, `in_flight`, `reason` | `blocked`, `not-blocked` |
+| `rdm.node.record.update.via-storage-block` | `node_id`, `change_id` | `blocked` |
+| `rdm.node_admin.storage.update.via-copy` | `change_id`, `source`, `destination`, `source_position`, `copied`, `cause` | `copied`, `refused`, `failed`, `indeterminate` |
+| `rdm.node_admin.storage.update.via-switch` | `change_id`, `provider`, `commit_found`, `reason` | `inserted`, `found`, `not-switched`, `no-answer`, `not-moved`, `fabric-row-unwritten` |
+| `rdm.node_admin.mesh.update.via-unblock` | `change_id`, `mesh`, `node_id`, `provider`, `moved`, `recreated`, `reason` | `unblocked`, `not-moved` |
+| `rdm.node.storage.update.via-move` | `change_id`, `node_id`, `provider`, `from`, `held`, `reason` | `moved`, `refused`, `rejected-stale-change` |
+| `rdm.node_admin.node.update.via-storage-move-lost` | `change_id`, `mesh`, `node_path`, `node_name`, `node_id`, `incarnation_id`, `provider`, `reason` | `recovery-submitted`, `no-recovery-yet` |
+| `rdm.node_admin.storage.update.via-ended` | `change_id`, `provider`, `state` (`complete`, `failed`), `reason` | `written`, `no-answer` |
 
 Every step is a span of the change's trace: the cell
 `a_customer_changes_topology_storage_without_restarting_members` asserts the block, the copy, the

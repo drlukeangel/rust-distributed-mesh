@@ -3,9 +3,8 @@
 How an application registers its backend, reads where RDM's records go, and moves them there. The
 contract is [storage.md §2](../../architecture/storage.md#2-topology_storage_provider-where-rdms-records-go);
 the parts and the failure paths are on the [overview](overview.md). Each example names the cell in
-`crates/rdm-test/tests/fabric/topology_storage_provider.rs` that runs the same calls; every cell named
-here passed at 27de0479e (`scripts/cells.sh rdm-test main -- topology_storage_provider::`: 15 passed,
-2 ignored, 29 s).
+`crates/rdm-test/tests/fabric/topology_storage_provider.rs` that runs the same calls
+(`scripts/cells.sh rdm-test main -- topology_storage_provider::`).
 
 ## 1. Register your provider in every executable
 
@@ -43,12 +42,9 @@ let providers = NodeStorageProviders::file()
 ```
 
 An application's own backend supplies all six storage boundaries behind
-`rdm_admin::storage_backend::StorageBackend` and `rdm_node::storage_backend::NodeStorageBackend`.
-`StorageBoundaries::node_records` and `NodeStorage::node_records` must use that registered backend,
-alongside its other stores; opening an independent file-only property store does not implement the
-registration. [i150](../../plans/i150-node-writes-lifecyle-updates.md) records application-provider
-integration and acceptance separately. Storage is persistence only: it stores and returns
-what it is given and decides nothing (Q109). Two places of one backend are two registered names.
+`rdm_admin::storage_backend::StorageBackend` and `rdm_node::storage_backend::NodeStorageBackend`:
+fabric, meshes, nodes, connections, Builds and events. Storage is persistence only: it stores and
+returns what it is given and decides nothing (Q109). Two places of one backend are two registered names.
 
 Cells: every cell of the stem runs these registrations.
 
@@ -107,8 +103,8 @@ node's row names `test-target`.
 
 Cells: `a_customer_changes_topology_storage_without_restarting_members` (the change on a two-mesh fabric
 with history, every line carried in source order), `every_serving_node_keeps_its_birth_and_ready_through_a_change`
-(`node.get` of every node answers the same birth, ready, before, while every mesh-primary is
-blocked, and after).
+(`node.get` of every node answers the same node id and incarnation, ready, before, while every
+mesh-primary is blocked, and after).
 
 ### Your commands during a change
 
@@ -118,7 +114,8 @@ during the change:
 
 ```rust
 let rpc = rdm_client::NodeRpc::new(carrier.client());
-rpc.config_update(&mesh_primary_id, &rdm_transport::RouteChoice::Direct, &birth, config, &Default::default()).await?;
+// CallOptions::default() carries Send::default(): the one Send on every call.
+rpc.config_update(&mesh_primary_id, &rdm_transport::RouteChoice::Direct, &node, config, &Default::default()).await?;
 ```
 
 is answered, and the node applies the map only once its mesh-primary's `mesh.unblock` began. Cell:
@@ -154,13 +151,13 @@ After it, `fabric.get` names `file` with `["file", "test-target"]` previous. Cel
 | what you did | how it ends | detail | cell |
 |---|---|---|---|
 | named a provider the fabric-primary does not register | `CallEnd::Rejected { reason: "topology-storage-provider-not-registered", .. }`; nothing accepted, nothing moved | names the provider and the ones the fabric-primary registers | `an_unsupported_provider_changes_nothing` |
-| submitted any Build while a change is in progress, a change back included | `CallEnd::BuildInProgress { current }`, `current` the change's Build | follow the change to its end, then read again and submit | `a_build_other_than_fabric_delete_is_refused_during_a_change` |
-| built the request from a Build another one overtook | `CallEnd::Rejected { reason: "based-on-not-current", .. }`; nothing accepted | read `fabric.get` again and rebuild the request | `a_named_create_runs_its_executable_and_a_stale_or_incomplete_request_is_refused_by_name` (`crates/rdm-test/tests/build/executables.rs`) |
-| the new provider holds lines the old one does not | the Build ends `BuildFrame::Failed` at operation `storage.change:<change_id>`; its `build.get` receipts hold the `Failed` of step `Copy` at `storage.switch:<change_id>`; nothing switched, every node writes the old provider | `storage change <change_id> to <new> failed before its switch (the new topology storage provider ... is not a copy of the old one ... in source order: ...); no commit record exists` | `a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider` |
+| submitted any Build but `fabric.delete`, or another change (a change back included), while a change is in progress | `CallEnd::Rejected { reason: "build-in-progress", .. }`, the detail naming the change; nothing accepted | wait for the change's `rdm.storage.ended` event, then read again and send | `a_build_other_than_fabric_delete_is_refused_during_a_change` |
+| the new provider holds lines the old one does not | the change ends with its `rdm.storage.ended` event `failed`, on the old provider; nothing switched, every node writes the old provider | the event's `reason`: `the new topology storage provider ... is not a copy of the old one ... in source order: ...` | `a_failed_step_before_the_switch_unblocks_every_node_on_the_old_provider` |
 | started an executable whose launch names a provider it does not register | the start is refused by name | `RDM_TOPOLOGY_STORAGE_PROVIDER names topology storage provider ..., which this executable does not register (it registers: ...)` | `a_provider_is_opened_by_its_registered_name_and_an_unregistered_one_is_refused_by_name` (`crates/rdm-admin/src/storage_backend.rs`) |
 
-`fabric.delete` is the one Build admitted during a change: it resolves the change by its `commit`
-record before its teardown, and keeps the records on both providers. Cell:
+`fabric.delete` is the one Build admitted during a change: before its teardown it reads the change's
+`rdm.storage.committed` event, unblocks every mesh onto the provider the change decided and ends the
+change `failed` (`interrupted by fabric.delete`), and keeps the records on both providers. Cell:
 `a_delete_resolves_the_storage_change_before_teardown`.
 
 When a change does not end the way you expect, the [runbook](runbook.md) says what to read.
