@@ -80,9 +80,9 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         // node_id | incarnation | scope Labels (1) (len 1: "red")
         (DeleteTags { node_id: node(), incarnation: birth(), scope: TagScope::Labels(["red".to_string()].into()) }, "1b0c3031323334353637383961620c397763707266677776746879010103726564"),
         // node_id | incarnation | operation "join-mesh:mesh1.node.1" (Q342: no Build, no attempt) | primary None (D57)
-        (JoinMesh { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None }, "1c0c3031323334353637383961620c397763707266677776746879156a6f696e2d6d6573683a6d657368312e7270632e3100000000"),
+        (JoinMesh { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None }, "1c0c3031323334353637383961620c397763707266677776746879166a6f696e2d6d6573683a6d657368312e6e6f64652e3100000000"),
         // node_id | incarnation | build_id | attempt 1 | operation "leave-mesh:mesh1.node.1"
-        (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201166c656176652d6d6573683a6d657368312e7270632e31000000"),
+        (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201176c656176652d6d6573683a6d657368312e6e6f64652e31000000"),
         // node_id | incarnation | cert (len 3) (i145 e3, node.cert.renew)
         (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3] }, "1e0c3031323334353637383961620c39776370726667777674687903010203"),
         // node_id | incarnation | key "ab" | cert "cd" (node.issuer.update)
