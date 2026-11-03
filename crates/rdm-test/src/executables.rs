@@ -237,7 +237,7 @@ mod tests {
     fn row(name: PathName, mesh: &str, r#type: &str, primary: bool, sha: &str) -> NodeView {
         let p = name;
         let mut v: NodeView = serde_json::from_value(serde_json::json!({
-            "name": p, "kind": r#type, "mesh": mesh, "node_id": rdm_core::NodeId::mint(), "status": "ready",
+            "name": p, "type": r#type, "mesh": mesh, "node_id": rdm_core::NodeId::mint(), "status": "ready",
             "is_primary": primary, "is_fabric_primary": false, "tags": [], "config": {}
         }))
         .unwrap();

@@ -1665,7 +1665,7 @@ mod tests {
         assert!(last_admin(&PathName::new("mesh1.node", "1").unwrap(), "stop", &t).is_none(), "mesh1's rpc primary has a secondary: admitted");
         for action in ["stop"] {
             match last_admin(&PathName::new("mesh2.node", "1").unwrap(), action, &t) {
-                Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type rpc-node in mesh mesh2"), "{action}"),
+                Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type node in mesh mesh2"), "{action}"),
                 None => panic!("{action} of mesh2's sole rpc node is refused by name"),
             }
         }

@@ -16,7 +16,7 @@
     "canonical": {
       "meshes": 2,
       "per_mesh": {
-        "node_admin": 2,
+        "node-admin": 2,
         "compute": 2,
         "gateway": 3,
         "broker": 3
@@ -26,7 +26,7 @@
     "fast": {
       "meshes": 2,
       "per_mesh": {
-        "node_admin": 2,
+        "node-admin": 2,
         "compute": 1,
         "gateway": 1,
         "broker": 1
@@ -37,7 +37,7 @@
     "scale": {
       "meshes": 10,
       "per_mesh": {
-        "node_admin": 3,
+        "node-admin": 3,
         "compute": 4,
         "gateway": 6,
         "broker": 7

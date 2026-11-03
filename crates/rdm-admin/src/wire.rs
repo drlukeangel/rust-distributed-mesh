@@ -866,7 +866,7 @@ mod tests {
     }
 
     fn roster_birth(name: PathName) -> Value {
-        json!({ "mesh": "mesh1", "kind": "node-admin", "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
+        json!({ "mesh": "mesh1", "type": "node-admin", "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
     }
 
     fn terminal() -> Value {

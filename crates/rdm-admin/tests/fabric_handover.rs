@@ -919,7 +919,7 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc-node primary moves");
-        assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
+        assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
         assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
         assert_eq!(f.b2().door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B2 installed itself");
@@ -942,10 +942,10 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let revisions = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await.expect("the hand-over completes on the successor P named");
-        assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
+        assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
-        let bare = f.b1.door.serve(Request::UpdatePrimary { r#type: "rpc-node".into(), build_id: "b1".into(), run: 1, operation: update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b2.as_ref().unwrap().resolved.node_id)), successor: None }).await;
-        assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == r#"path "mesh1.node", name "1" is a rpc-node primary: its mesh-primary's command names no successor"#), "{bare:?}");
+        let bare = f.b1.door.serve(Request::UpdatePrimary { r#type: "node".into(), build_id: "b1".into(), run: 1, operation: update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b2.as_ref().unwrap().resolved.node_id)), successor: None }).await;
+        assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == r#"path "mesh1.node", name "1" is a node primary: its mesh-primary's command names no successor"#), "{bare:?}");
         let _ = &f.x;
     });
 }
@@ -964,7 +964,7 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
         let b1 = node_at(&f.x, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let revisions = f.x.door.command_update_primary(&b1, "b1", 1, &op).await.expect("the command answers");
-        assert_eq!(revisions, vec![entry("rpc-node", &f.b1.resolved, &f.b2().resolved, 3)]);
+        assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
         assert_eq!(f.x.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| c["to"].clone()).collect::<Vec<_>>(), vec![f.p.resolved.node_id.to_string()], "X's command goes to mesh1's mesh-primary: {commands:?}");
@@ -982,7 +982,7 @@ fn an_rpc_type_with_no_other_node_fails_node_primary_update_by_its_exact_text() 
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
         let r = f.p.door.update_node_type_primary(&b1, None, "b1", 1, &op).await;
-        assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type rpc-node in mesh mesh1"), "{r:?}");
+        assert!(matches!(&r, Err(Reply::Failed { reason, .. }) if reason == "cannot transfer: no secondary of type node in mesh mesh1"), "{r:?}");
         assert_eq!(f.p.door.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "B1 stays the rpc-node primary");
         let _ = &f.x;
     });

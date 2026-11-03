@@ -36,7 +36,7 @@ fn observed() -> Topology {
 }
 
 fn mesh(name: &str) -> MeshDesired {
-    serde_json::from_value(serde_json::json!({"name": name, "node_admin": 1})).unwrap()
+    serde_json::from_value(serde_json::json!({"name": name, "counts": {"node-admin": 1}})).unwrap()
 }
 
 /// The fabric-primary `mesh1.node-admin.1` holding one settled Build (B0) of the observed topology.

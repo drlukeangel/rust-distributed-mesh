@@ -97,7 +97,7 @@ mod tests {
         );
         let mut t = observed(&[("mesh1", NodeStatus::Ready), ("mesh2", NodeStatus::Ready)]);
         t.nodes.last_mut().unwrap().status = NodeStatus::Pending; // mesh2.node.3
-        assert_eq!(fabric_ready_eligibility(&d, &t), Err("mesh mesh2: 2/3 rpc ready".into()));
+        assert_eq!(fabric_ready_eligibility(&d, &t), Err("mesh mesh2: 2/3 node ready".into()));
         t.nodes.last_mut().unwrap().status = NodeStatus::Ready;
         assert_eq!(fabric_ready_eligibility(&d, &t), Ok(()));
     }

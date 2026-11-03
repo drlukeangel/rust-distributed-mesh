@@ -3450,7 +3450,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
     // above), never required away here: the required connections are the current primary node-admin's.
     let connections = converge_connections_after_restart(f, inv, &node_id).await;
     let rec = json!({
-        "label": label, "node": node, "kind": r#type, "node_id": node_id, "endpoint_id": endpoint, "incarnation_id": inc,
+        "label": label, "node": node, "type": r#type, "node_id": node_id, "endpoint_id": endpoint, "incarnation_id": inc,
         "runtimes": runtimes, "launch": launch, "canary_key": ckey, "serves_testkit_store": serves_testkit_store, "restart": ev, "routing": routing, "connections": connections,
     });
     inv.holds(
@@ -3736,7 +3736,7 @@ async fn delete_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &PathN
     let g = &a.traffic.ops[gone_i].1.out;
     assert_eq!(bucket(g), Bucket::NotSent, "{node:?}: a call to the deleted NodeId sends nothing: {g}");
     let rec = json!({
-        "label": label, "node": node, "kind": r#type, "mesh": mesh, "node_id": node_id, "old_incarnation_id": old_inc, "endpoint_id": n["endpoint_id"], "data_dir": n["data_dir"],
+        "label": label, "node": node, "type": r#type, "mesh": mesh, "node_id": node_id, "old_incarnation_id": old_inc, "endpoint_id": n["endpoint_id"], "data_dir": n["data_dir"],
         "build_id": build_id, "fabric_build_id_before": before_build, "request_ns": t0, "wall_ms": fin["wall_ms"], "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"],
         "opened_by": match how { Removal::Delete => "rdm.node_admin.build.create.via-node-rpc", Removal::Replace => "rdm.node_admin.build.update.via-steps" },
         "runtime_before": rt_before.record(), "old_birth_terminal": terminal, "non_writer_refusal": refusal, "canary_key": ckey, "canary_value": cval,

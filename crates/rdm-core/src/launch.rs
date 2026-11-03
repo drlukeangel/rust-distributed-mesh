@@ -614,7 +614,7 @@ mod tests {
             assert_eq!(Launch::from_env(|k| missing.get(k).cloned()).unwrap_err(), format!("{field} is required and must not be empty"));
         }
         let mut unknown_type = env.clone();
-        unknown_type.insert(ENV_NODE_TYPE.into(), "unknown".into());
+        unknown_type.insert(ENV_NODE_TYPE.into(), "Not A Type".into());
         assert!(Launch::from_env(|k| unknown_type.get(k).cloned()).unwrap_err().starts_with(ENV_NODE_TYPE));
         assert!(Launch::from_env(|_| None).unwrap_err().contains("RDM_FABRIC is required"));
         // A launch with no store root is refused by name (R14 item 8).

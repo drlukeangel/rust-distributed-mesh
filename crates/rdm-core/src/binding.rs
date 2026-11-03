@@ -506,7 +506,7 @@ mod tests {
         s.candidate.sha = "deadbeef".into();
         assert!(matches!(s.validate(&e), Err(BindingError::CandidateMismatch { .. })));
         let mut s = good();
-        s.bindings[1].launch_id = "bridge".into();
+        s.bindings[1].launch_id = "Bridge".into();
         assert!(matches!(s.validate(&e), Err(BindingError::UnknownLaunchId { .. })));
         let s = good();
         assert!(matches!(s.validate(&Expect { required: &["gateway"], ..expect() }), Err(BindingError::NotRequiredByTheSet { .. })));
