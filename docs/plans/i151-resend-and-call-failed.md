@@ -1,4 +1,4 @@
-# i151 — one `Resend` for every Node RPC call; `on_call_failed` at the caller, `on_node_investigated` at the primary
+# i151 — one `Send` for every Node RPC call; `on_call_failed` at the caller, `on_node_investigated` at the primary
 
 **Initiative:** `i151`, five stories, one issue each
 **Status:** opened 2026-11-01; BUILD; starts after i150 (rdm#245) lands
@@ -8,16 +8,16 @@
 
 ## What is built
 
-1. `Resend { attempts, time_limit }` on every call, `Resend::default()` 3 and 10 s, set by whoever opens the call. `Budget` and `once` go. No other time words.
+1. `Send { attempts, TimeLimit }` on every call, `Send::default()` 3 and 10 s, set by whoever opens the call. `Budget` and `once` go. No other time words.
 2. A call whose attempts are spent ends to its owner by name: `NotSent` with the last reason when nothing crossed the commit cut, `Indeterminate` otherwise.
 3. A call addressed to a primary (`NodeTarget::Primary { mesh }`) counts its attempts per birth the view names for the role and ends `ReceiverGone` when the role has none. An exact-birth call keeps three in all.
 4. The calling node calls `on_call_failed(CallFailedCtx { sender, receiver, reason, context })` once per spent call. `sender` and `receiver` are each `(node_id, incarnation, path, name)`; `reason` is the call's stored end (`NotSent(..)` or `Indeterminate(..)`); `context` the call's trace context. A notice.
 5. The birth is investigated by the primary above it, as a birth whose command was never sent is today (node-recovery.md step 1's mark; no new timing rule). The mesh-primary marks its own spent call; any other caller reports the birth with Status `ReportCallFailed { sender, receiver, reason }`, answered `Applied`, or `RejectedNotPrimary { why: NotPrimary::SubjectUnknown }` for a birth the receiver is not the primary above. A spent report is dropped; nothing reports a report.
 6. The investigating primary calls `on_node_investigated(NodeInvestigatedCtx { fabric_id, mesh_id, node_id, incarnation, path, name, verdict, next, context })` once after it records the verdict; `next` is `rejoin` or `recreate`. A notice.
 7. The two admin workflow loops that resend on "no reply" (`node_config::owed`, `report_terminate`) go; their turns on a domain answer stay.
-8. The demo (a Rafka replica) moves to `Resend` and implements both hooks.
+8. The demo (a Rafka replica) moves to `Send` and implements both hooks.
 
-Not built: no new wire fields beyond `Resend` and `ReportCallFailed`, no per-call route policy change, no new store, no bound on anything that has not been measured, no extra spans beyond the two hook notices.
+Not built: no new wire fields beyond `Send` and `ReportCallFailed`, no per-call route policy change, no new store, no bound on anything that has not been measured, no extra spans beyond the two hook notices.
 
 ## The numbers (production cadence; the test cadence scales them)
 

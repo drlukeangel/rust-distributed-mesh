@@ -508,20 +508,18 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:23
 /// "| Spans | `rdm.node_admin.cert.update.via-renewal` (node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome: `installed` / `not-sent` / `refused`) on the issuer; `rdm.node.cert.update.via-installed` on the node |"
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:29
-/// "3. It sends `RenewCert` to the birth's held address. `NotSent` or `Indeterminate` is spanned and retried on the next tick, until the old cert expires; nothing else happens."
+/// "3. It sends `RenewCert` to the birth's held address on `Send` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)). A call that ends `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds."
 /// CONTRACT: docs/architecture/lifecycles/node-cert-renew.md:62
-/// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node is retried every tick and marks the node nothing: reachability is [node recovery](node-recovery.md)'s business, not this primitive's. A successor primary folds the cert rows and continues the schedule from them."
-/// CONTRACT (node-cert-renew.md step 3 and Failure: "`NotSent` or `Indeterminate` is spanned and
-/// retried on the next tick, until the old cert expires; nothing else happens ... A renewal that does
-/// not reach the node is retried every tick and marks the node nothing"): while the mesh-primary's
-/// calls to a member end NotSent, each tick spans one `via-renewal` `not-sent` for it, at least two
-/// of them; the member stays ready in the view at the same incarnation, nothing held-running,
-/// os-stopped or data-dir-lost is recorded of it, and its cert row is still the join's (Q141: a renewal
-/// not answered writes nothing). Once the calls reach it,
-/// the next tick installs the renewal.
+/// "Failures and stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that does not reach the node ends on its `Send`; its spent call marks the birth for [node recovery](node-recovery.md), and the tick renews it once the mark ends. A successor primary folds the cert rows and continues the schedule from them."
+/// CONTRACT (node-cert-renew.md step 3 and Failure; Q344): while the mesh-primary's calls to a member
+/// end NotSent, each renewal ends on its `Send` spanned `not-sent` and its spent call marks the birth
+/// (`via-call-failed`); the member, alive and heard, ends its mark, and the tick renews it again: at
+/// least two `not-sent` renewals. The member stays ready in the view at the same incarnation, no
+/// data-dir-lost is recorded of it, and its cert row is still the join's (Q141: a renewal not answered
+/// writes nothing). Once the calls reach it, the next tick installs the renewal.
 #[test]
-fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
-    let cell = "a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing";
+fn a_renewal_not_sent_marks_the_birth_and_is_sent_again_once_the_mark_ends() {
+    let cell = "a_renewal_not_sent_marks_the_birth_and_is_sent_again_once_the_mark_ends";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }
@@ -541,7 +539,12 @@ fn a_renewal_that_is_not_sent_is_retried_each_tick_and_marks_nothing() {
         .await;
         assert!(renewals_of(&spans, "mesh1.node.1").iter().all(|f| f["outcome"] == "not-sent"), "nothing reached it, nothing was installed");
         let view = node_get(&root, &b.digest.node.node_id).await.expect("mesh1.node.1 in the view");
-        assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member is marked nothing: {view:?}");
+        let id = b.digest.node.node_id.to_string();
+        assert!(
+            named(&spans, "rdm.node_admin.node.update.via-call-failed").iter().any(|f| f.get("node_id") == Some(&id)),
+            "the renewal's spent call marked the birth"
+        );
+        assert_eq!((view.status, view.incarnation_id.as_ref()), (NodeStatus::Ready, Some(&b.digest.node.incarnation)), "the member, heard, is ready at its birth: {view:?}");
         assert!(view.data_dir_lost.is_none(), "no fact is recorded of it: {view:?}");
         let row = root.runner.nodes_storage.node(&b.digest.node.node_id).await.unwrap().and_then(|r| r.birth(&b.digest.node.incarnation).and_then(|f| f.cert.clone())).expect("the member's cert dates");
         assert_eq!(row.issued_at, num(&join_issue(&spans, "mesh1.node.1"), "issued_at_rafka_ms"), "a renewal not answered writes nothing: the row is still the join's after {tries:?}");

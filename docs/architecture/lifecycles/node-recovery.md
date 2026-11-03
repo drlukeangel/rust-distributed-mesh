@@ -38,7 +38,7 @@ backoff doubling from the gossip interval to the staleness floor.
    running. The mesh-primary also marks a member `PendingReconnect` at once when a command to it was
    never sent for a reachability reason (the connect refused, timed out or failed; the endpoint
    unresolved), and when a call to it ends with its attempts spent: its own call, or one another
-   caller reports with Status `ReportCallFailed` ([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes)).
+   caller reports with Status `ReportCallFailed` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)).
    The mark is an observer mark: it never replaces a lifecycle state the node reported and
    the mesh-primary recorded (`connections-deleting`, `stopping`, `stopped`), a silence mark ends when a digest
    of the exact birth arrives after it or when the birth answers its tickle; a spent-call mark ends only

@@ -327,7 +327,7 @@ records the role and does not grant it.
   mesh rows writer, and every node writes its connections rows, each create and update at once,
   from Day 0 (Q171; [States](lifecycles/states.md#states)). A write the
   store refuses or fails is owed: the writer retries the row's current state under the one backoff
-  rule ([Node RPC §43](node-rpc.md#43-resend-delivery-is-the-runtimes)) until the store
+  rule ([Node RPC §43](node-rpc.md#43-send-delivery-is-the-runtimes)) until the store
   acknowledges it, on its own clock, never waiting for a birth, a digest or a primary change, and marks
   the row written only on that acknowledgement, while it is the writer. The
   row's write is the claim then the record (`rdm-admin/src/admin/rows_writer.rs`,

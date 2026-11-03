@@ -107,7 +107,7 @@ It is four steps:
 
 1. **Block.** The fabric-primary sends `mesh.block` to every mesh-primary. Each mesh-primary waits
    until its in-flight commands complete and every required node, including a stopped node, has acknowledged its freeze. An unanswered freeze is resolved through
-   the existing unanswered-command clock and node investigation/recovery before `blocked`; no
+   its spent call ([Node RPC §43](node-rpc.md#43-send-delivery-is-the-runtimes); Q332, Q344) and node investigation/recovery before `blocked`; no
    second timer or unresolved-investigation state is added. It then replies `blocked` and
    gossips the current topology of its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
 2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of

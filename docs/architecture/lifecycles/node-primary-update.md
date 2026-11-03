@@ -78,7 +78,7 @@ and recording it are separate for every type.
   step 4 and the role is the election's, not the write's: a named error is handled as every storage
   error is, named on its span and surfaced, it fails nothing already completed, and the successor stays
   what the election names it. The row is owed by its writer: the mesh-primary retries the write of the
-  row's current state under the one backoff rule ([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes))
+  row's current state under the one backoff rule ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes))
   until the store acknowledges it, on its own clock, never waiting for a digest, a birth or a primary
   change, and marks the row written only on that acknowledgement, while it is the writer. A write that
   never succeeds is surfaced as a stalled row; it blocks and reverses nothing. A writer dying before the rename changes nothing:
@@ -89,7 +89,7 @@ and recording it are separate for every type.
   record's. A call that reached a process other than the
   named birth, a refusal or no answer decides nothing about the successor's birth (R-SW1: a failed probe
   never shows anything). The call fails by name, and [node investigation](node-recovery.md) on the
-  successor's exact birth decides (Q111): reached, the call is retried against it; any other verdict, the
+  successor's exact birth decides (Q111): a `reached` verdict makes the identical call again; any other verdict, the
   successor is re-created and the ordinary election names the primary by the staleness-floor rule, the
   old primary included.
 - **The successor is unheard after the update.** When node investigation's verdict is anything but

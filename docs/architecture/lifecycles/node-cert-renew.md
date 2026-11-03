@@ -19,15 +19,14 @@ no gossip frame is published. A renewal is invisible to every other node.
 | Reply | `CertRenewed { node_id, incarnation, expires_at }`, the receipt: the node holds and presents the new cert. A node that cannot decode the cert answers a named refusal and keeps the one it holds |
 | Row | On `CertRenewed` the node's mesh-primary writes the birth's cert dates (`issued_at`, `expires_at`, `renew_at`) on the node's record and writes the record whole: the written expiry is the receipt. A mesh-primary's own cert, issued by the fabric-primary, it writes on its own record when it installs it. A renewal not answered writes nothing, and the row's `renew_at`, already passed, renews it on the next tick |
 | Overlap | The old cert stays valid until its own expiry; a dial in flight during the install is admitted on either |
-| Never | A connection closed, a status set, a frame published, a node marked. A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connection.create](node-connections-admit.md)) and its existing connections stay |
+| Never | A connection closed, a status set, a frame published by the renewal. A spent renewal call marks the birth as any spent call does (step 3). A node past its TTL whose renewal has not reached it is refused on its next new dial by name ([node.connection.create](node-connections-admit.md)) and its existing connections stay |
 | Spans | `rdm.node_admin.cert.update.via-renewal` (node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome: `installed` / `not-sent` / `refused`) on the issuer; `rdm.node.cert.update.via-installed` on the node |
 
 ## Numbered end-to-end sequence
 
 1. The issuer's tick reads its cert rows; a row whose `renew_at` has passed names a birth to renew.
 2. It signs a fresh member cert for that exact birth with the mesh's current issuing key, on rafka-time.
-3. It sends `RenewCert` to the birth's held address. `NotSent` or `Indeterminate` is spanned and
-   retried on the next tick, until the old cert expires; nothing else happens.
+3. It sends `RenewCert` to the birth's held address on `Send` ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes)). A call that ends `NotSent` or `Indeterminate` is spanned; the spent call marks the birth ([node recovery](node-recovery.md) step 1), and the tick sends it nothing while the mark holds.
 4. The node checks the cert names its own `(node.id, incarnation)`, installs it, and answers
    `CertRenewed`. Every connection it opens from now presents the new cert.
 5. The node's mesh-primary writes the expiry the node answered on the node's record. The old cert expires on its own.
@@ -61,8 +60,7 @@ sequenceDiagram
 
 Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty). A renewal that
-does not reach the node is retried every tick and marks the node nothing: reachability is
-[node recovery](node-recovery.md)'s business, not this primitive's. A successor primary folds the cert
+does not reach the node ends on its `Send`; its spent call marks the birth for [node recovery](node-recovery.md), and the tick renews it once the mark ends. A successor primary folds the cert
 rows and continues the schedule from them.
 
 ## Observability contract

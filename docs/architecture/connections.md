@@ -564,7 +564,7 @@ When a destination becomes due:
 
 1. Verify its `Node.incarnation_id` still matches the Failed record.
 2. Verify no Direct Connected already supersedes the obligation.
-3. Perform one bounded direct transport connection attempt.
+3. Perform one direct dial on `Send` ([Node RPC §43](node-rpc.md#43-send-delivery-is-the-runtimes)): a dial that sent nothing is made again within its attempts.
 4. On failure, append the next Direct Failed event and reschedule from that durable row.
 5. On success, normal pooled-connection machinery emits Direct Connected. The reconnect module does not
    invent a parallel success fact.

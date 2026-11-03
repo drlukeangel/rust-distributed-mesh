@@ -26,7 +26,7 @@ every member cert it signed, stay valid to their own expiry, so nothing is cut a
    row whose `renew_at` has passed, and no newer issuing cert held, is renewed. It mints the issuing cert
    for that mesh with the root, on rafka-time, and holds it in process.
 2. [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other node-admin of the
-   mesh as a command forwarded through the mesh-primary ([Forward 0x1A](../node-rpc-envelope.md#forward-op-0x1a-core), the mesh-primary the carrier). An admin not reached is retried on the next tick until the old issuer expires.
+   mesh as a command forwarded through the mesh-primary ([Forward 0x1A](../node-rpc-envelope.md#forward-op-0x1a-core), the mesh-primary the carrier). An admin not reached is marked by its spent call and sent again once the mark ends.
 3. Each admin signs member certs with the new key from its install. [node.cert.renew](node-cert-renew.md)
    runs on its own schedule; a member whose cert would outlive the old issuer is renewed early, cut to
    the issuer's expiry (`MemberOutlivesIssuer`), which is what forces this workflow to run first.

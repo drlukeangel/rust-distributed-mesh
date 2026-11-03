@@ -62,7 +62,7 @@ Nothing is cut and nothing reconnects at any step of either.
    re-minted under it ([mesh.issuer.renew](mesh-issuer-renew.md)). The row goes `ca-rotated`. Members
    renew under the new issuers at their own points ([node.cert.renew](node-cert-renew.md)).
 4. The tick waits until every cert row chains to the new anchor: at most one member TTL after step 3. A
-   member whose renewal has not reached it is the ordinary not-sent case, retried; the rotation waits
+   member whose renewal has not reached it is the ordinary not-sent case, marked by its spent call; the rotation waits
    rather than replacing an anchor something still chains to.
 5. `node.roots.update { [new] }` to every node. The row goes `updated` on the last receipt, and the old
    secret is destroyed on every admin.
@@ -93,7 +93,7 @@ An internal `fabric.ca.renew` is step 3 alone, with no caller and no `node.roots
 
 ## Failure and receipts
 
-A node not reached in a phase is retried every tick; the phase does not advance without it, and
+A node not reached in a phase is marked by its spent call and sent again once the mark ends or its re-created birth is held; the phase does not advance without it, and
 nothing expires meanwhile that the overlap does not cover. A successor fabric-primary continues from
 the roots row and the CA row, and from its own copy of the root secret, which every node-admin holds
 ([custody](../fabric-certs.md#custody)). A successor that does not hold the CA the CA row names (a renewal whose step 2 had not reached it) never mints under a CA it does not hold: it runs `fabric.ca.renew` again from the root secret, and step 2 reaches every admin under the new CA.

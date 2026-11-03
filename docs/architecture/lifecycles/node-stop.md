@@ -50,7 +50,7 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
    acknowledgement and completion at once, the receipt the `All` established in its
    `StopConnectionsDeleted`, and repeats no work.
 4. Emit `NodeStopped` (Terminal) on that same reply stream, and declare `Stopped` to the mesh-primary naming
-   the stop's operation, an owed message ([Node RPC §43](../node-rpc.md#43-resend-delivery-is-the-runtimes))
+   the stop's operation, an owed message ([Node RPC §43](../node-rpc.md#43-send-delivery-is-the-runtimes))
    sent whether or not the stop call's stream is still open. The node gossips nothing for this step.
 5. The mesh-primary takes the matching stopped frame, or the node's declaration of `Stopped`
    naming the stop's operation, whichever reaches it first, and publishes

@@ -865,7 +865,7 @@ Admission is capacity control, never deduplication.
 
 ## 34. Deadlines and cancellation
 
-Every call carries one `Resend { attempts, time_limit }`, set by whoever opens the call (Q315).
+Every call carries one `Send { attempts, time_limit }`, set by whoever opens the call (Q315).
 `attempts` is how many sends the call makes in all, the first included: three by default (the
 tickle's probes are one, node-recovery.md step 2). `TimeLimit` is how long one attempt may take:
 resolve, dial and the complete request and, once the request is acked, its reply counted from the
@@ -875,7 +875,7 @@ op's frames carry no time limit while its stream lives.
 
 The [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) runs its outer and inner streams with no overall deadline, bounded by the transport idle timeout and keepalive. A carried call's inner time limit is the `remaining_ms` the source stamps ([Forward](node-rpc-envelope.md#forward-op-0x1a-core)).
 
-Before the complete request frame is sent, deadline/cancellation/send failure is NotSent/499. After that cut, reply timeout is Indeterminate absent stronger no-dispatch evidence. A call's `Resend` is its owner's bound: when its attempts are spent the request is resent no longer and the call ends as §43 says. For a stream op of the Build family (the Build carrier, build.get's watch, the handover), closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: its owner declared the connection its bound and reattaches by its own rule, above this layer. For any other call, connection loss alone does not cancel the invocation: an unacked request is resent within its attempts, and a stream that loses its connection is held for its time limit while the responder resends its frames, then ends Indeterminate.
+Before the complete request frame is sent, deadline/cancellation/send failure is NotSent/499. After that cut, reply timeout is Indeterminate absent stronger no-dispatch evidence. A call's `Send` is its owner's bound: when its attempts are spent the request is resent no longer and the call ends as §43 says. For a stream op of the Build family (the Build carrier, build.get's watch, the handover), closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: its owner declared the connection its bound and reattaches by its own rule, above this layer. For any other call, connection loss alone does not cancel the invocation: an unacked request is resent within its attempts, and a stream that loses its connection is held for its time limit while the responder resends its frames, then ends Indeterminate.
 
 The caller's time limit is not a generic remote execution deadline. After dispatch, a streaming handler's sink answers `CallerGone` when the caller ends the invocation or the runtime disappears; a lost connection is no cancellation: the response is held for resend (§43). The owning protocol decides whether to stop, finish or detach durable work.
 
@@ -1004,9 +1004,9 @@ request later is the domain's decision.
 
 ---
 
-## 43. Resend: delivery is the runtime's
+## 43. Send: delivery is the runtime's
 
-Every call carries one `Resend` (§34). Send immediately. Without an ack, resend the same message
+Every call carries one `Send` (§34). Send immediately. Without an ack, resend the same message
 with the same delivery id: the next attempt at the publish cadence, then doubling with jitter, capped
 at the staleness floor; one attempt in flight per message. The receiver suppresses duplicate delivery ids, including duplicates received while the
 original invocation is executing. Before recoverable acceptance, duplicates remain pending without an

@@ -37,7 +37,7 @@ Ack      { sender: Birth, delivery_seq: u64 }                                   
 `Birth` is the sending node's exact `(node.id, incarnation)`; a `DeliveryId` is `(sender, delivery_seq)`.
 
 A frame's delivery identity is `(sender, delivery_seq)`, minted by its sender, the same on every resend
-([node-rpc.md §43](node-rpc.md#43-resend-delivery-is-the-runtimes)): `delivery_seq` is a
+([node-rpc.md §43](node-rpc.md#43-send-delivery-is-the-runtimes)): `delivery_seq` is a
 per-receiver sequence the sending birth never reuses. Every frame carries the sender's
 `forget_below`, the lowest `delivery_seq` it still holds unacked toward that receiver and a promise
 never to resend anything below it; the receiver forgets duplicate state only below that watermark or
@@ -296,7 +296,7 @@ success event follows it.
 
 Transport uncertainty is NotSent before the request commit cut and Indeterminate
 after it; both are statements about execution certainty, and under either the runtime keeps
-delivering the same invocation ([node-rpc.md §43](node-rpc.md#43-resend-delivery-is-the-runtimes)),
+delivering the same invocation ([node-rpc.md §43](node-rpc.md#43-send-delivery-is-the-runtimes)),
 which authorises no new execution. A broken stream shows neither step failure nor completion. The Build's
 only durable step outcomes are Complete and Failed { step, reason }. build.get [id: build_id] is a read for reattachment, never a resume. The caller resubmits the
 same build_id to the fabric-primary under the [Build carrier](#build-op-0x20-rdm). Reissuing a naturally
@@ -1297,10 +1297,7 @@ The [node start workflow](lifecycles/node-start.md) drives the read.
 The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer,
 unreadable-build, behind-floor. Every blocker reads the Build storage: no-pointer, which names no
 Build, reads the storage's current Build, selected once for the read; every other blocker reads
-the Build it names. No blocker is read by a second JoinNode. A read that fails is made again with
-bounded backoff, 250 ms doubling to 4 s. Source: `crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`,
-`crates/rdm-admin/src/fetch_build.rs::BACKOFF_BASE` and
-`crates/rdm-admin/src/fetch_build.rs::BACKOFF_CAP`; the read is
+the Build it names. No blocker is read by a second JoinNode. A read that fails is made again after the [§43 schedule](node-rpc.md#43-send-delivery-is-the-runtimes)'s delay. Source: `crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady` and `crates/rdm-admin/src/fetch_build.rs::backoff_for`; the read is
 `crates/rdm-admin/src/build_state.rs::BuildStateAdapter::committed_facts`.
 Spans: `rdm.node_admin.build.update.via-read-committed`,
 `rdm.node_admin.build.reject.via-read-committed-failed`.
@@ -1618,8 +1615,7 @@ There is no take-over op. A fabric-primary unheard past the staleness floor is [
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is
-RejectedConflictingPayload. The primary never treats NotSent or Indeterminate as an answer: it retries the
-identical call, and the election resolves uncertainty.
+RejectedConflictingPayload. The primary never treats NotSent or Indeterminate as an answer: the call ends on its `Send`, node investigation of the successor's exact birth decides, and a `reached` verdict makes the identical call again.
 
 The primary's full digest
 carries `admin_api_base`, the application contact URL including its bound port. Consumers

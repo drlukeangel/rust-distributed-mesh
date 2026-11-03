@@ -26,8 +26,7 @@ valid to their own expiry.
 1. The fabric-primary holds the mesh's new issuing material ([mesh.issuer.renew](mesh-issuer-renew.md) step 1).
 2. It sends `UpdateIssuer` to the mesh-primary's held address, and to each other admin as a Forward 0x1A
    through the mesh-primary, once the mesh-primary's node row holds the new dates; the carrier makes the one inner
-   call and returns its reply. `NotSent` or `Indeterminate` is spanned and
-   retried on the next tick, until the old issuer expires.
+   call and returns its reply. `NotSent` or `Indeterminate` is spanned; the spent call marks the admin, and it is sent nothing while the mark holds.
 3. The admin checks the material names its own mesh and its own `(node.id, incarnation)` and verifies
    the issuing cert to a root it holds (the issuing cert against the CA, the CA against the root),
    installs it, and answers `IssuerUpdated`.
