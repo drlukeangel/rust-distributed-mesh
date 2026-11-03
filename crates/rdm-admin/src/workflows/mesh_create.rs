@@ -560,7 +560,7 @@ mod tests {
                 [("mesh2".to_string(), mesh2_id.clone())].into_iter().collect();
             let m2_status = Arc::new(StatusService {
                 certs: None,
-                app_channels: None,
+                topology_view: None,
                 declaration_seam: None,
                 command_frame_seam: None,
                 operation_effects: Default::default(),

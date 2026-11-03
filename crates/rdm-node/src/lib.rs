@@ -31,7 +31,7 @@
 //!     let launch = read_launch()?;
 //!     let hooks = NodeHooks::new(Arc::new(Warm));
 //!     // `serve_app` adds the application's own ops to the node's server before it is built.
-//!     rdm_node::run_with(Role::of(&launch), &[], hooks, |server| server).await
+//!     rdm_node::run_with(Role::of(&launch), hooks, |server| server).await
 //! }
 //! ```
 //!
@@ -149,14 +149,14 @@ pub fn executable_name() -> Result<String> {
 /// The one node executable's run: the role is the type its launch names ([`Role::of`]), and
 /// the process runs it to completion as [`run`] does.
 pub async fn run_launched() -> Result<()> {
-    run(Role::of(&read_launch()?), &[]).await
+    run(Role::of(&read_launch()?)).await
 }
 
 #[cfg(feature = "file-backend")]
 /// Run a role process to completion: boot as `launch` says, serve, wait for the stop signal (or
 /// the mesh transport stopping for good), then `node.connection.delete` and leave.
-pub async fn run(role: Role, types: &[&str]) -> Result<()> {
-    run_with(role, types, crate::node_hooks::NodeHooks::none(), |b| b).await
+pub async fn run(role: Role) -> Result<()> {
+    run_with(role, crate::node_hooks::NodeHooks::none(), |b| b).await
 }
 
 #[cfg(feature = "file-backend")]
@@ -182,28 +182,26 @@ pub async fn run(role: Role, types: &[&str]) -> Result<()> {
 ///
 /// async fn run_role() -> anyhow::Result<()> {
 ///     let launch = read_launch()?;
-///     rdm_node::run_with(Role::of(&launch), &[], NodeHooks::new(Arc::new(Ready)), |b| b).await
+///     rdm_node::run_with(Role::of(&launch), NodeHooks::new(Arc::new(Ready)), |b| b).await
 /// }
 /// ```
 pub async fn run_with(
     role: Role,
-    types: &[&str],
     node_hooks: crate::node_hooks::NodeHooks,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
-    run_with_alpns(role, types, &[], node_hooks, serve_app).await
+    run_with_alpns(role, &[], node_hooks, serve_app).await
 }
 
 #[cfg(feature = "file-backend")]
 /// [`run_with`], also registering the application's data-plane `alpns` on the process's one endpoint.
 pub async fn run_with_alpns(
     role: Role,
-    types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
     node_hooks: crate::node_hooks::NodeHooks,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
-    run_on(role, crate::storage_backend::NodeStorageProviders::file(), types, alpns, node_hooks, serve_app).await
+    run_on(role, crate::storage_backend::NodeStorageProviders::file(), alpns, node_hooks, serve_app).await
 }
 
 /// [`run_with_alpns`] on the topology storage `providers` its executable registers (storage.md §2): the
@@ -211,7 +209,6 @@ pub async fn run_with_alpns(
 pub async fn run_on(
     role: Role,
     providers: crate::storage_backend::NodeStorageProviders,
-    types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
     node_hooks: crate::node_hooks::NodeHooks,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
@@ -233,7 +230,7 @@ pub async fn run_on(
     }
     let running = {
         use tracing::Instrument;
-        let started = crate::node::start_on(&launch, providers, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, |s| s, None, |b, _seams| serve_app(b), types, alpns)
+        let started = crate::node::start_on(&launch, providers, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, |s| s, None, |b, _seams| serve_app(b), alpns)
             .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,
@@ -261,7 +258,7 @@ pub async fn run_on(
     Ok(())
 }
 
-/// Declared app channels and events.
+/// Application channels and their events (gossip.md §8): an application's nodes join the channels its code names.
 pub use rdm_transport::gossip;
 /// Data-plane connections over registered application ALPNs (`i148`).
 pub use rdm_transport::connections;

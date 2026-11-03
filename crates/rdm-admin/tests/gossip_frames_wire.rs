@@ -28,7 +28,7 @@ fn fabric() -> FabricId {
 }
 
 fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),

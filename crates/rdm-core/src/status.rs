@@ -2663,7 +2663,7 @@ mod tests {
     }
 
     fn node_view() -> crate::views::NodeView {
-        crate::views::NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+        crate::views::NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
             path: "mesh1.node".into(), name: "12".into(),
             r#type: "node".into(),
             mesh: "mesh1".into(),

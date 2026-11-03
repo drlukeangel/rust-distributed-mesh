@@ -365,7 +365,7 @@ impl Prepared {
                 birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
                 config: INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
                 tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
-                endpoint_id: Some(own.endpoint_id.clone()), transport_addr: Some(own.transport_addr), listeners: Vec::new(), app_types: None, held: Default::default(),
+                endpoint_id: Some(own.endpoint_id.clone()), transport_addr: Some(own.transport_addr), listeners: Vec::new(),
             }).await.unwrap();
             let mut launched = Vec::new();
             for (path, name, r#type) in launched_names {
@@ -376,7 +376,7 @@ impl Prepared {
                 nodes.put_properties(&rdm_node::node_records::NodeProperties {
                     birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation },
                     config: Default::default(), tags: Default::default(),
-                    endpoint_id: Some(EndpointId(iroh::SecretKey::generate().public().to_string())), transport_addr: Some(unanswered_addr()), listeners: Vec::new(), app_types: None, held: Default::default(),
+                    endpoint_id: Some(EndpointId(iroh::SecretKey::generate().public().to_string())), transport_addr: Some(unanswered_addr()), listeners: Vec::new(),
                 }).await.unwrap();
                 let row = rdm_admin::storage::NodeRow { mesh: "mesh1".to_owned(), r#type: (*r#type).to_string(), initial_properties: None, topology_storage_provider: None, writer: None,
                     path: location.path.clone(), name: location.name.clone(),

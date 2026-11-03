@@ -35,7 +35,7 @@ fn attr(sp: &Value, k: &str) -> String {
 }
 
 fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
@@ -108,9 +108,9 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         learn_addresses(&y_node.ep, &[p_addr.clone()]).unwrap();
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node-admin.2", clock(), vec![], &[]).await.unwrap();
-        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node.1", clock(), vec![p_addr.clone()], &[]).await.unwrap();
-        let y = TopologyView::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node-admin.1", clock(), vec![p_addr], &[]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node-admin.2", clock(), vec![]).await.unwrap();
+        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node.1", clock(), vec![p_addr.clone()]).await.unwrap();
+        let y = TopologyView::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node-admin.1", clock(), vec![p_addr]).await.unwrap();
         p.set_author(&rdm_core::PublisherId { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, None);
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         m.wait_for_neighbour().await;
@@ -188,8 +188,8 @@ fn an_application_span_made_from_a_deleted_operation_shares_the_deletes_trace() 
         learn_addresses(&m_node.ep, &[p_addr.clone()]).unwrap();
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node-admin.2", clock(), vec![], &[]).await.unwrap();
-        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node.1", clock(), vec![p_addr], &[]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node-admin.2", clock(), vec![]).await.unwrap();
+        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.node.1", clock(), vec![p_addr]).await.unwrap();
         p.set_author(&rdm_core::PublisherId { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, None);
         m.wait_for_neighbour().await;
 

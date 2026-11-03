@@ -256,7 +256,7 @@ mod tests {
         let records = Arc::new(crate::storage::MemoryNodesStorage::default());
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let snapshot = view.read().await.clone();
-        let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", snapshot.meshes[0].id.as_ref().unwrap(), admin1.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         configs.uses_records(records.clone(), || "memory".into(), channels.clone());
         configs.bound_own(&admin1, rdm_core::launch::InitialProperties { config: [("preserved".into(), "value".into())].into(), tags: Default::default() }).await.unwrap();
 

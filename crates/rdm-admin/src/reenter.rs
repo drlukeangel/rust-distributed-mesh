@@ -483,11 +483,10 @@ mod tests {
             let local_time = rdm_transport::clock::RafkaTime::unadopted();
             local_time.adopt(5_000_000);
             let (local_node_id, local_inc) = (NodeId::mint(), IncarnationId::mint());
-            let local_view = TopologyView::join(&local_gossip, &local_ep, &fabric_id, "mesh1", &mesh1_id, local_node_id.as_str(), Arc::new(local_time.clone()), vec![], &[]).await.unwrap();
+            let local_view = TopologyView::join(&local_gossip, &local_ep, &fabric_id, "mesh1", &mesh1_id, local_node_id.as_str(), Arc::new(local_time.clone()), vec![]).await.unwrap();
             let (dead_node_id, dead_inc) = (NodeId::mint(), IncarnationId::mint());
 
             let local_digest = rdm_core::MeshDigest {
-                held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
                 node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: local_node_id.clone(),
@@ -582,7 +581,7 @@ mod tests {
             let fp_time = rdm_transport::clock::RafkaTime::unadopted();
             fp_time.adopt(5_000_000);
             let (fp_node_id, fp_inc) = (NodeId::mint(), IncarnationId::mint());
-            let fp_view = TopologyView::join(&fp_gossip, &fp_ep, &fabric_id, "mesh1", &mesh1_id, fp_node_id.as_str(), Arc::new(fp_time.clone()), vec![], &[]).await.unwrap();
+            let fp_view = TopologyView::join(&fp_gossip, &fp_ep, &fabric_id, "mesh1", &mesh1_id, fp_node_id.as_str(), Arc::new(fp_time.clone()), vec![]).await.unwrap();
             let fp_resolver = Arc::new(LiveNodeResolver::default());
             let fp_client = Arc::new(NodeRpcClient::new(fp_ep.clone(), fp_resolver.clone()));
 

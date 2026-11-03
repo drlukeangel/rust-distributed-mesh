@@ -393,8 +393,6 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `name` | the create spec | **`node.name.update { node_id, incarnation, path, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node holds no connection: stopped, or connections-deleted after an `All` with zero held; never ready (R-CR1); a live node rejoins its mesh under the new name | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the create) | `node.tag.create { label \| [labels] }` adds; `node.tag.delete { All \| [labels] }` removes. The node's property writer applies the label change to its own current tag set and persists it with its other owned fields | none | `node.tag.created` / `node.tag.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced, at any time: a caller's goes down from the fabric-primary, a node's own is a local durable property write; a Build sets config and tags only on a node it creates, through ApplyNodeProperties, and never writes a node it does not create (build.md §1, Q236 amended by Q342) ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
-| `types` | the birth's [JoinNode](#join-op-0x1d-rdm): what it declared; empty for a node-admin | nothing: a different declaration is a restart. `node.get` answers it whole | — | — |
-| `held`, `held_hash` | RDM: the types the node has joined ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)); equal to `types` for an ordinary node; for a node-admin the union of its nodes' declarations and what it read from other node-admins. `held_hash` is blake3 of the sorted set and rides the row's digest (32 bytes; no list rides gossip) | RDM, as members join; grows, never shrinks within a birth; never a put. `node.get` answers `held` whole | — | — |
 | `is_primary` | the election's result, recorded by the mesh-primary | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
 | `is_fabric_primary` | the election's result, recorded by the node-admin on its own row | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
 | connections | — (data plane, never a property) | `node.connection.delete { All \| [ids] }` | — | `node.connection.deleted` |
@@ -494,7 +492,7 @@ A unary reply is the body alone, with no second target or context.
 `MalformedKind` is shared by the protocol refusal variants:
 
 ```rust
-pub enum MalformedKind { TooLarge, UnknownVariant, Corrupt, TypesOverCap }
+pub enum MalformedKind { TooLarge, UnknownVariant, Corrupt }
 ```
 
 RDM-owned Node RPC instrumentation uses the `rdm` owner root under the repository grammar
@@ -1014,14 +1012,9 @@ joining birth.
 
 ```rust
 pub enum JoinRequest {
-    JoinNode { digest: MeshDigest, types: Vec<String>, listeners: Vec<(String, SocketAddr)> },
+    JoinNode { digest: MeshDigest, listeners: Vec<(String, SocketAddr)> },
 }
 ```
-
-`types` is the birth's declared app types ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)),
-at most 256 and 8 KiB encoded; over the bound the join is `Malformed { kind: TypesOverCap }` and
-the birth is never a member. The serving node-admin records the declaration beside the row, joins
-every type it does not already hold before it answers, and writes its own row's `held_hash`.
 
 `listeners` is each listener the application's wiring declares on the birth's kind, by name, at the address the birth bound: the IP address node-admin assigned and a nonzero port the operating system chose (Q151). The serving node-admin validates the whole report before it installs any part of the join, and refuses it by name, installing nothing, unless it carries exactly the declared names, each once, on its assigned IP address with a nonzero OS-selected port; the node writes them in its own part of its record (Q333).
 

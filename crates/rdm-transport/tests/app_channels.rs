@@ -3,17 +3,16 @@
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
+use rdm_core::{FabricId, MeshId, NodeId};
 use rdm_test::channel_member::{Member, MemberAddr};
 use rdm_transport::gossip::{channel_id, Channel, ChannelError, Event};
 use std::time::Duration;
 
 const TYPE: &str = "rafka.entity.channel-proof";
 
-/// A member of the mesh declaring [`TYPE`]: the testkit's channel member, the rig an embedding's
-/// app-channel cells use too.
+/// A member of the mesh: the testkit's channel member, the rig an embedding's app-channel cells use too.
 async fn node(fabric: &FabricId, mesh: &MeshId, name: rdm_core::PathName, mesh_name: &str, r#type: &str, seeds: Vec<MemberAddr>) -> Member {
-    Member::join(fabric, mesh, name, mesh_name, r#type, &seeds, &[TYPE]).await
+    Member::join(fabric, mesh, name, mesh_name, r#type, &seeds).await
 }
 
 async fn pair() -> (
@@ -28,8 +27,8 @@ async fn pair() -> (
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", vec![]).await;
     let b = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", vec![a.addr()]).await;
-    let ca = a.topology_view.join_channel(TYPE).await.unwrap();
-    let cb = b.topology_view.join_channel(TYPE).await.unwrap();
+    let ca = a.topology_view.join_channel(TYPE, &[]).await.unwrap();
+    let cb = b.topology_view.join_channel(TYPE, &[a.endpoint()]).await.unwrap();
     // Neighbour readiness is a protocol event, not an elapsed-time assumption.
     let mut raw = a
         .gossip()
@@ -93,15 +92,6 @@ fn encoded(n: &Member, kind: &str, id: &str, subject: &str, data: Vec<u8>, rever
         attributes.reverse();
     }
     postcard::to_allocvec(&(attributes, data)).unwrap()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_undeclared_type_is_refused_by_name_on_join() {
-    let fabric = FabricId::mint();
-    let n = node(&fabric, &MeshId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", vec![]).await;
-    assert!(
-        matches!(n.topology_view.join_channel("rafka.entity.unknown").await, Err(ChannelError::UndeclaredType { r#type }) if r#type == "rafka.entity.unknown")
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -345,40 +335,13 @@ fn the_receive_span_parents_to_the_publishers_span_and_carries_no_data() {
     });
 }
 
-#[test]
-fn an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies() {
-    if crate::own_process::delegated(
-        module_path!(),
-        "an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies",
-    ) {
-        return;
-    }
-    let capture =
-        rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "app-channel-type").unwrap();
-    capture.run(4, async {
-        let (a, _b, _unused, mut receiver, raw, _events) = pair().await;
-        raw.broadcast(encoded(&a, "app.undeclared", "wrong", "wrong", vec![1], false).into())
-            .await
-            .unwrap();
-        raw.broadcast(encoded(&a, TYPE, "next", "next", vec![2], false).into())
-            .await
-            .unwrap();
-        assert_eq!(receive(&mut receiver).await.subject, "next");
-        assert!(capture
-            .spans()
-            .unwrap()
-            .iter()
-            .any(|s| s["name"] == "rdm.mesh.channel.reject.via-undeclared-type"));
-    });
-}
-
-/// CONTRACT (one error arm per fact; the type's one receiver): a second join of a type whose
-/// receiver an earlier join holds is refused `ReceiverHeld` naming the type, never `Left`.
+/// CONTRACT (one error arm per fact; the channel's one receiver): a second join of a channel whose
+/// receiver an earlier join holds is refused `ReceiverHeld` naming the channel, never `Left`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_second_join_of_a_held_type_is_refused_receiver_held_by_name() {
+async fn a_second_join_of_a_channel_is_refused_receiver_held_by_name() {
     let n = node(&FabricId::mint(), &MeshId::mint(), rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", vec![]).await;
-    let _first = n.topology_view.join_channel(TYPE).await.unwrap();
-    assert!(matches!(n.topology_view.join_channel(TYPE).await, Err(ChannelError::ReceiverHeld { r#type }) if r#type == TYPE));
+    let _first = n.topology_view.join_channel(TYPE, &[]).await.unwrap();
+    assert!(matches!(n.topology_view.join_channel(TYPE, &[]).await, Err(ChannelError::ReceiverHeld { r#type }) if r#type == TYPE));
 }
 
 /// CONTRACT (an event's `sequence` is 20 decimal digits, gossip.md's app event attributes): a frame
@@ -473,67 +436,12 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// Holding a member's channel permits receipt, but does not declare its type for this author.
+/// CONTRACT (gossip.md §8, Q362): a channel is joined through the peers its join names, exact births
+/// of the topology view, even on a seedless first admin; a stop then a start rejoins it through the
+/// same peers. Must NOT happen: the channel joined through boot seeds, or a join refused for its name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_it() {
-    let n = node(&FabricId::mint(), &MeshId::mint(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", vec![]).await;
-    let kind = "app.member-owned";
-    let member = NodeId::mint();
-    let birth = IncarnationId::mint();
-    n.topology_view
-        .learn_app_types(
-            member,
-            birth,
-            [kind.to_string()].into(),
-            [kind.to_string()].into(),
-        )
-        .await
-        .unwrap();
-    assert!(n.topology_view.held_types().contains(kind));
-    assert!(!n.topology_view.app_types().contains(kind));
-    let channel = n
-        .topology_view
-        .join_channel(kind)
-        .await
-        .expect("a learned type has a receiver");
-    assert!(
-        matches!(channel.publish(event(1,vec![1])).await,Err(ChannelError::UndeclaredType{r#type})if r#type==kind),
-        "holding a member's channel does not let this birth author its events"
-    );
-}
-
-fn member_digest(n: &Member) -> rdm_core::MeshDigest {
-    rdm_core::MeshDigest {
-        fabric_id: n.topology_view.fabric_id().clone(),
-        node: rdm_core::MeshNode { mesh: n.topology_view.mesh_name().to_owned(), r#type: n.r#type.clone(),
-            node_id: n.author.node_id.clone(),
-            path: n.path.clone(), name: n.name.clone(),
-            endpoint_id: rdm_core::EndpointId(n.endpoint_id().to_string()),
-            transport_addr: n.bound_addr(),
-            incarnation: n.author.incarnation.clone(),
-            supersedes: None,
-            runtime: None,
-        },
-        status: rdm_core::MemberStatus::Pending,
-        node_state: Default::default(),
-        admin_api_base: None,
-        digest_seq: 1,
-        emitted_at_rafka_ms: 1,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        load: None,
-        gossip: None,
-        held_hash: n.topology_view.held_hash(),
-        is_primary: None,
-        is_fabric_primary: None,
-    }
-}
-
-/// A holder learned after boot is the physical join peer, including on the seedless first admin.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
-    const LATER: &str = "app.later-held";
+async fn a_channel_joins_through_the_peers_its_join_names_and_rejoins_them_after_a_start() {
+    const LATER: &str = "app.later-joined";
     let fabric = FabricId::mint();
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", vec![]).await;
@@ -541,20 +449,10 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     while a.topology_view.neighbours() < 1 || b.topology_view.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
-    let c = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[b.addr()], &[LATER]).await;
+    let c = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[b.addr()]).await;
     while b.topology_view.neighbours() < 2 || c.topology_view.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
-    b.topology_view.learn(member_digest(&c), "join-types-probe");
-    b.topology_view
-        .learn_app_types(
-            c.author.node_id.clone(),
-            c.author.incarnation.clone(),
-            c.topology_view.app_types(),
-            c.topology_view.held_types(),
-        )
-        .await
-        .unwrap();
     // Establish the member-to-own-admin connection on both sides without giving A any new
     // bootstrap peer, before A joins LATER through B so B's HyParView active_view
     // already holds C when A's Join arrives at B.
@@ -583,16 +481,9 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
             .expect("the middle holder stays subscribed")
             .unwrap();
     }
-    a.topology_view.learn(member_digest(&b), "peer-types-probe");
-    a.topology_view
-        .learn_app_types(
-            b.author.node_id.clone(),
-            b.author.incarnation.clone(),
-            b.topology_view.app_types(),
-            b.topology_view.held_types(),
-        )
-        .await
-        .unwrap();
+    // A names B, a birth its topology view holds, as the channel's first neighbour, by its endpoint_id.
+    a.topology_view.learn(b.digest(), "peer-probe");
+    let receiver = a.topology_view.join_channel(LATER, &[b.endpoint()]).await.unwrap();
     let mut observed = a
         .gossip()
         .subscribe(channel_id(&fabric, LATER), vec![])
@@ -601,7 +492,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     observed
         .joined()
         .await
-        .expect("the new type joins through its reporting holder, even with no boot seeds");
+        .expect("the channel joins through the peer its join named, even with no boot seeds");
     while !middle.neighbors().any(|p| p == a.endpoint_id())
         || !middle.neighbors().any(|p| p == c.endpoint_id())
     {
@@ -618,12 +509,12 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
             .expect("the publisher stays subscribed")
             .unwrap();
     }
-    let mut receiver = a.topology_view.join_channel(LATER).await.unwrap();
-    let publisher = c.topology_view.join_channel(LATER).await.unwrap();
+    let mut receiver = receiver;
+    let publisher = c.topology_view.join_channel(LATER, &[b.endpoint()]).await.unwrap();
     publisher.publish(event(1, vec![7])).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), &[7]);
 
-    // Rejoining uses the reporting holders retained for this type, without acquiring boot seeds.
+    // Rejoining uses the peers the join named, without acquiring boot seeds.
     drop(receiver);
     drop(observed);
     a.topology_view.stop().await;
@@ -653,7 +544,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     rejoined
         .joined()
         .await
-        .expect("the held type rejoins its reporting holder");
+        .expect("the channel rejoins the peer its join named");
     while !middle.neighbors().any(|p| p == a.endpoint_id()) {
         middle
             .next()
@@ -671,7 +562,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     // Q72 = b: after a rejoin, gossip is best-effort and an app event is the app's to order by
     // its own `sequence`. B's forwarded copy of event 1, sent before A left, may arrive on A's
     // new subscription; the app skips any event at or below the sequence it already applied.
-    let mut receiver = a.topology_view.join_channel(LATER).await.unwrap();
+    let mut receiver = a.topology_view.join_channel(LATER, &[b.endpoint()]).await.unwrap();
     publisher.publish(event(2, vec![8])).await.unwrap();
     let next = tokio::time::timeout(Duration::from_secs(10), async {
         loop {

@@ -22,7 +22,7 @@ fn run(malformed: bool) {
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
+        let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![addr]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
         let author = crate::gossip_author(&fabric);

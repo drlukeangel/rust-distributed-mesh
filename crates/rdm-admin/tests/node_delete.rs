@@ -973,7 +973,6 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         let peer_view = rdm_transport::topology::DigestView::default();
         let deleted_endpoint = EndpointId("deleted-birth-endpoint-key".into());
         let old_digest = rdm_core::MeshDigest {
-            held_hash: Default::default(),
             fabric_id: template.fabric_id.clone(),
             node: rdm_core::MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: target_id.clone(),

@@ -345,8 +345,9 @@ pub struct JoinService {
     /// Install the reported address for the key: the topology view's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
-    /// Join and persist the declared app types before the birth is admitted.
-    pub types: Arc<dyn Fn(MeshDigest, std::collections::BTreeSet<String>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>,
+    /// Seed the admitted birth's row before the join is answered, or hold the seed until this admin
+    /// writes its mesh's rows (the admin records' `seed_at_arrival_or_hold`).
+    pub seed_at_arrival: Arc<dyn Fn(MeshDigest) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>,
     /// Project the installed birth into the view this admin's status authority decides from, so the
     /// admitted birth is in that view when the join is answered: its first declaration finds its
     /// subject held.
@@ -385,8 +386,7 @@ impl JoinService {
     /// Answer a `JoinNode` from `peer`: verify the digest against what was deployed, install its
     /// address and answer with the admin's entry answer.
     pub async fn serve(&self, peer: EndpointId, req: JoinRequest) -> JoinReply {
-        let JoinRequest::JoinNode { digest, types, listeners } = req;
-        if let Err(kind) = rdm_core::app_types::check(&types) { return rdm_core::reply::join::malformed(kind); }
+        let JoinRequest::JoinNode { digest, listeners } = req;
         let d = MeshDigest::from(digest);
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-join",
@@ -402,13 +402,13 @@ impl JoinService {
             build_id = tracing::field::Empty,
             cert_len = tracing::field::Empty,
         );
-        self.decide(peer, d, types.into_iter().collect(), listeners, span.clone()).instrument(span).await
+        self.decide(peer, d, listeners, span.clone()).instrument(span).await
     }
 
     /// Decide a join on its digest against what was deployed. Nothing checks who is calling
     /// (node-rpc.md §14): the caller's endpoint names the call in its span, and the digest's
     /// endpoint is what the deployment verifies.
-    async fn decide(&self, peer: EndpointId, mut d: MeshDigest, types: std::collections::BTreeSet<String>, listeners: Vec<(String, SocketAddr)>, span: tracing::Span) -> JoinReply {
+    async fn decide(&self, peer: EndpointId, mut d: MeshDigest, listeners: Vec<(String, SocketAddr)>, span: tracing::Span) -> JoinReply {
         span.record("caller", peer.0.as_str());
         span.record("listeners", rdm_core::launch::encode_listeners(&listeners).as_str());
         match self.joins.standing(&d, &listeners) {
@@ -444,26 +444,7 @@ impl JoinService {
                         }
                         return rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported);
                     }
-                    Some(row) if row.node_id == d.node.node_id => {
-                        // The birth's declared types are the node's own part of its record (Q333): one point
-                        // read at its id, the one check of an immutable declaration (a birth that declared
-                        // other types rejoins refused by name). A read that fails is not ready.
-                        let own = match self.nodes.as_ref() {
-                            Some((storage, _)) => match storage.properties(&d.node.node_id).await {
-                                Ok(own) => own,
-                                Err(why) => {
-                                    span.record("outcome", "not-ready");
-                                    return rdm_core::reply::join::not_ready(format!("node {}: the own part of its record could not be read: {why}", d.node.node_id));
-                                }
-                            },
-                            None => None,
-                        };
-                        if let Some(held) = own.and_then(|o| o.app_types).filter(|held| held.incarnation == d.node.incarnation) {
-                            if held.types != types {
-                                return rdm_core::reply::join::join_mismatch("types".into(), format!("{:?}", held.types), format!("{types:?}"));
-                            }
-                        }
-                    }
+                    Some(row) if row.node_id == d.node.node_id => {}
                     Some(_) if !held => {}
                     Some(row) => {
                         span.record("outcome", "mismatch");
@@ -518,8 +499,8 @@ impl JoinService {
                 }
                 let cert = issue.bytes;
                 span.record("cert_len", cert.len() as u64);
-                if let Err(why) = (self.types)(d.clone(), types).await {
-                    return rdm_core::reply::join::not_ready(format!("node {}: the app declaration could not be joined and recorded: {why}", d.node.node_id));
+                if let Err(why) = (self.seed_at_arrival)(d.clone()).await {
+                    return rdm_core::reply::join::not_ready(format!("node {}: its row could not be seeded at its arrival: {why}", d.node.node_id));
                 }
                 // The validated report is kept durable before it is released (node-create.md step 5):
                 // a re-run of the create after this process restarted completes WaitForMeshJoin from
@@ -613,7 +594,7 @@ mod tests {
     }
 
     fn digest_of(d: &Deployed) -> MeshDigest {
-        MeshDigest { held_hash: Default::default(),
+        MeshDigest { 
             fabric_id: rdm_core::FabricId::mint(),
             node: MeshNode { mesh: d.mesh.clone(), r#type: d.r#type.clone(),
                 node_id: d.node_id.clone(),
@@ -855,7 +836,7 @@ mod tests {
                 install: Arc::new(move |d| {
                     installed_clone.lock().unwrap().push(d.node.transport_addr);
                 }),
-                types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+                seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
                 known: Arc::new(|| Box::pin(async {})),
                 pending: Arc::new(|_, _| Box::pin(async {})),
                 primary: Arc::new(|| Some(NodeId::parse("0123456789ab").unwrap())),
@@ -873,7 +854,6 @@ mod tests {
             // 1. Unknown birth -> `NotPrimary { primary }`.
             let unknown_req = JoinRequest::JoinNode {
                 digest: (&digest_of(&dep)).into(),
-                types: Vec::new(),
                 listeners: Vec::new(),
             };
             assert_eq!(
@@ -888,7 +868,6 @@ mod tests {
             joins.end(&dep.node_id, "3qcfk1kq47m9");
             let ab_req = JoinRequest::JoinNode {
                 digest: (&digest_of(&dep)).into(),
-                types: Vec::new(),
                 listeners: Vec::new(),
             };
             assert_eq!(
@@ -907,7 +886,6 @@ mod tests {
             bad_digest.node.incarnation = IncarnationId::mint();
             let bad_req = JoinRequest::JoinNode {
                 digest: (&bad_digest).into(),
-                types: Vec::new(),
                 listeners: Vec::new(),
             };
             assert!(matches!(
@@ -921,7 +899,6 @@ mod tests {
             let good_digest = digest_of(&dep);
             let good_req = JoinRequest::JoinNode {
                 digest: (&good_digest).into(),
-                types: Vec::new(),
                 listeners: Vec::new(),
             };
             assert!(matches!(

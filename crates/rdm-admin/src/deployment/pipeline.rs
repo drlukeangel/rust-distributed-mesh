@@ -3366,7 +3366,6 @@ mod tests {
             let key = crate::admin::load_or_mint_key(&spec.data_dir).await.map_err(refused)?;
             let env = |k: &str| spec.env.get(k).cloned().ok_or_else(|| refused(format!("the launch carries no {k}")));
             let digest = rdm_core::MeshDigest {
-                held_hash: Default::default(),
                 fabric_id: rdm_core::FabricId::mint(),
                 node: rdm_core::MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
                     node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?).map_err(|e| refused(e.to_string()))?,

@@ -35,7 +35,7 @@ async fn own(node_id: &NodeId, config: BTreeMap<String, String>, tags: std::coll
     use rdm_admin::storage::NodesStorage as _;
     properties().put_properties(&rdm_node::node_records::NodeProperties {
         birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: IncarnationId::mint() },
-        config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
+        config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(),
     }).await.unwrap();
 }
 
@@ -78,7 +78,7 @@ async fn reply(view: &Topology, status: &MemoryNodesStorage, filter: &Filter) ->
         }
     }
     let current = rdm_admin::current_record::CurrentRecords { nodes: status };
-    rdm_admin::views::nodes_answer_with_status(&path("mesh1.node-admin", "1"), view, &loads, &atlas, filter, &|_| {}, Some(current)).await
+    rdm_admin::views::nodes_answer_with_status(&path("mesh1.node-admin", "1"), view, &loads, &atlas, filter, Some(current)).await
 }
 
 /// CONTRACT (Q167 R-RD2, R-RD3; node-rpc-envelope.md node.get): over a fabric of two meshes holding
@@ -160,7 +160,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
     rdm_admin::status_rpc::StatusService {
         certs: None,
         primary_commands: Default::default(),
-        app_channels: None,
+        topology_view: None,
         declaration_seam: None,
         command_frame_seam: None,
         operation_effects: Default::default(),
@@ -343,7 +343,7 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
     let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
-    let gateway = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), NodeId::mint().as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
+    let gateway = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), NodeId::mint().as_str(), Arc::new(time.clone()), vec![]).await.unwrap();
 
     // (name, ready, primary of its node type)
     let births = [(path("mesh1.node-admin", "1"), "mesh1", "node-admin", true, true), (path("mesh1.node", "1"), "mesh1", "node", true, false), (path("mesh1.node", "2"), "mesh1", "node", false, false), (path("mesh2.broker", "1"), "mesh2", "broker", true, false)];
@@ -359,7 +359,6 @@ async fn the_same_pairs_answer_the_same_nodes_from_the_records_and_from_the_topo
         records.write_record(&row).await.unwrap();
         own(&n.node_id, BTreeMap::from([("zone".to_string(), "eu-1".to_string())]), ["gold".to_string()].into()).await;
         let d = MeshDigest {
-            held_hash: Default::default(),
             fabric_id: fabric.clone(),
             node: MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: n.endpoint_id.clone().unwrap(), transport_addr: n.transport_addr.unwrap(), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: if ready { MemberStatus::Ready } else { MemberStatus::Pending },

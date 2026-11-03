@@ -43,8 +43,6 @@ pub enum JoinRequest {
     JoinNode {
         /// The node's full digest.
         digest: WireDigest,
-        /// The birth's immutable app type declaration.
-        types: Vec<String>,
         /// The non-Iroh listeners the node bound, by name, each with the port the operating system
         /// selected (Q151): exactly the names its launch assigned, each on its assigned address.
         listeners: Vec<(String, std::net::SocketAddr)>,

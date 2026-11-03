@@ -1013,7 +1013,6 @@ mod tests {
 
     fn digest(p: &PathName, mesh: String, r#type: &str, status: MemberStatus) -> rdm_core::MeshDigest {
         rdm_core::MeshDigest {
-            held_hash: Default::default(),
             fabric_id: FabricId::mint(),
             node: rdm_core::MeshNode { mesh, r#type: r#type.to_string(),
                 node_id: NodeId::mint(),

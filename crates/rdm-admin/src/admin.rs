@@ -177,7 +177,7 @@ mod tests {
 
     pub(super) fn digest(name: PathName, mesh: &str, r#type: &str, status: MemberStatus) -> MeshDigest {
         let node_id = NodeId::mint();
-        MeshDigest { held_hash: Default::default(),
+        MeshDigest { 
             fabric_id: fabric1(),
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
                 node_id: node_id.clone(),
@@ -680,7 +680,7 @@ mod tests {
         nodes.put_properties(&rdm_node::node_records::NodeProperties {
             birth: rdm_node::node_records::RecordBirth { node_id: d.node.node_id.clone(), incarnation_id: d.node.incarnation.clone() },
             config: Default::default(), tags: Default::default(),
-            endpoint_id: Some(d.node.endpoint_id.clone()), transport_addr: Some(d.node.transport_addr), listeners: Vec::new(), app_types: None, held: Default::default(),
+            endpoint_id: Some(d.node.endpoint_id.clone()), transport_addr: Some(d.node.transport_addr), listeners: Vec::new(),
         }).await.unwrap();
     }
 
@@ -2959,7 +2959,7 @@ mod tests {
         let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric-primary role").clone();
         let status_service = StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -3027,7 +3027,7 @@ mod tests {
                     })
                 })
             }),
-            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d: &MeshDigest| {
                 installed.record(d.clone());
             }),
@@ -3045,7 +3045,7 @@ mod tests {
         assert!(status_service.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
         let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::Ready, operation: None };
         assert_eq!(status_service.apply(None, &declare).await, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "before the join the subject is not held");
-        let joined = join_service.serve(endpoint.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&reported).into(), listeners: Vec::new() }).await;
+        let joined = join_service.serve(endpoint.clone(), JoinRequest::JoinNode { digest: (&reported).into(), listeners: Vec::new() }).await;
         assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
 
         // Acceptance made the birth known; no projection tick ran since.

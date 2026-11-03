@@ -145,7 +145,7 @@ async fn member(by: &Running, store: &Path, ordinal: &str) -> RunningNode {
     let name = PathName::new("mesh1.node", ordinal).unwrap();
     let launch = launch_by(by, store, &dir, &name, "node");
     deployed(by, &launch);
-    rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], &[app_alpn()])
+    rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[app_alpn()])
         .await
         .unwrap_or_else(|e| panic!("{name:?} starts: {e}"))
 }

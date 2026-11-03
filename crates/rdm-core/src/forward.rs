@@ -351,7 +351,7 @@ impl ForwardReply {
             Self::NotForwardable { .. } => Code::FailedPrecondition,
             Self::ConnectionLost { .. } | Self::NoInnerBudget { .. } | Self::NotReady { .. } | Self::Busy { .. } | Self::ConnectionsDeleting { .. } => Code::Unavailable,
             Self::PeerUnresolved { .. } => Code::NotFound,
-            Self::Malformed { kind: MalformedKind::TooLarge | MalformedKind::TypesOverCap } => Code::ResourceExhausted,
+            Self::Malformed { kind: MalformedKind::TooLarge } => Code::ResourceExhausted,
             Self::Malformed { kind: MalformedKind::UnknownVariant } => Code::InvalidArgument,
             Self::Malformed { kind: MalformedKind::Corrupt } => Code::DataLoss,
             Self::Unauthorized { .. } => Code::PermissionDenied,

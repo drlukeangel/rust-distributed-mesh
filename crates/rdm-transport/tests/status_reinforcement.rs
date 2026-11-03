@@ -202,7 +202,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             (ep, g)
         };
-        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let author = rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.announce_statuses("pending", "pending", true, true).await;
@@ -360,7 +360,7 @@ fn announce_loop_and_join_answer_run_together_under_multi_thread_runtime_and_alw
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             (ep, g)
         };
-        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let topology_view = TopologyView::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let author = rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let backbone = Backbone::join(&gossip, &endpoint, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
 

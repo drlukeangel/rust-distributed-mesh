@@ -33,10 +33,6 @@ pub struct NodeProperties {
     pub transport_addr: Option<std::net::SocketAddr>,
     /// Actual non-Iroh listener addresses.
     pub listeners: Vec<(String, std::net::SocketAddr)>,
-    /// The application types the node declared at join.
-    pub app_types: Option<crate::nodes_storage::AppTypes>,
-    /// The entities the node declared it holds at join.
-    pub held: BTreeSet<String>,
 }
 
 /// One running node's serialized property write path. All its property commands use this
@@ -124,8 +120,6 @@ impl NodePropertyWriter {
                 record.endpoint_id = bound.endpoint_id;
                 record.transport_addr = bound.transport_addr;
                 record.listeners = bound.listeners;
-                record.app_types = bound.app_types;
-                record.held = bound.held;
                 Ok(())
             },
             publish,

@@ -344,7 +344,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn digest(ordinal: u32, id: &NodeId, birth: &IncarnationId, seq: u64) -> MeshDigest {
-        MeshDigest { held_hash: Default::default(),
+        MeshDigest { 
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: id.clone(),

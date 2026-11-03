@@ -303,7 +303,7 @@ mod tests {
         let republished = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let service = Arc::new(StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -363,7 +363,7 @@ mod tests {
             let configs = crate::node_config::NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
             let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             let snapshot = topology.read().await.clone();
-            let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+            let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
             configs.uses_records(Arc::new(crate::storage::MemoryNodesStorage::default()), || "memory".into(), channels);
             configs.bound_own(snapshot.own(&admin_id).unwrap(), Default::default()).await.unwrap();
             let _ = service.configs.set(Arc::new(configs));

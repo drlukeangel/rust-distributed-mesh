@@ -726,7 +726,7 @@ impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
 /// The `Wiring` that puts every decorator of `faults` into a node-admin.
 pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     let (f_builds, f_provider, f_events) = (faults.clone(), faults.clone(), faults.clone());
-    Wiring { types: Vec::new(), alpns: Vec::new(), declared: Vec::new(), listeners: Vec::new(),
+    Wiring { alpns: Vec::new(), declared: Vec::new(), listeners: Vec::new(),
         leave_seam: Some(Arc::new(FaultedLeave(faults.clone()))),
         announcement_seam: Some(Arc::new(FaultedAnnouncement(faults.clone()))),
         read_seam: Some(Arc::new(FaultedRead(faults.clone()))),

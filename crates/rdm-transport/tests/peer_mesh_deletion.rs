@@ -22,7 +22,7 @@ fn fabric() -> FabricId {
 }
 
 fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
@@ -92,9 +92,9 @@ fn a_deletion_executed_in_another_mesh_is_taken_by_the_deleted_births_mesh() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let fp_m = TopologyView::join(&fp.gossip, &fp.ep, &fab, "mesh1", &mesh1, "mesh1.node-admin.1", clock(), vec![], &[]).await.unwrap();
-        let m2_m = TopologyView::join(&m2.gossip, &m2.ep, &fab, "mesh2", &mesh2, "mesh2.node-admin.2", clock(), vec![], &[]).await.unwrap();
-        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh2", &mesh2, "mesh2.node.1", clock(), vec![m2_addr.clone()], &[]).await.unwrap();
+        let fp_m = TopologyView::join(&fp.gossip, &fp.ep, &fab, "mesh1", &mesh1, "mesh1.node-admin.1", clock(), vec![]).await.unwrap();
+        let m2_m = TopologyView::join(&m2.gossip, &m2.ep, &fab, "mesh2", &mesh2, "mesh2.node-admin.2", clock(), vec![]).await.unwrap();
+        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh2", &mesh2, "mesh2.node.1", clock(), vec![m2_addr.clone()]).await.unwrap();
         let fp_bb = Backbone::join(&fp.gossip, &fp.ep, &fp_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![]).await.unwrap();
         let m2_bb = Backbone::join(&m2.gossip, &m2.ep, &m2_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: NodeId::mint() }, vec![fp_addr.clone()]).await.unwrap();
         fp_bb.set_mesh_primary(true);

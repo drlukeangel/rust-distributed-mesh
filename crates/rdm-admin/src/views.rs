@@ -70,7 +70,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
 /// and the tags and config its record carries (Q203: config is never gossiped).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>, config: BTreeMap<String, String>) -> NodeView {
-    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
         path: n.path.clone(), name: n.name.clone(),
         r#type: n.r#type.clone(),
         mesh: n.mesh.clone(),
@@ -102,9 +102,9 @@ fn mesh_view(m: crate::topology::MeshView) -> MeshView {
 }
 
 /// `n` with `load` and `gossip`, as its mesh-primary's part of its record, `row`, carries it (its
-/// executable, storage, placement and cert dates), and its app types from `own`, the node's own part of its record (Q333), when it is
-/// of `n`'s birth. Its config and tags are the node's own part's too, taken by the answering read.
-fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, row: Option<&crate::storage::NodeRow>, own: Option<&rdm_node::node_records::NodeProperties>) -> NodeView {
+/// executable, storage, placement and cert dates). Its config and tags are the node's own part of its
+/// record (Q333), taken by the answering read.
+fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, row: Option<&crate::storage::NodeRow>) -> NodeView {
     let mut v = node_view(n, load, gossip, Default::default(), Default::default());
     // What this birth runs, as its row records it (proposal executable-bindings-at-create.md rule 7).
     v.executable = row.and_then(|r| r.executable.clone());
@@ -112,11 +112,6 @@ fn record_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, ro
     // (storage.md §1, §2): two properties under two names.
     v.storage_persistence = row.and_then(|r| r.storage_persistence);
     v.topology_storage_provider = row.and_then(|r| r.topology_storage_provider.clone());
-    if let Some(declared) = own.and_then(|o| o.app_types.clone()).filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
-        v.types = declared.types;
-        v.held = v.types.clone();
-    }
-    v.held_hash = rdm_core::app_types::hash(&v.held);
     // fabric-certs.md §Tracking: `node.get` surfaces the birth's held cert as `cert { issued_at,
     // expires_at, issuer_expires_at }`.
     v.cert = n.incarnation_id.as_ref().and_then(|i| row?.birth(i)?.cert.clone()).map(|c| rdm_core::views::NodeCertView { issued_at: c.issued_at, expires_at: c.expires_at, issuer_expires_at: c.issuer_expires_at });
@@ -154,7 +149,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             continue;
         }
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-        out.push(record_view(&n, load, gossip, row.as_ref(), None));
+        out.push(record_view(&n, load, gossip, row.as_ref()));
     }
     if let Some(c) = current {
         // A node the filter names by id that the view no longer holds: its record at that id, never
@@ -194,7 +189,7 @@ pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRo
     if let Some(b) = view.births().find(|n| n.node_id == row.node_id) {
         let mut n = b.clone();
         if atlas.read(&mut n, Some(row)) {
-            return record_view(&n, None, None, Some(row), own);
+            return record_view(&n, None, None, Some(row));
         }
     }
     let mut n = Node::allocated(row.location(), row.mesh.clone(), &row.r#type);
@@ -209,7 +204,7 @@ pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRo
             n.listeners = own.listeners.clone();
         }
     }
-    record_view(&n, None, None, Some(row), own)
+    record_view(&n, None, None, Some(row))
 }
 
 /// `node.get` (Q167) answered by the node-admin `me` from its `view`, its nodes' `loads` and the
@@ -218,10 +213,8 @@ pub fn own_row_view(view: &Topology, atlas: &Atlas, row: &crate::storage::NodeRo
 /// and nothing is read. Its span names the read, the pairs and how many nodes were answered. It takes
 /// `current`, the reader each birth's record is read through (query.md §1: its
 /// lifecycle record and its properties at its own node ID; never a copy an
-/// atlas holds), and `amend`, what the answering admin adds to each row
-/// before it is matched (the app types its own channels hold). A record that cannot be read answers
-/// `NotReady` naming it.
-pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, filter: &Filter, amend: &(dyn Fn(&mut NodeView) + Sync), current: Option<crate::current_record::CurrentRecords<'_>>) -> StatusReply {
+/// atlas holds). A record that cannot be read answers `NotReady` naming it.
+pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, records: &Atlas, filter: &Filter, current: Option<crate::current_record::CurrentRecords<'_>>) -> StatusReply {
     let read = Entity::Nodes.read();
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
@@ -267,9 +260,6 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                         node.listeners = own.listeners;
                         node.endpoint_id = own.endpoint_id.map(|id| id.to_string());
                         node.transport_addr = own.transport_addr;
-                        node.held = own.held;
-                        node.held_hash = rdm_core::app_types::hash(&node.held);
-                        if let Some(declared) = own.app_types { node.types = declared.types; }
                     }
                     // A node whose current property record is absent is listed with its lifecycle facts, its
                     // properties unavailable, named, never a lifecycle row's copy (node-config-update.md step 4;
@@ -279,9 +269,6 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                 }
             }
         }
-        // What the answering admin's own channels hold now, over the join-time declaration a property
-        // record carries: a node-admin's `held` grows as members join (gossip.md §8).
-        nodes.iter_mut().for_each(amend);
         nodes.retain(|n| filter.matches(n));
         let count = nodes.len();
         span.record("nodes", count as u64);
@@ -524,7 +511,7 @@ mod tests {
             let properties = &claims;
             let own = |node_id: &NodeId, incarnation: &IncarnationId, config: BTreeMap<String, String>, tags: BTreeSet<String>| rdm_node::node_records::NodeProperties {
                 birth: rdm_node::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
-                config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
+                config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(),
             };
             use crate::storage::NodesStorage as _;
             properties.put_properties(&own(&admin_id, &admin_inc, BTreeMap::new(), BTreeSet::new())).await.unwrap();
@@ -553,7 +540,7 @@ mod tests {
             let read = |filter: Filter| {
                 let (me, view, loads, atlas, claims) = (&me, &view, &loads, &atlas, &claims);
                 let current = crate::current_record::CurrentRecords { nodes: claims };
-                async move { nodes_answer_with_status(me, view, loads, atlas, &filter, &|_| {}, Some(current)).await }
+                async move { nodes_answer_with_status(me, view, loads, atlas, &filter, Some(current)).await }
             };
             let tag_reply = read(Filter::new().eq("tags", ["tier-a"])).await;
             match tag_reply {
@@ -579,7 +566,7 @@ mod tests {
             }
 
             // 3. Invalid filter on node.get is refused naming the pair.
-            let bad_node_reply = nodes_answer_with_status(&me, &view, &loads, &atlas, &Filter::new().eq("unknown_field", ["x"]), &|_| {}, None).await;
+            let bad_node_reply = nodes_answer_with_status(&me, &view, &loads, &atlas, &Filter::new().eq("unknown_field", ["x"]), None).await;
             assert!(matches!(bad_node_reply, StatusReply::RejectedFilter { ref reason } if reason.contains("(unknown_field, [x])")));
 
             // 4. mesh.get and fabric.get serve matching views and refuse invalid filters.
@@ -669,7 +656,7 @@ mod tests {
             let (atlas, loads): (Atlas, Loads) = (Atlas::default(), Arc::new(BTreeMap::new));
             let read = |filter: Filter| {
                 let (me, view, loads, atlas, store) = (&me, &view, &loads, &atlas, &store);
-                async move { nodes_answer_with_status(me, view, loads, atlas, &filter, &|_| {}, Some(crate::current_record::CurrentRecords { nodes: store })).await }
+                async move { nodes_answer_with_status(me, view, loads, atlas, &filter, Some(crate::current_record::CurrentRecords { nodes: store })).await }
             };
             match read(Filter::new().eq("path", [at.path.as_str()]).eq("name", [at.name.as_str()])).await {
                 StatusReply::Nodes { nodes } => {

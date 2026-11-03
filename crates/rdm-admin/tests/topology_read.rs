@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 fn member_of(fabric: &FabricId, mesh: &str, r#type: &str, ordinal: u32) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric.clone(),
         node: MeshNode { mesh: mesh.to_string(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
@@ -60,7 +60,7 @@ async fn node(fabric: &FabricId, mesh: &str, name: rdm_core::PathName, r#type: &
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
+    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time.clone()), vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = NodeRpcClient::new(ep.clone(), resolver.clone());
     let slot: TopologySlot = Arc::new(OnceLock::new());

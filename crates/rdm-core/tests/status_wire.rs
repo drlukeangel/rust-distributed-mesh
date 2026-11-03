@@ -173,8 +173,6 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
                 "2101",
                 "0a6d657368312e6e6f64650131", "046e6f6465", "056d65736831", "0c303132333435363738396162", "010165", "010c397763707266677776746879",
                 "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564", "01047469657204676f6c64",
-                // types and held lengths, and the fixed 32-byte held hash.
-                "00", "00", "0000000000000000000000000000000000000000000000000000000000000000",
                 // cert None (i145 e3)
                 "00",
                 // executable None (the row's, proposal executable-bindings-at-create.md rule 7)
@@ -323,7 +321,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
 /// One node as a `node.get` answer carries it: a `node` with its birth, provider, address, load
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
-    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
         path: "mesh1.node".into(), name: "1".into(),
         r#type: "node".into(),
         mesh: "mesh1".into(),
@@ -384,7 +382,6 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(MalformedKind::TooLarge, "00");
     golden(MalformedKind::UnknownVariant, "01");
     golden(MalformedKind::Corrupt, "02");
-    golden(MalformedKind::TypesOverCap, "03");
     golden(ConnectionScope::All, "00");
     golden(ConnectionScope::Connections(vec![connection()]), "01010c333132333435363738396162");
     golden(NodeSelect::Id(node()), "000c303132333435363738396162");

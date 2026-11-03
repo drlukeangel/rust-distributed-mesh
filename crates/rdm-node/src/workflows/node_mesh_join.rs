@@ -23,9 +23,6 @@ pub trait MeshJoin: Send {
     /// The digest the report presents; the primitive presents it Pending.
     fn join_digest(&self) -> MeshDigest;
 
-    /// The immutable app declaration reported on every join of this birth.
-    fn join_types(&self) -> Vec<String> { Vec::new() }
-
     /// The listeners this birth bound from its launch (`RDM_LISTENERS`), each with the port the
     /// operating system selected, reported on every join of this birth (Q151); none for a kind that
     /// binds none.
@@ -88,11 +85,11 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
         Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step),
         None => tracing::info_span!("rdm.node.mesh.update.via-joining", node_path = %digest.node.path, node_name = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, primary = %primary, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step),
     };
-    let (answer, through) = join(&name, client, to, &digest, &node.join_types(), &node.join_listeners()).instrument(joining).await?;
+    let (answer, through) = join(&name, client, to, &digest, &node.join_listeners()).instrument(joining).await?;
     drop(report_parent);
     reported.record("served_by", through.node_id.to_string().as_str());
     reported.record("endpoint", through.anchor.as_str());
-    // The name the answer hands (a join that hands none is refused, `crate::join::call_join_to_types`): the
+    // The name the answer hands (a join that hands none is refused, `crate::join::call_join_to_with_listeners`): the
     // birth holds it from the answer on, and every step from here is named by it.
     if let Some(handed) = &answer.control.name {
         name = handed.name.clone();
@@ -117,7 +114,7 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
 /// `JoinNode` with `digest`, each of its attempts made to whom `to` names then: the launcher, or the
 /// admin whose call commanded the join last, reached back over that call. The answer and who gave
 /// it: `served_by` names the admin (the launcher's record names it at a first start).
-async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDigest, types: &[String], listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, JoinThrough), StartFailed> {
+async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDigest, listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, JoinThrough), StartFailed> {
     let next = || {
         let to = match to {
             JoinTo::Launcher { target, endpoint, .. } => Ok((target.clone(), endpoint.fmt_short().to_string())),
@@ -130,7 +127,7 @@ async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDige
             }
         }
     };
-    let (answer, target) = match crate::join::call_join_to_types(client, next, digest, JOIN_TURNS, types, listeners).await {
+    let (answer, target) = match crate::join::call_join_to_with_listeners(client, next, digest, JOIN_TURNS, listeners).await {
         Ok(joined) => joined,
         Err(crate::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} was refused its join by {}: {why}", whom(to)) }),
         Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} could not join through {}: unreached: {why}", whom(to)) }),
@@ -215,7 +212,6 @@ mod tests {
                 &node_name,
                 clock,
                 Vec::new(),
-                &[],
             )
             .await
             .map_err(|e| StartFailed {
@@ -342,7 +338,6 @@ mod tests {
 
             // Start with status = Ready in the raw digest to prove `node_mesh_join` forces Pending on the wire.
             let digest = MeshDigest {
-                held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
@@ -621,7 +616,6 @@ mod tests {
             let client = NodeRpcClient::new(node_ep.clone(), resolver).with_caller_system("rdm");
             let node_id = NodeId::mint();
             let digest = MeshDigest {
-                held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),

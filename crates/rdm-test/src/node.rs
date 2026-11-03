@@ -290,7 +290,6 @@ async fn start_with_rafka_time_pre_node_ready_alpns(
             };
             register(b, seams).carry::<crate::testkit_store::TestkitStore>()
         },
-        &[],
         alpns,
     )
     .await?;

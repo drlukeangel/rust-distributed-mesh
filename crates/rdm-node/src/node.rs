@@ -257,7 +257,7 @@ fn install_handed(topology_view: &TopologyView, control: &crate::wire::JoinContr
 /// [`start_with_seams`] for an app with a hook before Ready: `pre_node_ready` carries its
 /// `pre_node_ready` hook (and the gate its own server-side ops sit behind).
 pub async fn start_pre_node_ready(launch: &Launch, node_hooks: crate::node_hooks::NodeHooks, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
-    start_with_rafka_time_pre_node_ready_and(launch, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, |s| s, None, register, &[]).await
+    start_with_rafka_time_pre_node_ready_and(launch, rdm_transport::clock::RafkaTime::unadopted(), node_hooks, |s| s, None, register).await
 }
 
 #[cfg(feature = "file-backend")]
@@ -280,7 +280,6 @@ pub async fn start_with_alpns(
         |s| s,
         None,
         register,
-        &[],
         alpns,
     )
     .await
@@ -369,7 +368,7 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
 /// the resolver, the client, the connections writer and the held name.
 pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
     let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
-    start_with_rafka_time_pre_node_ready_and(launch, rafka_time, crate::node_hooks::NodeHooks::none(), |s| s, None, register, &[]).await
+    start_with_rafka_time_pre_node_ready_and(launch, rafka_time, crate::node_hooks::NodeHooks::none(), |s| s, None, register).await
 }
 
 #[cfg(feature = "file-backend")]
@@ -381,9 +380,8 @@ pub async fn start_with_rafka_time_pre_node_ready_and(
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
-    types: &[&str],
 ) -> Result<RunningNode> {
-    start_with_rafka_time_pre_node_ready_alpns_and(launch, rafka_time, node_hooks, decorate_storage, knob_fn, register, types, &[]).await
+    start_with_rafka_time_pre_node_ready_alpns_and(launch, rafka_time, node_hooks, decorate_storage, knob_fn, register, &[]).await
 }
 
 #[cfg(feature = "file-backend")]
@@ -396,10 +394,9 @@ pub async fn start_with_rafka_time_pre_node_ready_alpns_and(
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
-    types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
 ) -> Result<RunningNode> {
-    start_on(launch, crate::storage_backend::NodeStorageProviders::file(), rafka_time, node_hooks, decorate_storage, knob_fn, register, types, alpns).await
+    start_on(launch, crate::storage_backend::NodeStorageProviders::file(), rafka_time, node_hooks, decorate_storage, knob_fn, register, alpns).await
 }
 
 /// [`start_with_rafka_time_pre_node_ready_alpns_and`] on the topology storage `providers` its executable
@@ -414,15 +411,12 @@ pub async fn start_on(
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
-    types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
 ) -> Result<RunningNode> {
-    let app_types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
-    rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node_path = %launch.path, node_name = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), "type" = launch.r#type);
     // Boxed: the boot is one large state machine, and its caller holds only the box.
-    let started = crate::taskdump::watched("start", Box::pin(start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot))).await;
+    let started = crate::taskdump::watched("start", Box::pin(start_booted(launch, providers, rafka_time, node_hooks, decorate_storage, knob_fn, register, alpns.to_vec(), &boot))).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }
@@ -438,7 +432,6 @@ async fn start_booted(
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
-    app_types: Vec<String>,
     alpns: Vec<rdm_transport::connections::Alpn>,
     boot: &tracing::Span,
 ) -> Result<RunningNode> {
@@ -611,7 +604,7 @@ async fn start_booted(
         .collect();
     let name = launch.node_id.to_string();
     // This birth's digest as it reports it: the address is the one the bound endpoint holds.
-    let digest = MeshDigest { held_hash: rdm_core::app_types::hash(&app_types.iter().cloned().collect()),
+    let digest = MeshDigest {
         fabric_id: launch.fabric_id.clone(),
         node: MeshNode { mesh: launch.mesh.clone(), r#type: launch.r#type.clone(),
             node_id: launch.node_id.clone(),
@@ -660,7 +653,6 @@ async fn start_booted(
     let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), birth_path: launch.path.clone(), birth_name: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
     let joining = crate::workflows::node_start::Joining::AcceptingPrimary { label: launcher.node_id.to_string() };
     let join_digest = digest.clone();
-    let join_types = app_types.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
         let (launch, boot, out, name, data_connections, bound_listeners, listener_addrs) = (launch.clone(), boot.clone(), out.clone(), name.clone(), data_connections.clone(), bound_listeners.clone(), listener_addrs.clone());
         Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(TopologyView, crate::workflows::node_start::JoinedSeam<anyhow::Error>), anyhow::Error>> {
@@ -673,7 +665,7 @@ async fn start_booted(
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seeds.len());
 
-            let topology_view = TopologyView::join(&g, &ep0, &launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds, &app_types.iter().map(String::as_str).collect::<Vec<_>>()).await?;
+            let topology_view = TopologyView::join(&g, &ep0, &launch.fabric_id, &launch.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds).await?;
             topology_view.set_author(&rdm_core::PublisherId { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() }, launch.supersedes.clone());
             // The name this birth holds is its topology view's (R12): its connections rows name it as their
             // source from here on, and every service names the node by it, whatever name the join hands it
@@ -906,7 +898,7 @@ async fn start_booted(
             })
         })
     };
-    let mut start = crate::workflows::node_start::FirstStart { types: join_types, listeners: listener_addrs,
+    let mut start = crate::workflows::node_start::FirstStart { listeners: listener_addrs,
         starting: Some(starting),
         joining: Some(joining),
         resolve: Some(resolve),
@@ -1074,8 +1066,6 @@ struct AfterStop<'a> {
 #[async_trait::async_trait]
 impl crate::workflows::node_mesh_join::MeshJoin for AfterStop<'_> {
     type Error = crate::node_self::StartFailed;
-
-    fn join_types(&self) -> Vec<String> { self.session.topology_view.app_types().into_iter().collect() }
 
     fn join_listeners(&self) -> Vec<(String, std::net::SocketAddr)> {
         self.session.listeners.clone()
@@ -1382,8 +1372,6 @@ fn property_snapshot(topology: &TopologyView, digest: &MeshDigest, config: std::
         tags: own_row.as_ref().map(|r| r.tags.clone()).unwrap_or_default(),
         endpoint_id: Some(digest.node.endpoint_id.clone()), transport_addr: Some(digest.node.transport_addr),
         listeners: own_row.as_ref().map(|r| r.listeners.clone()).unwrap_or_default(),
-        held: topology.held_types(),
-        app_types: Some(crate::nodes_storage::AppTypes { incarnation: digest.node.incarnation.clone(), types: topology.app_types() }),
     }
 }
 
@@ -2072,9 +2060,8 @@ mod primary_tests {
             let clock = Arc::new(rdm_transport::clock::RafkaTime::unadopted());
             clock.adopt(1_000_000);
             let g = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
-            let topology_view = TopologyView::join(&g, &endpoint, &fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock, Vec::new(), &[]).await.unwrap();
+            let topology_view = TopologyView::join(&g, &endpoint, &fabric_id, "mesh1", &mesh_id, node_id.as_str(), clock, Vec::new()).await.unwrap();
             let digest = MeshDigest {
-                held_hash: [0u8; 32],
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: rdm_core::EndpointId(endpoint.secret_key().public().to_string()), transport_addr: "127.0.0.1:41002".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
                 status: MemberStatus::Pending,

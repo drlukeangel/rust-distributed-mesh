@@ -296,9 +296,7 @@ fn a_create_launches_from_its_entry_and_a_recovery_from_its_predecessors_acknowl
         let acknowledged = NodeProperties {
             birth: RecordBirth { node_id: old.clone(), incarnation_id: IncarnationId::mint() },
             config: ports.clone(), tags: ["red".to_string()].into(),
-            endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None,
-            held: Default::default(),
-        };
+            endpoint_id: None, transport_addr: None, listeners: vec![], };
         let mut written = Vec::new();
         for of in [RowFor::Create, RowFor::Recovery] {
             let storage = Arc::new(MemoryNodesStorage::default());
@@ -1692,7 +1690,7 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
                 let view = view.read().await;
                 crate::write_meshes(&view, meshes).await;
                 let current = rdm_admin::current_record::CurrentRecords { nodes: &*storage };
-                let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer_with_status(&me, &view, &loads, &atlas, &filter, &|_| {}, Some(current)).await else {
+                let StatusReply::Nodes { nodes } = rdm_admin::views::nodes_answer_with_status(&me, &view, &loads, &atlas, &filter, Some(current)).await else {
                     panic!("expected StatusReply::Nodes");
                 };
                 nodes
@@ -1710,7 +1708,7 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
         };
         let own = |n: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>| rdm_node::node_records::NodeProperties {
             birth: rdm_node::node_records::RecordBirth { node_id: n.node_id.clone(), incarnation_id: n.incarnation_id.clone().unwrap() },
-            config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
+            config, tags, endpoint_id: None, transport_addr: None, listeners: Vec::new(),
         };
         let provenance = |pred: &Node, at: &PathName| rdm_admin::storage::Allocation {
             predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.node_id.clone(), incarnation_id: pred.incarnation_id.clone().unwrap() }),

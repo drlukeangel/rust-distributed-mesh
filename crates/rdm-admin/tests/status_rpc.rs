@@ -173,7 +173,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let fabric_id = topology.read().await.fabric.id.clone();
     let service = Arc::new(StatusService {
         certs: None,
-        app_channels: None,
+        topology_view: None,
         declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),

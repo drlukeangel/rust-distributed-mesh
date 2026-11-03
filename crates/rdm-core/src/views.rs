@@ -170,15 +170,6 @@ pub struct NodeView {
     /// the live copy. RDM never reads it.
     #[serde(default)]
     pub config: std::collections::BTreeMap<String, String>,
-    /// This exact birth's immutable app declaration.
-    #[serde(default)]
-    pub types: std::collections::BTreeSet<String>,
-    /// Types this birth joined, including members and peers on a node-admin.
-    #[serde(default)]
-    pub held: std::collections::BTreeSet<String>,
-    /// Canonical held-set hash carried by this birth's digest.
-    #[serde(default)]
-    pub held_hash: [u8; 32],
     /// The birth's member cert as its newest cert row holds it (fabric-certs.md §Tracking): `None`
     /// when no row names it (an admin configured with no certs issues none).
     #[serde(default)]

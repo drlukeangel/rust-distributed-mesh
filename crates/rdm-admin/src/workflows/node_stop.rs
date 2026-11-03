@@ -121,7 +121,6 @@ mod tests {
                 &node_id.to_string(),
                 clock,
                 Vec::new(),
-                &[],
             )
             .await
             .expect("topology view joins");
@@ -149,7 +148,6 @@ mod tests {
 
             let status_cell = Arc::new(Mutex::new(MemberStatus::Ready));
             let digest_base = MeshDigest {
-                held_hash: [0u8; 32],
                 fabric_id,
                 node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                     node_id: node_id.clone(),

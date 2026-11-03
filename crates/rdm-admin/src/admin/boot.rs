@@ -963,9 +963,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     // This admin's first call after it binds: `JoinNode`, carrying its full digest with the
     // addresses it really bound, to the admin that deployed it.
-    let join_types = wiring.types.clone();
-    rdm_core::app_types::check(&join_types).map_err(|k| format!("app type declaration: {k:?}"))?;
-    let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|(_, _, runtime)| MeshDigest { held_hash: rdm_core::app_types::hash(&join_types.iter().cloned().collect()),
+    let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|(_, _, runtime)| MeshDigest {
         fabric_id: cfg.fabric_id.clone(),
         node: MeshNode { mesh: cfg.mesh.clone(), r#type: "node-admin".into(),
             node_id: node_id.clone(),
@@ -1049,7 +1047,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // gossip, and the view keeps the newer copy.
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seed_addrs.len());
-                let topology_view = TopologyView::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &node_id.to_string(), clock.clone(), seed_addrs.clone(), &wiring.types.iter().map(String::as_str).collect::<Vec<_>>())
+                let topology_view = TopologyView::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &node_id.to_string(), clock.clone(), seed_addrs.clone())
                     .await
                     .map_err(|e| format!("topology view: {e}"))?;
                 topology_view.set_author(&rdm_core::PublisherId { node_id: node_id.clone(), incarnation: incarnation.clone() }, supersedes.clone());
@@ -1505,7 +1503,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 {
                                     let records_for_ids = records.clone();
                                     let _ = status_service.set(Arc::new(crate::status_rpc::StatusService {
-                                    app_channels: Some(topology_view.clone()),
+                                    topology_view: Some(topology_view.clone()),
                                     declaration_seam: wiring.declaration_seam.clone(),
                                     command_frame_seam: wiring.command_frame_seam.clone(),
                                     operation_effects: Default::default(),
@@ -1845,7 +1843,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 nodes_storage.put_runtime(&own_runtime_row).await.map_err(storage_err)?;
                             }
                             // Own digest, published on the topology cadence.
-                            let digest = Arc::new(Mutex::new(MeshDigest { held_hash: topology_view.held_hash(),
+                            let digest = Arc::new(Mutex::new(MeshDigest {
                                 fabric_id: cfg.fabric_id.clone(),
                                 node: MeshNode { mesh: cfg.mesh.clone(), r#type: "node-admin".into(),
                                     node_id: node_id.clone(),
@@ -1963,16 +1961,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         })
                                     }),
-                                    types: Arc::new({
-                                        let (topology_view, records) = (topology_view.clone(), records.clone());
-                                        move |d: MeshDigest, types: std::collections::BTreeSet<String>| {
-                                            let (topology_view, records) = (topology_view.clone(), records.clone());
-                                            Box::pin(async move {
-                                                records.seed_at_arrival_or_hold(&d).await?;
-                                                // The joiner's types are held before the join is answered; the joiner is handed to no
-                                                // channel as a peer: it dials this admin, its first neighbour (gossip.md §8, Q84).
-                                                topology_view.hold_app_types_from(&d, types.clone(), types).await.map_err(|e| e.to_string())
-                                            })
+                                    seed_at_arrival: Arc::new({
+                                        let records = records.clone();
+                                        move |d: MeshDigest| {
+                                            let records = records.clone();
+                                            Box::pin(async move { records.seed_at_arrival_or_hold(&d).await.map(|_| ()) })
                                         }
                                     }),
                                     install: Arc::new(move |d: &MeshDigest| {
@@ -2125,58 +2118,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
                                 })
                             };
-                            let app_channels_task = {
-                                let (topology_view, client, rows, me) = (topology_view.clone(), node_rpc.client.clone(), nodes_storage.clone(), node_id.clone());
-                                let stop = stop_gate.clone();
-                                tokio::spawn(async move {
-                                    let mut changes = topology_view.digest_view.digest_changes();
-                                    let mut learned = std::collections::HashMap::new();
-                                    loop {
-                                        let turn = stop.turn("app-channels").await;
-                                        changes.borrow_and_update();
-                                        let work = topology_view.digest_view.all().into_iter().filter(|d| d.node.node_id != me).filter(|d| learned.get(&(d.node.node_id.clone(), d.node.incarnation.clone())) != Some(&d.held_hash));
-                                        let results = futures_util::future::join_all(work.map(|d| {
-                                            let (topology_view, client, rows) = (topology_view.clone(), client.clone(), rows.clone());
-                                            let span = tracing::info_span!("rdm.node_admin.node.update.via-types-read", node_id = %d.node.node_id, incarnation = %d.node.incarnation, subject_path = %d.node.path, subject_name = %d.node.name);
-                                            async move {
-                                                let birth = (d.node.node_id.clone(), d.node.incarnation.clone());
-                                                if rdm_core::is_node_admin(&d.node.r#type) {
-                                                    // node.get of its own row, on op 0x23 (Q285).
-                                                    let filter = rdm_core::filter::Filter::new().eq("id", [d.node.node_id.to_string()]);
-                                                    let read = rdm_client::NodeRpc::new(&client).read(&rdm_transport::NodeTarget::ExactNode(d.node.node_id.clone()), rdm_core::filter::Entity::Nodes, &filter, &rdm_transport::CallOptions::default()).await;
-                                                    {
-                                                        if let Ok(rdm_core::read::Rows::Nodes(nodes)) = read {
-                                                            if let Some(n) = nodes.iter().find(|n| n.node_id == birth.0 && n.incarnation_id.as_ref() == Some(&birth.1)) {
-                                                                let hash = rdm_core::app_types::hash(&n.held);
-                                                                if hash == n.held_hash && n.types.is_subset(&n.held) {
-                                                                    if topology_view.learn_app_types_from(&d, n.types.clone(), n.held.clone()).await.is_ok() {
-                                                                        tracing::info_span!("rdm.node_admin.node.update.via-held-types", node_id = %birth.0, incarnation = %birth.1, types = n.types.len(), held = n.held.len()).in_scope(|| tracing::info!("peer node.get supplied the joined types"));
-                                                                        return Some((birth, d.held_hash));
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                } else if let Ok(Some(row)) = crate::node_rows::record_at(&*rows, &d.node.location()).await {
-                                                    // Its declared types are the node's own part of its record (Q333).
-                                                    let own = if row.node_id == birth.0 { rows.properties(&row.node_id).await.ok().flatten() } else { None };
-                                                    if row.node_id == birth.0 {
-                                                        if let Some(t) = own.and_then(|o| o.app_types).filter(|t| t.incarnation == birth.1) {
-                                                            // A member of this admin's own mesh: its types are held, it is dialled by no one but §6's repair (Q84).
-                                                            if topology_view.hold_app_types_from(&d, t.types.clone(), t.types).await.is_ok() { return Some((birth, d.held_hash)); }
-                                                        }
-                                                    }
-                                                }
-                                                None
-                                            }.instrument(span)
-                                        })).await;
-                                        learned.extend(results.into_iter().flatten());
-                                        drop(turn);
-                                        if changes.changed().await.is_err() { return; }
-                                    }
-                                })
-                            };
-                            let mut tasks = vec![contacts_task, node_rpc_feed, superseded_rows_task, app_channels_task];
+                            let mut tasks = vec![contacts_task, node_rpc_feed, superseded_rows_task];
                             // A fabric-primary resumes the storage change its predecessor started and did not end, from its
                             // events, each time the primary records change (storage.md §2 "Changing it").
                             tasks.push(tokio::spawn(crate::storage_change::keep_resumed(storage_changes.clone(), topology_view.primaries().clone())));
@@ -3424,7 +3366,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             })
         })
     };
-    let mut start = crate::workflows::node_start::FirstStart { types: join_types, listeners: Vec::new(),
+    let mut start = crate::workflows::node_start::FirstStart { listeners: Vec::new(),
         starting: Some(starting),
         joining: Some(joining),
         resolve: Some(resolve),

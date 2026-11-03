@@ -240,14 +240,12 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
             subject_id.as_str(),
             clock,
             Vec::new(),
-            &[],
         )
         .await
         .expect("join topology view");
 
         let status_cell = Arc::new(Mutex::new(MemberStatus::Ready));
         let digest_base = MeshDigest {
-            held_hash: Default::default(),
             fabric_id: fabric_id.clone(),
             node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: subject_id.clone(),
@@ -352,7 +350,7 @@ fn mesh_primary_carries_delete_connections_over_node_command_stream_and_records_
 
         let service = StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),

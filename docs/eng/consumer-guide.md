@@ -51,7 +51,7 @@ nothing matches.
 |---|---|---|---|---|
 | `fabric.get` | — | `id`, `name`, `status`, `provider`, `fabric_primary`, `admin_api_base`, `build_id`, `meshes`, `topology_storage_provider` | the fabric the admin's view holds: id, name, state, provider, fabric-primary, meshes | the fabric-primary |
 | `mesh.get` | — | `id`, `name`, `status`, `primary_admin`, `admin_api_base`, `nodes` | meshes, by name | the fabric-primary |
-| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `type`, `status`, `tags`, `config.<key>`, `types`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path` and `name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from the node records |
+| `node.get` | — | every field of the node-properties table: `id`, `name`, `mesh`, `type`, `status`, `tags`, `config.<key>`, `is_primary`, `is_fabric_primary`, `executable`, `stopped`, … | node rows by `path` and `name`, each with status, ports, config, tags and executable; no pair: every node of the fabric, its topology | the fabric-primary, from the node records |
 | `node.connection.get` | `node` (id, incarnation), required | `id`, `source`, `destination`, `kind`, `state`, `carrier`, `reason`, `logged_at_ms` | the exact node's own connections from its connections log | the exact node |
 
 Written as the pair list the wire carries:

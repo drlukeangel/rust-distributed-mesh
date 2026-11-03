@@ -26,7 +26,7 @@ use tracing::Instrument as _;
 
 fn digest(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, r#type: &str, mesh_id: &MeshId) -> MeshDigest {
     let node_id = NodeId::mint();
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric.clone(),
         node: MeshNode { mesh: mesh.into(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
@@ -84,7 +84,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let own = digest(&fabric, PathName::new("mesh3.node-admin", "1").unwrap(), "mesh3", "node-admin", &mesh3);
         let last = digest(&fabric, PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &mesh1);
-        let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh3", &mesh3, own.node.node_id.as_str(), Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
+        let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh3", &mesh3, own.node.node_id.as_str(), Arc::new(crate::adopted_time()), vec![]).await.unwrap();
         let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh3", rdm_core::PublisherId { incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);

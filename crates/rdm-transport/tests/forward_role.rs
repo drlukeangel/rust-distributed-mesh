@@ -18,7 +18,7 @@ fn fabric() -> FabricId {
 }
 
 fn member(ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq: u64, status: MemberStatus) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: "mesh2".into(), r#type: "node".into(),
             node_id: node_id.clone(),
@@ -79,9 +79,9 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let src_m = TopologyView::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.node-admin.1", clock(), vec![], &[]).await.unwrap();
-        let admin_m = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.node-admin.2", clock(), vec![], &[]).await.unwrap();
-        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.node.1", clock(), vec![admin_addr.clone()], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.node-admin.1", clock(), vec![]).await.unwrap();
+        let admin_m = TopologyView::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.node-admin.2", clock(), vec![]).await.unwrap();
+        let rpc_m = TopologyView::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.node.1", clock(), vec![admin_addr.clone()]).await.unwrap();
         let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
         src_bb.set_mesh_primary(true);

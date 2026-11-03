@@ -180,7 +180,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         held: true,
         listeners: Vec::new(),
     };
-    let digest = rdm_core::MeshDigest { held_hash: Default::default(),
+    let digest = rdm_core::MeshDigest { 
         fabric_id: template.fabric_id.clone(),
         node: rdm_core::MeshNode { mesh: node.mesh.clone(), r#type: node.r#type.clone(), node_id: node.node_id.clone(), path: name.path.clone(), name: name.name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
         status: rdm_core::MemberStatus::Pending,

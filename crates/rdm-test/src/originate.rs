@@ -163,6 +163,19 @@ pub enum OriginateRequest {
         /// The bytes each stream writes (the echo answers them back), at most 1 MiB less the echo's prefix.
         bytes: u32,
     },
+    /// Publish one event on the testkit application's channel ([`crate::test_app::APP_CHANNEL`],
+    /// gossip.md §8) through this process's publisher ([`crate::test_app::app_channel_publisher`]), in
+    /// the service's serve span: the event's `subject`, `sequence` and `data` as given. Appended last.
+    ///
+    /// Position 11 on the wire.
+    Publish {
+        /// The event's subject.
+        subject: String,
+        /// The event's sequence.
+        sequence: u64,
+        /// The event's data.
+        data: Vec<u8>,
+    },
 }
 
 /// Who answered.
@@ -397,6 +410,15 @@ pub enum OriginateReply {
         /// The bytes moved, written and read back, over every stream.
         bytes: u64,
     },
+    /// The event [`OriginateRequest::Publish`] named, handed to the channel's gossip or refused.
+    ///
+    /// Position 19 on the wire.
+    Published {
+        /// Who published it.
+        by: AnsweredBy,
+        /// `handed-to-gossip`, or the channel's refusal by name.
+        outcome: String,
+    },
 }
 
 impl NodeProtocol for Originate {
@@ -409,7 +431,7 @@ impl NodeProtocol for Originate {
     type Reply = OriginateReply;
 
     rdm_core::protocol_variants! {
-        request OriginateRequest { Call, ArmFault, ReleaseFault, Snapshot, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig, Throughput }
+        request OriginateRequest { Call, ArmFault, ReleaseFault, Snapshot, RecordProxy, Dial, Stream, StopTransport, BlockDirect, UpdateOwnConfig, Throughput, Publish }
         reply OriginateReply {
             Called = "called" => ReplyKind::Success,
             FaultArmed = "fault-armed" => ReplyKind::Success,
@@ -425,6 +447,7 @@ impl NodeProtocol for Originate {
             DirectBlocked = "direct-blocked" => ReplyKind::Success,
             OwnConfigUpdated = "own-config-updated" => ReplyKind::Success,
             Measured = "measured" => ReplyKind::Success,
+            Published = "published" => ReplyKind::Success,
         }
     }
 }
@@ -497,6 +520,17 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                             Err(end) => (format!("{end:?}"), Default::default()),
                         };
                         OriginateReply::OwnConfigUpdated { by, outcome, config }
+                    }
+                },
+                OriginateRequest::Publish { subject, sequence, data } => match crate::test_app::app_channel_publisher() {
+                    None => OriginateReply::NotReady { reason: format!("{own:?}: this node joined no {} channel", crate::test_app::APP_CHANNEL) },
+                    Some(publisher) => {
+                        let event = rdm_transport::gossip::Event { subject, sequence: Some(sequence), dataschema: Some("testkit.app.v1".into()), data: data.into() };
+                        let outcome = match publisher.publish(event).await {
+                            Ok(()) => "handed-to-gossip".to_string(),
+                            Err(e) => e.to_string(),
+                        };
+                        OriginateReply::Published { by, outcome }
                     }
                 },
                 OriginateRequest::StopTransport { reason } => {
@@ -768,7 +802,7 @@ mod tests {
 
     /// CONTRACT: `Originate`'s wire is the one its hand-written declaration had: each request and
     /// reply variant encodes to the pinned bytes and decodes back, each reply keeps its name and code,
-    /// the variant counts are 11 and 19, and the six reserved constructors build their own variants
+    /// the variant counts are 12 and 20, and the six reserved constructors build their own variants
     /// at positions 5 to 10, between the application's variants.
     #[test]
     fn originate_keeps_every_variant_on_its_pinned_bytes() {
@@ -786,6 +820,7 @@ mod tests {
             (OriginateRequest::BlockDirect { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), blocked: true }, "080c64646464646464646464646401"),
             (OriginateRequest::UpdateOwnConfig { config: [("a".to_string(), "b".to_string())].into() }, "090101610162"),
             (OriginateRequest::Throughput { destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), streams: 2, bytes: 3 }, "0a0c6464646464646464646464640203"),
+            (OriginateRequest::Publish { subject: "s".into(), sequence: 2, data: vec![9] }, "0b0173020109"),
         ];
         let replies = [
             (OriginateReply::Called { by: by(), destination_node_id: "d".into(), route: "direct".into(), carrier: None, deleted: Some("x".into()), outcome: "reply".into(), reply: None, pooled: vec!["p".into()] }, "0001690170016e016301640664697265637400010178057265706c7900010170", "called", Code::Ok),
@@ -807,6 +842,7 @@ mod tests {
             (OriginateReply::DirectBlocked { by: by(), destination: rdm_core::NodeId::parse("dddddddddddd").unwrap(), blocked: false }, "1001690170016e01630c64646464646464646464646400", "direct-blocked", Code::Ok),
             (OriginateReply::OwnConfigUpdated { by: by(), outcome: "o".into(), config: [("a".to_string(), "b".to_string())].into() }, "1101690170016e0163016f0101610162", "own-config-updated", Code::Ok),
             (OriginateReply::Measured { by: by(), kind: "k".into(), open_us: 1, streams_us: 2, bytes: 3 }, "1201690170016e0163016b010203", "measured", Code::Ok),
+            (OriginateReply::Published { by: by(), outcome: "o".into() }, "1301690170016e0163016f", "published", Code::Ok),
         ];
         let off = pinned::<Originate>(&requests, &replies);
         assert!(off.is_empty(), "the wire moved:\n{}", off.join("\n"));

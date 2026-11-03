@@ -20,7 +20,7 @@ fn publisher() -> PublisherId {
 
 fn digest() -> rdm_core::MeshDigest {
     use rdm_core::*;
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: FabricId::mint(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
@@ -82,9 +82,6 @@ fn own_row() -> rdm_core::views::NodeView {
         gossip: None,
         tags: Default::default(),
         config: [("k".to_string(), "v".to_string())].into(),
-        types: Default::default(),
-        held: Default::default(),
-        held_hash: [0; 32],
         cert: None,
         executable: None,
         storage_persistence: None,
@@ -120,8 +117,8 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
         // Q234: the reader's own whole row, a `NodeView` in its field order (its trailing properties Read,
         // Q318), and nothing after it: a node record carries no revision (i150 D10; durable format moved), and no
         // data-dir facts (Q359; wire format moved).
-        (OwnRow { node: own_row() }, "0e 06 6d2e6e6f6465 01 31 04 6e6f6465 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 00 00 \
-            0000000000000000000000000000000000000000000000000000000000000000 00 00 00 00 00"),
+        (OwnRow { node: own_row() }, "0e 06 6d2e6e6f6465 01 31 04 6e6f6465 016d 0c 303472616a303970337a7037 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 01 016b 0176 \
+            00 00 00 00 00"),
     ];
     for (r, hex) in fixtures {
         variants.insert(Topology::encode_reply(&r).unwrap()[0]);
@@ -142,7 +139,7 @@ fn replies_match_the_frozen_fifteen_variant_wire_schema() {
 #[test]
 fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
     use rdm_core::*;
-    let d = MeshDigest { held_hash: Default::default(),
+    let d = MeshDigest { 
         fabric_id: FabricId::parse("1123456789ab").unwrap(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::parse("0123456789ab").unwrap(),
@@ -167,7 +164,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
     let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], deleted: vec![] };
     let hex = "00 05 6d65736831 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
         0c 313132333435363738396162 05 6d65736831 04 6e6f6465 0c 303132333435363738396162 0a 6d657368312e6e6f6465 01 31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
-        01 00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
+        01 00 07 09 00 00 00 00 00 00 \
         00 \
         02 \
         00 00";

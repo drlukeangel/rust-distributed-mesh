@@ -108,7 +108,6 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
         };
 
         let digest = MeshDigest {
-            held_hash: Default::default(),
             fabric_id: FabricId::mint(),
             node: MeshNode { mesh: dep.mesh.clone(), r#type: dep.r#type.clone(),
                 node_id: dep.node_id.clone(),
@@ -162,7 +161,7 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                     })
                 })
             }) },
-            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| {
                 installed_for_service
                     .lock()
@@ -229,7 +228,6 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                 .serve(
                     dep.endpoint_id.clone(),
                     JoinRequest::JoinNode {
-                        types: Vec::new(),
                         digest: (&digest).into(),
                         listeners,
                     },
@@ -275,7 +273,6 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
             .serve(
                 dep.endpoint_id.clone(),
                 JoinRequest::JoinNode {
-                    types: Vec::new(),
                     digest: (&digest).into(),
                     listeners: good_listeners.clone(),
                 },
@@ -299,8 +296,6 @@ fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_ver
                     endpoint_id: Some(dep.endpoint_id.clone()),
                     transport_addr: Some(digest.node.transport_addr),
                     listeners: good_listeners.clone(),
-                    app_types: None,
-                    held: Default::default(),
                 },
                 |_| {},
             )

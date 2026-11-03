@@ -109,7 +109,7 @@ impl NodeObserver for LiveMesh {
             let fabric_id = self.topology_view.digest_view.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
             let service = rdm_admin::status_rpc::StatusService {
                 certs: None,
-                app_channels: None,
+                topology_view: None,
                 me: me.location(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
                 declaration_seam: None, command_frame_seam: None, operation_effects: Default::default(), stopped: Default::default(),
                 topology: Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
@@ -465,7 +465,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
             vec![seed.clone()]
         }
     };
-    let topology_view = TopologyView::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), admin_node_id.as_str(), Arc::new(rafka_time.clone()), seeds, &[]).await.unwrap();
+    let topology_view = TopologyView::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), admin_node_id.as_str(), Arc::new(rafka_time.clone()), seeds).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
     let nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage> = Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
@@ -474,7 +474,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let join_service = {
         let learner = topology_view.clone();
-        Arc::new(rdm_admin::join::JoinService { nodes: Some((nodes_storage.clone(), rows.clone())), types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        Arc::new(rdm_admin::join::JoinService { nodes: Some((nodes_storage.clone(), rows.clone())), seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             me_path: name.path.clone(), me_name: name.name.clone(),
             joins: joins.clone(),
             answer: Arc::new({
@@ -592,7 +592,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     // The admin side publishes its digest as a real node-admin does on joining: a node addresses a
     // connections delete's completion and its start's join to the admin its topology view holds.
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    let admin_digest = rdm_core::digest::MeshDigest { held_hash: topology_view.held_hash(),
+    let admin_digest = rdm_core::digest::MeshDigest {
         fabric_id: fabric.clone(),
         node: rdm_core::digest::MeshNode { mesh: "mesh1".into(), r#type: "node-admin".into(),
             node_id: admin_node_id.clone(),

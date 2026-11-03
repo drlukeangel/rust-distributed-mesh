@@ -105,9 +105,6 @@ pub use publisher::PublisherId;
 pub use role::{Primary, PrimaryRole};
 pub use runtime::{RuntimeFact, RuntimeFactError, RuntimeLocator, RuntimeProvider};
 
-/// App type declaration bounds and held-set identity.
-pub mod app_types;
-
 /// Structured, stable operation identities.
 pub mod operation_id;
 pub use operation_id::{OperationId, OperationSubject};

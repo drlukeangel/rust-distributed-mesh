@@ -433,7 +433,7 @@ impl Rig {
                 let data_dir = rdm_admin::deployment::node_data_dir(&self.data_root, &node_id);
                 let endpoint_id = rdm_admin::deployment::pipeline::endpoint_id(&data_dir).expect("the create wrote the transport key");
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
-                let digest = MeshDigest { held_hash: Default::default(),
+                let digest = MeshDigest { 
                     fabric_id: FabricId::mint(),
                     node: MeshNode { mesh: view.topology.node_spec(&name).unwrap().mesh.clone(), r#type: view.topology.node_spec(&name).unwrap().r#type.clone(), node_id, path: name.path.clone(), name: name.name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
                     status: MemberStatus::Pending,

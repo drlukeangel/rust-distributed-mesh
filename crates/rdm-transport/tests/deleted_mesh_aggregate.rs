@@ -13,7 +13,7 @@ fn fabric() -> FabricId {
 
 fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> MeshDigest {
     let node_id = NodeId::mint();
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),

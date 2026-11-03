@@ -132,9 +132,6 @@ const NODE: &[Property] = &[
     p("type", Takes::Text),
     p("name", Takes::Text),
     p("tags", Takes::Label),
-    p("types", Takes::Text),
-    p("held", Takes::Text),
-    p("held_hash", Takes::Text),
     p("is_primary", Takes::Bool),
     p("is_fabric_primary", Takes::Bool),
     p("stopped", Takes::Bool),
@@ -264,9 +261,6 @@ impl Row for NodeView {
             "type" => Value::One(self.r#type.clone()),
             "name" => Value::One(self.node_name()),
             "tags" => Value::set(&self.tags),
-            "types" => Value::set(&self.types),
-            "held" => Value::set(&self.held),
-            "held_hash" => Value::One(self.held_hash.iter().map(|b| format!("{b:02x}")).collect()),
             "is_primary" => Value::bool(self.is_primary),
             "is_fabric_primary" => Value::bool(self.is_fabric_primary),
             "stopped" => Value::bool(self.stopped),
@@ -523,7 +517,7 @@ mod tests {
             "incarnation_id": null, "deployment_id": null, "provider": "process", "data_dir": null, "status": "ready",
             "is_primary": false, "is_fabric_primary": false, "admin_api_base": null, "transport_addr": null, "listeners": [],
             "declared": null, "stopped": false, "load": null, "gossip": null, "tags": [], "config": {},
-            "types": [], "held": [], "held_hash": vec![0u8; 32], "cert": null, "executable": null,
+            "cert": null, "executable": null,
             "storage_persistence": null, "topology_storage_provider": null,
         }))
         .expect("a node row");
@@ -618,7 +612,6 @@ mod tests {
 
     fn digest(name: crate::PathName, mesh: &str, r#type: &str, status: crate::MemberStatus, is_primary: bool) -> MeshDigest {
         MeshDigest {
-            held_hash: Default::default(),
             fabric_id: crate::FabricId::mint(),
             node: crate::MeshNode { mesh: mesh.into(), r#type: r#type.into(),
                 node_id: NodeId::mint(),

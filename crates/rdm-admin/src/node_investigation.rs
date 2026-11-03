@@ -428,7 +428,6 @@ mod tests {
 
     fn digest(n: &Node, incarnation: IncarnationId, runtime: Option<rdm_core::RuntimeFact>) -> rdm_core::MeshDigest {
         rdm_core::MeshDigest {
-            held_hash: Default::default(),
             fabric_id: FabricId::mint(),
             node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation, supersedes: None, runtime },
             status: rdm_core::MemberStatus::Ready,

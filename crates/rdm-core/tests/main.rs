@@ -17,4 +17,3 @@ mod topology_wire;
 mod forward_causes;
 
 mod outcome_codes;
-mod app_types_wire;

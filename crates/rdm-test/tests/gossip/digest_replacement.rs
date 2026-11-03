@@ -37,13 +37,13 @@ fn story(story: Story) {
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
+        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
         let key = iroh::SecretKey::generate().public();
         let other_key = iroh::SecretKey::generate().public();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
+        let digest = MeshDigest { fabric_id: fabric, node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(), node_id: node_id.clone(), path: "mesh1.node".into(), name: "2".into(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None };
         if matches!(story, Story::ReadFloor) {
             let read = rdm_transport::snapshot::Chunk {
                 mesh: "mesh1".into(), publisher: rdm_transport::snapshot::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },

@@ -182,7 +182,7 @@ impl RuntimeRow {
 /// primary of a mesh with none, `rdm_admin::node_rows`), from the copy it caches: its `(path, name)`,
 /// status and executable, and the facts of its current birth and of the one a restart replaced: the
 /// mesh-primary's part of the node's record (Q333). What the node writes itself (config, tags,
-/// listeners, endpoint, transport address, declared types, held) is the node's own part at the same
+/// listeners, endpoint, transport address) is the node's own part at the same
 /// key (`crate::node_records::NodeProperties`). A `Deleted` record stands. A `(path, name)` resolves to
 /// the node whose live record stands there ([`NodeRowsStorage::node_at`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,15 +267,6 @@ pub struct NodeRow {
 impl NodeRow {
     /// The `(path, name)` lookup index key of path and name.
     pub fn location(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.path.clone(), name: self.name.clone() } }
-}
-
-/// The application types a birth declared at join, on the node's own part of its record (Q333).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppTypes {
-    /// Exact birth that declared the types.
-    pub incarnation: IncarnationId,
-    /// Immutable declared application types.
-    pub types: BTreeSet<String>,
 }
 
 /// The identity a create's `AllocateIdentity` decided for the birth its claim names (beside the
@@ -408,8 +399,9 @@ pub const RUNTIME_FORMAT: &str = "node-runtime/1";
 /// The `type` of [`RUNTIME_FORMAT`]'s lines.
 pub const RUNTIME_KIND: &str = "node-runtime";
 /// The `dataschema` of the node's own part of its record (Q333): the line the node appends at its node id,
-/// carrying only what it writes ([`crate::node_records::NodeProperties`]).
-pub const PROPERTIES_FORMAT: &str = "node-properties/1";
+/// carrying only what it writes ([`crate::node_records::NodeProperties`]). `/2` carries no `app_types`
+/// and no `held` (Q362); a `/1` line is refused by name, never decoded with its fields dropped.
+pub const PROPERTIES_FORMAT: &str = "node-properties/2";
 /// The `type` of [`PROPERTIES_FORMAT`]'s lines.
 pub const PROPERTIES_KIND: &str = "node-properties";
 #[cfg(feature = "file-backend")]
@@ -693,7 +685,7 @@ mod tests {
     /// CONTRACT (node-identity-and-state.md §2; storage.md §2; Q333, Q365): each of the nodes store's
     /// lines in the root's `nodes.jsonl` is frozen byte for byte: a CloudEvents event whose `source`
     /// is its writer, `subject` its node id (`<node id>--<incarnation>` for a runtime row), `type` and
-    /// `dataschema` `node-record` `node-record/1`, `node-properties` `node-properties/1` and
+    /// `dataschema` `node-record` `node-record/1`, `node-properties` `node-properties/2` and
     /// `node-runtime` `node-runtime/1`, and `data` the whole record; its `id` and `time` the write's. A
     /// layout that moves moves this cell with it (`durable format moved`). Must NOT happen: a line whose
     /// attributes or record bytes moved while this cell still passes.
@@ -709,7 +701,7 @@ mod tests {
         let incarnation_id = IncarnationId::parse(&rdm_core::fixture_crockford60("node-1-inc")).unwrap();
         let row = NodeRow::new(name.clone(), "mesh1", "node", node_id.clone(), crate::model::NodeStatus::Ready);
         store.put_node(&row).await.unwrap();
-        let properties = crate::node_records::NodeProperties { birth: crate::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation_id.clone() }, config: BTreeMap::new(), tags: BTreeSet::new(), endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: BTreeSet::new() };
+        let properties = crate::node_records::NodeProperties { birth: crate::node_records::RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation_id.clone() }, config: BTreeMap::new(), tags: BTreeSet::new(), endpoint_id: None, transport_addr: None, listeners: Vec::new() };
         store.put_properties(&properties).await.unwrap();
         store.finish_issued_writes().await;
         let file = d.join(crate::store_root::NODES_FILE);
@@ -721,8 +713,32 @@ mod tests {
             crate::store_log::encode_line(&attributes, data.as_bytes())
         };
         let record = format!(r#"{{"mesh":"mesh1","type":"node","path":"mesh1.node","name":"1","node_id":"{node_id}","status":"ready","topology_storage_provider":null}}"#);
-        let own = format!(r#"{{"birth":{{"node_id":"{node_id}","incarnation_id":"{incarnation_id}"}},"config":{{}},"tags":[],"endpoint_id":null,"transport_addr":null,"listeners":[],"app_types":null,"held":[]}}"#);
-        assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8([expect(0, "node-record", "node-record/1", node_id.as_str(), record), expect(1, "node-properties", "node-properties/1", node_id.as_str(), own)].concat()).unwrap());
+        let own = format!(r#"{{"birth":{{"node_id":"{node_id}","incarnation_id":"{incarnation_id}"}},"config":{{}},"tags":[],"endpoint_id":null,"transport_addr":null,"listeners":[]}}"#);
+        assert_eq!(String::from_utf8(std::fs::read(&file).unwrap()).unwrap(), String::from_utf8([expect(0, "node-record", "node-record/1", node_id.as_str(), record), expect(1, "node-properties", "node-properties/2", node_id.as_str(), own)].concat()).unwrap());
         assert_eq!(lines[1].attributes.source_node_id(), Some(writer.node_id.as_str()), "the source names the writer's node id");
+    }
+
+    /// CONTRACT (Q362, Q365: `dataschema` is the record's kind and schema version): a node's own line
+    /// of `node-properties/1`, the schema that carried `app_types` and `held`, is refused by name when
+    /// the nodes store is read, naming the dataschema and the ones this build reads. Must NOT happen:
+    /// the line decoded as `node-properties/2` with its fields dropped.
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn a_node_properties_1_line_is_refused_by_name() {
+        let d = crate::record_store::tempdir("nodes-store-properties-1");
+        let root = crate::store_root::StoreRoot::at(&d);
+        let writer = crate::store_log::LogWriter::mint();
+        let node_id = NodeId::parse(&rdm_core::fixture_crockford60("node-1")).unwrap();
+        let incarnation_id = IncarnationId::parse(&rdm_core::fixture_crockford60("node-1-inc")).unwrap();
+        let old = serde_json::json!({"birth": {"node_id": node_id, "incarnation_id": incarnation_id}, "config": {}, "tags": [], "endpoint_id": null, "transport_addr": null, "listeners": [], "app_types": null, "held": []});
+        let raw = crate::store_log::StoreLog::open(&d.join(crate::store_root::NODES_FILE), crate::store_log::Formats::any()).await.unwrap();
+        raw.append(&writer, PROPERTIES_KIND, "node-properties/1", node_id.as_str(), &old).await.unwrap();
+        drop(raw);
+        let read = match FileNodesStorage::open(&d, &root, "mesh1", &writer).await {
+            Ok(store) => store.properties(&node_id).await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        let why = read.expect_err("a node-properties/1 line is refused").to_string();
+        assert!(why.contains("\"node-properties/1\"") && why.contains("node-properties/2"), "refused naming the old dataschema and the one this build reads: {why}");
     }
 }

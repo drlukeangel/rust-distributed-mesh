@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 fn member(fabric: &FabricId, name: rdm_core::PathName, mesh: &str, r#type: &str, seq: u64) -> MeshDigest {
     let node_id = NodeId::mint();
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric.clone(),
         node: MeshNode { mesh: mesh.into(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
@@ -57,7 +57,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let admin_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
+    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: admin_birth.incarnation.clone(), node_id: admin_birth.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
     let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me_path: "mesh1.node-admin".into(), me_name: "1".into(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_service: Default::default() };
@@ -103,7 +103,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let admin_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
+    let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![]).await.unwrap();
     topology_view.set_mesh_primary(true);
 
     let member = member(&fabric, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 10);
@@ -129,7 +129,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     }));
     let status_service = StatusService {
         certs: None,
-        app_channels: None,
+        topology_view: None,
         declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),

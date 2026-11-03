@@ -1,5 +1,5 @@
 //! The testkit's channel member (`rdm_test::channel_member`): two members of one mesh, joined to one
-//! declared app type, publish and receive an app event through the channel `join_channel` opens, as
+//! app channel, publish and receive an app event through the channel `join_channel` opens, as
 //! an embedding's cell does with it.
 
 use bytes::Bytes;
@@ -17,8 +17,8 @@ fn event(sequence: u64, data: &'static [u8]) -> Event {
 
 // @feature: gossip
 /// CONTRACT (gossip.md app channels; the testkit rig for app-channel cells): two members of a mesh,
-/// the second joined through the first, both declaring one app type, open its channel with
-/// `topology_view.join_channel` and `split` it. Once the channel's neighbours are up (a protocol event,
+/// the second joined through the first, open one app channel with `topology_view.join_channel`, the
+/// second naming the first as its peer, and `split` it. Once the channel's neighbours are up (a protocol event,
 /// never elapsed time), each publishes one event and receives the other's: its data, sequence and
 /// schema as published, sourced from the publishing member's author.
 #[test]
@@ -26,10 +26,10 @@ fn two_members_publish_and_receive_one_event() {
     let cap = crate::common::capture("two_members_publish_and_receive_one_event");
     cap.run(crate::common::Threads::Workers(4), async {
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let a = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[], &[TYPE]).await;
-        let b = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &[a.addr()], &[TYPE]).await;
-        let (to_b, mut from_b) = a.topology_view.join_channel(TYPE).await.expect("a joins its declared channel").split();
-        let (to_a, mut from_a) = b.topology_view.join_channel(TYPE).await.expect("b joins its declared channel").split();
+        let a = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &[]).await;
+        let b = Member::join(&fabric, &mesh, rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &[a.addr()]).await;
+        let (to_b, mut from_b) = a.topology_view.join_channel(TYPE, &[]).await.expect("a joins the channel").split();
+        let (to_a, mut from_a) = b.topology_view.join_channel(TYPE, &[a.endpoint()]).await.expect("b joins the channel, naming a its first neighbour").split();
         for (on, other) in [(&a, &b), (&b, &a)] {
             let mut raw = on.gossip().subscribe(channel_id(&fabric, TYPE), vec![other.endpoint_id()]).await.unwrap();
             tokio::time::timeout(BOUND, raw.joined()).await.expect("the channel's neighbour is up").unwrap();

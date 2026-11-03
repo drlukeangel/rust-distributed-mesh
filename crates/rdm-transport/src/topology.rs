@@ -2424,7 +2424,7 @@ impl View {
             if let Some(digests) = digests {
                 let me_name = self.current_name();
                 for d in digests.into_iter().filter(|d| &d.fabric_id == fabric && d.node.mesh == self.mesh && d.node.node_id.to_string() != me_name) {
-                    if self.digest_view.get(d.node.node_id.as_str()).is_none_or(|(held, _)| held.node.incarnation != d.node.incarnation || held.digest_seq < d.digest_seq || held.held_hash != d.held_hash)
+                    if self.digest_view.get(d.node.node_id.as_str()).is_none_or(|(held, _)| held.node.incarnation != d.node.incarnation || held.digest_seq < d.digest_seq)
                         && self.digest_view.record_joined(d.clone())
                     {
                         self.note(&d, side.via());
@@ -2762,7 +2762,7 @@ impl TopologyView {
     /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`. `clock` is the
     /// Rafka-time the process composes: every timestamp this topology view and its backbone put on a
     /// frame reads it.
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>, types: &[&str]) -> Result<Self> {
+    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>) -> Result<Self> {
         let view = View::new(mesh, node);
         let (forward_path, forward_rx) = ForwardPath::pair(view.forwarder.clone(), Arc::default());
         let (replay_view, replay_fabric, replay_clock, replay_forward_path) = (view.clone(), fabric.clone(), clock.clone(), forward_path.clone());
@@ -2819,7 +2819,6 @@ impl TopologyView {
                 let me_name = target_view.current_name();
                 held_view(&digest_view, |d| d.node.mesh == own_mesh && d.node.node_id.to_string() != me_name)
             });
-        let app_seeds = seeds.clone();
         let channel = Channel::join(gossip, endpoint, mesh_channel(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, location, view.order.clone(), on_frame, targets, replay, Arc::default(), clock.clone()).await?;
         let sink_channel = channel.clone();
         let sink: crate::forward_path::Sink = Arc::new(move |f: Frame| {
@@ -2828,7 +2827,7 @@ impl TopologyView {
         });
         forward_path.spawn_sender(forward_rx, sink);
         let name = view.held_name.clone();
-        let apps = crate::gossip::Hub::new(gossip, fabric, channel.author.clone(), clock.clone(), types, &app_seeds).await?;
+        let apps = crate::gossip::Hub::new(gossip, fabric, channel.author.clone(), clock.clone());
         let mesh_status_publisher = Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string()))));
         let me = Self { apps, mesh: channel, digest_view: view.digest_view.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), own_row: Arc::default(), name, mesh_status_publisher };
         me.watch_meshes();
@@ -2846,55 +2845,23 @@ impl TopologyView {
         self.mesh_status_publisher.lock().unwrap().held()
     }
 
-    /// Join one declared or learned app type with one owned receiver.
-    pub async fn join_channel(&self, kind: &str) -> Result<crate::gossip::Channel, crate::gossip::ChannelError> { self.apps.join(kind).await }
+    /// Join the application channel `name` with `peers`, its first neighbours, each by its
+    /// `endpoint_id` (gossip.md §8, Q362): nodes the application names from its topology view, or, in
+    /// `pre_node_ready`, its mesh-primary from the context. They are handed to iroh-gossip as the
+    /// channel's bootstrap peers. The channel's one receiver is handed over once; a peer whose
+    /// `endpoint_id` is not an endpoint key refuses the join by name.
+    pub async fn join_channel(&self, name: &str, peers: &[rdm_core::EndpointId]) -> Result<crate::gossip::Channel, crate::gossip::ChannelError> {
+        let mut ids = Vec::new();
+        for p in peers {
+            let key = p.0.parse::<iroh::PublicKey>().map_err(|e| crate::gossip::ChannelError::Subscribe { r#type: name.into(), detail: format!("peer endpoint_id {:?} is not an endpoint key: {e}", p.0) })?;
+            ids.push(key);
+        }
+        self.apps.join(name, ids).await
+    }
     /// Testkit-only one-shot incoming chunk loss, absent from production.
     #[cfg(feature = "testkit-gossip")]
     pub async fn drop_app_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> { self.apps.drop_chunk_once(kind, index).await }
 
-    /// This birth's immutable app declaration.
-    pub fn app_types(&self) -> std::collections::BTreeSet<String> { self.apps.types() }
-    /// The monotonic set of app types this birth has joined.
-    pub fn held_types(&self) -> std::collections::BTreeSet<String> { self.apps.held() }
-    /// The held set ([`Self::held_types`]) as it grows: the whole set, sent each time a declared or
-    /// learned type is joined (gossip.md app channels: node-admin joins every type a member declares and
-    /// what another admin's `held_hash` teaches it), so an app holding a channel subscriber per type
-    /// learns of each new one. The receiver's current value is the set held now.
-    pub fn held_type_changes(&self) -> tokio::sync::watch::Receiver<std::collections::BTreeSet<String>> { self.apps.held_changes() }
-    /// The hash carried by this birth's next digest.
-    pub fn held_hash(&self) -> [u8; 32] { self.apps.hash() }
-    /// Hold a verified member or peer's declaration and joined types; ordinary app declarations stay immutable.
-    pub async fn learn_app_types_from(&self, d: &MeshDigest, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> {
-        anyhow::ensure!(d.fabric_id == self.fabric, "app declaration belongs to another fabric");
-        self.mesh.register(d);
-        let peer = gossip_addr(d).map(|a| a.id);
-        self.apps.learn(d.node.node_id.clone(), d.node.incarnation.clone(), types, held, peer).await?;
-        self.digest_view.set_own_held_hash(self.apps.hash());
-        Ok(())
-    }
-    /// [`Self::learn_app_types_from`] for a member of this node's own mesh at its join: the types are
-    /// held (joined) and the member is handed to no channel as a peer, so this node dials nothing. The
-    /// joiner joins each channel with its mesh's node-admin, already joined, as its first neighbour
-    /// (gossip.md §8); the node-admin dials a member only under §6's held-member repair. Two dials of one
-    /// pair at once leave each side holding the other's superseded connection, and the pair drops on
-    /// every channel (Q84).
-    pub async fn hold_app_types_from(&self, d: &MeshDigest, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> {
-        anyhow::ensure!(d.fabric_id == self.fabric, "app declaration belongs to another fabric");
-        self.mesh.register(d);
-        self.apps.learn(d.node.node_id.clone(), d.node.incarnation.clone(), types, held, None).await?;
-        self.digest_view.set_own_held_hash(self.apps.hash());
-        Ok(())
-    }
-    /// Learn metadata from an exact birth already held in the topology view.
-    pub async fn learn_app_types(&self, node: rdm_core::NodeId, incarnation: rdm_core::IncarnationId, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> {
-        let d = self.digest_view.get(node.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
-        let peer = d.as_ref().and_then(gossip_addr).map(|a| a.id);
-        self.apps.learn(node, incarnation, types, held, peer).await?;
-        self.digest_view.set_own_held_hash(self.apps.hash());
-        Ok(())
-    }
-    /// The type metadata learned for one exact birth.
-    pub fn member_app_types(&self, node: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId) -> Option<(std::collections::BTreeSet<String>, std::collections::BTreeSet<String>)> { self.apps.member(node, incarnation) }
     /// This topology view's fabric identity.
     pub fn fabric_id(&self) -> &FabricId { &self.fabric }
 
@@ -3187,14 +3154,12 @@ impl TopologyView {
         self.name.lock().unwrap().clone().unwrap_or_else(|| birth.clone())
     }
 
-    /// `d` as this birth reports it: with the name it was told, when it was told it, and the held
-    /// app-type hash.
+    /// `d` as this birth reports it: with the name it was told, when it was told it.
     pub fn reported(&self, d: &MeshDigest) -> MeshDigest {
         let mut d = d.clone();
         if let Some(n) = self.name.lock().unwrap().as_ref() {
             { let at = n.clone(); d.node.path = at.path; d.node.name = at.name; }
         }
-        d.held_hash = self.apps.hash();
         d
     }
 
@@ -4309,14 +4274,6 @@ impl HeldMembers {
     /// The member held at `name` (see the type's note for two births at one (path, name)).
     fn at_name(&self, name: &rdm_core::PathName) -> Option<&HeldMember> {
         self.by_name.get(name).and_then(|ids| ids.last()).and_then(|id| self.map.get(id))
-    }
-
-    /// Set the held hash of `node_id`'s digest: `true` when it moved. No lookup key moves.
-    fn set_held_hash(&mut self, node_id: &str, held_hash: [u8; 32]) -> bool {
-        let Some((d, _, _)) = self.map.get_mut(node_id) else { return false };
-        let moved = d.held_hash != held_hash;
-        d.held_hash = held_hash;
-        moved
     }
 
     /// Restart every member's silence at `now`. No lookup key moves.
@@ -5586,7 +5543,7 @@ impl DigestView {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
         self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d, now, Heard::Direct));
         drop(inner);
@@ -5623,16 +5580,6 @@ impl DigestView {
         }
     }
 
-    pub(crate) fn set_own_held_hash(&self, held_hash: [u8; 32]) {
-        let Some(own) = self.own.lock().unwrap().clone() else { return };
-        let changed = {
-            self.inner.lock().unwrap().set_held_hash(&own, held_hash)
-        };
-        if changed {
-            self.heard.send_modify(|v| *v += 1);
-            self.digests.send_modify(|v| *v += 1);
-        }
-    }
 
     /// Hold `d` as forwarded by its mesh's primary, which only forwards a
     /// member it hears: an equal copy of the held digest keeps the member
@@ -5679,7 +5626,7 @@ impl DigestView {
             held_entry = Some((*at, *heard));
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status));
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || (!own_mesh && held.status != d.status));
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
         self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), at, heard));
@@ -5738,7 +5685,7 @@ impl DigestView {
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         // A forwarded copy is its forwarder's word that the member is heard (it forwards only what it
         // hears): a birth held silent past the staleness floor is heard again here, as on its own digest.
-        let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, heard)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status) || unheard(at, *heard, now) > self.staleness_floor);
+        let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, heard)| held.node != d.node || (!own_mesh && held.status != d.status) || unheard(at, *heard, now) > self.staleness_floor);
         self.take_primaries(&d);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
@@ -6271,7 +6218,7 @@ mod tests {
     }
 
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
-        MeshDigest { held_hash: Default::default(),
+        MeshDigest { 
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: node_id.clone(),
@@ -8595,7 +8542,7 @@ mod tests {
             replayed_during_stamp: Mutex::new(Vec::new()),
         });
         let clock: SharedClock = racing.clone();
-        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", clock, vec![], &[]).await.unwrap();
+        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", clock, vec![]).await.unwrap();
         let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         // Clear `full_due` after initial role take so publication 1 is a normal source full and publication 2 is a delta.
@@ -8631,7 +8578,7 @@ mod tests {
         let ep = crate::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", crate::clock::os_clock(), vec![], &[]).await.unwrap();
+        let m = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", crate::clock::os_clock(), vec![]).await.unwrap();
         let bb = Backbone::join(&gossip, &ep, &m, "mesh1", p.clone(), vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone()]).await);

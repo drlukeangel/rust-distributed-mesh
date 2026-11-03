@@ -244,7 +244,7 @@ impl MeshStorage for FileMeshStorage {
 
 // ---------------------------------------------------------------- facts on a node's record
 
-pub use rdm_node::nodes_storage::{AppTypes, Allocation, BirthFacts, BirthRef, CertDates, NodeOperation, NodeRow, RuntimeRow, SigningCertDates, BIRTHS_KEPT};
+pub use rdm_node::nodes_storage::{Allocation, BirthFacts, BirthRef, CertDates, NodeOperation, NodeRow, RuntimeRow, SigningCertDates, BIRTHS_KEPT};
 
 /// The primaries recorded for `birth` leave its facts: a birth whose exit is proven holds no primary
 /// (mesh-delete.md step 7, "Deleted births resolve Gone"). The mesh-primary's write, never a node's: a

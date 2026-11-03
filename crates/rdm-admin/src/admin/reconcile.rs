@@ -410,7 +410,6 @@ mod tests {
 
     fn sample_digest(fabric_id: FabricId, mesh_id: MeshId, name: &PathName, mesh: &str, r#type: &str, node_id: &NodeId, incarnation: &IncarnationId) -> MeshDigest {
         MeshDigest {
-            held_hash: [0u8; 32],
             fabric_id,
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
                 node_id: node_id.clone(),

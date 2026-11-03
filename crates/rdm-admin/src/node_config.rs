@@ -143,8 +143,6 @@ impl NodeConfigs {
             birth: rdm_node::node_records::RecordBirth { node_id: subject.node_id.clone(), incarnation_id: subject.incarnation_id.clone()? },
             config, tags: row.as_ref().map(|r| r.tags.clone()).unwrap_or_default(),
             endpoint_id: subject.endpoint_id.clone(), transport_addr: subject.transport_addr, listeners: subject.listeners.clone(),
-            app_types: Some(rdm_node::nodes_storage::AppTypes { incarnation: subject.incarnation_id.clone()?, types: channels.app_types() }),
-            held: channels.held_types(),
         })
     }
 
@@ -734,7 +732,7 @@ mod tests {
         };
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-        let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &view.fabric.id, "mesh1", &mesh_id, admin.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &view.fabric.id, "mesh1", &mesh_id, admin.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep.clone(), Arc::new(StaticResolver::new())).with_caller_system("rdm"));
         let configs = NodeConfigs::new(client, Arc::new(crate::node_rows::WrittenRows::default()));
         let records = Arc::new(MemoryNodesStorage::default());

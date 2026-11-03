@@ -693,8 +693,8 @@ impl NodeRows {
     }
 
     /// Seed the arriving birth's row (`RowFor::Arrival`) before its join is answered: the row its
-    /// mesh's writer holds of it, written seeded when it holds none. Its declared types are the node's
-    /// own part of its record (Q333), never written here. One
+    /// mesh's writer holds of it, written seeded when it holds none. The node's own part of its record
+    /// (Q333) is never written here. One
     /// `rdm.node_admin.node.create.via-arrival-seed` span.
     pub async fn seed_at_arrival(&self, d: &rdm_core::MeshDigest) -> Result<(), String> {
         let me = self.writer_check(&d.node.mesh, &d.node.location()).await.map_err(|e| e.to_string())?;
@@ -778,7 +778,7 @@ impl NodeRows {
                 let row = self.written.known_row(&*self.storage, node_id).await.map_err(RowRefused::Unwritten)?.ok_or_else(|| RowRefused::Unwritten(format!("path {name_path:?}, name {name_name:?}: no record of {node_id} supplies its mesh", name_path = &name.path, name_name = &name.name)))?;
                 let me = self.row_writer_in(&*self.view.read().await, name, &row.mesh, node_id, fabric_recovery)?;
                 span.record("node_path", me.path.as_str()).record("node_name", me.name.as_str());
-                // The record is the one held, its facts, executable and app types kept: the node created
+                // The record is the one held, its facts and executable kept: the node created
                 // next at the name runs the executable (node-recovery.md "Retained").
                 write_deleted(&*self.storage, &self.written, name, node_id).await.map(|_| ()).map_err(|e| match e {
                     DeletedRefused::NameHeld(held) => RowRefused::NameHeld(held),
@@ -1565,9 +1565,7 @@ mod tests {
         let mut own = NodeProperties {
             birth: RecordBirth { node_id: old.clone(), incarnation_id: old_incarnation.clone() },
             config: [("source".into(), "node".into())].into(), tags: ["node".into()].into(),
-            endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None,
-            held: Default::default(),
-        };
+            endpoint_id: None, transport_addr: None, listeners: vec![], };
         storage.put_properties(&own).await.unwrap();
         let new = NodeId::mint();
         let allocated = Allocation { predecessor: Some(crate::storage::BirthRef { node_id: old.clone(), incarnation_id: old_incarnation.clone() }), build_id: Some(build_id), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&name)), incarnation: IncarnationId::mint(), deployment_id: crate::model::DeploymentId::mint() };

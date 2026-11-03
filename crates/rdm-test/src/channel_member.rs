@@ -1,9 +1,9 @@
 //! A member of a mesh's gossip topology, standing alone: one endpoint bound on loopback, the gossip
 //! protocol on it, a router accepting gossip, and the topology view joined under a publisher identity
 //! of its own. It is what an app-channel cell needs and nothing else: no Node RPC, no admin, no
-//! launch. A cell joins its declared app types and opens a channel with
-//! `member.topology_view.join_channel(ty)`. The member owns its endpoint, its gossip and its router;
-//! dropping it drops them.
+//! launch. A cell opens a channel with `member.topology_view.join_channel(name, &[other.endpoint()])`,
+//! naming its first neighbours by `endpoint_id`. The member owns its endpoint, its gossip and its router; dropping it
+//! drops them.
 //!
 //! An embedding names no iroh crate: a member is reached through another's [`MemberAddr`].
 
@@ -23,7 +23,7 @@ pub struct Member {
     pub name: String,
     /// Explicit declared node type.
     pub r#type: String,
-    /// Its topology view: the mesh channel joined and its declared app types held.
+    /// Its topology view: the mesh channel joined.
     pub topology_view: TopologyView,
     /// The publisher identity its app events are sourced from.
     pub author: PublisherId,
@@ -39,9 +39,9 @@ impl Member {
 
 impl Member {
     /// A member named `name` with explicit `mesh_name` and `kind`, of the mesh `mesh`
-    /// of `fabric`, joined through `seeds` and declaring `types`, under a publisher identity minted
-    /// for it. A member that cannot bind or join is a defect of the cell: it panics naming why.
-    pub async fn join(fabric: &FabricId, mesh: &MeshId, name: rdm_core::PathName, mesh_name: &str, r#type: &str, seeds: &[MemberAddr], types: &[&str]) -> Member {
+    /// of `fabric`, joined through `seeds`, under a publisher identity minted for it. A member that
+    /// cannot bind or join is a defect of the cell: it panics naming why.
+    pub async fn join(fabric: &FabricId, mesh: &MeshId, name: rdm_core::PathName, mesh_name: &str, r#type: &str, seeds: &[MemberAddr]) -> Member {
         let transport = iroh::endpoint::QuicTransportConfig::builder().build();
         let endpoint = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().expect("a loopback socket address"), vec![iroh_gossip::ALPN.to_vec()], transport)
             .await
@@ -50,7 +50,7 @@ impl Member {
         let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let node_id = NodeId::mint();
         let author = PublisherId { node_id, incarnation: IncarnationId::mint() };
-        let topology_view = TopologyView::join(&gossip, &endpoint, fabric, mesh_name, mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect(), types)
+        let topology_view = TopologyView::join(&gossip, &endpoint, fabric, mesh_name, mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect())
             .await
             .unwrap_or_else(|e| panic!("{name:?}: the member does not join mesh {mesh_name} ({mesh}): {e}"));
         topology_view.set_author(&author, None);
@@ -71,6 +71,43 @@ impl Member {
     /// Its endpoint's id: how RDM's own transport cells name it to the gossip protocol.
     pub fn endpoint_id(&self) -> iroh::EndpointId {
         self.endpoint.id()
+    }
+
+    /// This member as another member's topology view holds it (`TopologyView::learn`): where its
+    /// `endpoint_id` is reached.
+    pub fn digest(&self) -> rdm_core::MeshDigest {
+        rdm_core::MeshDigest {
+            fabric_id: self.topology_view.fabric_id().clone(),
+            node: rdm_core::MeshNode {
+                mesh: self.topology_view.mesh_name().to_owned(),
+                r#type: self.r#type.clone(),
+                node_id: self.author.node_id.clone(),
+                path: self.path.clone(),
+                name: self.name.clone(),
+                endpoint_id: rdm_core::EndpointId(self.endpoint_id().to_string()),
+                transport_addr: self.bound_addr(),
+                incarnation: self.author.incarnation.clone(),
+                supersedes: None,
+                runtime: None,
+            },
+            status: rdm_core::MemberStatus::Pending,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1,
+            data_dir: None,
+            mesh_id: None,
+            in_flight: None,
+            load: None,
+            gossip: None,
+            is_primary: None,
+            is_fabric_primary: None,
+        }
+    }
+
+    /// Its `endpoint_id`: how a channel join names it as a peer.
+    pub fn endpoint(&self) -> rdm_core::EndpointId {
+        rdm_core::EndpointId(self.endpoint_id().to_string())
     }
 
     /// Its gossip protocol: RDM's own transport cells subscribe to a channel's raw topic on it.

@@ -439,7 +439,6 @@ pub(crate) struct AdminAfterStop<'a> {
 impl crate::workflows::node_mesh_join::MeshJoin for AdminAfterStop<'_> {
     type Error = crate::node_self::StartFailed;
 
-    fn join_types(&self) -> Vec<String> { self.session.topology_view.app_types().into_iter().collect() }
 
     fn join_digest(&self) -> MeshDigest {
         self.session.digest.lock().unwrap().clone()

@@ -154,7 +154,7 @@ fn tags_have_per_element_codes_and_the_served_call_is_ok() {
 
 pub(crate) fn check_malformed<P: NodeProtocol>() {
     use rdm_core::outcome::MalformedKind;
-    for (kind, code) in [(MalformedKind::TooLarge, Code::ResourceExhausted), (MalformedKind::UnknownVariant, Code::InvalidArgument), (MalformedKind::Corrupt, Code::DataLoss), (MalformedKind::TypesOverCap, Code::ResourceExhausted)] {
+    for (kind, code) in [(MalformedKind::TooLarge, Code::ResourceExhausted), (MalformedKind::UnknownVariant, Code::InvalidArgument), (MalformedKind::Corrupt, Code::DataLoss)] {
         let value = P::malformed(kind);
         let decoded = P::decode_reply(&P::encode_reply(&value).unwrap()).unwrap();
         assert_eq!(P::classify_reply(&decoded).code(), code);

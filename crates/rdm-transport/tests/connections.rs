@@ -552,11 +552,10 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
         let fabric = rdm_core::FabricId::parse("fab000000001").unwrap();
         let mesh_id = rdm_core::MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let on_acceptor = rdm_transport::topology::TopologyView::join(&acceptor.gossip, &acceptor.ep, &fabric, "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![], &[]).await.unwrap();
+        let on_acceptor = rdm_transport::topology::TopologyView::join(&acceptor.gossip, &acceptor.ep, &fabric, "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![]).await.unwrap();
         let seed = iroh::EndpointAddr::new(acceptor.ep.id()).with_ip_addr(acceptor.peer.resolved.transport_addr);
-        let on_dialer = rdm_transport::topology::TopologyView::join(&dialer.gossip, &dialer.ep, &fabric, "mesh1", &mesh_id, "mesh1.node.1", clock(), vec![seed], &[]).await.unwrap();
+        let on_dialer = rdm_transport::topology::TopologyView::join(&dialer.gossip, &dialer.ep, &fabric, "mesh1", &mesh_id, "mesh1.node.1", clock(), vec![seed]).await.unwrap();
         let own = rdm_core::MeshDigest {
-            held_hash: Default::default(),
             fabric_id: fabric.clone(),
             node: rdm_core::MeshNode { mesh: dialer.peer.birth.mesh.clone(), r#type: dialer.peer.birth.r#type.clone(),
                 node_id: dialer.peer.birth.node_id.clone(),

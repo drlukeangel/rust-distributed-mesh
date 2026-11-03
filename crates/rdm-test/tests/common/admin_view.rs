@@ -20,7 +20,7 @@ pub fn admin_location() -> PathName { PathName::new("mesh1.node-admin", "9").unw
 /// One node of a served view: `endpoint`, `addr` and `incarnation` are `None` for a node the admin holds
 /// and that is not born yet.
 pub fn node(name: PathName, mesh: &str, r#type: &str, node_id: &NodeId, endpoint: Option<String>, addr: Option<SocketAddr>, incarnation: Option<IncarnationId>) -> NodeView {
-    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { properties: Default::default(), cert: None, executable: None, storage_persistence: None, topology_storage_provider: None, 
         r#type: r#type.to_string(),
         mesh: mesh.to_owned(),
         path: name.path.clone(), name: name.name.clone(),

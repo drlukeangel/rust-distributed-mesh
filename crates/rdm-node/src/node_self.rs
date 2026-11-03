@@ -1736,7 +1736,6 @@ mod tests {
                 node_id.as_str(),
                 clock,
                 Vec::new(),
-                &[],
             )
             .await
             .unwrap();
@@ -1750,7 +1749,6 @@ mod tests {
                 })
                 .unwrap();
             let digest = MeshDigest {
-                held_hash: [0u8; 32],
                 fabric_id,
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),
@@ -1944,7 +1942,6 @@ mod tests {
                 node_id.as_str(),
                 clock,
                 Vec::new(),
-                &[],
             )
             .await
             .unwrap();
@@ -1971,7 +1968,6 @@ mod tests {
                 })
                 .unwrap();
             let digest = MeshDigest {
-                held_hash: [0u8; 32],
                 fabric_id,
                 node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: node_id.clone(),

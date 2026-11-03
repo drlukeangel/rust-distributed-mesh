@@ -141,7 +141,6 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_pending_and_opens_once_an_a
             server_id.as_str(),
             Arc::new(rafka_time.clone()),
             Vec::new(),
-            &[],
         )
         .await
         .expect("join topology view");
@@ -210,7 +209,6 @@ fn pre_node_ready_gates_app_rpc_with_not_ready_while_pending_and_opens_once_an_a
         //    the gate opens.
         let digest_view = topology_view.digest_view.clone();
         assert!(digest_view.record(MeshDigest {
-            held_hash: Default::default(),
             fabric_id,
             node: MeshNode { mesh: "mesh1".to_string(), r#type: "node".into(),
                 node_id: target_node_id,
@@ -447,7 +445,6 @@ fn on_node_ready_runs_after_readiness_opens_without_gating_app_rpc_and_can_call_
             node_id.as_str(),
             Arc::new(rafka_time.clone()),
             Vec::new(),
-            &[],
         )
         .await
         .expect("join topology view");

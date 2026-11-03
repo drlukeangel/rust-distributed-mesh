@@ -126,7 +126,6 @@ impl DeploymentProvider for ImmediateReportProvider {
                 .ok_or_else(|| refused(format!("launch missing {k}")))
         };
         let digest = MeshDigest {
-            held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
             node: MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
                 node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?)
@@ -518,7 +517,6 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             listeners: Vec::new(),
         });
         let mut wrong_name_digest = MeshDigest {
-            held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
             node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                 node_id: exp_id.clone(),
@@ -643,7 +641,6 @@ impl DeploymentProvider for StepFaultProvider {
                 .ok_or_else(|| refused(format!("launch missing {k}")))
         };
         let digest = MeshDigest {
-            held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
             node: MeshNode { mesh: spec.mesh.clone(), r#type: spec.r#type.clone(),
                 node_id: NodeId::parse(&env(rdm_core::launch::ENV_NODE_ID)?)
@@ -700,8 +697,6 @@ impl DeploymentProvider for StepFaultProvider {
                     endpoint_id: Some(d.node.endpoint_id.clone()),
                     transport_addr: Some(d.node.transport_addr),
                     listeners: report.listeners.clone(),
-                    app_types: None,
-                    held: Default::default(),
                 };
                 rdm_admin::storage::NodesStorage::put_properties(&*self.store, &bound).await.unwrap();
             }

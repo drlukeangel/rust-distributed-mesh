@@ -398,7 +398,7 @@ mod tests {
     /// malformed kind's own: every kind keeps it.
     #[test]
     fn stamped_malformed_holds_its_position_and_its_kind_code() {
-        for (kind, code) in [(MalformedKind::TooLarge, Code::ResourceExhausted), (MalformedKind::TypesOverCap, Code::ResourceExhausted), (MalformedKind::UnknownVariant, Code::InvalidArgument), (MalformedKind::Corrupt, Code::DataLoss)] {
+        for (kind, code) in [(MalformedKind::TooLarge, Code::ResourceExhausted), (MalformedKind::UnknownVariant, Code::InvalidArgument), (MalformedKind::Corrupt, Code::DataLoss)] {
             stamped(Shape::malformed(kind), 6, "malformed", ReplyKind::Malformed(kind));
             assert_eq!(ReplyKind::Malformed(kind).code(), code, "{kind:?}");
         }

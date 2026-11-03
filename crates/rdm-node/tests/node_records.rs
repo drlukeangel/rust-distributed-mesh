@@ -21,8 +21,6 @@ fn properties() -> NodeProperties {
         endpoint_id: None,
         transport_addr: Some("127.0.0.1:45002".parse().unwrap()),
         listeners: vec![("data".into(), "127.0.0.1:45001".parse().unwrap())],
-        app_types: None,
-        held: ["example.record".into()].into(),
     }
 }
 fn record(node_id: NodeId, mesh: &str) -> NodeRow {
@@ -497,7 +495,6 @@ async fn a_same_id_start_refreshes_bound_facts_and_preserves_applied_properties(
     (bound.config, bound.tags) = (before.config.clone(), before.tags.clone());
     bound.transport_addr = Some("127.0.0.1:45012".parse().unwrap());
     bound.listeners = vec![("data".into(), "127.0.0.1:45011".parse().unwrap())];
-    bound.held = ["new.declaration".into()].into();
     let writer = NodePropertyWriter::new(store.clone(), || "file".into());
     let after = writer.bound(bound.clone(), |_| {}).await.unwrap().record;
     assert_eq!(after.birth, before.birth);
@@ -506,8 +503,6 @@ async fn a_same_id_start_refreshes_bound_facts_and_preserves_applied_properties(
     assert_eq!(after.endpoint_id, bound.endpoint_id);
     assert_eq!(after.transport_addr, bound.transport_addr);
     assert_eq!(after.listeners, bound.listeners);
-    assert_eq!(after.app_types, bound.app_types);
-    assert_eq!(after.held, bound.held);
     assert_eq!(
         store.properties(&initial.birth.node_id).await.unwrap(),
         Some(after)

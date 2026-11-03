@@ -37,7 +37,7 @@ fn attr(sp: &Value, k: &str) -> String {
 
 /// One birth's heartbeat as its node publishes it: `seq` is its `digest_seq`.
 fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, seq: u64, port: u16) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
@@ -215,8 +215,8 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         // The primary joins under its node id, as every node does: its spans and its publisher name that id.
         let p_birth = IncarnationId::mint();
         let p_node_id = NodeId::mint();
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), vec![], &[]).await.unwrap();
-        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![p_addr], &[]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), vec![]).await.unwrap();
+        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![p_addr]).await.unwrap();
         let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         m.wait_for_neighbour().await;
@@ -348,8 +348,8 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         // The primary joins under its node id, as every node does: its spans and its publisher name that id.
         let p_birth = IncarnationId::mint();
         let p_node_id = NodeId::mint();
-        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), vec![], &[]).await.unwrap();
-        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![p_addr], &[]).await.unwrap();
+        let p = TopologyView::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, p_node_id.as_str(), clock(), vec![]).await.unwrap();
+        let m = TopologyView::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.node.2", clock(), vec![p_addr]).await.unwrap();
         let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         m.wait_for_neighbour().await;

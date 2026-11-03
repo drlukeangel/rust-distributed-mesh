@@ -322,8 +322,6 @@ impl FabricHooks {
 /// (`docs/architecture/node-admin-lifecycle.md` §2, `docs/architecture/fabric-node-hooks.md`).
 #[derive(Default)]
 pub struct Wiring {
-    /// The embedded app's own kinds, declared once for this admin birth.
-    pub types: Vec<String>,
     /// The embedded app's own protocols on this admin's endpoint, registered like every node's
     /// (`rdm_transport::connections::Alpn`): RDM owns their accept loop, every inbound connection on
     /// one passes `node.connection.create` before the app takes it from

@@ -186,8 +186,8 @@ impl History {
 
         // The nodes' own parts of their records are history too, each at its node id in the nodes store (Q333).
         let records = log(&root, NODES_FILE).await;
-        records.append(&mp1, "node-properties", "node-properties/1", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
-        records.append(&mp2, "node-properties", "node-properties/1", second.as_str(), &json!({"node_id": second, "config": {"setting": APP_SETTING}})).await.unwrap();
+        records.append(&mp1, "node-properties", "node-properties/2", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
+        records.append(&mp2, "node-properties", "node-properties/2", second.as_str(), &json!({"node_id": second, "config": {"setting": APP_SETTING}})).await.unwrap();
 
         Self { store_dir, root, fabric, fp2, gone, live, first, second }
     }

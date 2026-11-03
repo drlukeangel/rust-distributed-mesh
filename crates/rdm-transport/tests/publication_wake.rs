@@ -23,7 +23,7 @@ fn fabric() -> FabricId {
 }
 
 fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_string(), r#type: "node".into(),
             node_id: node_id.clone(),
@@ -81,8 +81,8 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         let src_addr = addr_of(&src_node.ep);
         learn_addresses(&peer_node.ep, &[src_addr.clone()]).unwrap();
         let fab = fabric();
-        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let peer_m = TopologyView::join(&peer_node.gossip, &peer_node.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &MeshId::mint(), "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let peer_m = TopologyView::join(&peer_node.gossip, &peer_node.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let peer_bb = Backbone::join(&peer_node.gossip, &peer_node.ep, &peer_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr]).await.unwrap();
         src_bb.set_mesh_primary(true);

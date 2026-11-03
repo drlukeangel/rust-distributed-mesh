@@ -138,9 +138,6 @@ pub struct MeshDigest {
     /// moves the postcard wire format again and gets the same review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gossip: Option<GossipStats>,
-    /// Hash of this birth's joined app types; the list is read with node.get.
-    #[serde(default)]
-    pub held_hash: [u8; 32],
     /// The revision at which this birth is its node type's primary in its mesh (`is_primary`), when it
     /// is (gossip.md "A primary change on gossip"): on its own digest, the election's result it
     /// installed; on a member of its mesh-primary's `MeshTopology` projection, the primary recorded on the

@@ -616,7 +616,7 @@ fact is a subject whose latest value is its completion, so a late or repeated on
 Gossip stays best-effort (§7): no acknowledgement and no delivery identity beyond `id`'s duplicate
 suppression.
 
-A declared app type (§8, `rafka.entity.<kind>`) rides this same envelope on its own channel (§4).
+An application's event (§8) rides this same envelope on the channel its node joined (§4).
 Its receiver is the app: RDM authors `id`, `source`, `time` and the trace context, carries
 `subject`, `sequence` and `data` opaque, and decides nothing on the frame. The receive rules above
 apply to the `rdm.*` types only. An event whose complete encoded frame, metadata included, exceeds
@@ -644,7 +644,7 @@ Conceptually:
 ```text
 mesh topology channel = f(logical FabricId, MeshId)
 backbone channel        = f(logical FabricId)
-app channel             = f(logical FabricId, declared type)
+app channel             = f(logical FabricId, channel name)
 ```
 
 EndpointId/address data is used to join/dial peers; it is not the logical Fabric identity or channel identity.
@@ -806,29 +806,7 @@ Projection kind enrolment remains explicit. Provisioning/writing an entity kind 
 
 Message ordering/version rules remain owned by the entity/projection framework, not by the leadership or recovery layer.
 
-**Only projected kinds gossip, and each goes only to the nodes that project it.** A kind is a
-declared type, `rafka.entity.<kind>`: the role declares its types once at boot, beside its
-`pre_node_ready` hook, and its birth carries them in its [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm)
-(`types`: at most 256 types and 8 KiB encoded, refused by name as `TypesOverCap`; a different
-declaration is a restart). No type list rides a digest: 158 kinds today are 4.4 KB of names, more
-than a gossip message. Two sets, both answered by `node.get`: `types`, what the birth declared, immutable
-for its life (a node-admin's through `Wiring`: its embedded app's own kinds); and `held`, the types
-the node has joined, equal to `types` for an ordinary node and, for a node-admin, its own `types`,
-its members' declarations and what it learned from other node-admins, growing as members join and
-never shrinking within a birth. A node-admin joins its own `types` before its `pre_node_ready` hook, as
-every node does. Its mesh's node-admin records the declaration beside the row (a node-admin that
-writes no rows yet, the Day-0 admin before it is Ready, holds the declaration and writes it with its
-first write after it becomes the primary; the join is answered on the held declaration),
-joins every type it does not already hold before it answers the join, and writes its own row's
-`held_hash` (blake3 of the sorted `held`), the one hash that rides a digest. Another node-admin
-that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds what it
-learns, so every projected kind reaches every node-admin (§10: gossip says changed, the call is
-the certainty). A
-node joins the channel of every type it declared through `TopologyView::join_channel`
-(`rdm_transport::gossip`); the channel id is `f(fabric_id, type)` (§4), so two fabrics on one
-network never share a kind; its first neighbour is its own mesh's node-admin, already joined. A write is one
-`Event { subject, sequence, data }` published once on its kind's channel. So a compute node never
-receives a gateway-only kind (`principal`, `service_account`, `path_config` and the rest).
+**RDM provides channels; an application's nodes join the channels its own code names (Q362).** A node joins a channel through `TopologyView::join_channel(name, peers)` (`rdm_transport::gossip`): `name` is the application's, and `peers` are its first neighbours on the channel, each by its `endpoint_id`: nodes the application names from its topology view, or, in `pre_node_ready`, its mesh-primary from the context (`accepting_primary`). The channel id is `f(fabric_id, name)` (§4), so two fabrics on one network never share a channel. A node-admin is one of the application's nodes and joins the channels its code names, as every node does; joined by nodes of two meshes, it carries the channel between them. In `pre_node_ready` a node gets the list of its projections and their channels, pulls their current data from its mesh-primary or the fabric-primary, and joins its channels, before Ready (Q362). A write is one `Event { subject, sequence, data }` published once on its channel. Rafka names one channel per projected kind, `rafka.entity.<kind>`, and its node joins the channels of the kinds it projects, so a compute node never receives a gateway-only kind (`principal`, `service_account`, `path_config` and the rest).
 
 **The event rides the envelope (§3.4) and RDM decides nothing on it.** `subject` is the row key,
 `<org>/<kind>/<key>`; `sequence` is the row's own version as the application defines it; `data` is the row, `offset`, `order_key`
@@ -838,11 +816,9 @@ starts no trace of its own and no byte of `data` enters a span), chunks `data` o
 `MAX_MESSAGE_BYTES` under one `id`, and hands the receiver the whole event with a span parented
 to the author's. Stale, duplicate and gap for a row are the framework's comparator over
 `sequence` and `order_key`, across authors, never RDM's. The receive seam holds the row under
-the subject's org and refuses an empty org by name. An undeclared type is refused by name
-on publish and dropped by name on receive.
+the subject's org and refuses an empty org by name.
 
-**node-admin holds every channel, as the app.** node-admin holds its own declared types and the union
-of its members' (`held`), so every projected kind reaches it; it is a Rafka binary embedding RDM, and the rows
+**node-admin joins every channel, as the app.** Rafka's node-admin joins the channel of every projected kind, so every projected kind reaches it; it is a Rafka binary embedding RDM, and the rows
 it keeps are the app's: the entity framework runs in node-admin as a `Channel` subscriber and applies
 the kind's one comparator, the same one its typed stores apply, read from the event's header
 `(offset, order_key, version, tombstone)` without decoding the value. RDM holds none of them and

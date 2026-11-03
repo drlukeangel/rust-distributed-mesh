@@ -505,8 +505,8 @@ pub fn set_member_status(digest_view: &rdm_transport::topology::DigestView, rece
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
 pub struct StatusService {
-    /// This admin's own declaration and the application channels it holds.
-    pub app_channels: Option<rdm_transport::topology::TopologyView>,
+    /// This admin's topology view.
+    pub topology_view: Option<rdm_transport::topology::TopologyView>,
     /// This admin's `(path, name)`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
     /// Asked before a node's declaration is decided ([`crate::wiring::DeclarationSeam`]); the product's
@@ -1062,7 +1062,7 @@ impl StatusService {
         let me_name = self.held_name_in(&view);
         // A birth this admin's node recovery holds deleted from its verdict is a deleted birth here: its
         // declarations and commands are refused by name (node-recovery.md step 3; Q342).
-        if let (Some(n), Some(channels)) = (sender.as_ref(), self.app_channels.as_ref()) {
+        if let (Some(n), Some(channels)) = (sender.as_ref(), self.topology_view.as_ref()) {
             if n.incarnation_id.as_ref().is_some_and(|inc| channels.is_recovering(n.node_id.as_str(), inc)) {
                 tracing::info_span!("rdm.node_admin.status.reject.via-deleted-birth", node_path = %me_name.path, node_name = %me_name.name, op = req.op(), sender = %n.node_id, sender_path = %n.path, sender_name = %n.name, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a call from a birth held deleted from its recovery's verdict: refused"));
@@ -1483,25 +1483,11 @@ impl StatusService {
                 let Some(loads) = self.loads.as_ref() else {
                     return rdm_core::reply::status::not_ready(format!("path {me_name_path:?}, name {me_name_name:?} reads no digest view; {op} is refused", me_name_path = &me_name.path, me_name_name = &me_name.name));
                 };
-                // The app types this admin's own channels hold, on each row before it is matched.
-                let amend = |n: &mut rdm_core::views::NodeView| {
-                    let Some(channels) = &self.app_channels else { return };
-                    let sets = if n.node_id == self.node_id {
-                        Some((channels.app_types(), channels.held_types()))
-                    } else {
-                        n.incarnation_id.as_ref().and_then(|inc| channels.member_app_types(&n.node_id, inc))
-                    };
-                    if let Some((types, held)) = sets {
-                        n.types = types;
-                        n.held = held;
-                        n.held_hash = rdm_core::app_types::hash(&n.held);
-                    }
-                };
                 // Each record through the reader (query.md §1): both parts of each node's record and the
                 // name claims, in this admin's nodes store, once its node records are bound.
                 let records = self.configs.get().and_then(|c| c.records());
                 let current = records.map(|_| crate::current_record::CurrentRecords { nodes: &*self.nodes_storage });
-                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &read.filter, &amend, current).await
+                crate::views::nodes_answer_with_status(me_name, view, loads, atlas, &read.filter, current).await
             }
             Entity::Meshes => {
                 if self.loads.is_none() {
@@ -1668,7 +1654,7 @@ impl StatusService {
         let status = node_status_of(row.state);
         // The current stopped period's own stop, recorded on the node record when the birth is written
         // `stopped` and cleared at the start's `ready` (node-identity-and-state.md §6.9 "Age", D50).
-        let now_ms = self.app_channels.as_ref().map(|v| v.clock().now_rafka_ms());
+        let now_ms = self.topology_view.as_ref().map(|v| v.clock().now_rafka_ms());
         let written = self.caches.nodes.update_spanned(&*self.nodes_storage, &row.node_id, Some(base), |r| {
             let birth = r.birth_mut(&row.incarnation_id, &row.name);
             birth.declared.insert(row.state);
@@ -2252,7 +2238,7 @@ impl StatusService {
     /// follows drops its primary role before node.mesh.join (`AdminSession::rejoin`). One span,
     /// `rdm.mesh.election.resolve.via-commanded-join`.
     fn join_elects(&self, me: &crate::model::Node, commander: Option<&rdm_core::Primary>) -> Option<StatusReply> {
-        let channels = self.app_channels.as_ref()?;
+        let channels = self.topology_view.as_ref()?;
         let incarnation = me.incarnation_id.as_ref()?;
         let primaries = channels.primaries();
         let taken = commander.map(|r| match primaries.take(rdm_core::PrimaryRole::MeshPrimary, r) {
@@ -2322,7 +2308,7 @@ impl StatusService {
             // A hand-off with no instant (a new mesh's first admin handed Pending) reaches the publisher
             // too: it is the mesh's first state, which the publisher stamps once (Q272).
             if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
-                if let Some(view) = &self.app_channels {
+                if let Some(view) = &self.topology_view {
                     let taken = view.adopt_mesh_status(rdm_transport::topology::StatusFact { status: mesh_status_name(*state).to_string(), changed_at_rafka_ms: *at });
                     self.wake.report_notify.notify_waiters();
                     tracing::info_span!("rdm.node_admin.mesh.update.via-held-mesh-status", mesh = %mesh, state = ?state, changed_at_rafka_ms = *at, taken).in_scope(|| tracing::info!("the hand-off's state is held as this admin's MeshStatus at the instant it carries"));
@@ -2422,7 +2408,7 @@ impl StatusService {
         let day0 = state == MeshState::Pending && at == 0;
         let mut taken = false;
         if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) {
-            if let Some(view) = &self.app_channels {
+            if let Some(view) = &self.topology_view {
                 taken = view.adopt_mesh_status(rdm_transport::topology::StatusFact { status: mesh_status_name(state).to_string(), changed_at_rafka_ms: at });
                 self.wake.report_notify.notify_waiters();
             }
@@ -2977,7 +2963,7 @@ mod tests {
         let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
         let service = StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -3045,7 +3031,7 @@ mod tests {
         }));
         let service = StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -3249,7 +3235,7 @@ mod tests {
         StatusService {
             certs: None,
             primary_commands: Default::default(),
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -3410,7 +3396,7 @@ mod tests {
                     })
                 })
             }),
-            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(|_| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new({
@@ -3444,7 +3430,6 @@ mod tests {
             listeners: Vec::new(),
         };
         let report = rdm_core::MeshDigest {
-            held_hash: Default::default(),
             fabric_id,
             node: rdm_core::MeshNode { mesh: rpc.mesh.clone(), r#type: rpc.r#type.clone(),
                 node_id: rpc.node_id.clone(),
@@ -3475,7 +3460,7 @@ mod tests {
         let serve = move |what: &'static str| {
             let (report, replies) = (report.clone(), replies.clone());
             async move {
-                let answered = join_service.serve(EndpointId("rpc-endpoint".into()), JoinRequest::JoinNode { types: Vec::new(), digest: (&report).into(), listeners: Vec::new() }).await;
+                let answered = join_service.serve(EndpointId("rpc-endpoint".into()), JoinRequest::JoinNode { digest: (&report).into(), listeners: Vec::new() }).await;
                 assert!(matches!(answered, JoinReply::Joined { .. }), "{what}: {answered:?}");
                 replies.lock().unwrap().pop().unwrap_or_else(|| panic!("{what}: the accepted report recorded no Pending"))
             }
@@ -3581,7 +3566,7 @@ mod tests {
         let status: Arc<SlowPuts> = Arc::new(Default::default());
         let service = StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -3745,7 +3730,7 @@ mod tests {
         StatusService {
             certs: None,
             primary_commands: Default::default(),
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -4095,7 +4080,7 @@ mod tests {
     }
 
     fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rdm_core::MeshDigest {
-        rdm_core::MeshDigest { held_hash: Default::default(),
+        rdm_core::MeshDigest { 
             fabric_id: FabricId::mint(),
             node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(),
                 node_id: n.node_id.clone(),
@@ -4150,7 +4135,7 @@ mod tests {
         let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
         let service = StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -4253,7 +4238,7 @@ mod tests {
         let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
         let service = StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -4364,7 +4349,7 @@ mod tests {
         let status: Arc<crate::storage::MemoryNodesStorage> = Arc::new(Default::default());
         let service = StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),

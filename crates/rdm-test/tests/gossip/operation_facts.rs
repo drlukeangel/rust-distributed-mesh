@@ -26,11 +26,11 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let (sender_id, receiver_id, target_id) = (NodeId::mint(), NodeId::mint(), NodeId::mint());
-        let sender = TopologyView::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let sender = TopologyView::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         crate::declare_gossip_probe(&sender);
-        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
+        let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "deletion-build".into(), operation: rdm_core::OperationId::node("node.delete", &target_id), node_id: target_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        assert!(receiver.digest_view.record(MeshDigest { held_hash: Default::default(),
+        assert!(receiver.digest_view.record(MeshDigest { 
             fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None },
             status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1,
             data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None

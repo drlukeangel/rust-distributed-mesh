@@ -49,8 +49,16 @@ async fn main() {
     let running = {
         use tracing::Instrument;
         // A scenario's `pre_node_ready` knob for this node (passing immediately when no knob file exists).
-        let pre_node_ready = match launch.data_dir.parent().map(|root| rdm_test::pre_node_ready_probe::KnobPreNodeReady::always(root, &launch.location())) {
-            Some(hook) => rdm_test::node_hooks::NodeHooks::new(hook),
+        // The testkit application's channel, joined before the knob is consulted when the estate's root asks for it.
+        let pre_node_ready = match launch.data_dir.parent() {
+            Some(root) => {
+                let hook = rdm_test::pre_node_ready_probe::KnobPreNodeReady::always(root, &launch.location());
+                if rdm_test::test_app::app_channel_knob(root) {
+                    rdm_test::node_hooks::NodeHooks::new(rdm_test::test_app::JoinsAppChannel::over(Some(hook)))
+                } else {
+                    rdm_test::node_hooks::NodeHooks::new(hook)
+                }
+            }
             None => rdm_test::node_hooks::NodeHooks::none(),
         }
         .with_on_call_failed(Arc::new(rdm_test::test_app::CallFailed));

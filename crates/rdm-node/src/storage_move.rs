@@ -148,7 +148,7 @@ mod tests {
     use rdm_core::IncarnationId;
 
     fn properties() -> NodeProperties {
-        NodeProperties { birth: RecordBirth { node_id: NodeId::mint(), incarnation_id: IncarnationId::mint() }, config: [("source".into(), "initial".into())].into(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: vec![], app_types: None, held: Default::default() }
+        NodeProperties { birth: RecordBirth { node_id: NodeId::mint(), incarnation_id: IncarnationId::mint() }, config: [("source".into(), "initial".into())].into(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: vec![], }
     }
 
     // @feature: node-records

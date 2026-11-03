@@ -140,7 +140,7 @@ async fn rig_with_digest_view(digest_view: Option<rdm_transport::topology::Diges
     let rig_mesh_ids = mesh_ids.clone();
     let service = Arc::new(StatusService {
         certs: None,
-        app_channels: None,
+        topology_view: None,
         declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -551,7 +551,7 @@ async fn written_by_the_node(writer: &rdm_node::node_records::NodePropertyWriter
     };
     let initial = NodeProperties {
         birth: RecordBirth { node_id: node_id.clone(), incarnation_id: incarnation.clone() },
-        config: Default::default(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
+        config: Default::default(), tags: Default::default(), endpoint_id: None, transport_addr: None, listeners: Vec::new(),
     };
     let written = match req {
         StatusRequest::ApplyNodeConfig { config, .. } => {
@@ -1044,7 +1044,7 @@ async fn second_admin(rig: &Rig, b: &Birth, resolves: &[ResolvedNode]) -> Second
     let mesh_ids = rig.mesh_ids.clone();
     let status = Arc::new(StatusService {
         certs: None,
-        app_channels: None,
+        topology_view: None,
         declaration_seam: None,
         command_frame_seam: None,
         operation_effects: Default::default(),
@@ -1509,7 +1509,7 @@ async fn own_tags(b: &Birth, tags: &[&str]) {
     node_records()
         .put_properties(&rdm_node::node_records::NodeProperties {
             birth: rdm_node::node_records::RecordBirth { node_id: b.node.node_id.clone(), incarnation_id: b.node.incarnation_id.clone().unwrap() },
-            config: Default::default(), tags: labels(tags), endpoint_id: None, transport_addr: None, listeners: Vec::new(), app_types: None, held: Default::default(),
+            config: Default::default(), tags: labels(tags), endpoint_id: None, transport_addr: None, listeners: Vec::new(),
         })
         .await
         .unwrap();
@@ -2199,7 +2199,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
         async move {
             let service = StatusService {
                 certs: None,
-                app_channels: None,
+                topology_view: None,
                 declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2295,11 +2295,11 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let (rig, b) = rig_with_digest_view(Some(topology_view.digest_view.clone())).await;
         let rpc = &b["rpc2"];
-        assert!(topology_view.digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
+        assert!(topology_view.digest_view.record(rdm_core::MeshDigest { 
             fabric_id: fabric,
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
@@ -2448,11 +2448,11 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let (rig, b) = rig_with_digest_view(Some(topology_view.digest_view.clone())).await;
         let rpc = &b["rpc2"];
-        assert!(topology_view.digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
+        assert!(topology_view.digest_view.record(rdm_core::MeshDigest { 
             fabric_id: fabric,
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
@@ -2516,13 +2516,13 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let digest_view = topology_view.digest_view.clone();
         let (rig, b) = rig_with_digest_view(Some(digest_view.clone())).await;
         let rpc = &b["rpc2"];
         let incarnation = rpc.node.incarnation_id.clone().unwrap();
-        assert!(digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
+        assert!(digest_view.record(rdm_core::MeshDigest { 
             fabric_id: fabric,
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
@@ -2709,14 +2709,14 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![], &[]).await.unwrap();
+        let topology_view = rdm_transport::topology::TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.node-admin.1", Arc::new(time), vec![]).await.unwrap();
         topology_view.set_mesh_primary(true);
         let digest_view = topology_view.digest_view.clone();
         let (rig, b) = rig_with_digest_view(Some(digest_view.clone())).await;
         let rpc = &b["rpc2"];
         let incarnation = rpc.node.incarnation_id.clone().unwrap();
         let marked = if marked_other_birth { IncarnationId::mint() } else { incarnation.clone() };
-        assert!(digest_view.record(rdm_core::MeshDigest { held_hash: Default::default(),
+        assert!(digest_view.record(rdm_core::MeshDigest { 
             fabric_id: fabric,
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: marked.clone(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None

@@ -1042,7 +1042,6 @@ mod tests {
             "mesh1.node-admin.1",
             Arc::new(time.clone()),
             vec![],
-            &[],
         )
         .await
         .unwrap();

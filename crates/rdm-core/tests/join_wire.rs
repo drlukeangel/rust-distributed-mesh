@@ -14,7 +14,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 fn digest() -> rdm_core::MeshDigest {
     use rdm_core::*;
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: FabricId::mint(),
         node: MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
             node_id: NodeId::mint(),
@@ -43,7 +43,7 @@ fn digest() -> rdm_core::MeshDigest {
 #[test]
 fn a_join_request_and_its_digest_round_trip_through_postcard_with_every_field_present() {
     let d = digest();
-    let q = JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: Vec::new() };
+    let q = JoinRequest::JoinNode { digest: WireDigest::from(&d), listeners: Vec::new() };
     let bytes = Join::encode_request(&q).unwrap();
     assert_eq!(bytes[0], 0x00, "variant 0");
     assert!(bytes.len() <= Join::MAX_REQUEST_FRAME_BYTES);
@@ -75,15 +75,15 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
     }
 }
 
-/// The request ends with the listeners the node bound (Q151), after the type declaration: their
-/// count, then each name and its address (`V4`, four octets, the port as a u16 varint).
+/// The request ends with the listeners the node bound (Q151), after its digest: their count, then
+/// each name and its address (`V4`, four octets, the port as a u16 varint).
 #[test]
-fn a_join_request_carries_the_listeners_the_node_bound_after_its_types() {
+fn a_join_request_carries_the_listeners_the_node_bound_after_its_digest() {
     let d = digest();
     let listeners = vec![("kafka".to_string(), "127.0.0.1:9092".parse().unwrap())];
-    let q = JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: listeners.clone() };
+    let q = JoinRequest::JoinNode { digest: WireDigest::from(&d), listeners: listeners.clone() };
     let wire = Join::encode_request(&q).unwrap();
-    assert_eq!(&wire[wire.len() - 15..], bytes("00 01 056b61666b61 00 7f000001 8447".replace(' ', "").as_str()).as_slice(), "the empty types list, then one listener: kafka at 127.0.0.1:9092");
+    assert_eq!(&wire[wire.len() - 15..], bytes("00 01 056b61666b61 00 7f000001 8447".replace(' ', "").as_str()).as_slice(), "the digest's absent fabric-primary revision, then one listener: kafka at 127.0.0.1:9092");
     let JoinRequest::JoinNode { listeners: back, .. } = Join::decode_request(&wire).unwrap();
     assert_eq!(back, listeners);
 }
@@ -93,38 +93,38 @@ fn a_join_request_carries_the_listeners_the_node_bound_after_its_types() {
 #[test]
 fn a_join_request_round_trips_no_listeners_and_three() {
     let d = digest();
-    let none = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
+    let none = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
     assert_eq!(none.last(), Some(&0u8), "no listeners is a zero count");
     let JoinRequest::JoinNode { listeners: back, .. } = Join::decode_request(&none).unwrap();
     assert!(back.is_empty());
     let three: Vec<(String, std::net::SocketAddr)> = [("kafka", "10.0.0.7:41001"), ("rest", "10.0.0.7:41002"), ("proxy", "10.0.0.7:41003")].iter().map(|(n, a)| (n.to_string(), a.parse().unwrap())).collect();
-    let wire = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: three.clone() }).unwrap();
+    let wire = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d), listeners: three.clone() }).unwrap();
     let JoinRequest::JoinNode { listeners: back, .. } = Join::decode_request(&wire).unwrap();
     assert_eq!(back, three, "three listeners come back as sent");
 }
 
-/// The digest's wire shape ends `load`, `gossip`, the held hash, then the primary revision and the
+/// The digest's wire shape ends `load`, `gossip`, then the primary revision and the
 /// fabric-primary revision (gossip.md "A primary change on gossip"), every field present: `gossip`
 /// absent is one `00` byte after the `00` of an absent `load`; present it is `01` then `heard`,
 /// `neighbours` (u32 varints) and `frames_sent`, `frames_received` (u64 varints). A revision absent is
 /// one `00`; present it is `01` then the revision (a u64 varint). A field added to the struct moves
 /// these bytes again.
 #[test]
-fn a_join_keeps_gossip_positions_then_appends_the_held_hash_and_type_declaration() {
+fn a_join_keeps_gossip_positions_then_the_primary_revisions_and_the_listeners() {
     use rdm_core::GossipStats;
     let mut d = digest();
-    let none = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
-    assert_eq!(&none[none.len() - 38..none.len() - 36], bytes("0000").as_slice(), "load absent, gossip absent");
+    let none = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
+    assert_eq!(&none[none.len() - 5..none.len() - 3], bytes("0000").as_slice(), "load absent, gossip absent");
     d.gossip = Some(GossipStats { heard: 2, neighbours: 3, frames_sent: 300, frames_received: 5 });
-    let some = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
-    assert_eq!(&some[some.len() - 43..some.len() - 36], bytes("00010203ac0205").as_slice());
+    let some = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
+    assert_eq!(&some[some.len() - 10..some.len() - 3], bytes("00010203ac0205").as_slice());
     let JoinRequest::JoinNode { digest: back, .. } = Join::decode_request(&some).unwrap();
     assert_eq!(rdm_core::MeshDigest::from(back).gossip, d.gossip);
-    assert_eq!(&some[some.len()-36..], &[0;36], "held hash is 32 fixed bytes, both revisions absent, then the empty types list and the empty listeners list");
+    assert_eq!(&some[some.len()-3..], &[0;3], "both revisions absent, then the empty listeners list");
     d.is_primary = Some(4);
     d.is_fabric_primary = Some(300);
-    let primary = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
-    assert_eq!(&primary[primary.len() - 7..], bytes("010401ac020000").as_slice(), "the primary revision, the fabric-primary revision, then the empty types list and the empty listeners list");
+    let primary = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d), listeners: Vec::new() }).unwrap();
+    assert_eq!(&primary[primary.len() - 6..], bytes("010401ac0200").as_slice(), "the primary revision, the fabric-primary revision, then the empty listeners list");
     let JoinRequest::JoinNode { digest: back, .. } = Join::decode_request(&primary).unwrap();
     let back = rdm_core::MeshDigest::from(back);
     assert_eq!((back.is_primary, back.is_fabric_primary), (Some(4), Some(300)));

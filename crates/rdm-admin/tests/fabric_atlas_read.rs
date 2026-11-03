@@ -190,7 +190,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
 
         let service = Arc::new(StatusService {
             certs: None,
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),

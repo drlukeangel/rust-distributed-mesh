@@ -165,7 +165,7 @@ fn a_new_mesh_primary_folds_the_mesh_status_rows_and_a_secondary_folds_none() {
 
 /// The heartbeat `n`'s exact birth publishes: liveness only, no status (gossip.md §3.1).
 fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
-    rdm_core::MeshDigest { held_hash: Default::default(),
+    rdm_core::MeshDigest { 
         fabric_id: fabric_id.clone(),
         node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(),
             node_id: n.node_id.clone(),
@@ -231,7 +231,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-                let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, b.node_id.as_str(), Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
+                let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, b.node_id.as_str(), Arc::new(crate::adopted_time()), vec![]).await.unwrap();
                 let records = Records::default();
                 records.set_digest_view(topology_view.digest_view.clone());
                 let b_stores = stores(&root, &IncarnationId::mint()).await;
@@ -262,7 +262,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 // rpc.1 declares to its new primary.
                 let service = rdm_admin::status_rpc::StatusService {
                     certs: None,
-                    app_channels: None,
+                    topology_view: None,
                     declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -385,7 +385,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let storage = stores(&predecessor_root, a.incarnation_id.as_ref().unwrap()).await;
                 let service = rdm_admin::status_rpc::StatusService {
                     certs: None,
-                    app_channels: None,
+                    topology_view: None,
                     declaration_seam: None, command_frame_seam: None,
                     operation_effects: Default::default(), stopped: Default::default(),
                     me: a.location(), node_id: a.node_id.clone(), fabric_id: fabric_id.clone(),
@@ -421,7 +421,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-                let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, b.node_id.as_str(), Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
+                let topology_view = TopologyView::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, b.node_id.as_str(), Arc::new(crate::adopted_time()), vec![]).await.unwrap();
                 let records = Records::default();
                 records.set_digest_view(topology_view.digest_view.clone());
                 hydrate(&records, &*successor.nodes, &*successor.meshes, &*successor.fabric).await;

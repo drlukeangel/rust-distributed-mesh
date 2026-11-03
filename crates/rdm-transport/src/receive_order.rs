@@ -579,7 +579,7 @@ mod tests {
     use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshNode, NodeId};
 
     fn birth(path: rdm_core::PathName, mesh: &str, r#type: &str) -> MeshDigest {
-        MeshDigest { held_hash: Default::default(),
+        MeshDigest { 
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(NodeId::mint().to_string()), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::Ready,

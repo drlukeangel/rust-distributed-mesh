@@ -64,7 +64,6 @@ mod tests {
                 "mesh1.node-admin.1",
                 Arc::new(server_time.clone()),
                 Vec::new(),
-                &[],
             )
             .await
             .expect("join server topology view");
@@ -86,7 +85,6 @@ mod tests {
                 "mesh1.node.1",
                 Arc::new(caller_time.clone()),
                 Vec::new(),
-                &[],
             )
             .await
             .expect("join caller topology view");
@@ -102,7 +100,6 @@ mod tests {
                 node_id: server_node_id.clone(),
             };
             let own_digest = MeshDigest {
-                held_hash: Default::default(),
                 fabric_id: fabric_id.clone(),
                 node: MeshNode { mesh: "mesh1".to_string(), r#type: "node-admin".into(),
                     node_id: server_node_id.clone(),
@@ -204,9 +201,6 @@ mod tests {
                         gossip: None,
                         tags: BTreeSet::from(["role-a".to_string()]),
                         config: BTreeMap::from([("tier".to_string(), "gold".to_string())]),
-                        types: BTreeSet::new(),
-                        held: BTreeSet::new(),
-                        held_hash: [0u8; 32],
                         cert: None,
                         executable: None,
                         storage_persistence: None,

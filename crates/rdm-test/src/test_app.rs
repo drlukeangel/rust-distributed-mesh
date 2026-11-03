@@ -214,3 +214,96 @@ impl rdm_node::node_hooks::OnCallFailed for CallFailed {
         .in_scope(|| tracing::info!("the application was told one of its calls' attempts are spent"));
     }
 }
+
+/// The testkit application's one gossip channel (gossip.md §8, Q362: RDM provides channels; an
+/// application's nodes join the channels its own code names). Every testkit node and node-admin joins
+/// it in its `pre_node_ready` when the estate's root holds [`APP_CHANNEL_KNOB`] ([`JoinsAppChannel`]).
+pub const APP_CHANNEL: &str = "testkit.app";
+
+/// The file, under the root that holds an estate's data dirs, that has the testkit's nodes and
+/// node-admins join [`APP_CHANNEL`].
+pub const APP_CHANNEL_KNOB: &str = "app-channel.knob";
+
+/// Whether `root`, the directory holding an estate's data dirs, holds [`APP_CHANNEL_KNOB`].
+pub fn app_channel_knob(root: &std::path::Path) -> bool {
+    root.join(APP_CHANNEL_KNOB).exists()
+}
+
+/// This process's publisher on [`APP_CHANNEL`], once its [`JoinsAppChannel`] joined it.
+static APP_CHANNEL_PUBLISHER: std::sync::OnceLock<rdm_transport::gossip::Publisher> = std::sync::OnceLock::new();
+
+/// This process's publisher on [`APP_CHANNEL`], `None` before it joined the channel.
+pub fn app_channel_publisher() -> Option<&'static rdm_transport::gossip::Publisher> {
+    APP_CHANNEL_PUBLISHER.get()
+}
+
+/// The peers the testkit application names, by `endpoint_id`, for its node's join of [`APP_CHANNEL`]
+/// in `pre_node_ready`: its mesh-primary from the context (`accepting_primary`), and, for a
+/// node-admin, every other node-admin its topology view holds, of any mesh. A node that is not a
+/// node-admin names its mesh-primary alone, so its events reach another mesh only through the
+/// node-admins the application joined to the channel.
+pub fn app_channel_peers(ctx: &rdm_node::node_hooks::NodeReadyCtx) -> Vec<rdm_core::EndpointId> {
+    let mut peers: Vec<rdm_core::EndpointId> = ctx.accepting_primary.accepted().map(|a| rdm_core::EndpointId(a.endpoint.to_string())).into_iter().collect();
+    if rdm_core::is_node_admin(&ctx.birth.r#type) {
+        for d in ctx.topology_view.digest_view.all() {
+            if d.node.node_id != ctx.birth.node_id && rdm_core::is_node_admin(&d.node.r#type) && !peers.contains(&d.node.endpoint_id) {
+                peers.push(d.node.endpoint_id.clone());
+            }
+        }
+    }
+    peers
+}
+
+/// The testkit application's `pre_node_ready` over its node's own hook `inner`: it joins
+/// [`APP_CHANNEL`] once, naming [`app_channel_peers`], keeps the publisher
+/// ([`app_channel_publisher`]) and records each event it receives
+/// (`rdm.testkit.channel.update.via-received`, under the event's receive span), then answers what
+/// `inner` answers (Ok with none).
+pub struct JoinsAppChannel {
+    inner: Option<Arc<dyn rdm_node::node_hooks::PreNodeReady>>,
+}
+
+impl JoinsAppChannel {
+    /// The hook, over the node's own hook `inner`.
+    pub fn over(inner: Option<Arc<dyn rdm_node::node_hooks::PreNodeReady>>) -> Arc<Self> {
+        Arc::new(Self { inner })
+    }
+}
+
+#[async_trait::async_trait]
+impl rdm_node::node_hooks::PreNodeReady for JoinsAppChannel {
+    fn send(&self) -> rdm_transport::Send {
+        self.inner.as_ref().map(|h| h.send()).unwrap_or_default()
+    }
+
+    async fn pre_node_ready(&self, ctx: &rdm_node::node_hooks::NodeReadyCtx) -> rdm_node::node_hooks::HookOutcome {
+        if APP_CHANNEL_PUBLISHER.get().is_none() {
+            let peers = app_channel_peers(ctx);
+            let named: Vec<String> = peers.iter().map(|p| p.0.clone()).collect();
+            let span = tracing::info_span!("rdm.testkit.channel.update.via-join", node_id = %ctx.birth.node_id, node_path = %ctx.birth.path, node_name = %ctx.birth.name, channel = APP_CHANNEL, peers = %named.join(","), "otel.kind" = "internal");
+            let joined = ctx.topology_view.join_channel(APP_CHANNEL, &peers).instrument(span.clone()).await;
+            match joined {
+                Ok(channel) => {
+                    let (publisher, mut subscriber) = channel.split();
+                    if APP_CHANNEL_PUBLISHER.set(publisher).is_ok() {
+                        let node_id = ctx.birth.node_id.clone();
+                        tokio::spawn(async move {
+                            while let Some(received) = subscriber.recv().await {
+                                received.span.in_scope(|| {
+                                    tracing::info_span!("rdm.testkit.channel.update.via-received", node_id = %node_id, channel = APP_CHANNEL, subject = %received.subject, sequence = ?received.sequence, source_node_id = %received.source.node, source_incarnation_id = %received.source.incarnation, "otel.kind" = "internal")
+                                        .in_scope(|| tracing::info!("the testkit application received an event on its channel"))
+                                });
+                            }
+                        });
+                    }
+                    span.in_scope(|| tracing::info!("the testkit application joined its channel"));
+                }
+                Err(e) => return rdm_node::node_hooks::HookOutcome::Pending { reason: format!("{APP_CHANNEL}: {e}") },
+            }
+        }
+        match &self.inner {
+            Some(h) => h.pre_node_ready(ctx).await,
+            None => rdm_node::node_hooks::HookOutcome::Ok,
+        }
+    }
+}

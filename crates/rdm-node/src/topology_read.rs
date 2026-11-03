@@ -593,13 +593,11 @@ mod tests {
             "mesh1.node-admin.1",
             Arc::new(rafka_time.clone()),
             Vec::new(),
-            &[],
         )
         .await
         .unwrap();
 
         let own_digest = MeshDigest {
-            held_hash: Default::default(),
             fabric_id,
             node: MeshNode { mesh: "mesh1".to_string(), r#type: "node-admin".into(),
                 node_id: NodeId::mint(),

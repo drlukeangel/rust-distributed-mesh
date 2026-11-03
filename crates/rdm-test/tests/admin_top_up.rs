@@ -198,7 +198,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         learn_addresses(&probe.ep, &[admin_addr.clone()]).unwrap();
         let mesh_id = root_digest.mesh_id.clone().expect("the root holds its mesh id");
         let observer_id = NodeId::mint();
-        let channel = TopologyView::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, observer_id.as_str(), rdm_transport::clock::os_clock(), vec![admin_addr], &[]).await.expect("the cell joins mesh1's channel");
+        let channel = TopologyView::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, observer_id.as_str(), rdm_transport::clock::os_clock(), vec![admin_addr]).await.expect("the cell joins mesh1's channel");
         crate::declare_gossip_probe(&channel);
         until("the cell's endpoint to hold the primary's replayed full", WRONG, || channel.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         // mesh1.node-admin.2's own Ready moves the primary's projection, which the primary then

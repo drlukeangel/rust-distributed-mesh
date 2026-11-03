@@ -32,7 +32,7 @@ fn attr(sp: &Value, k: &str) -> String {
 
 fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> MeshDigest {
     let node_id = NodeId::mint();
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
@@ -127,9 +127,9 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
         let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 41_001), digest(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", 41_002), digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 41_011), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", 41_012), digest(rdm_core::PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", 41_013), digest(rdm_core::PathName::new("mesh1.node", "4").unwrap(), "mesh1", "node", 41_014));
-        let m1 = TopologyView::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, p1_d.node.node_id.as_str(), clock(), vec![], &[]).await.unwrap();
-        let m2 = TopologyView::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, p2_d.node.node_id.as_str(), clock(), vec![a1.clone()], &[]).await.unwrap();
-        let m = TopologyView::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, rpc1.node.node_id.as_str(), clock(), vec![a1.clone()], &[]).await.unwrap();
+        let m1 = TopologyView::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, p1_d.node.node_id.as_str(), clock(), vec![]).await.unwrap();
+        let m2 = TopologyView::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, p2_d.node.node_id.as_str(), clock(), vec![a1.clone()]).await.unwrap();
+        let m = TopologyView::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, rpc1.node.node_id.as_str(), clock(), vec![a1.clone()]).await.unwrap();
         let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
         let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
         m2.wait_for_neighbour().await;
@@ -260,8 +260,8 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let source_birth = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 42001);
         let forwarder_birth = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 42002);
         let author = PublisherId::from(&source_birth.node);
-        let src = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, source_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fwd = TopologyView::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, forwarder_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let src = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, source_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let fwd = TopologyView::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, forwarder_birth.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         // Deliberately a different exact birth at the author's descriptive path.
         let impostor = digest(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", 42003);
         assert_ne!(impostor.node.node_id, author.node_id);
@@ -279,14 +279,14 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
 
         // This neighbour joins after the empty source installed: its baseline is a replayed full.
         let own = digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 42004);
-        let mem = TopologyView::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![forwarder_addr], &[]).await.unwrap();
+        let mem = TopologyView::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![forwarder_addr]).await.unwrap();
         until("the new neighbour to install the forwarded replay", || mem.held_source_version("mesh2").is_some()).await;
         assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
         let served = mem.held_topology(&own).into_iter().find(|s| s.mesh == "mesh2").unwrap();
         assert_eq!(served.publisher, author);
         assert!(served.digests.is_empty(), "the author is carried even without an author digest");
         let reader_id = NodeId::mint();
-        let read = TopologyView::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let read = TopologyView::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, reader_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let chunk = rdm_transport::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, deleted: served.deleted };
         assert!(matches!(read.take_read_chunk(chunk, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
@@ -312,7 +312,7 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         let mesh = MeshId::mint();
         let node_id = NodeId::mint();
         let author = PublisherId { node_id, incarnation: IncarnationId::mint() };
-        let topology_view = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let topology_view = TopologyView::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, author.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let backbone = Backbone::join(&source.gossip, &source.ep, &topology_view, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
         let mut local = probe.gossip.subscribe(rdm_transport::topology::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();

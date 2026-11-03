@@ -1,17 +1,17 @@
-//! Declared application types on the CloudEvents gossip envelope. Application ordering stays with the application.
+//! Application channels on the CloudEvents gossip envelope: RDM provides the channels, an application's
+//! nodes join the channels its own code names (gossip.md §8, Q362). Application ordering stays with the application.
 
 pub use crate::envelope::Birth;
 use crate::{clock::SharedClock, wire};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use iroh::EndpointAddr;
 use iroh_gossip::{
     api::{Event as GossipEvent, GossipSender},
     net::Gossip,
     proto::TopicId,
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
@@ -38,7 +38,7 @@ pub fn dial_span(caller: &'static str, node: &str, channel: &str, topic: &TopicI
         .in_scope(|| tracing::info!("peers handed to iroh-gossip"));
 }
 
-/// The fabric-scoped channel identity of one declared application type.
+/// The fabric-scoped channel identity of one application channel, by its name.
 pub fn channel_id(fabric: &rdm_core::FabricId, kind: &str) -> TopicId {
     let bytes = postcard::to_allocvec(&("rdm.app", fabric, kind)).expect("strings encode");
     TopicId::from(*blake3::hash(&bytes).as_bytes())
@@ -79,12 +79,6 @@ pub struct Received {
 /// A named failure to join or publish an app channel.
 #[derive(Debug, thiserror::Error)]
 pub enum ChannelError {
-    /// This birth did not declare the type for publication or does not hold it for receipt.
-    #[error("undeclared type {}", .r#type)]
-    UndeclaredType {
-        /// Refused type.
-        r#type: String,
-    },
     /// The complete event cannot fit at most sixteen complete chunk messages.
     #[error("event has {bytes} bytes; maximum {max}")]
     Oversize {
@@ -135,7 +129,6 @@ struct State {
     dropped: AtomicU64,
     lost: watch::Sender<u64>,
     kind: String,
-    publish_declared: bool,
     author: Arc<Mutex<Option<Birth>>>,
     clock: SharedClock,
     ids: Arc<AtomicU64>,
@@ -167,12 +160,6 @@ impl State {
     async fn publish(&self, event: Event) -> Result<(), ChannelError> {
         if self.left.load(Ordering::Acquire) {
             return Err(ChannelError::Left);
-        }
-        if !self.publish_declared {
-            tracing::info_span!("rdm.mesh.channel.reject.via-undeclared-type", event_type = %self.kind).in_scope(|| tracing::info!("this birth holds the channel but did not declare the type for publication"));
-            return Err(ChannelError::UndeclaredType {
-                r#type: self.kind.clone(),
-            });
         }
         let source = self
             .author
@@ -410,49 +397,32 @@ struct Assembly {
 pub(crate) struct Hub {
     gossip: Gossip,
     fabric: rdm_core::FabricId,
-    peers: Vec<iroh::EndpointId>,
-    joined_peers: Mutex<HashMap<String, BTreeSet<iroh::EndpointId>>>,
-    own: BTreeSet<String>,
-    /// The held set: every type joined, declared or learned. One watch, so a reader of the set and a
-    /// waiter for its growth read the same value.
-    held: watch::Sender<BTreeSet<String>>,
+    /// Each joined channel's first neighbours, as its application named them at its join: a rejoin
+    /// after a stop subscribes with them again.
+    peers: Mutex<HashMap<String, Vec<iroh::EndpointId>>>,
     entries: tokio::sync::Mutex<HashMap<String, Arc<Entry>>>,
     author: Arc<Mutex<Option<Birth>>>,
     clock: SharedClock,
     ids: Arc<AtomicU64>,
     id_nonce: [u8; 32],
-    members: Mutex<
-        HashMap<(rdm_core::NodeId, rdm_core::IncarnationId), (BTreeSet<String>, BTreeSet<String>)>,
-    >,
 }
 impl Hub {
-    pub(crate) async fn new(
+    pub(crate) fn new(
         gossip: &Gossip,
         fabric: &rdm_core::FabricId,
         author: Arc<Mutex<Option<Birth>>>,
         clock: SharedClock,
-        types: &[&str],
-        seeds: &[EndpointAddr],
-    ) -> anyhow::Result<Arc<Self>> {
-        let types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
-        rdm_core::app_types::check(&types).map_err(|k| anyhow::anyhow!("app types: {k:?}"))?;
-        let own = types.into_iter().collect();
-        let me = Arc::new(Self {
+    ) -> Arc<Self> {
+        Arc::new(Self {
             gossip: gossip.clone(),
             fabric: fabric.clone(),
-            peers: seeds.iter().map(|a| a.id).collect(),
-            own,
-            joined_peers: Default::default(),
-            held: watch::channel(BTreeSet::new()).0,
+            peers: Default::default(),
             entries: Default::default(),
             author,
             clock,
             ids: Arc::new(AtomicU64::new(1)),
             id_nonce: *iroh::SecretKey::generate().public().as_bytes(),
-            members: Default::default(),
-        });
-        me.hold(&me.own).await?;
-        Ok(me)
+        })
     }
     pub(crate) async fn suspend(&self) {
         let states: Vec<_> = self
@@ -466,128 +436,62 @@ impl Hub {
             state.leave().await;
         }
     }
+    /// Subscribe every channel this birth joined again, each with the peers its join named.
     pub(crate) async fn resume(&self) -> anyhow::Result<()> {
-        self.hold(&self.held()).await
-    }
-    pub(crate) fn types(&self) -> BTreeSet<String> {
-        self.own.clone()
+        let joined: Vec<_> = self.peers.lock().unwrap().iter().map(|(k, p)| (k.clone(), p.clone())).collect();
+        for (kind, peers) in joined {
+            self.ensure(&kind, &peers).await?;
+        }
+        Ok(())
     }
     fn node_name(&self) -> String {
         self.author.lock().unwrap().as_ref().map(|b| b.node.to_string()).unwrap_or_default()
     }
-    pub(crate) fn held(&self) -> BTreeSet<String> {
-        self.held.borrow().clone()
-    }
-    /// The held set as it grows: the whole set, sent each time a type is joined.
-    pub(crate) fn held_changes(&self) -> watch::Receiver<BTreeSet<String>> {
-        self.held.subscribe()
-    }
-    pub(crate) async fn hold(&self, types: &BTreeSet<String>) -> anyhow::Result<()> {
-        for kind in types {
-            self.ensure(kind).await?;
-        }
-        self.held.send_if_modified(|held| {
-            let before = held.len();
-            held.extend(types.iter().cloned());
-            held.len() != before
-        });
-        Ok(())
-    }
-    pub(crate) fn hash(&self) -> [u8; 32] {
-        rdm_core::app_types::hash(&self.held())
-    }
-    pub(crate) fn member(
-        &self,
-        node: &rdm_core::NodeId,
-        incarnation: &rdm_core::IncarnationId,
-    ) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
-        self.members
-            .lock()
-            .unwrap()
-            .get(&(node.clone(), incarnation.clone()))
-            .cloned()
-    }
-    pub(crate) async fn learn(
-        &self,
-        node: rdm_core::NodeId,
-        incarnation: rdm_core::IncarnationId,
-        types: BTreeSet<String>,
-        held: BTreeSet<String>,
-        peer: Option<iroh::EndpointId>,
-    ) -> anyhow::Result<()> {
-        if let Some(peer) = peer {
-            let mut peers = self.joined_peers.lock().unwrap();
-            for kind in &held {
-                peers.entry(kind.clone()).or_default().insert(peer);
-            }
-        }
-        self.hold(&held).await?;
-        if let Some(peer) = peer {
-            for kind in &held {
-                let entry = self.ensure(kind).await?;
-                let sender = entry.state.sender.lock().unwrap().clone();
-                if let Some(sender) = sender {
-                    dial_span("apps.learn", &self.node_name(), kind, &channel_id(&self.fabric, kind), &[peer]);
-                    sender.join_peers(vec![peer]).await?;
-                }
-            }
-        }
-        let mut members = self.members.lock().unwrap();
-        let entry = members
-            .entry((node, incarnation))
-            .or_insert_with(|| (types.clone(), BTreeSet::new()));
-        if entry.0 != types {
-            anyhow::bail!("the exact birth already declared different app types");
-        }
-        entry.1.extend(held);
-        Ok(())
-    }
     #[cfg(feature = "testkit-gossip")]
     pub(crate) async fn drop_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> {
         anyhow::ensure!(index < PARTS, "chunk index exceeds the sixteen-part limit");
-        anyhow::ensure!(
-            self.held.borrow().contains(kind),
-            "the type is not held"
-        );
-        let entry = self.ensure(kind).await?;
+        let entry = self.entries.lock().await.get(kind).cloned();
+        let entry = entry.ok_or_else(|| anyhow::anyhow!("the channel is not joined"))?;
         entry.state.chunk_cut.store(index, Ordering::Release);
         Ok(())
     }
-    pub(crate) async fn join(&self, kind: &str) -> Result<Channel, ChannelError> {
-        if !self.held.borrow().contains(kind) {
-            tracing::info_span!(
-                "rdm.mesh.channel.reject.via-undeclared-type",
-                event_type = kind
-            )
-            .in_scope(|| tracing::info!("the birth has not declared or learned this type"));
-            return Err(ChannelError::UndeclaredType {
-                r#type: kind.into(),
-            });
-        }
-        let e = self.ensure(kind).await.map_err(|e| ChannelError::Subscribe { r#type: kind.into(), detail: e.to_string() })?;
+    /// Join the channel `kind` with `peers`, its first neighbours as the application names them: one
+    /// owned receiver per channel. A channel already subscribed hands `peers` to its gossip.
+    pub(crate) async fn join(&self, kind: &str, peers: Vec<iroh::EndpointId>) -> Result<Channel, ChannelError> {
+        let subscribe = |e: anyhow::Error| ChannelError::Subscribe { r#type: kind.into(), detail: e.to_string() };
+        let (e, created) = self.ensure_created(kind, &peers).await.map_err(subscribe)?;
         let rx = e
             .receiver
             .lock()
             .unwrap()
             .take()
             .ok_or_else(|| ChannelError::ReceiverHeld { r#type: kind.into() })?;
+        if !created && !peers.is_empty() {
+            let sender = e.state.sender.lock().unwrap().clone();
+            if let Some(sender) = sender {
+                dial_span("apps.join", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers);
+                sender.join_peers(peers.clone()).await.map_err(|e| subscribe(e.into()))?;
+            }
+        }
+        self.peers.lock().unwrap().insert(kind.into(), peers);
         Ok(Channel {
             state: e.state.clone(),
             rx: Some(rx),
         })
     }
-    async fn ensure(&self, kind: &str) -> anyhow::Result<Arc<Entry>> {
+    async fn ensure(&self, kind: &str, peers: &[iroh::EndpointId]) -> anyhow::Result<Arc<Entry>> {
+        Ok(self.ensure_created(kind, peers).await?.0)
+    }
+    /// The live subscription of `kind`, or a new one with `peers`; whether it is new.
+    async fn ensure_created(&self, kind: &str, peers: &[iroh::EndpointId]) -> anyhow::Result<(Arc<Entry>, bool)> {
         let mut entries = self.entries.lock().await;
         if let Some(e) = entries
             .get(kind)
             .filter(|e| !e.state.left.load(Ordering::Acquire))
         {
-            return Ok(e.clone());
+            return Ok((e.clone(), false));
         }
-        let mut peers = self.peers.clone();
-        if let Some(learned) = self.joined_peers.lock().unwrap().get(kind) {
-            peers.extend(learned);
-        }
+        let mut peers = peers.to_vec();
         peers.sort_unstable();
         peers.dedup();
         dial_span("apps.subscribe", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers);
@@ -604,7 +508,6 @@ impl Hub {
             dropped: AtomicU64::new(0),
             lost: watch::channel(0).0,
             kind: kind.into(),
-            publish_declared: self.own.contains(kind),
             author: self.author.clone(),
             clock: self.clock.clone(),
             ids: self.ids.clone(),
@@ -738,10 +641,6 @@ impl Hub {
                         }
                         h = whole;
                     }
-                    if h.kind != state.kind {
-                        tracing::info_span!("rdm.mesh.channel.reject.via-undeclared-type", event_type = %h.kind, channel_type = %state.kind).in_scope(|| tracing::info!("type does not belong to this declared channel"));
-                        continue;
-                    }
                     let sequence = match &h.sequence {
                         None => None,
                         Some(s) => match Some(s).filter(|s| s.len() == 20 && s.bytes().all(|b| b.is_ascii_digit())).and_then(|s| s.parse().ok()) {
@@ -784,7 +683,7 @@ impl Hub {
             drop(stream);
             state.finished.send_replace(true);
         });
-        Ok(e)
+        Ok((e, true))
     }
 }
 fn event_identity(source: &Birth, id: &str) -> [u8; 32] {
@@ -897,7 +796,6 @@ mod tests {
             dropped: AtomicU64::new(0),
             lost: watch::channel(0).0,
             kind: "app.author".into(),
-            publish_declared: true,
             author: Default::default(),
             clock: crate::clock::os_clock(),
             ids: Arc::new(AtomicU64::new(1)),
@@ -927,8 +825,7 @@ mod tests {
                 dropped: AtomicU64::new(0),
                 lost: watch::channel(0).0,
                 kind: "app.queue".into(),
-                publish_declared: true,
-                author: Default::default(),
+                    author: Default::default(),
                 clock: crate::clock::os_clock(),
                 ids: Arc::new(AtomicU64::new(1)),
                 id_nonce: [0; 32],

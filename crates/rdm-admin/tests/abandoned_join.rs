@@ -157,7 +157,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
         let data_dir = rdm_admin::deployment::node_data_dir(&data_root, &node_id);
         let endpoint_id = rdm_admin::deployment::pipeline::endpoint_id(&data_dir).expect("the create wrote its node key");
         let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
-        let digest = |incarnation: &IncarnationId| MeshDigest { held_hash: Default::default(),
+        let digest = |incarnation: &IncarnationId| MeshDigest { 
             fabric_id: FabricId::mint(),
             node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(),
                 node_id: node_id.clone(),
@@ -186,7 +186,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
             me_path: "mesh1.node-admin".into(), me_name: "1".into(),
             joins: joins.clone(),
             answer: Arc::new(|| Box::pin(async { Err("a refused join is never answered".to_string()) })),
-            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(move |_| {
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }),
@@ -200,7 +200,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
                 t
             })),
         };
-        let ask = |d: &MeshDigest| JoinRequest::JoinNode { types: Vec::new(), digest: d.into(), listeners: Vec::new() };
+        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into(), listeners: Vec::new() };
 
         let late = service.serve(endpoint_id.clone(), ask(&digest(&incarnation))).await;
         assert_eq!(

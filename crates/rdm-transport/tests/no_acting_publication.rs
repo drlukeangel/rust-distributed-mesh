@@ -23,7 +23,7 @@ fn fabric() -> FabricId {
 
 fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> MeshDigest {
     let node_id = NodeId::mint();
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: node_id.clone(),
@@ -93,7 +93,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         let fp_n = node().await;
         let fab = fabric();
         let fp_own = digest(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", 41_001);
-        let fp_m = TopologyView::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), fp_own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fp_m = TopologyView::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), fp_own.node.node_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", rdm_core::PublisherId { incarnation: fp_own.node.incarnation.clone(), node_id: fp_own.node.node_id.clone() }, vec![]).await.unwrap();
         fp_bb.set_mesh_primary(true);
         // The view a node-admin hands its backbone at each install: it names mesh2 live, for the

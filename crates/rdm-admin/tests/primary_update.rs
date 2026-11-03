@@ -192,7 +192,7 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_id
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
-    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), vec![], &[]).await.unwrap();
+    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), vec![]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &topology_view, mesh, rdm_core::PublisherId { incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
@@ -552,7 +552,7 @@ async fn member(fabric: &FabricId, mesh: &str, path: &rdm_core::PathName, node_i
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
-    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), vec![], &[]).await.unwrap();
+    let topology_view = TopologyView::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), node_id.as_str(), Arc::new(time), vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: rdm_admin::primary_update::NodePrimaryUpdateSlot = Arc::new(OnceLock::new());
@@ -591,7 +591,6 @@ fn digest_of(r: &ResolvedNode, fabric: &FabricId) -> rdm_core::MeshDigest {
         in_flight: None,
         load: None,
         gossip: None,
-        held_hash: Default::default(),
         is_primary: None,
         is_fabric_primary: None,
     }

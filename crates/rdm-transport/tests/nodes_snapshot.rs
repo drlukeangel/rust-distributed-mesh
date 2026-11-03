@@ -42,7 +42,7 @@ fn fabric() -> FabricId {
 
 /// One member of `mesh` at `ordinal`; the NodeId is minted once per ordinal by the caller.
 fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq: u64) -> MeshDigest {
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: fabric(),
         node: MeshNode { mesh: mesh.to_string(), r#type: "node".into(),
             node_id: node_id.clone(),
@@ -446,9 +446,9 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         learn_addresses(&member_node.ep, &[fwd_addr.clone()]).unwrap();
         let fab = fabric();
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
-        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
-        let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
+        let src_m = TopologyView::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let fwd_m = TopologyView::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node-admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let mem_m = TopologyView::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.node.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()]).await.unwrap();
         let src_birth = IncarnationId::mint();
         let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { incarnation: src_birth.clone(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();

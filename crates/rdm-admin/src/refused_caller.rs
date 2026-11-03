@@ -333,7 +333,7 @@ mod tests {
         crate::status_rpc::StatusService {
             certs: None,
             primary_commands: Default::default(),
-            app_channels: None,
+            topology_view: None,
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -495,7 +495,7 @@ mod tests {
             me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
-            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(|_| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
@@ -508,7 +508,6 @@ mod tests {
             })),
         };
         let report = rdm_core::MeshDigest {
-            held_hash: Default::default(),
             fabric_id,
             node: rdm_core::MeshNode { mesh: caller.mesh.clone(), r#type: caller.r#type.clone(),
                 node_id: caller.node_id.clone(),
@@ -532,7 +531,7 @@ mod tests {
             is_primary: None,
             is_fabric_primary: None,
         };
-        let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), types: Default::default(), listeners: Vec::new() };
+        let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), listeners: Vec::new() };
         let reply = join_service.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
         assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "node_id" && deployed.contains(recreated.node_id.as_str())), "the deleted birth's join is refused at once by its node id, naming the re-created birth: {reply:?}");
         // The decision runs on its own task: it ends once its one span closes.
@@ -602,7 +601,7 @@ mod tests {
             me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
             answer: Arc::new(|| Box::pin(async { Err("the cell admits no join".to_string()) })),
-            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+            seed_at_arrival: Arc::new(|_| Box::pin(async { Ok(()) })),
             install: Arc::new(|_| {}),
             known: Arc::new(|| Box::pin(async {})),
             pending: Arc::new(|_, _| Box::pin(async {})),
@@ -615,7 +614,6 @@ mod tests {
             })),
         };
         let report = rdm_core::MeshDigest {
-            held_hash: Default::default(),
             fabric_id,
             node: rdm_core::MeshNode { mesh: caller.mesh.clone(), r#type: caller.r#type.clone(),
                 node_id: caller.node_id.clone(),
@@ -639,7 +637,7 @@ mod tests {
             is_primary: None,
             is_fabric_primary: None,
         };
-        let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), types: Default::default(), listeners: Vec::new() };
+        let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), listeners: Vec::new() };
         let reply = join_service.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
         assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "status" && deployed.contains("is deleted")), "the deleted birth's join is refused at once by name, naming its deleted row: {reply:?}");
         // The decision runs on its own task: it ends once its one span closes.

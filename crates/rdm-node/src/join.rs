@@ -40,15 +40,15 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
-    call_join_to_types(client, next, digest, turns, &[], &[]).await
+    call_join_to_with_listeners(client, next, digest, turns, &[]).await
 }
 
-/// Join using this birth's immutable app declaration and the listeners it bound (Q151: each with the
-/// port the operating system selected), retained across all calls.
-pub async fn call_join_to_types<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, turns: u32, types: &[String], listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+/// Join reporting the listeners this birth bound (Q151: each with the port the operating system
+/// selected), retained across all calls.
+pub async fn call_join_to_with_listeners<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, turns: u32, listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
 where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
-    let req = JoinRequest::JoinNode { types: types.to_vec(), digest: WireDigest::from(digest), listeners: listeners.to_vec() };
+    let req = JoinRequest::JoinNode { digest: WireDigest::from(digest), listeners: listeners.to_vec() };
     let node = digest.node.node_id.to_string();
     let mut last = String::new();
     let opts = rdm_transport::CallOptions::default();

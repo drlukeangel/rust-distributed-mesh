@@ -806,7 +806,6 @@ mod tests {
             "mesh2.node-admin.1",
             Arc::new(time),
             vec![],
-            &[],
         )
         .await
         .unwrap();

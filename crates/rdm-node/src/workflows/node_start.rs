@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 use tracing::Instrument as _;
 
 /// The most `JoinNode` calls a start makes, each on the default `Send`, before it ends unreached: a
-/// call is made again only on a domain answer (`crate::join::call_join_to_types`).
+/// call is made again only on a domain answer (`crate::join::call_join_to_with_listeners`).
 pub const JOIN_TURNS: u32 = 5;
 
 /// A boxed future a step's plug returns.
@@ -540,8 +540,6 @@ pub type HookStarted<E> = Box<dyn FnOnce(tokio::task::JoinHandle<()>) -> BoxFut<
 /// left, so a node type that brings its runtime up while it starts (a node-admin hydrating its stores
 /// and entering the election) holds what it built from one step to the next.
 pub struct FirstStart<E> {
-    /// The immutable app types presented by the first join.
-    pub types: Vec<String>,
     /// The listeners the birth bound from its launch, each with its selected port, presented by the
     /// first join (Q151); none for a kind that binds none.
     pub listeners: Vec<(String, std::net::SocketAddr)>,
@@ -564,8 +562,6 @@ pub struct FirstStart<E> {
 #[async_trait::async_trait]
 impl<E: From<StartFailed> + Send + 'static> super::node_mesh_join::MeshJoin for FirstStart<E> {
     type Error = E;
-
-    fn join_types(&self) -> Vec<String> { self.types.clone() }
 
     fn join_listeners(&self) -> Vec<(String, std::net::SocketAddr)> { self.listeners.clone() }
 
@@ -683,7 +679,6 @@ mod tests {
 
         fn join_digest(&self) -> MeshDigest {
             MeshDigest {
-                held_hash: Default::default(),
                 fabric_id: FabricId::mint(),
                 node: rdm_core::MeshNode { mesh: "mesh1".into(), r#type: "node".into(),
                     node_id: self.starting.node_id.clone(),
@@ -728,7 +723,6 @@ mod tests {
                 &self.starting.name,
                 Arc::new(self.starting.rafka_time.clone()),
                 Vec::new(),
-                &[],
             )
             .await
             .map_err(|e| StartFailed {

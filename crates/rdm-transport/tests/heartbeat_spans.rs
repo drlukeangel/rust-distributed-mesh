@@ -15,7 +15,7 @@ use std::time::Duration;
 
 fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, ep: &iroh::Endpoint) -> MeshDigest {
     let port = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
-    MeshDigest { held_hash: Default::default(),
+    MeshDigest { 
         fabric_id: FabricId::parse("fab000000001").unwrap(),
         node: MeshNode { mesh: mesh.to_owned(), r#type: r#type.to_string(),
             node_id: NodeId::mint(),
@@ -72,9 +72,9 @@ fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
         // Each node joins under its node id, as every node does; its digest names its (path, name).
         let (da, db) = (digest(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a.ep), digest(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b.ep));
         let (a_id, b_id) = (da.node.node_id.clone(), db.node.node_id.clone());
-        let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, a_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let ma = TopologyView::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, a_id.as_str(), rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
-        let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, b_id.as_str(), rdm_transport::clock::os_clock(), vec![seed], &[]).await.unwrap();
+        let mb = TopologyView::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, b_id.as_str(), rdm_transport::clock::os_clock(), vec![seed]).await.unwrap();
         let started = std::time::Instant::now();
         let pa = ma.publish_every(Duration::from_millis(500), move || da.clone());
         let pb = mb.publish_every(Duration::from_millis(500), move || db.clone());

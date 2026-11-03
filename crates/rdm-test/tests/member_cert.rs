@@ -190,7 +190,7 @@ async fn alpn_birth(admin: &AdminSide, fabric: &FabricId, name: rdm_core::PathNa
     let key = node::load_or_mint_key(&dir).unwrap();
     let launch = Launch { path: name.path.clone(), name: name.name.clone(), roots, ..launch_in(&dir, fabric, admin, IncarnationId::mint(), None, NodeId::mint()) };
     admin.deployed(&launch, &key);
-    let running = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, &[], std::slice::from_ref(alpn))
+    let running = rdm_node::node::start_with_rafka_time_pre_node_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::node_hooks::NodeHooks::none(), |s| s, None, |b, _| b, std::slice::from_ref(alpn))
         .await
         .expect("the birth starts");
     (running, dir)

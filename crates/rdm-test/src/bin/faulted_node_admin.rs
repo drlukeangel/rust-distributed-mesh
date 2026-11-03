@@ -44,6 +44,10 @@ async fn main() {
         let service = faults.clone();
         wiring.serve_app = Some(Box::new(move |b| rdm_test::fault::serve(b, service)));
         wiring.fabric_hooks = test_app::hooks();
+        // The testkit application's channel, joined before Ready when the estate's root asks for it.
+        if test_app::app_channel_knob(&root) {
+            wiring.node_hooks = rdm_admin::node_hooks::NodeHooks::new(test_app::JoinsAppChannel::over(None));
+        }
         wiring.node_hooks = std::mem::take(&mut wiring.node_hooks).with_on_call_failed(std::sync::Arc::new(test_app::CallFailed));
         wiring.certs = rdm_admin::entry::material_or_exit("faulted-node-admin", cfg);
         // The testkit application's declared secret, registered at boot like its hooks.
