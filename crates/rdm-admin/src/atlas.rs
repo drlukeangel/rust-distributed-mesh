@@ -403,27 +403,47 @@ impl Atlas {
     /// `t` with `is_primary` and `is_fabric_primary` as the primary updates' answers this atlas holds
     /// set them (Q355): this admin reads a node's mesh-primary (the fabric-primary) from here wherever it
     /// decides which node runs a node command, and in its `node.get` answer. An answer stands while this
-    /// admin's record of the role is the one it held when the answer came; any later record, the change
-    /// gossip carried or one after it, ends it.
+    /// admin's record of the role is the one it held when the answer came. A later record replaces it
+    /// (node-primary-update.md): while `t` still names the node the update was sent to, `t` was made
+    /// before that record, so the role is read from the record; once `t` names another node, or the
+    /// record names the old node again, `t` is the record's and the answer goes.
     pub fn primaries(&self, t: &mut Topology) {
         let Some(records) = self.records.get() else { return };
         let mut held = self.held.lock().unwrap();
-        held.is_primary.retain(|mesh, u| records.mesh(mesh).as_ref() == Some(&u.record));
-        if held.is_fabric_primary.as_ref().is_some_and(|u| records.fabric().as_ref() != Some(&u.record)) {
+        let names = |t: &Topology, id: &NodeId, fabric: bool| t.own(id).is_some_and(|n| if fabric { n.is_fabric_primary } else { n.is_primary });
+        // The node each held answer names primary in `t`: the answer's, or the record that replaced it.
+        let mut meshes: Vec<(String, NodeId, NodeId)> = Vec::new();
+        held.is_primary.retain(|mesh, u| match records.mesh(mesh) {
+            Some(r) if r == u.record => {
+                meshes.push((mesh.clone(), u.node_id.clone(), u.record.node_id.clone()));
+                true
+            }
+            Some(r) if r.node_id != u.record.node_id && names(t, &u.record.node_id, false) => {
+                meshes.push((mesh.clone(), r.node_id, u.record.node_id.clone()));
+                true
+            }
+            _ => false,
+        });
+        let fabric = match (held.is_fabric_primary.as_ref(), records.fabric()) {
+            (Some(u), Some(r)) if r == u.record => Some((u.node_id.clone(), u.record.node_id.clone())),
+            (Some(u), Some(r)) if r.node_id != u.record.node_id && names(t, &u.record.node_id, true) => Some((r.node_id, u.record.node_id.clone())),
+            _ => None,
+        };
+        if fabric.is_none() {
             held.is_fabric_primary = None;
         }
         for n in t.nodes.iter_mut() {
-            if let Some(u) = held.is_primary.get(&n.mesh).filter(|_| rdm_core::is_node_admin(&n.r#type)) {
-                if n.node_id == u.node_id {
+            if let Some((_, primary, old)) = meshes.iter().find(|(mesh, _, _)| *mesh == n.mesh).filter(|_| rdm_core::is_node_admin(&n.r#type)) {
+                if n.node_id == *primary {
                     n.is_primary = true;
-                } else if n.node_id == u.record.node_id {
+                } else if n.node_id == *old {
                     n.is_primary = false;
                 }
             }
-            if let Some(u) = &held.is_fabric_primary {
-                if n.node_id == u.node_id {
+            if let Some((primary, old)) = &fabric {
+                if n.node_id == *primary {
                     n.is_fabric_primary = true;
-                } else if n.node_id == u.record.node_id {
+                } else if n.node_id == *old {
                     n.is_fabric_primary = false;
                 }
             }
@@ -1101,7 +1121,7 @@ mod tests {
     /// atlas, and the old one no more; `is_fabric_primary` the same for node.fabric-primary.update. The
     /// answer stands while this admin's record of the role is the one it held at the answer: the next
     /// record ends it, read or not, and the role returning to the old primary at a later revision is
-    /// the record's. Must NOT happen: the view's stale `is_primary` read after the answer, or an answer
+    /// the record's; a view made before the later record reads the role from it. Must NOT happen: the view's stale `is_primary` read after the answer, or an answer
     /// laid over a later record (own_delete_matrix: a fabric-primary handed its roles back to).
     #[test]
     fn an_answered_primary_update_sets_is_primary_on_node_id_until_a_later_record() {
@@ -1137,8 +1157,22 @@ mod tests {
         atlas.primaries(&mut back);
         assert!(atlas.held.lock().unwrap().is_primary.is_empty(), "the answer goes once a later record is held");
         assert_eq!(back.node_type_primary("mesh2", "node-admin").map(|n| n.node_id.clone()), Some(old.node_id.clone()), "the view's own primary stands once the answer went");
+        // Answered again, then the record names node_id at the next revision while `t`, made before it,
+        // still names the old primary: the role is read from the record, and the answer stands until `t`
+        // moves (node_stop: a node.get between the record and the view).
+        atlas.primary_updated(&records, "mesh2", &old.node_id, &new.node_id);
+        records.take(PrimaryRole::MeshPrimary, &record(&new, "mesh2", 6));
+        let mut lagging = gossip.clone();
+        atlas.primaries(&mut lagging);
+        assert_eq!(lagging.node_type_primary("mesh2", "node-admin").map(|n| n.node_id.clone()), Some(new.node_id.clone()), "a view made before the later record names the record's primary, never the old one");
+        assert!(!lagging.own(&old.node_id).unwrap().is_primary, "the old primary is not named while the view lags the record");
+        assert_eq!(atlas.held.lock().unwrap().is_primary.len(), 1, "the answer stands while the view still names the old primary");
+        let mut moved = gossip.clone();
+        moved.nodes.iter_mut().for_each(|n| if n.mesh == "mesh2" { n.is_primary = n.node_id == new.node_id });
+        atlas.primaries(&mut moved);
+        assert!(atlas.held.lock().unwrap().is_primary.is_empty(), "the answer goes once the view names the record's primary");
         // An answer the records already carry holds nothing.
-        atlas.primary_updated(&records, "mesh2", &new.node_id, &old.node_id);
+        atlas.primary_updated(&records, "mesh2", &old.node_id, &new.node_id);
         assert!(atlas.held.lock().unwrap().is_primary.is_empty(), "a record naming another node than the one the update was sent to: nothing held");
         // node.fabric-primary.update of the fabric-primary: is_fabric_primary on node_id, removed from it.
         atlas.fabric_primary_updated(&records, &fp.node_id, &new.node_id);
