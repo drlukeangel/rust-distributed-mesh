@@ -370,7 +370,7 @@ impl StorageChanges {
             Err(e) => return rdm_core::reply::status::not_ready(e),
         };
         if from == provider {
-            return StatusReply::AlreadyApplied;
+            return rdm_core::reply::status::already_applied();
         }
         if let Err(detail) = self.handle.opens(provider).await {
             let reject = crate::build::BuildReject::TopologyStorageProviderNotOpened { provider: provider.to_string(), detail };

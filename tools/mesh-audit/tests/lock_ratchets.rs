@@ -217,7 +217,7 @@ fn typed_protocol_evidence_fails_untyped_held_evidence() {
 #[test]
 fn status_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-core/src/status.rs", "const REPLY_VARIANTS: u32 = 63;", "const REPLY_VARIANTS: u32 = 64;");
+    t.edit("crates/rdm-core/src/status.rs", "const REPLY_VARIANTS: u32 = 66;", "const REPLY_VARIANTS: u32 = 67;");
     only(check(t.root()), Ratchet::StatusWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/status_wire.rs");
@@ -237,7 +237,7 @@ fn forward_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
 #[test]
 fn node_command_wire_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-core/src/node_command.rs", "const REPLY_VARIANTS: u32 = 24;", "const REPLY_VARIANTS: u32 = 25;");
+    t.edit("crates/rdm-core/src/node_command.rs", "const REPLY_VARIANTS: u32 = 26;", "const REPLY_VARIANTS: u32 = 27;");
     only(check(t.root()), Ratchet::NodeCommandWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/node_command_wire.rs");

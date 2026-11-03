@@ -278,8 +278,8 @@ pub const FORWARD_REPLIES: u32 = 14;
 pub const NODE_COMMAND: &str = "crates/rdm-core/src/node_command.rs";
 pub const NODE_COMMAND_WIRE: &str = "crates/rdm-core/tests/node_command_wire.rs";
 /// The frozen 0x22 counts.
-pub const NODE_COMMAND_REQUESTS: u32 = 6;
-pub const NODE_COMMAND_REPLIES: u32 = 24;
+pub const NODE_COMMAND_REQUESTS: u32 = 8;
+pub const NODE_COMMAND_REPLIES: u32 = 26;
 pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 /// The frozen transport-header goldens (node-rpc-envelope.md "Transport frames"): Request kind 0,
@@ -299,8 +299,8 @@ pub const PROBE_APPLY_CELLS: &str = "crates/rdm-test/tests/status_probe_apply.rs
 pub const COMMAND_ARMS: [&str; 9] = ["Admitted", "AlreadyAdmitted", "Stopped", "ConnectionsDeleted", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
-pub const STATUS_REQUESTS: u32 = 39;
-pub const STATUS_REPLIES: u32 = 63;
+pub const STATUS_REQUESTS: u32 = 40;
+pub const STATUS_REPLIES: u32 = 66;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -655,8 +655,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 STATUS_WIRE,
                 &[
-                    "fn requests_match_the_frozen_thirty_nine_variant_wire_schema",
-                    "fn replies_match_the_frozen_sixty_three_variant_wire_schema",
+                    "fn requests_match_the_frozen_forty_variant_wire_schema",
+                    "fn replies_match_the_frozen_sixty_six_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
                     "Status::REPLY_VARIANTS",
@@ -732,8 +732,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 NODE_COMMAND_WIRE,
                 &[
-                    "fn the_requests_match_the_frozen_six_variant_wire_schema",
-                    "fn replies_match_the_frozen_twenty_four_variant_wire_schema",
+                    "fn the_requests_match_the_frozen_eight_variant_wire_schema",
+                    "fn replies_match_the_frozen_twenty_six_variant_wire_schema",
                     "NodeCommand::REQUEST_VARIANTS",
                     "NodeCommand::REPLY_VARIANTS",
                 ],
