@@ -1175,6 +1175,9 @@ impl DriveEnv {
                 }
                 item = inner.next() => item,
             };
+            // Each frame is the drive's once it is pushed or read as the section's end, and it is
+            // recovered then (`ReplyStream::accepted`): the mesh-primary's held frames are acked as they
+            // are taken, never only the first, so a section of any length streams to its terminal.
             match item {
                 InnerItem::Frame(f @ BuildReply::Step { .. }) => {
                     if let BuildReply::Step { operation, .. } = &f {
@@ -1182,18 +1185,30 @@ impl DriveEnv {
                         last = operation.clone();
                     }
                     drive.push(f);
+                    inner.accepted().await;
                 }
                 InnerItem::Frame(f @ BuildReply::Blocked { .. }) => {
                     drive.push(f);
+                    inner.accepted().await;
                 }
                 InnerItem::Frame(BuildReply::Started { .. }) => {}
-                InnerItem::Frame(BuildReply::Complete { .. }) => return Section::Ran,
+                InnerItem::Frame(BuildReply::Complete { .. }) => {
+                    inner.accepted().await;
+                    return Section::Ran
+                }
                 InnerItem::Frame(BuildReply::Incomplete { sections, .. }) => {
+                    inner.accepted().await;
                     let u = sections.into_iter().find(|s| s.mesh == mesh).unwrap_or_else(|| call_ended_short(mesh, &last, format!("mesh {mesh}'s section ended incomplete naming no section of {mesh}"), Code::Internal));
                     return Section::Unfinished(u);
                 }
-                InnerItem::Frame(BuildReply::RoleYielded { .. } | BuildReply::FabricPrimaryMoved { .. }) => return Section::RoleYielded,
-                InnerItem::Frame(other) => return Section::Unfinished(call_ended_short(mesh, &last, format!("mesh {mesh}'s section ended with {}", describe(&other)), <rdm_core::build::Build as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code())),
+                InnerItem::Frame(BuildReply::RoleYielded { .. } | BuildReply::FabricPrimaryMoved { .. }) => {
+                    inner.accepted().await;
+                    return Section::RoleYielded
+                }
+                InnerItem::Frame(other) => {
+                    inner.accepted().await;
+                    return Section::Unfinished(call_ended_short(mesh, &last, format!("mesh {mesh}'s section ended with {}", describe(&other)), <rdm_core::build::Build as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code()));
+                },
                 InnerItem::Ended => return Section::Unfinished(call_ended_short(mesh, &last, format!("mesh {mesh}'s section stream ended without its terminal"), Code::Unavailable)),
                 InnerItem::Broke(why) => return Section::Unfinished(call_ended_short(mesh, &last, format!("mesh {mesh}'s primary was lost mid-section (Indeterminate): {why}"), Code::Unavailable)),
             }
