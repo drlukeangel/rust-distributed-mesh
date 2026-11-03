@@ -217,8 +217,6 @@ pub const WIRE_SOURCES: &[&str] = &[
     "crates/rdm-transport/src/snapshot.rs",
     "crates/rdm-transport/src/chunking.rs",
     "crates/rdm-transport/src/wire.rs",
-    "crates/rdm-admin/src/fabric_builds.rs",
-    "crates/rdm-admin/src/wire.rs",
     "crates/rdm-admin/src/join.rs",
     "crates/rdm-node/src/topology_read.rs",
     "crates/rdm-node/src/join.rs",
@@ -241,12 +239,8 @@ pub const JSON_CODEC_TOKENS: &[&str] = &[
     "serde_json::Deserializer",
 ];
 
-/// The one source that converts a step receipt's JSON `output` (the REST and journal shape) to the
-/// typed result its step produced: it names `serde_json::Value` and nothing else may.
-pub const JSON_VALUE_EDGE: &str = "crates/rdm-admin/src/wire.rs";
-
 /// The gossip topics' frame codecs go through the one shared codec, never `postcard` directly.
-pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-transport/src/topology.rs", "crates/rdm-transport/src/envelope.rs", "crates/rdm-admin/src/fabric_builds.rs"];
+pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-transport/src/topology.rs", "crates/rdm-transport/src/envelope.rs"];
 pub const WIRE_CODEC: &str = "crates/rdm-transport/src/wire.rs";
 pub const WIRE_CELLS: &str = "crates/rdm-admin/tests/gossip_frames_wire.rs";
 /// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
@@ -760,14 +754,12 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 out.push(Violation::Missing { ratchet, file: WIRE_SOURCES.join(", "), what: "the wire sources themselves".into() });
             }
             scan_non_test_tokens(root, &files, JSON_CODEC_TOKENS, ratchet, &mut out);
-            let no_edge: Vec<PathBuf> = files.iter().filter(|f| rel(root, f) != JSON_VALUE_EDGE).cloned().collect();
-            scan_non_test_tokens(root, &no_edge, &["serde_json::Value"], ratchet, &mut out);
+            scan_non_test_tokens(root, &files, &["serde_json::Value"], ratchet, &mut out);
             scan_non_test_tokens(root, &files_in(root, GOSSIP_FRAME_SOURCES), &["postcard::"], ratchet, &mut out);
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/topology.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.topology.reject.via-undecodable-frame", "Concern { role: PrimaryRole, node_id: NodeId"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/envelope.rs", &["crate::wire", "wire::encode", "wire::decode", "specversion", "datacontenttype", "rdm.mesh.digest", "rdm.node.stopped"], ratchet, &mut out);
             require(root, PRIMARY_FRAME_CELLS, &["fn primary_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
-            require(root, "crates/rdm-admin/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/join.rs", &["WireDigest::from", "crate::wire::answer_from_wire"], ratchet, &mut out);
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);
@@ -779,7 +771,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, PRIMARY_UPDATE_SOURCE, &["rdm.node_admin.primary.update.via-primary-updated", "rdm.node_admin.primary.reject.via-primary-update", "call_successor"], ratchet, &mut out);
             require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_two_variant_wire_schema", "fn replies_match_the_frozen_fourteen_variant_wire_schema"], ratchet, &mut out);
             require(root, PRIMARY_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
-            require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
+            require(root, WIRE_CELLS, &["fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneRenameWritePath => {
             // A node row moves through one writer (R13: node.update is one write path):

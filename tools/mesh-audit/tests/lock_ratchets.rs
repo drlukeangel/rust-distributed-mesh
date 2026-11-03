@@ -319,12 +319,9 @@ fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
     envelope.edit("crates/rdm-transport/src/envelope.rs", "wire::encode(&(context.attributes(dataschema)?, data))", "serde_json::to_vec(&(context.attributes(dataschema)?, data))");
     only(check(envelope.root()), Ratchet::NoJsonOnTheWire);
 
-    // The Build topic too, and a direct postcard call beside the shared codec.
+    // A direct postcard call beside the shared codec.
     let t = Planted::of_tree();
-    t.edit("crates/rdm-admin/src/fabric_builds.rs", "rdm_transport::wire::decode(bytes)", "serde_json::from_slice(bytes).map_err(|e| rdm_transport::wire::WireError::new(e.to_string()))");
-    only(check(t.root()), Ratchet::NoJsonOnTheWire);
-    let t = Planted::of_tree();
-    t.edit("crates/rdm-admin/src/fabric_builds.rs", "rdm_transport::wire::encode(&wire)", "postcard::to_allocvec(&wire).map_err(|e| rdm_transport::wire::WireError::new(e.to_string()))");
+    t.edit("crates/rdm-transport/src/envelope.rs", "wire::encode(&(context.attributes(dataschema)?, data))", "postcard::to_allocvec(&(context.attributes(dataschema)?, data))");
     only(check(t.root()), Ratchet::NoJsonOnTheWire);
 
     // A Node RPC source takes no JSON either.
@@ -345,7 +342,7 @@ fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rdm-admin/tests/gossip_frames_wire.rs",
-        "fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling",
+        "fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling",
         "fn every_frame_round_trips",
     );
     only(check(t.root()), Ratchet::NoJsonOnTheWire);

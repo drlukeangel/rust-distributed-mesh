@@ -144,7 +144,7 @@ const CREATE_ORDER: [&str; 13] = [
 /// exact birth, exactly that birth removed; the old birth is targeted before the new one is created;
 /// node.create at the same path.name (`node.create:<path>`): the same data dir (its storage still
 /// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready. No operation
-/// writes a receipt of another, and every receipt has a wire shape on the Build topic.
+/// writes a receipt of another.
 /// Must NOT happen: one fused `recover-node:<path>` operation, a rename, a stop, a
 /// storage handoff or release, a path-keyed removal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

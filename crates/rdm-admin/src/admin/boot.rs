@@ -3085,7 +3085,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if let Some(Some(b)) = current {
                                                     records.set_planned(&b.topology);
                                                 }
-                                                // Every mesh the Build names, its section held here or not (Q284).
+                                                // Every mesh the Build names.
                                                 let named = current.and_then(|c| c.as_ref()).map(|b| b.topology.mesh_names()).unwrap_or_default();
                                                 let adopted_ready = backbone.adopted_mesh_status().is_some_and(|h| h.status == rdm_transport::topology::MESH_READY);
                                                 records.set_heard_ready(
@@ -3126,7 +3126,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let forgot = {
                                                         let mut meshes = records.meshes.lock().unwrap();
                                                         let before = meshes.len();
-                                                        meshes.retain(|name, _| b.topology.names_mesh(name) || t.births().any(|n| &n.mesh == name));
+                                                        meshes.retain(|name, _| b.topology.meshes.contains_key(name) || t.births().any(|n| &n.mesh == name));
                                                         meshes.len() < before
                                                     };
                                                     if forgot {

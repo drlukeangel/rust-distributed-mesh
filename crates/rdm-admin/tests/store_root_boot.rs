@@ -1059,7 +1059,7 @@ impl Prepared {
             let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await;
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
-                topology: rdm_admin::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
+                topology: rdm_admin::accepted::FabricTopology { created: Vec::new(), pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },
                 change: rdm_core::build::BuildChange::DeleteFabric,
                 source: None, time: now_ms(),
             };

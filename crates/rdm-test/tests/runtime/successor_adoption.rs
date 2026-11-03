@@ -2,8 +2,8 @@
 //! (rafka-v2 #2850).
 //!
 //! Build A completes (the bootstrap admin launches three nodes). Only then is
-//! the successor admin born, so it never holds A's receipts: the Build topic hands
-//! a new admin only active Builds. The launching admin is killed. From public
+//! the successor admin born, so it never holds A's receipts. The launching admin
+//! is killed. From public
 //! surfaces only:
 //! - the successor holds the mesh and the fabric, and its view advertises
 //!   every node's data dir (current birth metadata, from the topology view);

@@ -506,10 +506,9 @@ pub(crate) fn ready_prerequisites_missing(p: &crate::build_state::BuildProjectio
     READY_PREREQUISITES.iter().map(|s| s.name()).filter(|s| !p.completed(&op, s)).collect()
 }
 
-/// The typed output of a `ReleaseStorage` receipt ([`crate::wire::RELEASE_STORAGE_STEP`]). No step
-/// of this pipeline runs it: a delete retains the data dir and endpoint key (node-delete.md
-/// "Storage"). It stays the receipt's shape so a Build message's positional layout
-/// ([`crate::wire`]) and a receipt an earlier build wrote still decode.
+/// The typed output of a `ReleaseStorage` receipt. No step of this pipeline runs it: a delete
+/// retains the data dir and endpoint key (node-delete.md "Storage"). It stays the receipt's shape so
+/// a receipt an earlier build wrote still decodes.
 ///
 /// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
 /// even under `deny_unknown_fields`, and an empty field list refuses it. The JSON is the same.
@@ -685,7 +684,7 @@ pub struct TerminalReceipt {
     /// An unreached birth's delete (node-recovery.md step 3): what the provider read of the runtime at
     /// the step's own instant, `running` (then terminated), `exited`, `os-stopped` or `unavailable`.
     /// The re-created node takes the inherited data dir only on `exited` (`R-FM2`). `None` for every
-    /// other delete. Positional in a Build message, after `exit_code`.
+    /// other delete.
     #[serde(default)]
     pub verdict: Option<String>,
     /// The data dir the birth ran over, as the delete resolved its record: a replacement's create of
@@ -1154,8 +1153,8 @@ pub struct Created {
 pub(crate) struct Identity {
     node_id: NodeId,
     incarnation: IncarnationId,
-    /// Always `None`: a create mints a new node and supersedes no birth. The field keeps its position in the receipt's wire form
-    /// (`wire::WireOutput::Identity`, positional in every Build message).
+    /// Always `None`: a create mints a new node and supersedes no birth. The field stays so a receipt
+    /// an earlier build wrote still decodes.
     supersedes: Option<IncarnationId>,
     deployment_id: DeploymentId,
 }
@@ -1828,12 +1827,12 @@ impl DeploymentPipeline<'_> {
                 let of = row_for;
                 // A plain create's row carries the tag labels and the config its create spec names, from the
                 // path's entry the fabric-primary put on the create (Q166; proposal
-                // executable-bindings-at-create.md rule 1; a Build message carries no entry's tags, config or
-                // executable, and this admin reads no Build record, Q227), so its first join hands it that
+                // executable-bindings-at-create.md rule 1; this admin reads no Build record, Q227), so its
+                // first join hands it that
                 // config; a recovery's and a successor's carry their seed's.
                 // Whatever the create, its storage and placement are the create spec's (build-deployment.md §3:
-                // a successor's storage follows its create spec's), written onto the row (build.md §1): a
-                // Build message carries them, read from the Build this admin holds.
+                // a successor's storage follows its create spec's), written onto the row (build.md §1), read
+                // from the Build this admin holds.
                 step_span.record("awaiting", "entry-spec");
                 // A create of no Build (a node recovery's, Q342) reads no Build: its storage is the
                 // node record's, which its claim inherits.

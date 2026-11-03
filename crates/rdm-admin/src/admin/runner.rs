@@ -598,8 +598,8 @@ impl AdminRunner {
 
     /// node.create of `node`, its name claimed for `row_for`, launching the executable the step names, else
     /// the path's entry the fabric-primary put on the operation (`entry`, [`crate::build::EntrySpec`]:
-    /// proposal executable-bindings-at-create.md rules 1-2; a Build message carries none, rule 7, and this
-    /// admin reads no Build record, Q227), else the row's ([`Self::create_template`]). A plain create's
+    /// proposal executable-bindings-at-create.md rules 1-2; this admin reads no Build record, Q227),
+    /// else the row's ([`Self::create_template`]). A plain create's
     /// row takes the entry's tags and config at its name claim.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create(&self, build_id: &crate::build::BuildId, node: &PathName, mesh: &str, r#type: &str, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, row_for: crate::node_rows::RowFor, node_id: &crate::model::NodeId, operation: &rdm_core::OperationId, predecessor: Option<crate::storage::BirthRef>) -> Result<(), crate::executor::RunEnd> {

@@ -30,7 +30,6 @@ iroh-gossip = { workspace = true }
 blake3 = "1"
 futures-lite = "2"
 futures-util = "0.3"
-bytes = "1"
 # events_storage: an event's `time`, RFC 3339 (CloudEvents 1.0), as rdm-transport's envelope writes it.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 rdm-transport = { path = "../rdm-transport" }

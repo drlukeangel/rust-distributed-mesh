@@ -503,8 +503,6 @@ pub enum BuildStateError {
     ConflictingIntent(BuildId),
     /// The store could not be read or written.
     Io(String),
-    /// A record cannot be encoded.
-    Unencodable(String),
     /// The fabric-primary record this admin holds names another live birth: it writes nothing.
     RoleYielded {
         /// This admin.
@@ -522,7 +520,6 @@ impl std::fmt::Display for BuildStateError {
             Self::UnknownBuild(id) => write!(f, "no Build {id}"),
             Self::ConflictingIntent(id) => write!(f, "Build {id} was published with a different intent"),
             Self::Io(e) => write!(f, "build journal I/O: {e}"),
-            Self::Unencodable(e) => write!(f, "Build record cannot be sent: {e}"),
             Self::RoleYielded { node, by, .. } => write!(f, "{node} is no longer the fabric-primary: {by}; its Build log decides nothing any more"),
         }
     }
@@ -746,9 +743,7 @@ fn accepted_conflict(facts: &[BuildFact], accepted: &BuildAccepted) -> Result<bo
 /// their key, everything else deduplicates.
 fn is_new(facts: &[BuildFact], f: &BuildFact) -> bool {
     match f {
-        // The whole acceptance is insert-and-fail on its Build; a section (Q284) on its Build and
-        // meshes, and the whole holds every section.
-        BuildFact::Accepted(i) => !facts.iter().any(|f| matches!(f, BuildFact::Accepted(h) if h.build_id == i.build_id && (h.topology.section_of.is_none() || (i.topology.section_of.is_some() && h.topology.meshes.keys().eq(i.topology.meshes.keys()))))),
+        BuildFact::Accepted(i) => !known(facts, &i.build_id),
         BuildFact::Forget { .. } => !facts.contains(f),
     }
 }

@@ -3,30 +3,18 @@
 //! no estate, no spans.
 //!
 //! CONTRACT: every internal mesh gossip frame is postcard. Every `Frame` variant of the
-//! topology channels and every shape a `BuildMessage` carries (each Build fact; the removed Fabric
-//! record refused) encodes, decodes to the value it was
-//! made from, and re-encodes to the same bytes; a chunk the packers produce encodes under
-//! `MAX_MESSAGE_BYTES`; a frame this build does not read is refused with a named reason, a
-//! JSON frame included.
+//! topology channels encodes, decodes to the value it was made from, and re-encodes to the same
+//! bytes; a chunk the packers produce encodes under `MAX_MESSAGE_BYTES`; a frame this build does not
+//! read is refused with a named reason, a JSON frame included.
 
-use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_transport::topology::Frame;
 use rdm_transport::snapshot::{chunks_of, Full, PublisherId};
-use rdm_admin::accepted::{FabricTopology, MeshTopology};
-use rdm_core::build::BuildChange;
-use rdm_admin::build::{BuildId, MeshDesired};
-use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildStateError, StepOutcome};
-use rdm_admin::deployment::pipeline::Bound;
-use rdm_admin::deployment::pipeline::{CommandAdmission, Completion, CreateStep, DeleteStep, StorageDisposition};
-use rdm_admin::deployment::provider::DeploymentHandle;
-use rdm_admin::fabric_builds::{encode_chunks, BuildMessage};
-use rdm_admin::model::{DeploymentId, ProviderKind};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-const CELL: &str = "every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling";
+const CELL: &str = "every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling";
 
 fn acceptance_dir() -> PathBuf {
     match std::env::var("I143_ACCEPTANCE_DIR") {
@@ -152,48 +140,8 @@ fn frames() -> Vec<Frame> {
     ]
 }
 
-fn bid(s: &str) -> BuildId {
-    BuildId::parse(s).unwrap()
-}
-
-fn topology() -> FabricTopology {
-    let mut t = FabricTopology::root("fabric-1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap());
-    let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [("node-admin", 1), ("node", 2), ("broker", 1)]));
-    let broker: PathName = rdm_core::PathName::new("mesh2.broker", "1").unwrap();
-    let rpc: PathName = rdm_core::PathName::new("mesh2.node", "1").unwrap();
-    m2.set_spec(NodeSpec { storage_persistence: StoragePersistence::Persistent { disposition: PersistentDisposition::Release }, ..NodeSpec::default_for(broker, "mesh2", "broker") }).unwrap();
-    m2.set_spec(NodeSpec { storage_persistence: StoragePersistence::Ephemeral, ..NodeSpec::default_for(rpc, "mesh2", "node") }).unwrap();
-    t.meshes.insert("mesh2".into(), m2);
-    // A Build message carries no topology_storage_provider (Q184: it is written in the records, like the
-    // executable), so the shape that round-trips names none.
-    t.topology_storage_provider = None;
-    t
-}
-
-fn changes() -> Vec<BuildChange> {
-    let node = |path: &str, name: &str, mesh: &str, r#type: &str| rdm_core::build::Nodes { path: path.into(), name: name.into(), mesh: mesh.into(), r#type: r#type.into(), storage_persistence: None, executable: None, tags: Default::default(), config: Default::default() };
-    vec![
-        BuildChange::Create { meshes: vec![rdm_core::build::Meshes { name: "mesh2".into() }], nodes: vec![node("mesh2.node-admin", "1", "mesh2", "node-admin"), node("mesh2.broker", "1", "mesh2", "broker")] },
-        BuildChange::Create { meshes: Vec::new(), nodes: vec![node("mesh2.gateway", "1", "mesh2", "gateway")] },
-        BuildChange::Delete { meshes: Vec::new(), node_ids: vec![rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "2").unwrap())] },
-        BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() },
-        BuildChange::DeleteFabric,
-    ]
-}
-
-/// Every Build fact: the acceptance of each change, and the history's forget. A step is an
-/// `rdm.build.step` event, never a Build fact (build.md §5).
-fn facts() -> Vec<BuildFact> {
-    let mut out = Vec::new();
-    for change in changes() {
-        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), change: change, source: None, time: 55 }));
-    }
-    out.push(BuildFact::Forget { build_id: bid("3qcfk1kq47m9") });
-    out
-}
-
 #[test]
-fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling() {
+fn every_gossip_frame_encodes_and_decodes_through_postcard_under_the_ceiling() {
     let mut result = serde_json::Map::new();
 
     // ---- every Frame variant: decode(encode(f)) is f, and re-encodes to the same bytes ----
@@ -205,44 +153,6 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
         assert!(bytes.len() <= MAX_MESSAGE_BYTES, "{f:?} fits one complete gossip message");
     }
     result.insert("frame_variants_round_tripped".into(), json!(all_frames.len()));
-
-    // ---- every Build fact and shape, one BuildMessage each ----
-    let all_facts = facts();
-    for fact in &all_facts {
-        let (messages, refused) = encode_chunks(vec![fact.clone()]);
-        assert!(refused.is_empty(), "{fact:?}: {refused:?}");
-        assert_eq!(messages.len(), 1);
-        let back = BuildMessage::from_bytes(&messages[0]).unwrap_or_else(|e| panic!("{fact:?} does not decode: {e}"));
-        assert_eq!(back.facts, vec![fact.clone()], "a fact decodes to the fact it was made from");
-    }
-    result.insert("build_fact_shapes_round_tripped".into(), json!(all_facts.len()));
-
-    // The removed Build channel's Fabric record (Q185): its position is reserved, and a message
-    // carrying one is refused by name.
-    #[derive(serde::Serialize)]
-    struct WithFabricRecord {
-        nonce: u64,
-        facts: Vec<u8>,
-        fabric: Option<(FabricId, String)>,
-    }
-    let bytes = rdm_transport::wire::encode(&WithFabricRecord { nonce: 7, facts: vec![], fabric: Some((fabric(), "fabric-1".into())) }).unwrap();
-    let refused = BuildMessage::from_bytes(&bytes).err().expect("a message carrying the Fabric record is refused").to_string();
-    assert!(refused.contains("Fabric record") && refused.contains("reserved"), "{refused}");
-    let none = rdm_transport::wire::encode(&WithFabricRecord { nonce: 7, facts: vec![], fabric: None }).unwrap();
-    assert_eq!(BuildMessage { nonce: 7, facts: vec![] }.to_bytes().unwrap().as_ref(), none.as_slice(), "the reserved position keeps the frame's bytes");
-
-    // ---- the packers keep every message under the ceiling and lose no fact ----
-    let many: Vec<BuildFact> = all_facts.iter().cloned().cycle().take(all_facts.len() * 8).collect();
-    let (messages, refused) = encode_chunks(many.clone());
-    assert!(refused.is_empty(), "{refused:?}");
-    assert!(messages.len() > 1, "{} facts need more than one message", many.len());
-    let mut got = Vec::new();
-    for m in &messages {
-        assert!(m.len() <= MAX_MESSAGE_BYTES, "a Build message of {} bytes fits the ceiling {MAX_MESSAGE_BYTES}", m.len());
-        got.extend(BuildMessage::from_bytes(m).unwrap().facts);
-    }
-    assert_eq!(got, many, "the messages carry every fact, in order");
-    result.insert("build_messages".into(), json!({ "facts": many.len(), "messages": messages.len(), "largest_bytes": messages.iter().map(|m| m.len()).max(), "ceiling": MAX_MESSAGE_BYTES }));
 
     let members: Vec<MeshDigest> = (1..=150).map(|k| digest(k, (k % 2 == 0).then(process_runtime), k % 3 == 0)).collect();
     let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("node.delete", PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node")).collect();
@@ -290,9 +200,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     padded.push(0);
     let trailing = Frame::decode(&padded).unwrap_err().to_string();
     assert!(trailing.contains("1 bytes left after the frame"), "{trailing}");
-    let build_garbage = BuildMessage::from_bytes(br#"{"nonce":1,"facts":[]}"#).err().expect("a JSON Build message is refused").to_string();
-    assert!(build_garbage.contains("postcard decode"), "{build_garbage}");
-    result.insert("refusals".into(), json!({ "garbage": garbage, "json_frame": json_frame, "trailing_bytes": trailing, "json_build_message": build_garbage }));
+    result.insert("refusals".into(), json!({ "garbage": garbage, "json_frame": json_frame, "trailing_bytes": trailing }));
 
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
@@ -315,65 +223,4 @@ fn every_kind_declares_its_ruled_type_string() {
     // 19 catalog types; the two reserved since Q171 and the two since Q174 are never sent;
     // rdm.node.restarting, reserved since Q183, is encoded here only to prove its refusal.
     assert_eq!(expected.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 15);
-}
-
-/// A twelve-node fabric whose every entry names its executable, as a complete-topology request
-/// compiles it: three meshes of four, each path on its own launch id's binding, each with a tag and a
-/// config.
-fn twelve_node_topology() -> FabricTopology {
-    let mut t = FabricTopology::root("fabric-1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap());
-    t.meshes.clear();
-    for (mesh, r#type) in [("mesh1", "node"), ("mesh2", "broker"), ("mesh3", "gateway")] {
-        let mut m = MeshTopology::of(&MeshDesired::of(mesh, [("node-admin", 2), (r#type, 2)]));
-        for p in m.nodes.clone() {
-            let entry_kind = m.spec(&p).unwrap().r#type.clone();
-            let id = entry_kind.replace('-', "_");
-            let executable = rdm_core::binding::Binding { launch_id: id.clone(), executable: format!("/opt/rafka/candidates/0123456789abcdef/{id}").into(), sha256: "ab".repeat(32), image: Some("rafka-node-runtime:0123456789abcdef".into()) };
-            let config = [("zone".to_string(), "a".to_string())].into();
-            m.set_spec(NodeSpec { storage_persistence: StoragePersistence::Ephemeral, executable: Some(executable), tags: ["zone_a".to_string()].into(), config, ..NodeSpec::default_for(p.clone(), mesh, &entry_kind) }).unwrap();
-        }
-        t.meshes.insert(mesh.into(), m);
-    }
-    t
-}
-
-/// `t` with no entry naming an executable, tags or a config, and no `topology_storage_provider` (Q184: it is
-/// written in the records, like the executable): what a Build message carries of it.
-fn without_executables(t: &FabricTopology) -> FabricTopology {
-    let mut t = t.clone();
-    t.topology_storage_provider = None;
-    for m in t.meshes.values_mut() {
-        for c in m.spec_by_path.values_mut() {
-            c.executable = None;
-            c.tags.clear();
-            c.config.clear();
-        }
-    }
-    t
-}
-
-/// CONTRACT (proposal executable-bindings-at-create.md rule 7: "Nothing about executables rides gossip or
-/// `node.topology.get`"; Luke 2026-10-24: "the executable is not gossiped, it's only in the node storage"):
-/// the accepted fact in a Build message carries no executable (nor an entry's tags or config, Q166), of its topology's
-/// entries or of the complete-topology change it was submitted with; its bytes are those of the same fact
-/// naming none, so
-/// a twelve-node fabric's accepted fact fits one gossip message, as it did before the field. The stored
-/// accepted Build (builds.storage) keeps them. Must NOT happen: an executable, or a table of them, in a
-/// Build message.
-#[test]
-fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_fabric_fits_one_message() {
-    let named = twelve_node_topology();
-    assert_eq!(named.meshes.values().map(|m| m.nodes.len()).sum::<usize>(), 12);
-    let fact = |t: FabricTopology| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 1_700_000_000_000 });
-    let with = fact(named.clone());
-    let without = fact(without_executables(&named));
-
-    let (messages, refused) = encode_chunks(vec![with.clone()]);
-    assert!(refused.is_empty(), "a twelve-node fabric's accepted fact fits one gossip message: {refused:?}");
-    assert_eq!(messages.len(), 1);
-    assert!(messages[0].len() <= MAX_MESSAGE_BYTES);
-    let back = BuildMessage::from_bytes(&messages[0]).unwrap();
-    assert_eq!(back.facts, vec![without.clone()], "a Build message carries the fact with no executable");
-    let bytes = |f: &BuildFact| BuildMessage { nonce: 7, facts: vec![f.clone()] }.to_bytes().unwrap();
-    assert_eq!(bytes(&with), bytes(&without), "the executables add no byte to a Build message's frame");
 }

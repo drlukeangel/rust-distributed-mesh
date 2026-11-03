@@ -15,11 +15,10 @@ use std::fmt;
 /// (R-BI5). It belongs to fabric control state, not to the executor that happens to run it.
 pub use rdm_core::BuildId;
 
-/// What a path's entry in the accepted Build names that a Build message does not carry (proposal
-/// executable-bindings-at-create.md rule 7; Q166): its executable, tags and config. The fabric-primary,
-/// the one admin that reads the Build records (Q227), puts it on each create and config operation it
-/// dispatches, so the executor reads no stored record for it. Its storage rides the Build
-/// message and are read from the Build the executor holds.
+/// What a path's entry in the accepted Build names for its create (Q166): its executable, tags and
+/// config. The fabric-primary, the one admin that reads the Build records (Q227), puts it on each
+/// create and config operation it dispatches, so the executor reads no stored record for it. Its
+/// storage is read from the Build the executor holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntrySpec {
     /// The executable the entry names.

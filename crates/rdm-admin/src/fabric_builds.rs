@@ -1,5 +1,4 @@
-//! An admin's Build state over its Build journal (PRD §1.4, §7; mesh-control-plane.md §3–§4.1), and
-//! the Build facts' wire message.
+//! An admin's Build state over its Build journal (PRD §1.4, §7; mesh-control-plane.md §3–§4.1).
 //!
 //! Every node-admin's Build journal is the fabric's Build journal on the shared store root (build.md
 //! §5.3, R-BI6): each fact the fabric-primary commits is one record there (Q118: it writes every
@@ -9,74 +8,15 @@
 //! continues a Build from the store root, never from the executing admin's disk or process.
 //!
 //! The adapter here gates the fabric-primary's decisions on the primary record this admin holds
-//! (ruling R-A2) and refuses a fact with no typed shape before it commits ([`BuildMessage`]: every
-//! fact and step output in its positional shape, the check a receipt passes before it is a record).
+//! (ruling R-A2).
 //!
 //! Facts fold deterministically and absorb idempotently: intents and claims are insert-and-fail,
 //! receipts deduplicate. Split-primary safety comes from reconciliation over pinned intents and
 //! idempotent operation keys, not from the claim alone (mesh-control-plane.md §4.1).
 
 use crate::build::BuildId;
-use crate::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, LocalBuildLog};
+use crate::build_state::{BuildAccepted, BuildProjection, BuildStateAdapter, BuildStateError, LocalBuildLog};
 use std::sync::Arc;
-
-/// One Build message, one postcard frame (`rdm_transport::wire`): Build facts in their typed shapes
-/// (`crate::wire`), never the JSON-shaped domain types. No call carries one (Q292): it is the shape
-/// check a fact passes before it commits ([`wire_shaped`]).
-pub struct BuildMessage {
-    /// The message's nonce.
-    pub nonce: u64,
-    /// The Build facts the message carries.
-    pub facts: Vec<BuildFact>,
-}
-
-impl BuildMessage {
-    /// This message as one frame; the frame is not bounded here (see `encode`).
-    pub fn to_bytes(&self) -> Result<bytes::Bytes, BuildStateError> {
-        let wire = crate::wire::WireMessage::of(self).map_err(|e| BuildStateError::Unencodable(e.to_string()))?;
-        rdm_transport::wire::encode(&wire).map(Into::into).map_err(|e| BuildStateError::Unencodable(e.to_string()))
-    }
-
-    /// The message a frame carries, or why it is not one.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, rdm_transport::wire::WireError> {
-        let wire: crate::wire::WireMessage = rdm_transport::wire::decode(bytes)?;
-        wire.into_message().map_err(|e| rdm_transport::wire::WireError::new(format!("a Build message this build does not read: {e}")))
-    }
-}
-
-pub use rdm_transport::chunking::{GOSSIP_FRAME_LIMIT, MAX_MESSAGE_BYTES};
-
-fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
-    let bytes = BuildMessage { nonce: rand::random(), facts }.to_bytes()?;
-    if bytes.len() > MAX_MESSAGE_BYTES {
-        return Err(BuildStateError::Io(format!(
-            "a Build message of {} bytes exceeds the message limit of {MAX_MESSAGE_BYTES} (frame limit {GOSSIP_FRAME_LIMIT})",
-            bytes.len()
-        )));
-    }
-    Ok(bytes.into())
-}
-
-/// `facts` cut as Q284 cut them (no call carries them since Q292): each whole acceptance replaced by its sections of `meshes` (every
-/// mesh it names when `None`), in place; every other fact, and a section already cut, as it is.
-pub fn sectioned(facts: Vec<BuildFact>, meshes: Option<&std::collections::BTreeSet<String>>) -> Vec<BuildFact> {
-    facts
-        .into_iter()
-        .flat_map(|f| match f {
-            BuildFact::Accepted(a) => a.topology.sections(meshes).into_iter().map(|topology| BuildFact::Accepted(BuildAccepted { topology, ..a.clone() })).collect(),
-            other => vec![other],
-        })
-        .collect()
-}
-
-/// `facts` packed, in order, into messages that each fit the message limit.
-/// A fact that fits no message on its own is left out and named.
-pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStateError>) {
-    // Each encoding draws a fresh nonce, whose length varies: a batch is sent as the bytes that
-    // were measured to fit, never encoded a second time.
-    let (runs, refused) = rdm_transport::chunking::pack_in_order(facts, |batch| encode(batch.to_vec()));
-    (runs.into_iter().map(|(_, b)| b).collect(), refused)
-}
 
 /// A node-admin's Build state: the fabric's Build journal, read and written on the shared store root,
 /// behind this admin's primary records.
@@ -207,18 +147,10 @@ impl FabricBuildStateAdapter {
     }
 }
 
-/// A fact is encoded before it commits: one with no typed shape (a step output that is not the type
-/// its step produces) is refused by name and lands in no log. Its size is not bounded here: the
-/// record is whole on the store, which has no frame.
-fn wire_shaped(fact: &BuildFact) -> Result<(), BuildStateError> {
-    BuildMessage { nonce: 0, facts: vec![fact.clone()] }.to_bytes().map(|_| ())
-}
-
 #[async_trait::async_trait]
 impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let _gate = self.gate.enter().await?;
-        wire_shaped(&BuildFact::Accepted(accepted.clone()))?;
         self.local.publish_accepted(accepted).await
     }
 
@@ -257,7 +189,6 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         let _gate = self.gate.enter().await?;
-        wire_shaped(&BuildFact::Forget { build_id: build_id.clone() })?;
         self.local.forget(build_id).await
     }
 }
@@ -265,105 +196,6 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// L4's shape (load-testing.md "Profiles"): ten meshes of three node-admins and seventeen rpc
-    /// nodes, a pin on `mesh2.node.1`.
-    fn l4_acceptance() -> BuildAccepted {
-        
-        let meshes = (1..=10)
-            .map(|i| {
-                let name = format!("mesh{i}");
-                let m = crate::accepted::MeshTopology::with_id(&crate::build::MeshDesired::of(name.clone(), [("node-admin", 3), ("node", 17)]), crate::model::MeshId::mint());
-                (name, m)
-            })
-            .collect();
-        let pin = crate::build::PinnedBirth { mesh: "mesh2".into(), r#type: "node".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
-        let topology = crate::accepted::FabricTopology {
-            created: Vec::new(), section_of: None,
-            pinned: vec![(rdm_core::PathName::new("mesh2.node", "1").unwrap(), pin)],
-            topology_storage_provider: Some("file".into()),
-            fabric: "fabric1".into(),
-            meshes,
-        };
-        BuildAccepted { build_id: BuildId::mint(), topology, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 7 }
-    }
-
-    /// CONTRACT (INDEX Q284: "The fabric-primary records the accepted Build whole in the journal, and
-    /// the gossip-sized check at commit goes"; "build.attempt.run carries the BuildSections"): an
-    /// acceptance larger than one message (L3's ten meshes) has a wire shape and commits; it travels as
-    /// one section per mesh, each fitting a message, each naming every mesh of the Build, each mesh's
-    /// pinned births in its own section only.
-    #[test]
-    fn an_acceptance_larger_than_a_message_commits_and_travels_as_its_sections() {
-        let whole = l4_acceptance();
-        let fact = BuildFact::Accepted(whole.clone());
-        let bytes = BuildMessage { nonce: 0, facts: vec![fact.clone()] }.to_bytes().unwrap().len();
-        assert!(bytes > MAX_MESSAGE_BYTES, "the acceptance does not fit one message whole: {bytes} bytes");
-        wire_shaped(&fact).expect("the whole acceptance commits: the store has no frame");
-        let sections = sectioned(vec![fact], None);
-        assert_eq!(sections.len(), 10, "one section per mesh");
-        let (messages, refused) = encode_chunks(sections.clone());
-        assert!(refused.is_empty(), "every section fits a message: {refused:?}");
-        assert!(messages.iter().all(|m| m.len() <= MAX_MESSAGE_BYTES));
-        let heard: Vec<BuildFact> = messages.iter().flat_map(|m| BuildMessage::from_bytes(m).unwrap().facts).collect();
-        assert_eq!(heard.len(), 10, "no section lost");
-        let names: std::collections::BTreeSet<String> = whole.topology.meshes.keys().cloned().collect();
-        for f in &heard {
-            let BuildFact::Accepted(a) = f else { panic!("a section is an acceptance: {f:?}") };
-            assert_eq!((a.build_id.clone(), a.time, a.topology.fabric.as_str(), a.topology.topology_storage_provider.as_deref()), (whole.build_id.clone(), 7, "fabric1", Some("file")));
-            assert_eq!(a.topology.meshes.len(), 1, "one mesh's section");
-            assert_eq!(a.topology.mesh_names(), names, "every section names every mesh of the Build");
-            let (mesh, m) = a.topology.meshes.iter().next().unwrap();
-            assert_eq!(m.nodes, whole.topology.meshes[mesh].nodes, "the mesh's nodes, whole");
-            assert_eq!(a.topology.pinned.len(), usize::from(mesh == "mesh2"), "a pin travels in its own mesh's section only");
-        }
-    }
-
-    /// CONTRACT (INDEX Q284 "the BuildSections of the meshes its operations touch"; the lead's
-    /// mechanics, Q284 lines 2-3): a run's sections are the meshes it acts in; a Build that names no
-    /// mesh (a fabric delete) still travels, as one section with none, and says it deletes the fabric.
-    #[test]
-    fn a_run_carries_its_meshes_sections_and_a_build_with_no_mesh_carries_one_with_none() {
-        let whole = l4_acceptance();
-        let touched = std::collections::BTreeSet::from(["mesh3".to_string()]);
-        let cut = sectioned(vec![BuildFact::Accepted(whole.clone())], Some(&touched));
-        let [BuildFact::Accepted(a)] = cut.as_slice() else { panic!("one section: {cut:?}") };
-        assert_eq!(a.topology.meshes.keys().collect::<Vec<_>>(), vec!["mesh3"]);
-        assert!(a.topology.names_mesh("mesh7") && !a.topology.meshes.contains_key("mesh7"), "mesh7 is the Build's, its section not here");
-        let delete = BuildAccepted {
-            topology: crate::accepted::FabricTopology { meshes: Default::default(), pinned: Vec::new(), ..whole.topology.clone() },
-            change: rdm_core::build::BuildChange::DeleteFabric,
-            ..whole
-        };
-        for wanted in [None, Some(&touched)] {
-            let cut = sectioned(vec![BuildFact::Accepted(delete.clone())], wanted);
-            let (messages, refused) = encode_chunks(cut);
-            assert!(refused.is_empty());
-            let heard = BuildMessage::from_bytes(&messages[0]).unwrap().facts;
-            let [BuildFact::Accepted(a)] = heard.as_slice() else { panic!("the Build's one section: {heard:?}") };
-            assert!(a.topology.meshes.is_empty() && a.topology.mesh_names().is_empty());
-            assert_eq!(a.change, rdm_core::build::BuildChange::DeleteFabric, "it says it deletes the fabric");
-        }
-    }
-
-    /// Packing measures each batch once and sends those bytes: a fresh
-    /// nonce of another length can never push a sent message over the limit.
-    #[test]
-    fn every_packed_message_fits_whatever_nonce_it_drew() {
-        for n in 0..200u32 {
-            let facts: Vec<BuildFact> = (0..60u32)
-                .map(|i| {
-                    let _ = (n, i);
-                    BuildFact::Forget { build_id: BuildId::mint() }
-                })
-                .collect();
-            let (messages, refused) = encode_chunks(facts);
-            assert!(refused.is_empty());
-            assert!(messages.iter().all(|m| m.len() <= MAX_MESSAGE_BYTES), "every message fits");
-            let sent: usize = messages.iter().map(|m| BuildMessage::from_bytes(m).unwrap().facts.len()).sum();
-            assert_eq!(sent, 60, "no fact lost");
-        }
-    }
 
     /// CONTRACT (proposal node-primary-update Part C1 step 5: "This is the commit. From this write the
     /// primary is no longer primary"; Build dispatch from the old role is refused `RoleYielded`, and nothing

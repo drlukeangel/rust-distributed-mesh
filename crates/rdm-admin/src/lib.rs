@@ -138,6 +138,7 @@ pub mod topology;
 pub use rdm_node::topology_read;
 pub mod primitives;
 pub mod views;
-pub mod wire;
+/// The `JoinNode` answer postcard frame codec.
+pub use rdm_node::wire;
 pub mod wiring;
 pub mod workflows;
