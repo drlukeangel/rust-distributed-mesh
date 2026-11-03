@@ -9,7 +9,11 @@
 //! that birth while the cut holds, its own workflow: one recovery submit of the birth by mesh2's primary
 //! completes before the cut is dropped, and mesh2.node.1 is ready under a new node id. What must NOT
 //! happen: the recovery waiting on the fabric-primary it cannot reach, a recovery by any other admin,
-//! or a second recovery of the birth.
+//! or a second recovery of the birth. Nor is mesh2's primary investigated or commanded back through
+//! node.mesh.join: a call to it spent across the cut marks it at the fabric-primary, which investigates
+//! a peer mesh's primary only when that mesh's aggregate stays unheard past the staleness floor
+//! (node-recovery.md step 2, Q335; rdm#295: a reached, Ready primary was re-marked, investigated and
+//! commanded back after each spent call).
 
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
@@ -111,6 +115,12 @@ async fn a_mesh_primary_cut_from_the_fabric_primary_recovers_its_killed_node_whi
     assert_eq!(done.len(), 1, "one recovery of {victim:?} completed: {submits:#?}");
     assert!(end(done[0]) <= done_at, "the recovery completed while the cut held: {}", done[0]);
     assert!(submits.iter().all(|sp| s(&sp["attributes"]["submitter"]) == primary_id), "every recovery of {victim:?} is {mesh2_primary:?}'s: {submits:#?}");
+    // mesh2's aggregate is heard throughout (its other nodes reach both sides): its primary is never
+    // investigated and never commanded back, whatever spent calls marked it.
+    let looks: Vec<&Value> = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().filter(|sp| s(&sp["attributes"]["suspect_node_id"]) == primary_id).collect();
+    assert!(looks.is_empty(), "{mesh2_primary:?}, its mesh heard, is never investigated: {looks:#?}");
+    let joins: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded").into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == primary_id).collect();
+    assert!(joins.is_empty(), "{mesh2_primary:?}, Ready on its mesh, is never commanded back through node.mesh.join: {joins:#?}");
     eprintln!("the recovery of {victim:?} by {mesh2_primary:?} completed {} ms after the kill, the cut holding; {victim:?} is now {recovered}", end(done[0]).saturating_sub(killed_at) / 1_000_000);
     estate.record_trace_url(&s(&done[0]["trace_id"]));
 }
