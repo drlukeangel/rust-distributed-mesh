@@ -1395,7 +1395,7 @@ pub enum MeshDeleteAdmission {
     /// The manifest is recorded under this workflow, at this attempt or an earlier one: the recorded
     /// MeshDeleted report is what repeats, to this sender under its key, and no member workflow runs
     /// again (mesh-delete.md "Failure and receipts": the next attempt resumes from the receipts).
-    Resend {
+    Repeat {
         /// The manifest recorded.
         manifest: ExitManifest,
         /// The attempt it was recorded under: the replayed report's `receipt_manifest` names it.
@@ -1474,7 +1474,7 @@ impl MeshDeleteRuns {
             // refused above): the recorded report is replayed to this sender under its key.
             Some(MeshDeleteRun::Exited { manifest, recorded, .. }) => {
                 runs.insert(key.mesh_id.clone(), MeshDeleteRun::Exited { key: key.clone(), owner: sender.clone(), manifest: manifest.clone(), recorded });
-                MeshDeleteAdmission::Resend { manifest, recorded }
+                MeshDeleteAdmission::Repeat { manifest, recorded }
             }
             _ => {
                 runs.insert(key.mesh_id.clone(), MeshDeleteRun::Running { key: key.clone(), owner: sender.clone() });
@@ -1923,7 +1923,7 @@ mod tests {
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
         assert!(matches!(runs.exited(&key, &manifest), RunExit::Exited(o) if o == successor), "the handoff goes to the owner that sent delete-mesh last");
         let third = owner();
-        assert_eq!(runs.admit(&key, &third), MeshDeleteAdmission::Resend { manifest, recorded: 1 });
+        assert_eq!(runs.admit(&key, &third), MeshDeleteAdmission::Repeat { manifest, recorded: 1 });
         assert_eq!(runs.incomplete(&key.mesh_id), Some((key.clone(), third)), "a resend is owned by its sender");
         // A later attempt after the manifest is recorded runs again under its own key, from the receipts.
         let later = MeshDeleteKey { attempt: 2, ..key.clone() };
@@ -2001,7 +2001,7 @@ mod tests {
         assert_eq!(end, MeshDeleteRunEnd::Exited { key: later.clone(), owner: owner2.clone(), manifest: manifest.clone() }, "the run ends naming attempt 2 and its sender");
         assert_eq!(*calls.lock().unwrap(), vec![(1, owner1), (2, owner2.clone())], "the run is called once more under attempt 2's key once attempt 1's call ended");
         assert_eq!(most.load(std::sync::atomic::Ordering::SeqCst), 1, "never two runs at once");
-        assert_eq!(runs.admit(&later, &owner2), MeshDeleteAdmission::Resend { manifest, recorded: 2 }, "a repeat of attempt 2's delete-mesh resends its handoff");
+        assert_eq!(runs.admit(&later, &owner2), MeshDeleteAdmission::Repeat { manifest, recorded: 2 }, "a repeat of attempt 2's delete-mesh resends its handoff");
 
         capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
         let joined: Vec<_> = exporter.get_finished_spans().unwrap().into_iter().filter(|s| s.name == "rdm.node_admin.mesh.resolve.via-later-delete-mesh").collect();
@@ -2100,7 +2100,7 @@ mod tests {
 
         // The owner's next attempt re-admits the same mesh.delete: the recorded report is replayed,
         // naming where its manifest was recorded, and the member workflows do not run again.
-        assert_eq!(runs.admit(&next, &owner), MeshDeleteAdmission::Resend { manifest: manifest.clone(), recorded: 1 }, "attempt 2's DeleteMesh replays the recorded report");
+        assert_eq!(runs.admit(&next, &owner), MeshDeleteAdmission::Repeat { manifest: manifest.clone(), recorded: 1 }, "attempt 2's DeleteMesh replays the recorded report");
         assert_eq!(ran.load(SeqCst), 1, "the member workflows ran once");
 
         // The replay validates against attempt 2's open workflow from the receipt recorded under attempt 1 ...

@@ -562,7 +562,7 @@ pub async fn node_command(client: &rdm_transport::NodeRpcClient, target: &rdm_tr
 /// A node command (op 0x22) to the exact birth `target` reaches, as its mesh-primary commands it: the
 /// command's completion (its last frame; a refusal is its one frame).
 pub async fn node_command_completion(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::node_command::NodeCommandRequest) -> rdm_core::node_command::NodeCommandReply {
-    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+    let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
     match node_command(client, target, req, &opts).await {
         Ok(mut frames) => frames.pop().expect("a command's stream holds at least its completion"),
         Err(e) => panic!("{} did not complete: {e}", req.op()),

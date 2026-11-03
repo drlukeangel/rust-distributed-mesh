@@ -50,13 +50,9 @@ impl LiveMesh {
         Ok(NodeTarget::ExactNode(node.node_id.clone()))
     }
 
-    /// One Ping. On loopback a live endpoint answers in milliseconds; the
-    /// budget bounds a dial to an endpoint that is gone.
+    /// One Ping on the default `Send`: an endpoint that is gone ends it when its attempts are spent.
     pub async fn echo(&self, target: &NodeTarget) -> RpcOutcome<PingReply> {
-        let opts = CallOptions {
-            resend: rdm_transport::Resend::with_time_limit(Duration::from_millis(500)),
-            ..CallOptions::default()
-        };
+        let opts = CallOptions::default();
         let req = PingRequest::Ping { payload: b"ready?".to_vec() };
         self.client.call::<Ping>(target, &req, &opts).await.0
     }

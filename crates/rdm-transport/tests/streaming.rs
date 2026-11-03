@@ -304,7 +304,7 @@ async fn a_slow_consumer_holds_the_producer_without_unbounded_buffering() {
     let (n, size) = (2_000u32, 64 * 1024u32); // 128 MiB if nothing held the producer back
     // The whole 128 MiB is read at the end: the budget covers that transfer (this cell proves the
     // producer is held, not a throughput), so the default unary reply bound does not apply.
-    let budget = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(120) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+    let budget = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(120) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
     let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(n, size, Mode::Normal), &budget).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
     assert!(matches!(s.next().await, Some(StreamItem::Frame(FrameKind::Started, _))));
     tokio::time::sleep(Duration::from_millis(800)).await;

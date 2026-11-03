@@ -50,7 +50,7 @@ async fn a_non_forwardable_family_is_refused_by_type_at_the_origin_and_at_the_ca
 async fn a_carrier_that_is_gone_before_commit_is_not_sent() {
     let r = rig().await;
     r.carrier.router.shutdown().await.unwrap();
-    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(2)), ..CallOptions::default() };
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(2)), ..CallOptions::default() };
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &opts).await;
     assert!(out.proves_not_dispatched(), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
@@ -216,7 +216,7 @@ async fn a_carried_call_answering_connection_lost_hands_the_proxy_back_to_be_dis
 async fn an_unreachable_target_under_the_origins_default_budget_is_connection_lost_never_indeterminate() {
     let r = rig_with(Some(Arc::new(ConnectionFact(Some("Direct Failed (dial failed)".into())))), false).await;
     r.target.router.shutdown().await.unwrap();
-    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(10)), ..CallOptions::default() };
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(10)), ..CallOptions::default() };
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &opts).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::ConnectionLost("Direct Failed (dial failed)".into())), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);

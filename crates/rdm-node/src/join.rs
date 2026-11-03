@@ -28,31 +28,31 @@ impl std::fmt::Display for JoinFailure {
     }
 }
 
-/// `JoinNode` with `digest`, within `attempts` of five seconds each, each attempt made to whom `next`
-/// names then (a target, and the short endpoint id the attempt's span names as its anchor): a start
-/// after a stop joins the call that commanded it last. A refusal by name ends it at once; an attempt
-/// `next` can name no target for is unanswered, its reason named. The answer, and the target that
-/// gave it.
-pub async fn call_join_to<F, Fut>(client: &NodeRpcClient, next: F, digest: &MeshDigest, attempts: u32) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+/// `JoinNode` with `digest`, one call on the default `Send` (Q344) to whom `next` names then (a
+/// target, and the short endpoint id the call's span names as its anchor): a start after a stop
+/// joins the call that commanded it last. A refusal by name ends it at once. Another call is made
+/// only on a domain answer: within `turns`, after a receiver's not-ready answer, or after a call
+/// that ended unanswered when `next` now names another anchor (a later command's commander). A call
+/// that ended unanswered to the same anchor, or a `next` that names no target, ends it unreached,
+/// its reason named. The answer, and the target that gave it.
+pub async fn call_join_to<F, Fut>(client: &NodeRpcClient, next: F, digest: &MeshDigest, turns: u32) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
-    call_join_to_types(client, next, digest, attempts, &[], &[]).await
+    call_join_to_types(client, next, digest, turns, &[], &[]).await
 }
 
 /// Join using this birth's immutable app declaration and the listeners it bound (Q151: each with the
-/// port the operating system selected), retained across all attempts.
-pub async fn call_join_to_types<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, attempts: u32, types: &[String], listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+/// port the operating system selected), retained across all calls.
+pub async fn call_join_to_types<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, turns: u32, types: &[String], listeners: &[(String, std::net::SocketAddr)]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
 where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
     let req = JoinRequest::JoinNode { types: types.to_vec(), digest: WireDigest::from(digest), listeners: listeners.to_vec() };
     let node = digest.node.node_id.to_string();
     let mut last = String::new();
-    for attempt in 1..=attempts.max(1) {
-        // One attempt per anchor: this loop's own attempts go on to the anchor `next` names (Q315:
-        // the caller owns its attempts).
-        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_secs(5)) }, ..Default::default() };
+    let opts = rdm_transport::CallOptions::default();
+    for attempt in 1..=turns.max(1) {
         let to = next().await;
         let anchor = match &to {
             Ok((_, anchor)) => anchor.clone(),
@@ -98,11 +98,21 @@ where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, S
             }
             Err(JoinFailure::Unreached(why)) => {
                 last = why;
-                tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
+                match step {
+                    // The receiver answered it is not ready: a domain answer, asked again after a pause.
+                    "not-ready" => tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await,
+                    // The call ended with its attempts spent: asked again only of a later commander.
+                    "unanswered" => {
+                        if !matches!(next().await, Ok((_, later)) if later != anchor) {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
             }
         }
     }
-    tracing::info_span!("rdm.mesh.entry.reject.via-topology-pull-failed", node = %node, reason = %last, attempts).in_scope(|| tracing::warn!("the join found no admin to take it"));
+    tracing::info_span!("rdm.mesh.entry.reject.via-topology-pull-failed", node = %node, reason = %last, turns).in_scope(|| tracing::warn!("the join found no admin to take it"));
     Err(JoinFailure::Unreached(last))
 }
 

@@ -20,7 +20,7 @@ use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::stream::{StreamFailure, StreamItem};
 use rdm_transport::{
     CallOptions, CarriedIdentity, Delivery, DeliveryStats, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, PeerContext, ReplyWithhold, ResolvedNode, ServedBirth,
-    Resend, ServerBuilder, ServerStats, StaticResolver, TimeLimit,
+    Send, ServerBuilder, ServerStats, StaticResolver, TimeLimit,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -322,7 +322,7 @@ fn run(tag: u32, mode: Mode) -> CommandRequest {
 }
 
 fn budget(d: Duration) -> CallOptions {
-    CallOptions { resend: Resend::with_time_limit(d), ..CallOptions::default() }
+    CallOptions { send: Send::with_time_limit(d), ..CallOptions::default() }
 }
 
 async fn eventually(what: &str, within: Duration, f: impl Fn() -> bool) {
@@ -657,7 +657,7 @@ async fn resends_arrive_at_the_cadence_then_doubling_capped_at_the_floor() {
     let (client, _) = client_of(&[&r.node]).await;
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
     let called_at = Instant::now();
-    let six = CallOptions { resend: Resend { attempts: 6, time_limit: TimeLimit(Duration::from_secs(4)) }, ..CallOptions::default() };
+    let six = CallOptions { send: Send { attempts: 6, time_limit: TimeLimit(Duration::from_secs(4)) }, ..CallOptions::default() };
     let call = tokio::spawn(async move { client.call::<Command>(&target, &run(8, Mode::Apply), &six).await });
     let conn = r.conns.recv().await.unwrap();
     let mut arrivals = Vec::new();
@@ -882,7 +882,7 @@ async fn tick_stream(r: &mut Raw, client: &NodeRpcClient) -> (rdm_transport::str
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
     let opening = {
         let client = client.clone();
-        tokio::spawn(async move { client.call_stream::<Tick>(&target, &TickRequest::Tick, &CallOptions { resend: Resend::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() }).await })
+        tokio::spawn(async move { client.call_stream::<Tick>(&target, &TickRequest::Tick, &CallOptions { send: Send::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() }).await })
     };
     let conn = r.conns.recv().await.unwrap();
     let (mut send, mut recv) = conn.accept_bi().await.unwrap();
@@ -1035,7 +1035,7 @@ async fn a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_ori
     }
     let (origin, _) = client_of(&[&target.node, &carriers[0].1, &carriers[1].1]).await;
     let identity = CarriedIdentity { id: DeliveryId { sender: origin.delivery().me().clone(), delivery_seq: 7 }, forget_below: 7 };
-    let opts = |d: Duration| CallOptions { resend: Resend::with_time_limit(d), carried: Some(identity.clone()), ..CallOptions::default() };
+    let opts = |d: Duration| CallOptions { send: Send::with_time_limit(d), carried: Some(identity.clone()), ..CallOptions::default() };
     let via = |i: usize| NodeTarget::ExactNode(carriers[i].1.node_id.clone());
     let (first, _) = origin.call_via::<Command>(&via(0), &target.node.node_id, &run(17, Mode::Apply), &opts(Duration::from_secs(2))).await;
     assert_eq!(ran(&first), Some((17, 1)), "{first:?}");
@@ -1295,7 +1295,7 @@ fn every_return_of_a_requests_attempt_task_is_spanned_with_its_path() {
 /// Many attempts, each with a long time limit: a cell that watches a request resent and ends it
 /// by another cause (the receiver's removal, the owner's drop) before its attempts are spent.
 fn many_attempts() -> CallOptions {
-    CallOptions { resend: Resend { attempts: 20, time_limit: TimeLimit(Duration::from_secs(20)) }, ..CallOptions::default() }
+    CallOptions { send: Send { attempts: 20, time_limit: TimeLimit(Duration::from_secs(20)) }, ..CallOptions::default() }
 }
 
 /// A birth, its endpoint key and an address nothing listens on: the endpoint that held it is closed.
@@ -1382,7 +1382,7 @@ async fn a_call_committed_and_never_acked_ends_indeterminate_after_three_attempt
     let (client, _) = client_of(&[&r.node]).await;
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
     let started = Instant::now();
-    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(241, Mode::Apply), &CallOptions { resend: Resend::with_time_limit(FLOOR), ..CallOptions::default() }).await });
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(241, Mode::Apply), &CallOptions { send: Send::with_time_limit(FLOOR), ..CallOptions::default() }).await });
     let conn = r.conns.recv().await.unwrap();
     let arrivals = Arc::new(Mutex::new(Vec::new()));
     let reading = {
@@ -1539,7 +1539,7 @@ async fn an_unresolved_receiver_spends_an_attempt_never_a_wait() {
 /// counted from the ack, never resent.
 #[tokio::test]
 async fn an_attempt_is_bounded_by_its_time_limit() {
-    let limit = || CallOptions { resend: Resend::with_time_limit(FLOOR / 2), ..CallOptions::default() };
+    let limit = || CallOptions { send: Send::with_time_limit(FLOOR / 2), ..CallOptions::default() };
     let (_, _, node) = unreachable().await;
     let (client, _) = client_of(&[&node]).await;
     let started = Instant::now();
@@ -1673,7 +1673,7 @@ async fn node_command_stream(r: &mut Raw, client: &NodeRpcClient) -> (rdm_transp
     let request = NodeCommandRequest::DeleteConnections { node_id: r.me.node_id.clone(), incarnation: r.me.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
     let opening = {
         let client = client.clone();
-        tokio::spawn(async move { client.call_stream::<NodeCommand>(&target, &request, &CallOptions { resend: Resend::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() }).await })
+        tokio::spawn(async move { client.call_stream::<NodeCommand>(&target, &request, &CallOptions { send: Send::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() }).await })
     };
     let (conn, mut send, recv, h) = tokio::time::timeout(Duration::from_secs(5), async {
         let conn = r.conns.recv().await.unwrap();
@@ -1822,7 +1822,7 @@ async fn a_request_write_lost_mid_frame_is_resent_within_its_attempts_and_told_o
     let (client, _) = client_of(&[&r.node]).await;
     let told = Arc::new(Told::default());
     let client = client.with_call_failed_observer(told.clone());
-    let opts = CallOptions { resend: Resend { attempts: 3, time_limit: TimeLimit(Duration::from_millis(300)) }, ..CallOptions::default() };
+    let opts = CallOptions { send: Send { attempts: 3, time_limit: TimeLimit(Duration::from_millis(300)) }, ..CallOptions::default() };
     let payload = vec![0u8; 8 << 20];
     let (out, _) = client
         .invoke_raw::<CommandReply, _>(&NodeTarget::ExactNode(r.node.node_id.clone()), Command::OP, payload, 1024, &opts, |d| match d {

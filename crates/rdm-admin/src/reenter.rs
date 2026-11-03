@@ -16,13 +16,11 @@
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::NodeRow;
 use rdm_transport::topology::TopologyView;
-use rdm_transport::{Resend, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
+use rdm_transport::{CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-/// A node's fixed deadline in the sweep.
-pub(crate) const SWEEP_DEADLINE: Duration = Duration::from_secs(2);
 /// The most nodes pinged at once.
 pub(crate) const SWEEP_CONCURRENCY: usize = 8;
 
@@ -230,9 +228,8 @@ async fn ping(ctx: &EntryCtx, n: &MapNode) -> Result<(), String> {
         ctx.resolver.apply(r, None);
     }
     let req = rdm_core::ping::PingRequest::Ping { payload: b"entry-sweep".to_vec() };
-    // One attempt: the sweep gives each node its one fixed deadline and goes on to the next (Q315: the
-    // caller owns its attempts).
-    let opts = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(SWEEP_DEADLINE) }, ..CallOptions::default() };
+    // The default `Send` (Q344): a node not reached within its attempts goes to node recovery.
+    let opts = CallOptions::default();
     let (out, _) = ctx.client.call::<rdm_core::ping::Ping>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &opts).await;
     if out.reply().is_some() {
         Ok(())

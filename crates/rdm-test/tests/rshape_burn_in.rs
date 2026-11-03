@@ -24,7 +24,7 @@ use rdm_test::estate::{at_location, location, names_location, of_node};
 use rdm_core::NodeId;
 use rdm_client::{BuildId, FabricDesired, MeshDesired, PathName};
 use rdm_transport::stream::StreamItem;
-use rdm_transport::{Resend, CallOptions, NodeTarget};
+use rdm_transport::{CallOptions, NodeTarget};
 use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit};
 use rdm_core::outcome::RpcOutcome;
 use rdm_test::container_faults;
@@ -1508,8 +1508,6 @@ fn pid_alive(pid: u64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
 
-/// The bound on connecting to an admin and writing one Build call: the client's own (`build_stream::SEND`).
-const SEND: Duration = Duration::from_secs(10);
 
 /// `fabric.get` at the admin named `admin`, as the JSON its view serializes to, when it answers for this
 /// Fabric within 2 s; never a panic, so a dead admin is a `None`.
@@ -1558,7 +1556,7 @@ async fn created(e: &Estate, admin: &PathName, mesh: &str, kind: String) -> Buil
 async fn ask(e: &Estate, admin: &PathName, change: BuildChange) -> Value {
     let carrier = e.carrier_at(admin).await;
     let req = BuildRequest::Create { submit: BuildSubmit::Change(change) };
-    let opts = CallOptions { resend: Resend::with_time_limit(SEND), ..CallOptions::default() };
+    let opts = CallOptions::default();
     let first = match carrier.client().call_stream::<Build>(&NodeTarget::CurrentPath(admin.clone()), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
         Err((RpcOutcome::Reply(r), _)) => Ok(r.into_value()),
         Err((other, _)) => Err(format!("{other:?}")),

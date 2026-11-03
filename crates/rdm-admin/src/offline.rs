@@ -268,7 +268,7 @@ pub fn tickle_ladder(per_call: std::time::Duration) -> std::time::Duration {
 /// [`tickle_ladder`] at the default call budget (`docs/architecture/lifecycles/node-tickle.md`), the
 /// one every call of the tickle spends.
 pub fn tickle_ladder_at_default_budget() -> std::time::Duration {
-    tickle_ladder(rdm_transport::CallOptions::default().resend.time_limit.0)
+    tickle_ladder(rdm_transport::CallOptions::default().send.time_limit.0)
 }
 
 /// The mesh-primary's recovery tick (node-recovery.md "Detection and proof": "The mesh-primary runs
@@ -481,13 +481,13 @@ impl TickleCalls for TickleClient {
     }
 
     fn deadline(&self) -> std::time::Duration {
-        rdm_transport::CallOptions::default().resend.time_limit.0
+        rdm_transport::CallOptions::default().send.time_limit.0
     }
 
     async fn direct(&self, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd {
         // One connect, direct (node-recovery.md step 2): one attempt, never resent; the ladder, not
         // this call, goes on to the peers.
-        let once = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, ..rdm_transport::Resend::default() }, ..rdm_transport::CallOptions::default() };
+        let once = rdm_transport::CallOptions { send: rdm_transport::Send { attempts: 1, ..rdm_transport::Send::default() }, ..rdm_transport::CallOptions::default() };
         // The investigation's own probe is never a spent call that marks the birth it investigates
         // (node-rpc.md §43): its end is the ladder's, on a client that tells no spent call.
         let (out, _) = self.client.without_call_ends().call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), probe, &once).await;
@@ -497,7 +497,7 @@ impl TickleCalls for TickleClient {
     async fn via_peer(&self, carrier: &crate::model::Node, node: &crate::model::Node, probe: &rdm_core::status::StatusRequest) -> ProbeEnd {
         let route = rdm_transport::RouteChoice::ViaPeer { carrier: carrier.node_id.clone() };
         // The same probe, carried (node-tickle.md "Ladder"): one attempt, as the direct probe's.
-        let once = rdm_transport::CallOptions { resend: rdm_transport::Resend { attempts: 1, ..rdm_transport::Resend::default() }, ..rdm_transport::CallOptions::default() };
+        let once = rdm_transport::CallOptions { send: rdm_transport::Send { attempts: 1, ..rdm_transport::Send::default() }, ..rdm_transport::CallOptions::default() };
         let (out, _, _) = self.client.without_call_ends().call_routed::<rdm_core::status::Status>(&node.node_id, &route, probe, &once).await;
         ProbeEnd::of(out)
     }

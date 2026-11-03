@@ -1,4 +1,4 @@
-//! i151.s5, the proof of one `Resend` for every Node RPC call (node-rpc.md §34, §43; Q311-Q315;
+//! i151.s5, the proof of one `Send` for every Node RPC call (node-rpc.md §34, §43; Q311-Q315;
 //! fabric-node-hooks.md "on_call_failed", "on_node_investigated"; node-recovery.md steps 1-3).
 //!
 //! CONTRACT: in a one-mesh estate whose node-admins are the testkit's (`faulted-node-admin`: the testkit
@@ -100,7 +100,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     let carrier = estate.carrier().await;
-    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(40)), ..rdm_transport::CallOptions::default() };
+    let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(40)), ..rdm_transport::CallOptions::default() };
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &opts).await;
     eprintln!("node.config.update of the hung birth answered: {reply:?}");
 
@@ -131,7 +131,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     // 1. The call the notice is told under: three attempts, spent.
     let call = span_of(&s(&notice["parent_span_id"])).unwrap_or_else(|| panic!("the on_call_failed notice's parent span is exported: {notice}"));
     assert_eq!(s(&call["name"]), "rdm.node_rpc.request.update.via-call", "on_call_failed is told under the spent call's span: {call}");
-    assert_eq!(attr(&call, "attempts"), "3", "the call ends after three attempts (Resend::default, Q311): {call}");
+    assert_eq!(attr(&call, "attempts"), "3", "the call ends after three attempts (Send::default, Q311): {call}");
     assert_eq!(attr(&call, "delivery"), "attempts-spent", "the call ends with its attempts spent: {call}");
     let outcome = attr(&call, "outcome");
     assert!(outcome == "NotSent" || outcome == "Indeterminate", "a spent call ends NotSent or Indeterminate by name (node-rpc.md §43): {call}");
@@ -190,7 +190,7 @@ async fn a_call_to_a_hung_birth_spends_three_attempts_tells_on_call_failed_and_t
     assert_eq!(attr(told, "event_id"), event.id.to_string(), "the notice is sent from the event's write: {told}");
 
     eprintln!(
-        "resend: hang at 0 | call op {} attempts {} delivery {} outcome {} ended +{} ms (trace {}) | on_call_failed +{} ms reason {} | mark +{} ms | investigation +{} ms | recovery submit +{} ms (trace {}) | on_node_investigated +{} ms verdict {} next {} | new birth {} at {path:?}",
+        "send: hang at 0 | call op {} attempts {} delivery {} outcome {} ended +{} ms (trace {}) | on_call_failed +{} ms reason {} | mark +{} ms | investigation +{} ms | recovery submit +{} ms (trace {}) | on_node_investigated +{} ms verdict {} next {} | new birth {} at {path:?}",
         attr(&call, "op"),
         attr(&call, "attempts"),
         attr(&call, "delivery"),

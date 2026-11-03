@@ -18,7 +18,7 @@ use rdm_node::node_hooks::{
 };
 use rdm_transport::topology::TopologyView;
 use rdm_transport::{
-    CallOptions, CancelToken, NodeRpcClient, NodeTarget, Resend, ResolvedNode, ServedBirth,
+    CallOptions, CancelToken, NodeRpcClient, NodeTarget, Send, ResolvedNode, ServedBirth,
     ServerBuilder, StaticResolver, TimeLimit, ALPN,
 };
 use std::sync::{Arc, Mutex};
@@ -604,7 +604,7 @@ fn a_spent_call_calls_on_call_failed_once_with_both_births_and_its_reason_and_an
         assert!(matches!(answered, RpcOutcome::Reply(_)), "the live receiver answers: {answered:?}");
 
         // 2. The spent call: two attempts, each bounded at 500 ms, to the gone endpoint.
-        let opts = CallOptions { resend: Resend { attempts: 2, time_limit: TimeLimit(std::time::Duration::from_millis(500)) }, ..CallOptions::default() };
+        let opts = CallOptions { send: Send { attempts: 2, time_limit: TimeLimit(std::time::Duration::from_millis(500)) }, ..CallOptions::default() };
         let (spent, _) = client.call::<Ping>(&NodeTarget::ExactNode(gone.node_id.clone()), &PingRequest::Ping { payload: b"spent".to_vec() }, &opts).await;
         let reason = match &spent {
             RpcOutcome::NotSent(n) => CallFailedReason::NotSent(n.reason().clone()),

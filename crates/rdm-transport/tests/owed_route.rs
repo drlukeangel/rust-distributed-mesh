@@ -11,7 +11,7 @@ use rdm_core::framing::Birth;
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::route::RouteChoice;
-use rdm_transport::{Resend, CallOptions, Delivery, NodeRpcClient, NodeTarget, Pacing, RoutePolicy, StaticResolver};
+use rdm_transport::{CallOptions, Delivery, NodeRpcClient, NodeTarget, Pacing, RoutePolicy, StaticResolver};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -35,7 +35,7 @@ async fn misdialing_origin(r: &Rig) -> (NodeRpcClient, Arc<StaticResolver>) {
 /// A call whose owner's carrier policy answers `policy` per attempt, with attempts enough for the
 /// cell to watch it resent across legs (the caller owns its attempts, Q315).
 fn owed_via(policy: impl Fn(u32) -> RouteChoice + Send + Sync + 'static) -> CallOptions {
-    CallOptions { resend: Resend { attempts: 20, time_limit: rdm_transport::TimeLimit(Duration::from_secs(20)) }, route: Some(RoutePolicy(Arc::new(policy))), ..CallOptions::default() }
+    CallOptions { send: rdm_transport::Send { attempts: 20, time_limit: rdm_transport::TimeLimit(Duration::from_secs(20)) }, route: Some(RoutePolicy(Arc::new(policy))), ..CallOptions::default() }
 }
 
 fn via_carrier(r: &Rig) -> RouteChoice {

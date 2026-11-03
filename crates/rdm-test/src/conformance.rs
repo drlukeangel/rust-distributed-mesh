@@ -28,7 +28,7 @@ use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::admission::Limits;
 use rdm_transport::stream::{ReplyStream, StreamFailure, StreamItem};
 use rdm_transport::{
-    Resend, CallOptions, CarriedIdentity, Decode, Delivery, DeliveryStats, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder,
+    Send, CallOptions, CarriedIdentity, Decode, Delivery, DeliveryStats, NodeRpcClient, NodeRpcServer, NodeTarget, Pacing, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder,
     ServerStats, StaticResolver,
 };
 use std::fmt::Debug;
@@ -468,7 +468,7 @@ impl Rig {
 }
 
 fn options() -> CallOptions {
-    CallOptions { resend: Resend::with_time_limit(Duration::from_secs(10)), ..CallOptions::default() }
+    CallOptions::default()
 }
 
 async fn eventually(within: Duration, f: impl Fn() -> bool) -> bool {

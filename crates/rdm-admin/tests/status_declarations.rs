@@ -18,7 +18,7 @@ use rdm_admin::status_rpc::{Declared, StatusDoor};
 use rdm_admin::node_config::SentBy;
 use rdm_admin::storage::{MemoryNodesStorage, MeshStorage, NodesStorage};
 use rdm_admin::topology::Topology;
-use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{FabricEvent, MeshState, NodeState, NotPrimary, Status, StatusReply, StatusRequest};
 use std::collections::BTreeMap;
@@ -398,7 +398,7 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).iter().all(|c| c.node_id != rpc1.node.node_id));
     // Applied, reply lost: Indeterminate at the caller; the same declaration again is AlreadyApplied.
     rig.door.hold_next_reply.store(true, Ordering::SeqCst);
-    let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions { resend: Resend::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
+    let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::Indeterminate(_)), "{out:?}");
     assert!(ev.unwrap().committed);
     assert_eq!(rig.door.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "applied before the reply was lost");
@@ -420,7 +420,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     let c = client_of(&rig, rpc1).await;
     let target = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
     rig.withhold.arm();
-    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(600)), ..Default::default() };
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(600)), ..Default::default() };
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::Ready), &opts).await;
     assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == rdm_core::outcome::IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was withheld");
@@ -1199,7 +1199,7 @@ fn a_callers_command_carried_up_while_the_fabric_primary_changes_completes_once_
         let node = serve_node(&b["rpc1"]).await;
         let client = own_client(&node, &joined.resolved);
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
-        let opts = CallOptions { resend: Resend::default(), ..CallOptions::default() };
+        let opts = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
         let (rpc, birth) = (rdm_client::NodeRpc::new(&client), exact(rpc2));
         let call = rpc.config_update(&admin2.node.node_id, &rdm_transport::RouteChoice::Direct, &birth, config.clone(), &opts);
         let land = async {
@@ -1239,7 +1239,7 @@ fn a_nodes_own_tags_create_through_an_admin_that_is_not_the_fabric_primary_is_ca
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(joined.resolved.clone());
         let client = NodeRpcClient::new(node.endpoint.clone(), resolver).with_caller_system("rdm");
-        let opts = CallOptions { resend: Resend::default(), ..CallOptions::default() };
+        let opts = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
         let (out, _) = tokio::time::timeout(Duration::from_secs(20), client.call::<Status>(&NodeTarget::ExactNode(admin2.node.node_id.clone()), &create_tags(rpc1, &["edge"]), &opts)).await.expect("the owed call is answered");
         let StatusReply::TagsCreated { node_id, .. } = reply(&out) else { panic!("tags created: {out:?}") };
         assert_eq!(node_id, rpc1.node.node_id);

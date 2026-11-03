@@ -49,7 +49,7 @@ pub enum ForwardRequest {
         /// A resent request's own delivery identity, which its carried attempt keeps toward the
         /// target under this frame's sender (node-rpc.md §43; i146 Q52). `None`: the inner call
         /// keeps this frame's identity.
-        owed: Option<ResendDelivery>,
+        owed: Option<SendDelivery>,
     },
 }
 
@@ -57,7 +57,7 @@ pub enum ForwardRequest {
 /// invocation of its own toward the carrier, and the inner call is the request's, so a carrier that
 /// answered one attempt carries the next and the target's duplicate window suppresses any repeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResendDelivery {
+pub struct SendDelivery {
     /// The request's `delivery_seq` in its origin birth's window.
     pub delivery_seq: u64,
     /// The origin's `forget_below` toward the target.

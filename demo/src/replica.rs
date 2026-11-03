@@ -10,7 +10,7 @@
 //!   primary, found from RDM's topology (`TopologyView::primaries`). A `NotPrimary` or a broker not
 //!   ready yet is asked again of the primary the gateway then holds, for up to [`FORWARD_FOR`]: when
 //!   RDM elects the next broker primary, the gateway follows it. RDM resends each call itself
-//!   ([`Resend`]); a call whose attempts are spent is told to the gateway's `on_call_failed`
+//!   ([`Send`]); a call whose attempts are spent is told to the gateway's `on_call_failed`
 //!   ([`PassOver`]), which passes that broker birth over, and the gateway asks the next replica: the
 //!   next ready broker of its mesh. A `Produce` whose answer was lost is asked again under the same
 //!   operation id, never as a new record.
@@ -26,7 +26,7 @@ use rdm_core::{IncarnationId, MemberStatus, NodeId, PathName};
 use rdm_node::node_hooks::{CallFailedCtx, OnCallFailed};
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded};
 use rdm_transport::topology::TopologyView;
-use rdm_transport::{Resend, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
+use rdm_transport::{CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -509,7 +509,7 @@ pub async fn wait_for_change<T>(heard: &mut tokio::sync::watch::Receiver<u64>, p
 /// - with no broker to ask, until there is one (RDM's election).
 async fn forward(client: &NodeRpcClient, node: &Node, request: &RecordsRequest) -> RecordsReply {
     let until = tokio::time::Instant::now() + FORWARD_FOR;
-    let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(5)), ..CallOptions::default() };
+    let options = CallOptions::default();
     let Some(view) = node.view.get() else { return Records::not_ready(format!("path {:?}, name {:?} is starting", node.name.path, node.name.name)) };
     let (mut heard, mut passed) = (view.digest_view.heard_changes(), node.passed.0.subscribe());
     let mut last = String::from("no broker primary is held");

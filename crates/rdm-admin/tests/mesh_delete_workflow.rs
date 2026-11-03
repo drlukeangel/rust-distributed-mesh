@@ -118,7 +118,7 @@ fn a_delete_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_t
         "while the members run, an earlier attempt is stale and another Build conflicts; the workflow held is the same leave"
     );
     assert_eq!(end, MeshDeleteRunEnd::Exited { key: held.clone(), owner: owner.clone(), manifest: manifest.clone() }, "the run ends under the workflow held, its handoff to that workflow's sender");
-    assert_eq!(exited, vec![MeshDeleteAdmission::Refused(StatusReply::RejectedStaleWorkflow { held: identity(&held), offered: identity(&stale) }), MeshDeleteAdmission::Resend { manifest, recorded: held.attempt }], "after the manifest, an earlier attempt is still stale and the workflow held resends");
+    assert_eq!(exited, vec![MeshDeleteAdmission::Refused(StatusReply::RejectedStaleWorkflow { held: identity(&held), offered: identity(&stale) }), MeshDeleteAdmission::Repeat { manifest, recorded: held.attempt }], "after the manifest, an earlier attempt is still stale and the workflow held resends");
     let spans = cap.spans();
     keep("delete_mesh_workflow", &trace_id, &spans);
     let stale_spans = refusals(&spans, &trace_id, STALE);
@@ -247,9 +247,9 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_workflow_identity_and_comm
     assert_eq!(
         after,
         vec![
-            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Resend { manifest: manifest.clone(), recorded: held.attempt } },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Repeat { manifest: manifest.clone(), recorded: held.attempt } },
             DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Refused(StatusReply::RejectedStaleWorkflow { held: identity(&held), offered: identity(&stale) }) },
-            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Resend { manifest, recorded: held.attempt } },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Repeat { manifest, recorded: held.attempt } },
         ],
         "after mesh.deleted each delete-mesh is decided on its workflow, and none commits the row again"
     );

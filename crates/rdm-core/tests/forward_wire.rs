@@ -3,7 +3,7 @@
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rdm_core::NodeId;
-use rdm_core::forward::{IndeterminateCause, NotSentCause, Forward, ForwardReply, ForwardRequest, ResendDelivery};
+use rdm_core::forward::{IndeterminateCause, NotSentCause, Forward, ForwardReply, ForwardRequest, SendDelivery};
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
 
@@ -24,7 +24,7 @@ fn the_request_matches_the_frozen_one_variant_wire_schema() {
     assert_eq!(Forward::encode_request(&q).unwrap(), expected);
     assert_eq!(Forward::decode_request(&expected).unwrap(), q);
     // owed: Some 01 | delivery_seq 7 | forget_below 3
-    let q = ForwardRequest::Forward { target: NodeId::parse(NODE).unwrap(), inner_op: 0x5e, inner: vec![1, 2], remaining_ms: 1000, owed: Some(ResendDelivery { delivery_seq: 7, forget_below: 3 }) };
+    let q = ForwardRequest::Forward { target: NodeId::parse(NODE).unwrap(), inner_op: 0x5e, inner: vec![1, 2], remaining_ms: 1000, owed: Some(SendDelivery { delivery_seq: 7, forget_below: 3 }) };
     let expected = bytes(&format!("00 0c {NODE_HEX} 5e 02 01 02 e8 07 01 07 03"));
     assert_eq!(Forward::encode_request(&q).unwrap(), expected);
     assert_eq!(Forward::decode_request(&expected).unwrap(), q);

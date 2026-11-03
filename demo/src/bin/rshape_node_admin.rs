@@ -73,7 +73,7 @@ fn ready_gateways(started: &Started) -> Vec<(rdm_core::NodeId, rdm_core::Incarna
     started.view.nodes_get(&filter).unwrap_or_default().into_iter().map(|d| (d.node.node_id, d.node.incarnation)).collect()
 }
 
-/// Ask `gateway` for `request` (op [`Records`]); RDM resends it ([`rdm_transport::Resend`]).
+/// Ask `gateway` for `request` (op [`Records`]); RDM resends it ([`rdm_transport::Send`]).
 async fn ask_gateway(started: &Started, gateway: rdm_core::NodeId, request: &RecordsRequest) -> Asked {
     let (outcome, _) = started.client.call::<Records>(&rdm_transport::NodeTarget::ExactNode(gateway), request, &rdm_transport::CallOptions::default()).await;
     Asked::of(outcome)

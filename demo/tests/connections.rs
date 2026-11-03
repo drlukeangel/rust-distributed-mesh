@@ -23,7 +23,7 @@ use rdm_core::views::ConnectionView;
 use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_test::estate::{Estate, Owner};
 use rdm_test::originate::{Originate, OriginateReply, OriginateRequest};
-use rdm_transport::{Resend, CallOptions, NodeTarget};
+use rdm_transport::{CallOptions, NodeTarget};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -81,7 +81,7 @@ async fn estate(test: &str) -> Estate {
 /// Ask `from`'s originate door (op `0x73`) for `request`: three attempts, each answered within 30 s.
 async fn originate(estate: &Estate, from: &PathName, request: &OriginateRequest) -> OriginateReply {
     let node_id = id_at(estate, from).await;
-    let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(30)), ..CallOptions::default() };
+    let options = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30)), ..CallOptions::default() };
     let (outcome, _) = estate.carrier().await.client().call::<Originate>(&NodeTarget::ExactNode(node_id), request, &options).await;
     match outcome {
         RpcOutcome::Reply(reply) => reply.into_value(),

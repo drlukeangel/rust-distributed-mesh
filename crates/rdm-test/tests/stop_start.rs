@@ -21,7 +21,7 @@ use rdm_test::node;
 use std::time::Duration;
 
 async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
-    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
     if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.topology_view.digest_view)).await { return reply; }
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),

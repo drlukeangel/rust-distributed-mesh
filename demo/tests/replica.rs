@@ -13,7 +13,7 @@ use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::{NodeId, PathName};
 use rdm_test::estate::{Estate, Owner};
-use rdm_transport::{Resend, CallOptions, NodeTarget};
+use rdm_transport::{CallOptions, NodeTarget};
 use rshape_consumer::replica::{Records, RecordsReply, RecordsRequest};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -61,7 +61,7 @@ async fn node_id(estate: &Estate, node: &PathName) -> NodeId {
 
 /// `request` at `node`'s [`Records`] op: three attempts, each answered within 40 s.
 async fn records(estate: &Estate, node: &PathName, request: &RecordsRequest) -> RecordsReply {
-    let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(40)), ..CallOptions::default() };
+    let options = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(40)), ..CallOptions::default() };
     let target = NodeTarget::ExactNode(node_id(estate, node).await);
     let (outcome, _) = estate.carrier().await.client().call::<Records>(&target, request, &options).await;
     match outcome {

@@ -2,7 +2,7 @@
 //!
 //! One call is one request to one exact target (node-rpc.md §43): its identity is minted once, and
 //! the runtime resends it with that identity on the schedule until it is acked, its receiver's exit
-//! is proven, its owner ends it, or its attempts are spent. A call's `Resend` is its owner's bound:
+//! is proven, its owner ends it, or its attempts are spent. A call's `Send` is its owner's bound:
 //! when its attempts are spent the call ends `NotSent` with the last reason if no attempt crossed
 //! the commit cut, `Indeterminate` otherwise (Q311). Each attempt is resolve, the ordinary dial,
 //! `open_bi` and the request frame; pre-commit work can only end `NotSent`. The commit cut is the
@@ -38,9 +38,9 @@ pub struct TimeLimit(pub Duration);
 
 /// How a call is resent (node-rpc.md §34, §43; Q311, Q315): how many attempts it makes in all, the
 /// first send included, and how long one attempt may take. Set by whoever opens the call;
-/// [`Resend::default`] is RDM's values, three attempts and ten seconds.
+/// [`Send::default`] is RDM's values, three attempts and ten seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Resend {
+pub struct Send {
     /// Attempts in all, the first send included (a call addressed to a primary: per birth the view
     /// names for the role, Q313).
     pub attempts: u8,
@@ -48,13 +48,13 @@ pub struct Resend {
     pub time_limit: TimeLimit,
 }
 
-impl Default for Resend {
+impl Default for Send {
     fn default() -> Self {
         Self { attempts: 3, time_limit: TimeLimit(Duration::from_secs(10)) }
     }
 }
 
-impl Resend {
+impl Send {
     /// The default attempts with the time limit `d`.
     pub fn with_time_limit(d: Duration) -> Self {
         Self { time_limit: TimeLimit(d), ..Self::default() }
@@ -69,7 +69,7 @@ pub const TRANSPORT_LIMIT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub struct CallOptions {
     /// How the call is resent: its attempts and the time limit of one attempt.
-    pub resend: Resend,
+    pub send: Send,
     /// Failpoint: write part of the request, then reset it with 499.
     pub cut_before_finish: bool,
     /// The caller's execution scope: part of the pool identity, so two
@@ -99,7 +99,7 @@ pub struct CallOptions {
 /// number, the route the projection answers now for the call's one receiver. The receiver is the same
 /// on every leg; only the leg changes.
 #[derive(Clone)]
-pub struct RoutePolicy(pub Arc<dyn Fn(u32) -> crate::route::RouteChoice + Send + Sync>);
+pub struct RoutePolicy(pub Arc<dyn Fn(u32) -> crate::route::RouteChoice + std::marker::Send + Sync>);
 
 impl std::fmt::Debug for RoutePolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -119,7 +119,7 @@ pub struct CarriedIdentity {
 impl Default for CallOptions {
     fn default() -> Self {
         Self {
-            resend: Resend::default(),
+            send: Send::default(),
             cut_before_finish: false,
             scope: None,
             after_connect: None,
@@ -135,7 +135,7 @@ impl Default for CallOptions {
 /// attempt's time limit.
 pub(crate) enum Payload {
     Ready(Vec<u8>),
-    AtWrite(Box<dyn FnOnce(Duration) -> Result<Vec<u8>, String> + Send>),
+    AtWrite(Box<dyn FnOnce(Duration) -> Result<Vec<u8>, String> + std::marker::Send>),
 }
 
 /// Which exact leg a call used.
@@ -161,7 +161,7 @@ pub struct CallEvidence {
 /// section 10): the pooled connection to an exact birth opened, a dial to it ended without a
 /// connection, or a pooled connection broke. The observer is the source-owned connections
 /// writer; the client reports facts and decides nothing.
-pub trait ConnectionObserver: Send + Sync {
+pub trait ConnectionObserver: std::marker::Send + Sync {
     /// A new pooled connection to `node` opened (a reused one is not reported).
     fn direct_connected(&self, node: &ResolvedNode);
     /// A dial to `node` ended with no connection: `reason` is the NotSent reason's text.
@@ -214,7 +214,7 @@ impl CallEnd {
 /// `on_call_failed`): the client reports the fact, once per call, and decides nothing. A unary call is
 /// told when its attempts are spent or when its receiver answered it; a stream call when its attempts
 /// are spent. A carried call is the origin's, never the carrier's: it is not reported.
-pub trait CallEndObserver: Send + Sync {
+pub trait CallEndObserver: std::marker::Send + Sync {
     /// A call this client opened ended `end`, its outcome already its owner's: `receiver` is the birth
     /// it was addressed to (none for a call that names no birth, or whose receiver never resolved).
     /// Told on the call's own task for every answered call: an observer does its `Answered` work at
@@ -232,7 +232,7 @@ pub type CallEndsSlot = Arc<std::sync::OnceLock<Arc<dyn CallEndObserver>>>;
 /// A connection this process's server accepted from a live node (connections.md section 10,
 /// R-CN1): a recovery trigger for this node's own direct dial toward that exact birth, never
 /// Direct evidence. The acceptor writes nothing to its connections log.
-pub trait AcceptTrigger: Send + Sync {
+pub trait AcceptTrigger: std::marker::Send + Sync {
     /// The server accepted a connection from `node`, the live birth the resolver names.
     fn accepted(&self, node: &ResolvedNode);
 }
@@ -698,12 +698,12 @@ impl NodeRpcClient {
             failpoint: opts.after_connect.clone(),
             // The dial that opens the connection reports it, once, whoever is waiting for it.
             opened: match (self.observer.clone(), node.observed.clone()) {
-                (Some(o), Some(n)) => Some(Arc::new(move || o.direct_connected(&n)) as Arc<dyn Fn() + Send + Sync>),
+                (Some(o), Some(n)) => Some(Arc::new(move || o.direct_connected(&n)) as Arc<dyn Fn() + std::marker::Send + Sync>),
                 _ => None,
             },
             // The same connection's close, told once, whether or not a call rides it then.
             closed: match (self.observer.clone(), node.observed.clone()) {
-                (Some(o), Some(n)) => Some(Arc::new(move || o.direct_broken(&n, "connection lost")) as Arc<dyn Fn() + Send + Sync>),
+                (Some(o), Some(n)) => Some(Arc::new(move || o.direct_broken(&n, "connection lost")) as Arc<dyn Fn() + std::marker::Send + Sync>),
                 _ => None,
             },
             admission: self.admission.clone(),
@@ -955,9 +955,9 @@ impl NodeRpcClient {
         opts: &CallOptions,
         shape: ReplyShape,
         span: &tracing::Span,
-    ) -> Result<ResendCall, (RpcOutcome<()>, Option<CallEvidence>)> {
+    ) -> Result<SendCall, (RpcOutcome<()>, Option<CallEvidence>)> {
         let unary = shape == ReplyShape::Unary;
-        let allowed = u32::from(opts.resend.attempts.max(1));
+        let allowed = u32::from(opts.send.attempts.max(1));
         let pacing = self.delivery.pacing();
         let mut spent = 0u32;
         let node = loop {
@@ -1047,7 +1047,7 @@ impl NodeRpcClient {
             Some(d) => tokio::spawn(UnderDispatch { fut: Some(Box::pin(run)), dispatch: d }),
             None => tokio::spawn(run),
         };
-        Ok(ResendCall { guard, frames, attempted, state, evidence, attempts, receiver: node.node.clone(), _task: AbortOnDrop(Some(handle)) })
+        Ok(SendCall { guard, frames, attempted, state, evidence, attempts, receiver: node.node.clone(), _task: AbortOnDrop(Some(handle)) })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1065,7 +1065,7 @@ impl NodeRpcClient {
     where
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
-        let limit = opts.resend.time_limit.0;
+        let limit = opts.send.time_limit.0;
         let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, ReplyShape::Unary, span).await {
             Ok(o) => o,
             Err((out, ev)) => return (out.retyped().expect("no reply before anything is sent"), ev),
@@ -1239,7 +1239,7 @@ pub(crate) enum ReplyShape {
 
 /// One request, held by its owner: dropped, the invocation ends and its request is resent no
 /// longer (the owner's cancellation).
-pub(crate) struct ResendCall {
+pub(crate) struct SendCall {
     pub(crate) guard: CallGuard,
     pub(crate) frames: mpsc::UnboundedReceiver<SlotEvent>,
     pub(crate) attempted: mpsc::UnboundedReceiver<Attempted>,
@@ -1298,7 +1298,7 @@ async fn keep_reading(d: Delivery, out: FrameOut, mut reader: FrameReader, mut s
 /// the close happens on: a runtime that drops a finished or aborted future on a worker holding none would
 /// leave the parent (the caller's own span, and every span above it) open for good.
 struct UnderDispatch {
-    fut: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    fut: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + std::marker::Send>>>,
     dispatch: tracing::Dispatch,
 }
 
@@ -1335,7 +1335,7 @@ impl Drop for AbortOnDrop {
     }
 }
 
-impl ResendCall {
+impl SendCall {
     /// End the owner's hold and wait for the attempt task to end, so nothing of the call (its span
     /// above all) outlives it: aborted when the owner ends it early, else it ends on its own once
     /// the invocation is complete (its last ack written, its request direction finished).
@@ -1445,7 +1445,7 @@ impl Attempts {
             _ => return Err("a carried attempt needs an exact receiver".into()),
         };
         let Payload::Ready(inner) = &self.payload else { return Err("the request is built at its write".into()) };
-        let owed = rdm_core::forward::ResendDelivery { delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
+        let owed = rdm_core::forward::SendDelivery { delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
         let forward = rdm_core::forward::ForwardRequest::Forward { target: receiver.clone(), inner_op: self.op, inner: inner.clone(), remaining_ms: remaining.as_millis() as u64, owed: Some(owed) };
         <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::encode_request(&forward).map(Payload::Ready).map_err(|e| e.0)
     }
@@ -1458,7 +1458,7 @@ impl Attempts {
     }
 
     fn end_spent(&self, attempts: u32) -> AttemptEnd {
-        tracing::info_span!("rdm.node_rpc.delivery.update.via-attempts-spent", delivery_id = %self.id, attempts, allowed = self.opts.resend.attempts)
+        tracing::info_span!("rdm.node_rpc.delivery.update.via-attempts-spent", delivery_id = %self.id, attempts, allowed = self.opts.send.attempts)
             .in_scope(|| tracing::info!("the call's attempts are spent with no answer: it ends to its owner"));
         let _ = self.tx.send(Attempted::Spent);
         AttemptEnd::AttemptsSpent
@@ -1503,7 +1503,7 @@ impl Attempts {
     /// for the view to name another birth for the role (Q313): `Some` ends the call (the role names
     /// no birth, or the owner's end), `None` takes the next birth.
     async fn until_next_birth(&mut self, attempts: u32) -> Option<AttemptEnd> {
-        tracing::info_span!("rdm.node_rpc.delivery.update.via-attempts-spent", delivery_id = %self.id, attempts, allowed = self.opts.resend.attempts, birth = %self.birth.as_ref().map(|b| b.as_str().to_string()).unwrap_or_default())
+        tracing::info_span!("rdm.node_rpc.delivery.update.via-attempts-spent", delivery_id = %self.id, attempts, allowed = self.opts.send.attempts, birth = %self.birth.as_ref().map(|b| b.as_str().to_string()).unwrap_or_default())
             .in_scope(|| tracing::info!("the attempts on this birth are spent: the call waits for the view to name the role's next birth"));
         let mut changes = self.client.resolver.changes();
         loop {
@@ -1547,8 +1547,8 @@ impl Attempts {
     /// names for the role; any other keeps its count across every attempt.
     async fn until_end(&mut self) -> AttemptEnd {
         let pacing = self.client.delivery.pacing();
-        let limit = self.opts.resend.time_limit.0;
-        let allowed = u32::from(self.opts.resend.attempts.max(1));
+        let limit = self.opts.send.time_limit.0;
+        let allowed = u32::from(self.opts.send.attempts.max(1));
         // Attempts in all, and on the birth the call is sent to now (the same, but for a call
         // addressed to a primary, whose count restarts on each birth the view names).
         let mut attempt = self.spent;
@@ -1776,7 +1776,7 @@ impl Attempts {
     /// completed within the call's time limit from the loss (`held_since`).
     async fn hold_connection(&mut self, turn: u32, held_since: &mut Option<Instant>) -> Result<(), String> {
         let pacing = self.client.delivery.pacing();
-        let limit = self.opts.resend.time_limit.0;
+        let limit = self.opts.send.time_limit.0;
         if !self.unary {
             let since = *held_since.get_or_insert_with(Instant::now);
             if since.elapsed() >= limit {

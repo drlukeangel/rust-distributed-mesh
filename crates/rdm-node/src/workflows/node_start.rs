@@ -46,8 +46,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tracing::Instrument as _;
 
-/// The attempts a start's `JoinNode` makes before it ends unreached.
-pub const JOIN_ATTEMPTS: u32 = 5;
+/// The most `JoinNode` calls a start makes, each on the default `Send`, before it ends unreached: a
+/// call is made again only on a domain answer (`crate::join::call_join_to_types`).
+pub const JOIN_TURNS: u32 = 5;
 
 /// A boxed future a step's plug returns.
 pub type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;

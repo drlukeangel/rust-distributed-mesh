@@ -23,14 +23,13 @@ use crate::topology::Topology;
 use rdm_core::IncarnationId;
 use rdm_transport::topology::PrimaryView;
 use rdm_transport::stream::{NotStarted, ReplySink, StreamItem};
-use rdm_transport::{Resend, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
+use rdm_transport::{CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
 use rdm_core::catalog::OpOwner;
 use rdm_core::context::CallContext;
 use rdm_core::outcome::RpcOutcome;
 use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::Instrument as _;
 
@@ -679,10 +678,6 @@ impl RpcDispatcher {
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
-/// The bound on connecting to an executor and writing its request. The reply has none: a run lasts
-/// as long as its steps, and the transport's own liveness (idle, keepalive) ends a dead one.
-pub const DISPATCH_SEND: Duration = Duration::from_secs(10);
-
 #[async_trait::async_trait]
 impl Dispatcher for RpcDispatcher {
     fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<crate::build_run::HeldRun> {
@@ -794,7 +789,6 @@ impl RpcDispatcher {
             mesh: lane.map(str::to_string),
         };
         let opts = CallOptions {
-            resend: Resend::with_time_limit(DISPATCH_SEND),
             context: Some(context),
             ..CallOptions::default()
         };

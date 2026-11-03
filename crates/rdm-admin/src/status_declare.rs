@@ -27,7 +27,7 @@
 //!                                  view names next (never a negative state)
 //! ```
 //!
-//! Delivery is Node RPC's (node-rpc.md §43, i146 Q44): each declaration sent is one `Resend::default()`
+//! Delivery is Node RPC's (node-rpc.md §43, i146 Q44): each declaration sent is one `rdm_transport::Send::default()`
 //! call held by the declarer, resent by the layer until the authority answers. The declarer never
 //! sends a key again because a delivery failed: a call in flight to the destination the view names
 //! is left to run, and is dropped and owed to the new destination when the view names another birth
@@ -40,7 +40,7 @@
 
 use crate::model::{IncarnationId, NodeId, PathName};
 use crate::topology::Topology;
-use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{DeclaredOperation, MeshState, NodeState, Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, BTreeSet};
@@ -404,7 +404,7 @@ impl Declarer {
             let sent_to = to.clone();
             // Spawned under the lock: the call's own end, which takes the lock, never runs ahead of its record.
             let task = tokio::spawn(async move {
-                let owed = CallOptions { resend: Resend::default(), ..CallOptions::default() };
+                let owed = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
                 let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &owed).instrument(completion_span(&p, &target)).await;
                 let (outcome, finished, typed) = match &out {
                     RpcOutcome::Reply(r) => {

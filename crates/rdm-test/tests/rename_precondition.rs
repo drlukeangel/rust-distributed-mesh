@@ -128,7 +128,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
 
         let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
+        let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
             let (client, target, opts) = (&admin.observer.client, &target, &opts);
@@ -275,7 +275,7 @@ fn a_node_whose_connected_row_is_still_owed_is_refused_its_name() {
 
         let (d, _) = digest_view.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type, node_id: d.node.node_id.clone(), path: d.node.path.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
+        let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
             let (client, target, opts) = (&admin.observer.client, &target, &opts);

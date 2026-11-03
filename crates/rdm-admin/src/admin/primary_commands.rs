@@ -235,7 +235,7 @@ impl PrimaryCommandDoor {
             return rdm_core::reply::node_command::rejected("no-secondary", format!("node {node_id}: its roles moved, and this view names no mesh-primary of mesh {mesh} to run its stop"));
         };
         tracing::Span::current().record("handed_to", to.to_string().as_str());
-        let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(self.runner.observer.commands.connections_delete_reply() + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+        let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(self.runner.observer.commands.connections_delete_reply() + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
         let mut stream = match self.runner.node_rpc.client.call_stream::<NodeCommand>(&rdm_transport::NodeTarget::ExactNode(to.clone()), req, &opts).await {
             Ok((stream, _)) => stream,
             Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => return r.into_value(),

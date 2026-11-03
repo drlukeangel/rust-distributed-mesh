@@ -54,7 +54,7 @@ use rdm_node::node_hooks::{HookOutcome, NodeHooks, NodeReadyCtx, OnNodeReady, Pr
 use rdm_node::operation::{Decision, OperationStore, Operations, Recorded, State};
 use rdm_node::Role;
 use rdm_transport::stream::{ReplyStream, SinkError, StreamFailure, StreamItem};
-use rdm_transport::{Resend, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, PreNodeReadyGate, ServerBuilder};
+use rdm_transport::{CallOptions, HandlerFault, NodeRpcClient, NodeTarget, PreNodeReadyGate, ServerBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -663,7 +663,7 @@ impl Caller {
     async fn copy(&self, client: &NodeRpcClient, node: NodeId, path: &PathName, copied: &mut BTreeMap<PathName, u64>, unserved: &mut BTreeSet<NodeId>) {
         let file = self.dir.join(format!("copy-of-{}-{}.jsonl", path.path, path.name));
         let from = *copied.entry(path.clone()).or_insert_with(|| std::fs::read_to_string(&file).map(|t| t.lines().count() as u64).unwrap_or(0));
-        let options = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(10)), ..Default::default() };
+        let options = CallOptions::default();
         match client.call_stream::<ExampleRecords>(&NodeTarget::ExactNode(node.clone()), &RecordsRequest::Read { from, max: 256 }, &options).await {
             Ok((stream, _)) => {
                 let mut out = match std::fs::OpenOptions::new().create(true).append(true).open(&file) {

@@ -255,7 +255,7 @@ impl NodeConfigs {
 
     /// A caller's config command goes through its primaries to the subject's writer.
     /// The command sent down is owed until the mesh-primary answers it (node-rpc.md §43; D12): one
-    /// `Resend::default()` call to the mesh-primary this admin's view names, direct first and then through each
+    /// `Send::default()` call to the mesh-primary this admin's view names, direct first and then through each
     /// other live node-admin of the mesh on Forward `0x1A`. A mesh-primary that answers `RejectedNotPrimary`
     /// (the primary changing: a newly elected admin that does not hold it yet) or is proven gone does
     /// not fail the caller: the owning workflow retargets it to the mesh-primary the view names when the
@@ -337,7 +337,7 @@ impl NodeConfigs {
     /// caller's goes up to it first), owed until it answers (node-rpc.md §43): the fabric-primary's
     /// answer, handed back to the caller as it is, or the view in which this admin holds the
     /// fabric-primary itself (served in process). The fabric-primary is the one this admin's view names
-    /// from its records, never a digest; one `Resend::default()` call addressed to the
+    /// from its records, never a digest; one `Send::default()` call addressed to the
     /// fabric-primary role (`NodeTarget::Primary`), direct first and then through each other live
     /// node-admin of its mesh on Forward `0x1A`. A fabric-primary that answers `ReceiverNotPrimary`
     /// (it no longer holds it, or its successor does not yet) does not fail the caller: the command is
@@ -384,7 +384,7 @@ impl NodeConfigs {
     }
 
     /// `req` to the primary `hop` names in this admin's view: down to the subject's mesh-primary, or up to
-    /// the fabric-primary. One `Resend::default()` call per send, addressed to the primary role
+    /// the fabric-primary. One `Send::default()` call per send, addressed to the primary role
     /// (`NodeTarget::Primary`), direct first and then through each other live node-admin of that
     /// primary's mesh on Forward `0x1A`; a refusal that it is not the primary sends it again to the
     /// primary the view names when it next changes, or after the resend schedule's next delay
@@ -540,7 +540,7 @@ pub(crate) async fn owed(client: &NodeRpcClient, mut views: Option<tokio::sync::
                 Err(none) => none,
                 Ok((primary, mesh, role)) => {
                     tracing::Span::current().record(field, primary.as_str());
-                    let opts = CallOptions { resend: rdm_transport::Resend::default(), route: Some(primary_route(&view, &mesh, &primary, me_id)), ..CallOptions::default() };
+                    let opts = CallOptions { send: rdm_transport::Send::default(), route: Some(primary_route(&view, &mesh, &primary, me_id)), ..CallOptions::default() };
                     sends += 1;
                     let (out, _) = client.call::<Status>(&role, req, &opts).await;
                     let outcome = match &out {

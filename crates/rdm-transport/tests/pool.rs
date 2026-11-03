@@ -14,7 +14,7 @@ use iroh::SecretKey;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry_sdk::trace::SpanData;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_transport::{Resend, CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
+use rdm_transport::{CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
@@ -108,7 +108,7 @@ fn superseded(out: &RpcOutcome<PingReply>) -> bool {
 }
 
 /// A reply budget the `slow` and `hang` handlers outlast.
-const REPLY_BUDGET: Resend = Resend { attempts: 3, time_limit: rdm_transport::TimeLimit(Duration::from_millis(200)) };
+const REPLY_BUDGET: Send = rdm_transport::Send { attempts: 3, time_limit: rdm_transport::TimeLimit(Duration::from_millis(200)) };
 
 fn spans() -> crate::common::Spans {
     crate::common::spans_exporter()
@@ -143,7 +143,7 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
     // below the transport's idle timeout (the staleness floor, 3 s at gate cadence), which would otherwise end an
     // unanswered dial as `Connection("timed out")` at the same instant.
     let r = rig(record.clone()).await;
-    let budget = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_secs(2)) }, ..Default::default() };
+    let budget = CallOptions { send: rdm_transport::Send { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_secs(2)) }, ..Default::default() };
     let started = Instant::now();
     let rr = &r;
     let (out, ()) = tokio::join!(async { rr.client.call::<Ping>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
@@ -157,7 +157,7 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
 
     // The birth moving while the dial is in flight: released at once, as a stale target.
     let r = rig(record.clone()).await;
-    let budget = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_secs(4)) }, ..Default::default() };
+    let budget = CallOptions { send: rdm_transport::Send { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_secs(4)) }, ..Default::default() };
     let started = Instant::now();
     let rr = &r;
     let (out, ()) = tokio::join!(async { rr.client.call::<Ping>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
@@ -217,7 +217,7 @@ async fn three_reply_deadlines_leave_the_pooled_connection_in_place_and_reused()
     assert!(out.reply().is_some(), "{out:?}");
     let caller = tracing::info_span!("test.caller");
     let trace = caller.context().span().span_context().trace_id().to_string();
-    let opts = CallOptions { resend: REPLY_BUDGET, ..Default::default() };
+    let opts = CallOptions { send: REPLY_BUDGET, ..Default::default() };
     let (late, (next_out, next)) = tracing::Instrument::instrument(
         async {
             let mut late = Vec::new();
@@ -323,7 +323,7 @@ async fn a_dial_that_outlives_its_callers_deadline_reports_connected_once_when_i
     let (r, told) = observed_rig(n.resolved.clone()).await;
     let fp = Arc::new(Failpoint::default());
     // One attempt: the one caller whose limit ends while the dial is held.
-    let opts = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_millis(400)) }, after_connect: Some(fp.clone()), ..Default::default() };
+    let opts = CallOptions { send: rdm_transport::Send { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_millis(400)) }, after_connect: Some(fp.clone()), ..Default::default() };
     let (out, _) = r.client.call::<Ping>(&r.target, &echo(b"x"), &opts).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::Deadline), "the caller's deadline ended while the dial was held: {out:?}");
     assert_eq!(told.0.lock().unwrap().len(), 1, "only the failure so far: {:?}", told.0.lock().unwrap());
@@ -354,7 +354,7 @@ async fn three_reply_deadlines_report_nothing_broken_to_the_connections_writer()
     let (r, told) = observed_rig(n.resolved.clone()).await;
     let (out, first) = r.ping().await;
     assert!(out.reply().is_some(), "{out:?}");
-    let opts = CallOptions { resend: REPLY_BUDGET, ..Default::default() };
+    let opts = CallOptions { send: REPLY_BUDGET, ..Default::default() };
     for i in 0..3 {
         let (out, ev) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
         assert!(matches!(&out, RpcOutcome::Indeterminate(x) if *x.reason() == IndeterminateReason::ReplyDeadline), "call {i}: {out:?}");
@@ -379,7 +379,7 @@ async fn a_connection_closed_under_a_committed_call_is_evicted_and_reported_brok
     assert!(out.reply().is_some(), "{out:?}");
     let stats = n._server.stats();
     let before = ServerStats::get(&stats.dispatched);
-    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_secs(1) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(1) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
     let hang = echo(b"hang");
     let held = r.client.call::<Ping>(&r.target, &hang, &opts);
     let cut = async {

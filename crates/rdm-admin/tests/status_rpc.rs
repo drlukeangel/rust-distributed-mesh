@@ -14,7 +14,7 @@ use rdm_admin::status_rpc::{Declared, StatusDoor};
 use rdm_admin::fabric_storage::{FabricStorage, MemoryFabricStorage};
 use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
 use rdm_admin::topology::Topology;
-use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -284,7 +284,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
 
     // Applied, its reply lost: Indeterminate at the caller, and the state is held once.
     rig.door.hold_next_reply.store(true, Ordering::SeqCst);
-    let lost = call(&rig, &fabric_primary, &pending, &CallOptions { resend: Resend::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
+    let lost = call(&rig, &fabric_primary, &pending, &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
     assert!(matches!(lost, RpcOutcome::Indeterminate(_)), "{lost:?}");
     let held_after_lost = rig.door.declared.lock().unwrap().meshes.clone();
     assert_eq!(held_after_lost.get(&mesh2), Some(&MeshState::Pending), "applied before the reply was lost");
@@ -390,7 +390,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     assert!(matches!(not_sent, CommandAdmission::NotSent { .. }), "{not_sent:?}");
     // Indeterminate: decided, the reply lost.
     rig.door.hold_next_reply.store(true, Ordering::SeqCst);
-    let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { resend: Resend::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
+    let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
     let indeterminate = command_admission(&lost);
     assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
     // Deadline: the delete pipeline's AwaitNodeLeft over an admitted command that never completes.

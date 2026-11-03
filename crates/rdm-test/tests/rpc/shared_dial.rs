@@ -7,7 +7,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -75,7 +75,7 @@ async fn a_caller_joining_a_dial_is_not_ended_by_the_starters_shorter_budget() {
     let mut behind = n.resolved.clone();
     behind.transport_addr = tap.addr();
     let r = rig(behind).await;
-    let short = CallOptions { resend: Resend { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_millis(300)) }, ..Default::default() };
+    let short = CallOptions { send: rdm_transport::Send { attempts: 1, time_limit: rdm_transport::TimeLimit(Duration::from_millis(300)) }, ..Default::default() };
     let rr = &r;
     let tapr = &tap;
     let ((starter, starter_ended_ms), (joiner, joiner_ended_ms)) = tokio::join!(

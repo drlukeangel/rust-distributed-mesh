@@ -349,7 +349,7 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     };
     let mut opts = CallOptions { cut_before_finish: a.cut_before_finish, ..CallOptions::default() };
     if let Some(ms) = a.budget_ms {
-        opts.resend = rdm_transport::Resend::with_time_limit(std::time::Duration::from_millis(ms));
+        opts.send = rdm_transport::Send::with_time_limit(std::time::Duration::from_millis(ms));
     }
     let (out, leg): (RpcOutcome<TestkitStoreReply>, &str) = match route {
         Err(f) => (rdm_core::outcome::PreCommit::begin(<TestkitStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), "via-peer"),
@@ -544,7 +544,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         _ => OriginateRequest::Snapshot,
     };
     let (client, _) = enter(&a.admin_birth).await?;
-    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(std::time::Duration::from_secs(20)), ..CallOptions::default() };
+    let opts = CallOptions::default();
     let (out, _) = client.call::<Originate>(target, &req, &opts).await;
     // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
     // process ungracefully and its span file is lost (a call that never left the resolver is the case).

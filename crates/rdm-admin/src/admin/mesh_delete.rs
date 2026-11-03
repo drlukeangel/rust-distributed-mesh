@@ -798,7 +798,7 @@ impl AdminRunner {
         }
         let resend = match admission {
             crate::mesh_delete::MeshDeleteAdmission::Running => return rdm_core::reply::already_applied(),
-            crate::mesh_delete::MeshDeleteAdmission::Resend { manifest, recorded } => Some((manifest, recorded)),
+            crate::mesh_delete::MeshDeleteAdmission::Repeat { manifest, recorded } => Some((manifest, recorded)),
             crate::mesh_delete::MeshDeleteAdmission::Start => None,
             crate::mesh_delete::MeshDeleteAdmission::Refused(reply) => return reply,
         };

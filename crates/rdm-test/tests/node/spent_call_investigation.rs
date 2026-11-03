@@ -67,7 +67,7 @@ async fn a_mesh_primarys_spent_call_marks_the_birth_and_its_tick_investigates_it
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("the node's birth") };
     let carrier = estate.carrier().await;
-    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(40)), ..rdm_transport::CallOptions::default() };
+    let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(40)), ..rdm_transport::CallOptions::default() };
     let reply = rdm_client::NodeRpc::new(carrier.client()).config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told, &opts).await;
     eprintln!("node.config.update of the hung birth answered: {reply:?}");
 

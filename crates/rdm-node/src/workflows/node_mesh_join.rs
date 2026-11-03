@@ -4,7 +4,7 @@
 //! before. It is run by [node.start](super::node_start) step 2, by the mesh-primary's standalone
 //! `JoinMesh`, and by a node-admin entering a mesh; each of them calls this, never a copy of it.
 
-use super::node_start::{reached_back, JoinThrough, JoinTo, JOIN_ATTEMPTS};
+use super::node_start::{reached_back, JoinThrough, JoinTo, JOIN_TURNS};
 use crate::model::NodeId;
 use crate::node_self::StartFailed;
 use crate::wire::JoinAnswer;
@@ -130,7 +130,7 @@ async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDige
             }
         }
     };
-    let (answer, target) = match crate::join::call_join_to_types(client, next, digest, JOIN_ATTEMPTS, types, listeners).await {
+    let (answer, target) = match crate::join::call_join_to_types(client, next, digest, JOIN_TURNS, types, listeners).await {
         Ok(joined) => joined,
         Err(crate::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} was refused its join by {}: {why}", whom(to)) }),
         Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} could not join through {}: unreached: {why}", whom(to)) }),

@@ -74,7 +74,7 @@ async fn a_members_spent_call_to_its_mesh_primary_is_reported_to_the_fabric_prim
     let hung = rt.hang().expect("the hang is acknowledged by the OS");
     // The member's own call to its mesh-primary: fabric.get, which it forwards there.
     let carrier = estate.carrier().await;
-    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(50)), ..rdm_transport::CallOptions::default() };
+    let opts = rdm_transport::CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(50)), ..rdm_transport::CallOptions::default() };
     let (out, _) = carrier.client().call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(rpc.node_id.clone()), &rdm_core::status::StatusRequest::GetFabric, &opts).await;
     eprintln!("fabric.get at the member ended {}", out.name());
 

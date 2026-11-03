@@ -15,7 +15,7 @@ use crate::calls::ended;
 use crate::{BuildId, CallEnd};
 use rdm_core::PathName;
 use rdm_transport::stream::{ReplyStream, StreamFailure, StreamItem};
-use rdm_transport::{Resend, CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::build::{Build as BuildFamily, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
 use rdm_core::filter::Filter;
 use rdm_core::streaming::StreamingProtocol as _;
@@ -24,14 +24,9 @@ use rdm_core::outcome::RpcOutcome;
 use rdm_core::protocol::NodeProtocol;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// What `build.create` submits (`Change`) and how the accepted Build started (`StartDisposition`).
 pub use rdm_core::build::{BuildChange as Change, Disposition as StartDisposition};
-
-/// The bound on connecting to the fabric-primary and writing the request. The stream after it has
-/// no deadline: the transport's own liveness ends a dead one.
-pub const SEND: Duration = Duration::from_secs(10);
 
 /// How the typed `node` and `build` objects reach the fabric-primary's Build family.
 #[derive(Clone)]
@@ -367,7 +362,7 @@ impl BuildCarrier {
         let mut asked: BTreeSet<rdm_core::NodeId> = BTreeSet::new();
         let mut target = self.target.clone();
         loop {
-            let opts = CallOptions { resend: Resend::with_time_limit(SEND), ..CallOptions::default() };
+            let opts = CallOptions::default();
             // The first reply of the call: an early refusal of the receiving node, or the first frame
             // of the stream (`Started`, or the handler's own refusal).
             // The frames are the executor's receipts, recorded before they are sent; this client records

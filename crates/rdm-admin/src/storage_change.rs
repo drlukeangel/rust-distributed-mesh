@@ -84,7 +84,7 @@ pub async fn command(client: &rdm_transport::NodeRpcClient, commands: &crate::no
 
 async fn command_reply(client: &rdm_transport::NodeRpcClient, node_id: &NodeId, command: &NodeCommandRequest) -> Result<NodeCommandReply, String> {
     let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
-    let opts = rdm_transport::CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..Default::default() };
+    let opts = rdm_transport::CallOptions::default();
     let mut stream = match client.call_stream::<NodeCommand>(&target, command, &opts).await {
         Ok((stream, _)) => stream,
         Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => return Ok(r.into_value()),

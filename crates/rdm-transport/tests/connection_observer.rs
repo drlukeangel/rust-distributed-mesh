@@ -6,7 +6,7 @@
 use crate::common;
 use common::*;
 use rdm_core::{IncarnationId, NodeId};
-use rdm_transport::{Resend, CallOptions, ConnectionObserver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{CallOptions, ConnectionObserver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,7 +45,7 @@ async fn a_source_observes_its_own_direct_connections_opening_and_failing_once_e
     let (_, oe) = bind().await;
     let observed = Arc::new(Observed::default());
     let origin = NodeRpcClient::new(oe, resolver).with_connection_observer(observed.clone());
-    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(1500)), ..Default::default() };
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(1500)), ..Default::default() };
     let (out, ev) = origin.call::<Probe>(&NodeTarget::ExactNode(b.resolved.node_id.clone()), &probe(b"one"), &opts).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     assert!(!ev.unwrap().reused);
@@ -53,7 +53,7 @@ async fn a_source_observes_its_own_direct_connections_opening_and_failing_once_e
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     assert!(ev.unwrap().reused, "the second call rode the pooled connection");
     // One attempt, one dial: each dial that ends with no connection is reported once.
-    let once = CallOptions { resend: Resend { attempts: 1, ..opts.resend }, ..Default::default() };
+    let once = CallOptions { send: rdm_transport::Send { attempts: 1, ..opts.send }, ..Default::default() };
     let (out, _) = origin.call::<Probe>(&NodeTarget::ExactNode(nobody.node_id.clone()), &probe(b"none"), &once).await;
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
     let events = observed.events.lock().unwrap().clone();
@@ -110,7 +110,7 @@ async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
     let acceptor = ResolvedNode { mesh: "mesh1".into(), r#type: "node".into(), node_id, path: "mesh1.node".into(), name: "1".into(), endpoint_id: ak.public(), transport_addr: addr, incarnation };
     let sr = Arc::new(StaticResolver::new());
     sr.insert(acceptor.clone());
-    let opts = CallOptions { resend: Resend::with_time_limit(Duration::from_millis(1500)), ..Default::default() };
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(1500)), ..Default::default() };
     let known = NodeRpcClient::new(de, sr.clone());
     for payload in [b"one".as_slice(), b"two"] {
         let (out, _) = known.call::<Probe>(&NodeTarget::ExactNode(acceptor.node_id.clone()), &probe(payload), &opts).await;

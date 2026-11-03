@@ -11,7 +11,7 @@ use crate::common;
 use common::*;
 use rdm_core::connections::{CarrierPolicy, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute};
 use rdm_core::reconnect::owed_direct_restored;
-use rdm_transport::{Resend, CallOptions, ConnectedCall, PoolKey, RouteLeg};
+use rdm_transport::{CallOptions, ConnectedCall, PoolKey, RouteLeg};
 use rdm_core::outcome::RpcOutcome;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -31,7 +31,7 @@ async fn connected(rig: &Rig, held: &ConnectionsHeld, own: &rdm_core::connection
             &target.resolved.node_id,
             policy(),
             &probe(payload),
-            &CallOptions { resend: Resend::with_time_limit(Duration::from_millis(1500)), ..Default::default() },
+            &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(1500)), ..Default::default() },
         )
         .await
 }

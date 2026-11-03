@@ -16,7 +16,7 @@
 //! `Indeterminate`. Dropping the stream ends the invocation: the server's next write sees the caller
 //! gone.
 
-use crate::client::{AttemptEnd, Attempted, CallEvidence, CallOptions, NodeRpcClient, Payload, ReplyShape, ResendCall};
+use crate::client::{AttemptEnd, Attempted, CallEvidence, CallOptions, NodeRpcClient, Payload, ReplyShape, SendCall};
 use crate::delivery::{AckOnRecovery, FrameOut, Settled, SlotEvent, Written};
 use crate::resolve::NodeTarget;
 use crate::server::{Accepting, BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
@@ -395,7 +395,7 @@ pub enum StreamItem<R> {
 pub struct ReplyStream<P: StreamingProtocol> {
     span: tracing::Span,
     started: Instant,
-    owed: ResendCall,
+    owed: SendCall,
     order: FrameOrder,
     /// No time limit bounds a committed stream's frames while its stream lives (node-rpc.md §34):
     /// `None` for every stream the client opens. A stream lost and not recovered within the call's
@@ -604,7 +604,7 @@ impl NodeRpcClient {
                     Some(Attempted::StoppedBeforeComplete) => {
                         // Refused before the request was complete: the refusal is the stream's one frame.
                         let early = pre.take().expect("stopped once").stopped_before_finish();
-                        let frame = tokio::time::timeout(opts.resend.time_limit.0, owed.frames.recv()).await.ok().flatten();
+                        let frame = tokio::time::timeout(opts.send.time_limit.0, owed.frames.recv()).await.ok().flatten();
                         let bytes = match frame {
                             Some(SlotEvent::Frame(b, ack)) => {
                                 if let Some(ack) = ack {
@@ -660,7 +660,7 @@ mod tests {
         let (tx, frames) = tokio::sync::mpsc::unbounded_channel();
         let (_attempts_tx, attempted) = tokio::sync::mpsc::unbounded_channel();
         let (_state_tx, state) = tokio::sync::watch::channel(crate::delivery::SlotState::default());
-        let owed = ResendCall {
+        let owed = SendCall {
             guard, frames, attempted, state,
             evidence: Arc::new(std::sync::Mutex::new(CallEvidence { node_id: None, addr: "127.0.0.1:0".parse().unwrap(), committed: true, connection: None, reused: false, dial_failure: None })),
             attempts: Arc::new(std::sync::atomic::AtomicU32::new(1)),

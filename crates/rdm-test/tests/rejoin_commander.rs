@@ -27,7 +27,7 @@ use std::time::Duration;
 pub(crate) const NEVER: Duration = Duration::from_secs(20);
 
 pub(crate) async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
-    let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
+    let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() };
     if let Some(reply) = crate::common::lifecycle_reply(&admin.observer.client, target, req, &opts, Some(&admin.observer.topology_view.digest_view)).await { return reply; }
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
@@ -299,7 +299,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, operation },
             _ => unreachable!("the first command is a start"),
         };
-        let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(60) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() }).await };
+        let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(60) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() }).await };
         let rest = async {
             let at_lost = |f: &BTreeMap<String, String>| f.get("node") == Some(&node_id.to_string()) && f.get("anchor") == Some(&lost_short) && f.contains_key("outcome");
             if tokio::time::timeout(NEVER, spans.recorded("rdm.mesh.entry.update.via-pull-attempt", at_lost)).await.is_err() {
@@ -473,7 +473,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
             StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, operation },
             _ => unreachable!("the first command is a start"),
         };
-        let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(60) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() }).await };
+        let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(60) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() }).await };
         let rest = async {
             tokio::time::timeout(NEVER, hook_started.notified()).await.expect("the lost commander's start never reached its hook: its join was not answered");
             lost.observer.client.endpoint().close().await;

@@ -3,14 +3,14 @@
 //! receiver's mesh, or the fabric-primary when the receiver is that mesh-primary
 //! (node-investigation.md, Caller); it marks the birth as a command never sent marks it
 //! (node-recovery.md step 1). Every other caller sends it `ReportCallFailed { sender, receiver, reason }`
-//! on Status, to the exact birth its view names in that role now, with `Resend::default()`. The report
+//! on Status, to the exact birth its view names in that role now, with `rdm_transport::Send::default()`. The report
 //! is sent on a client that tells no spent call: a report whose own attempts are spent is dropped by
 //! name, never sent on to the role's next birth, and nothing reports a report. Nothing is above the
 //! fabric-primary: a spent call to it is reported to nobody.
 
 use rdm_core::status::{ReportedBirth, Status, StatusReply, StatusRequest};
 use rdm_core::{IncarnationId, NodeId, PathName};
-use rdm_transport::{CallEnd, CallEndObserver, CallFailedReason, CallOptions, LiveNodeResolver, NodeResolver, NodeRpcClient, NodeTarget, Resend, ResolvedNode};
+use rdm_transport::{CallEnd, CallEndObserver, CallFailedReason, CallOptions, LiveNodeResolver, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::sync::Arc;
 
 /// One call whose attempts are spent, as the client tells it (node-rpc.md §43): the birth it was
@@ -107,7 +107,7 @@ impl ReportToPrimary {
     }
 
     /// Report `call` to the primary above its receiver and read the answer: one call,
-    /// `Resend::default()`, to the exact birth the view names in that role now ([`Self::above`]).
+    /// `rdm_transport::Send::default()`, to the exact birth the view names in that role now ([`Self::above`]).
     /// Spanned `rdm.mesh.node.update.via-call-failed-report` under the current span, its
     /// `primary_above` the birth reported to.
     pub async fn send(&self, call: &SpentCall) -> ReportEnd {
@@ -151,7 +151,7 @@ impl ReportToPrimary {
         let target = NodeTarget::ExactNode(primary.node_id.clone());
         let receiver = ReportedBirth { node_id: call.receiver.node_id.clone(), incarnation: call.receiver.incarnation.clone(), name: call.receiver.location() };
         let req = StatusRequest::report_call_failed(sender, receiver, &call.reason);
-        let opts = CallOptions { resend: Resend::default(), ..CallOptions::default() };
+        let opts = CallOptions { send: rdm_transport::Send::default(), ..CallOptions::default() };
         match self.client.call::<Status>(&target, &req, &opts).await.0 {
             rdm_core::outcome::RpcOutcome::Reply(r) => ReportEnd::Answered(r.into_value()),
             other => ReportEnd::Dropped(format!("the report's own call ended {} ({})", other.name(), other.detail_name())),

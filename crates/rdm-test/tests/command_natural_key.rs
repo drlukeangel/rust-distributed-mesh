@@ -139,7 +139,7 @@ impl Birth {
     }
 
     fn opts() -> CallOptions {
-        CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() }
+        CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30) + rdm_transport::TRANSPORT_LIMIT), ..CallOptions::default() }
     }
 
     async fn call(&self, req: &StatusRequest) -> StatusReply {

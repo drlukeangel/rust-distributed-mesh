@@ -216,7 +216,7 @@ impl Day0 {
     async fn dialed_by(&self, node: &ResolvedNode) {
         let me = self.running.birth().node_id.clone();
         let req = OriginateRequest::Stream { destination: me.clone(), payload: format!("from {}", node.node_id).into_bytes() };
-        let opts = CallOptions { resend: rdm_transport::Resend::with_time_limit(Duration::from_secs(30)), ..CallOptions::default() };
+        let opts = CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_secs(30)), ..CallOptions::default() };
         let (out, _) = self.running.node_rpc.client.call::<Originate>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
         match out {
             rdm_core::outcome::RpcOutcome::Reply(r) => match r.into_value() {

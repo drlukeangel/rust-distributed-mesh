@@ -10,7 +10,7 @@ use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::status::{ReportedBirth, Status, StatusReply, StatusRequest};
 use rdm_core::{IncarnationId, NodeId, PathName};
 use rdm_node::spent_calls::{ReportEnd, ReportToPrimary, SpentCall};
-use rdm_transport::{CallEnd, CallEndObserver, CallEndsSlot, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, Resend, ResolvedNode, ServedBirth, ServerBuilder, TimeLimit};
+use rdm_transport::{CallEnd, CallEndObserver, CallEndsSlot, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, TimeLimit};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -89,7 +89,7 @@ async fn a_nodes_spent_call_is_reported_to_its_mesh_primary_and_a_spent_report_i
     let _ = slot.set(told.clone());
 
     // One attempt, the caller's (Q315): spent at once.
-    let opts = CallOptions { resend: Resend { attempts: 1, time_limit: TimeLimit(Duration::from_secs(2)) }, ..CallOptions::default() };
+    let opts = CallOptions { send: rdm_transport::Send { attempts: 1, time_limit: TimeLimit(Duration::from_secs(2)) }, ..CallOptions::default() };
     let bound = Duration::from_secs(60);
     let out = tokio::time::timeout(bound, client.call::<Ping>(&NodeTarget::ExactNode(receiver.node_id.clone()), &PingRequest::Ping { payload: b"p".to_vec() }, &opts)).await.expect("the call to the receiver ends").0;
     assert_eq!(out.name(), "NotSent", "nothing reached the receiver");
