@@ -273,6 +273,9 @@ pub struct StorageChanges {
     pub wiring: OnceLock<Wiring>,
     /// This mesh-primary's node recovery, set once it holds it.
     pub recreate: OnceLock<Recreate>,
+    /// The paths this mesh-primary's node recovery re-creates in its `mesh.unblock`: their operations run
+    /// while the mesh is blocked, since the unblock waits on them.
+    recreating: std::sync::Mutex<std::collections::BTreeSet<PathName>>,
     running: std::sync::Mutex<Option<Running>>,
 }
 
@@ -304,7 +307,13 @@ impl MeshCommand {
 impl StorageChanges {
     /// The storage changes of the admin `node_id` writing through `handle`.
     pub fn new(handle: Arc<crate::storage_backend::TopologyStorageHandle>, providers: crate::storage_backend::TopologyStorageProviders, fabric_id: crate::model::FabricId, node_id: NodeId) -> Self {
-        Self { handle, providers, fabric_id, node_id, aggregate: OnceLock::new(), wiring: OnceLock::new(), recreate: OnceLock::new(), running: std::sync::Mutex::new(None) }
+        Self { handle, providers, fabric_id, node_id, aggregate: OnceLock::new(), wiring: OnceLock::new(), recreate: OnceLock::new(), recreating: Default::default(), running: std::sync::Mutex::new(None) }
+    }
+
+    /// Whether this mesh-primary's node recovery re-creates the node at `path` in its `mesh.unblock`
+    /// (storage.md §2 step 4): an operation on it runs while the mesh is blocked.
+    pub fn recreating(&self, path: &PathName) -> bool {
+        self.recreating.lock().unwrap().contains(path)
     }
 
     /// The change this fabric-primary runs now, when one is in progress.
@@ -357,6 +366,9 @@ impl StorageChanges {
         if !door.topology.read().await.is_fabric_primary(&self.node_id) {
             return rdm_core::reply::status::rejected_not_primary(rdm_core::status::NotPrimary::ReceiverNotPrimary { needed: "fabric-primary".into() });
         }
+        if let Some(running) = self.in_progress() {
+            return rdm_core::reply::status::storage_build_in_progress(None, Some(running.change_id));
+        }
         if !self.providers.names().iter().any(|n| n == provider) {
             let reject = crate::build::BuildReject::TopologyStorageProviderNotRegistered { provider: provider.to_string(), registered: self.providers.names() };
             span.record("reason", reject.reason());
@@ -406,7 +418,9 @@ impl StorageChanges {
         span.record("change_id", change.change_id.as_str());
         let me = self.clone();
         let change_id = change.change_id.clone();
-        tokio::spawn(async move { me.run(change, interrupted, ended).await });
+        // The change's steps continue the caller's trace: one causal trace from the request to its end.
+        let run = tracing::info_span!(parent: span, "rdm.node_admin.storage.update.via-change", change_id = %change.change_id, from = %change.from, to = %change.to, node_id = %self.node_id);
+        tokio::spawn(tracing::Instrument::instrument(async move { me.run(change, interrupted, ended).await }, run));
         rdm_core::reply::status::storage_updated(change_id)
     }
 
@@ -467,10 +481,11 @@ impl StorageChanges {
             *running = Some(Running { change: change.clone(), interrupted: interrupted.clone(), ended: rx });
             (interrupted, tx)
         };
-        tracing::info_span!("rdm.node_admin.storage.update.via-started", change_id = %change.change_id, from = %change.from, to = %change.to, node_id = %self.node_id, outcome = "resumed")
-            .in_scope(|| tracing::info!("a change this fabric-primary's predecessor started has no rdm.storage.ended event: it is resumed from its events"));
+        let resumed = tracing::info_span!("rdm.node_admin.storage.update.via-started", change_id = %change.change_id, from = %change.from, to = %change.to, node_id = %self.node_id, outcome = "resumed");
+        resumed.in_scope(|| tracing::info!("a change this fabric-primary's predecessor started has no rdm.storage.ended event: it is resumed from its events"));
         let me = self.clone();
-        tokio::spawn(async move { me.run(change, interrupted, ended).await });
+        let run = tracing::info_span!(parent: &resumed, "rdm.node_admin.storage.update.via-change", change_id = %change.change_id, from = %change.from, to = %change.to, node_id = %self.node_id);
+        tokio::spawn(tracing::Instrument::instrument(async move { me.run(change, interrupted, ended).await }, run));
     }
 
     /// The change, to its `rdm.storage.ended` event: its steps, or, once a fabric.delete interrupts it,
@@ -825,7 +840,9 @@ impl StorageChanges {
                 match self.recreate.get().cloned() {
                     Some(recreate) => {
                         use tracing::Instrument as _;
+                        self.recreating.lock().unwrap().insert(path.clone());
                         recreate(birth.clone()).instrument(span.clone()).await;
+                        self.recreating.lock().unwrap().remove(path);
                         span.record("outcome", "recovery-submitted");
                         recreated.push(birth.node_id);
                         continue;

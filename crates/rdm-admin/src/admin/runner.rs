@@ -1413,8 +1413,10 @@ impl AdminRunner {
             }
         }
         // A mesh-primary that replied `blocked` to a storage change runs no operation until it is
-        // unblocked: an operation issues commands (storage.md §2 step 1).
-        if let Some(status_door) = self.observer.status_door.get() {
+        // unblocked: an operation issues commands (storage.md §2 step 1). Its node recovery's re-create of
+        // a node that will not move runs inside its `mesh.unblock`, which waits on it (step 4).
+        let recreating = op.node().is_some_and(|node| self.storage_changes.recreating(node));
+        if let (Some(status_door), false) = (self.observer.status_door.get(), recreating) {
             status_door.commands.admitted().await;
         }
         let ended: Result<(), crate::executor::RunEnd> = match op {
