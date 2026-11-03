@@ -442,7 +442,7 @@ fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_doo
 #[test]
 fn build_wire_refuses_a_moved_position_or_a_lost_golden() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-core/src/build.rs", "const REPLY_VARIANTS: u32 = 30;", "const REPLY_VARIANTS: u32 = 31;");
+    t.edit("crates/rdm-core/src/build.rs", "const REPLY_VARIANTS: u32 = 27;", "const REPLY_VARIANTS: u32 = 28;");
     only(check(t.root()), Ratchet::BuildWireIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/build_wire.rs");

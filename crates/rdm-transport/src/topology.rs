@@ -6656,8 +6656,9 @@ mod tests {
         assert!(digest_view.record(digest(&id, &inc, None, MemberStatus::Ready, 125)));
         assert!(digest_view.routable(id.as_str()), "its ready restores selection");
         // A departure ends a stop for good.
+        // A later stop of the same birth is another occurrence of node.stop (a Build has no attempts, Q344).
         let o2 = op(&id, &inc, "node.stop");
-        assert!(digest_view.stopped(o2));
+        assert!(digest_view.stopped(LifecycleOp { operation: o2.operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint()), ..o2 }));
         assert!(digest_view.depart(op(&id, &inc, "node.delete")));
         assert!(digest_view.in_flight().is_empty(), "the departure cleared the stop overlay");
         assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a deleted node never returns");

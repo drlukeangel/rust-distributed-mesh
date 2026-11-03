@@ -552,7 +552,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_tokens(root, &files_in(root, ACTIVE_TRANSPORT_SOURCES), TRANSPORT_TAG_TOKENS, ratchet, &mut out);
         }
         Ratchet::DeleteAttemptsRpcStopFirst => {
-            require(root, DELETE_CELLS, &["fn node_delete_runs_every_step_in_order", "DeleteStep::StopNode"], ratchet, &mut out);
+            require(root, DELETE_CELLS, &["fn node_delete_runs_every_step_in_order", "DeleteStep::ORDER"], ratchet, &mut out);
             if let Some(text) = read(root, PIPELINE) {
                 match (text.find("Self::StopNode,"), text.find("Self::TerminateRuntime,")) {
                     (Some(a), Some(b)) if a < b => {}
@@ -659,25 +659,21 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             );
         }
         Ratchet::BuildWireIsAtomic => {
-            require(root, "crates/rdm-core/src/build.rs", &["const REQUEST_VARIANTS: u32 = 5;", "const REPLY_VARIANTS: u32 = 30;", "code: crate::outcome::Code"], ratchet, &mut out);
+            require(root, "crates/rdm-core/src/build.rs", &["const REQUEST_VARIANTS: u32 = 5;", "const REPLY_VARIANTS: u32 = 27;", "code: crate::outcome::Code"], ratchet, &mut out);
             require(root, "crates/rdm-core/tests/build_wire.rs", &["fn failure_codes_are_appended_and_retained_by_the_build_wire", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::StoreLayoutWireIsAtomic => {
             // The store root's layout (Q28 A; build.md §5.3; R-SR1 to R-SR5): the layout marker, the
             // store file's line (its len first, its crc32 last, frozen byte for byte by one cell), the
-            // Build record's format and keys, one line per fact at its own key, and the in-flight lock,
-            // frozen byte for byte by one cell; a layout that moves moves them together (`durable format
-            // moved`).
+            // Build record's format and keys, one line per fact at its own key, frozen byte for byte by
+            // one cell; a layout that moves moves them together (`durable format moved`).
             require(
                 root,
                 "crates/rdm-admin/src/build_state.rs",
                 &[
-                    "pub const RECORD_FORMAT: &str = \"build-record/2\";",
+                    "pub const RECORD_FORMAT: &str = \"build-record/3\";",
                     "BuildFact::Accepted(_) => \"accepted\".to_string(),",
-                    "Some(mesh) => format!(\"{mesh}-{attempt}\")",
-                    "serde_json::to_vec(&receipt_key(s))",
-                    "hash.finalize().to_hex()",
-                    "pub struct ReceiptKey",
+                    "BuildFact::Forget { .. } => \"forget\".to_string()",
                     "fn the_store_layout_is_frozen_byte_for_byte",
                 ],
                 ratchet,
@@ -686,7 +682,6 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rdm-node/src/store_root.rs", &["pub const LAYOUT_VALUE: &str = \"r-sr1\";"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/store_log.rs", &["const CRC_SUFFIX: usize = 20;"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/store_log/tests.rs", &["fn a_line_states_its_own_length_first_and_its_checksum_last"], ratchet, &mut out);
-            require(root, "crates/rdm-admin/src/storage.rs", &["const IN_FLIGHT_FORMAT: &str = \"mesh-in-flight/2\";"], ratchet, &mut out);
         }
         Ratchet::PrimaryUpdateWireIsAtomic => {
             require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 2;", "const REPLY_VARIANTS: u32 = 13;", "code: crate::outcome::Code"], ratchet, &mut out);

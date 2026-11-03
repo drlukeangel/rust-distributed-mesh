@@ -1620,3 +1620,32 @@ mod ended_fold_cells {
         assert_eq!(p.failure, Some(BuildFailure { reason: "interrupted by a fabric.delete".into(), code: "ABORTED".into() }));
     }
 }
+
+#[cfg(all(test, feature = "file-backend"))]
+mod store_layout_cells {
+    use super::*;
+
+    /// CONTRACT (build.md §5.3; R-SR1): one Build record's line in the store root's `builds.jsonl` is
+    /// frozen byte for byte: the store file's line around it, its format `build-record/3`, its key
+    /// `<build_id>/<record_key>` and the record `{"seq", "fact"}` as the journal writes it. A layout that
+    /// moves moves this cell with it (`durable format moved`). Must NOT happen: a line whose format, key
+    /// or record bytes moved while this cell still passes.
+    #[tokio::test]
+    async fn the_store_layout_is_frozen_byte_for_byte() {
+        let d = std::env::temp_dir().join(format!("rdm-store-layout-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&d).unwrap();
+        let root = crate::store_root::StoreRoot::at(&d);
+        let events: Arc<dyn EventsStorage> = Arc::new(crate::events_storage::MemoryEventsStorage::new());
+        let j = FileJournal::open_on_root(&root, &crate::store_log::LogWriter::mint(), events).await.unwrap();
+        let b1 = rdm_core::fixture_crockford60("b1");
+        j.forget(&BuildId::parse(&b1).unwrap()).await.unwrap();
+        let file = d.join(crate::store_root::BUILDS_FILE);
+        let lines = crate::store_log::read_file(&file).unwrap();
+        assert_eq!(lines.len(), 1);
+        let op = lines[0].op.clone().unwrap();
+        let record = format!(r#"{{"seq":1,"fact":{{"fact":"forget","build_id":"{b1}"}}}}"#);
+        let line = crate::store_log::encode_line(&op, "build-record/3", &format!("{b1}/forget"), record.as_bytes());
+        assert_eq!(std::fs::read(&file).unwrap(), line);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

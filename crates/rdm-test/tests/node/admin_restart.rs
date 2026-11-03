@@ -85,8 +85,8 @@ async fn a_restarted_mesh_primary_elected_again_after_its_successor_dies_writes_
     let primary_pid = estate.pid_of(&primary).await;
     let handed = wait_for(&format!("{primary:?}'s evidence records its restart's node.primary.update"), Duration::from_secs(10), || {
         let spans = spans_of(&estate, primary_pid);
-        // The stop's node.primary.update belongs to no Build: it names none and run 0 (D44).
-        let found = named(&spans, "rdm.node_admin.primary.update.via-update-primary").into_iter().find(|x| s(&x["attributes"]["build_id"]) == "" && s(&x["attributes"]["run"]) == "0" && x["attributes"]["outcome"] == "updated").cloned();
+        // The stop's node.primary.update belongs to no Build: it names none (Q342).
+        let found = named(&spans, "rdm.node_admin.primary.update.via-update-primary").into_iter().find(|x| s(&x["attributes"]["build_id"]) == "" && x["attributes"]["outcome"] == "updated").cloned();
         async move { found }
     })
     .await;
