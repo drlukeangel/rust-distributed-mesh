@@ -136,17 +136,21 @@ async fn a_stopped_node_shutting_down_shuts_its_gossip_down_once_through_its_rou
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a node whose `pre_node_ready` hook fails ends at start by name, and its gossip
-/// is shut down once, through its router.
+/// CONTRACT (fabric-node-hooks.md "Outcomes and the gate", Q350: "A start that ends `Failed` leaves the
+/// node `Pending`, and nothing retries until someone acts"): a node whose `pre_node_ready` hook fails
+/// stays up, Pending, with its gossip running: nothing shuts it down at the failure. Its later stop
+/// shuts its gossip down once, through its router. What must NOT happen: the node ending at the
+/// failure, a gossip shutdown before the stop, or a second shutdown.
 #[tokio::test]
-async fn a_node_whose_hook_fails_shuts_its_gossip_down_once_through_its_router() {
+async fn a_node_whose_hook_fails_stays_up_and_its_stop_shuts_its_gossip_down_once_through_its_router() {
     let events = GossipEvents::default();
     let _sub = events.install();
     let (dir, _admin, launch) = admitted("gossip-once-hook-failed").await;
     let pre_node_ready = TestPreNodeReady::new(Mode::Fixed(HookOutcome::Failed { reason: "the cell's hook fails".into() }));
     let started = tokio::time::timeout(Duration::from_secs(10), node::start_pre_node_ready(&launch, NodeHooks::new(pre_node_ready), |b, _| b)).await.expect("the start ends");
-    let why = started.err().expect("a failed hook ends the node").to_string();
-    assert!(why.contains("failed pre_node_ready") && why.contains("the cell's hook fails"), "{why}");
-    assert_shut_down_once(&events, "close");
+    let running = started.expect("a node whose hook failed stays up, Pending");
+    assert_eq!(events.count(ACTOR_TOOK_SHUTDOWN), 0, "the failed hook shut no gossip down: {:?}", events.all());
+    tokio::time::timeout(Duration::from_secs(10), running.stop()).await.expect("the stop ends");
+    assert_shut_down_once(&events, "stop after a failed hook");
     let _ = std::fs::remove_dir_all(&dir);
 }

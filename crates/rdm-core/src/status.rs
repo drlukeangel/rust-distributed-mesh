@@ -1494,10 +1494,10 @@ pub enum StatusReply {
     /// The exact node's own answer to a probe while its `pre_node_ready` hook answered `Pending`
     /// (fabric-node-hooks.md "Outcomes and the gate"): the probe served that node and found an active
     /// readiness blocker. `reason` is the hook's own text. It is never a `NotReady`: a `NotReady` is
-    /// the door or the handler not serving yet, and says nothing of the hook.
+    /// the door or the handler not serving yet, and says nothing of the hook. Q350 took the position
+    /// of `Blocked`, without its retry event: the wire format moved.
     ///
-    /// Position 25 on the wire (Q350 took the position of `Blocked`, without its retry event: the
-    /// wire format moved).
+    /// Position 25 on the wire.
     Pending {
         /// The answering birth's logical node.
         node_id: NodeId,
