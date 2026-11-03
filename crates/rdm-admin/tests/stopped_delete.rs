@@ -86,6 +86,28 @@ impl TopologySink for Discard {
     fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
 }
 
+/// A sink over node rows the cell seeds: the node record a completed step's value is read from (D67).
+struct Rows(std::sync::Arc<rdm_admin::node_rows::NodeRows>);
+impl TopologySink for Rows {
+    fn publish(&self, _: Node) {}
+    fn remove(&self, _: &PathName) {}
+    fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
+    fn node_rows(&self) -> Option<std::sync::Arc<rdm_admin::node_rows::NodeRows>> {
+        Some(self.0.clone())
+    }
+}
+
+/// A Build accepted for one case of a cell: each case's steps are its own (build.md §1: a step whose
+/// event ended complete is never run again).
+async fn accepted_case(builds: &dyn BuildStateAdapter) -> BuildId {
+    let build_id = BuildId::mint();
+    builds
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+        .await
+        .unwrap();
+    build_id
+}
+
 /// CONTRACT (lifecycles/node-delete.md 1-2: "For a crashed process those stop steps are already done; do
 /// not fabricate node replies or receipts. Stop and inspect the exact runtime through provider
 /// control"; node-stop.md 6: "Delete proceeds to external exact runtime exited verdict instead"): the
@@ -347,11 +369,27 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         };
         let lifecycle = StopLifecycleRecorder::default();
         let joins = rdm_admin::join::Joins::default();
+        // The node's record: its birth declared Stopped once it answered a stop-node `Stopped`
+        // (node-stop.md step 4), what a resumed stop's completed StopNode hands on (case 4).
+        let store = std::sync::Arc::new(rdm_admin::storage::MemoryNodesStorage::default());
+        let mut row = rdm_admin::storage::NodeRow::new(node.location(), "mesh1", "node", node.node_id.clone(), NodeStatus::Stopped);
+        row.birth_mut(node.incarnation_id.as_ref().unwrap(), &node.location()).declared.insert(rdm_core::status::NodeState::Stopped);
+        rdm_admin::node_rows::WriteRecord::write_record(&*store, &row).await.unwrap();
+        let mut admin = Node::allocated(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
+        admin.node_id = executor.node_id.clone();
+        admin.incarnation_id = Some(executor.incarnation.clone());
+        admin.is_primary = true;
+        let view = std::sync::Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
+            fabric: rdm_admin::model::Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: rdm_admin::model::ScopeStatus::Ready, provider: ProviderKind::Process },
+            meshes: vec![rdm_admin::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: rdm_admin::model::ScopeStatus::Ready }],
+            nodes: vec![admin.clone()],
+        }));
+        let rows = Rows(std::sync::Arc::new(rdm_admin::node_rows::NodeRows::new(admin.location(), admin.node_id.clone(), view, store)));
         let pipeline = DeploymentPipeline {
             provider: &provider,
             joins: &joins,
             observer: &observer,
-            sink: &Discard,
+            sink: &rows,
             lifecycle: &lifecycle,
             builds: &builds,
             template: &template,
@@ -377,6 +415,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         assert_eq!(err_lost.code, rdm_core::outcome::Code::Unknown);
         assert!(lifecycle.stopped_ops.lock().unwrap().is_empty());
 
+        let kill_build = accepted_case(&builds).await;
         // 2. Kill at AwaitNodeLeft (runtime Exited before Stopped reply arrives):
         //    StopNode is admitted, then runtime exits while AwaitNodeLeft waits; fails Unavailable.
         *observer.admission.lock().unwrap() = CommandAdmission::Admitted {};
@@ -384,7 +423,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         *provider.status.lock().unwrap() = DeploymentStatus::Exited { code: Some(137) };
         let err_kill = pipeline
             .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
-                build_id: Some(build_id.clone()),
+                build_id: Some(kill_build.clone()),
                 node: node.clone(),
                 handle: handle.clone(),
                 unreached: false,
@@ -396,6 +435,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         assert!(err_kill.reason.contains("RuntimeExited"));
         assert!(lifecycle.stopped_ops.lock().unwrap().is_empty());
 
+        let os_build = accepted_case(&builds).await;
         // 3. SIGSTOP (OsStopped) at AwaitNodeLeft:
         //    OsStopped is not Exited; when the stopped reply does not arrive before the completion
         //    deadline, AwaitNodeLeft fails DeadlineExceeded and publishes no NodeStopped.
@@ -404,7 +444,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.completion.lock().unwrap() = Completion::Deadline {};
         let err_os_stop = pipeline
             .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
-                build_id: Some(build_id.clone()),
+                build_id: Some(os_build.clone()),
                 node: node.clone(),
                 handle: handle.clone(),
                 unreached: false,
@@ -415,11 +455,12 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         assert_eq!(err_os_stop.code, rdm_core::outcome::Code::DeadlineExceeded);
         assert!(lifecycle.stopped_ops.lock().unwrap().is_empty());
 
-        // 4. Cut after StopNode (Stopped receipt recorded at attempt 4, cut before AwaitNodeLeft),
-        //    then resumed at attempt 5 once the runtime is Running again:
-        //    Attempt 5 reuses the StopNode receipt without sending a second stop-node command,
-        //    completes AwaitNodeLeft from the recorded Stopped receipt, publishes NodeStopped once,
-        //    and records Complete.
+        let resumed_build = accepted_case(&builds).await;
+        // 4. Cut after StopNode (its event ended complete, the birth's record declares Stopped, cut
+        //    before AwaitNodeLeft), then resumed once the runtime is Running again: the resumed run
+        //    takes StopNode's answer from the node record's declared Stopped without sending a second
+        //    stop-node command, completes AwaitNodeLeft from it, publishes NodeStopped once, and
+        //    records Complete.
         let stopped_admission = CommandAdmission::Stopped {
             receipt: rdm_core::status::ConnectionsReceipt::Established {
                 in_flight: 0,
@@ -427,7 +468,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
             },
         };
         builds
-            .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: rdm_core::OperationId::node("node.stop", &node.node_id), step: DeleteStep::StopNode.name().into(), outcome: rdm_admin::build_state::StepOutcome::Complete })
+            .write_step(&rdm_admin::build_state::StepWrite { build_id: resumed_build.clone(), mesh: None, operation: rdm_core::OperationId::node("node.stop", &node.node_id), step: DeleteStep::StopNode.name().into(), outcome: rdm_admin::build_state::StepOutcome::Complete })
             .await
             .unwrap();
 
@@ -435,7 +476,7 @@ fn node_stop_step_faults_recover_or_fail_as_the_page_specifies() {
         let sent_before_resume = *observer.commands_sent.lock().unwrap();
         pipeline
             .stop(&DeleteRequest { operation: rdm_core::OperationId::node("node.stop", &node.node_id),
-                build_id: Some(build_id.clone()),
+                build_id: Some(resumed_build.clone()),
                 node: node.clone(),
                 handle: handle.clone(),
                 unreached: false,
