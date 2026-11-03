@@ -37,7 +37,6 @@
 
 pub mod binding;
 pub mod build;
-pub mod build_claim;
 pub mod cadence;
 pub mod catalog;
 pub mod certs;

@@ -16,7 +16,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
 | Caller / driver | The topology Build that adds the mesh ([build.md §12.1](../build.md#121-create-a-new-mesh)); the fabric-primary accepts it and drives it through the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm) |
 | Precondition | The Day-0 Build is Complete; before its ready it is the Build in progress, and the Build is refused `build-in-progress` (Q170) |
 | MeshId | Minted once, when the mesh enters the accepted topology, and carried by every Build after it; never reissued |
-| Name | `mesh<#>` by default, the Build's `mesh_name`; the first node-admin, as the mesh's primary, claims it at `(path, name)`, unique within its path; held by a different MeshId answers `NameHeld` |
+| Name | `mesh<#>` by default, the Build's `mesh_name`; unique within its path, checked by the fabric-primary against its records at the Build's acceptance; held by another mesh answers `NameHeld` |
 | Executor / maker | The fabric-primary: it is the maker of the mesh's first node-admin and writes the mesh's rows until the mesh has a primary (R-OW1) |
 | Channel | `f(FabricId, MeshId)`, created by its first listener, the node-admin |
 | Members | The first node-admin only. The mesh's other nodes are created afterwards by that node-admin as mesh-primary, under the same accepted Build's attempts |
@@ -29,8 +29,8 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
 
 1. A topology Build is accepted whose complete topology names a mesh the current topology does
    not have (`{mesh1} → {mesh1, mesh2}`). Acceptance mints `mesh2`'s MeshId; every later Build
-   carries it. The Build is in progress until its attempts realize the topology.
-2. The fabric-primary claims the attempt and executes `node.create` of `mesh2`'s first node-admin
+   carries it. The Build is in progress until its steps realize the topology.
+2. The fabric-primary executes `node.create` of `mesh2`'s first node-admin
    itself: the mesh has no primary, so the fabric-primary is maker and executor. It records the
    deployment, prepares the data dir and seed, and launches the executable in the Create start
    mode ([node-admin lifecycle §3](../node-admin-lifecycle.md#3-start-modes)).
@@ -54,7 +54,7 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    writes the mesh row and records `is_primary` on its own row, which its `Digest` carries, publishes its mesh's status
    `pending` as `MeshStatus`, and becomes the writer of `mesh2`'s rows. `node.created` ends the
    step.
-8. The mesh-primary creates `mesh2`'s other nodes as attempts of the same Build, at once: a
+8. The mesh-primary creates `mesh2`'s other nodes as steps of the same Build, at once: a
    create that fails stops none of the others (Q245). When every
    planned birth is ready it declares `Ready` to the fabric-primary (`DeclareMeshState`, owed until
    answered), which decides it and answers `Applied`; answered, the mesh-primary records it on the
@@ -175,7 +175,7 @@ come after Ready; nothing about `mesh2` is on gossip before step 7.
 
 A mesh name another mesh holds (`NameHeld`, naming it) fails the create step by name and nothing is
 launched; a join refusal or a hook failure fails it as [node.create](node-create.md) states, and
-the next attempt of the same Build resumes from the receipts (R-BI4). A mesh whose first
+a rerun of the same Build resumes from its events (R-BI4). A mesh whose first
 node-admin exits after creation is not re-created: it is a live mesh that lost its node-admins
 and [node recovery](node-recovery.md) gives it one under the same MeshId (Q335). Failures and
 stream certainty follow the [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).

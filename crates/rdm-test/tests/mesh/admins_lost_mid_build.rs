@@ -2,12 +2,13 @@
 //! whose node-admins are lost while a Build runs (node-recovery.md step 2, Q335; node-create.md "A
 //! node-admin created into a live mesh"; PRD §12.2).
 //!
-//! desired {mesh1, mesh2}; a Build B is active (growing mesh2, executed by mesh2's admin primary)
-//! when both of mesh2's node-admins and every birth B's first attempt launched are killed; the three
+//! desired {mesh1, mesh2}; a Build B is running (growing mesh2, mesh2's section run by mesh2's
+//! mesh-primary) when both of mesh2's node-admins and every birth B launched are killed; the three
 //! members born before B stay alive, so mesh2 is a live mesh with no node-admin. From public
 //! surfaces only:
 //! - control is found again through the advertised endpoints;
-//! - B completes under its own id: an admin of mesh1 takes it over;
+//! - B ends incomplete naming mesh2's section (Q346), and its resubmit by its build_id completes it:
+//!   mesh2's re-created mesh-primary runs the section from B's step events;
 //! - mesh2 keeps its MeshId and its node names;
 //! - every node-admin of mesh2 is a new birth, created into the live mesh; the members that stayed
 //!   alive keep theirs;
@@ -16,8 +17,8 @@
 //! Evidence: the fabric-primary's primary watch runs node investigation on mesh2's lost mesh-primary
 //! (`rdm.node_admin.primary.update.via-investigation`), and on its verdict submits that birth's node
 //! recovery (`rdm.node_admin.node.update.via-node-recovery`): no node-admin of mesh2 is left for the
-//! election to name, so the fabric-primary executes it; a reconcile of B by a mesh1 admin names mesh2's
-//! admin primary as the previous executor.
+//! election to name, so the fabric-primary runs it; the resubmitted B's section call to mesh2 is served
+//! by mesh2's re-created mesh-primary (`rdm.node_admin.build.serve.via-attempt-run`).
 
 use rdm_core::PathName;
 use rdm_test::estate::location;
@@ -25,7 +26,8 @@ use crate::build_log;
 use rdm_client::{FabricDesired, MeshDesired, Meshes};
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
-use rdm_test::estate::{claim_decider, named, Estate, Owner};
+use rdm_client::BuildFrame;
+use rdm_test::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -68,15 +70,17 @@ fn shape(r2: u32) -> FabricDesired {
 /// CONTRACT: docs/architecture/lifecycles/node-recovery.md
 /// "(A mesh none of whose node-admins can be reached is this page's case with no successor named: the
 /// fabric-primary investigates the lost mesh-primary and re-creates it at its path.name, Q335.)"
-/// CONTRACT: docs/architecture/lifecycles/node-create.md "A node-admin created into a live mesh"
-/// "A node-admin that node recovery re-creates into a mesh that lost its node-admins ... joins that mesh
-/// under the mesh's own MeshId and never mints another. The mesh is still in the accepted topology, so
-/// the attempt belongs to the SAME accepted Build."
-/// CONTRACT (R-D1): mesh2 loses both node-admins mid-Build while three of its members live on. The
-/// fabric-primary (mesh1's primary) runs node investigation on mesh2's lost mesh-primary and, on its
-/// verdict, recovers it at its path.name; the re-created node-admin is mesh2's primary, recovers the
-/// rest of its mesh, and B completes. Must NOT happen: a node of mesh2 created by B before the
-/// recovery (the target holds), a new MeshId, a member that stayed alive born again, or mesh1 touched.
+/// CONTRACT (Q346): "A failed step fails its mesh's section, never the Build ... A Build ends
+/// `complete` when every section finished, `incomplete` when it ran but not every section finished
+/// (what ran stands)"; build.md §4: an incomplete Build is resubmitted by its build_id.
+/// CONTRACT (R-D1): mesh2 loses both node-admins mid-Build while three of its members live on. B's
+/// section call to mesh2 ends short and B ends incomplete naming mesh2. The fabric-primary (mesh1's
+/// primary) runs node investigation on mesh2's lost mesh-primary and, on its verdict, recovers it at
+/// its path.name; the re-created node-admin is mesh2's primary and recovers the rest of its mesh. The
+/// resubmit of B by its build_id dispatches mesh2's section to that re-created mesh-primary, which runs
+/// only the steps whose event did not end `complete`, and B completes. Must NOT happen: a node of
+/// mesh2 created by B between the loss and the resubmit, a new MeshId, a member that stayed alive born
+/// again, mesh1 touched, or a step of B that ended `complete` run again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_by_the_fabric_primary_and_the_build_completes() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
@@ -88,18 +92,19 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
     let mesh2_primary = before.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.node_id.clone()).unwrap();
     let mesh1_primary_id = estate.mesh_view("mesh1").await.primary_admin.expect("mesh1 roles a primary admin");
     let mesh1_primary = before.iter().find(|n| n.node_id == mesh1_primary_id).map(|n| n.location()).expect("mesh1's primary admin is settled");
-    let mesh1_admin_ids: BTreeSet<String> = before.iter().filter(|n| n.mesh == "mesh1" && n.r#type == "node-admin").map(|n| n.node_id.to_string()).collect();
 
-    // B: grow mesh2. Once its first attempt is claimed, lose mesh2's node-admins. Its births run one
-    // after another (~55 ms each on the process provider), so six of them keep the first attempt
-    // running across several polls; two finished inside one 100 ms poll.
+
+    // B: grow mesh2. Once mesh2's section is dispatched, lose mesh2's node-admins. Its births run one
+    // after another (~55 ms each on the process provider), so six of them keep the section running
+    // across several polls; two finished inside one 100 ms poll.
     let stream = estate.submit(&BuildSpec::Fabric(shape(9))).await;
     let b = stream.build_id().to_string();
-    // Active fabric-wide: the fabric-primary's mesh already sees mesh2's admin holding B's first attempt.
-    build_log::build_fact(&estate, &b, "mesh1's admin sees B's first attempt held by mesh2's admin", Duration::from_secs(30), |p| p.attempt == 1 && p.state == BuildState::Running && p.executor.as_ref().is_some_and(|e| e.node_id == mesh2_primary))
+    let b_id = stream.build_id().clone();
+    // Running fabric-wide: the fabric-primary dispatched mesh2's section (`rdm.build.dispatched`).
+    build_log::build_fact(&estate, &b, "B running with mesh2's section dispatched", Duration::from_secs(30), |p| p.state == BuildState::Running && p.dispatched.contains("mesh2"))
         .await
         .unwrap_or_else(|end| panic!("{end}"));
-    // mesh2's node-admins and every birth B's first attempt launched; the members born before B
+    // mesh2's node-admins and every birth B launched; the members born before B
     // (rpc.1..3) stay alive, so a member of mesh2 can say it cannot reach its own node-admin.
     let kept: BTreeSet<PathName> = (1..=3).map(|i| Estate::path("mesh2.node", &i.to_string())).collect();
     // A runtime's data dir is named by its node id: every birth B launched is mesh2's, so a runtime
@@ -119,9 +124,28 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
     estate.until_view_at(&mesh1_primary, "a surviving admin answers", Duration::from_secs(30), |_| Some(())).await;
     estate.enter(&mesh1_primary).await;
 
-    // B completes under its own id, and mesh2 keeps its MeshId and names.
-    let done = build_log::attempt_complete(&estate, &b, 2, Duration::from_secs(180)).await;
-    assert!(done.attempt > 1, "a successor continued B: {done:#?}");
+    // B ends incomplete naming mesh2's section: its section call ended short with its mesh-primary.
+    let short = build_log::build_fact(&estate, &b, "B ended incomplete naming mesh2", Duration::from_secs(120), |p| p.state.ended_short()).await.unwrap_or_else(|end| panic!("{end}"));
+    assert_eq!(short.state, BuildState::Incomplete, "B ran, so it is incomplete, never failed: {short:#?}");
+    assert!(short.unfinished.iter().any(|u| u.mesh == "mesh2"), "B's end names mesh2's section: {:?}", short.unfinished);
+    let stood: Vec<(String, String, String)> = short.steps.iter().filter(|s| s.outcome == rdm_admin::build_state::StepOutcome::Complete).map(|s| (s.mesh.clone(), s.operation.clone(), s.step.clone())).collect();
+    // mesh2's mesh-primary is recovered at its path.name: both its node-admins are back.
+    estate
+        .until_view("both of mesh2's node-admins recovered and ready", Duration::from_secs(180), |views| {
+            let admins: Vec<&rdm_client::NodeView> = views.iter().filter(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.status == rdm_client::NodeStatus::Ready).collect();
+            (admins.len() == 2 && admins.iter().all(|n| n.node_id != mesh2_primary)).then_some(())
+        })
+        .await;
+    let resubmitted_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+
+    // The resubmit by B's build_id completes it, and mesh2 keeps its MeshId and names.
+    let resumed = estate.follow_to_terminal(estate.resubmit(&b_id).await).await;
+    assert!(matches!(resumed.frames.last(), Some(BuildFrame::Complete)), "the resubmitted B completes: {:?}", resumed.frames);
+    let done = build_log::complete(&estate, &b, Duration::from_secs(60)).await;
+    for (mesh, op, step) in &stood {
+        let n = done.steps.iter().filter(|s| s.mesh == *mesh && s.operation == *op && s.step == *step && s.outcome == rdm_admin::build_state::StepOutcome::Complete).count();
+        assert_eq!(n, 1, "a step that ended complete before the loss is never run again: {mesh} {op} {step}");
+    }
     let after = estate.settles_to_named(&names(&[("mesh1", 2, 3), ("mesh2", 2, 9)]), Duration::from_secs(60)).await;
     let mesh2 = estate.mesh_view("mesh2").await;
     assert_eq!(mesh2.id.as_ref().map(|i| i.to_string()), Some(mesh2_id.clone()), "mesh2 keeps its MeshId: {mesh2:#?}");
@@ -154,34 +178,24 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
     let look = named(&spans, "rdm.node_admin.primary.update.via-investigation").into_iter().find(|sp| attr(sp, "suspect_node_id") == mesh2_primary.as_str() && attr(sp, "node_path") == "mesh1.node-admin" && at(sp) > killed_ns).cloned().unwrap_or_else(|| panic!("a mesh1 admin ran node investigation on mesh2's lost mesh-primary {mesh2_primary}"));
     assert_ne!(attr(&look, "finding"), "reached", "the killed mesh-primary is not reached: {look}");
     let create = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().find(|sp| attr(sp, "node_id") == mesh2_primary.as_str() && at(sp) >= at(&look)).cloned().unwrap_or_else(|| panic!("the fabric-primary submitted the node recovery of mesh2's lost mesh-primary on the verdict"));
-    // The target held: no node of mesh2 was created by B before the recovery.
+    // Nothing of mesh2 was created by B between the loss and the resubmit: B had ended.
     let early: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
-        .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
-        .filter(|c| attr(c, "build_id") == b && attr(c, "node_path").starts_with("mesh2.") && at(c) > killed_ns && at(c) < at(&create))
-        .map(|c| format!("{}/{} attempt {} at {}", attr(c, "node_path"), attr(c, "node_name"), attr(c, "attempt"), at(c)))
+        .filter(|c| attr(c, "build_id") == b && attr(c, "node_path").starts_with("mesh2.") && at(c) > killed_ns && at(c) < resubmitted_ns)
+        .map(|c| format!("{}/{} at {}", attr(c, "node_path"), attr(c, "node_name"), at(c)))
         .collect();
-    assert!(early.is_empty(), "nothing of mesh2 is created by B before its mesh-primary's recovery (at {}): {early:?}", at(&create));
-    let accepting = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| location(&n)).expect("a fabric-primary before the loss");
-    let takeover = named(&spans, "rdm.node_admin.build.update.via-reconcile")
+    assert!(early.is_empty(), "nothing of mesh2 is created by B between the loss and its resubmit: {early:?}");
+    assert!(at(&create) < resubmitted_ns, "mesh2's mesh-primary was recovered before the resubmit");
+    // B's section ended short at the loss, named on the fabric-primary's drive.
+    let unfinished = named(&spans, "rdm.node_admin.build.update.via-section-unfinished").into_iter().find(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2").cloned().unwrap_or_else(|| panic!("B's drive named mesh2's section unfinished"));
+    // The resubmitted B's section call to mesh2 is served by mesh2's re-created admin, not by a mesh1 admin.
+    let section = named(&spans, "rdm.node_admin.build.serve.via-attempt-run")
         .into_iter()
-        .find(|r| {
-            let a = &r["attributes"];
-            a["build_id"] == b.as_str() && a["previous_executor"].as_str().is_some_and(|p| p.contains(mesh2_primary.as_str())) && a["executor_node_id"].as_str().is_some_and(|e| mesh1_admin_ids.contains(e))
-        })
-        .unwrap_or_else(|| panic!("no takeover of {b} by a mesh1 admin"))
-        .clone();
-    let attempt = takeover["attributes"]["attempt"].as_str().map(String::from).unwrap_or_else(|| takeover["attributes"]["attempt"].to_string());
-    let decider = claim_decider(&spans, b.as_str(), &attempt).unwrap_or_else(|| panic!("the claim of takeover attempt {attempt} of {b} has its decision span"));
-    if takeover["attributes"]["reason"] == "recovery" {
-        // The takeover is the lost mesh-primary's node recovery (Q335): its attempt is that recovery's story.
-        assert_eq!(takeover["trace_id"], create["trace_id"], "the recovery attempt that took B's mesh over shares the recovery submit's trace: {takeover}");
-    } else if decider == accepting {
-        let accepted = named(&spans, "rdm.node_admin.build.create.via-accepted").into_iter().find(|sp| sp["attributes"]["build_id"] == b.as_str()).expect("B's request").clone();
-        assert_eq!(takeover["trace_id"], accepted["trace_id"], "a takeover the accepting fabric-primary decided shares B's request trace");
-    } else {
-        assert_eq!(takeover["parent_span_id"].as_str().unwrap_or(""), "", "a takeover decided after the role moved starts its own trace: {takeover}");
-    }
+        .find(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2" && at(sp) > resubmitted_ns)
+        .cloned()
+        .unwrap_or_else(|| panic!("the resubmitted B's section call to mesh2 was served"));
+    assert_eq!(attr(&section, "node_path"), "mesh2.node-admin", "mesh2's section runs on mesh2's own mesh-primary: {section}");
+
     // Each created admin held every surviving member's runtime before it
     // committed Ready (i143.e4.s16): mesh1's five births at least.
     for admin in after.iter().filter(|n| n["mesh"] == "mesh2" && n["type"] == "node-admin") {
@@ -193,6 +207,6 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
         let held = ready["attributes"]["runtime_facts_held"].as_u64().or_else(|| ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);
         assert!(held >= 5, "{} held {held} runtime facts before Ready: {ready}", admin["name"]);
     }
-    eprintln!("admins_lost_mid_build: investigation trace {} | recovery trace {} | takeover trace {}", s(&look["trace_id"]), s(&create["trace_id"]), s(&takeover["trace_id"]));
-    estate.record_trace_url(takeover["trace_id"].as_str().unwrap_or(""));
+    eprintln!("admins_lost_mid_build: investigation trace {} | recovery trace {} | unfinished trace {} | resubmitted section trace {}", s(&look["trace_id"]), s(&create["trace_id"]), s(&unfinished["trace_id"]), s(&section["trace_id"]));
+    estate.record_trace_url(section["trace_id"].as_str().unwrap_or(""));
 }

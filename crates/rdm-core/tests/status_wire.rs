@@ -23,7 +23,7 @@ fn fabric() -> FabricId { FabricId::parse("2123456789ab").unwrap() }
 fn birth() -> IncarnationId { IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap() }
 fn connection() -> ConnectionId { ConnectionId::parse("3123456789ab").unwrap() }
 
-fn identity(build_id: &str, attempt: u32) -> MeshDeleteIdentity { MeshDeleteIdentity { build_id: build_id.into(), attempt, operation: rdm_core::OperationId::unscoped("o") } }
+fn identity(build_id: &str) -> MeshDeleteIdentity { MeshDeleteIdentity { build_id: build_id.into(), operation: rdm_core::OperationId::unscoped("o") } }
 
 fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| {
@@ -41,29 +41,28 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c3031323334353637383961620c397763707266677776746879"),
         (ApplyMeshState { mesh_id: mesh(), mesh_name: "mesh1".into(), state: MeshState::Pending, changed_at_rafka_ms: 300 }, "040c313132333435363738396162056d6573683100ac02"),
         (ApplyFabricEvent { fabric_id: fabric(), event: FabricEvent::Ready }, "050c32313233343536373839616200"),
-        (Reserved6 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.node.1") }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720117647261696e2d6e6f64653a6d657368312e6e6f64652e31000000"),
-        (Reserved7 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("drain-node:mesh1.node.1") }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720117647261696e2d6e6f64653a6d657368312e6e6f64652e31000000"),
-        (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.node.1") }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011673746f702d6e6f64653a6d657368312e6e6f64652e31000000"),
-        (NodeLeft { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop-node:mesh1.node.1") }, "090c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011673746f702d6e6f64653a6d657368312e6e6f64652e31000000"),
-        (DeleteMesh { mesh_id: mesh(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("shutdown-mesh:1123456789ab") }, "0a0c3131323334353637383961620c796e6835673262717a663472011a73687574646f776e2d6d6573683a313132333435363738396162000000"),
+        (Reserved6 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("drain-node:mesh1.node.1") }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347217647261696e2d6e6f64653a6d657368312e6e6f64652e31000000"),
+        (Reserved7 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("drain-node:mesh1.node.1") }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347217647261696e2d6e6f64653a6d657368312e6e6f64652e31000000"),
+        (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("stop-node:mesh1.node.1") }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634721673746f702d6e6f64653a6d657368312e6e6f64652e31000000"),
+        (NodeLeft { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("stop-node:mesh1.node.1") }, "090c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634721673746f702d6e6f64653a6d657368312e6e6f64652e31000000"),
+        (DeleteMesh { mesh_id: mesh(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("shutdown-mesh:1123456789ab") }, "0a0c3131323334353637383961620c796e6835673262717a6634721a73687574646f776e2d6d6573683a313132333435363738396162000000"),
         (
             MeshDeleted {
                 mesh_id: mesh(),
                 build_id: "ynh5g2bqzf4r".into(),
-                attempt: 1,
                 operation: rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Mesh(mesh())),
                 final_node_id: node(),
                 final_incarnation: birth(),
                 final_runtime: RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep_mesh1_admin1"), provider: RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: RuntimeLocator::Process { pid: 4321, start: 123456 } },
-                receipt_manifest: rdm_core::status::ManifestReference { build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Mesh(mesh())), scope: rdm_core::status::ManifestScope::OtherMembersExited },
+                receipt_manifest: rdm_core::status::ManifestReference { build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Mesh(mesh())), scope: rdm_core::status::ManifestScope::OtherMembersExited },
             },
-            "0b0c3131323334353637383961620c796e6835673262717a663472010b6d6573682e64656c65746501030c31313233343536373839616200000c3031323334353637383961620c3977637072666777767468790c39726d797a34306d67776563001670726f636573733a626f6f742d613a7069646e732d6100e121c0c4070c796e6835673262717a663472010b6d6573682e64656c65746501030c313132333435363738396162000000",
+            "0b0c3131323334353637383961620c796e6835673262717a6634720b6d6573682e64656c65746501030c31313233343536373839616200000c3031323334353637383961620c3977637072666777767468790c39726d797a34306d67776563001670726f636573733a626f6f742d613a7069646e732d6100e121c0c4070c796e6835673262717a6634720b6d6573682e64656c65746501030c313132333435363738396162000000",
         ),
-        (Reserved12 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("commit-state:fabric1") }, "0c0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720114636f6d6d69742d73746174653a66616272696331000000"),
-        (Reserved13 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("commit-state:fabric1") }, "0d0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720114636f6d6d69742d73746174653a66616272696331000000"),
-        (Reserved14 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("open-traffic:fabric1") }, "0e0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201146f70656e2d747261666669633a66616272696331000000"),
-        (Reserved15 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("open-traffic:fabric1") }, "0f0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201146f70656e2d747261666669633a66616272696331000000"),
-        (StartNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("start-node:mesh1.node.1") }, "100c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011773746172742d6e6f64653a6d657368312e6e6f64652e31000000"),
+        (Reserved12 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("commit-state:fabric1") }, "0c0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347214636f6d6d69742d73746174653a66616272696331000000"),
+        (Reserved13 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("commit-state:fabric1") }, "0d0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347214636f6d6d69742d73746174653a66616272696331000000"),
+        (Reserved14 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("open-traffic:fabric1") }, "0e0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472146f70656e2d747261666669633a66616272696331000000"),
+        (Reserved15 { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("open-traffic:fabric1") }, "0f0c3231323334353637383961620c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472146f70656e2d747261666669633a66616272696331000000"),
+        (StartNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("start-node:mesh1.node.1") }, "100c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634721773746172742d6e6f64653a6d657368312e6e6f64652e31000000"),
         (UpdateNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c3031323334353637383961620c39776370726667777674687901016b0176"),
         // node_id | incarnation | config (len 1: "k" "v") | revision 3 (P1)
         (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c3031323334353637383961620c39776370726667777674687901016b0176"),
@@ -82,7 +81,7 @@ fn requests_match_the_frozen_forty_variant_wire_schema() {
         // node_id | incarnation | operation "join-mesh:mesh1.node.1" (Q342: no Build, no attempt) | primary None (D57)
         (JoinMesh { node_id: node(), incarnation: birth(), operation: rdm_core::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None }, "1c0c3031323334353637383961620c397763707266677776746879166a6f696e2d6d6573683a6d657368312e6e6f64652e3100000000"),
         // node_id | incarnation | build_id | attempt 1 | operation "leave-mesh:mesh1.node.1"
-        (Reserved29 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201176c656176652d6d6573683a6d657368312e6e6f64652e31000000"),
+        (Reserved29 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), operation: rdm_core::OperationId::unscoped("leave-mesh:mesh1.node.1") }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472176c656176652d6d6573683a6d657368312e6e6f64652e31000000"),
         // node_id | incarnation | cert (len 3) (i145 e3, node.cert.renew)
         (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3] }, "1e0c3031323334353637383961620c39776370726667777674687903010203"),
         // node_id | incarnation | key "ab" | cert "cd" (node.issuer.update)
@@ -147,7 +146,7 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
         (ConnectionsDeleting { reason: "d".into() }, "0d0164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0e02"),
         (Unauthorized { reason: "u".into() }, "0f0175"),
-        (RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, "1007617474656d707401310132"),
+        (RejectedUnmatchedCompletion { field: "operation".into(), expected: "node.stop".into(), reported: "node.start".into() }, "10096f7065726174696f6e096e6f64652e73746f700a6e6f64652e7374617274"),
         (Stopped { receipt: ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } }, "11000000"),
         (Started, "12"),
         (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
@@ -205,10 +204,10 @@ fn replies_match_the_frozen_sixty_six_variant_wire_schema() {
         ),
         (UnknownMesh { mesh: "m".into() }, "25016d"),
         (ReadOverBound { read: "r".into(), bytes: 300, max: 65536 }, "260172ac02808004"),
-        // held { build_id "b" | attempt 2 | operation "o" } | offered { "b" | 1 | "o" }
-        (RejectedStaleWorkflow { held: identity("b", 2), offered: identity("b", 1) }, "27016202016f000000016201016f000000"),
-        // held { "b" | 1 | "o" } | offered { "c" | 1 | "o" }
-        (RejectedConflictingWorkflow { held: identity("b", 1), offered: identity("c", 1) }, "28016201016f000000016301016f000000"),
+        // Reserved (Q344): held { build_id "b" | operation "o" } | offered { "b" | "o" }
+        (Reserved39 { held: identity("b"), offered: identity("b") }, "270162016f0000000162016f000000"),
+        // held { "b" | "o" } | offered { "c" | "o" }
+        (RejectedConflictingWorkflow { held: identity("b"), offered: identity("c") }, "280162016f0000000163016f000000"),
         // missing 1 | without_exit (len 1: "n i") | reason "r"
         (RejectedIncompleteManifest { missing: 1, without_exit: vec!["n i".into()], reason: "r".into() }, "290101036e20690172"),
         // source "s" | op "o" | cause "c"
@@ -290,7 +289,7 @@ fn a_stopped_reply_carries_its_connections_receipt_in_frozen_bytes() {
 
 fn largest_manifest_reference() -> rdm_core::status::ManifestReference {
     let mut reference = rdm_core::status::ManifestReference {
-        build_id: "ynh5g2bqzf4r".into(), attempt: u32::MAX,
+        build_id: "ynh5g2bqzf4r".into(),
         operation: rdm_core::OperationId::unscoped(""),
         scope: rdm_core::status::ManifestScope::OtherMembersExited,
     };
@@ -309,7 +308,6 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
     let request = StatusRequest::MeshDeleted {
         mesh_id: mesh(),
         build_id: "ynh5g2bqzf4r".into(),
-        attempt: u32::MAX,
         operation: rdm_core::OperationId::unscoped("shutdown-mesh:1123456789ab"),
         final_node_id: node(),
         final_incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap(),
@@ -426,8 +424,8 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     ] { golden(status, expected); }
     golden(ProviderKind::Process, "00");
     golden(ProviderKind::Container, "01");
-    // build_id "b" | attempt 300 (ac 02) | operation "o"
-    golden(MeshDeleteIdentity { build_id: "b".into(), attempt: 300, operation: rdm_core::OperationId::unscoped("o") }, "0162ac02016f000000");
+    // build_id "b" | operation "o"
+    golden(MeshDeleteIdentity { build_id: "b".into(), operation: rdm_core::OperationId::unscoped("o") }, "0162016f000000");
 }
 
 #[test]

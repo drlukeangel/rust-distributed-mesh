@@ -683,14 +683,14 @@ impl NodeSelf {
     }
 
     /// A stop or start this birth's own run commands of it, in process: a step of the Build `build_id`
-    /// at `attempt` the node-admin runs from its own context (a node.delete's composed stop of itself).
+    /// the node-admin runs from its own context (a node.delete's composed stop of itself).
     /// The command is served as [`Self::serve_node_command`]; its lifecycle op names that Build, so the
     /// stop's hold spares that run's turns, which wait on the stop (node-stop.md step 3; Q342 flag 1 B:
     /// "`LifecycleOp.build_id` is the Build's when the publishing mesh-primary runs the step from its own
     /// context"). Any other command is served as [`Self::serve_node_command`].
-    pub async fn serve_node_command_of_run(self: &Arc<Self>, commander: Option<&NodeId>, build_id: &str, attempt: u32, req: &NodeCommandRequest, frames: Box<dyn CommandFrames>) -> NodeCommandReply {
+    pub async fn serve_node_command_of_run(self: &Arc<Self>, commander: Option<&NodeId>, build_id: &str, req: &NodeCommandRequest, frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         match req {
-            NodeCommandRequest::StopNode { .. } | NodeCommandRequest::StartNode { .. } => self.serve_lifecycle_command_in(commander, None, Some((build_id, attempt)), req, frames).await,
+            NodeCommandRequest::StopNode { .. } | NodeCommandRequest::StartNode { .. } => self.serve_lifecycle_command_in(commander, None, Some(build_id), req, frames).await,
             _ => self.serve_node_command_on(commander, None, req, frames).await,
         }
     }
@@ -844,7 +844,7 @@ impl NodeSelf {
 
     /// [`Self::serve_lifecycle_command`], with `run`: the Build and attempt of this birth's own run that
     /// commands it in process ([`Self::serve_node_command_of_run`]), named by the command's lifecycle op.
-    async fn serve_lifecycle_command_in(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, run: Option<(&str, u32)>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
+    async fn serve_lifecycle_command_in(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, run: Option<&str>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         // The command's identity is its operation, keyed on the node.id (Q342): it belongs to no Build.
         let (incarnation, operation) = match req {
             NodeCommandRequest::StopNode { incarnation, operation, .. } | NodeCommandRequest::StartNode { incarnation, operation, .. } => (incarnation, operation),
@@ -869,9 +869,9 @@ impl NodeSelf {
             return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing executed", self.node_id));
         }
         let progress = Arc::new(tokio::sync::Mutex::new(frames));
-        let (build_id, attempt) = run.unwrap_or((LifecycleOp::NO_BUILD, LifecycleOp::NO_ATTEMPT));
+        let build_id = run.unwrap_or(LifecycleOp::NO_BUILD);
         let held = self.held_name();
-        let op = LifecycleOp { r#type: self.r#type.clone(), mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), path: held.path, name: held.name, build_id: build_id.into(), attempt, operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms(), traceparent: None, tracestate: None };
+        let op = LifecycleOp { r#type: self.r#type.clone(), mesh: self.topology_view.mesh_name().to_string(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), path: held.path, name: held.name, build_id: build_id.into(), operation: operation.clone(), event_at_rafka_ms: self.topology_view.clock().now_rafka_ms(), traceparent: None, tracestate: None };
         let result = if stopping {
             self.stop(commander.cloned(), spare, op, tracing::Span::current(), Some(progress)).await
         } else {
@@ -1070,7 +1070,7 @@ impl NodeSelf {
                 let span = tracing::info_span!(
                     parent: &parent,
                     "rdm.node_admin.status.update.via-stop-node",
-                    node = %self.node_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, build_id = %op.build_id, attempt = op.attempt,
+                    node = %self.node_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, build_id = %op.build_id,
                     commander = %named(commander.as_ref()), state = "Stopped", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
                 let (receipt, _) = self.stop_steps(StopBy::Command { commander: commander.as_ref(), spare, op: &op, progress: progress.clone() }).instrument(span.clone()).await;
@@ -1326,7 +1326,7 @@ impl NodeSelf {
         let span = tracing::info_span!(
             parent: &parent,
             "rdm.node_admin.status.update.via-start-node",
-            node = %self.node_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, build_id = %op.build_id, attempt = op.attempt,
+            node = %self.node_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, build_id = %op.build_id,
             commander = %named(commander.as_ref()), joined = tracing::field::Empty, outcome = tracing::field::Empty, failed_step = tracing::field::Empty, "otel.kind" = "internal"
         );
         let reply = async {
@@ -1511,13 +1511,13 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
         .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
         return rdm_core::reply::status::rejected_unmatched_completion("command".into(), RETIRED_PAIR_IS_RESERVED.into(), reported);
     }
-    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved29 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved12 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, attempt, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, attempt, operation, .. }) = req else {
+    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, operation } | StatusRequest::Reserved29 { node_id, incarnation, build_id, operation, .. } | StatusRequest::Reserved12 { node_id, incarnation, build_id, operation, .. } | StatusRequest::Reserved13 { node_id, incarnation, build_id, operation, .. } | StatusRequest::Reserved14 { node_id, incarnation, build_id, operation, .. } | StatusRequest::Reserved15 { node_id, incarnation, build_id, operation, .. }) = req else {
         unreachable!("refuse_reserved is called for the reserved positions only")
     };
-    let reported = format!("{} {operation:?} (build {build_id}, attempt {attempt})", req.op());
+    let reported = format!("{} {operation:?} (build {build_id})", req.op());
     tracing::info_span!(
         "rdm.node_admin.status.reject.via-reserved-position",
-        node = %receiver, op = req.op(), operation = %operation.action, operation_subject = ?operation.subject, build_id = %build_id, attempt = *attempt, subject = %node_id, incarnation_id = %incarnation.as_str(),
+        node = %receiver, op = req.op(), operation = %operation.action, operation_subject = ?operation.subject, build_id = %build_id, subject = %node_id, incarnation_id = %incarnation.as_str(),
         caller = %caller, field = "command", expected = RETIRED_PAIR_IS_RESERVED, reported = %reported, "otel.kind" = "internal"
     )
     .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
@@ -1544,15 +1544,14 @@ pub fn request_not_handled(receiver: &str, req: &StatusRequest) -> StatusReply {
 /// only; nothing checks who is calling (node-rpc.md §14). Never `NotReady`, the readiness gate's
 /// answer (R-NR1).
 pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    let StatusRequest::NodeLeft { node_id, incarnation, build_id, attempt, operation } = req else { unreachable!("refuse_node_left is called for node-left only") };
-    let reported = format!("{} {operation:?} (build {build_id}, attempt {attempt})", req.op());
+    let StatusRequest::NodeLeft { node_id, incarnation, build_id, operation } = req else { unreachable!("refuse_node_left is called for node-left only") };
+    let reported = format!("{} {operation:?} (build {build_id})", req.op());
     tracing::info_span!(
         "rdm.node_admin.status.reject.via-node-left",
         node = %receiver,
         op = req.op(),
         operation = %operation.action, operation_subject = ?operation.subject,
         build_id = %build_id,
-        attempt = *attempt,
         subject = %node_id,
         incarnation_id = %incarnation.as_str(),
         name = %name,

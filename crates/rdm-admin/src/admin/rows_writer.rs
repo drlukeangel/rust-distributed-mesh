@@ -350,24 +350,23 @@ pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::
     }
 }
 
-/// A step's receipt, its durable commit: the Build state takes it, or the step is not committed and the
-/// refusal is named with the step, its operation and its attempt.
-pub(crate) async fn commit_receipt(builds: &dyn BuildStateAdapter, me: &str, receipt: crate::build_state::BuildStepReceipt) -> Result<(), (&'static str, String)> {
+/// A step's `rdm.build.step` event, its durable commit: the Build state writes it, or the step is not
+/// committed and the refusal is named with the step and its operation.
+pub(crate) async fn commit_receipt(builds: &dyn BuildStateAdapter, me: &str, step: crate::build_state::StepWrite) -> Result<(), (&'static str, String)> {
     builds
-        .append_step_receipt(&receipt)
+        .write_step(&step)
         .await
-        .map_err(|e| ("receipt-refused", format!("{me}: the {} receipt of {:?} (Build {}, attempt {}) was not written: {e}", receipt.step, receipt.operation, receipt.build_id, receipt.attempt)))
+        .map_err(|e| ("receipt-refused", format!("{me}: the {} event of {} (Build {}) was not written: {e}", step.step, step.operation, step.build_id)))
 }
 
 /// `create-mesh:<mesh>` as the Build runs it (node-rpc-envelope.md, Build op 0x20: "completed step
 /// receipts are read and replayed, never executed again"; Build carrier: "Completed steps are not
 /// rerun. Settle an idempotent uncertain step by its natural key"). The operation's one step is the
-/// write of the mesh's row ([`create_mesh`]), and its `Complete` receipt, written by `executor`, is the
-/// step's durable commit.
+/// write of the mesh's row ([`create_mesh`]), and its `Complete` step event, written by this admin, is
+/// the step's durable commit.
 ///
-/// - A `Complete` receipt of the operation in the Build's current run (from the attempt a reopen began,
-///   [`crate::build_state::BuildProjection::opened`], to this attempt) is the step done: it is replayed, which holds the operation's mesh id for this admin's launches and writes
-///   nothing else.
+/// - A `Complete` step of the operation whose event ended `complete` is the step done: it is replayed,
+///   which holds the operation's mesh id for this admin's launches and writes nothing else.
 /// - No receipt is an uncertain step, run by its natural key: the write finds the mesh free (written),
 ///   or its own row standing (`row-held-by-mesh`: an earlier run wrote and was lost before it
 ///   receipted), and the `Complete` receipt follows. A write refused by name leaves a `Failed` receipt of
@@ -379,8 +378,8 @@ pub(crate) async fn commit_receipt(builds: &dyn BuildStateAdapter, me: &str, rec
 /// `refused`, `store-unanswered`, `receipt-refused` or `build-unreadable`, and the write's own span is its
 /// child.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::storage::MeshStorage, builds: &dyn BuildStateAdapter, executor: &rdm_core::framing::Birth, me: &str, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
-    use crate::build_state::{BuildStepReceipt, StepOutcome};
+pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::storage::MeshStorage, builds: &dyn BuildStateAdapter, me: &str, build_id: &crate::build::BuildId, op: &BuildOperation) -> Result<(), String> {
+    use crate::build_state::{StepOutcome, StepWrite};
     use crate::deployment::pipeline::CreateMeshStep;
     let BuildOperation::CreateMesh { mesh, mesh_id } = op else { return Err(format!("{me}: {:?} is not a create-mesh operation", op.key())) };
     let operation = op.key();
@@ -390,16 +389,15 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
         mesh = %mesh,
         mesh_id = %mesh_id,
         build_id = %build_id.log(),
-        attempt,
         operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
         outcome = tracing::field::Empty,
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let receipt = |step: CreateMeshStep, outcome: StepOutcome| BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.name().into(), outcome, output: None, executor: Some(executor.clone()) };
+    let receipt = |step: CreateMeshStep, outcome: StepOutcome| StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: step.name().into(), outcome };
     let run = async {
         let held = builds.read_build(build_id).await.map_err(|e| ("build-unreadable", format!("{me}: {operation:?}: the Build {build_id} could not be read for its receipts: {e}")))?;
-        if held.steps.iter().any(|r| r.operation == operation && r.step == CreateMeshStep::Complete.name() && r.outcome == StepOutcome::Complete && r.attempt >= held.opened && r.attempt <= attempt) {
+        if held.completed(&operation.to_string(), CreateMeshStep::Complete.name()) {
             hold_mesh_id(records, mesh, mesh_id);
             return Ok("replayed");
         }
@@ -520,11 +518,10 @@ pub async fn inspection_with_handle(
 }
 
 /// The workflow a member's removal was announced by ([`RecoverySubmitter::removal_announced`]):
-/// which announcement, and the operation, Build and attempt it names (a mesh.delete announced by its
+/// which announcement, and the operation and Build it names (a mesh.delete announced by its
 /// mesh's status names its operation and no Build).
 pub(crate) struct Announced {
     pub(crate) announced: &'static str,
     pub(crate) operation: rdm_core::OperationId,
     pub(crate) build_id: String,
-    pub(crate) attempt: u32,
 }

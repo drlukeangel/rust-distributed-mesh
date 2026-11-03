@@ -2,7 +2,7 @@
 //! around it, keyed by the operation it belongs to.
 //!
 //! One deletion runs many deployment steps and publishes one `NodeDeleting`
-//! (after the executor's own journal holds its Claim for the attempt) and one
+//! (after its `NodeDeleting` step's event is written) and one
 //! `NodeDeleted` (after the provider's exact inspection says the runtime is
 //! terminal). Both carry the same [`LifecycleOp`]; a receiver applies a
 //! repeated or doubly-sourced copy once, by its key.
@@ -21,8 +21,6 @@ pub struct LifecycleOp {
     pub r#type: String,
     /// The Build the operation belongs to.
     pub build_id: String,
-    /// The attempt of the Build.
-    pub attempt: u32,
     /// The admitted structured operation identity, preserving its original step position.
     pub operation: crate::OperationId,
     /// The logical node.
@@ -55,18 +53,14 @@ impl LifecycleOp {
     /// The `build_id` of an operation that belongs to no Build: a node command or a repair, the
     /// primary's own work (Q342). The frames that carry it stay byte-identical (D44).
     pub const NO_BUILD: &'static str = "";
-    /// The `attempt` of an operation that belongs to no Build: the field keeps its position with this
-    /// constant (D44; removal debt D17 removes it with a gossip change of its own).
-    pub const NO_ATTEMPT: u32 = 0;
     /// The `(path, name)` lookup index key of path and name.
     pub fn location(&self) -> crate::PathName { crate::PathName { path: self.path.clone(), name: self.name.clone() } }
 }
 
 impl PartialEq for LifecycleOp {
     fn eq(&self, other: &Self) -> bool {
-        let Self { build_id, attempt, operation, node_id, incarnation, path, name, r#type, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
+        let Self { build_id, operation, node_id, incarnation, path, name, r#type, mesh, event_at_rafka_ms, traceparent: _, tracestate: _ } = self;
         *build_id == other.build_id
-            && *attempt == other.attempt
             && *operation == other.operation
             && *node_id == other.node_id
             && *incarnation == other.incarnation
@@ -93,8 +87,6 @@ pub struct StateHook {
     pub incarnation: IncarnationId,
     /// The Build the checklist belongs to.
     pub build_id: String,
-    /// The Build attempt that holds the checklist.
-    pub attempt: u32,
     /// The operation.
     pub operation: crate::OperationId,
     /// The author at this hop, by `(path, name)`.
@@ -116,8 +108,8 @@ impl LifecycleOp {
     }
 
     /// The operation's identity: the same for its `NodeDeleting` and `NodeDeleted`.
-    pub fn key(&self) -> (String, u32, crate::OperationId) {
-        (self.build_id.clone(), self.attempt, self.operation.clone())
+    pub fn key(&self) -> (String, crate::OperationId) {
+        (self.build_id.clone(), self.operation.clone())
     }
 }
 
@@ -135,7 +127,6 @@ mod tests {
     fn an_op_round_trips_and_its_key_is_the_operation_not_a_step() {
         let op = LifecycleOp { r#type: "node".into(), mesh: "mesh2".into(),
             build_id: "b1".into(),
-            attempt: 2,
             operation: crate::OperationId::node("node.delete", &crate::fixture_node_id(&crate::PathName::new("mesh2.node", "2").unwrap())),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
@@ -146,6 +137,6 @@ mod tests {
         };
         let back: LifecycleOp = serde_json::from_str(&serde_json::to_string(&op).unwrap()).unwrap();
         assert_eq!(back, op);
-        assert_eq!(op.key(), ("b1".to_string(), 2, op.operation.clone()));
+        assert_eq!(op.key(), ("b1".to_string(), op.operation.clone()));
     }
 }

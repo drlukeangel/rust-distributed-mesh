@@ -27,7 +27,8 @@ async fn read_to_complete(stream: &mut BuildStream) {
     while let Some(frame) = stream.next().await {
         match frame.expect("stream frame") {
             BuildFrame::Complete { .. } => return,
-            BuildFrame::Failed { step, reason, .. } => panic!("the Build failed at {step}: {reason}"),
+            BuildFrame::Failed { reason, .. } => panic!("the Build could not start: {reason}"),
+            BuildFrame::Incomplete { sections } => panic!("the Build ended incomplete: {sections:?}"),
             _ => {}
         }
     }
@@ -107,7 +108,7 @@ async fn a_stop_and_a_start_run_while_a_build_is_held_and_write_no_build() {
     let ids = |b: &[rdm_client::Build]| b.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>();
     assert_eq!(ids(&builds_after), ids(&builds_before), "a stop and a start write no Build");
     let held_after = carrier.build(held.build_id()).await.expect("build.get [id]");
-    assert_eq!((held_after.attempt, &held_after.reason), (held_before.attempt, &held_before.reason), "the held Build is not written by a node command");
+    assert_eq!((held_after.phase, &held_after.events), (held_before.phase, &held_before.events), "the held Build is not written by a node command: no event of it");
 
     rdm_test::write_pre_node_ready_knob(&estate.root, &grown_node, "pass").unwrap();
     read_to_complete(&mut held).await;
@@ -145,7 +146,7 @@ async fn a_member_lost_while_a_build_is_held_is_recovered_before_the_build_ends(
     let ids = |b: &[rdm_client::Build]| b.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>();
     assert_eq!(ids(&builds_after), ids(&builds_before), "a recovery writes no Build");
     let held_after = carrier.build(held.build_id()).await.expect("build.get [id]");
-    assert_eq!((held_after.attempt, &held_after.reason), (held_before.attempt, &held_before.reason), "the held Build is not written by a recovery");
+    assert_eq!((held_after.phase, &held_after.events), (held_before.phase, &held_before.events), "the held Build is not written by a recovery: no event of it");
 
     rdm_test::write_pre_node_ready_knob(&estate.root, &grown_node, "pass").unwrap();
     read_to_complete(&mut held).await;

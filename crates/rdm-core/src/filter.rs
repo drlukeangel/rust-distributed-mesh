@@ -13,6 +13,7 @@
 //! cannot take or an empty values list is refused naming the pair; a property the schema has and one
 //! row lacks (a config entry) does not match that row. Nothing matching is the empty list.
 
+use crate::build::BuildPhase;
 use crate::digest::MeshDigest;
 use crate::views::{ConnectionView, FabricView, MeshView, NodeView};
 use serde::{Deserialize, Serialize};
@@ -180,17 +181,21 @@ const CONNECTION: &[Property] = &[
     p("logged_at_ms", Takes::Number),
 ];
 
-/// A Build's phases, by their page names (`BuildPhase`, lowercase).
-pub const BUILD_PHASES: &[&str] = &["pending", "running", "complete", "failed"];
+/// A Build's phases, by their page names (`BuildPhase::page_name`): every phase a Build header can carry.
+pub const BUILD_PHASES: &[&str] = &[
+    BuildPhase::Pending.page_name(),
+    BuildPhase::Running.page_name(),
+    BuildPhase::Complete.page_name(),
+    BuildPhase::Failed.page_name(),
+    BuildPhase::Incomplete.page_name(),
+];
 
-/// The Build header's properties (Q167 R-RD5): what `build.get` filters on. Its topology and receipts
+/// The Build header's properties (Q167 R-RD5): what `build.get` filters on. Its topology and events
 /// are the Build's content, never a property.
 const BUILD_HEADER: &[Property] = &[
     p("id", Takes::Id),
     p("current", Takes::Bool),
     p("phase", Takes::OneOf(BUILD_PHASES)),
-    p("attempt", Takes::Number),
-    p("executor", Takes::Text),
 ];
 
 /// The node properties the topology a node holds carries for every node it hears, the gossiped digest
@@ -341,8 +346,6 @@ impl Row for crate::build::BuildHeader {
             "id" => Value::One(self.build_id.clone()),
             "current" => Value::bool(self.current),
             "phase" => Value::One(self.phase.page_name().to_string()),
-            "attempt" => Value::One(self.attempt.to_string()),
-            "executor" => Value::of(self.executor.as_ref().map(|birth| &birth.node_id)),
             _ => Value::Absent,
         }
     }
@@ -405,8 +408,7 @@ impl Filter {
     }
 
     /// Why this filter is refused for `build.get` (Q167 R-RD5), naming the pair, or `None` when every
-    /// pair names a property of the Build header (`BUILD_HEADER`: `id`, `current`, `phase`,
-    /// `attempt`, `executor`) and values it can take. Read against the schema, never a Build.
+    /// pair names a property of the Build header (`BUILD_HEADER`: `id`, `current`, `phase`) and values it can take. Read against the schema, never a Build.
     pub fn builds_refusal(&self) -> Option<String> {
         self.refusal_in(&BUILDS)
     }
@@ -679,32 +681,31 @@ mod tests {
         assert!(why.starts_with("node.get: the pair (status, [redy])"), "{why:?}");
     }
 
-    /// CONTRACT (Q167 R-RD5): `build.get` filters on the Build header (`id`, `current`, `phase`,
-    /// `attempt`, `executor`): a phase by its lowercase page name, `current` a boolean, `attempt` its
-    /// digits, an executor absent from a Build no executor holds; a pair naming anything else (a
-    /// topology or receipt field, a node property) or a value the field cannot take is refused naming
+    /// CONTRACT (Q167 R-RD5): `build.get` filters on the Build header (`id`, `current`, `phase`): a
+    /// phase by its lowercase page name, `current` a boolean; a pair naming anything else (a topology
+    /// or event field, a node property, the removed `attempt` and `executor`) or a value the field cannot take is refused naming
     /// the pair and `build.get`. Must NOT happen: a phase spelt `Failed` accepted, or `tags` read as
     /// matching nothing.
     #[test]
     fn a_builds_get_filter_matches_the_build_header_and_refuses_anything_else_naming_the_pair() {
-        use crate::build::{BuildHeader, BuildPhase};
-        let header = |id: &str, phase, current, executor: Option<&str>| BuildHeader { build_id: id.into(), phase, attempt: 2, executor: executor.map(|id| crate::framing::Birth { node_id: crate::NodeId::parse(id).unwrap(), incarnation: crate::IncarnationId::mint() }), reason: "requested".into(), last_failure: None, current };
-        let (a, b) = (crate::BuildId::mint().to_string(), crate::BuildId::mint().to_string());
-        let rows = [header(&a, BuildPhase::Failed, false, None), header(&b, BuildPhase::Complete, true, Some("3123456789ab"))];
+        use crate::build::BuildHeader;
+        let header = |id: &str, phase, current| BuildHeader { build_id: id.into(), phase, reason: "requested".into(), last_failure: None, current };
+        let (a, b, c) = (crate::BuildId::mint().to_string(), crate::BuildId::mint().to_string(), crate::BuildId::mint().to_string());
+        let rows = [header(&a, BuildPhase::Failed, false), header(&b, BuildPhase::Complete, true), header(&c, BuildPhase::Incomplete, false)];
         let ids = |f: Filter| -> Vec<String> {
             assert_eq!(f.builds_refusal(), None, "{f:?}");
             rows.iter().filter(|r| f.matches(*r)).map(|r| r.build_id.clone()).collect()
         };
-        assert_eq!(ids(Filter::new()), [a.clone(), b.clone()]);
+        assert_eq!(ids(Filter::new()), [a.clone(), b.clone(), c.clone()]);
         assert_eq!(ids(Filter::new().eq("current", ["true"])), [b.clone()]);
         assert_eq!(ids(Filter::new().eq("phase", ["failed", "pending"])), [a.clone()]);
-        assert_eq!(ids(Filter::new().eq("id", [a.clone()]).eq("attempt", ["2"])), [a.clone()]);
-        assert_eq!(ids(Filter::new().eq("executor", ["3123456789ab"])), [b.clone()], "a Build no executor holds lacks the property");
+        assert_eq!(ids(Filter::new().eq("phase", ["incomplete"])), [c.clone()]);
+        assert_eq!(ids(Filter::new().eq("id", [a.clone()]).eq("phase", ["failed"])), [a.clone()]);
         for (f, wanted) in [
             (Filter::new().eq("phase", ["Failed"]), "build.get: the pair (phase, [Failed])"),
             (Filter::new().eq("tags", ["gold"]), "build.get: the pair (tags, [gold]) names no property of a Build header row"),
             (Filter::new().eq("current", ["yes"]), "a boolean is true or false"),
-            (Filter::new().eq("attempt", ["two"]), "a number is decimal digits"),
+            (Filter::new().eq("attempt", ["2"]), "build.get: the pair (attempt, [2]) names no property of a Build header row"),
             (Filter::new().eq("id", Vec::<String>::new()), "names no value"),
         ] {
             let why = f.builds_refusal().unwrap_or_else(|| panic!("{f:?} is refused"));

@@ -183,7 +183,6 @@ fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
     let d = digest();
     let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
         build_id: "b".into(),
-        attempt: 1,
         operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())),
         node_id: rdm_core::NodeId::mint(),
         incarnation: IncarnationId::mint(),

@@ -8,9 +8,7 @@
 //! and "could not be read" are different errors, and neither is an empty answer).
 
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, MemoryBuildStateAdapter};
 use rdm_admin::deployment::pipeline::{CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, DeleteRequest, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::model::{IncarnationId, Node, NodeId, NodeStatus, PathName, ProviderKind};
@@ -73,10 +71,12 @@ impl TopologySink for Discard {
     fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
 }
 
-/// The Build state, refusing the receipt of one step: as the fabric's adapter refuses a fact with no
-/// wire shape (`local: false`), or as a local log whose write fails (`local: true`).
+/// The Build state, refusing the step event of one step: as the fabric's adapter refuses a fact with no
+/// wire shape (`local: false`), or as a local log whose write fails (`local: true`). Every other step
+/// is written as its event.
 struct Refuses {
-    inner: MemoryBuildStateAdapter,
+    inner: std::sync::Arc<MemoryBuildStateAdapter>,
+    steps: rdm_admin::build_run::FramedBuilds,
     step: &'static str,
     local: bool,
     /// The Build cannot be read: the journal read fails with this.
@@ -91,11 +91,11 @@ impl rdm_admin::build_state::LocalBuildLog for Refuses {
     async fn derive_on_every_fact(&self, derive: rdm_admin::build_state::FactDerivation) {
         self.inner.derive_on_every_fact(derive).await
     }
-    async fn put_attempt_context(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.inner.put_attempt_context(build_id, lane, attempt, context).await
+    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.facts().await
     }
-    async fn attempt_context(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, rdm_admin::storage_error::StorageError> {
-        self.inner.attempt_context(build_id, lane, attempt).await
+    async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.committed_facts(build).await
     }
 }
 
@@ -103,9 +103,6 @@ impl rdm_admin::build_state::LocalBuildLog for Refuses {
 impl BuildStateAdapter for Refuses {
     async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
         self.inner.publish_accepted(a).await
-    }
-    async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(o).await
     }
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         if let Some(why) = self.unreadable {
@@ -119,45 +116,37 @@ impl BuildStateAdapter for Refuses {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
-    }
-    async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(c).await
-    }
-    async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(c).await
-    }
-    async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        if r.step == self.step && self.local {
-            return Err(BuildStateError::Io(format!("journal write of step {} of {} attempt {}: this cell's disk refuses it", r.step, r.build_id, r.attempt)));
-        }
-        if r.step == self.step {
-            return Err(BuildStateError::Unencodable(format!("the output of step {} of {} attempt {} has no wire shape: this cell refuses it", r.step, r.build_id, r.attempt)));
-        }
-        self.inner.append_step_receipt(r).await
-    }
-    async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(r).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
+    }
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.inner.accepted_newest_first().await
+    }
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
+    }
+    async fn write_step(&self, step: &rdm_admin::build_state::StepWrite) -> Result<(), BuildStateError> {
+        if step.step == self.step {
+            return Err(BuildStateError::Io(if self.local { format!("the {} event of {}: this cell's disk refuses it", step.step, step.operation) } else { format!("the {} event of {} has no wire shape: this cell refuses it", step.step, step.operation) }));
+        }
+        self.steps.write_step(step).await
+    }
+}
+
+impl Refuses {
+    /// The Build state over memory, refusing `step` (`local` as a failed local write), unreadable when
+    /// `unreadable` says so; `executor` writes the other steps.
+    fn new(executor: &rdm_core::framing::Birth, step: &'static str, local: bool, unreadable: Option<&'static str>) -> Self {
+        let inner = std::sync::Arc::new(MemoryBuildStateAdapter::new());
+        let steps = rdm_admin::build_run::FramedBuilds::stepping(inner.clone(), &rdm_core::FabricId::parse("fab000000001").unwrap(), &executor.node_id, "mesh1");
+        Self { inner, steps, step, local, unreadable }
     }
 }
 
 /// CONTRACT (node-recovery.md "Failure and receipts"; CLAUDE.md "an error state carries every
 /// non-leaking detail"): a standalone node.connection.delete whose `DeleteConnections` receipt the Build state refuses (here
 /// as a fact with no wire shape) fails at `DeleteConnections`, the error naming the step and the refusal,
-/// under a `rdm.node_admin.deployment.reject.via-receipt-refused` span naming the Build, attempt,
+/// under a `rdm.node_admin.deployment.reject.via-receipt-refused` span naming the Build,
 /// operation, step and refusal. Must NOT happen: the refusal swallowed and the run going on to
 /// `Complete` as if the step were committed.
 #[tokio::test]
@@ -168,13 +157,12 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let (spans_pipeline, layer) = rdm_transport::span_capture("i143-3051-receipt-refusal", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
-    let builds = Refuses { inner: MemoryBuildStateAdapter::new(), step: "DeleteConnections", local: false, unreadable: None };
+    let builds = Refuses::new(&executor, "DeleteConnections", false, None);
     let build_id = BuildId::mint();
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
         .await
         .unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
     let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
     node.node_id = target_id.clone();
     node.incarnation_id = Some(IncarnationId::mint());
@@ -196,7 +184,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let joins = rdm_admin::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Answers, sink: &Discard, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.connection.delete", &node.node_id), build_id: Some(build_id.clone()), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.connection.delete", &node.node_id), build_id: Some(build_id.clone()), node, handle, unreached: false };
 
     let err = match pipeline.delete_connections(&req).await {
         Err(e) => e,
@@ -232,9 +220,9 @@ async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
     let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let target_id = NodeId::mint();
     let (capture, _guard) = Capture::new("i143-s42-build-unreadable");
-    let builds = Refuses { inner: MemoryBuildStateAdapter::new(), step: "", local: false, unreadable: Some("this cell's disk refuses it") };
+    let builds = Refuses::new(&executor, "", false, Some("this cell's disk refuses it"));
     let build_id = BuildId::mint();
-    accepted_and_claimed(&builds.inner, &build_id, &executor).await;
+    accepted(&*builds.inner, &build_id, &executor).await;
 
     let err = match standalone_through(&builds, &build_id, &Answers, false, &executor, &target_id).await {
         Err(e) => e,
@@ -293,9 +281,10 @@ async fn a_standalone_connections_delete_or_stop_whose_command_is_never_sent_fai
     let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let target_id = NodeId::mint();
     for (stop, step) in [(false, "DeleteConnections"), (true, "AwaitNodeLeft")] {
-        let local = MemoryBuildStateAdapter::new();
+        // A run's step log over the memory store: the one adapter that writes step events.
+        let local = crate::stepping(&executor.node_id, "mesh1");
         let build_id = BuildId::mint();
-        accepted_and_claimed(&local, &build_id, &executor).await;
+        accepted(&local, &build_id, &executor).await;
         let err = match standalone_through(&local, &build_id, &NeverReached, stop, &executor, &target_id).await {
             Err(e) => e,
             Ok(()) => panic!("the {} command never reached the birth, yet the operation reported complete", if stop { "stop-node" } else { "node.connection.delete" }),
@@ -347,12 +336,12 @@ async fn fabric_builds(executor: &rdm_core::framing::Birth, local: std::sync::Ar
     (endpoint, builds)
 }
 
-/// A standalone node.connection.delete of a ready `mesh1.node.1` as attempt 1 of `build_id`, through `builds`.
+/// A standalone node.connection.delete of a ready `mesh1.node.1` as a step of `build_id`, through `builds`.
 async fn connections_delete_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: &rdm_core::framing::Birth, target_id: &NodeId) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
     standalone_through(builds, build_id, &Answers, false, executor, target_id).await
 }
 
-/// A standalone node.connection.delete (or, with `stop`, a standalone stop) of a ready `mesh1.node.1` as attempt 1 of
+/// A standalone node.connection.delete (or, with `stop`, a standalone stop) of a ready `mesh1.node.1` as a step of
 /// `build_id`, through `builds`, its commands answered by `observer`.
 async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, observer: &dyn NodeObserver, stop: bool, executor: &rdm_core::framing::Birth, target_id: &NodeId) -> Result<(), rdm_admin::deployment::pipeline::PipelineError> {
     let mut node = Node::allocated(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
@@ -376,7 +365,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     let joins = rdm_admin::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
     let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-3051-refusal".into()) };
-    let req = DeleteRequest { operation: rdm_core::OperationId::node(if stop { "node.stop" } else { "node.connection.delete" }, &node.node_id), build_id: Some(build_id.clone()), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { operation: rdm_core::OperationId::node(if stop { "node.stop" } else { "node.connection.delete" }, &node.node_id), build_id: Some(build_id.clone()), node, handle, unreached: false };
     if stop {
         pipeline.stop(&req).await
     } else {
@@ -384,13 +373,12 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     }
 }
 
-/// Build `build_id` accepted and its attempt 1 claimed by `mesh1.node-admin.1`, in `builds`.
-async fn accepted_and_claimed(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: &rdm_core::framing::Birth) {
+/// Build `build_id` accepted in `builds`.
+async fn accepted(builds: &dyn BuildStateAdapter, build_id: &BuildId, executor: &rdm_core::framing::Birth) {
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
         .await
         .unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
 }
 
 /// CONTRACT (node-recovery.md "Failure and receipts"): a standalone node.connection.delete run through the fabric's
@@ -403,10 +391,10 @@ async fn a_step_whose_local_receipt_write_fails_fails_by_name() {
     let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let target_id = NodeId::mint();
     let (capture, _guard) = Capture::new("i143-3051-local-write-refused");
-    let local = std::sync::Arc::new(Refuses { inner: MemoryBuildStateAdapter::new(), step: "DeleteConnections", local: true, unreadable: None });
+    let local = std::sync::Arc::new(Refuses::new(&executor, "DeleteConnections", true, None));
     let (_endpoint, builds) = fabric_builds(&executor, local.clone()).await;
     let build_id = BuildId::mint();
-    accepted_and_claimed(&builds, &build_id, &executor).await;
+    accepted(&builds, &build_id, &executor).await;
 
     let err = match connections_delete_through(&builds, &build_id, &executor, &target_id).await {
         Err(e) => e,

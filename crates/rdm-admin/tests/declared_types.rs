@@ -39,7 +39,7 @@ async fn submit_adding(types: Vec<rdm_core::NodeType>, added: NodeSpec) -> (Resu
     let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
     let held = FabricTopology::of_observed(&t);
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), held.clone(), &executor, "mesh1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), held.clone(), &executor).await.unwrap();
     // The Fabric record declares `types`, as Day 0 writes RDM_NODE_TYPES on it.
     let mut record = accepted.storage().fabric().await.unwrap().expect("the seeded Fabric record");
     record.types = types;

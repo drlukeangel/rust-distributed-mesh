@@ -131,71 +131,6 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         entry: Option<EntrySpec>,
     },
-    /// `node.connection.delete { All }` of the exact birth `from_incarnation` of `node`; it keeps
-    /// running (node-connections-delete.md).
-    DeleteConnections {
-        /// The node.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-        /// The explicitly declared mesh owning this operation.
-        mesh: String,
-        /// The admitted subject kind, independent of the current pair occupant.
-        r#type: String,
-        /// The node id of the birth the gates pinned (build.md §4.4).
-        node_id: NodeId,
-        /// The birth whose connections are deleted.
-        from_incarnation: IncarnationId,
-    },
-    /// Stop the exact birth `from_incarnation` of `node` (node-stop.md): `stop-node`, its node-left
-    /// reply and the provider's Exited proof. No implicit connections delete, no departure.
-    StopNode {
-        /// The node to stop.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-        /// The explicitly declared mesh owning this operation.
-        mesh: String,
-        /// The admitted subject kind, independent of the current pair occupant.
-        r#type: String,
-        /// The node id of the birth the gates pinned (build.md §4.4).
-        node_id: NodeId,
-        /// The birth stopped.
-        from_incarnation: IncarnationId,
-    },
-    /// Start the stopped exact birth `from_incarnation` of `node` (node-start.md): `start-node`,
-    /// whose reply is `Started` once the same process rejoined as itself, then the wait for ready.
-    StartNode {
-        /// The node to start.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-        /// The explicitly declared mesh owning this operation.
-        mesh: String,
-        /// The admitted subject kind, independent of the current pair occupant.
-        r#type: String,
-        /// The node id of the birth the gates pinned (build.md §4.4).
-        node_id: NodeId,
-        /// The birth started.
-        from_incarnation: IncarnationId,
-    },
-    /// node.delete of the stopped exact birth `from_incarnation` at `node` (node-delete.md): its stop
-    /// steps are done; `NodeDeleting`, the provider's exact Exited proof, `NodeDeleted`, and `Complete`
-    /// naming the birth. Storage is kept. Its key is node.delete's one key, `node.delete:<path>`.
-    DeleteNode {
-        /// The stopped node's path.
-        path: String,
-        /// The name, beside its path.
-        name: String,
-        /// The explicitly declared mesh owning this operation.
-        mesh: String,
-        /// The admitted subject kind, independent of the current pair occupant.
-        r#type: String,
-        /// The node id of the birth the gates pinned (build.md §4.4).
-        node_id: NodeId,
-        /// The birth deleted.
-        from_incarnation: IncarnationId,
-    },
     /// The live target's delete (node-delete.md "Live target"): `node.stop` completes first, then the delete; its storage stays.
     #[serde(rename = "retire_node")] // rdm#88: stored tag
     DeleteLiveNode {
@@ -241,10 +176,6 @@ impl BuildOperation {
     pub fn subject(&self) -> Option<rdm_core::OperationSubject> {
         use rdm_core::OperationSubject;
         let birth = match self {
-            Self::DeleteConnections { node_id, from_incarnation, .. }
-            | Self::StopNode { node_id, from_incarnation, .. }
-            | Self::StartNode { node_id, from_incarnation, .. }
-            | Self::DeleteNode { node_id, from_incarnation, .. } => Some((node_id, from_incarnation)),
             Self::DeleteLiveNode { birth: Some(birth), .. } => Some((&birth.node_id, &birth.incarnation)),
             Self::DeleteLiveNode { exited: Some(birth), .. } => Some((&birth.node_id, &birth.incarnation)),
             _ => None,
@@ -255,7 +186,7 @@ impl BuildOperation {
     /// The accepted path and name, when this operation carries location metadata.
     pub fn node(&self) -> Option<PathName> {
         match self {
-            Self::CreateNode { path, name, .. } | Self::DeleteConnections { path, name, .. } | Self::StopNode { path, name, .. } | Self::StartNode { path, name, .. } | Self::DeleteNode { path, name, .. } | Self::DeleteLiveNode { path, name, .. } => Some(PathName { path: path.clone(), name: name.clone() }),
+            Self::CreateNode { path, name, .. } | Self::DeleteLiveNode { path, name, .. } => Some(PathName { path: path.clone(), name: name.clone() }),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
@@ -265,9 +196,7 @@ impl BuildOperation {
     pub fn mesh(&self) -> Option<&str> {
         match self {
             Self::CreateMesh { mesh, .. } | Self::ShutdownMesh { mesh, .. }
-            | Self::CreateNode { mesh, .. } | Self::DeleteConnections { mesh, .. }
-            | Self::StopNode { mesh, .. } | Self::StartNode { mesh, .. }
-            | Self::DeleteNode { mesh, .. } | Self::DeleteLiveNode { mesh, .. } => Some(mesh),
+            | Self::CreateNode { mesh, .. } | Self::DeleteLiveNode { mesh, .. } => Some(mesh),
             Self::DeleteFabric { .. } => None,
         }
     }
@@ -275,9 +204,7 @@ impl BuildOperation {
     /// The admitted type of the node an operation acts on.
     pub fn r#type(&self) -> Option<String> {
         match self {
-            Self::CreateNode { r#type, .. } | Self::DeleteConnections { r#type, .. }
-            | Self::StopNode { r#type, .. } | Self::StartNode { r#type, .. }
-            | Self::DeleteNode { r#type, .. } | Self::DeleteLiveNode { r#type, .. } => Some(r#type.clone()),
+            Self::CreateNode { r#type, .. } | Self::DeleteLiveNode { r#type, .. } => Some(r#type.clone()),
             _ => None,
         }
     }
@@ -295,12 +222,6 @@ impl BuildOperation {
         match self {
             Self::CreateMesh { mesh_id, .. } => rdm_core::OperationId::new("create-mesh", rdm_core::OperationSubject::Mesh(mesh_id.clone())),
             Self::CreateNode { node_id, .. } => rdm_core::OperationId::node("node.create", node_id),
-            Self::DeleteConnections { node_id, .. } => rdm_core::OperationId::node("node.connection.delete", node_id),
-            Self::StopNode { node_id, .. } => rdm_core::OperationId::node("node.stop", node_id),
-            Self::StartNode { node_id, .. } => rdm_core::OperationId::node("node.start", node_id),
-            // node.delete has one key, whatever the node's name and whatever state the birth is
-            // deleted from (a stopped birth's delete runs no stop steps, a live one's stops it first).
-            Self::DeleteNode { node_id, .. } => rdm_core::OperationId::node("node.delete", node_id),
             // Acceptance pins every delete to its birth (build.md §4.4); a delete naming none acts on no
             // node and is keyed with no subject.
             Self::DeleteLiveNode { birth, exited, .. } => birth.as_ref().map(|b| &b.node_id).or_else(|| exited.as_ref().map(|b| &b.node_id)).map_or_else(|| rdm_core::OperationId::unscoped("node.delete"), |id| rdm_core::OperationId::node("node.delete", id)),
@@ -877,5 +798,18 @@ mod tests {
     fn only_a_create_operation_names_the_node_it_creates() {
         let node: PathName = rdm_core::PathName::new("mesh2.node-admin", "1").unwrap();
         assert_eq!(BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh2".into(), node_id: rdm_core::fixture_node_id(&node), path: node.path.clone(), name: node.name.clone(), over: None, executable: None, entry: None }.created_node(), Some(node));
+    }
+}
+
+/// The caller system every RDM-originated Build context names.
+pub const CALLER_SYSTEM: &str = "rdm";
+
+/// The context of the current span: where a dispatch made now comes from.
+pub fn current_context() -> rdm_core::context::CallContext {
+    rdm_core::context::CallContext {
+        caller_system: Some(CALLER_SYSTEM.into()),
+        traceparent: rdm_transport::current_traceparent(),
+        tracestate: rdm_transport::current_tracestate(),
+        baggage: None,
     }
 }

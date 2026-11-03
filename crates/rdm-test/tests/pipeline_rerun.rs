@@ -10,10 +10,7 @@ use crate::common;
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
-    ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Publication, Timeouts};
 use rdm_admin::join::Joins;
@@ -76,10 +73,10 @@ impl DeploymentProvider for Killable {
     }
 }
 
-/// The in-memory Build state, pausing forever before one step's receipt when armed: the executor
-/// dying after the step ran and before its receipt was written.
+/// A run's step log over memory, pausing forever before one step's `rdm.build.step` event when armed:
+/// the executor dying after the step ran and before its event was written.
 struct Pausing<'a> {
-    inner: &'a MemoryBuildStateAdapter,
+    inner: &'a rdm_admin::build_run::FramedBuilds,
     before: Option<&'static str>,
     reached: Arc<Notify>,
 }
@@ -88,9 +85,6 @@ struct Pausing<'a> {
 impl BuildStateAdapter for Pausing<'_> {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         self.inner.publish_accepted(accepted).await
-    }
-    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(opened).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
@@ -101,36 +95,21 @@ impl BuildStateAdapter for Pausing<'_> {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
+    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(build_id).await
     }
-    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(claim).await
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.inner.accepted_newest_first().await
     }
-    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(claim).await
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
     }
-    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        if self.before == Some(receipt.step.as_str()) {
+    async fn write_step(&self, step: &rdm_admin::build_state::StepWrite) -> Result<(), BuildStateError> {
+        if self.before == Some(step.step.as_str()) {
             self.reached.notify_one();
             std::future::pending::<()>().await;
         }
-        self.inner.append_step_receipt(receipt).await
-    }
-    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(receipt).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        self.inner.forget(build_id).await
+        self.inner.write_step(step).await
     }
 }
 
@@ -151,14 +130,14 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&admin);
-    let builds = MemoryBuildStateAdapter::new();
+    let builds = crate::common::stepping(&fabric, "mesh1");
     let build_id = publish_build(&builds, add_node()).await;
     let sink = Published::default();
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
     // The node.id the Build minted for the node, one per cell: a cell beside it never runs a runtime of it.
     let node_id = rdm_core::NodeId::mint();
-    let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+    let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
     // Attempt 1 dies at the kill point.
     let first = Killable {
@@ -211,8 +190,8 @@ async fn killed_then_rerun(kill_at: KillAt) {
         assert_eq!(created.node.transport_addr, Some(addr), "the re-run keeps the address the birth reported");
     }
 
-    // Every step Complete exactly once across both attempts; the steps
-    // before the kill point keep attempt 1's receipt.
+    // Every step Complete exactly once across both runs: the steps before the kill point keep the
+    // first run's event and the rerun runs only the rest.
     let view = builds.read_build(&build_id).await.unwrap();
     let split = match kill_at {
         KillAt::AfterSpawn => CreateStep::DeployRuntime,
@@ -220,14 +199,8 @@ async fn killed_then_rerun(kill_at: KillAt) {
     };
     let split_at = CreateStep::ORDER.iter().position(|s| *s == split).unwrap();
     for (i, step) in CreateStep::ORDER.iter().enumerate() {
-        let done: Vec<u32> = view
-            .steps
-            .iter()
-            .filter(|r| r.step == step.name() && r.outcome == StepOutcome::Complete)
-            .map(|r| r.attempt)
-            .collect();
-        let want = if i < split_at { 1 } else { 2 };
-        assert_eq!(done, vec![want], "{}: Complete receipts by attempt", step.name());
+        let done = view.steps.iter().filter(|r| r.step == step.name() && r.outcome == StepOutcome::Complete).count();
+        assert_eq!(done, 1, "{} (step {i} of {}, split at {split_at}): Complete step events", step.name(), CreateStep::ORDER.len());
     }
 
     process.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
@@ -265,14 +238,14 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
         let template = template(&admin);
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::common::stepping(&fabric, "mesh1");
         let build_id = publish_build(&builds, add_node()).await;
         let sink = Published::default();
         let reached = Arc::new(Notify::new());
         let process = Arc::new(ProcessDeploymentProvider::new());
         // The node.id the Build minted for the node, one per cell: a cell beside it never runs a runtime of it.
         let node_id = rdm_core::NodeId::mint();
-        let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
         // Attempt 1 dies after the join was admitted (WaitForBind's receipt is written) and before the
         // WaitForMeshJoin receipt.
@@ -325,9 +298,8 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         let view = builds.read_build(&build_id).await.unwrap();
         let split_at = CreateStep::ORDER.iter().position(|s| *s == CreateStep::WaitForMeshJoin).unwrap();
         for (i, step) in CreateStep::ORDER.iter().enumerate() {
-            let done: Vec<u32> = view.steps.iter().filter(|r| r.step == step.name() && r.outcome == StepOutcome::Complete).map(|r| r.attempt).collect();
-            let want = if i < split_at { 1 } else { 2 };
-            assert_eq!(done, vec![want], "{}: Complete receipts by attempt", step.name());
+            let done = view.steps.iter().filter(|r| r.step == step.name() && r.outcome == StepOutcome::Complete).count();
+            assert_eq!(done, 1, "{} (step {i} of {}, split at {split_at}): Complete step events", step.name(), CreateStep::ORDER.len());
         }
 
         process.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();

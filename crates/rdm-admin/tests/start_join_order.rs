@@ -4,7 +4,7 @@
 
 use rdm_core::{IncarnationId, LifecycleOp, NodeId};
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::deployment::pipeline::{
     CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, LifecycleEvents, NodeObserver, Publication, StartRequest, Timeouts, TopologySink,
 };
@@ -136,13 +136,12 @@ impl NodeObserver for StartsWhole<'_> {
 #[tokio::test]
 async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_started() {
     let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let builds = MemoryBuildStateAdapter::new();
+    let builds = crate::stepping(&rdm_core::NodeId::mint(), "mesh1");
     let build_id = BuildId::mint();
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
         .await
         .unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
     let name: PathName = PathName::new("mesh1.node", "1").unwrap();
     let incarnation = IncarnationId::mint();
     let mut node = Node::allocated(name.clone(), "mesh1", "node");
@@ -208,7 +207,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
     };
     let operation = rdm_core::OperationId::node("node.start", &node.node_id);
-    let out = pipeline.start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 1, node, handle, deployed }).await;
+    let out = pipeline.start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), node, handle, deployed }).await;
     assert!(out.is_ok(), "{out:?}");
     let published = events.published.lock().unwrap().clone();
     assert!(published.iter().all(|(_, recorded)| recorded == &operation), "each event retains the admitted node ID: {published:?}");
@@ -231,13 +230,14 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
 /// "Failures and stream certainty follow the caller execution contract."
 /// "Trace propagation, step spans and correlation follow the runtime spans."
 /// Injects one fault per step of `node.start` (lost reply at `StartNode`, join failure at `StartNode`,
-/// a cut at `WaitForNodeReady` while the birth is suspended followed by resume and step-receipt reuse,
-/// and a replayed `StartNode` answered `AlreadyAdmitted`) and asserts the page's failure or recovery
-/// outcome on spans and step receipts.
+/// a cut at `WaitForNodeReady` while the birth is suspended) and asserts the page's failure or recovery
+/// outcome on its step spans. node.start is a node command, never a Build step (inbox 0008: a node
+/// command keys on its node.id and operation): each call runs every step, so the call after the cut
+/// sends `start-node` again, and the birth answers that replayed start `AlreadyAdmitted`; the start
+/// completes with the same exact runtime, nothing terminated or spawned.
 #[test]
 fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
-    use rdm_admin::build_state::StepOutcome;
-    use rdm_admin::deployment::pipeline::{CreateStep, DeleteStep, StartStep};
+    use rdm_admin::deployment::pipeline::{CreateStep, StartStep};
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -279,17 +279,7 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
 
     rt.block_on(async {
         let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let builds = MemoryBuildStateAdapter::new();
-        let build_id = BuildId::mint();
-        builds
-            .publish_accepted(&BuildAccepted {
-                build_id: build_id.clone(),
-                topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
-                change: None,
-                source: None, time: 0,
-            })
-            .await
-            .unwrap();
+        let builds = crate::stepping(&rdm_core::NodeId::mint(), "mesh1");
 
         let name: PathName = PathName::new("mesh1.node", "1").unwrap();
         let incarnation = IncarnationId::mint();
@@ -342,20 +332,20 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         let (provider, events, joins) = (Running::default(), Events::default(), rdm_admin::join::Joins::default());
         let observer = FaultStartObserver {
             admissions: Mutex::new(std::collections::VecDeque::from([
-                // Attempt 1: lost reply at StartNode.
+                // Call 1: lost reply at StartNode.
                 CommandAdmission::Indeterminate {
                     reason: "stream reset before NodeStarted".into(),
                     code: rdm_core::outcome::Code::Unavailable,
                 },
-                // Attempt 2: join fails after start (node-start.md:88-96).
+                // Call 2: join fails after start.
                 CommandAdmission::StartFailed {
                     step: "node.join".into(),
                     reason: "join door cut".into(),
                     code: rdm_core::outcome::Code::Unavailable,
                 },
-                // Attempt 3: StartNode succeeds, then cut while suspended at WaitForNodeReady.
+                // Call 3: StartNode succeeds, then cut while suspended at WaitForNodeReady.
                 CommandAdmission::Started {},
-                // Attempt 5: replayed StartNode answered AlreadyAdmitted (node-start.md:29-32).
+                // Call 4: the replayed start-node, answered AlreadyAdmitted.
                 CommandAdmission::AlreadyAdmitted {},
             ])),
             send_calls: AtomicUsize::new(0),
@@ -379,78 +369,35 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
             },
         };
 
-        // 1. Attempt 1: lost reply at `StartNode` -> fails at `StartNode` with no downstream steps.
-        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
-        let err1 = pipeline
-            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
-            .await
-            .expect_err("lost reply at StartNode must fail");
+        // 1. Call 1: lost reply at `StartNode` -> fails at `StartNode` with no downstream steps.
+        let req = || StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), node: node.clone(), handle: handle.clone(), deployed: deployed.clone() };
+        let err1 = pipeline.start(&req()).await.expect_err("lost reply at StartNode must fail");
         assert_eq!(err1.step, StartStep::StartNode.name());
         assert_eq!(err1.code, rdm_core::outcome::Code::Unavailable);
         assert!(err1.reason.contains("start-node was not answered Started"), "unexpected reason: {}", err1.reason);
 
-        // 2. Attempt 2: join failure after `CommandAccepted` -> fails at `StartNode` naming `node.join`;
-        // no `WaitForNodeReady` or `Complete` receipt follows (node-start.md:88-96).
-        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 2, executor: executor_birth.clone() }).await.unwrap();
-        let err2 = pipeline
-            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 2, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
-            .await
-            .expect_err("join failure at StartNode must fail");
+        // 2. Call 2: join failure after `CommandAccepted` -> fails at `StartNode` naming `node.join`;
+        // nothing past it runs.
+        let err2 = pipeline.start(&req()).await.expect_err("join failure at StartNode must fail");
         assert_eq!(err2.step, StartStep::StartNode.name());
         assert_eq!(err2.code, rdm_core::outcome::Code::Unavailable);
         assert!(err2.reason.contains("node.start failed at node.join"), "unexpected reason: {}", err2.reason);
 
-        // 3. Attempt 3: `StartNode` succeeds (`Started`), then the birth is suspended (`os-stopped`) and
-        // the executor is cut at `WaitForNodeReady` before any terminal receipt.
+        // 3. Call 3: `StartNode` succeeds (`Started`), then the birth is suspended (`os-stopped`) and
+        // the call is cut at `WaitForNodeReady`.
         *observer.ready_err.lock().unwrap() = Some("birth is os-stopped before readiness".into());
-        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: executor_birth.clone() }).await.unwrap();
-        let req3 = StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 3, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() };
+        let req3 = req();
         tokio::select! {
-            res = pipeline.start(&req3) => panic!("attempt 3 should be cut while suspended at WaitForNodeReady, got {res:?}"),
+            res = pipeline.start(&req3) => panic!("call 3 should be cut while suspended at WaitForNodeReady, got {res:?}"),
             _ = observer.ready_entered.notified() => {}
         }
         assert_eq!(observer.send_calls.load(Ordering::SeqCst), 3);
 
-        // 4. Attempt 4: birth is resumed (`ready_err = None`); attempt 4 reuses attempt 3's `StartNode`
-        // receipt without re-sending `start-node` and completes `WaitForNodeReady` and `Complete`.
+        // 4. Call 4: the birth is resumed; the call sends `start-node` again, the birth answers the
+        // replayed start `AlreadyAdmitted`, and `WaitForNodeReady` and `Complete` follow.
         *observer.ready_err.lock().unwrap() = None;
-        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 4, executor: executor_birth.clone() }).await.unwrap();
-        pipeline
-            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id.clone()), attempt: 4, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
-            .await
-            .expect("attempt 4 must reuse StartNode receipt and complete once resumed");
-        assert_eq!(observer.send_calls.load(Ordering::SeqCst), 3, "attempt 4 must reuse StartNode without re-sending");
-
-        // 5. Replayed start on a fresh Build where the birth already rejoined and answers `AlreadyAdmitted`
-        // (node-start.md:29-32) -> `StartNode`, `WaitForNodeReady`, and `Complete` all succeed.
-        let build_id_2 = BuildId::mint();
-        builds
-            .publish_accepted(&BuildAccepted {
-                build_id: build_id_2.clone(),
-                topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
-                change: None,
-                source: None, time: 0,
-            })
-            .await
-            .unwrap();
-        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id_2.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
-        pipeline
-            .start(&StartRequest { operation: rdm_core::OperationId::node("node.start", &(node).node_id), build_id: Some(build_id_2.clone()), attempt: 1, node: node.clone(), handle: handle.clone(), deployed: deployed.clone() })
-            .await
-            .expect("replayed start answered AlreadyAdmitted must complete");
-        assert_eq!(observer.send_calls.load(Ordering::SeqCst), 4);
-
-        let view1 = builds.read_build(&build_id).await.unwrap();
-        assert!(
-            !view1.steps.iter().any(|r| r.attempt == 3 && r.step == DeleteStep::Complete.name()),
-            "attempt 3 whose readiness apply was refused/cut completes no readiness: {:?}",
-            view1.steps
-        );
-        assert!(
-            view1.steps.iter().any(|r| r.attempt == 4 && r.step == DeleteStep::Complete.name() && r.outcome == StepOutcome::Complete),
-            "attempt 4 must record Complete: {:?}",
-            view1.steps
-        );
+        pipeline.start(&req()).await.expect("the replayed start answered AlreadyAdmitted completes once resumed");
+        assert_eq!(observer.send_calls.load(Ordering::SeqCst), 4, "a node command holds no receipt: the call after the cut sends start-node again");
         assert!(
             provider.terminated.lock().unwrap().is_empty(),
             "node.start keeps the same exact runtime and terminates or spawns nothing"
@@ -466,36 +413,9 @@ fn node_start_step_faults_recover_or_fail_as_the_page_specifies() {
         .filter(|s| s.name == "rdm.node_admin.deployment.update.via-step")
         .map(|s| s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect())
         .collect();
-    assert!(
-        step_spans.iter().any(|s| {
-            s.get("step").map(String::as_str) == Some(StartStep::StartNode.name())
-                && s.get("attempt").map(String::as_str) == Some("1")
-                && s.get("outcome").map(String::as_str) == Some("failed")
-        }),
-        "expected failed StartNode span on attempt 1: {step_spans:?}"
-    );
-    assert!(
-        step_spans.iter().any(|s| {
-            s.get("step").map(String::as_str) == Some(StartStep::StartNode.name())
-                && s.get("attempt").map(String::as_str) == Some("2")
-                && s.get("outcome").map(String::as_str) == Some("failed")
-        }),
-        "expected failed StartNode span on attempt 2: {step_spans:?}"
-    );
-    assert!(
-        step_spans.iter().any(|s| {
-            s.get("step").map(String::as_str) == Some(CreateStep::WaitForNodeReady.name())
-                && s.get("attempt").map(String::as_str) == Some("3")
-                && s.get("outcome").map(String::as_str) == Some("cancelled")
-        }),
-        "expected cancelled WaitForNodeReady span on attempt 3: {step_spans:?}"
-    );
-    assert!(
-        step_spans.iter().any(|s| {
-            s.get("step").map(String::as_str) == Some(StartStep::StartNode.name())
-                && s.get("attempt").map(String::as_str) == Some("4")
-                && s.get("outcome").map(String::as_str) == Some("reused")
-        }),
-        "expected reused StartNode span on attempt 4: {step_spans:?}"
-    );
+    let of = |step: &str, outcome: &str| step_spans.iter().filter(|s| s.get("step").map(String::as_str) == Some(step) && s.get("outcome").map(String::as_str) == Some(outcome)).count();
+    assert_eq!(of(StartStep::StartNode.name(), "failed"), 2, "calls 1 and 2 fail at StartNode: {step_spans:?}");
+    assert_eq!(of(StartStep::StartNode.name(), "complete"), 2, "calls 3 and 4 complete StartNode: {step_spans:?}");
+    assert_eq!(of(CreateStep::WaitForNodeReady.name(), "cancelled"), 1, "call 3 is cut at WaitForNodeReady: {step_spans:?}");
+    assert_eq!(of(CreateStep::WaitForNodeReady.name(), "complete"), 1, "call 4 completes WaitForNodeReady: {step_spans:?}");
 }

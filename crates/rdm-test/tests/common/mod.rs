@@ -340,8 +340,30 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
     }
 }
 
+/// A Build store over memory whose steps are written as `rdm.build.step` events (build.md §5) by a
+/// birth of `fabric`, of `mesh`, as a run's step log writes them: what a pipeline's `builds` is.
+pub fn stepping(fabric: &FabricId, mesh: &str) -> rdm_admin::build_run::FramedBuilds {
+    rdm_admin::build_run::FramedBuilds::stepping(Arc::new(MemoryBuildStateAdapter::new()), fabric, &NodeId::mint(), mesh)
+}
+
+/// The exact runtime a create launched for `node_id` under `data_root`, as its birth published it in its
+/// data dir (`runtime.json`): the handle that stops it. A step event carries no output (build.md §5), so
+/// the handle is read where the birth wrote it.
+pub fn launched_handle(data_root: &std::path::Path, node_id: &NodeId) -> rdm_admin::deployment::provider::DeploymentHandle {
+    let dir = rdm_admin::deployment::node_data_dir(data_root, node_id);
+    let rt = rdm_test::process_faults::ExactRuntime::published(&dir).unwrap_or_else(|r| panic!("{node_id}: no exact runtime published in {}: {r:?}", dir.display()));
+    rdm_admin::deployment::provider::DeploymentHandle {
+        deployment_id: rdm_core::DeploymentId::parse(&rt.deployment_id).unwrap_or_else(|e| panic!("{node_id}: a deployment id in runtime.json: {e}")),
+        provider: rdm_admin::model::ProviderKind::Process,
+        pid: Some(rt.pid),
+        start: Some(rt.start),
+        container: None,
+        domain: Some(rt.control_domain),
+    }
+}
+
 /// Accept one Build of `topology` and return its id.
-pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTopology) -> BuildId {
+pub async fn publish_build(builds: &(impl BuildStateAdapter + ?Sized), topology: FabricTopology) -> BuildId {
     let build_id = BuildId::mint();
     builds
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, change: None, source: None, time: 0 })
@@ -406,7 +428,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     let observer = &admin.observer;
     let template = template(&admin);
     let data_root = template.data_root.clone();
-    let builds = MemoryBuildStateAdapter::new();
+    let builds = stepping(&fabric_id, "mesh1");
     let build_id = publish_build(&builds, add_node()).await;
     let node_name = rdm_core::PathName::new("mesh1.node", "1").unwrap();
     let sink = Published::default();
@@ -422,7 +444,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     };
 
     let created = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(node_name))), node_id: (rdm_core::fixture_node_id(&(node_name))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: node_name.path.clone(), name: node_name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(node_name))), node_id: (rdm_core::fixture_node_id(&(node_name))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: node_name.path.clone(), name: node_name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await;
     let created = match created {
         Ok(c) => c,
@@ -467,11 +489,11 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
         assert_eq!(udp, vec![addr], "the process holds exactly one Iroh UDP socket on its address: {udp:?}");
     }
 
-    // Every step has exactly one Complete receipt, in pipeline order.
+    // Every step has exactly one Complete step event, in pipeline order.
     let view = builds.read_build(&build_id).await.unwrap();
-    let receipts: Vec<_> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, &r.operation, r.attempt)).collect();
-    let operation = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&created.node.location()));
-    let want: Vec<_> = CreateStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, &operation, 1)).collect();
+    let receipts: Vec<_> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, r.operation.as_str())).collect();
+    let operation = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&created.node.location())).to_string();
+    let want: Vec<_> = CreateStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, operation.as_str())).collect();
     assert_eq!(receipts, want);
 
     // One child span per step under the pipeline span, each fully attributed.
@@ -576,8 +598,8 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
     use rdm_core::status::{StatusReply as R, StatusRequest as S};
     use rdm_transport::stream::StreamItem;
     let command = match req {
-        S::StopNode { node_id, incarnation, build_id, attempt, operation } => Q::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
-        S::StartNode { node_id, incarnation, build_id, attempt, operation } => Q::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
+        S::StopNode { node_id, incarnation, build_id, operation } => Q::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
+        S::StartNode { node_id, incarnation, build_id, operation } => Q::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone() },
         _ => return None,
     };
     let (node_id, incarnation) = command.subject();
@@ -628,14 +650,14 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
 pub async fn root_lifecycle_reply(root: &rdm_admin::admin::Running, launch: &rdm_core::launch::Launch, req: &rdm_core::status::StatusRequest) -> Option<rdm_core::status::StatusReply> {
     use rdm_core::status::{StatusRequest as Q, StatusReply as R};
     use rdm_admin::deployment::pipeline::{CommandContext, CommandAdmission as A};
-    let (start, build_id, attempt, operation) = match req {
-        Q::StopNode { build_id, attempt, operation, .. } => (false, build_id, attempt, operation),
-        Q::StartNode { build_id, attempt, operation, .. } => (true, build_id, attempt, operation),
+    let (start, build_id, operation) = match req {
+        Q::StopNode { build_id, operation, .. } => (false, build_id, operation),
+        Q::StartNode { build_id, operation, .. } => (true, build_id, operation),
         _ => return None,
     };
     let door = root.status_door().expect("the primary's command owner");
     let subject = door.topology.read().await.births().find(|n| n.node_id == launch.node_id).cloned().expect("the primary holds the commanded birth");
-    let ctx = CommandContext { build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
+    let ctx = CommandContext { build_id: build_id.clone(), operation: operation.clone() };
     Some(match door.carry_lifecycle(&subject, start, &ctx).await {
         A::Started {} => R::Started,
         A::Stopped { receipt } => R::Stopped { receipt },

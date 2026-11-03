@@ -11,10 +11,7 @@ use crate::common;
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
-    ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Publication, Timeouts, READY_PREREQUISITES,
@@ -26,9 +23,9 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-/// The in-memory Build state, except one step's receipts are never kept.
+/// A run's step log over memory, except one step's `rdm.build.step` event is never written.
 struct Losing {
-    inner: MemoryBuildStateAdapter,
+    inner: rdm_admin::build_run::FramedBuilds,
     lose: Option<&'static str>,
 }
 
@@ -36,9 +33,6 @@ struct Losing {
 impl BuildStateAdapter for Losing {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         self.inner.publish_accepted(accepted).await
-    }
-    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(opened).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
@@ -49,35 +43,20 @@ impl BuildStateAdapter for Losing {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
-    }
-    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(claim).await
-    }
-    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(claim).await
-    }
-    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        if self.lose == Some(receipt.step.as_str()) {
-            return Ok(());
-        }
-        self.inner.append_step_receipt(receipt).await
-    }
-    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(receipt).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
+    }
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.inner.accepted_newest_first().await
+    }
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
+    }
+    async fn write_step(&self, step: &rdm_admin::build_state::StepWrite) -> Result<(), BuildStateError> {
+        if self.lose == Some(step.step.as_str()) {
+            return Ok(());
+        }
+        self.inner.write_step(step).await
     }
 }
 
@@ -98,12 +77,12 @@ impl NodeObserver for Counting<'_> {
     }
 }
 
-/// Create toward one node with `lose`'s receipts never kept; returns the pid of the runtime it launched.
+/// Create toward one node with `lose`'s step event never written; returns the pid of the runtime it launched.
 async fn create_losing(lose: Option<&'static str>) -> u32 {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&admin);
-    let inner = MemoryBuildStateAdapter::new();
+    let inner = common::stepping(&fabric, "mesh1");
     let build_id = publish_build(&inner, add_node()).await;
     let builds = Losing { inner, lose };
     let provider = ProcessDeploymentProvider::new();
@@ -119,7 +98,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
         template: &template,
         timeouts: Timeouts::default(),
     };
-    let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+    let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
     let result = pipeline.create(&req).await;
     let view = builds.read_build(&build_id).await.unwrap();
     let complete = |s: CreateStep| view.steps.iter().any(|r| r.step == s.name() && r.outcome == StepOutcome::Complete);
@@ -127,7 +106,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
         Some(lost) => {
             let err = result.err().expect("Ready over a lost prerequisite receipt");
             assert_eq!(err.step, CreateStep::WaitForNodeReady.name());
-            assert!(err.reason.contains("no Complete receipt for") && err.reason.contains(lost), "{}", err.reason);
+            assert!(err.reason.contains("no step event ended complete for") && err.reason.contains(lost), "{}", err.reason);
             assert_eq!(observer.asked_ready.load(Ordering::SeqCst), 0, "WaitForNodeReady never began");
             assert!(!complete(CreateStep::Complete));
             // Every other prerequisite was committed; the birth itself is up.
@@ -148,13 +127,8 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
     }
     // Whatever runs for this node stops with the test, by signal: it deletes its connections, stops and exports its
     // queued spans before it exits.
-    let handle: rdm_admin::deployment::provider::DeploymentHandle = view
-        .steps
-        .iter()
-        .find(|r| r.step == CreateStep::DeployRuntime.name())
-        .and_then(|r| r.output.clone())
-        .and_then(|h| serde_json::from_value(h).ok())
-        .expect("the runtime was deployed and its handle receipted");
+    assert!(complete(CreateStep::DeployRuntime), "the runtime was deployed");
+    let handle = common::launched_handle(&template.data_root, &req.node_id);
     provider.terminate(&handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     let _ = std::fs::remove_dir_all(&template.data_root);
     handle.pid.expect("a process handle carries its pid")
@@ -187,8 +161,10 @@ fn ready_follows_every_runtime_prerequisite_receipt() {
 struct ExitsWhenAsked<'a> {
     live: &'a LiveMesh,
     provider: &'a ProcessDeploymentProvider,
-    builds: &'a MemoryBuildStateAdapter,
+    builds: &'a rdm_admin::build_run::FramedBuilds,
     build_id: BuildId,
+    data_root: std::path::PathBuf,
+    node_id: NodeId,
 }
 
 #[async_trait::async_trait]
@@ -198,8 +174,9 @@ impl NodeObserver for ExitsWhenAsked<'_> {
     }
     async fn ready(&self, _node: &Node) -> Result<(), String> {
         let view = self.builds.read_build(&self.build_id).await.unwrap();
-        let handle = view.steps.iter().find(|r| r.step == CreateStep::DeployRuntime.name()).and_then(|r| r.output.clone()).expect("the runtime was deployed");
-        self.provider.terminate(&serde_json::from_value(handle).unwrap(), TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
+        assert!(view.steps.iter().any(|r| r.step == CreateStep::DeployRuntime.name() && r.outcome == StepOutcome::Complete), "the runtime was deployed");
+        let handle = common::launched_handle(&self.data_root, &self.node_id);
+        self.provider.terminate(&handle, TerminationMode::Immediate, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
         Err("not Ready: the node does not answer".to_string())
     }
 }
@@ -213,10 +190,11 @@ fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
         let template = template(&admin);
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = common::stepping(&fabric, "mesh1");
         let build_id = publish_build(&builds, add_node()).await;
         let provider = ProcessDeploymentProvider::new();
-        let observer = ExitsWhenAsked { live: &admin.observer, provider: &provider, builds: &builds, build_id: build_id.clone() };
+        let node_id = rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap());
+        let observer = ExitsWhenAsked { live: &admin.observer, provider: &provider, builds: &builds, build_id: build_id.clone(), data_root: template.data_root.clone(), node_id };
         let sink = Published::default();
         let pipeline = DeploymentPipeline {
             provider: &provider,
@@ -228,7 +206,7 @@ fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
             template: &template,
             timeouts: Timeouts { ready: Duration::from_secs(120), ..Timeouts::default() },
         };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         let asked = std::time::Instant::now();
         let err = pipeline.create(&req).await.err().expect("a create over an exited runtime");
         assert!(asked.elapsed() < Duration::from_secs(60), "the create waited {:?} on a runtime already proven exited", asked.elapsed());

@@ -16,8 +16,8 @@ never decides an RDM transition.
 | [`on_node_ready`](#on_node_ready) | every node | after its Ready | nothing; it is a notice |
 | [`on_mesh_ready`](#on_mesh_ready) | each mesh-primary | after its mesh's ready is on its Mesh record | nothing; it is a notice |
 | [`on_fabric_ready`](#on_fabric_ready) | fabric-primary | after the ready state is set | nothing; it is a notice |
-| [`on_build_started`](#on_build_started) | fabric-primary | after the claim of a Build's first attempt, or of the attempt that reopens an ended Build, is recorded | nothing; it is a notice |
-| [`on_build_ended`](#on_build_ended) | fabric-primary | after the Build's Complete or Failed is recorded | nothing; it is a notice |
+| [`on_build_started`](#on_build_started) | fabric-primary | from the write of a Build's `rdm.build.started` event, at acceptance or the resubmission of a failed or incomplete Build | nothing; it is a notice |
+| [`on_build_ended`](#on_build_ended) | fabric-primary | from the write of the Build's `rdm.build.ended` event: Complete, Incomplete or Failed | nothing; it is a notice |
 | [`on_call_failed`](#on_call_failed) | every node | after one of its calls ends with its attempts spent | nothing; it is a notice |
 | [`on_node_investigated`](#on_node_investigated) | each mesh-primary | after it records a node investigation's verdict on a node of its mesh | nothing; it is a notice |
 
@@ -132,17 +132,17 @@ on a task of its own. The notice gates nothing in RDM.
 
 After the ready state is set, the fabric-primary sends the application one
 `on_fabric_ready` notice ([ready](lifecycles/states.md#the-fabrics-ready)), with
-`FabricReadyCtx { fabric_id, build_id, attempt, context }`: the accepted Build and attempt whose change
-made the fabric ready and that attempt's observability context. Rafka opens client traffic
+`FabricReadyCtx { fabric_id, build_id, context }`: the accepted Build whose change made the fabric
+ready and its observability context. Rafka opens client traffic
 on that notice. The notice gates nothing in RDM.
 
 ## on_build_started
 
-Each time a Build's first attempt is claimed, or an attempt that reopens a Build that has ended is claimed, the fabric-primary sends the application one `on_build_started` notice, the opening's first step ([build.md §4.1](build.md#41-build-identity-is-active-reconciliation-state)), with `BuildStartedCtx { fabric_id, build_id, attempt, reason, context }`: the Build, the attempt and its reason (`requested` at acceptance, or the reopening attempt's: a drift repair, a stop, a start), and that attempt's observability context. An attempt that continues a Build in progress (a takeover, or the next attempt after a hand-back) sends none. Each `on_build_started` is followed by one `on_build_ended` for the same opening. The notice is sent at most once per opening, and `build.get` is the durable read. The notice gates nothing in RDM.
+Each time the fabric-primary writes a Build's `rdm.build.started` event, at acceptance or when a caller's resubmission runs a failed or incomplete Build again, it sends the application one `on_build_started` notice from that write ([build.md §4.1](build.md#41-build-identity-is-active-reconciliation-state)), with `BuildStartedCtx { fabric_id, build_id, context }`: the Build and its observability context. A Build in progress that continues under a new fabric-primary or mesh-primary sends none. Each `on_build_started` is followed by one `on_build_ended` for the same run. The notice is sent at most once per opening, and `build.get` is the durable read. The notice gates nothing in RDM.
 
 ## on_build_ended
 
-Each time a Build's terminal state is recorded, the fabric-primary sends the application one `on_build_ended` notice, the ending's last step ([build.md §4.1](build.md#41-build-identity-is-active-reconciliation-state)), with `BuildEndedCtx { fabric_id, build_id, attempt, reason, state, context }`: the Build, the attempt that ended it and that attempt's reason (`requested`, or a later attempt's: a drift repair, a stop, a takeover), its state, `Complete` or `Failed { step, reason, code }` as its caller reads it on the Build stream (R-BI4), and that attempt's observability context. A Build that put the fabric back to pending completes when its ready state is set, so its `Complete` notice follows its `on_fabric_ready`. The notice is sent at most once per ending: a fabric-primary lost before it sends it leaves none, and `build.get` is the durable read. The notice gates nothing in RDM.
+Each time a Build's terminal state is recorded, the fabric-primary sends the application one `on_build_ended` notice, the ending's last step ([build.md §4.1](build.md#41-build-identity-is-active-reconciliation-state)), from the write of the Build's `rdm.build.ended` event, with `BuildEndedCtx { fabric_id, build_id, state, context }`: the Build, its state, `Complete`, `Incomplete { sections }` or `Failed { reason, code }` as its caller reads it on the Build stream (R-BI4), and its observability context. A Build that put the fabric back to pending completes when its ready state is set, so its `Complete` notice follows its `on_fabric_ready`. The notice is sent at most once per ending: a fabric-primary lost before it sends it leaves none, and `build.get` is the durable read. The notice gates nothing in RDM.
 
 ## on_call_failed
 
@@ -182,5 +182,5 @@ RDM exposes it to the application through one public, cloneable `RafkaTime` hand
 ## Observability
 
 Each hook call is one span under the node's boot span, under the fabric's change span for
-`on_fabric_ready`, under the attempt's span for `on_build_started` and `on_build_ended` (`rdm.node_admin.build.update.via-on-build-started`, `rdm.node_admin.build.update.via-on-build-ended`), or of its own for `on_mesh_ready` (`rdm.node_admin.mesh.update.via-on-mesh-ready`), under the spent call's span for `on_call_failed` (`rdm.mesh.node.update.via-on-call-failed`), under the span that records the verdict for `on_node_investigated` (`rdm.node_admin.node.update.via-on-node-investigated`). The span carries the outcome and the blocker or reason. `via-ready` follows the
+`on_fabric_ready`, under the Build's span for `on_build_started` and `on_build_ended` (`rdm.node_admin.build.update.via-on-build-started`, `rdm.node_admin.build.update.via-on-build-ended`), or of its own for `on_mesh_ready` (`rdm.node_admin.mesh.update.via-on-mesh-ready`), under the spent call's span for `on_call_failed` (`rdm.mesh.node.update.via-on-call-failed`), under the span that records the verdict for `on_node_investigated` (`rdm.node_admin.node.update.via-on-node-investigated`). The span carries the outcome and the blocker or reason. `via-ready` follows the
 successful `pre_node_ready`. A cancelled hook names the cancellation.

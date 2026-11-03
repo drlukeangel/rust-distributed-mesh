@@ -132,12 +132,8 @@ impl PrimaryCommandDoor {
         // which the caller's command goes on to. A delete of named connections moves no role: step 0 is
         // `All`'s alone.
         if !start && named.is_none() {
-            let op = match kind {
-                ActionKind::DeleteConnections => crate::build::BuildOperation::DeleteConnections { r#type: pin.r#type.clone(), mesh: pin.mesh.clone(), path: path.path.clone(), name: path.name.clone(), node_id: pin.node_id.clone(), from_incarnation: pin.incarnation.clone() },
-                _ => crate::build::BuildOperation::StopNode { r#type: pin.r#type.clone(), mesh: pin.mesh.clone(), path: path.path.clone(), name: path.name.clone(), node_id: pin.node_id.clone(), from_incarnation: pin.incarnation.clone() },
-            };
             let view = self.runner.topology.read().await.clone();
-            if let Some(m) = crate::executor::role_move(&op, &view) {
+            if let Some(m) = crate::executor::node_role_move(&pin, false, &view) {
                 if let Err(end) = self.move_roles(&m, operation).await {
                     return rdm_core::reply::node_command::rejected("primary-not-updated", format!("node {node_id}: node.primary.update before its {} did not complete: {end:?}", req.op()));
                 }
@@ -164,9 +160,9 @@ impl PrimaryCommandDoor {
         }
         let run = async {
             match kind {
-                ActionKind::Start => self.runner.start_stopped(None, rdm_core::LifecycleOp::NO_ATTEMPT, &path, &pin, operation).await,
-                ActionKind::DeleteConnections => self.runner.standalone(None, rdm_core::LifecycleOp::NO_ATTEMPT, &path, &pin, false, operation).await,
-                _ => self.runner.standalone(None, rdm_core::LifecycleOp::NO_ATTEMPT, &path, &pin, true, operation).await,
+                ActionKind::Start => self.runner.start_stopped(&path, &pin, operation).await,
+                ActionKind::DeleteConnections => self.runner.standalone(&path, &pin, false, operation).await,
+                _ => self.runner.standalone(&path, &pin, true, operation).await,
             }
         };
         let (ended, sent) = forward(recorded, run, frames).await;
@@ -206,11 +202,10 @@ impl PrimaryCommandDoor {
         use rdm_core::PrimaryRole;
         let door = &self.runner.handover;
         let build = rdm_core::LifecycleOp::NO_BUILD;
-        let run = rdm_core::LifecycleOp::NO_ATTEMPT;
         if m.primary.node_id != door.node_id {
             if m.mesh_role || m.node_type_role {
                 let role = if m.node_type_role { PrimaryRole::of_type(&m.primary.r#type) } else { PrimaryRole::MeshPrimary };
-                door.command_update_primary(&m.primary, build, run, &update_operation(role, operation)).await?;
+                door.command_update_primary(&m.primary, build, &update_operation(role, operation)).await?;
             }
             return Ok(());
         }
@@ -220,7 +215,7 @@ impl PrimaryCommandDoor {
             (false, true) => (Moving::FabricRoleOutside, PrimaryRole::FabricPrimary),
             (false, false) => return Ok(()),
         };
-        door.update_own_primaries(moving, build, run, &update_operation(role, operation), m.successor.as_ref()).await?;
+        door.update_own_primaries(moving, build, &update_operation(role, operation), m.successor.as_ref()).await?;
         Ok(())
     }
 

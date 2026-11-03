@@ -301,7 +301,7 @@ RDM deletes nothing on disk, ever. A node's storage default is its type's: `node
 
 | span | emitted by | fields |
 |---|---|---|
-| `rdm.node_admin.deployment.update.via-step` | the pipeline, per step | build_id, attempt, node, step (`DeployRuntime`, `PrepareStorage`, `TerminateRuntime`, …), outcome |
+| `rdm.node_admin.deployment.update.via-step` | the pipeline, per step | build_id, node, step (`DeployRuntime`, `PrepareStorage`, `TerminateRuntime`, …), outcome |
 | `rdm.node_admin.node.resolve.via-provider-inspection` | the caller of node.runtime.inspect | node, node_id, incarnation_id, inspector, handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), exit_code, reason |
 | `rdm.node_admin.runtime.reject.via-<reason>` | adopt | `invalid-fact`, `other-provider`, `foreign-control-domain` |
 | `rdm.node_admin.node.update.via-data-dir-lost`, `via-data-dir-unreadable` | PrepareStorage | node, node_id, incarnation_id, path, cause |

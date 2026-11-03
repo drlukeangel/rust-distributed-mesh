@@ -73,14 +73,13 @@ impl HeardAgain {
     pub async fn rejoin(&self, node: &Node, incarnation: &IncarnationId) -> Result<rdm_core::status::StatusReply, String> {
         let operation = rdm_core::OperationId::new("node.mesh.join", rdm_core::OperationSubject::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() })
             .in_occurrence(rdm_core::OperationOccurrenceId::mint());
-        let (build_id, attempt) = (rdm_core::LifecycleOp::NO_BUILD.to_string(), rdm_core::LifecycleOp::NO_ATTEMPT);
+        let build_id = rdm_core::LifecycleOp::NO_BUILD;
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-mesh-join-commanded",
             node_path = %node.path, node_name = %node.name,
             node_id = %node.node_id,
             incarnation_id = %incarnation.as_str(),
             build_id = %build_id,
-            attempt,
             operation = %operation.action, operation_subject = ?operation.subject, operation_occurrence = ?operation.occurrence,
             cause = "node.name.update",
             outcome = tracing::field::Empty,
@@ -91,7 +90,7 @@ impl HeardAgain {
             let status_door = self.status_door.get().ok_or_else(|| "no-authority: this admin's Status door is not open yet".to_string())?;
             let (_, _, deployed) = runner.stopped_birth_or_live(node).await.map_err(|why| format!("join-not-registered: {why}"))?;
             let _ = runner.joins.expect(deployed);
-            let command = crate::node_commands::CommandKey { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+            let command = crate::node_commands::CommandKey { operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
             let _ = status_door.commands.open(command.clone());
             let req = StatusRequest::JoinMesh { node_id: node.node_id.clone(), incarnation: incarnation.clone(), operation: operation.clone(), primary: self.digest_view.primaries.mesh(&node.mesh) };
             let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &CallOptions::default()).await;
@@ -174,14 +173,13 @@ async fn command_mesh_join(
     let operation = rdm_core::OperationId::new("node.mesh.join", rdm_core::OperationSubject::Birth { node_id: node.node_id.clone(), incarnation: incarnation.clone() })
         .in_occurrence(rdm_core::OperationOccurrenceId::mint());
     // A command back is the primary's own work, never a Build or part of one (Q342).
-    let (build_id, attempt) = (rdm_core::LifecycleOp::NO_BUILD.to_string(), rdm_core::LifecycleOp::NO_ATTEMPT);
+    let build_id = rdm_core::LifecycleOp::NO_BUILD.to_string();
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-mesh-join-commanded",
         node_path = %node.path, node_name = %node.name,
         node_id = %node.node_id,
         incarnation_id = %incarnation.as_str(),
         build_id = %build_id,
-        attempt,
         operation = %operation.action, operation_subject = ?operation.subject, operation_occurrence = ?operation.occurrence,
         outcome = tracing::field::Empty,
         "otel.kind" = "internal"
@@ -220,7 +218,7 @@ async fn command_mesh_join(
         }
         // The command back is this authority's command to the birth, open from the send to the answer
         // as every command of the authority is: the birth's lifecycle is the command's until then.
-        let command = crate::node_commands::CommandKey { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+        let command = crate::node_commands::CommandKey { operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
         let _ = status_door.commands.open(command.clone());
         if let Some(ids) = notice {
             crate::node_investigation::write_node_investigated(investigated, ids, node, incarnation, crate::wiring::NodeInvestigatedVerdict::Reached, crate::wiring::NodeInvestigatedNext::Rejoin).await;

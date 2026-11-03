@@ -346,9 +346,9 @@ async fn form(cell: &str, shape: Shape) -> Formed {
     // `build.create` awaited to its stream's `Complete` (the Build follows the role if it moves while it runs).
     let reconciled = estate.resize(&desired).await;
     let build_id = reconciled.build_id.to_string();
-    actions.push(json!({"t_ms": t0, "action": "build.create", "via": "build.create", "attempt": reconciled.attempt, "build_id": build_id, "body": body}));
+    actions.push(json!({"t_ms": t0, "action": "build.create", "via": "build.create", "build_id": build_id, "body": body}));
     let build = build_now(&estate, &build_id).await;
-    actions.push(json!({"t_ms": now_ms(), "action": "build.complete", "build_id": build_id, "attempt": build["attempt"], "executor": build["executor"]}));
+    actions.push(json!({"t_ms": now_ms(), "action": "build.complete", "build_id": build_id, "state": build["state"]}));
     // Every fault the run arms comes after the fabric's start (Q74).
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     Formed { cell: cell.into(), dir, shape, seed: seed(), candidate, set, bound, estate, actions, topology_initial, provider_before, started_ms, build_id, build }
@@ -1204,40 +1204,51 @@ async fn restart_with_traffic(
     let e = &f.estate;
     let before = e.node_value(node).await;
     let t0 = now_ms();
-    // `node.stop` over Node RPC: the call follows the fabric-primary role; the stream is not this loop's
-    // completion source (the Build log read below is, between the traffic it issues), so it is let go.
-    // Once the stop's attempt is complete and the node stopped, `node.start` the same way.
+    // `node.stop` over Node RPC, then `node.start` once the stop completed and the fabric-primary lists
+    // the node stopped: node commands of the primary above the node, never a Build (Q342). Each stream
+    // is read to its end beside the traffic this loop issues.
+    let to_end = |mut stream: rdm_client::WorkflowStream| {
+        tokio::spawn(async move {
+            let mut frames = Vec::new();
+            while let Some(frame) = stream.next().await {
+                frames.push(frame.map_err(|end| end.to_string()));
+            }
+            frames
+        })
+    };
     let stream = e.nodes_obj().await.stop(node).await.unwrap_or_else(|end| panic!("{node:?}: node.stop was not accepted: {end}"));
-    let (build_id, mut attempt) = (stream.accepted().expect("the call opened a Build").build_id.to_string(), u64::from(stream.accepted().expect("the call opened a Build").attempt));
-    drop(stream);
-    actions.push(json!({"t_ms": t0, "action": "node.stop", "via": "node.stop", "node": node, "attempt": attempt, "build_id": build_id, "incarnation_id": before["incarnation_id"]}));
+    assert!(stream.accepted().is_none(), "{node:?}: node.stop is a node command and opens no Build (Q342)");
+    let mut command = to_end(stream);
+    actions.push(json!({"t_ms": t0, "action": "node.stop", "via": "node.stop", "node": node, "incarnation_id": before["incarnation_id"]}));
     let started = Instant::now();
     let mut during = 0;
     let mut start_sent = false;
+    let completed = |frames: Vec<Result<rdm_client::Frame, String>>, what: &str| {
+        assert!(matches!(frames.last(), Some(Ok(rdm_client::Frame::Complete))), "{node:?}: {what} did not complete: {frames:?}");
+    };
     loop {
-        let b = build_at(e, &build_id).await.unwrap_or(Value::Null);
-        assert_ne!(b["state"], "failed", "{node:?}: restart Build failed: {b:#}");
         let now = e.node_value_opt(node).await;
-        if !start_sent && b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && now.as_ref().is_some_and(|n| n["stopped"] == true) {
+        if !start_sent && command.is_finished() && now.as_ref().is_some_and(|n| n["stopped"] == true) {
+            completed((&mut command).await.expect("the stop's stream reader"), "node.stop");
             let stream = e.nodes_obj().await.start(node).await.unwrap_or_else(|end| panic!("{node:?}: node.start was not accepted: {end}"));
-            attempt = u64::from(stream.accepted().expect("the call opened a Build").attempt);
-            drop(stream);
+            command = to_end(stream);
             start_sent = true;
-            actions.push(json!({"t_ms": now_ms(), "action": "node.start", "via": "node.start", "node": node, "attempt": attempt, "build_id": build_id}));
+            actions.push(json!({"t_ms": now_ms(), "action": "node.start", "via": "node.start", "node": node}));
         }
         // The same birth back: ready, the node id and the incarnation it had before the stop.
         let back = now.as_ref().is_some_and(|n| n["status"] == "ready" && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]);
-        if start_sent && b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && back {
-            actions.push(json!({"t_ms": now_ms(), "action": "node.restart.complete", "node": node, "build_id": build_id, "incarnation_id": now.as_ref().map(|n| n["incarnation_id"].clone()), "node_id": now.as_ref().map(|n| n["node_id"].clone())}));
+        if start_sent && command.is_finished() && back {
+            completed((&mut command).await.expect("the start's stream reader"), "node.start");
+            actions.push(json!({"t_ms": now_ms(), "action": "node.restart.complete", "node": node, "incarnation_id": now.as_ref().map(|n| n["incarnation_id"].clone()), "node_id": now.as_ref().map(|n| n["node_id"].clone())}));
             break;
         }
-        assert!(started.elapsed() < Duration::from_secs(120), "{node:?}: the restart did not complete within 120 s: build {b:#}");
+        assert!(started.elapsed() < Duration::from_secs(120), "{node:?}: the restart did not complete within 120 s: the node {now:?}");
         // Half of the traffic in the window is aimed at the changing node; the rest is spread.
         let aimed = rng.below(2) == 0;
         issue(f, ops, rng, seq, brokers, gateways, if aimed { Some(aim_at) } else { None }, "during-restart").await;
         during += 1;
     }
-    json!({"node": node, "node_id": before["node_id"], "build_id": build_id, "incarnation_id": before["incarnation_id"], "operations_issued_during": during, "window_ms": started.elapsed().as_millis() as u64})
+    json!({"node": node, "node_id": before["node_id"], "incarnation_id": before["incarnation_id"], "operations_issued_during": during, "window_ms": started.elapsed().as_millis() as u64})
 }
 
 /// Issue one seeded synthetic put. `aim` names a node whose operations are forced (a broker, or a
@@ -1527,7 +1538,7 @@ async fn nodes_at(e: &Estate, admin: &PathName) -> Option<Vec<Value>> {
 async fn build_at(e: &Estate, id: &str) -> Option<Value> {
     BuildId::parse(id).ok()?;
     let facts = crate::build_log::log_read(e, id).await.ok()?;
-    crate::build_log::projection(&facts, id).map(|b| serde_json::to_value(b).expect("a Build view serializes"))
+    crate::build_log::projection(e, &facts, id).map(|b| serde_json::to_value(b).expect("a Build view serializes"))
 }
 
 /// `fabric.get` at the admin the estate asks, as the JSON its view serializes to.
@@ -1541,7 +1552,7 @@ async fn build_now(e: &Estate, id: &str) -> Value {
 }
 
 /// One Build call asked of the admin named `admin` itself, its redirect never followed, as the cell records
-/// the answer: `started` with the Build and the attempt the call opened; a non-writer's `not-fabric-primary`
+/// the answer: `started` with the Build the call opened; a non-writer's `not-fabric-primary`
 /// naming the fabric-primary it sees; `build-in-progress` naming the Build in flight; a topology rule's own
 /// name (`unknown-node`, `node-not-live`, `unheard-mesh`) with its detail; or `ended` with how the call ended
 /// without a reply. The first item of the call is read as `BuildCarrier::open` reads it.
@@ -1567,9 +1578,9 @@ async fn ask(e: &Estate, admin: &PathName, change: BuildChange) -> Value {
         },
     };
     match first {
-        Ok(BuildReply::Started { build_id, attempt, .. }) => json!({"reply": "started", "build_id": build_id, "attempt": attempt}),
+        Ok(BuildReply::Started { build_id, .. }) => json!({"reply": "started", "build_id": build_id}),
         Ok(BuildReply::NotFabricPrimary { fabric_primary }) => json!({"reply": "not-fabric-primary", "fabric_primary": fabric_primary}),
-        Ok(BuildReply::BuildInProgress { current_build_id, mesh, held_by }) => json!({"reply": "build-in-progress", "current_build_id": current_build_id, "mesh": mesh, "held_by": held_by}),
+        Ok(BuildReply::BuildInProgress { current_build_id }) => json!({"reply": "build-in-progress", "current_build_id": current_build_id}),
         Ok(BuildReply::Rejected { reason, detail }) => json!({"reply": reason, "detail": detail}),
         Ok(other) => json!({"reply": other.name(), "detail": format!("{other:?}")}),
         Err(ended) => json!({"reply": "ended", "detail": ended}),

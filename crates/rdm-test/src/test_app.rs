@@ -143,15 +143,6 @@ impl rdm_node::storage_copy::ProviderLines for ListRefused {
     async fn append_line(&self, store: rdm_node::storage_copy::Store, line: &rdm_node::store_log::Line) -> Result<(), rdm_node::storage_error::StorageError> {
         self.inner.append_line(store, line).await
     }
-    async fn claims(&self) -> Result<Vec<rdm_node::storage_copy::Claim>, rdm_node::storage_error::StorageError> {
-        self.inner.claims().await
-    }
-    async fn insert_claim(&self, claim: &rdm_node::storage_copy::Claim) -> Result<rdm_node::storage_copy::ClaimTaken, rdm_node::storage_error::StorageError> {
-        self.inner.insert_claim(claim).await
-    }
-    async fn remove_claim(&self, claim: &rdm_node::storage_copy::Claim) -> Result<bool, rdm_node::storage_error::StorageError> {
-        self.inner.remove_claim(claim).await
-    }
 }
 
 /// The topology storage providers the testkit's node-admin registers (storage.md §2): RDM's `file`
@@ -187,15 +178,15 @@ pub fn hooks() -> FabricHooks {
         Box::pin(async move { tracing::info!("the application was told the mesh is ready") }.instrument(span))
     });
     let on_fabric_ready: rdm_admin::wiring::FabricReadyNotice = Arc::new(|ready: FabricReadyCtx| {
-        let span = tracing::info_span!("rdm.testkit.app.update.via-on-fabric-ready", fabric_id = %ready.fabric_id, build_id = %ready.build_id, attempt = ready.attempt, "otel.kind" = "internal");
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-fabric-ready", fabric_id = %ready.fabric_id, build_id = %ready.build_id, "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application opens client traffic") }.instrument(span))
     });
     let on_build_started: rdm_admin::wiring::BuildStartedNotice = Arc::new(|started: BuildStartedCtx| {
-        let span = tracing::info_span!("rdm.testkit.app.update.via-on-build-started", fabric_id = %started.fabric_id, build_id = %started.build_id, attempt = started.attempt, reason = started.reason.as_str(), "otel.kind" = "internal");
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-build-started", fabric_id = %started.fabric_id, build_id = %started.build_id, "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application was told the Build started") }.instrument(span))
     });
     let on_build_ended: rdm_admin::wiring::BuildEndedNotice = Arc::new(|ended: BuildEndedCtx| {
-        let span = tracing::info_span!("rdm.testkit.app.update.via-on-build-ended", fabric_id = %ended.fabric_id, build_id = %ended.build_id, attempt = ended.attempt, reason = ended.reason.as_str(), state = ended.state.as_str(), "otel.kind" = "internal");
+        let span = tracing::info_span!("rdm.testkit.app.update.via-on-build-ended", fabric_id = %ended.fabric_id, build_id = %ended.build_id, state = ended.state.as_str(), "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application was told the Build ended") }.instrument(span))
     });
     let on_node_investigated: rdm_admin::wiring::NodeInvestigatedNotice = Arc::new(|told: NodeInvestigatedCtx| {

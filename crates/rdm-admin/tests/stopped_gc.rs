@@ -5,12 +5,11 @@
 //! sweep; the delete's admission runs the stopped and open-Build checks again, serialized with it.
 //! Every cell writes the records it decides from: nothing here depends on timing.
 
-use rdm_admin::accepted::{AcceptedStore, AttemptAction, FabricTopology};
+use rdm_admin::accepted::{AcceptedStore, FabricTopology};
+use rdm_admin::build_state::LocalBuildLog as _;
 use rdm_core::build::BuildChange;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter,
-};
+use rdm_admin::build_state::{BuildFact, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::{ControlPlane, Refusal};
 use rdm_admin::model::*;
 use rdm_admin::stopped_gc::{ttl_from_env, Swept, Verdict, SHIPPED_TTL};
@@ -81,7 +80,7 @@ async fn plane(builds: Arc<MemoryBuildStateAdapter>, t: Topology, me: &PathName)
 
 /// [`plane`] with no node records bound: every record read is refused by name.
 async fn plane_unbound(builds: Arc<MemoryBuildStateAdapter>, t: Topology, me: &PathName) -> Arc<ControlPlane> {
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), desired(&t), &t.node(me).unwrap().birth().unwrap(), &t.node(me).unwrap().mesh).await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), desired(&t), &t.node(me).unwrap().birth().unwrap()).await.unwrap();
     let cp = Arc::new(crate::control_plane(builds.clone(), accepted, me.clone(), t, crate::adopted_time()));
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     settle(&builds, &b0, &executor(&cp).await).await;
@@ -103,12 +102,9 @@ async fn executor(cp: &ControlPlane) -> rdm_core::framing::Birth {
     cp.topology.read().await.node(&cp.me()).unwrap().birth().unwrap()
 }
 
-/// The Build `id`'s current attempt claimed and converged.
+/// A run of the Build `id` that ended complete.
 async fn settle(builds: &MemoryBuildStateAdapter, id: &BuildId, executor_birth: &rdm_core::framing::Birth) {
-    let p = builds.read_build(id).await.unwrap();
-    let attempt = p.attempt_to_drive();
-    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: executor_birth.clone() }).await.unwrap();
-    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+    crate::end_build(builds, id, executor_birth, rdm_admin::events_storage::EndedState::Complete).await;
 }
 
 fn birth(t: &Topology, p: &PathName) -> (PathName, NodeId, IncarnationId) {
@@ -271,7 +267,7 @@ async fn a_successor_fabric_primary_sweeps_from_the_same_receipts() {
     *first.topology.write().await = moved.clone();
     let held = Arc::new(MemoryBuildStateAdapter::new());
     held.absorb(&builds.facts().await.unwrap()).await;
-    let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), desired(&moved), &moved.node(&PathName::new("mesh1.node-admin", "2").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*held, moved.fabric.id.clone(), desired(&moved), &moved.node(&PathName::new("mesh1.node-admin", "2").unwrap()).unwrap().birth().unwrap()).await.unwrap();
     let successor = crate::control_plane(held.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), moved, crate::adopted_time());
     let _ = successor.node_rows.set(first.node_rows.get().unwrap().clone());
     let b = successor.builds.current_build().await.unwrap().into_build_id().unwrap();
@@ -337,9 +333,6 @@ impl rdm_admin::build_state::BuildStateAdapter for UnreadableCurrent {
     async fn publish_accepted(&self, a: &rdm_admin::build_state::BuildAccepted) -> Result<(), rdm_admin::build_state::BuildStateError> {
         self.0.publish_accepted(a).await
     }
-    async fn open_attempt(&self, o: &rdm_admin::build_state::AttemptOpened) -> Result<(), rdm_admin::build_state::BuildStateError> {
-        self.0.open_attempt(o).await
-    }
     async fn read_build(&self, id: &BuildId) -> Result<rdm_admin::build_state::BuildProjection, rdm_admin::build_state::BuildStateError> {
         self.0.read_build(id).await
     }
@@ -349,32 +342,14 @@ impl rdm_admin::build_state::BuildStateAdapter for UnreadableCurrent {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
         self.0.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<rdm_admin::build_state::BuildProjection>, rdm_admin::build_state::BuildStateError> {
-        self.0.list_active().await
-    }
-    async fn claim_attempt(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<rdm_admin::build_state::ClaimOutcome, rdm_admin::build_state::BuildStateError> {
-        self.0.claim_attempt(c).await
-    }
-    async fn adopt_claim(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<(), rdm_admin::build_state::BuildStateError> {
-        self.0.adopt_claim(c).await
-    }
-    async fn append_step_receipt(&self, r: &rdm_admin::build_state::BuildStepReceipt) -> Result<(), rdm_admin::build_state::BuildStateError> {
-        self.0.append_step_receipt(r).await
-    }
-    async fn append_attempt_receipt(&self, r: &rdm_admin::build_state::BuildAttemptReceipt) -> Result<(), rdm_admin::build_state::BuildStateError> {
-        self.0.append_attempt_receipt(r).await
-    }
-    async fn facts(&self) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.0.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.0.committed_facts(build).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, rdm_admin::build_state::BuildStateError> {
-        self.0.mesh_deleted_of(node_id, incarnation).await
-    }
     async fn forget(&self, id: &BuildId) -> Result<(), rdm_admin::build_state::BuildStateError> {
         self.0.forget(id).await
+    }
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.0.accepted_newest_first().await
+    }
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.0.events()
     }
 }
 
@@ -389,7 +364,7 @@ async fn a_stopped_node_whose_current_build_cannot_be_read_is_skipped_as_an_unre
     let (spans, _g) = capture("i143-3072-unreadable-accepted");
     let t = view(&PathName::new("mesh1.node-admin", "1").unwrap());
     let held = MemoryBuildStateAdapter::new();
-    let accepted = AcceptedStore::seeded(&held, t.fabric.id.clone(), desired(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&held, t.fabric.id.clone(), desired(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap()).await.unwrap();
     let cp = crate::control_plane(Arc::new(UnreadableCurrent(held)), accepted.clone(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time());
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);
     let unreadable = spans.spans("rdm.node_admin.node.reject.via-unreadable-build-log");

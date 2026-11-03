@@ -801,12 +801,14 @@ impl NodeRows {
     /// (`Allocation.predecessor`), never of a record last written at the location. A row the same node holds already,
     /// at whatever name, is left as it is: it is found through the node's id index
     /// ([`WrittenRows::known_row`]), so a node renamed while stopped (told nothing of it, R12) keeps
-    /// its one row where the rename put it, whatever name a view still lists it at.
+    /// its one row where the rename put it, whatever name a view still lists it at. A `Withdrawn` row
+    /// of the node is not held: its create was withdrawn before the node ran, and the node's create
+    /// writes its record afresh ([`seeded_put`]).
     #[allow(clippy::too_many_arguments)]
     async fn put_seeded(&self, me: &PathName, name: &PathName, mesh: &str, r#type: &str, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, executable: Option<&rdm_core::binding::Binding>, tags: &std::collections::BTreeSet<String>, storage_persistence: Option<rdm_core::meta::StoragePersistence>, of: RowFor, span: &tracing::Span, prefix: &str) -> Result<RowCreated, RowRefused> {
         let created = match self.written.known_row(&*self.storage, node_id).await {
-            Ok(Some(held)) => RowCreated::HeldByNode(held),
-            Ok(None) => seeded_put(&*self.storage, &self.written, me, name, mesh, r#type, node_id, status, own, allocated, allocated.and_then(|allocation| allocation.predecessor.as_ref()), executable, tags, storage_persistence, of, span, prefix).await?,
+            Ok(Some(held)) if held.status != NodeStatus::Withdrawn => RowCreated::HeldByNode(held),
+            Ok(_) => seeded_put(&*self.storage, &self.written, me, name, mesh, r#type, node_id, status, own, allocated, allocated.and_then(|allocation| allocation.predecessor.as_ref()), executable, tags, storage_persistence, of, span, prefix).await?,
             Err(e) => return Err(RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: the row {node_id} holds could not be read before its row at path {name_path:?}, name {name_name:?} was written: {e}", me_path = &me.path, me_name = &me.name, name_path = &name.path, name_name = &name.name))),
         };
         Ok(created)
@@ -1148,8 +1150,10 @@ pub async fn write_deleted(storage: &dyn NodesStorage, written: &WrittenRows, na
 
 /// [`NodeRows::put_seeded`]'s one write, by `me` into `storage`: the record of `node_id` at `name`, its
 /// config and tags seeded as that method says, written under the node's lock after its name's check.
-/// A record the same node holds already is left as it is. A recovery's record names the birth it
-/// replaced, the newest birth of the `Deleted` record at the name (`predecessor`).
+/// A record the same node holds already is left as it is, unless it is `Withdrawn`: a create withdrawn
+/// before its node ran released the name, and a later create of the same node.id (the Build record's,
+/// D58) writes its record afresh. A recovery's record names the birth it replaced, the newest birth of
+/// the `Deleted` record at the name (`predecessor`).
 #[allow(clippy::too_many_arguments)]
 async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &PathName, name: &PathName, mesh: &str, r#type: &str, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, predecessor: Option<&crate::storage::BirthRef>, executable: Option<&rdm_core::binding::Binding>, created_with: &std::collections::BTreeSet<String>, storage_persistence: Option<rdm_core::meta::StoragePersistence>, of: RowFor, span: &tracing::Span, prefix: &str) -> Result<RowCreated, RowRefused> {
     let _one = written.lock(node_id).await;
@@ -1158,7 +1162,7 @@ async fn seeded_put(storage: &dyn NodesStorage, written: &WrittenRows, me: &Path
     let previous = written.fold_read(me, record_at(storage, name).await.map_err(|e| RowRefused::Unwritten(format!("path {me_path:?}, name {me_name:?}: the previous record at path {name_path:?}, name {name_name:?} could not be read for {node_id}: {e}", me_path = &me.path, me_name = &me.name, name_path = &name.path, name_name = &name.name)))?);
     push_awaited(&mut awaited, "read-previous-row");
     span.record("awaited", awaited.as_str());
-    if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id) {
+    if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id && p.status != NodeStatus::Withdrawn) {
         span.record("awaiting", "done");
         written.hold(p);
         return Ok(RowCreated::HeldByNode(p.clone()));

@@ -124,7 +124,7 @@ async fn day0(dir: &Path) -> Day0 {
     // The admin names its Day-0 Build before it holds the fabric-primary: the stream is opened once it does.
     let mut stream = tokio::time::timeout(WRONG, async {
         loop {
-            match carrier.resubmit(&day_zero, 1).await {
+            match carrier.resubmit(&day_zero).await {
                 Ok(s) => return s,
                 Err(e) if e.to_string().contains("not-fabric-primary") => tokio::time::sleep(Duration::from_millis(100)).await,
                 Err(e) => panic!("the admin does not stream its Day-0 Build {day_zero}: {e}"),

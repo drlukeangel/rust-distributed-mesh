@@ -138,10 +138,10 @@ impl Nodes {
 
     /// Re-submit the workflow `kind` of the call that opened `accepted`: never a second Build. A
     /// complete Build answers `AlreadyApplied` with its frames and terminal; a running one streams
-    /// from where it is; a failed one takes its next attempt.
+    /// from where it is; a failed one has its remaining steps dispatched again.
     pub async fn resume(&self, kind: WorkflowKind, accepted: &Accepted) -> Result<WorkflowStream, CallEnd> {
         let span = kind.span();
-        match tracing::Instrument::instrument(self.carrier.resubmit(&accepted.build_id, accepted.attempt), span.clone()).await {
+        match tracing::Instrument::instrument(self.carrier.resubmit(&accepted.build_id), span.clone()).await {
             Ok(inner) => Ok(WorkflowStream::new(inner, kind, span)),
             Err(end) => {
                 span.record("outcome", end.outcome());
@@ -355,15 +355,15 @@ impl Nodes {
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
     /// to move its mesh-primary role (and the fabric-primary role with it when it is both)
     /// to its same-mesh successor.
-    pub async fn primary_update(&self, fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
-        crate::NodeRpc::new(self.carrier.client()).primary_update(fabric, primary, build_id, attempt, &CallOptions::default()).await
+    pub async fn primary_update(&self, fabric: &str, primary: &NodeId, build_id: &BuildId) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        crate::NodeRpc::new(self.carrier.client()).primary_update(fabric, primary, build_id, &CallOptions::default()).await
     }
 
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"): command the
     /// fabric-primary to move the fabric-primary role (step 1 same-mesh successor
     /// first, step 2 another Ready mesh-primary when no same-mesh successor is Ready).
-    pub async fn fabric_primary_update(&self, fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
-        crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, primary, build_id, attempt, &CallOptions::default()).await
+    pub async fn fabric_primary_update(&self, fabric: &str, primary: &NodeId, build_id: &BuildId) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, primary, build_id, &CallOptions::default()).await
     }
 }
 

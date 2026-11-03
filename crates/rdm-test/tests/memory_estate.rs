@@ -174,7 +174,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         // submitted, as an estate's is.
         let day_zero = rdm_test::typed::the_fabric(&fabrics).await.unwrap_or_else(|e| panic!("fabric.get: {e}")).build_id.expect("the Day-0 admin holds its Day-0 Build as the current one");
         let day_zero = BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names {day_zero}, not a Build id: {e}"));
-        Estate::until_complete(&mut carrier.resubmit(&day_zero, 1).await.unwrap_or_else(|e| panic!("the admin does not stream its Day-0 Build {day_zero}: {e}"))).await;
+        Estate::until_complete(&mut carrier.resubmit(&day_zero).await.unwrap_or_else(|e| panic!("the admin does not stream its Day-0 Build {day_zero}: {e}"))).await;
 
         // Each create names its path and the executable it runs (proposal executable-bindings-at-create.md
         // rule 1): the complete topology with one more node, read from the admin now.
@@ -192,9 +192,9 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         Estate::workflow("node.stop of mesh1.node.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.node.1", nodes.start(&node).await).await;
         until_status(&nodes, &node, NodeStatus::Ready).await;
-        let receipts = carrier.build(&created.build_id).await.unwrap_or_else(|e| panic!("build.get [id] of the create's Build {}: {e}", created.build_id));
-        assert_eq!(receipts.phase, BuildPhase::Complete, "the create's Build is Complete: {receipts:#?}");
-        assert!(!receipts.steps.is_empty(), "build.get answers the create's step receipts: {receipts:#?}");
+        let build = carrier.build(&created.build_id).await.unwrap_or_else(|e| panic!("build.get [id] of the create's Build {}: {e}", created.build_id));
+        assert_eq!(build.phase, BuildPhase::Complete, "the create's Build is Complete: {build:#?}");
+        assert!(build.events.iter().any(|e| e["type"] == "rdm.build.step"), "build.get answers the create's step events: {build:#?}");
         running.leave().await;
     });
     eprintln!("memory estate: boot to leave in {} ms", started.elapsed().as_millis());

@@ -308,7 +308,6 @@ mod tests {
                     node_id: node_id.clone(),
                     incarnation: incarnation.clone(),
                     build_id: "b-stop-1".into(),
-                    attempt: 2,
                     operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                 },
             );
@@ -324,7 +323,6 @@ mod tests {
                     node_id,
                     incarnation,
                     build_id: "b-stop-1".into(),
-                    attempt: 2,
                     operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                 },
             );

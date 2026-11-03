@@ -2,7 +2,6 @@
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 
-mod build_claim_wire;
 mod read_wire;
 mod build_wire;
 mod cadence;

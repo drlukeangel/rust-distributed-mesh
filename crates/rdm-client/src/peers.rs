@@ -93,7 +93,7 @@ impl Peers {
 
     /// The Build carrier whose calls start at the fabric-primary `fabric_primary`, when the caller
     /// is told where the fabric-primary moved: a stream that ended `FabricPrimaryMoved` names the node-admin that is the fabric-primary now
-    /// (`node-rpc-envelope.md` "Frames, durable receipts and reattachment": the caller resubmits the same `build_id` there). Its birth
+    /// (`node-rpc-envelope.md` "Frames, durable events and reattachment": the caller resubmits the same `build_id` there). Its birth
     /// is read from `entry`'s node list over Node RPC and made reachable here; a list that holds
     /// none is named.
     pub async fn carrier_following(&self, entry: &PathName, fabric_primary: &NodeId) -> Result<crate::BuildCarrier, crate::CallEnd> {

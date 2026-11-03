@@ -3,22 +3,21 @@
 //! no estate, no spans.
 //!
 //! CONTRACT: every internal mesh gossip frame is postcard. Every `Frame` variant of the
-//! topology channels and every shape a `BuildMessage` carries (each Build fact,
-//! each typed step output, the shutdown; the removed Fabric record refused) encodes, decodes to the value it was
+//! topology channels and every shape a `BuildMessage` carries (each Build fact; the removed Fabric
+//! record refused) encodes, decodes to the value it was
 //! made from, and re-encodes to the same bytes; a chunk the packers produce encodes under
 //! `MAX_MESSAGE_BYTES`; a frame this build does not read is refused with a named reason, a
-//! JSON frame included; a step output that has no wire shape is refused naming its Build,
-//! attempt and step while the facts around it still travel.
+//! JSON frame included.
 
 use rdm_core::meta::{NodeSpec, PersistentDisposition, StoragePersistence};
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_transport::chunking::MAX_MESSAGE_BYTES;
 use rdm_transport::topology::Frame;
 use rdm_transport::snapshot::{chunks_of, Full, PublisherId};
-use rdm_admin::accepted::{AttemptAction, FabricTopology, MeshTopology};
+use rdm_admin::accepted::{FabricTopology, MeshTopology};
 use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, MeshDesired};
-use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, StepOutcome};
+use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildStateError, StepOutcome};
 use rdm_admin::deployment::pipeline::Bound;
 use rdm_admin::deployment::pipeline::{CommandAdmission, Completion, CreateStep, DeleteStep, StorageDisposition};
 use rdm_admin::deployment::provider::DeploymentHandle;
@@ -81,7 +80,7 @@ fn container_runtime() -> RuntimeFact {
 
 fn op(action: &str, name: PathName, mesh: &str, r#type: &str) -> LifecycleOp {
     let node_id = NodeId::mint();
-    LifecycleOp { r#type: r#type.to_string(), mesh: mesh.into(), build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: rdm_core::OperationId::node(action, &node_id), node_id, incarnation: IncarnationId::mint(), path: name.path.clone(), name: name.name.clone(), event_at_rafka_ms: 7, traceparent: None, tracestate: None }
+    LifecycleOp { r#type: r#type.to_string(), mesh: mesh.into(), build_id: "3qcfk1kq47m9".into(), operation: rdm_core::OperationId::node(action, &node_id), node_id, incarnation: IncarnationId::mint(), path: name.path.clone(), name: name.name.clone(), event_at_rafka_ms: 7, traceparent: None, tracestate: None }
 }
 
 fn publisher() -> PublisherId {
@@ -183,107 +182,13 @@ fn changes() -> Vec<Option<BuildChange>> {
     ]
 }
 
-fn step(step: &str, output: Option<Value>) -> BuildFact {
-    BuildFact::Step(BuildStepReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "1").unwrap())), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor()) })
-}
-
-fn to_json<T: serde::Serialize>(v: &T) -> Value {
-    serde_json::to_value(v).unwrap()
-}
-
-/// Every Build fact, each step output as the pipeline commits it (the JSON of the typed result).
+/// Every Build fact: the acceptance of each change, and the history's forget. A step is an
+/// `rdm.build.step` event, never a Build fact (build.md §5).
 fn facts() -> Vec<BuildFact> {
-    let deleted_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     let mut out = Vec::new();
     for change in changes() {
         out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), change: change, source: None, time: 55 }));
     }
-    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Delete, action: a, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 56, context: None });
-    out.push(action(None));
-    out.push(action(Some(AttemptAction::Delete { r#type: "node".into(), mesh: "mesh2".into(), path: rdm_core::PathName::new("mesh2.node", "1").unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() })));
-    out.push(BuildFact::Claim(BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, executor: executor() }));
-    out.push(step("PrepareNetwork", None));
-    out.push(BuildFact::Step(BuildStepReceipt {
-        mesh: None,
-        build_id: bid("3qcfk1kq47m9"),
-        attempt: 2,
-        operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "1").unwrap())),
-        step: "WaitForBind".into(),
-        outcome: StepOutcome::failed("runtime exited (code Some(1)) before binding"),
-        output: None,
-        executor: None,
-    }));
-    // An unreached birth's TerminateRuntime: refused by the provider, then the receipt of what the step
-    // read at its instant (node-recovery.md step 3), in a Build message.
-    out.push(BuildFact::Step(BuildStepReceipt {
-        mesh: Some("mesh2".into()),
-        build_id: bid("3qcfk1kq47m9"),
-        attempt: 3,
-        operation: rdm_core::OperationId::node("node.delete", &deleted_birth.node_id),
-        step: DeleteStep::TerminateRuntime.name().into(),
-        outcome: StepOutcome::failed("terminating deployment an16er0436pg failed: the daemon refused"),
-        output: None,
-        executor: Some(executor()),
-    }));
-    out.push(BuildFact::Step(BuildStepReceipt {
-        mesh: Some("mesh2".into()),
-        build_id: bid("3qcfk1kq47m9"),
-        attempt: 4,
-        operation: rdm_core::OperationId::node("node.delete", &deleted_birth.node_id),
-        step: DeleteStep::TerminateRuntime.name().into(),
-        outcome: StepOutcome::Complete,
-        output: Some(to_json(&rdm_admin::deployment::pipeline::TerminalReceipt { path: "mesh2.node".into(), name: "1".into(), node_id: deleted_birth.node_id.to_string(), incarnation_id: deleted_birth.incarnation.to_string(), runtime: None, exit_code: None, verdict: Some("running".into()), data_dir: Some("/data/mesh2.node.1-3qcfk1kq47m9".into()) })),
-        executor: Some(executor()),
-    }));
-    out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": null, "deployment_id": "an16er0436pg" }))));
-    out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": to_json(&IncarnationId::mint()), "deployment_id": "an16er0436pg" }))));
-    out.push(step(CreateStep::WaitForBind.name(), Some(to_json(&Bound { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![("control".into(), "127.0.0.1:41001".parse().unwrap())] }))));
-    out.push(step(CreateStep::PrepareStorage.name(), Some(to_json(&EndpointId("abcd".into())))));
-    out.push(step(
-        CreateStep::DeployRuntime.name(),
-        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-1")).unwrap(), provider: ProviderKind::Process, pid: Some(4242), start: Some(99), container: None, domain: Some("host-a".into()) })),
-    ));
-    out.push(step(
-        CreateStep::DeployRuntime.name(),
-        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-2")).unwrap(), provider: ProviderKind::Container, pid: None, start: None, container: Some("c".repeat(64)), domain: None })),
-    ));
-    let evidence = |data_dir: Option<&str>| {
-        let mut v = json!({ "deployment_id": "an16er0436pg", "provider": "process", "provider_control_domain_fingerprint": "aa11", "runtime_locator_kind": "process-pid-start", "runtime_locator_fingerprint": "bb22" });
-        if let Some(d) = data_dir {
-            v["data_dir"] = d.into();
-        }
-        v
-    };
-    for s in [CreateStep::RegisterExactRuntimeHandle, CreateStep::ResolveProviderControlDomain, CreateStep::MakeRuntimeFactAvailableToBirth] {
-        out.push(step(s.name(), Some(evidence(None))));
-    }
-    out.push(step(CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), Some(evidence(Some("/var/lib/rafka/mesh2.node.1")))));
-    out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": "Pending" }))));
-    out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": null, "reason": "no Pending owed: not a new mesh's first admin" }))));
-    for s in [DeleteStep::NodeDeleting, DeleteStep::NodeDeleted] {
-        out.push(step(s.name(), Some(to_json(&op("node.delete", PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node")))));
-    }
-    for (command, completion) in [(DeleteStep::StopNode, DeleteStep::AwaitNodeLeft)] {
-        for d in [
-            CommandAdmission::Admitted {},
-            CommandAdmission::AlreadyAdmitted {},
-            CommandAdmission::NotSent { reason: "NoRoute".into() , code: rdm_core::outcome::Code::FailedPrecondition },
-            CommandAdmission::Indeterminate { reason: "no reply".into() , code: rdm_core::outcome::Code::FailedPrecondition },
-            CommandAdmission::Refused { reply: "StaleIncarnation".into() , code: rdm_core::outcome::Code::FailedPrecondition },
-        ] {
-            out.push(step(command.name(), Some(to_json(&d))));
-        }
-        for c in [Completion::Received {}, Completion::Deadline {}, Completion::RuntimeExited {}, Completion::NotAwaited { admission: "NotSent".into() }] {
-            out.push(step(completion.name(), Some(to_json(&c))));
-        }
-    }
-    for s in [StorageDisposition::Released { locator: "/data/x".into() }, StorageDisposition::Preserved {}, StorageDisposition::PreservedNoMeta {}] {
-        // A receipt an earlier build wrote: no step of this build runs it, and it still decodes.
-        out.push(step(rdm_admin::wire::RELEASE_STORAGE_STEP, Some(to_json(&s))));
-    }
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Converged }));
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Failed { reason: "step failed".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 3, outcome: AttemptOutcome::HandedOff { to: NodeId::mint() } }));
     out.push(BuildFact::Forget { build_id: bid("3qcfk1kq47m9") });
     out
 }
@@ -389,20 +294,6 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     let build_garbage = BuildMessage::from_bytes(br#"{"nonce":1,"facts":[]}"#).err().expect("a JSON Build message is refused").to_string();
     assert!(build_garbage.contains("postcard decode"), "{build_garbage}");
     result.insert("refusals".into(), json!({ "garbage": garbage, "json_frame": json_frame, "trailing_bytes": trailing, "json_build_message": build_garbage }));
-
-    // ---- an output with no wire shape is refused naming Build, attempt and step; neighbours travel ----
-    let good = step(CreateStep::WaitForBind.name(), Some(to_json(&Bound { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![] })));
-    let stray = step(CreateStep::PrepareNetwork.name(), Some(json!({ "anything": 1 })));
-    let mistyped = step(CreateStep::AllocateIdentity.name(), Some(json!({ "pid": 7 })));
-    let (messages, refused) = encode_chunks(vec![good.clone(), stray, mistyped, good.clone()]);
-    let named: Vec<String> = refused.iter().map(|e| e.to_string()).collect();
-    assert_eq!(named.len(), 2, "{named:?}");
-    assert!(refused.iter().all(|e| matches!(e, BuildStateError::Unencodable(_))), "{named:?}");
-    assert!(named[0].contains("step PrepareNetwork (Build 3qcfk1kq47m9, attempt 2)") && named[0].contains("commits no output"), "{}", named[0]);
-    assert!(named[1].contains("step AllocateIdentity (Build 3qcfk1kq47m9, attempt 2)"), "{}", named[1]);
-    let sent: usize = messages.iter().map(|m| BuildMessage::from_bytes(m).unwrap().facts.len()).sum();
-    assert_eq!(sent, 2, "the facts around a refused one still travel");
-    result.insert("unencodable".into(), json!({ "refused": named, "sent": sent }));
 
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();

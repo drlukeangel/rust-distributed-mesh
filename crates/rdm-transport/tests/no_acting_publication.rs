@@ -50,7 +50,6 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, port: u16) -> Mesh
 fn op(kind: &str, d: &MeshDigest) -> LifecycleOp {
     LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(),
         build_id: "b-s53".into(),
-        attempt: 1,
         operation: rdm_core::OperationId::new(kind, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         node_id: d.node.node_id.clone(),
         incarnation: d.node.incarnation.clone(),

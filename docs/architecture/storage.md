@@ -70,7 +70,7 @@ registered in its wiring by name:
 
 | provider | registered by | where the records go |
 |---|---|---|
-| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `events.jsonl`, with the `layout` marker and the `locks/` of the in-flight rows; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
+| `file` | every RDM binary | one append-only JSONL file per store under the fabric's shared store root (`RDM_STORE_DIR`), `fabric.jsonl`, `meshes.jsonl`, `nodes.jsonl`, `connections.jsonl`, `builds.jsonl`, `events.jsonl`, with the `layout` marker; every line a whole record with its writer's operation identity, the latest line for a key its current state, nothing removed |
 | the application's | the application's binaries, at `start_on` | its own stores; Rafka binds the traits to its system topics |
 
 A provider is one set of stores for the fabric, reached by every node that writes: a node's own record is written by the node and read by its primaries. A backend that keeps its stores in one process, the testkit's `memory` backend, serves a single-process fabric only.
@@ -112,10 +112,9 @@ It is four steps:
    gossips the current topology of its mesh. A mesh-primary that has replied `blocked` issues no new command until it is unblocked.
 2. **Copy.** Once every mesh-primary has replied `blocked`, the fabric-primary appends every line of
    all six stores on the old provider to the new one in source order, including both node-record
-   kinds, immutable launch snapshots and unresolved property obligations.
-   every in-flight row
-   with its exact claimant. A copy resumed after a lost answer appends nothing twice; a new provider
-   holding lines the old one does not is refused by name, and nothing switches.
+   kinds, immutable launch snapshots and unresolved property obligations. A copy resumed after a lost answer
+   appends nothing twice; a new provider holding lines the old one does not is refused by name, and
+   nothing switches.
 3. **Switch.** The fabric-primary appends the change's `rdm.storage.committed` event for
    its `change_id` to the new provider's events store, then appends the Fabric row's line naming the new
    provider current and the old in `previous_topology_storage_providers`. Whoever resumes the change

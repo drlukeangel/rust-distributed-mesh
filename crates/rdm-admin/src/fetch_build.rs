@@ -9,9 +9,8 @@
 //!
 //! - [`NodeAdminNotReady::NoCurrentBuild`] with a `wanted` BuildId (the entry reply named the
 //!   answering admin's current Build and it is not held): that Build's committed records.
-//! - [`NodeAdminNotReady::UnreadableBuild`] (the entry's Build cannot be read locally) and
-//!   [`NodeAdminNotReady::BehindFloor`] (the local Build is behind the entry's attempt floor): the
-//!   entry's Build's committed records.
+//! - [`NodeAdminNotReady::UnreadableBuild`] (the entry's Build cannot be read locally): the entry's
+//!   Build's committed records.
 //! - [`NodeAdminNotReady::NoCurrentBuild`] with nothing wanted (no-pointer: nothing names the Build):
 //!   the storage's current Build, by R-BI3's acceptance order, and its committed records; none in
 //!   progress or completed leaves the blocker.
@@ -20,7 +19,7 @@
 //! blocker, is not made again until its backoff has passed.
 
 use crate::build::BuildId;
-use crate::build_state::{BuildFact, BuildStateAdapter, LocalBuildLog};
+use crate::build_state::{BuildFact, BuildStateAdapter as _, LocalBuildLog};
 use crate::model::{NodeId, PathName};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -62,19 +61,6 @@ pub enum NodeAdminNotReady {
         /// Why the store could not be read.
         error: String,
     },
-    /// The local Build holds attempt `held`; the admin that served the entry held `floor`.
-    BehindFloor {
-        /// This admin.
-        me_path: String,
-        /// This node's name, beside its path.
-        me_name: String,
-        /// The Build.
-        build_id: BuildId,
-        /// The attempt the local Build holds.
-        held: u32,
-        /// The attempt the admin that served the entry held.
-        floor: u32,
-    },
 }
 
 impl std::fmt::Display for NodeAdminNotReady {
@@ -84,10 +70,6 @@ impl std::fmt::Display for NodeAdminNotReady {
             Self::NoCurrentBuild { me_path, me_name, wanted: Some(id) } => write!(f, "path {me_path:?}, name {me_name:?}: holds no facts of Build {id}, the current Build of the admin that served its entry"),
             Self::UnreadableBuild { me_path, me_name, build_id, error } => write!(f, "path {me_path:?}, name {me_name:?}: its entry named Build {build_id} and this admin's Build log cannot read it: {error}"),
             Self::BuildStoreUnreadable { me_path, me_name, error } => write!(f, "path {me_path:?}, name {me_name:?}: its builds store cannot be read for the current Build: {error}"),
-            Self::BehindFloor { me_path, me_name, build_id, held, floor } => write!(
-                f,
-                "path {me_path:?}, name {me_name:?}: holds attempt {held} of Build {build_id}; the admin that served its entry held attempt {floor} (its opens, claims and receipts are still arriving)"
-            ),
         }
     }
 }
@@ -109,7 +91,7 @@ impl NodeAdminNotReady {
         match self {
             Self::NoCurrentBuild { wanted: Some(id), .. } => Need::BuildFacts(id.clone()),
             Self::NoCurrentBuild { wanted: None, .. } => Need::CurrentBuild,
-            Self::UnreadableBuild { build_id, .. } | Self::BehindFloor { build_id, .. } => Need::BuildFacts(build_id.clone()),
+            Self::UnreadableBuild { build_id, .. } => Need::BuildFacts(build_id.clone()),
             Self::BuildStoreUnreadable { .. } => Need::Nothing,
         }
     }
@@ -121,7 +103,6 @@ impl NodeAdminNotReady {
             Self::NoCurrentBuild { wanted: None, .. } => "no-current-build",
             Self::UnreadableBuild { .. } => "unreadable-build",
             Self::BuildStoreUnreadable { .. } => "build-store-unreadable",
-            Self::BehindFloor { .. } => "behind-floor",
         }
     }
 }
@@ -163,7 +144,6 @@ pub struct FetchBuild {
     /// This node's name, beside its path.
     me_name: String,
     /// The Build storage the read is made of (Q292).
-    store: Arc<dyn BuildStateAdapter>,
     local: Arc<dyn LocalBuildLog>,
     /// The key the storage's backoff is held at.
     store_key: NodeId,
@@ -181,9 +161,9 @@ impl FetchBuild {
 }
 
 impl FetchBuild {
-    /// A fetch_build for the admin `me` over the Build storage `store` it reads and its local Build log.
-    pub fn new(me: PathName, store: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>) -> Self {
-        Self { me_path: me.path.clone(), me_name: me.name.clone(), store, local, store_key: NodeId::mint(), in_flight: None, backoff: BTreeMap::new(), judging: None, ended: Arc::default() }
+    /// A fetch_build for the admin `me` over its local Build log, which reads the Build storage.
+    pub fn new(me: PathName, local: Arc<dyn LocalBuildLog>) -> Self {
+        Self { me_path: me.path.clone(), me_name: me.name.clone(), local, store_key: NodeId::mint(), in_flight: None, backoff: BTreeMap::new(), judging: None, ended: Arc::default() }
     }
 
     /// One floor check's turn. `blocker` is what the check just found, `None` when no control fact
@@ -269,7 +249,7 @@ impl FetchBuild {
         if !self.backoff.get(&self.store_key).is_none_or(|b| b.open(now)) {
             return;
         }
-        let (store, local, me, kind, ended, key) = (self.store.clone(), self.local.clone(), self.me(), blocker.kind(), self.ended.clone(), self.store_key.clone());
+        let (local, me, kind, ended, key) = (self.local.clone(), self.me(), blocker.kind(), self.ended.clone(), self.store_key.clone());
         // The read is a step of the turn that started it: it runs under that turn's span and dispatcher.
         let parent = tracing::Span::current();
         self.in_flight = Some(tokio::spawn(
@@ -277,8 +257,8 @@ impl FetchBuild {
                 let span = tracing::info_span!("rdm.node_admin.build.update.via-read-committed", node_path = %me.path, node_name = %me.name, build_id = tracing::field::Empty, blocker = kind, facts = tracing::field::Empty, outcome = tracing::field::Empty);
                 let read = async {
                     match id {
-                        Some(id) => store.committed_facts(Some(&id)).await.map(|facts| (id, facts)),
-                        None => current_committed(&*store).await,
+                        Some(id) => local.committed_facts(Some(&id)).await.map(|facts| (id, facts)),
+                        None => current_committed(&*local).await,
                     }
                 }
                 .instrument(span.clone())
@@ -311,10 +291,11 @@ impl FetchBuild {
 
 /// The storage's current Build and its committed facts (R-BI3's acceptance order, read fresh): an
 /// error naming that no Build is in progress or completed when none is.
-async fn current_committed(store: &dyn BuildStateAdapter) -> Result<(BuildId, Vec<BuildFact>), crate::build_state::BuildStateError> {
-    let all = store.committed_facts(None).await?;
-    let folded = crate::build_state::MemoryBuildStateAdapter::new();
-    folded.absorb(&all).await;
+async fn current_committed(local: &dyn LocalBuildLog) -> Result<(BuildId, Vec<BuildFact>), crate::build_state::BuildStateError> {
+    let all = local.committed_facts(None).await?;
+    // The Builds' state is their events: the records are folded over the same events store.
+    let folded = crate::build_state::MemoryBuildStateAdapter::with_events(local.events());
+    folded.absorb_facts(&all).await;
     let id = match folded.current_build().await? {
         crate::build_state::CurrentBuild::InProgress(id) | crate::build_state::CurrentBuild::Completed(id) => id,
         crate::build_state::CurrentBuild::None => return Err(crate::build_state::BuildStateError::Io("the Build storage holds no Build in progress or completed".into())),
@@ -355,14 +336,6 @@ mod tests {
         assert_eq!(unreadable.kind(), "unreadable-build");
         assert_eq!(unreadable.need(), Need::BuildFacts(bid.clone()));
 
-        let behind = NodeAdminNotReady::BehindFloor {
-            me_path: me.path.clone(), me_name: me.name.clone(),
-            build_id: bid.clone(),
-            held: 1,
-            floor: 3,
-        };
-        assert_eq!(behind.kind(), "behind-floor");
-        assert_eq!(behind.need(), Need::BuildFacts(bid));
 
         let store_unreadable = NodeAdminNotReady::BuildStoreUnreadable {
             me_path: me.path.clone(), me_name: me.name.clone(),

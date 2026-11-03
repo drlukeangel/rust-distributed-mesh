@@ -28,19 +28,17 @@ use rdm_core::build::StepResult;
 /// A frame of a workflow's reply stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
-    /// The call was accepted: this Build and attempt run it.
+    /// The call was accepted: this Build runs it.
     Started {
         /// The Build.
         build_id: BuildId,
-        /// The attempt the call opened.
-        attempt: u32,
     },
     /// A step completed.
     Event(NodeEvent),
     /// The step in flight is blocked. Live progress: never a step outcome, and not terminal.
     Blocked {
-        /// The Build operation the blocked step belongs to.
-        operation: rdm_core::OperationId,
+        /// The Build operation the blocked step belongs to (`noun.verb:<node_id>`).
+        operation: String,
         /// The blocked step.
         step: String,
         /// What it waits for.
@@ -56,7 +54,7 @@ pub enum Frame {
         /// The step's own reason.
         reason: String,
     },
-    /// The fabric-primary moved while the workflow ran (`node-rpc-envelope.md` "Frames, durable receipts and reattachment"). Terminal for this
+    /// The fabric-primary moved while the workflow ran (`node-rpc-envelope.md` "Frames, durable events and reattachment"). Terminal for this
     /// stream, not a failure: the Build goes on at the new fabric-primary, and the caller resumes it there.
     FabricPrimaryMoved {
         /// The node-admin (`(path, name)`) that is the fabric-primary now, when the old fabric-primary's view named one.
@@ -106,8 +104,8 @@ const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, e
 }
 
 impl Row {
-    /// Whether the receipt key `key` is this row's operation in workflow `kind`.
-    fn matches(&self, kind: &WorkflowKind, key: &rdm_core::OperationId) -> bool {
+    /// Whether the step's operation `key` is this row's operation in workflow `kind`.
+    fn matches(&self, kind: &WorkflowKind, key: &str) -> bool {
         kind.operation_matches(self.operation, key)
     }
 }
@@ -223,11 +221,15 @@ impl WorkflowKind {
     }
 
     /// The Build operation key a row's operation prefix names for this workflow.
-    fn operation_matches(&self, prefix: &str, key: &rdm_core::OperationId) -> bool {
+    fn operation_matches(&self, prefix: &str, key: &str) -> bool {
+        let (action, subject) = match key.split_once(':') {
+            Some((action, subject)) => (action, Some(subject)),
+            None => (key, None),
+        };
         match self {
-            Self::Create => prefix == "node.create" && key.action == prefix,
-            Self::Stop(_) | Self::Start(_) | Self::DeleteConnections(_) => key.action == prefix && matches!(&key.subject, Some(rdm_core::OperationSubject::Node(_))),
-            Self::Delete(ids) => key.action == prefix && matches!(&key.subject, Some(rdm_core::OperationSubject::Node(id)) if ids.contains(id)),
+            Self::Create => prefix == "node.create" && action == prefix,
+            Self::Stop(_) | Self::Start(_) | Self::DeleteConnections(_) => action == prefix && subject.is_some(),
+            Self::Delete(ids) => action == prefix && subject.is_some_and(|s| ids.iter().any(|id| id.as_str() == s)),
         }
     }
 
@@ -243,49 +245,49 @@ impl WorkflowKind {
     }
 }
 
-/// What a Build's receipts say of one workflow.
+/// What a Build's step events say of one workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Folded {
-    /// The frames the receipts justify, after `Started`, in order.
+    /// The frames the events justify, after `Started`, in order.
     pub frames: Vec<Frame>,
-    /// The `(operation, step)` of every step with a `Complete` receipt, in pipeline order.
-    pub completed: Vec<(rdm_core::OperationId, String)>,
-    /// The `(operation, step)` of the first step with no `Complete` receipt, when there is one.
-    pub next: Option<(rdm_core::OperationId, String)>,
+    /// The `(operation, step)` of every step whose event ended `complete`, in pipeline order.
+    pub completed: Vec<(String, String)>,
+    /// The `(operation, step)` of the first step with no `complete` event, when there is one.
+    pub next: Option<(String, String)>,
 }
 
-/// Fold the receipts of `view` that attempts `from_attempt` and later wrote for `kind` into
-/// frames. Per step the receipt of the latest attempt decides. A step whose latest receipt is
-/// `Failed` ends the stream `Failed` only when an attempt this call opened wrote it; a receipt
-/// no row names is refused by name.
-pub fn fold(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<Folded, CallEnd> {
-    fold_steps(kind, &view.steps, from_attempt)
+/// Fold the step events of `view` for `kind` into frames. Per step the latest event decides; a
+/// step whose latest event is `failed` ends the stream `Failed`; an event no row names is refused by
+/// name.
+pub fn fold(kind: &WorkflowKind, view: &BuildView) -> Result<Folded, CallEnd> {
+    fold_steps(kind, &view.steps)
 }
 
-/// [`fold`] over the receipts `build.get` read.
-pub fn fold_receipts(kind: &WorkflowKind, receipts: &Build, from_attempt: u32) -> Result<Folded, CallEnd> {
-    let steps: Vec<StepView> = receipts
-        .steps
+/// [`fold`] over the events `build.get` read.
+pub fn fold_receipts(kind: &WorkflowKind, build: &Build) -> Result<Folded, CallEnd> {
+    fold_steps(kind, &steps_of(build))
+}
+
+/// The `rdm.build.step` events of `build`, in event.id order, as step views.
+pub fn steps_of(build: &Build) -> Vec<StepView> {
+    build
+        .events
         .iter()
-        .map(|s| StepView {
-            attempt: s.attempt,
-            operation: s.operation.clone(),
-            step: s.step.clone(),
-            outcome: match &s.result {
-                StepResult::Complete => serde_json::Value::String("complete".into()),
-                StepResult::Failed { reason, code } => serde_json::json!({ "failed": { "reason": reason, "code": code } }),
-            },
+        .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("rdm.build.step"))
+        .filter_map(|e| {
+            let data = e.get("data")?;
+            let field = |k: &str| data.get(k).and_then(|v| v.as_str()).map(str::to_string);
+            Some(StepView { mesh: field("mesh")?, operation: field("op")?, step: field("step")?, outcome: data.get("state")?.clone() })
         })
-        .collect();
-    fold_steps(kind, &steps, from_attempt)
+        .collect()
 }
 
-/// [`fold`] over bare receipts.
-pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) -> Result<Folded, CallEnd> {
+/// [`fold`] over bare step views.
+pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView]) -> Result<Folded, CallEnd> {
     let rows = kind.rows();
-    // The latest receipt of each (operation, step) among the attempts this call opened.
-    let mut latest: Vec<(rdm_core::OperationId, String, u32, Option<String>)> = Vec::new();
-    for s in steps.iter().filter(|s| s.attempt >= from_attempt) {
+    // The latest event of each (operation, step).
+    let mut latest: Vec<(String, String, Option<String>)> = Vec::new();
+    for s in steps {
         if !rows.iter().any(|r| r.matches(kind, &s.operation)) {
             continue;
         }
@@ -301,13 +303,12 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
             other => return Err(CallEnd::UnrecognisedReceipt { operation: s.operation.clone(), step: format!("{}: outcome {other}", s.step) }),
         };
         match latest.iter_mut().find(|(op, st, ..)| *op == s.operation && *st == s.step) {
-            Some(held) if held.2 > s.attempt => {}
-            Some(held) => *held = (s.operation.clone(), s.step.clone(), s.attempt, failure),
-            None => latest.push((s.operation.clone(), s.step.clone(), s.attempt, failure)),
+            Some(held) => *held = (s.operation.clone(), s.step.clone(), failure),
+            None => latest.push((s.operation.clone(), s.step.clone(), failure)),
         }
     }
-    // One workflow row belongs to one admitted operation. Never combine receipts
-    // from distinct node IDs, occurrences or other operation scopes.
+    // One workflow row belongs to one admitted operation. Never combine events
+    // from distinct node IDs or other operation scopes.
     for row in &rows {
         let mut matching = latest.iter().filter(|(operation, ..)| row.matches(kind, operation));
         if let Some((first, ..)) = matching.next() {
@@ -330,7 +331,7 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
             continue;
         }
         match held {
-            Some((op, st, _, None)) => {
+            Some((op, st, None)) => {
                 completed.push((op.clone(), st.clone()));
                 frames.extend(r.events.iter().map(|e| Frame::Event(*e)));
                 if r.terminal {
@@ -338,7 +339,7 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
                     break;
                 }
             }
-            Some((op, st, _, Some(reason))) => {
+            Some((op, st, Some(reason))) => {
                 next.get_or_insert((op.clone(), st.clone()));
                 frames.push(Frame::Failed { step: r.node_step, reason: reason.clone() });
                 break;
@@ -347,7 +348,7 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
                 if next.is_none() {
                     let operation = latest.iter().find(|(operation, ..)| r.matches(kind, operation))
                         .map(|(operation, ..)| operation.clone())
-                        .unwrap_or_else(|| rdm_core::OperationId::unscoped(r.operation));
+                        .unwrap_or_else(|| r.operation.to_string());
                     next = Some((operation, r.step.to_string()));
                 }
                 break;
@@ -360,22 +361,22 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
 /// Where a caller that lost a stream picks the workflow up again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resume {
-    /// The steps whose `Complete` receipt exists. A resume replays none of them.
-    pub completed: Vec<(rdm_core::OperationId, String)>,
-    /// The first step with no `Complete` receipt: where the next attempt starts. `None` when
-    /// every step is complete.
-    pub from: Option<(rdm_core::OperationId, String)>,
+    /// The steps whose event ended `complete`. A resume replays none of them.
+    pub completed: Vec<(String, String)>,
+    /// The first step with no `complete` event: where the run goes on. `None` when every step is
+    /// complete.
+    pub from: Option<(String, String)>,
 }
 
 impl Resume {
-    /// What `build.get`'s `view` says of `kind` for the call that opened `from_attempt`.
-    pub fn from_view(kind: &WorkflowKind, view: &BuildView, from_attempt: u32) -> Result<Self, CallEnd> {
-        Self::of(fold(kind, view, from_attempt)?)
+    /// What `build.get`'s `view` says of `kind`.
+    pub fn from_view(kind: &WorkflowKind, view: &BuildView) -> Result<Self, CallEnd> {
+        Self::of(fold(kind, view)?)
     }
 
-    /// What `build.get`'s `receipts` say of `kind` for the call that opened `from_attempt`.
-    pub fn from_receipts(kind: &WorkflowKind, receipts: &Build, from_attempt: u32) -> Result<Self, CallEnd> {
-        Self::of(fold_receipts(kind, receipts, from_attempt)?)
+    /// What the events `build.get` read say of `kind`.
+    pub fn from_receipts(kind: &WorkflowKind, build: &Build) -> Result<Self, CallEnd> {
+        Self::of(fold_receipts(kind, build)?)
     }
 
     fn of(f: Folded) -> Result<Self, CallEnd> {
@@ -396,17 +397,16 @@ pub struct WorkflowStream {
     /// The frames of one receipt or command frame after the first, delivered before the next is read.
     queued: std::collections::VecDeque<Frame>,
     /// The `(operation, step)` of every step whose event this stream delivered. A step is one event
-    /// to the caller whichever attempts completed it, as in [`fold`]: a successor attempt that
-    /// reissues a step whose receipt the lost executor alone held completes it again under its own
-    /// receipt key, and that frame announces nothing new.
-    delivered: std::collections::HashSet<(rdm_core::OperationId, String)>,
+    /// to the caller, as in [`fold`]: a new mesh-primary that runs again a step whose event the lost
+    /// one never wrote announces nothing new.
+    delivered: std::collections::HashSet<(String, String)>,
     /// A node command's terminal frame from the primary above the node, once delivered.
     completion: Option<rdm_core::node_command::NodeCommandReply>,
 }
 
 /// Where a workflow's frames come from.
 enum Source {
-    /// The Build the call opened, and the attempt that runs it.
+    /// The Build the call opened.
     Build { inner: BuildStream, accepted: Accepted },
     /// The node command's reply stream from the primary above the node (D40): it belongs to no Build.
     /// `first` is its first frame, read when the call was made, not yet delivered.
@@ -419,9 +419,8 @@ impl WorkflowStream {
     /// The stream of the accepted call `inner` follows; `span` is the call's span, opened when it
     /// was submitted and closed with the stream.
     pub(crate) fn new(inner: BuildStream, kind: WorkflowKind, span: tracing::Span) -> Self {
-        let accepted = Accepted { build_id: inner.build_id().clone(), attempt: inner.attempt() };
+        let accepted = Accepted { build_id: inner.build_id().clone() };
         span.record("build_id", accepted.build_id.as_str());
-        span.record("attempt", accepted.attempt);
         Self { source: Source::Build { inner, accepted }, kind, span, started: false, ended: false, queued: Default::default(), delivered: Default::default(), completion: None }
     }
 
@@ -437,7 +436,7 @@ impl WorkflowStream {
         Self { source: Source::Answered, kind, span, started: true, ended: false, queued: frames.into(), delivered: Default::default(), completion: None }
     }
 
-    /// The Build and attempt the call opened; `None` for a node command, which belongs to no Build.
+    /// The Build the call opened; `None` for a node command, which belongs to no Build.
     pub fn accepted(&self) -> Option<&Accepted> {
         match &self.source {
             Source::Build { accepted, .. } => Some(accepted),
@@ -457,8 +456,8 @@ impl WorkflowStream {
         &self.kind
     }
 
-    /// How the call came to its Build: a new one, an attach to a running one, the next attempt of a
-    /// failed one, or a complete one (`AlreadyApplied`); `None` for a node command.
+    /// How the call came to its Build: a new one, an attach to a running one, a failed one's remaining
+    /// steps dispatched again, or a complete one (`AlreadyApplied`); `None` for a node command.
     pub fn disposition(&self) -> Option<rdm_core::build::Disposition> {
         match &self.source {
             Source::Build { inner, .. } => Some(inner.disposition()),
@@ -550,8 +549,8 @@ impl WorkflowStream {
         };
         if !self.started {
             self.started = true;
-            self.span.in_scope(|| tracing::info!(build_id = %accepted.build_id.log(), attempt = accepted.attempt, "the workflow call was accepted"));
-            return Some(Ok(Frame::Started { build_id: accepted.build_id.clone(), attempt: accepted.attempt }));
+            self.span.in_scope(|| tracing::info!(build_id = %accepted.build_id.log(), "the workflow call was accepted"));
+            return Some(Ok(Frame::Started { build_id: accepted.build_id.clone() }));
         }
         let rows = self.kind.rows();
         loop {
@@ -562,8 +561,9 @@ impl WorkflowStream {
                 Some(Ok(f)) => f,
             };
             match frame {
-                BuildFrame::Step { attempt, operation, step } => {
-                    if attempt < accepted.attempt {
+                BuildFrame::Step { operation, step, result, .. } => {
+                    // A failed step's event is followed by the Build's own `Failed` terminal.
+                    if result != StepResult::Complete {
                         continue;
                     }
                     if !rows.iter().any(|r| r.matches(&self.kind, &operation)) {
@@ -573,7 +573,7 @@ impl WorkflowStream {
                         return Some(Err(self.broke(CallEnd::UnrecognisedReceipt { operation, step })));
                     };
                     if !self.delivered.insert((operation.clone(), step.clone())) {
-                        self.span.in_scope(|| tracing::info!(attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step = %step, "a later attempt completed a step whose event this stream delivered: one event per step"));
+                        self.span.in_scope(|| tracing::info!(operation = %operation, step = %step, "a step whose event this stream delivered completed again: one event per step"));
                         continue;
                     }
                     let mut events = row.events.iter().copied();
@@ -581,17 +581,22 @@ impl WorkflowStream {
                     self.queued.extend(events.map(Frame::Event));
                     return Some(Ok(self.deliver(Frame::Event(e))));
                 }
-                BuildFrame::Blocked { attempt, operation, step, reason } => {
-                    if attempt < accepted.attempt {
-                        continue;
-                    }
-                    self.span.in_scope(|| tracing::info!(operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step = %step, reason = %reason, "the step in flight is blocked"));
+                BuildFrame::Blocked { operation, step, reason, .. } => {
+                    self.span.in_scope(|| tracing::info!(operation = %operation, step = %step, reason = %reason, "the step in flight is blocked"));
                     return Some(Ok(Frame::Blocked { operation, step, reason }));
                 }
-                BuildFrame::Complete { .. } => return Some(Ok(self.deliver(Frame::Complete))),
-                BuildFrame::Failed { operation, step, reason, .. } => {
-                    let node_step = rows.iter().find(|r| r.step == step && r.matches(&self.kind, &operation)).map(|r| r.node_step).unwrap_or_else(|| self.kind.fallback_step());
-                    return Some(Ok(self.deliver(Frame::Failed { step: node_step, reason })));
+                BuildFrame::Complete => return Some(Ok(self.deliver(Frame::Complete))),
+                BuildFrame::Failed { reason, .. } => {
+                    return Some(Ok(self.deliver(Frame::Failed { step: self.kind.fallback_step(), reason })));
+                }
+                // The workflow's Build ran and its section ended short: the workflow failed at that
+                // section's step (Q346).
+                BuildFrame::Incomplete { sections } => {
+                    let Some(u) = sections.into_iter().next() else {
+                        return Some(Ok(self.deliver(Frame::Failed { step: self.kind.fallback_step(), reason: "the Build ended incomplete naming no section".into() })));
+                    };
+                    let node_step = rows.iter().find(|r| r.step == u.step && r.matches(&self.kind, &u.operation)).map(|r| r.node_step).unwrap_or_else(|| self.kind.fallback_step());
+                    return Some(Ok(self.deliver(Frame::Failed { step: node_step, reason: u.reason })));
                 }
                 BuildFrame::FabricPrimaryMoved { fabric_primary } => {
                     self.ended = true;
@@ -615,113 +620,65 @@ impl WorkflowStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdm_core::build::{BuildPhase, StepReceipt};
-    use rdm_core::outcome::Code;
+    use rdm_core::build::BuildPhase;
 
-    /// CONTRACT: docs/architecture/build.md:453
-    /// "One writer per key: the fabric-primary writes the Fabric record and every topology attempt's Build facts"
+    fn view(operation: &str, step: &str, outcome: serde_json::Value) -> StepView {
+        StepView { mesh: "mesh1".into(), operation: operation.into(), step: step.into(), outcome }
+    }
+
+    /// CONTRACT: build.md §5: a step's `rdm.build.step` event names its mesh, op, step and state
+    /// (`complete` or `failed { reason, code }`); a client folds a workflow's frames from those events,
+    /// the latest event of a step deciding, and refuses a step no row of the workflow names.
     #[test]
-    fn fold_steps_and_fold_receipts_map_step_receipts_to_workflow_frames_and_refuse_unknown_steps() {
+    fn fold_steps_and_fold_receipts_map_step_events_to_workflow_frames_and_refuse_unknown_steps() {
         let node: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
         let kind = WorkflowKind::Start(node.clone());
-        let op = rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&node));
+        let op = rdm_core::OperationId::node("node.start", &rdm_core::fixture_node_id(&node)).to_string();
+        let complete = || serde_json::Value::String("complete".into());
 
-        // 1. `fold_steps` folds completed receipts from `from_attempt` onward into workflow `Frame`s.
-        let steps = vec![
-            StepView {
-                attempt: 1,
-                operation: op.clone(),
-                step: "StartNode".into(),
-                outcome: serde_json::Value::String("complete".into()),
-            },
-            StepView {
-                attempt: 1,
-                operation: op.clone(),
-                step: "WaitForNodeReady".into(),
-                outcome: serde_json::Value::String("complete".into()),
-            },
-            StepView {
-                attempt: 1,
-                operation: op.clone(),
-                step: "Complete".into(),
-                outcome: serde_json::Value::String("complete".into()),
-            },
-        ];
-        let folded = fold_steps(&kind, &steps, 1).unwrap();
-        assert_eq!(
-            folded.frames,
-            vec![Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Complete]
-        );
+        // 1. `fold_steps` folds complete events into workflow `Frame`s.
+        let steps = vec![view(&op, "StartNode", complete()), view(&op, "WaitForNodeReady", complete()), view(&op, "Complete", complete())];
+        let folded = fold_steps(&kind, &steps).unwrap();
+        assert_eq!(folded.frames, vec![Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Complete]);
         assert_eq!(folded.completed.len(), 3);
         assert_eq!(folded.next, None);
 
-        // 2. `fold_receipts` converts `Build` step receipts (`Complete` and `Failed`) and delegates to `fold_steps`.
+        // 2. `fold_receipts` reads a `build.get` Build's step events (`complete` and `failed`).
+        let event = |step: &str, state: serde_json::Value| serde_json::json!({"type": "rdm.build.step", "data": {"build_id": "b", "mesh": "mesh1", "op": op, "step": step, "state": state}});
         let build = Build {
             build_id: BuildId::mint(),
             phase: BuildPhase::Failed,
-            attempt: 2,
-            executor: None,
-            reason: "start".into(),
-            last_failure: Some("hook refused".into()),
             current: false,
             nodes: Vec::new(),
-            steps: vec![
-                StepReceipt {
-                    attempt: 2,
-                    operation: op.clone(),
-                    step: "StartNode".into(),
-                    result: StepResult::Complete,
-                },
-                StepReceipt {
-                    attempt: 2,
-                    operation: op.clone(),
-                    step: "WaitForNodeReady".into(),
-                    result: StepResult::Failed { reason: "hook refused".into(), code: Code::FailedPrecondition },
-                },
+            events: vec![
+                serde_json::json!({"type": "rdm.build.started", "data": {"build_id": "b"}}),
+                event("StartNode", complete()),
+                event("WaitForNodeReady", serde_json::json!({"failed": {"reason": "hook refused", "code": "FAILED_PRECONDITION"}})),
             ],
         };
-        let folded_failed = fold_receipts(&kind, &build, 2).unwrap();
-        assert_eq!(
-            folded_failed.frames,
-            vec![
-                Frame::Event(NodeEvent::Joined),
-                Frame::Failed { step: NodeStep::Start, reason: "hook refused".into() }
-            ]
-        );
+        let folded_failed = fold_receipts(&kind, &build).unwrap();
+        assert_eq!(folded_failed.frames, vec![Frame::Event(NodeEvent::Joined), Frame::Failed { step: NodeStep::Start, reason: "hook refused".into() }]);
 
         // 3. An unrecognised step name for a matching operation is refused with `UnrecognisedReceipt`.
-        let bad_steps = vec![StepView {
-            attempt: 1,
-            operation: op,
-            step: "NoSuchStep".into(),
-            outcome: serde_json::Value::String("complete".into()),
-        }];
-        assert!(matches!(fold_steps(&kind, &bad_steps, 1), Err(CallEnd::UnrecognisedReceipt { .. })));
+        assert!(matches!(fold_steps(&kind, &[view(&op, "NoSuchStep", complete())]), Err(CallEnd::UnrecognisedReceipt { .. })));
     }
+
+    /// CONTRACT: a workflow folds the events of the node.ids it names only, and a step's latest event
+    /// decides it: a step that failed and then completed is complete.
     #[test]
-    fn resume_preserves_admitted_operation_and_refuses_mixed_occurrences() {
+    fn resume_reads_the_named_nodes_events_and_the_latest_event_of_each_step() {
         let deleted = rdm_core::NodeId::mint();
         let kind = WorkflowKind::Delete(vec![deleted.clone()]);
-        let operation = rdm_core::OperationId::node("node.delete", &deleted).in_occurrence(rdm_core::OperationOccurrenceId::mint());
-        let receipt = |operation| StepView { attempt: 1, operation, step: "NodeDeleting".into(), outcome: serde_json::json!("complete") };
-        let first = receipt(operation.clone());
-        assert_eq!(fold_steps(&kind, &[first.clone()], 1).unwrap().next, Some((operation.clone(), "StopNode".into())));
-        // A receipt of a node the workflow does not name is not this workflow's: it folds as if absent.
-        let other = receipt(rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::mint()));
-        assert_eq!(fold_steps(&kind, &[first.clone(), other.clone()], 1).unwrap().next, Some((operation.clone(), "StopNode".into())));
-        let different_occurrence = receipt(operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint()));
-        assert!(matches!(fold_steps(&kind, &[first.clone(), different_occurrence], 1), Err(CallEnd::UnrecognisedReceipt { .. })));
-        let mut retried = first.clone();
-        retried.attempt = 2;
-        let mut failed = first;
+        let operation = rdm_core::OperationId::node("node.delete", &deleted).to_string();
+        let first = view(&operation, "NodeDeleting", serde_json::json!("complete"));
+        assert_eq!(fold_steps(&kind, &[first.clone()]).unwrap().next, Some((operation.clone(), "StopNode".into())));
+        // An event of a node the workflow does not name is not this workflow's: it folds as if absent.
+        let other = view(&rdm_core::OperationId::node("node.delete", &rdm_core::NodeId::mint()).to_string(), "NodeDeleting", serde_json::json!("complete"));
+        assert_eq!(fold_steps(&kind, &[first.clone(), other.clone()]).unwrap().next, Some((operation.clone(), "StopNode".into())));
+        let mut failed = first.clone();
         failed.outcome = serde_json::json!({"failed": {"reason": "try failed"}});
-        let latest = fold_steps(&kind, &[failed, retried.clone()], 1).unwrap();
-        assert_eq!(latest.next, Some((operation.clone(), "StopNode".into())));
+        let latest = fold_steps(&kind, &[failed, first]).unwrap();
+        assert_eq!(latest.next, Some((operation, "StopNode".into())));
         assert!(latest.frames.is_empty());
-        assert_eq!(fold_steps(&kind, &[other, retried], 2).unwrap().next, Some((operation, "StopNode".into())));
-
     }
-
 }
-
-

@@ -34,8 +34,8 @@ pub struct Running {
     /// stopped first on leave.
     pub(crate) publisher: tokio::task::JoinHandle<()>,
     pub(crate) executor: tokio::task::JoinHandle<()>,
-    /// The attempt runs this admin executes, each a task of its own: stopped with the reconciling.
-    pub(crate) runs: Arc<crate::build_run::AttemptRuns>,
+    /// The section runs this admin executes, each a task of its own: stopped with the reconciling.
+    pub(crate) runs: Arc<crate::build_run::SectionRuns>,
     pub(crate) hierarchy: tokio::task::JoinHandle<()>,
     /// The mesh topology anti-entropy: this admin's mesh topology on the backbone, on its own timer.
     pub(crate) anti_entropy: tokio::task::JoinHandle<()>,
@@ -235,50 +235,37 @@ pub(crate) fn provider_image(p: ProviderKind) -> rdm_core::binding::ProviderImag
 }
 
 /// The Node RPC server a node-admin serves, before it is built: core (Ping, Forward), then the families the
-/// admin owns as a primary (status, build claim, join).
+/// admin owns as a primary (status, join).
 pub fn rpc_server(
     connections: Arc<crate::connections_writer::ConnectionsWriter>,
     client: Arc<rdm_transport::NodeRpcClient>,
     status_door: crate::status_rpc::StatusDoorSlot,
-    claim: crate::build_claim::ClaimSlot,
     join: crate::join::JoinSlot,
 ) -> rdm_transport::ServerBuilder {
     let core = rdm_transport::ServerBuilder::new().serve_core(client, Some(connections));
     // Status is forwardable: a peer may carry an authority's status call through this admin.
-    crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, status_door), claim), join).carry::<rdm_core::status::Status>()
+    crate::join::serve(crate::status_rpc::serve(core, status_door), join).carry::<rdm_core::status::Status>()
 }
 
-/// The unreadable pre-event steps already named: each is named once, not on every fact.
-pub(crate) type NamedSteps = HashSet<(String, u32, rdm_core::OperationId, String)>;
-
-/// Apply the lifecycle overlays `facts` name open to `digest_view`: every open operation as a hold
-/// that its attempt's terminal verdict or its Build's forgetting closes
-/// (`DigestView::deletions_from_facts`), and every pre-event step this build cannot read refused by
-/// name, once. Run inside the
-/// log's append as each fact enters it ([`crate::build_state::LocalBuildLog::derive_on_every_fact`]).
-pub(crate) fn overlays_from_facts(facts: &[crate::build_state::BuildFact], digest_view: &DigestView, named: &mut NamedSteps) {
-    let builds = crate::build_state::fold(facts);
-    if let Some(b) = facts
-        .iter()
-        .rev()
-        .filter_map(|f| match f {
-            crate::build_state::BuildFact::Accepted(a) => builds.get(&a.build_id),
-            _ => None,
-        })
-        .find(|p| p.lane_open() || !matches!(p.state, crate::build_state::BuildState::Failed) || p.completed_at.is_some())
-    {
+/// Apply what the Build facts `facts` say to `digest_view`: the meshes of the newest accepted Build, and
+/// the end of every open lifecycle overlay of a Build forgotten (`DigestView::deletions_from_facts`). An
+/// overlay opens and closes with its own operation's run ([`crate::deployment::pipeline::LifecycleEvents`]);
+/// a resumed run re-applies it from its reused step. Run inside the log's append as each fact enters it
+/// ([`crate::build_state::LocalBuildLog::derive_on_every_fact`]).
+pub(crate) fn overlays_from_facts(facts: &[crate::build_state::BuildFact], digest_view: &DigestView) {
+    let newest = facts.iter().filter_map(|f| match f {
+        crate::build_state::BuildFact::Accepted(a) => Some(a),
+        _ => None,
+    }).max_by(|a, b| (a.time, &a.build_id).cmp(&(b.time, &b.build_id)));
+    if let Some(b) = newest {
         digest_view.set_accepted_meshes(b.topology.mesh_names());
     }
-    let in_flight = crate::build_state::in_flight_ops(facts, &builds);
-    for op in in_flight.ops {
-        digest_view.deleting(op);
-    }
-    digest_view.deletions_from_facts(&in_flight.removals_ended, &crate::build_state::forgotten_builds(facts, &builds));
-    for u in in_flight.unrecognised {
-        if named.insert((u.build_id.to_string(), u.attempt, u.operation.clone(), u.step.clone())) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id.log(), attempt = u.attempt, operation = %u.operation.action, operation_subject = ?u.operation.subject, step = %u.step, reason = %u.reason)
-                .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
-        }
+    let forgotten: BTreeSet<String> = facts.iter().filter_map(|f| match f {
+        crate::build_state::BuildFact::Forget { build_id } => Some(build_id.to_string()),
+        _ => None,
+    }).collect();
+    if !forgotten.is_empty() {
+        digest_view.deletions_from_facts(&Default::default(), &forgotten);
     }
 }
 
@@ -531,10 +518,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     }
     let storage_changes = Arc::new(crate::storage_change::StorageChanges::new(topology_storage.clone(), providers.clone(), cfg.fabric_id.clone(), minted_node_id.clone()));
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_backed.clone());
-    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::on(journal.clone()));
-    // Each mesh's in-flight row (R-BI7 caveat 3): the one set of rows the claim door, the drive's
-    // release and the recovery door all take and release.
-    let mesh_claims = mesh_storage.clone();
     // A launched node-admin starts holding the runtime rows its launcher held (`CreateRequest::
     // held_runtimes`): handed in its data dir beside the launch record, put in its own nodes storage
     // before anything reads it. On a provider whose runtime rows are the fabric's shared store root's
@@ -650,20 +633,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         (Some(l), _) => (l.location(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, l.seeds.clone()),
         (None, Some(lost)) if adoption.is_some() => {
             // The adoption launch: a new birth with its own node.id, at the lost fabric-primary's path and name,
-            // or, under an in-force fabric.delete, at its own new path and name (Q159). Its claim of the
-            // fabric-recovery attempt, or of the delete's next attempt, is its first recovery mutation (Q156);
-            // a lost claim refuses the start by name, having written nothing else.
+            // or, under an in-force fabric.delete, at its own new path and name (Q159). Its start writes nothing
+            // (Q342, no lock).
             let node_id = minted_node_id.clone();
             let a = adoption.as_ref().expect("an adoption launch read its store");
             let at = match (&a.delete, &cfg.adopt) {
                 (Some(_), Some(new)) => new.clone(),
                 _ => lost.location(),
             };
-            let claimed = super::adoption::claim(&at, &cfg.mesh, &rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }, a, &*journal, &*mesh_claims, &attempt_contexts, crate::admin::local_now_ms())
-                .instrument(boot.clone())
-                .await
-                .map_err(|e| format!("refusing to start: {e}"))?;
-            adoption_claim = Some(Arc::new(claimed));
+            adoption_claim = Some(Arc::new(super::adoption::claim(&at, a)));
             // An adoption launch is the externally started Day-0 adoption (deployment-provider.md §3), and no
             // launcher records its runtime: right after its claim it adopts its current runtime and keeps its
             // runtime row on the fabric's store root, its nodes store, so a later adoption launch resolves it
@@ -787,7 +765,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     connections.held().lock().unwrap().set_topology_view(node_rpc_resolver.clone());
     let status_door: crate::status_rpc::StatusDoorSlot = Arc::new(std::sync::OnceLock::new());
     let status_door_set = Arc::new(tokio::sync::Notify::new());
-    let claim_slot: crate::build_claim::ClaimSlot = Arc::new(std::sync::OnceLock::new());
     // The births this admin deployed and awaits a `JoinNode` from, and the door that answers it.
     let joins = Arc::new(crate::join::Joins::over(nodes_storage.clone()));
     // The runner, once built: the primary watch registers a primary heard again through it (Q87).
@@ -813,7 +790,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::read_op::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), status_door.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), status_door.clone()), handover_slot.clone()), build_slot.clone());
+    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::read_op::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), status_door.clone(), join_slot.clone()), topology_slot.clone()), status_door.clone()), handover_slot.clone()), build_slot.clone());
     // The app's own ops (each behind the gate of its hook), before the catalog is built.
     let rpc_builder = match wiring.serve_app.take() {
         Some(serve_app) => serve_app(rpc_builder),
@@ -912,9 +889,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             .map_err(|e| super::adoption::Refused { reason: e, answered: None }),
         };
         if let Err(refusal) = released {
-            if let Err(e) = super::adoption::fail(claimed, &*journal, &*mesh_claims, &refusal).await {
-                return Err(format!("refusing to start: {refusal}; and the claimed attempt could not be closed: {e}"));
-            }
+            super::adoption::fail(claimed, &refusal);
             return Err(format!("refusing to start: {refusal}"));
         }
     }
@@ -1260,7 +1235,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 journal.read_records_while(build_records_reader(&topology_view.digest_view, &records, (node_id.clone(), incarnation.clone()), &name, cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()).is_none(), view_slot.clone())).await;
                 // The Build state every consumer after the fetch shares: the control routes, the executor, the
                 // pipelines and the drift check.
-                let runs = Arc::new(crate::build_run::AttemptRuns::default());
+                let runs = Arc::new(crate::build_run::SectionRuns::default());
                 // An application's wrap of the Build state sees every write before the run decides
                 // whether it writes it or reports it up its stream (Q118).
                 let framed: Arc<dyn BuildStateAdapter> = Arc::new(crate::build_run::FramedBuilds::new(builds.clone(), runs.clone()).writing_steps(events.clone(), own_mesh.to_string()));
@@ -1273,7 +1248,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // so this admin's first view is its launcher's; the fabric record carries
                 // the policy. Without that answer it cannot know the policy, and it
                 // refuses to start by name.
-                let entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>> = Arc::default();
+                let entry_floor: Arc<Mutex<Option<crate::build::BuildId>>> = Arc::default();
                 // The topology this admin enters its mesh from without an authority (its durable map), and
                 // where it came from; a launched admin's comes from node.start's topology step, after its hook.
                 let mut entry_map: Option<(&'static str, Vec<crate::reenter::MapNode>)> = None;
@@ -1350,7 +1325,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             })
                                             .await
                                             .map_err(|e| format!("refusing to start: {e}"))?;
-                                        attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                                         crate::build_state::accept(&*builds, &b0, None, &node_id.to_string(), "day-0").await.map_err(|e| e.to_string())?;
                                     }
                                     FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
@@ -1426,25 +1400,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         ),
                                         rafka_time.clone(),
                                     )
-                                    .with_contexts(attempt_contexts.clone())
-                                    .with_claims(mesh_claims.clone())
                                     .with_executable_dirs(cfg.executable_dirs.clone())
                                     .with_topology_storage_providers(providers.names()),
                                 );
                                 let _ = control.storage_changes.set(storage_changes.clone());
-                                // The claim door: this admin decides a fabric-lane claim only while it holds the fabric-primary
-                                // role, and its own mesh's drift-lane claim only while it holds its mesh's primary role (R-BI7).
-                                let claim_door = Arc::new(crate::build_claim::ClaimDoor {
-                                    me_path: name.path.clone(), me_name: name.name.clone(),
-                                    node_id: node_id.clone(),
-                                    incarnation: incarnation.clone(),
-                                    topology: control.topology.clone(),
-                                    builds: builds_dyn.clone(),
-                                    contexts: attempt_contexts.clone(),
-                                    claims: mesh_claims.clone(),
-                                    claimed: Default::default(),
-                                });
-                                let _ = claim_slot.set(claim_door.clone());
                                 {
                                     let (digest_view, records) = (digest_view.clone(), records.clone());
                                     let _ =
@@ -1648,7 +1607,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 topology: control.topology.clone(),
                                 client: node_rpc.client.clone(),
                                 builds: builds_dyn.clone(),
-                                contexts: attempt_contexts.clone(),
                                 records: records.clone(),
                                 hooks: fabric_hooks,
                             }));
@@ -1823,18 +1781,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     me_path: name.path.clone(), me_name: name.name.clone(),
                                     topology: control.topology.clone(),
                                     builds: builds_dyn.clone(),
-                                    door: claim_door.clone(),
-                                    dispatcher: Arc::new(crate::build_op::RpcDispatcher { me_path: name.path.clone(), me_name: name.name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
+                                    birth: rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() },
+                                    dispatcher: Arc::new(crate::build_op::RpcDispatcher { me_path: name.path.clone(), me_name: name.name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone(), send: rdm_transport::Send::default() }),
                                     gate: Arc::new(RoleGate { builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone(), meshes: mesh_storage.clone() }),
-                                    departure: Arc::new(ProviderDeparture {
-                                        me_path: name.path.clone(), me_name: name.name.clone(),
-                                        refresh: refresh_view,
-                                        digest_view: digest_view.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone() }),
-                                    verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
                                     notices: build_notices.clone(),
                                     turns: stop_gate.clone(),
                                 });
-                                let _ = control.departure.set(env.departure.clone());
                                 let _ = control.node_rows.set(nodes_storage.clone());
                                 let _ = control.node_id.set(node_id.clone());
                                 let _ = control.incarnation.set(incarnation.clone());
@@ -2266,7 +2218,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     me_path: name.path.clone(), me_name: name.name.clone(),
                                     builds: builds_dyn.clone(),
                                     floor: entry_floor.clone(),
-                                    fetch_build: crate::fetch_build::FetchBuild::new(name.clone(), builds_dyn.clone(), journal.clone()),
+                                    fetch_build: crate::fetch_build::FetchBuild::new(name.clone(), journal.clone()),
                                     progress: Some(progress.clone()),
                                     held: cfg.launch.is_some().then(|| journal.clone()),
                                 },
@@ -3062,12 +3014,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // `LocalBuildLog::derive_on_every_fact`). A successor primary publishes the same overlays from the same facts. Derived
                                     // once over the facts held before the hierarchy's first turn, then on every fact.
                                     {
-                                        let (digest_view, named) = (topology_view.digest_view.clone(), Mutex::new(NamedSteps::new()));
+                                        let digest_view = topology_view.digest_view.clone();
                                         // The Builds the view holds overlays of are read with the current Build and the new
                                         // facts' own, so an overlay heard by gossip ends on its own Build's facts.
                                         let holds = digest_view.clone();
                                         let held = move || holds.in_flight().into_iter().filter_map(|o| crate::build::BuildId::parse(&o.build_id).ok()).collect::<Vec<_>>();
-                                        journal.derive_on_every_fact(crate::build_state::FactDerivation::new(held, move |facts| overlays_from_facts(facts, &digest_view, &mut named.lock().unwrap()))).await;
+                                        journal.derive_on_every_fact(crate::build_state::FactDerivation::new(held, move |facts| overlays_from_facts(facts, &digest_view))).await;
                                     }
 
                                     let hierarchy;
@@ -3091,29 +3043,21 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let records = records.clone();
                                         let fabric_states = states_slot.get().cloned().expect("the fabric states are built before the hierarchy runs");
                                         let stop = stop_gate.clone();
-                                        let claim_door = claim_slot.clone();
                                         // A mesh-primary taking its role reads the accepted Build before it counts its fresh checklist
                                         // (states.md "The check-in checklist"): node start's Build floor read again, the current Build's
                                         // committed records from the Build storage (Q292), owed until read.
-                                        let (build_read_store, build_read_log) = (control.builds.clone(), journal.clone());
+                                        let build_read_log = journal.clone();
                                         let atlas = control.atlas.clone();
                                         hierarchy = tokio::spawn(async move {
                                             let mut was_fabric_primary = false;
                                             let mut was_mesh_primary = false;
-                                            let mut build_read = crate::fetch_build::FetchBuild::new(me.clone(), build_read_store, build_read_log);
+                                            let mut build_read = crate::fetch_build::FetchBuild::new(me.clone(), build_read_log);
                                             let mut build_read_owed = false;
                                             let mut unreadable_named: Option<String> = None;
                                             loop {
                                                 // Held here while the admin is stopped: its own wait, outside every lock.
                                                 let turn = stop.turn("hierarchy").await;
                                                 let me = view_digest_view.held_path_name().unwrap_or_else(|| me.clone());
-                                                // A claim this admin's door wins from here on, during the turn included, ends the
-                                                // turn's wait: the attempt it opens is the one the fabric's change names.
-                                                let door = claim_door.get().cloned();
-                                                let mut claimed = door.as_ref().map(|d| Box::pin(d.claimed.notified()));
-                                                if let Some(c) = claimed.as_mut() {
-                                                    c.as_mut().enable();
-                                                }
                                                 // The current Build, read once per turn. A builds store that cannot be read is
                                                 // named once per distinct error and decides nothing this turn: no planned births,
                                                 // accepted meshes or step are taken from a read that failed.
@@ -3298,7 +3242,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // held member gone stale is dialled by §6's repair alone (gossip.md §6, §8; Q84).
                                                 drop(turn);
                                                 // The next turn is due after one gossip interval, or at once when what the turn
-                                                // decides on moved: a checklist the fabric-primary waits on; an attempt claimed; or the view changes a member's status or a primary,
+                                                // decides on moved: a checklist the fabric-primary waits on; or the view changes a member's status or a primary,
                                                 // its mesh's or a node type's (this admin's own roles among them), or a mesh's status.
                                                 // The fabric is ready once every planned mesh is, and a
                                                 // status change is sent at once (states.md; gossip.md §3.2: timers only for
@@ -3313,7 +3257,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         _ = build_read.request_ended(), if build_read_owed => break,
                                                         _ = fabric_states.change_due() => break,
                                                         _ = records.wake.report_notify.notified() => break,
-                                                        _ = async { match claimed.as_mut() { Some(c) => c.as_mut().await, None => std::future::pending().await } } => break,
                                                         _ = records.view_changed.notified() => {
                                                             let now = topology.read().await.clone();
                                                             if decides(&now) != decided_on || announced.mesh_awaiting_checklist || announced.fabric_awaiting_checklist {

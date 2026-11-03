@@ -136,7 +136,7 @@ impl RecoverySubmitter {
     pub(crate) async fn recover(&self, n: &Node) -> Inspected {
         let (outcome, handle) = self.inspect(n).await;
         self.span_inspection(n, &outcome, handle.as_ref());
-        if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
+        if let Some(Announced { announced, operation, build_id }) = self.removal_announced(n).await {
             let incarnation = n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
             tracing::info_span!(
                 "rdm.node_admin.build.reject.via-removal-announced",
@@ -147,7 +147,6 @@ impl RecoverySubmitter {
                 announced,
                 operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step,
                 build_id = %build_id,
-                attempt,
                 verdict = verdict_name(&outcome),
             )
             .in_scope(|| tracing::info!("the birth's removal belongs to the workflow that announced it: no recovery is submitted"));
@@ -295,7 +294,7 @@ impl RecoverySubmitter {
     /// the birth ([`Self::owed_submits`]).
     pub(crate) async fn removal_announced(&self, n: &Node) -> Option<Announced> {
         let incarnation = n.incarnation_id.as_ref()?;
-        let of = |announced: &'static str, op: rdm_core::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id, attempt: op.attempt };
+        let of = |announced: &'static str, op: rdm_core::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id };
         if let Some(op) = self.digest_view.deleted().into_iter().find(|op| op.node_id == n.node_id) {
             return Some(of("node-deleted", op));
         }
@@ -308,7 +307,7 @@ impl RecoverySubmitter {
             _ => return None,
         };
         let operation = self.topology.read().await.meshes.iter().find(|m| m.name == n.mesh).and_then(|m| m.id.clone()).map(|id| crate::mesh_delete::operation(&id)).unwrap_or_else(|| rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Named(n.mesh.clone())));
-        Some(Announced { announced, operation, build_id: String::new(), attempt: 0 })
+        Some(Announced { announced, operation, build_id: String::new() })
     }
 
     /// The inspection's span (node-runtime-inspect.md "Spans"), with `handle` the exact runtime handle
@@ -642,7 +641,7 @@ pub(crate) async fn superseded_births(me: &PathName, view: &Topology, mesh: &str
                 Ok(_) => {
                     span.record("outcome", "row-deleted");
                     span.in_scope(|| tracing::info!("a second birth at the same path and name, made across a cut, is superseded: its row is written deleted"));
-                    ops.push(rdm_core::LifecycleOp { r#type: b.r#type.clone(), mesh: mesh.to_string(), build_id: build_id.to_string(), attempt: 0, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation, path: path.path.clone(), name: path.name.clone(), event_at_rafka_ms: local_now_ms(), traceparent: None, tracestate: None });
+                    ops.push(rdm_core::LifecycleOp { r#type: b.r#type.clone(), mesh: mesh.to_string(), build_id: build_id.to_string(), operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation, path: path.path.clone(), name: path.name.clone(), event_at_rafka_ms: local_now_ms(), traceparent: None, tracestate: None });
                 }
                 Err(e) => {
                     span.record("outcome", "row-refused");

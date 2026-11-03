@@ -17,7 +17,6 @@
 //! | `0x01` | `ping` | [`Ping`](crate::ping::Ping) | [`PingRequest`](crate::ping::PingRequest) | [`PingReply`](crate::ping::PingReply) |
 //! | `0x1A` | `forward` | [`Forward`](crate::forward::Forward) | [`ForwardRequest`](crate::forward::ForwardRequest) | [`ForwardReply`](crate::forward::ForwardReply) |
 //! | `0x1B` | `status` | [`Status`](crate::status::Status) | [`StatusRequest`](crate::status::StatusRequest) | [`StatusReply`](crate::status::StatusReply) |
-//! | `0x1C` | `build-claim` | [`BuildClaim`](crate::build_claim::BuildClaim) | [`BuildClaimRequest`](crate::build_claim::BuildClaimRequest) | [`BuildClaimReply`](crate::build_claim::BuildClaimReply) |
 //! | `0x1D` | `join` | [`Join`](crate::join::Join) | [`JoinRequest`](crate::join::JoinRequest) | [`JoinReply`](crate::join::JoinReply) |
 //! | `0x1E` | `topology` | [`Topology`](crate::topology::Topology) | [`TopologyRequest`](crate::topology::TopologyRequest) | [`TopologyReply`](crate::topology::TopologyReply) |
 //! | `0x20` | `build` | [`Build`](crate::build::Build) | [`BuildRequest`](crate::build::BuildRequest) | [`BuildReply`](crate::build::BuildReply) |

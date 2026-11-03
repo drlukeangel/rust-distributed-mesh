@@ -4,7 +4,7 @@
 //! A command is sent to one exact birth. `stop-node` is answered `Stopped` once the birth is
 //! stopped, and that reply is node-left: no upward node-left call exists (R-ON1). `Reserved6` and
 //! `Reserved7` are reserved positions (R-CR4), refused by name ([`refuse_reserved`]). A completion is matched to
-//! the open command by `(build_id, attempt, operation, node_id, incarnation)`. A completion with no open command is
+//! the open command by `(operation, node_id, incarnation)`: a node command is no Build's (Q342). A completion with no open command is
 //! refused by name; a repeat of an accepted completion is `AlreadyApplied`. This is the RPC
 //! completion inbox of the executing admin: it reads no gossip and writes nothing durable (the
 //! pipeline's step receipt is the durable record).
@@ -49,11 +49,7 @@ impl NodeCommand {
 /// The natural key of a command and its completion.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CommandKey {
-    /// The Build the operation belongs to.
-    pub build_id: String,
-    /// The Build attempt that holds it.
-    pub attempt: u32,
-    /// `node.stop:<path>` or `node.start:<path>`.
+    /// `node.stop:<node_id>` or `node.start:<node_id>`.
     pub operation: rdm_core::OperationId,
     /// The exact birth commanded.
     pub node_id: NodeId,
@@ -241,11 +237,9 @@ impl CommandView {
                 // The command held for this birth that the completion most resembles: the one
                 // under the same operation, else any. The first differing field is the answer.
                 let mut held: Vec<&CommandKey> = open.keys().filter(|k| k.node_id == key.node_id && k.incarnation == key.incarnation).collect();
-                held.sort_by_key(|k| (k.operation != key.operation, k.operation.clone(), k.build_id.clone(), k.attempt));
+                held.sort_by_key(|k| (k.operation != key.operation, k.operation.clone()));
                 match held.first() {
-                    None => Accepted::NoOpenCommand { field: "command".into(), expected: "an open stop-node or start-node for this birth".into(), reported: format!("{:?} (build {}, attempt {})", key.operation, key.build_id, key.attempt) },
-                    Some(k) if k.build_id != key.build_id => Accepted::NoOpenCommand { field: "build_id".into(), expected: k.build_id.clone(), reported: key.build_id.clone() },
-                    Some(k) if k.attempt != key.attempt => Accepted::NoOpenCommand { field: "attempt".into(), expected: k.attempt.to_string(), reported: key.attempt.to_string() },
+                    None => Accepted::NoOpenCommand { field: "command".into(), expected: "an open stop-node or start-node for this birth".into(), reported: format!("{:?}", key.operation) },
                     Some(k) => Accepted::NoOpenCommand { field: "operation".into(), expected: format!("{:?}", k.operation), reported: format!("{:?}", key.operation) },
                 }
             }
@@ -308,7 +302,7 @@ pub fn unreachable_of(cause: &rdm_core::outcome::NotSentReason) -> Option<Unreac
 /// a step reads writes, whether a wait received it or the command's own reply carried it (a stop's
 /// `Stopped`, node-stop.md).
 pub fn completion_span(node: &Node, cmd: NodeCommand, ctx: &CommandContext, received: bool) {
-    tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node_path = %node.path, node_name = %node.name, completion = cmd.completion(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, received = received, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node_path = %node.path, node_name = %node.name, completion = cmd.completion(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, received = received, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the completion was awaited"));
 }
 
@@ -318,7 +312,7 @@ pub async fn await_completion(commands: &CommandView, node: &Node, cmd: NodeComm
     let Some(incarnation) = node.incarnation_id.clone() else {
         return Completion::NotAwaited { admission: format!("{} has no known birth", node.node_id) };
     };
-    let key = CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation };
+    let key = CommandKey { operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation };
     let mut rx = commands.open(key);
     let got = tokio::time::timeout(within, rx.wait_for(|done| *done)).await.is_ok_and(|r| r.is_ok());
     completion_span(node, cmd, ctx, got);
@@ -353,7 +347,7 @@ mod tests {
     use super::*;
 
     fn key(op: &str) -> CommandKey {
-        CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: rdm_core::OperationId::unscoped(op), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }
+        CommandKey { operation: rdm_core::OperationId::unscoped(op), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }
     }
 
     /// CONTRACT (node-tickle.md step 1; i144 R9): a command never sent because its birth refused or
@@ -390,8 +384,6 @@ mod tests {
         assert_eq!(commands.complete(&k), Accepted::Again);
         let other = CommandKey { operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), ..k.clone() };
         assert_eq!(commands.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: format!("{:?}", k.operation), reported: format!("{:?}", other.operation) });
-        let attempt = CommandKey { attempt: 2, ..k.clone() };
-        assert_eq!(commands.complete(&attempt), Accepted::NoOpenCommand { field: "attempt".into(), expected: "1".into(), reported: "2".into() });
         let stranger = CommandKey { node_id: NodeId::mint(), ..k.clone() };
         assert!(matches!(commands.complete(&stranger), Accepted::NoOpenCommand { field, .. } if field == "command"));
     }

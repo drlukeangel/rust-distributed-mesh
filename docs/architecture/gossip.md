@@ -104,7 +104,7 @@ receiving peer mesh primary
     -> forwards remote topology onto own mesh channel
        as deltas backed by periodic full snapshots, loads omitted
 
-mesh executor (the primary holding a claimed attempt)
+mesh executor (the mesh-primary running its mesh's section of a Build)
     -> publishes lifecycle events on its own mesh channel; the backbone carries them
        in its mesh topology (in_flight, deleted)
 
@@ -162,7 +162,7 @@ local Instant         silence and elapsed time                    (receiver-loca
 
 `operation` is the lifecycle operation's idempotency key (`node.delete:mesh2.node.2`), not a
 deployment pipeline step: one node.delete runs many steps and publishes one `NodeDeleting` and one
-`NodeDeleted`. `(build_id, attempt, operation)` is the only operation identity and is carried on
+`NodeDeleted`. `(build_id, operation)` is the only operation identity and is carried on
 the operation's Step receipt; no other operation id is minted. Every removal has a Build, and an
 operation without that identity is not a lifecycle op.
 
@@ -205,7 +205,7 @@ Receiver rules:
 <a id="gossip-correlation"></a>
 Correlation: a gossip frame carries no Node RPC target or CallContext. Its envelope carries the
 publishing span's trace context (§3.4), so a receive span is that span's child; the publishing span
-need not be the operation's ([Telemetry](telemetry.md)). Correlate a frame with its operation by `build_id`, `attempt`, `operation`, `node_id` and
+need not be the operation's ([Telemetry](telemetry.md)). Correlate a frame with its operation by `build_id`, `operation`, `node_id` and
 `incarnation`, and a mesh topology by its `publisher`, `topology_version` and `snapshot_id`. A gossip
 receiver's TraceId or ParentSpanId need not match the operation's trace.
 
@@ -243,7 +243,6 @@ Reserved18              { hook: StateHook, forwarded_by: Option<String> }, // re
 LifecycleOp {
     type: String,
     build_id: String,
-    attempt: u32,
     operation: String,
     node_id: NodeId,
     incarnation: IncarnationId,
@@ -330,7 +329,7 @@ a chunked full installs only when every chunk is held.
 Topology frames are postcard `Frame` / `WireDigest` encodings. The JSON below is a readable
 decoded view, not a gossip wire codec; the fields are the catalog's above.
 
-A lifecycle event frame carries one `LifecycleOp`. `NodeDeleting` from the executor of a claimed
+A lifecycle event frame carries one `LifecycleOp`. `NodeDeleting` from the executor of an admitted
 node.delete:
 
 ```json
@@ -338,7 +337,6 @@ node.delete:
   "frame": "node-deleting",
   "op": {
     "build_id": "bld_1a2b3c4d",
-    "attempt": 1,
     "operation": "node.delete:mesh1.node.1",
     "node_id": "k8pag1qx95gw",
     "incarnation": "0000000000000008",
@@ -366,7 +364,6 @@ that node's matching stopped frame:
   "frame": "node-stopped",
   "op": {
     "build_id": "bld_1a2b3c4d",
-    "attempt": 1,
     "operation": "node.stop:mesh1.node.1",
     "node_id": "k8pag1qx95gw",
     "incarnation": "0000000000000008",
@@ -429,7 +426,6 @@ removal in `in_flight`:
   "in_flight": [
     {
       "build_id": "bld_1a2b3c4d",
-      "attempt": 1,
       "operation": "node.delete:mesh1.node.1",
       "node_id": "k8pag1qx95gw",
       "incarnation": "0000000000000008",
@@ -470,8 +466,8 @@ P(n) is the 20-digit zero-padded decimal representation of the existing u64 vers
 | `Digest` (`rdm.mesh.digest`) | replacement state | the author birth / that exact birth | `P(digest_seq)`, higher is newer | birth and digest sequence |
 | `MeshTopology` (`rdm.mesh.members`, source publication and forwarded full) | snapshot | the original author birth / `(mesh, source_publisher)` | `P(topology_version)` against the installed floor, including a topology read; equal material version admits a new publication's hearing and distinct unfinished chunks | source projection, topology version, publication owner's exact birth and counter, chunk index; a resend keeps id |
 | `MeshTopologyDelta` (`rdm.mesh.members.delta`) | delta | the original author birth / `(mesh, source_publisher)` | `P(topology_version)`; `base_version` in data equals installed to apply, ahead requests repair as via-gap, lower version is stale | source projection, base version and topology version |
-| `NodeDeleting`, `NodeStopped` (`rdm.node.deleting`, `rdm.node.stopped`) | operation fact | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; the operation cannot reopen after completion or the exact birth's later lifecycle. The carried `topology_version` is data, checked on the projection's own subject by its existing per-publisher floor rule, even for a repeated fact | kind and the complete operation identity; a repeat runs no effect twice, including when the carried version is refused |
-| `NodeDeleted` (`rdm.node.deleted`) | operation fact, terminal | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; stands after unrelated traffic | kind and the complete operation identity |
+| `NodeDeleting`, `NodeStopped` (`rdm.node.deleting`, `rdm.node.stopped`) | operation fact | the author birth / `(build_id, operation, node_id, incarnation)` | absent; the operation cannot reopen after completion or the exact birth's later lifecycle. The carried `topology_version` is data, checked on the projection's own subject by its existing per-publisher floor rule, even for a repeated fact | kind and the complete operation identity; a repeat runs no effect twice, including when the carried version is refused |
+| `NodeDeleted` (`rdm.node.deleted`) | operation fact, terminal | the author birth / `(build_id, operation, node_id, incarnation)` | absent; stands after unrelated traffic | kind and the complete operation identity |
 | `MeshStatus`, `FabricStatus` (`rdm.mesh.status`, `rdm.fabric.status`) | replacement state | the author birth / stable mesh or fabric status scope | `P(the primary's revision) + "." + P(changed_at_rafka_ms)`, lexical order; the publisher takes its revision from the Mesh row. A predecessor's later timestamp loses to the successor's higher revision; within one primary its change time orders changes | subject and composite sequence; equal sequence is duplicate with identical content, inconsistent with different content |
 | `Concern` (`rdm.mesh.concern`, position 10) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
 | `NodeConnectionsDeleting`, `NodeLeaving`, `NodeLeft`, `NodeConnectionsDeleted`, `NewFabricPrimary` (`rdm.node.connections.deleting`, `rdm.node.leaving`, `rdm.node.left`, `rdm.node.connections.deleted`, `rdm.fabric.primary.new`) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
@@ -752,7 +748,7 @@ These are **not** the provider's `Exited`:
 - silence/staleness;
 - failed RPC or failed dial;
 - an unheard peer mesh;
-- holding the Build claim.
+- running a Build's step.
 
 Retention is bounded current topology state, not permanent history: at least the topology
 repair horizon, expired by local age since the receiver accepted it; `event_at_rafka_ms` is evidence
@@ -927,20 +923,20 @@ There is no leadership-specific repair protocol.
 Gossip does not decide to recreate a missing node.
 
 Build-channel facts remain broadcast for durability and recovery. The fabric-primary
-is the sole Build driver; it claims and calls the executor over the
+is the sole Build driver; it dispatches each mesh's section to its executor over the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm). Caller progress waits on
 no gossip receipt.
 
 For a mesh whose node-admins are unheard the sequence is [node recovery](lifecycles/node-recovery.md)
 of its lost mesh-primary by the fabric-primary (Q335), and node recovery for a member whose
-mesh-primary is live; who claims and executes is [build.md](build.md). Gossip's part is fixed:
+mesh-primary is live; who executes a Build is [build.md](build.md). Gossip's part is fixed:
 canonical runtime and lifecycle evidence, never silence, establishes which births are gone; the
 current Build, read from `builds.storage`, establishes what should exist; a node-admin created into
 an existing mesh keeps that mesh's MeshId.
 
 Held live ordinary members remain reconciliation inputs and are preserved through their current topology + RuntimeFacts/runtime metadata.
 
-A deletion is published by the executor that holds the operation, after its node.delete step's receipt. Holding a claim does not delete; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): node investigation, then on any verdict but reached one recovery attempt that deletes the unheard node (NodeDeleted from that step) and creates its successor at the same path and name.
+A deletion is published by the executor that holds the operation, after its node.delete step's receipt. Running a Build's step does not delete; neither does the node's own `stopped`, a failed RPC, silence or an unheard peer mesh. A lost member is recovered by its mesh-primary ([node recovery](lifecycles/node-recovery.md)): node investigation, then on any verdict but reached one recovery attempt that deletes the unheard node (NodeDeleted from that step) and creates its successor at the same path and name.
 
 ---
 
@@ -979,6 +975,6 @@ At minimum:
 30. two heartbeats of one birth are ordered by `digest_seq` alone: a stalled or repeated Rafka-time never makes a newer heartbeat look older;
 31. a forwarder that missed an intermediate source version emits one delta from the version it last published to the one it holds;
 32. a source Mesh whose nodes only heartbeat does not bump `topology_version`, and no delta travels;
-33. `NodeDeleting` is never emitted before the executor's own journal holds its adopted claim for the attempt; a multi-mesh Build's second Mesh emits its `NodeDeleting` only after the fabric-primary claims the next attempt and dispatches build.attempt.run and that Mesh's executor adopts the won claim, keyed on that attempt, never on Build acceptance;
+33. `NodeDeleting` is never emitted before the mesh's primary has received its section of the Build (`build.attempt.run`); a multi-mesh Build's second mesh emits its `NodeDeleting` only after the fabric-primary dispatches that mesh's section, never on Build acceptance;
 34. `NodeDeleted` is never emitted without node.delete's step receipt; silence, a failed RPC and an unheard peer never produce it; after it, `ExactNode(old)` is `Gone`, the path has no node until a new birth, and the current topology does not list the node;
 35. unplanned loss produces one `NodeDeleted` for the old identity, after evidence, from the recovery Build's node.delete.

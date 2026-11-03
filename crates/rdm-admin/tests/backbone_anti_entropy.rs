@@ -20,7 +20,7 @@ use rdm_transport::topology::{gossip_addr, learn_addresses, Backbone, TopologyVi
 use rdm_admin::admin::{start_with, AdminConfig};
 use rdm_core::PathName;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild};
+use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, CurrentBuild};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -63,9 +63,6 @@ impl BuildStateAdapter for HeldBuilds {
     async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
         self.inner.publish_accepted(a).await
     }
-    async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(o).await
-    }
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(id).await
     }
@@ -81,35 +78,17 @@ impl BuildStateAdapter for HeldBuilds {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
-    }
-    async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(c).await
-    }
-    async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(c).await
-    }
-    async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_step_receipt(r).await
-    }
-    async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(r).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
     }
-    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
+    async fn note_blocked(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        self.inner.note_blocked(build_id, operation, step, reason).await
     }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.inner.accepted_newest_first().await
+    }
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
     }
 }
 

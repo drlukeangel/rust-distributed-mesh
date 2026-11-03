@@ -101,7 +101,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     let window_victim = Estate::path(&format!("{lost}.node"), "3");
     let survivors: Vec<PathName> = (1..=2).map(|i| Estate::path(&format!("{lost}.node"), &i.to_string())).collect();
     assert_eq!(estate.accepted_build_id().await, accepted, "the accepted Build names the topology");
-    let attempt_before = estate.attempt_of_build(&accepted).await;
+    let attempt_before = estate.starts_of_build(&accepted).await;
     let lost_primary_id = before.iter().find(|n| n["mesh"] == lost && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| s(&n["node_id"])).expect("the lost mesh's primary");
     let lost_births: BTreeMap<PathName, String> = births(&before).into_iter().filter(|(n, _)| n.path == format!("{lost}.node-admin") || *n == window_victim).collect();
     // A runtime's data dir is named by its birth's node id.
@@ -145,7 +145,7 @@ async fn recovery_admin_restores_lost_node_admins_preserves_mesh_and_build() {
     .await;
     let after = values(&estate.settled_views(&shape).await);
     assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build: the current build_id is unchanged");
-    assert_eq!(estate.attempt_of_build(&accepted).await, attempt_before, "no attempt of the current Build runs a repair (Q342)");
+    assert_eq!(estate.starts_of_build(&accepted).await, attempt_before, "no attempt of the current Build runs a repair (Q342)");
     assert_eq!(estate.mesh_view(lost).await.id.expect("the lost mesh still has its id").to_string(), lost_mesh_id, "{lost} recovered under its own MeshId");
     let (old, new) = (births(&before), births(&after));
     for (name, inc) in &old {

@@ -35,7 +35,7 @@ fn a_rig_dropped_with_its_launched_node_running_leaves_no_node_running() {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
         let template = template(&admin);
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::common::stepping(&fabric, "mesh1");
         let sink = Published::default();
         let provider = ProcessDeploymentProvider::new();
         let pipeline = DeploymentPipeline {
@@ -49,7 +49,7 @@ fn a_rig_dropped_with_its_launched_node_running_leaves_no_node_running() {
             timeouts: Timeouts::default(),
         };
         let created = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(publish_build(&builds, add_node()).await), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(publish_build(&builds, add_node()).await), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
         let pid = created.handle.pid.expect("a process handle names its pid");

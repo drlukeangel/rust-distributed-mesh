@@ -3,7 +3,7 @@
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
@@ -54,8 +54,10 @@ impl Capture {
     }
 }
 
-/// A runtime that stays up and never reports: the create stops waiting for it.
-struct Silent;
+/// A runtime that stays up and never reports: the create stops waiting for it. It keeps the
+/// incarnation each launch carried.
+#[derive(Default)]
+struct Silent(std::sync::Mutex<Vec<String>>);
 #[async_trait::async_trait]
 impl DeploymentProvider for Silent {
     fn kind(&self) -> ProviderKind {
@@ -65,6 +67,7 @@ impl DeploymentProvider for Silent {
         "i143-rb2".into()
     }
     async fn spawn(&self, spec: &ResolvedNodeLaunch, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<DeploymentHandle, DeployError> {
+        self.0.lock().unwrap().extend(spec.env.get(rdm_core::launch::ENV_INCARNATION).cloned());
         Ok(DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("i143-rb2".into()) })
     }
     async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode, _deadline: rdm_admin::deployment::deadline::Deadline) -> Result<(), DeployError> {
@@ -99,28 +102,23 @@ impl TopologySink for Discard {
     fn remove_birth(&self, _: &rdm_admin::model::PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
 }
 
-fn receipt_output(view: &rdm_admin::build_state::BuildProjection, step: &str) -> Value {
-    view.steps.iter().find(|s| s.step == step).unwrap_or_else(|| panic!("no {step} receipt")).output.clone().unwrap_or_else(|| panic!("{step} recorded no output"))
-}
-
 /// CONTRACT (R-B2 D): the deploying admin ends a create whose birth never reported (`WaitForBind`
 /// expires). The birth's `JoinNode` that arrives afterwards is answered `DeploymentAbandoned`
-/// naming the Build, the attempt, the node id and the incarnation of exactly that birth, and its
-/// `via-join` span records outcome `deployment-abandoned` with the Build and attempt. A digest of
+/// naming the Build, the node id and the incarnation of exactly that birth, and its
+/// `via-join` span records outcome `deployment-abandoned` with the Build. A digest of
 /// the same node under another incarnation is not that birth: it is refused as a mismatch by its
 /// field, never as abandoned. The reply is never `NotPrimary`.
 #[test]
-fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_and_birth() {
+fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth() {
     let cap = capture();
     cap.run(async {
         let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = rdm_admin::build_run::FramedBuilds::stepping(Arc::new(MemoryBuildStateAdapter::new()), &FabricId::mint(), &executor.node_id, "mesh1");
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
             .await
             .unwrap();
-        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: executor.clone() }).await.unwrap();
         let data_root = std::env::temp_dir().join(format!("i143-rb2-{}", NodeId::mint()));
         let template = LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
@@ -137,8 +135,9 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             binding: None,
         };
         let joins = Arc::new(Joins::default());
+        let silent = Silent::default();
         let pipeline = DeploymentPipeline {
-            provider: &Silent,
+            provider: &silent,
             joins: &joins,
             observer: &Never,
             sink: &Discard,
@@ -148,16 +147,15 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             timeouts: Timeouts { bind: Duration::from_millis(300), ..Timeouts::default() },
         };
         let name: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let err = pipeline.create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(name))), node_id: (rdm_core::fixture_node_id(&(name))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 3, path: name.path.clone(), name: name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }).await.unwrap_err();
+        let err = pipeline.create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(name))), node_id: (rdm_core::fixture_node_id(&(name))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: name.path.clone(), name: name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None }).await.unwrap_err();
         assert_eq!(err.step, "WaitForBind", "{err}");
 
-        // The exact birth the create deployed, from its own receipts and data dir.
-        let view = builds.read_build(&build_id).await.unwrap();
-        let identity = receipt_output(&view, "AllocateIdentity");
-        let node_id = NodeId::parse(identity["node_id"].as_str().unwrap()).unwrap();
-        let incarnation = IncarnationId::parse(identity["incarnation"].as_str().unwrap()).unwrap();
-        let endpoint_id = EndpointId(receipt_output(&view, "PrepareStorage").as_str().unwrap().to_string());
+        // The exact birth the create deployed: the Build record's node id (D58), the incarnation its
+        // launch carried, and the transport key its data dir holds.
+        let node_id = rdm_core::fixture_node_id(&name);
+        let incarnation = IncarnationId::parse(silent.0.lock().unwrap().last().expect("the create launched its birth")).unwrap();
         let data_dir = rdm_admin::deployment::node_data_dir(&data_root, &node_id);
+        let endpoint_id = rdm_admin::deployment::pipeline::inspect_transport_key(&data_dir).expect("the create wrote its node key");
         let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
         let digest = |incarnation: &IncarnationId| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
@@ -207,8 +205,8 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let late = door.serve(endpoint_id.clone(), ask(&digest(&incarnation))).await;
         assert_eq!(
             late,
-            JoinReply::DeploymentAbandoned { build_id: build_id.to_string(), attempt: 3, node_id: node_id.clone(), incarnation: incarnation.clone() },
-            "the late join names the Build, the attempt and the exact birth"
+            JoinReply::DeploymentAbandoned { build_id: build_id.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() },
+            "the late join names the Build and the exact birth"
         );
         let other = IncarnationId::mint();
         let targeted = door.serve(endpoint_id.clone(), ask(&digest(&other))).await;
@@ -220,7 +218,6 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
     let via_join: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.update.via-join").collect();
     let abandoned: Vec<&&Value> = via_join.iter().filter(|s| s["attributes"]["outcome"] == "deployment-abandoned").collect();
     assert_eq!(abandoned.len(), 1, "{via_join:?}");
-    assert_eq!(abandoned[0]["attributes"]["attempt"], "3");
     assert!(rdm_core::BuildId::parse(abandoned[0]["attributes"]["build_id"].as_str().unwrap()).is_ok());
     assert!(via_join.iter().all(|s| s["attributes"]["outcome"] != "not-authority"), "the authority never answers not-authority about itself");
 }

@@ -216,7 +216,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 has its id").to_string();
     estate.enter(&fp).await;
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let attempt_before = estate.attempt_of_build(&accepted).await;
+    let attempt_before = estate.starts_of_build(&accepted).await;
     let (floor, gossip) = (rdm_transport::topology::staleness_floor(), rdm_transport::topology::gossip_interval());
     let fault_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.kill_pid(runtime_of(&estate, &lost_id));
@@ -227,7 +227,7 @@ async fn a_lost_mesh_primary_with_no_successor_is_investigated_and_re_created_by
     .await;
     wait_for("the fabric is ready", floor + gossip * 2, || async { estate.fabric_view_at(&fp).await.filter(|f| status_word(f.status) == "ready").map(|_| ()) }).await;
     let mesh2_after = estate.mesh_view("mesh2").await;
-    let attempt_after = estate.attempt_of_build(&accepted).await;
+    let attempt_after = estate.starts_of_build(&accepted).await;
     let stop_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     let spans = estate.spans();

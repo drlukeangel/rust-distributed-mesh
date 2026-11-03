@@ -4,10 +4,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    BuildAccepted, BuildAttemptClaim, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter,
-    StepOutcome,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome, StepWrite};
 use rdm_admin::model::{MeshId, PathName};
 use rdm_client::{BuildCarrier, BuildFrame};
 use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit, Disposition};
@@ -62,8 +59,8 @@ impl Capture {
     }
 }
 
-/// CONTRACT: docs/architecture/node-rpc-envelope.md:1388 "Every progress frame (Step, Blocked) carries the receipt key `(build_id, attempt, operation, step)` and receivers drop duplicates by that key. A caller watching a Build whose connection closes (`Budget::Stream`'s one end) reattaches by `build_id`: `build.get [id: build_id]` for the receipts, then the outer stream again, resuming from the receipts; the break is never a defect and never a new execution (Node RPC §34, §43)."
-/// docs/architecture/node-rpc-envelope.md:1403 "`FabricPrimaryMoved { build_id, fabric_primary }`, the typed frame naming the new fabric-primary | deliberate outer-stream end naming the new fabric-primary; caller resubmits the same build_id there"
+/// CONTRACT: docs/architecture/node-rpc-envelope.md "Frames, durable events and reattachment": "Every progress frame (Step, Blocked) carries the key `(build_id, mesh, operation, step)` and receivers drop duplicates by that key. A caller watching a Build whose connection closes (a Build stream ends with its connection, `StreamingProtocol::ENDS_WITH_ITS_CONNECTION`) reattaches by `build_id`: `build.get [id: build_id]` for the events, then the outer stream again, resuming from the events; the break is never a defect and never a new execution"
+/// docs/architecture/node-rpc-envelope.md "`FabricPrimaryMoved { build_id, fabric_primary }`, the typed frame naming the new fabric-primary | deliberate outer-stream end naming the new fabric-primary; caller resubmits the same build_id there"
 #[test]
 fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating_step_receipts() {
     let capture = Capture::new(
@@ -81,7 +78,7 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
 
     rt.block_on(async move {
         let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let log = Arc::new(MemoryBuildStateAdapter::default());
+        let log = Arc::new(rdm_admin::build_run::FramedBuilds::stepping(Arc::new(MemoryBuildStateAdapter::default()), &rdm_core::FabricId::mint(), &executor_birth.node_id, "mesh1"));
         let build_id = BuildId::parse("cq2tyb03krac").unwrap();
         let topology = FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap());
         log.publish_accepted(&BuildAccepted {
@@ -92,25 +89,13 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
         })
         .await
         .unwrap();
-        log.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-            claimant: None,
-            mesh: None,
-            build_id: build_id.clone(),
-            attempt: 1,
-            executor: executor_birth.clone(),
-        })
-        .await
-        .unwrap();
         for step in ["AllocateIdentity", "WaitForMeshJoin"] {
-            log.append_step_receipt(&BuildStepReceipt {
+            log.write_step(&StepWrite {
                 build_id: build_id.clone(),
-                attempt: 1,
+                mesh: None,
                 operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
                 step: step.into(),
                 outcome: StepOutcome::Complete,
-                output: None,
-                executor: Some(executor_birth.clone()),
-                mesh: None,
             })
             .await
             .unwrap();
@@ -143,17 +128,16 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 let mut sink = sink
                                     .started(BuildReply::Started {
                                         build_id: bid.clone(),
-                                        attempt: 1,
                                         disposition: Disposition::Created,
                                     })
                                     .await
                                     .map_err(gone)?;
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
-                                    attempt: 1,
-                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
+                                    mesh: "mesh1".into(),
+                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())).to_string(),
                                     step: "AllocateIdentity".into(),
-                                    receipt: None,
+                                    result: rdm_core::build::StepResult::Complete,
                                 })
                                 .await
                                 .map_err(gone)?;
@@ -166,14 +150,12 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 rdm_admin::build_op::serve_builds(&me, &*log, filter, sink).await
                             }
                             BuildRequest::Create {
-                                submit: BuildSubmit::Resubmit { build_id: r_id, from_attempt },
+                                submit: BuildSubmit::Resubmit { build_id: r_id },
                             } => {
                                 assert_eq!(r_id, bid);
-                                assert_eq!(from_attempt, 1);
                                 let mut sink = sink
                                     .started(BuildReply::Started {
                                         build_id: bid.clone(),
-                                        attempt: 1,
                                         disposition: Disposition::Attached,
                                     })
                                     .await
@@ -181,26 +163,23 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
                                 // Replay WaitForMeshJoin (already read via build.get) and then emit Complete.
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
-                                    attempt: 1,
-                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
+                                    mesh: "mesh1".into(),
+                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())).to_string(),
                                     step: "WaitForMeshJoin".into(),
-                                    receipt: None,
+                                    result: rdm_core::build::StepResult::Complete,
                                 })
                                 .await
                                 .map_err(gone)?;
                                 sink.data(BuildReply::Step {
                                     build_id: bid.clone(),
-                                    attempt: 1,
-                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
+                                    mesh: "mesh1".into(),
+                                    operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())).to_string(),
                                     step: "Complete".into(),
-                                    receipt: None,
+                                    result: rdm_core::build::StepResult::Complete,
                                 })
                                 .await
                                 .map_err(gone)?;
-                                Ok(BuildReply::Complete {
-                                    build_id: bid,
-                                    attempt: 1,
-                                })
+                                Ok(BuildReply::Complete { build_id: bid })
                             }
                             other => Ok(rdm_core::reply::build::rejected(
                                 "unserved".into(),
@@ -254,24 +233,27 @@ fn build_carrier_follow_reattaches_through_builds_get_and_resubmit_deduplicating
             followed.frames,
             vec![
                 BuildFrame::Step {
-                    attempt: 1,
-                    operation: op.clone(),
+                    mesh: "mesh1".into(),
+                    operation: op.clone().to_string(),
                     step: "AllocateIdentity".into(),
+                    result: rdm_core::build::StepResult::Complete,
                 },
                 BuildFrame::FabricPrimaryMoved {
                     fabric_primary: Some(executor_birth.node_id.clone()),
                 },
                 BuildFrame::Step {
-                    attempt: 1,
-                    operation: op.clone(),
+                    mesh: "mesh1".into(),
+                    operation: op.clone().to_string(),
                     step: "WaitForMeshJoin".into(),
+                    result: rdm_core::build::StepResult::Complete,
                 },
                 BuildFrame::Step {
-                    attempt: 1,
-                    operation: op,
+                    mesh: "mesh1".into(),
+                    operation: op.to_string(),
                     step: "Complete".into(),
+                    result: rdm_core::build::StepResult::Complete,
                 },
-                BuildFrame::Complete { attempt: 1 },
+                BuildFrame::Complete,
             ]
         );
 

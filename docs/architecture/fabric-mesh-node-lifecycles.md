@@ -20,7 +20,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Fabric certs](fabric-certs.md) | the cert chain, issuance, renewal and verification at a connection; the cert workflows table |
 | [Elections](fabric-node-lifecycle-elections.md) | the leadership election: a heard primary stays, unheard past the staleness floor it is superseded; the Mesh row and the fabric row as its inputs |
 | [Node-admin lifecycle](node-admin-lifecycle.md) | node-admin launch inputs and start modes, who starts a node-admin of an existing mesh, the Rafka recovery copy |
-| [Build](build.md) | the Build engine: accepted topology, the Build/attempt/claim model, BuildStateAdapter, storage interfaces, crash safety, lifecycle transitions, the RDM/Rafka boundary and import rule |
+| [Build](build.md) | the Build engine: accepted topology, the Build record written once and its events, BuildStateAdapter, storage interfaces, crash safety, lifecycle transitions, the RDM/Rafka boundary and import rule |
 | [Build deployment](build-deployment.md) | what a Build deploys: the executable each node runs, named per node at create, recorded on the row, re-hashed at the launch, replaced only by re-birth, recovered from the row, read from the rows |
 | [Deployment provider](deployment-provider.md) | the deployment provider and its environment policy, the DeploymentPipeline, the RuntimeFact contract, current runtime metadata and the exact runtime handle |
 | [Fabric primary](fabric-primary.md) | the fabric-primary: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
@@ -39,7 +39,7 @@ TOPOLOGY GOSSIP
 BUILD / ATTEMPT / CLAIM / STEP
     assigns durable work and records its outcome
     survives a primary change; a successor continues the same Build
-    exactly one executor holds an attempt at a time
+    each mesh's section runs at that mesh's primary
 
 NODE RPC
     an exact-target command from a Mesh executor to one node, with a typed reply
@@ -49,7 +49,7 @@ NODE RPC
 None replaces another. A Build assigns; Node RPC executes against one node; gossip tells every
 node what changed and when. The fabric-primary drives every Build through the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm). Node RPC carries both assignment and
-progress; a won claim supplies durable ownership. Gossip carries the recovery evidence, never the
+progress; the Build record and its events are the durable record. Gossip carries the recovery evidence, never the
 progress wait.
 
 What an operation is admitted against, gate by gate and the source each reads, is
@@ -123,7 +123,7 @@ are explicit.
 
 Five concepts are distinct and never mixed.
 
-**Build operation.** `(build_id, attempt, operation)` identifies a lifecycle operation in
+**Build operation.** `(build_id, operation)` identifies a lifecycle operation in
 reconciliation. Operation names render mechanically from the typed object:
 
 ```text
@@ -139,7 +139,7 @@ A typed call has one canonical name, noun.verb, and a command completes as noun.
 A new node is node.created. Birth and re-birth are the application's names for its own workflows, never RDM operations. Rafka names its own workflows without creating an RDM opcode; a new executable is a new node, a Build that adds it, and no page documents primitives together (Q345).
 
 **Node RPC opcode.** A row of the [op ledger](node-rpc-envelope.md#the-op-ledger). An opcode is
-not a Build operation identity: only `build_id + attempt + operation` names a Build operation.
+not a Build operation identity: only `build_id + operation` names a Build operation.
 A stop step sends StopNode for [node.stop](lifecycles/node-stop.md#command-and-completion-messages) on op
 `0x22` (NodeCommand).
 

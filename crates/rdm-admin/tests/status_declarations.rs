@@ -1378,7 +1378,7 @@ async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Route
     ));
     connections.held().lock().unwrap().set_topology_view(live.clone());
     let node_rpc = rdm_admin::node_rpc::ProcessNodeRpc::new(live.clone(), ep.clone());
-    let server = rdm_admin::admin::rpc_server(connections, node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
+    let server = rdm_admin::admin::rpc_server(connections, node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
         .build(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     (resolved, Router::builder(ep).accept(rdm_transport::ALPN, server).spawn())
@@ -2140,14 +2140,14 @@ const NODE_LEFT_EXPECTED: &str = "no command: node-left is never a call; a stopp
 fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     let cap = capture();
     let operation = rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap()));
-    let reported = format!("node-left {operation:?} (build 66h8qrqvaajk, attempt 1)");
+    let reported = format!("node-left {operation:?} (build 66h8qrqvaajk)");
     let (stop_open, reply, admin, rpc) = cap.run(async {
         let (rig, b) = rig().await;
         let rpc1 = &b["rpc1"];
         let incarnation = rpc1.node.incarnation_id.clone().unwrap();
-        let key = rdm_admin::node_commands::CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: operation.clone(), node_id: rpc1.node.node_id.clone(), incarnation: incarnation.clone() };
+        let key = rdm_admin::node_commands::CommandKey { operation: operation.clone(), node_id: rpc1.node.node_id.clone(), incarnation: incarnation.clone() };
         let completed = rig.door.commands.open(key);
-        let left = StatusRequest::NodeLeft { node_id: rpc1.node.node_id.clone(), incarnation, build_id: "66h8qrqvaajk".into(), attempt: 1, operation: operation.clone() };
+        let left = StatusRequest::NodeLeft { node_id: rpc1.node.node_id.clone(), incarnation, build_id: "66h8qrqvaajk".into(), operation: operation.clone() };
         let reply = reply(&call(&rig, rpc1, &left).await);
         let stop_open = !*completed.borrow();
         (stop_open, reply, rig.admin.node.node_id.to_string(), rpc1.node.node_id.to_string())
@@ -2163,8 +2163,8 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     let (trace_id, attrs) = &spans[0];
     let a = |k: &str| attrs.get(k).cloned().unwrap_or_default();
     assert_eq!(
-        (a("node"), a("op"), a("field"), a("expected"), a("reported"), a("name"), a("caller"), a("operation"), a("build_id"), a("attempt")),
-        (admin, "node-left".to_string(), "command".to_string(), NODE_LEFT_EXPECTED.to_string(), reported.clone(), rpc.clone(), rpc, "node.stop".to_string(), "66h8qrqvaajk".to_string(), "1".to_string()),
+        (a("node"), a("op"), a("field"), a("expected"), a("reported"), a("name"), a("caller"), a("operation"), a("build_id")),
+        (admin, "node-left".to_string(), "command".to_string(), NODE_LEFT_EXPECTED.to_string(), reported.clone(), rpc.clone(), rpc, "node.stop".to_string(), "66h8qrqvaajk".to_string()),
         "{attrs:?}"
     );
     assert!(cap.spans("rdm.node_admin.status.update.via-completion-accepted").is_empty(), "no completion is accepted");
@@ -2182,7 +2182,7 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips_a_failed_one() {
     use rdm_admin::accepted::{AcceptedStore, FabricTopology};
-    use rdm_admin::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
+    use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter};
     let admin = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
@@ -2190,7 +2190,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
         nodes: vec![admin.node.clone()],
     };
     let builds = Arc::new(MemoryBuildStateAdapter::default());
-    AcceptedStore::seeded(&*builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), &admin.node.birth().unwrap(), "mesh1").await.unwrap();
+    AcceptedStore::seeded(&*builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), &admin.node.birth().unwrap()).await.unwrap();
     let held = builds.current_build().await.unwrap().into_build_id().expect("the seeded Build is current").to_string();
     let empty = Arc::new(MemoryBuildStateAdapter::default());
     let answer = |builds: Arc<dyn BuildStateAdapter>| {
@@ -2243,9 +2243,10 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     // A newer Build that failed is skipped: the older completed one is still the current Build.
     let newer = rdm_admin::build::BuildId::mint();
     builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), change: None, source: None, time: u64::MAX - 1 }).await.unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: newer.clone(), attempt: 1, executor: admin.node.birth().unwrap() }).await.unwrap();
+    crate::start_build(&*builds, &newer, &admin.node.birth().unwrap()).await;
     assert_eq!(answer(builds.clone()).await.build_id, Some(newer.to_string()), "the newer Build in progress is the current Build");
-    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into(), code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
+    let source = rdm_admin::events_storage::EventSource { fabric_id: crate::cell_fabric(), node_id: admin.node.node_id.clone(), incarnation: admin.node.birth().unwrap().incarnation };
+    builds.events().append(&rdm_admin::events_storage::Event::build_ended(&source, 2, &newer, &rdm_admin::events_storage::EndedState::Failed { reason: "node.create: PrepareStorage".into(), code: "FAILED_PRECONDITION".into() })).await.unwrap();
     assert_eq!(answer(builds).await.build_id, Some(held.to_string()), "a failed Build is skipped: fabric.get answers the Build before it");
     assert_eq!(answer(empty).await.build_id, None, "an admin whose builds store holds no Build in progress or completed answers none");
 }
@@ -2351,7 +2352,7 @@ async fn a_never_sent_stop_or_start_writes_no_lifecycle_state() {
     let subject = &births["rpc2"].node;
     for start in [false, true] {
         let before = rig.door.declared.lock().unwrap().clone();
-        let ctx = CommandContext { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node(if start { "node.start" } else { "node.stop" }, &subject.node_id) };
+        let ctx = CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node(if start { "node.start" } else { "node.stop" }, &subject.node_id) };
         assert!(matches!(rig.door.carry_lifecycle(subject, start, &ctx).await, CommandAdmission::NotSent { .. }));
         assert_eq!(*rig.door.declared.lock().unwrap(), before);
         assert!(rdm_admin::status_rpc::Declaration::of_records(&rig.storage.nodes("mesh1").await.unwrap()).is_empty());
@@ -2365,7 +2366,7 @@ async fn status_stop_and_start_positions_are_refused_by_name_without_execution()
     let (rig, births) = rig().await;
     let subject = &births["rpc2"];
     for start in [false, true] {
-        let request = if start { StatusRequest::StartNode { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("start") } } else { StatusRequest::StopNode { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("stop") } };
+        let request = if start { StatusRequest::StartNode { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), build_id: "b".into(), operation: rdm_core::OperationId::unscoped("start") } } else { StatusRequest::StopNode { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), build_id: "b".into(), operation: rdm_core::OperationId::unscoped("stop") } };
         let before = rig.door.declared.lock().unwrap().clone();
         let result = call(&rig, subject, &request).await;
         assert!(matches!(reply(&result), StatusReply::RejectedUnmatchedCompletion { expected, reported, .. } if expected.contains("reserved") && reported.contains(request.op())), "{result:?}");
@@ -2407,7 +2408,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
         assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
-        let ctx = CommandContext { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node(if start { "node.start" } else { "node.stop" }, &subject.node_id) };
+        let ctx = CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node(if start { "node.start" } else { "node.stop" }, &subject.node_id) };
         let (door, target) = (rig.door.clone(), subject.clone());
         let call = tokio::spawn(async move { door.carry_lifecycle(&target, start, &ctx).await });
         tokio::time::timeout(Duration::from_secs(5), arrived.notified()).await.unwrap();
@@ -2484,7 +2485,7 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
         caller_delivery.set(client.delivery().clone()).unwrap_or_else(|_| panic!("one caller"));
         assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
-        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
+        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let answer = rig.door.carry_lifecycle(&rpc.node, true, &context).await;
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
         assert_eq!(rdm_admin::status_rpc::OperationEffect::of_records(&rig.storage.nodes("mesh1").await.unwrap()).len(), 1);
@@ -2527,7 +2528,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
         // The birth's stop: its Stopped row, and the view's stop of it.
-        let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), node_id: rpc.node.node_id.clone(), incarnation: incarnation.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &rpc.node.node_id), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), node_id: rpc.node.node_id.clone(), incarnation: incarnation.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), operation: rdm_core::OperationId::node("node.stop", &rpc.node.node_id), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert_eq!(rig.door.stop_received(&stop).await, StatusReply::Applied);
         assert!(digest_view.stopped(stop), "the view holds the birth's stop");
         // The start's join report, accepted at the door: the birth's next cycle begins and its Pending
@@ -2567,7 +2568,7 @@ fn start_after_a_stop_with_the_pending_recorded_at_the_join(ready_first: bool, j
         let admin_ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(admin_ep, resolver).with_caller_system("rdm"));
         assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
-        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b-start".into(), attempt: 1, operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
+        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b-start".into(), operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let (door, target) = (rig.door.clone(), rpc.node.clone());
         let start = tokio::spawn(async move { door.carry_lifecycle(&target, true, &context).await });
         tokio::time::timeout(Duration::from_secs(10), taken.notified()).await.expect("the mesh-primary took the start's NodeJoined");
@@ -2685,7 +2686,7 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     // through this router and find the invocation in the same Delivery as the call.
     let client = Arc::new(NodeRpcClient::new(rig.endpoint.clone(), resolver).with_delivery(rig.server.delivery().clone()).with_caller_system("rdm"));
     assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
-    let context = CommandContext { build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &subject.node.node_id) };
+    let context = CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node("node.stop", &subject.node.node_id) };
     let end = tokio::time::timeout(Duration::from_secs(5), rig.door.carry_lifecycle(&subject.node, false, &context)).await.expect("the lost physical stream recovers its terminal on the same invocation");
     assert!(matches!(end, A::Stopped { .. }), "{end:?}");
     assert_eq!(published.load(Ordering::SeqCst), 1, "the declaration publishes stopped; the recovered terminal publishes nothing twice");
@@ -2694,7 +2695,7 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
 }
 
 /// A start of mesh1.node.2 carried by its mesh-primary on a real command stream, answered the way a
-/// birth answers a start an earlier attempt of the same Build completed (`AlreadyApplied`: the
+/// birth answers a start an earlier run of the same Build completed (`AlreadyApplied`: the
 /// acknowledgement, then `NodeStarted`, no `NodeJoined`; node_self.rs `Cycle::Live`). The view holds a
 /// stop of the node's birth `marked` (the command's own birth, or another). Answers whether the view
 /// still holds that birth stopped once the start is carried.
@@ -2720,7 +2721,7 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
             node: rdm_core::MeshNode { mesh: rpc.node.mesh.clone(), r#type: rpc.node.r#type.clone(), node_id: rpc.node.node_id.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: marked.clone(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None
         }));
-        let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), node_id: rpc.node.node_id.clone(), incarnation: marked.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &rpc.node.node_id), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), node_id: rpc.node.node_id.clone(), incarnation: marked.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), build_id: "b-stop".into(), operation: rdm_core::OperationId::node("node.stop", &rpc.node.node_id), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(digest_view.stopped(stop), "the view holds the stop of the marked birth");
         assert!(digest_view.holds_stopped(rpc.node.node_id.as_str(), &marked));
         let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, req: NodeCommandRequest, sink| async move {
@@ -2736,15 +2737,15 @@ fn replayed_start_leaves_stopped(marked_other_birth: bool) -> bool {
         let admin_ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(NodeRpcClient::new(admin_ep, resolver).with_caller_system("rdm"));
         assert!(rig.door.configs.set(Arc::new(crate::bound_configs_on(rig.records.clone(), rdm_admin::node_config::NodeConfigs::new(client, Default::default())).await)).is_ok());
-        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), attempt: 2, operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
+        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), operation: rdm_core::OperationId::node("node.start", &rpc.node.node_id) };
         let answer = rig.door.carry_lifecycle(&rpc.node, true, &context).await;
         assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
         digest_view.holds_stopped(rpc.node.node_id.as_str(), &marked)
     })
 }
 
-/// CONTRACT (node-start.md step 2, Q249): a start an earlier attempt completed, reissued by the next
-/// attempt's executor, is answered without a `NodeJoined`; the mesh-primary whose overlay holds that
+/// CONTRACT (node-start.md step 2, Q249): a start an earlier run completed, reissued by the next
+/// run's executor, is answered without a `NodeJoined`; the mesh-primary whose overlay holds that
 /// exact birth stopped clears the mark at that answer, as at the join it did not see. Must NOT happen:
 /// the birth held stopped after its start completed, every view refusing its digests.
 #[test]

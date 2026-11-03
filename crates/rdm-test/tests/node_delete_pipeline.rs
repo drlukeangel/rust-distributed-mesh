@@ -36,7 +36,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
         let template = template(&admin);
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::common::stepping(&fabric, "mesh1");
         let sink = Published::default();
         let provider = ProcessDeploymentProvider::new();
         let pipeline = DeploymentPipeline {
@@ -50,37 +50,24 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             timeouts: Timeouts::default(),
         };
         let node: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let create = |build_id, node_id: rdm_core::NodeId| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id, mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let create = |build_id, node_id: rdm_core::NodeId| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id, mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
         let first = pipeline.create(&create(publish_build(&builds, add_node()).await, rdm_core::fixture_node_id(&node))).await.unwrap_or_else(|e| panic!("create: {e}"));
         let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
         let delete_build = publish_build(&builds, add_node()).await; // the Build names the path: a node's meta is Ephemeral
         pipeline
-            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(delete_build.clone()), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(delete_build.clone()), node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await
             .unwrap_or_else(|e| panic!("delete: {e}"));
 
         // Every delete step, in order, Complete once.
         let view = builds.read_build(&delete_build).await.unwrap();
-        let got: Vec<(&str, &StepOutcome, &rdm_core::OperationId)> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, &r.operation)).collect();
-        let delete_operation = rdm_core::OperationId::node("node.delete", &first.node.node_id);
-        let want: Vec<(&str, &StepOutcome, &rdm_core::OperationId)> =
-            DeleteStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, &delete_operation)).collect();
+        let got: Vec<(&str, &StepOutcome, &str)> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, r.operation.as_str())).collect();
+        let delete_operation = rdm_core::OperationId::node("node.delete", &first.node.node_id).to_string();
+        let want: Vec<(&str, &StepOutcome, &str)> =
+            DeleteStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, delete_operation.as_str())).collect();
         assert_eq!(got, want);
-        // StopNode is the directed command: its receipt carries what the call established;
-        // AwaitNodeLeft carries the completion, the stop's own reply.
-        use rdm_admin::deployment::pipeline::{CommandAdmission, Completion};
-        let output = |step: DeleteStep| view.steps.iter().find(|r| r.step == step.name()).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{} receipted with an output", step.name()));
-        // The stop is answered `Stopped` on its own call: the receipt names what its
-        // node.connection.delete { All } established.
-        let stopped: CommandAdmission = serde_json::from_value(output(DeleteStep::StopNode)).expect("a CommandAdmission");
-        assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rdm_core::status::ConnectionsReceipt::Established { .. } }), "StopNode: {stopped:?}");
-        for step in [DeleteStep::AwaitNodeLeft] {
-            let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
-            assert_eq!(completion, Completion::Received {}, "{}", step.name());
-        }
-
         // What each step did, from outside.
         let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
         assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::Ready], "the pipeline does not publish Leaving from a stop answer; the command owner records the node report");
@@ -141,7 +128,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         release.meshes.get_mut("mesh1").unwrap().set_spec(released).unwrap();
         let again_build = publish_build(&builds, release).await;
         pipeline
-            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(again.node).node_id), build_id: Some(again_build.clone()), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), unreached: false })
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(again.node).node_id), build_id: Some(again_build.clone()), node: again.node.clone(), handle: again.handle.clone(), unreached: false })
             .await
             .unwrap();
         assert!(matches!(provider.inspect(&again.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the delete ended the runtime");

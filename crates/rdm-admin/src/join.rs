@@ -168,8 +168,6 @@ struct Slot {
 pub struct Abandoned {
     /// The Build whose create deployed the birth.
     pub build_id: String,
-    /// The attempt of that Build.
-    pub attempt: u32,
     /// What was deployed.
     pub deployed: Deployed,
 }
@@ -279,7 +277,7 @@ impl Joins {
     /// deployment that heard its birth is kept as the admitted birth's report, handed to the same
     /// deployment's next registration (a held deployment's report ends with it); one that never heard
     /// its birth is remembered as abandoned, so a late `JoinNode` is refused by name.
-    pub fn end(&self, node_id: &NodeId, build_id: &str, attempt: u32) {
+    pub fn end(&self, node_id: &NodeId, build_id: &str) {
         let Some(slot) = self.slots.lock().unwrap().remove(node_id) else { return };
         let report = slot.reported.borrow().clone();
         if let Some(report) = report {
@@ -299,7 +297,7 @@ impl Joins {
         if kept.len() == ABANDONED_KEPT {
             kept.pop_front();
         }
-        kept.push_back(Abandoned { build_id: build_id.into(), attempt, deployed: slot.deployed });
+        kept.push_back(Abandoned { build_id: build_id.into(), deployed: slot.deployed });
     }
 
     /// How the deploying admin stands toward the birth `d` reports, with the `listeners` it bound.
@@ -402,7 +400,6 @@ impl JoinDoor {
             admitted_path = tracing::field::Empty, admitted_name = tracing::field::Empty,
             outcome = tracing::field::Empty,
             build_id = tracing::field::Empty,
-            attempt = tracing::field::Empty,
             cert_len = tracing::field::Empty,
         );
         self.decide(peer, d, types.into_iter().collect(), listeners, span.clone()).instrument(span).await
@@ -545,9 +542,8 @@ impl JoinDoor {
             Standing::Abandoned(a) => {
                 span.record("outcome", "deployment-abandoned");
                 span.record("build_id", a.build_id.as_str());
-                span.record("attempt", a.attempt);
-                tracing::warn!(build_id = %a.build_id, attempt = a.attempt, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.as_str(), "this admin ended the deployment of this birth before it reported");
-                rdm_core::reply::join::deployment_abandoned(a.build_id, a.attempt, a.deployed.node_id, a.deployed.incarnation)
+                tracing::warn!(build_id = %a.build_id, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.as_str(), "this admin ended the deployment of this birth before it reported");
+                rdm_core::reply::join::deployment_abandoned(a.build_id, a.deployed.node_id, a.deployed.incarnation)
             }
             Standing::Unknown => {
                 span.record("outcome", "not-authority");
@@ -781,7 +777,7 @@ mod tests {
         assert!(joins.creating(&dep.node_id), "the create registered its deployment: creating");
         joins.report(&JoinReport { digest: digest_of(&dep), listeners: Vec::new() });
         assert!(joins.creating(&dep.node_id), "its report heard, the create still runs: creating");
-        joins.end(&dep.node_id, "3qcfk1kq47m9", 1);
+        joins.end(&dep.node_id, "3qcfk1kq47m9");
         assert!(!joins.creating(&dep.node_id), "the create ended: not creating");
         joins.expect(Deployed { held: true, last_accepted_name: Some(dep.location()), ..dep.clone() });
         assert!(!joins.creating(&dep.node_id), "a held deployment (a restart, a heard-again) is not a create");
@@ -796,7 +792,7 @@ mod tests {
         let d = digest_of(&dep);
         joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
         drop(rx);
-        joins.end(&dep.node_id, "3qcfk1kq47m9", 1);
+        joins.end(&dep.node_id, "3qcfk1kq47m9");
         assert_eq!(joins.standing(&d, &[]), Standing::Unknown, "an ended create holds the deployment no more");
         let again = joins.expect(dep.clone());
         assert_eq!(again.borrow().as_ref().map(|r| r.digest.node.transport_addr), Some(d.node.transport_addr), "the same deployment's next registration is handed the admitted report");
@@ -805,7 +801,7 @@ mod tests {
         // A held deployment's report ends with its registration: a later registration of the same
         // held deployment (a heard-again of the live birth) waits for its own commanded join.
         joins.report(&JoinReport { digest: d.clone(), listeners: Vec::new() });
-        joins.end(&dep.node_id, "3qcfk1kq47m9", 2);
+        joins.end(&dep.node_id, "3qcfk1kq47m9");
         assert!(joins.expect(restart).borrow().is_none(), "a held deployment's report is not kept for its next registration");
     }
 
@@ -889,7 +885,7 @@ mod tests {
 
             // 2. Ended deployment before report arrived -> `DeploymentAbandoned`.
             let _ = joins.expect(dep.clone());
-            joins.end(&dep.node_id, "3qcfk1kq47m9", 2);
+            joins.end(&dep.node_id, "3qcfk1kq47m9");
             let ab_req = JoinRequest::JoinNode {
                 digest: (&digest_of(&dep)).into(),
                 types: Vec::new(),
@@ -899,7 +895,6 @@ mod tests {
                 door.serve(dep.endpoint_id.clone(), ab_req).await,
                 JoinReply::DeploymentAbandoned {
                     build_id: "3qcfk1kq47m9".into(),
-                    attempt: 2,
                     node_id: dep.node_id.clone(),
                     incarnation: dep.incarnation.clone(),
                 }

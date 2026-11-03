@@ -498,7 +498,6 @@ fn a_read_while_a_birth_of_the_mesh_is_being_deleted_carries_the_deleting_overla
         let deleting = &members[1];
         let op = rdm_core::LifecycleOp { r#type: deleting.node.r#type.clone(), mesh: deleting.node.mesh.clone(),
             build_id: "b1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh3.node", "2").unwrap())),
             node_id: deleting.node.node_id.clone(),
             incarnation: deleting.node.incarnation.clone(),
@@ -538,7 +537,6 @@ fn a_late_reader_lists_a_stopped_node_from_the_stop_overlay_a_read_carries() {
         let stopped = &members[1];
         let op = rdm_core::LifecycleOp { r#type: stopped.node.r#type.clone(), mesh: stopped.node.mesh.clone(),
             build_id: "b1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh3.node", "2").unwrap())),
             node_id: stopped.node.node_id.clone(),
             incarnation: stopped.node.incarnation.clone(),

@@ -116,7 +116,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert!(matches!(&refused, Err(CallEnd::Rejected { reason, .. }) if reason == "cannot-delete"), "the accepted Build {a} stays in history: {refused:?}");
     estate.builds_obj().await.delete(&BuildId::parse(&b0).unwrap()).await.unwrap_or_else(|e| panic!("Day 0's Build {b0} leaves history: {e}"));
     let facts = build_log::log_read(&estate, &b0).await.unwrap_or_else(|end| panic!("the fabric-primary's log answers the read of the forgotten Build {b0}: {end}"));
-    assert!(build_log::projection(&facts, &b0).is_none(), "the forgotten Build {b0} is no Build of the fabric-primary's log: {facts:?}");
+    assert!(build_log::projection(&estate, &facts, &b0).is_none(), "the forgotten Build {b0} is no Build of the fabric-primary's log: {facts:?}");
     assert_eq!(current_build(&estate).await, a, "forget is history administration only");
 
     // 4. An admin born later hydrates the current Build, not the history.

@@ -123,7 +123,7 @@ fn a_node_admin_joining_at_a_deleted_birth_name_takes_its_mesh_status_from_the_e
         assert_eq!(p.mesh_status("mesh2"), held, "mesh2.node-admin.2 holds X's status");
 
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
-        let departure = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), node_id: x.clone(), incarnation: x_inc.clone(), path: "mesh2.node-admin".into(), name: "1".into(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
+        let departure = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), node_id: x.clone(), incarnation: x_inc.clone(), path: "mesh2.node-admin".into(), name: "1".into(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
         p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
         until("Y and the member to hold X deleted", || y.digest_view.is_deleted(x.as_str()) && m.digest_view.is_deleted(x.as_str())).await;
         assert!(y.digest_view.all().iter().all(|d| d.node.location() != rdm_core::PathName::new("mesh2.node-admin", "1").unwrap()), "Y has not published: no live birth holds the name in Y's view");
@@ -199,7 +199,7 @@ fn an_application_span_made_from_a_deleted_operation_shares_the_deletes_trace() 
         let delete = tracing::info_span!("app.node.delete", node = "mesh2.node-admin.1");
         rdm_transport::set_remote_parent(&delete, &rdm_transport::traceparent_of(&request).expect("the capture's layer gives the request a context"), Some("rafka=delete-1"));
         let deleted_in = rdm_transport::traceparent_of(&delete);
-        let departure = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), node_id: x.clone(), incarnation: x_inc.clone(), path: "mesh2.node-admin".into(), name: "1".into(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
+        let departure = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh2".into(), build_id: "dnd82kmawp3h".into(), operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), node_id: x.clone(), incarnation: x_inc.clone(), path: "mesh2.node-admin".into(), name: "1".into(), event_at_rafka_ms: 7, traceparent: None, tracestate: None };
         tracing::Instrument::instrument(p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }), delete.clone()).await.unwrap();
         until("the member to hold X deleted", || m.digest_view.is_deleted(x.as_str())).await;
 

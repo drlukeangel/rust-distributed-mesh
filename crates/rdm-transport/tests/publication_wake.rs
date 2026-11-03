@@ -124,7 +124,6 @@ fn a_member_stop_overlay_between_two_publications_reaches_the_backbone_at_once()
         let stopped = &digests[0];
         let op = LifecycleOp { r#type: stopped.node.r#type.clone(), mesh: stopped.node.mesh.clone(),
             build_id: "b-s40".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::new("node.stop", rdm_core::OperationSubject::Birth { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation.clone() }),
             node_id: stopped.node.node_id.clone(),
             incarnation: stopped.node.incarnation.clone(),

@@ -1,18 +1,16 @@
 //! `build.get` (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`": `GetBuilds`), over real Node RPC:
 //! the fabric-primary's Build log answers every Build whose header matches the filter, newest first,
-//! each whole (its header, its topology, its receipts), the current one selected once and marked, and
+//! each whole (its header, its topology, its events), the current one selected once and marked, and
 //! only `End` completes the read.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, StepOutcome};
 use rdm_admin::model::{MeshId, PathName};
 use rdm_client::{BuildCarrier, CallEnd, Filter};
-use rdm_core::build::{Build, BuildPhase, BuildReply, BuildRequest, StepResult};
+use rdm_core::build::{Build, BuildPhase, BuildReply, BuildRequest};
 use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::stream::StreamItem;
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -36,17 +34,17 @@ fn topology(rpcs: u32) -> FabricTopology {
     t
 }
 
-/// Build `id`, accepted at `at` over `t`; its attempt 1 claimed by mesh1.node-admin.1, `receipts` written,
-/// and its verdict.
-async fn build(log: &MemoryBuildStateAdapter, id: &BuildId, at: u64, t: FabricTopology, receipts: &[(rdm_core::OperationId, StepOutcome)], verdict: AttemptOutcome) {
-    let executor_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+/// Build `id`, accepted at `at` over `t`; a run of it started, each of `steps` written as its
+/// `rdm.build.step` event, and the run ended `ended`.
+async fn build(log: &rdm_admin::build_run::FramedBuilds, id: &BuildId, at: u64, t: FabricTopology, steps: &[(rdm_core::OperationId, StepOutcome)], ended: rdm_admin::events_storage::EndedState) {
+    let fp = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
     log.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: t, change: None, source: None, time: at }).await.unwrap();
-    log.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: executor_birth.clone() }).await.unwrap();
-    for (operation, outcome) in receipts {
-        let receipt = BuildStepReceipt { build_id: id.clone(), attempt: 1, operation: operation.clone(), step: "Complete".into(), outcome: outcome.clone(), output: None, executor: Some(executor_birth.clone()), mesh: None };
-        log.append_step_receipt(&receipt).await.unwrap();
+    crate::start_build(log, id, &fp).await;
+    for (operation, outcome) in steps {
+        log.write_step(&rdm_admin::build_state::StepWrite { build_id: id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: outcome.clone() }).await.unwrap();
     }
-    log.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: verdict }).await.unwrap();
+    let source = rdm_admin::events_storage::EventSource { fabric_id: crate::cell_fabric(), node_id: fp.node_id.clone(), incarnation: fp.incarnation.clone() };
+    log.events().append(&rdm_admin::events_storage::Event::build_ended(&source, at, id, &ended)).await.unwrap();
 }
 
 /// The fabric-primary on the wire: `build.get` served from `log`, at `mesh1.node-admin.1`.
@@ -86,25 +84,27 @@ fn ids(builds: &[rdm_client::Build]) -> Vec<String> {
 // @feature: fabric-build
 /// CONTRACT (Q167 R-RD5; node-rpc-envelope.md "Build, op `0x20`", `build.get`): a fabric-primary
 /// whose Build log holds three Builds, b1 (complete), b2 (complete, accepted after b1, so the
-/// current Build) and b3 (accepted last, failed part-way: one step Complete, the next Failed), answers
-/// `build.get []` with all three, newest first (b3, b2, b1), each whole: its header (phase, attempt,
-/// executor, reason, last failure) as its log folds it, its topology (every node's create spec,
-/// a topology of 301 nodes taking several Topology chunks), and its receipts; only b2 is marked
-/// current. `[current: true]` streams b2 alone, `[phase: failed]` b3 alone, `[id: b1]` b1 alone, an
-/// id the log does not hold the empty list. A pair naming no property of the Build header (`zone`) is
-/// refused INVALID_ARGUMENT (`RejectedFilter`) naming the pair. The stream, read on the wire, opens
-/// with Started naming the current Build, and only `End` closes it. Must NOT happen: the failed
-/// Build marked current or left out, a Build answered without its topology or receipts, an unknown
-/// property read as matching nothing.
+/// current Build) and b3 (accepted last, ended incomplete part-way: one step complete, the next
+/// failed), answers `build.get []` with all three, newest first (b3, b2, b1), each whole: its header
+/// (phase) as its events fold it, its topology (every node's create spec, a topology of 301 nodes
+/// taking several Topology chunks), and its events; only b2 is marked current. `[current: true]`
+/// streams b2 alone, `[phase: incomplete]` b3 alone, `[id: b1]` b1 alone, an id the log does not hold
+/// the empty list. A pair naming no property of the Build header (`zone`) is refused INVALID_ARGUMENT
+/// (`RejectedFilter`) naming the pair. The stream, read on the wire, opens with Started naming the
+/// current Build, and only `End` closes it. Must NOT happen: the incomplete Build marked current or
+/// left out, a Build answered without its topology or events, an unknown property read as matching
+/// nothing.
 #[test]
 fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_marked() {
     tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap().block_on(async {
-        let log = Arc::new(MemoryBuildStateAdapter::new());
+        let log = Arc::new(crate::stepping(&rdm_core::NodeId::mint(), "mesh1"));
         let (b1, b2, b3) = (BuildId::mint(), BuildId::mint(), BuildId::mint());
-        build(&log, &b1, 1, topology(1), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "1").unwrap())), StepOutcome::Complete)], AttemptOutcome::Converged).await;
-        build(&log, &b2, 2, topology(300), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), StepOutcome::Complete)], AttemptOutcome::Converged).await;
+        use rdm_admin::events_storage::{EndedSection, EndedState};
+        build(&log, &b1, 1, topology(1), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "1").unwrap())), StepOutcome::Complete)], EndedState::Complete).await;
+        build(&log, &b2, 2, topology(300), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())), StepOutcome::Complete)], EndedState::Complete).await;
+        let short = EndedState::Incomplete { sections: vec![EndedSection { mesh: "mesh1".into(), op: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "4").unwrap())).to_string(), step: "Complete".into(), reason: "the launch of mesh1.node.4 exited 1".into(), code: "FAILED_PRECONDITION".into() }] };
         let failed = StepOutcome::Failed { reason: "the launch of mesh1.node.4 exited 1".into(), code: rdm_core::outcome::Code::FailedPrecondition };
-        build(&log, &b3, 3, topology(4), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), StepOutcome::Complete), (rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "4").unwrap())), failed)], AttemptOutcome::Failed { reason: "node.create failed for path mesh1.node, name 4".into(), code: rdm_core::outcome::Code::FailedPrecondition }).await;
+        build(&log, &b3, 3, topology(4), &[(rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), StepOutcome::Complete), (rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "4").unwrap())), failed)], short).await;
         assert_eq!(log.current_build().await.unwrap().into_build_id(), Some(b2.clone()), "the setup: b2 is the current Build, the failed b3 skipped");
 
         let (ep, fp, _router) = fabric_primary(log.clone()).await;
@@ -126,20 +126,22 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
                 rdm_admin::build_state::BuildState::Running => BuildPhase::Running,
                 rdm_admin::build_state::BuildState::Complete => BuildPhase::Complete,
                 rdm_admin::build_state::BuildState::Failed => BuildPhase::Failed,
+                rdm_admin::build_state::BuildState::Incomplete => BuildPhase::Incomplete,
             };
-            assert_eq!((got.phase, got.attempt, got.executor.clone(), got.reason.clone(), got.last_failure.clone()), (phase, held.attempt, held.executor.clone(), held.reason.as_str().to_string(), held.last_failure.clone()), "{}'s header is its log's", got.build_id);
+            assert_eq!(got.phase, phase, "{}'s header is its events' fold", got.build_id);
             let specs: Vec<rdm_core::meta::NodeSpec> = held.topology.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
             assert_eq!(got.nodes, specs, "{}'s topology is every node's create spec, whole", got.build_id);
-            let receipts: Vec<(rdm_core::OperationId, bool)> = got.steps.iter().map(|s| (s.operation.clone(), s.result == StepResult::Complete)).collect();
-            let held_receipts: Vec<(rdm_core::OperationId, bool)> = held.steps.iter().map(|s| (s.operation.clone(), s.outcome == StepOutcome::Complete)).collect();
-            assert_eq!(receipts, held_receipts, "{}'s receipts are its log's", got.build_id);
+            let steps: Vec<(String, bool)> = got.events.iter().filter(|e| e["type"] == "rdm.build.step").map(|e| (e["data"]["op"].as_str().unwrap_or_default().to_string(), e["data"]["state"] == "complete")).collect();
+            let held_steps: Vec<(String, bool)> = held.steps.iter().map(|s| (s.operation.clone(), s.outcome == StepOutcome::Complete)).collect();
+            assert_eq!(steps, held_steps, "{}'s step events are its log's", got.build_id);
         }
         assert_eq!(every[1].nodes.len(), 301, "b2's topology: mesh1.node-admin.1 and 300 nodes");
-        assert_eq!((every[0].phase, every[0].steps.len()), (BuildPhase::Failed, 2), "b3 failed part-way, both its receipts read: {:?}", every[0]);
+        let b3_steps = every[0].events.iter().filter(|e| e["type"] == "rdm.build.step").count();
+        assert_eq!((every[0].phase, b3_steps), (BuildPhase::Incomplete, 2), "b3 ended incomplete part-way, both its step events read: {:?}", every[0]);
 
         // One pair each: the current Build, the failed one, one by id, and an id not held.
         assert_eq!(ids(&read(Filter::new().eq("current", ["true"])).await.unwrap()), vec![b2.to_string()], "[current: true] is the current Build alone");
-        assert_eq!(ids(&read(Filter::new().eq("phase", ["failed"])).await.unwrap()), vec![b3.to_string()], "[phase: failed]");
+        assert_eq!(ids(&read(Filter::new().eq("phase", ["incomplete"])).await.unwrap()), vec![b3.to_string()], "[phase: incomplete]");
         assert_eq!(ids(&read(Filter::new().eq("id", [b1.to_string()])).await.unwrap()), vec![b1.to_string()], "[id: b1]");
         assert_eq!(ids(&read(Filter::new().eq("phase", ["complete"]).eq("current", ["false"])).await.unwrap()), vec![b1.to_string()], "pairs AND");
         assert!(read(Filter::new().eq("id", [BuildId::mint().to_string()])).await.unwrap().is_empty(), "an id the log does not hold is the empty list");
@@ -176,7 +178,7 @@ fn builds_get_answers_every_matching_build_whole_newest_first_the_current_one_ma
             }
         }
         match frames.first() {
-            Some(BuildReply::Started { build_id, attempt, .. }) => assert_eq!((build_id.as_str(), *attempt), (b2.to_string().as_str(), 1), "Started names the current Build"),
+            Some(BuildReply::Started { build_id, .. }) => assert_eq!(build_id.as_str(), b2.to_string().as_str(), "Started names the current Build"),
             other => panic!("the stream opens with Started: {other:?}"),
         }
         assert!(matches!(frames.last(), Some(BuildReply::End { builds: 3 })), "End closes the read, counting three Builds: {:?}", frames.last());

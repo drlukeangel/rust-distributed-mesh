@@ -2,7 +2,7 @@
 
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [Build](build.md) · [Deployment provider](deployment-provider.md)
 
-build.md owns the engine: the accepted topology, attempts, claims and receipts. deployment-provider.md
+build.md owns the engine: the accepted topology, the Build record and its events. deployment-provider.md
 owns the provider: how one runtime is launched, inspected and terminated. This page owns what a Build
 deploys: the executable each node runs, from the request to the row and back out through the reads.
 

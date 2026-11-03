@@ -77,11 +77,11 @@ pub enum Notice {
 }
 
 impl Notice {
-    /// The Build and attempt the notice names, and `started` or the ended state's name.
-    pub fn key(&self) -> (String, u32, &'static str) {
+    /// The Build the notice names, and `started` or the ended state's name.
+    pub fn key(&self) -> (String, &'static str) {
         match self {
-            Notice::Started(c) => (c.build_id.clone(), c.attempt, "started"),
-            Notice::Ended(c) => (c.build_id.clone(), c.attempt, c.state.as_str()),
+            Notice::Started(c) => (c.build_id.clone(), "started"),
+            Notice::Ended(c) => (c.build_id.clone(), c.state.as_str()),
         }
     }
 }
@@ -224,16 +224,14 @@ pub async fn records_of_views(views: &[&rdm_admin::topology::Topology]) -> std::
 /// [`records_of_views`] bound on `cp` as the records its acceptance and name lookups read ([`bind_store`]).
 pub async fn bind_records(cp: &rdm_admin::control_plane::ControlPlane, views: &[&rdm_admin::topology::Topology]) -> std::sync::Arc<rdm_admin::storage::MemoryNodesStorage> {
     let rows = records_of_views(views).await;
-    bind_store(cp, rows.clone(), views[0]).await;
+    bind_store(cp, rows.clone());
     rows
 }
 
 /// Bind on `cp` the records its acceptance and name lookups read (query.md §1: the pair's name claim,
-/// then the record at the node id): `rows`, the nodes store the claims and records are read from, each
-/// mesh `t` names given its Mesh record in `cp`'s mesh store.
-pub async fn bind_store(cp: &rdm_admin::control_plane::ControlPlane, rows: std::sync::Arc<rdm_admin::storage::MemoryNodesStorage>, t: &rdm_admin::topology::Topology) {
+/// then the record at the node id): `rows`, the nodes store the claims and records are read from.
+pub fn bind_store(cp: &rdm_admin::control_plane::ControlPlane, rows: std::sync::Arc<rdm_admin::storage::MemoryNodesStorage>) {
     let _ = cp.node_rows.set(rows.clone());
-    write_meshes(t, &*cp.claims).await;
 }
 
 /// Every mesh `t` names given its Mesh record and name claim in `meshes` (the one `meshes` holds by name,
@@ -250,6 +248,43 @@ pub async fn write_meshes(t: &rdm_admin::topology::Topology, meshes: &dyn rdm_ad
 }
 
 #[cfg(feature = "file-backend")]
+/// Now, in milliseconds since the Unix epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// The fabric of the Build events the cells write.
+pub fn cell_fabric() -> rdm_admin::model::FabricId {
+    rdm_admin::model::FabricId::parse("fab000000001").unwrap()
+}
+
+/// `build_id`'s `rdm.build.started`, written into `builds`' events store by `by`: a run of the Build
+/// began (build.md §5).
+pub async fn start_build(builds: &dyn rdm_admin::build_state::BuildStateAdapter, build_id: &rdm_admin::build::BuildId, by: &rdm_core::framing::Birth) {
+    let source = rdm_admin::events_storage::EventSource { fabric_id: cell_fabric(), node_id: by.node_id.clone(), incarnation: by.incarnation.clone() };
+    builds.events().append(&rdm_admin::events_storage::Event::build_started(&source, now_ms(), build_id)).await.unwrap();
+}
+
+/// A run of `build_id` by `by` that ended `ended`: its `rdm.build.started`, then its `rdm.build.ended`.
+pub async fn end_build(builds: &dyn rdm_admin::build_state::BuildStateAdapter, build_id: &rdm_admin::build::BuildId, by: &rdm_core::framing::Birth, ended: rdm_admin::events_storage::EndedState) {
+    start_build(builds, build_id, by).await;
+    let source = rdm_admin::events_storage::EventSource { fabric_id: cell_fabric(), node_id: by.node_id.clone(), incarnation: by.incarnation.clone() };
+    builds.events().append(&rdm_admin::events_storage::Event::build_ended(&source, now_ms(), build_id, &ended)).await.unwrap();
+}
+
+/// `notices`, the fabric-primary `by` of `fabric_id` writing the Build-level events into `builds`'
+/// events store, as boot wires them (build.md §5).
+pub fn written_by(notices: rdm_admin::build_drive::BuildNotices, builds: &dyn rdm_admin::build_state::BuildStateAdapter, fabric_id: &rdm_admin::model::FabricId, by: &rdm_core::framing::Birth) -> rdm_admin::build_drive::BuildNotices {
+    let mut events = rdm_admin::events_storage::EventsWriter::on(builds.events(), fabric_id, &by.node_id);
+    events.source.incarnation = by.incarnation.clone();
+    notices.writing_to(events)
+}
+
+/// A Build store over memory whose steps are written as events by `by`, of `mesh`.
+pub fn stepping(by: &rdm_core::NodeId, mesh: &str) -> rdm_admin::build_run::FramedBuilds {
+    rdm_admin::build_run::FramedBuilds::stepping(std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()), &cell_fabric(), by, mesh)
+}
+
 mod admin_app_alpns;
 mod app_protocol_dials;
 mod admin_serves_forward;
@@ -265,7 +300,6 @@ mod mesh_delete_view;
 mod build_admission;
 mod operation_gates;
 mod pinned_birth;
-mod build_claim;
 mod build_drive;
 mod build_run;
 mod build_floor_read;

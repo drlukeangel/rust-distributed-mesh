@@ -21,7 +21,7 @@ use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 pub use rdm_core::PublisherId;
 
-type OpKey = (String, u32, rdm_core::OperationId);
+type OpKey = (String, rdm_core::OperationId);
 
 /// The digest as the topology projection sees it: what `topology_version` orders.
 ///
@@ -984,7 +984,7 @@ mod tests {
     use rdm_core::IncarnationId;
 
     fn op(action: &str, node_id: &rdm_core::NodeId, incarnation: &IncarnationId) -> LifecycleOp {
-        LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }), node_id: node_id.clone(), incarnation: incarnation.clone(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+        LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b1".into(), operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() }), node_id: node_id.clone(), incarnation: incarnation.clone(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
     /// CONTRACT (gossip.md §3.1 NodeStopped: "stays in the in-flight overlay until the next lifecycle

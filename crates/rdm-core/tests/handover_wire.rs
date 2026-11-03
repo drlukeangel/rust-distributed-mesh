@@ -39,23 +39,23 @@ const SUCCESSOR: &str = "0c 303132333435363738396364  0c 79727a37396a3330337a737
 
 /// CONTRACT: the family's two requests. `PrimaryUpdate` (variant 0) is the primary's call on its
 /// successor carrying the election's result: one entry per primary that moves, `(type, primary,
-/// successor, revision)`, the fabric-primary an entry of node type `fabric`, then the Build, its run and
+/// successor, revision)`, the fabric-primary an entry of node type `fabric`, then the Build and
 /// the operation. `UpdatePrimary` (variant 1) is the command from above: the node type whose primary
-/// moves, the Build, its run, the operation and the successor's exact birth the mesh-primary named, none
+/// moves, the Build, the operation and the successor's exact birth the mesh-primary named, none
 /// to a node-admin (Q129). There is no take-over call (Q122). What must NOT happen: a name in place of a birth, a field moved, a variant inserted before
 /// the end.
 #[test]
 fn requests_match_the_frozen_two_variant_wire_schema() {
     let fixtures = [
-        // variant 0 | primaries (len 2: "node-admin" primary successor 4, "fabric" primary successor 8) | build_id | run | operation
+        // variant 0 | primaries (len 2: "node-admin" primary successor 4, "fabric" primary successor 8) | build_id | operation
         (
-            NodePrimaryUpdateRequest::PrimaryUpdate { primaries: vec![("node-admin".into(), primary(), successor(), 4), fabric_entry()], build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o") },
-            format!("00 02 0a 6e6f64652d61646d696e {PRIMARY} {SUCCESSOR} 04 06 666162726963 {PRIMARY} {SUCCESSOR} 08 0162 02 016f 00 00 00"),
+            NodePrimaryUpdateRequest::PrimaryUpdate { primaries: vec![("node-admin".into(), primary(), successor(), 4), fabric_entry()], build_id: "b".into(), operation: rdm_core::OperationId::unscoped("o") },
+            format!("00 02 0a 6e6f64652d61646d696e {PRIMARY} {SUCCESSOR} 04 06 666162726963 {PRIMARY} {SUCCESSOR} 08 0162 016f 00 00 00"),
         ),
-        // variant 1 | type "node" | build_id | run | operation | successor none (a node-admin's command)
-        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: None }, "01 04 6e6f6465 0162 02 016f 00 00 00 00".to_string()),
+        // variant 1 | type "node" | build_id | operation | successor none (a node-admin's command)
+        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "node".into(), build_id: "b".into(), operation: rdm_core::OperationId::unscoped("o"), successor: None }, "01 04 6e6f6465 0162 016f 00 00 00 00".to_string()),
         // variant 1 | ... | successor some: the birth the mesh-primary's pre-check named (Q129)
-        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "node".into(), build_id: "b".into(), run: 2, operation: rdm_core::OperationId::unscoped("o"), successor: Some(successor()) }, format!("01 04 6e6f6465 0162 02 016f 00 00 00 01 {SUCCESSOR}")),
+        (NodePrimaryUpdateRequest::UpdatePrimary { r#type: "node".into(), build_id: "b".into(), operation: rdm_core::OperationId::unscoped("o"), successor: Some(successor()) }, format!("01 04 6e6f6465 0162 016f 00 00 00 01 {SUCCESSOR}")),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
@@ -129,7 +129,7 @@ fn the_largest_request_fits_the_frame_ceiling() {
     let long = "x".repeat(128);
     let b = || Birth { node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
     let primaries = vec![(long.clone(), b(), b(), u64::MAX), (long.clone(), b(), b(), u64::MAX)];
-    let q = NodePrimaryUpdateRequest::PrimaryUpdate { primaries: primaries.clone(), build_id: long.clone(), run: u32::MAX, operation: rdm_core::OperationId::unscoped(long.clone()) };
+    let q = NodePrimaryUpdateRequest::PrimaryUpdate { primaries: primaries.clone(), build_id: long.clone(), operation: rdm_core::OperationId::unscoped(long.clone()) };
     assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
     let r = NodePrimaryUpdateReply::PrimaryUpdated { revisions: primaries };
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);

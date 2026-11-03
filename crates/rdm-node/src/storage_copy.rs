@@ -1,25 +1,22 @@
 //! The copy of a storage change (storage.md §2, "Changing it", step 3): "The fabric-primary, the one
 //! reader of every store, appends every line of every store on the old provider to the new one in
-//! source order, dead births' and deleted nodes' records included, and every in-flight row with its
-//! exact claimant. A copy resumed after a lost answer recognises the lines already there
-//! and appends none twice; a new provider holding lines the old one does not is refused by name, and
+//! source order, dead births' and deleted nodes' records included. A copy resumed after a lost answer
+//! recognises the lines already there and appends none twice; a new provider holding lines the old one does not is refused by name, and
 //! nothing switches."
 //!
 //! A provider answers the copy through [`ProviderLines`]: its stores as their lines, each with the
-//! op its writer wrote it with, and its claims as their content. It stores and returns what it is
-//! given and decides nothing (Q109); [`copy`] decides. The copy runs once changes are blocked and the
+//! op its writer wrote it with. It stores and returns what it is given and decides nothing (Q109); [`copy`] decides. The copy runs once changes are blocked and the
 //! outstanding writes have finished (steps 1 and 2), so neither provider changes beneath it.
 //!
 //! [`copy`] first verifies that each of the new provider's stores holds a prefix of the old one's
-//! lines, line for line, and that every claim it holds is the old one's with the same content; a
-//! store or a claim that is not is refused by name, naming the store or the claim, the key and the ops
-//! that differ, never a record, and nothing is appended. It then appends the old provider's lines
-//! after that prefix, store by store in source order, and inserts the claims the new provider lacks.
+//! lines, line for line; a store that does not is refused by name, naming the store, the key and the
+//! ops that differ, never a record, and nothing is appended. It then appends the old provider's lines
+//! after that prefix, store by store in source order.
 //! The new provider's verified lines are the copy's progress: a copy resumed after a lost answer
 //! verifies them again and appends only what follows.
 
 use crate::storage_error::StorageError;
-use crate::store_log::{Line, LockKind, LockTaken, Op, StoreLocks, StoreLog};
+use crate::store_log::{Line, Op, StoreLog};
 use async_trait::async_trait;
 use rdm_core::ChangeId;
 use std::path::Path;
@@ -81,56 +78,14 @@ impl std::fmt::Display for Store {
     }
 }
 
-/// Which claim: a mesh's in-flight row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ClaimKind {
-    /// The one attempt in flight on a mesh.
-    InFlight,
-}
-
-impl std::fmt::Display for ClaimKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::InFlight => "in-flight row",
-        })
-    }
-}
-
-/// One claim a provider holds: its kind, its name and its content as written, which names its claimant.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Claim {
-    /// Which claim.
-    pub kind: ClaimKind,
-    /// The mesh an in-flight row holds.
-    pub name: String,
-    /// The claim as written, byte for byte.
-    pub content: Vec<u8>,
-}
-
-/// What an insert of a claim came to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClaimTaken {
-    /// This insert wrote the claim.
-    Won,
-    /// The claim stands: its content.
-    Held(Vec<u8>),
-}
-
-/// A provider's stores as their lines, and its claims: what a copy reads from the old provider and
-/// appends to the new one. Persistence only: every method stores or returns what it is given.
+/// A provider's stores as their lines: what a copy reads from the old provider and appends to the new
+/// one. Persistence only: every method stores or returns what it is given.
 #[async_trait]
 pub trait ProviderLines: Send + Sync {
     /// Every line of `store`, in source order, each with its op.
     async fn lines(&self, store: Store) -> Result<Vec<Line>, StorageError>;
     /// Append `line` to `store` as its writer wrote it, its op kept.
     async fn append_line(&self, store: Store, line: &Line) -> Result<(), StorageError>;
-    /// Every claim that stands.
-    async fn claims(&self) -> Result<Vec<Claim>, StorageError>;
-    /// Insert `claim` as written: `Won` when this insert wrote it, else `Held` with the standing content.
-    async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError>;
-    /// Let go of `claim` while it stands as written: a claim the new provider holds as the fabric left
-    /// it, in place of which the old provider's is taken. `Ok(false)`: nothing as written stood.
-    async fn remove_claim(&self, claim: &Claim) -> Result<bool, StorageError>;
 }
 
 /// The change a copy is a step of, and the registered names of its two providers.
@@ -205,10 +160,9 @@ fn refused(run: &CopyRun, why: String) -> CopyError {
     CopyError::Refused(format!("the new topology storage provider `{}` is not a copy of the old one `{}` in source order: {why}; nothing is appended and nothing switches", run.destination, run.source))
 }
 
-/// Copy every line of every store of `source` to `destination` in source order, then every claim with
-/// its exact claimant (storage.md §2 Copy), recorded on the [`COPY_SPAN`] span. `destination` must hold
-/// a prefix of `source`'s lines in each store and only claims `source` holds with the same content,
-/// else the copy is refused by name and nothing is appended; it appends what follows that prefix, so a
+/// Copy every line of every store of `source` to `destination` in source order (storage.md §2 Copy),
+/// recorded on the [`COPY_SPAN`] span. `destination` must hold a prefix of `source`'s lines in each
+/// store, else the copy is refused by name and nothing is appended; it appends what follows that prefix, so a
 /// copy resumed after a lost answer appends nothing twice.
 pub async fn copy(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn ProviderLines) -> Result<Copied, CopyError> {
     let span = tracing::info_span!(
@@ -252,8 +206,6 @@ async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn Pr
         *position += to.len() as u64;
         stores.push((store, from, to.len()));
     }
-    let held = source.claims().await.map_err(&from_source)?;
-    let mut present = destination.claims().await.map_err(&from_destination)?;
     for (store, from, verified) in &stores {
         for line in &from[*verified..] {
             destination.append_line(*store, line).await.map_err(&from_destination)?;
@@ -261,29 +213,13 @@ async fn copy_in(run: &CopyRun, source: &dyn ProviderLines, destination: &dyn Pr
             *copied += 1;
         }
     }
-    // Claims are not history: they are what stands. Every node is blocked, so what the old provider
-    // holds stands; a claim the new provider holds that the old one does not, or holds for another
-    // claimant, is the new provider's as the fabric left it (a provider a later Build names again):
-    // it is let go, and the old provider's taken in its place.
-    for claim in present.iter().filter(|p| !held.iter().any(|c| c.kind == p.kind && c.name == p.name && c.content == p.content)) {
-        destination.remove_claim(claim).await.map_err(&from_destination)?;
-    }
-    present.retain(|p| held.iter().any(|c| c.kind == p.kind && c.name == p.name && c.content == p.content));
-    for claim in held.iter().filter(|c| !present.iter().any(|p| p.kind == c.kind && p.name == c.name)) {
-        match destination.insert_claim(claim).await.map_err(&from_destination)? {
-            ClaimTaken::Won => {}
-            ClaimTaken::Held(content) if content == claim.content => {}
-            ClaimTaken::Held(_) => return Err(CopyError::Refused(format!("the new topology storage provider `{}`'s {} {:?} was taken by another claimant during the copy: every line of the old provider `{}` is appended, the claim is not, and nothing switches", run.destination, claim.kind, claim.name, run.source))),
-        }
-    }
     Ok(())
 }
 
-/// RDM's file provider's lines and claims for one fabric, on the store dir it was registered at: the
-/// store files and the `locks/` of its root (`<store_dir>/<fabric_id>/`).
+/// RDM's file provider's lines for one fabric, on the store dir it was registered at: the store files
+/// of its root (`<store_dir>/<fabric_id>/`).
 pub struct FileProviderLines {
     stores: Vec<(Store, StoreLog)>,
-    locks: StoreLocks,
 }
 
 impl FileProviderLines {
@@ -298,8 +234,7 @@ impl FileProviderLines {
         for store in Store::ALL {
             stores.push((store, StoreLog::open_for(provider, &root.dir().join(store.file()), crate::store_log::Formats::any()).await?));
         }
-        let copier = crate::store_log::LogWriter::new(&crate::model::NodeId::mint(), &crate::model::IncarnationId::mint());
-        Ok(Self { stores, locks: StoreLocks::at(root.dir(), &copier) })
+        Ok(Self { stores })
     }
 
     fn log(&self, store: Store) -> &StoreLog {
@@ -317,21 +252,4 @@ impl ProviderLines for FileProviderLines {
         self.log(store).append_line(line).await
     }
 
-    async fn claims(&self) -> Result<Vec<Claim>, StorageError> {
-        Ok(self.locks.held(LockKind::InFlight).await?.into_iter().map(|(name, content)| Claim { kind: ClaimKind::InFlight, name, content }).collect())
-    }
-
-    async fn remove_claim(&self, claim: &Claim) -> Result<bool, StorageError> {
-        let ClaimKind::InFlight = claim.kind;
-        let content = claim.content.clone();
-        self.locks.release(LockKind::InFlight, &claim.name, move |held| held == content.as_slice()).await
-    }
-
-    async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError> {
-        let ClaimKind::InFlight = claim.kind;
-        Ok(match self.locks.take(LockKind::InFlight, &claim.name, &claim.content).await? {
-            LockTaken::Won => ClaimTaken::Won,
-            LockTaken::Held(content) => ClaimTaken::Held(content),
-        })
-    }
 }

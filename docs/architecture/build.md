@@ -1,6 +1,6 @@
 # Build: the topology engine, leadership, lifecycle transitions and state adapters
 
-This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](deployment-provider.md).
+This page owns the Build engine (the accepted topology, the Build record written once, its events, `BuildStateAdapter` and `EventsStorage`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](deployment-provider.md).
 
 It defines the generic control-plane contract built and tested in `rust-distributed-mesh` (RDM), an independently owned and versioned reusable distributed-system substrate that Rafka imports at an exact revision. Rafka is its first customer: RDM owns how distributed execution works, and Rafka owns what its product asks nodes to do.
 
@@ -21,7 +21,10 @@ Build / Reconciler
     realizes the accepted topology Build
 
 builds.storage (BuildStateAdapter)
-    Build intent/attempt/receipt/completion evidence and history
+    each Build, written once
+
+events.storage (EventsStorage)
+    what happened while executing each Build, and each node's investigations
 
 The leadership election
     deterministic node-type primary -> mesh-primary -> fabric-primary projection
@@ -60,7 +63,7 @@ Allowed customer seams are:
 - current topology/runtime fact feeds and projection/public-API mappings;
 - product authorization and the hooks of [Fabric and node hooks](fabric-node-hooks.md).
 
-RDM retains Build compilation/reconciliation and attempts, the leadership election,
+RDM retains Build compilation/reconciliation, the leadership election,
 executor selection, generic lifecycle eligibility/commit/receipts, readiness roots, recovery,
 exact-runtime adoption/a sign the node is dead, provider-domain execution and connection mechanics.
 Customer seams supply policy or facts; they MUST NOT substitute a second implementation of
@@ -135,11 +138,11 @@ submitted change
 
 The Build record is never updated as the system runs: the topology of the moment is the records ([node identity](node-identity-and-state.md)), and the Build's progress is its events (§5). Counts are the product's door's vocabulary, expanded into named nodes before the typed call; RDM mints a path and name only for a create it originates itself.
 
-Exactly one current fabric-primary accepts topology-changing requests. A non-primary refuses by name. A second topology-changing request while the current Build is actively reconciling is refused with a named build-in-progress refusal naming the current Build; RDM does not implement Build supersession/cancellation. The one exception is fabric.delete, which may interrupt the Build in progress because its target is nothing. Its acceptance record is the durable intent: once written, the interrupted Build opens no further operation and is never resumed, and a successor fabric-primary reads the delete as the current Build and continues the teardown. Operations already admitted at an executor finish or fail within their existing bounds and their launch evidence is retained; a fabric state the fabric-primary is setting ends at the acceptance, its hook's future dropped. When every open attempt of the interrupted Build has ended, its run receives `Failed { step, reason }` naming the delete, and the teardown's steps open mesh by mesh under the one-attempt-per-mesh rule. An operation that fails to end within its bound fails the delete's attempt by name, the intent retained; nothing reconciles the interrupted Build again. No other Build ends another.
+Exactly one current fabric-primary accepts topology-changing requests. A non-primary refuses by name. A second topology-changing request while the current Build is actively reconciling is refused with a named build-in-progress refusal naming the current Build; RDM does not implement Build supersession/cancellation. The one exception is fabric.delete, which may interrupt the Build in progress because its target is nothing. Its acceptance record is the durable intent: once written, the interrupted Build opens no further operation and is never resumed, and a successor fabric-primary reads the delete as the current Build and continues the teardown. Operations already admitted at an executor finish or fail within their existing bounds and their launch evidence is retained; a fabric state the fabric-primary is setting ends at the acceptance, its hook's future dropped. When every step of the interrupted Build in flight has ended, that Build ends `incomplete`, each section it did not finish naming the delete, and the teardown's steps run mesh by mesh. An operation that fails to end within its bound fails the delete by name, the intent retained; nothing reconciles the interrupted Build again. No other Build ends another.
 
 A node command and a repair carry the exact birth they act on (node id and incarnation), which refuses a stale birth by name. They never change the Build.
 
-Every execution attempt re-reads the accepted topology and current realized/observed state and computes remaining work. Completed step receipts prevent repeating already-satisfied work; a Build never resumes from a mutable instruction pointer. A step receipt is `(build_id, attempt, operation, step)` with its output; the exact birth it acted on is the attempt's fenced action. Each workflow's `AttemptOpened` starts a run; a resume after the executor is lost (R-BI4) continues that run; a receipt is reused only within its run. A later attempt of the same run replays a held Complete receipt for the same operation and step. A receipt of an earlier run at the same path and name satisfies nothing for a later run: a second recovery at the same name opens its own run and runs its own steps.
+Every run of a Build reads its topology and the records and computes the remaining work. A step whose `rdm.build.step` event ended `complete` is not run again; a Build never resumes from a mutable instruction pointer. A section that ends short, its mesh-primary lost among the causes, runs no more in that run, and the Build ends `incomplete` naming it (Q346); its resubmission dispatches the section to the mesh's primary of the moment, which reads the Build's events and runs the steps its mesh owes (elections §4.1).
 
 Forbidden:
 
@@ -202,14 +205,14 @@ The writer is the current fabric-primary from [fabric-node-lifecycle-elections.m
 
 "Desired topology" means the topology the current fabric-primary accepted, which the current Build is intended to realize. It is not a separate object beside the Build:
 
-- the current Build is found by reading the Builds last in, first out: the first one that is in progress or completed. In progress, it is the Build being driven, and it is resumed; completed, it is the known state, and it stays completed when a later attempt of its unchanged topology fails. A failed Build is skipped: it is never current, nothing resumes it on its own, and a caller resubmits it;
+- the current Build is found by reading the Builds last in, first out: the first one that is in progress or completed, by its events (§5). In progress, it is the Build being driven, and it is resumed; completed, it is the known state. An incomplete or failed Build is skipped: it is never current, nothing resumes it on its own, and a caller resubmits it by its build_id, whose run skips every step whose event ended `complete`;
 - every node-admin reads the current Build from `builds.storage`; the Fabric row carries no pointer to it;
 - a leadership change does not change it;
 - later runtime loss is reconciled against it.
 
 Persisted copies are not writers: several node-admins may each hold the same Fabric and Build facts for recovery, and only the current fabric-primary, as the election names it, may accept the next topology mutation.
 
-A topology-changing request compiles the current accepted explicit path map plus the requested change into a new complete Build. Create/remove/add/resize select exact logical paths during compilation. node.stop, node.start and node recovery are attempts of the current Build and keep that exact topology map unchanged.
+A request adds or removes the nodes it names; the fabric-primary composes the complete topology from its records at acceptance and writes it into the Build once. node.stop, node.start, node.connection.delete and node recovery are never part of a Build (§1).
 
 ### 4.1 Build identity is active reconciliation state
 
@@ -219,13 +222,13 @@ While a Build is in progress, `builds.storage` carries enough information for an
 
 ```text
 build_id (the current Build)
-complete explicit topology map, each node's create spec with its executable
-submitted change history (optional; never the plan)
-current executor/attempt evidence
-completed step receipts and outputs
+the change as it came in
+the complete topology at acceptance, each node's Nodes schema with its executable
 ```
 
-A primary or executor change during that active Build keeps the same `build_id`. A primary change is not a topology mutation and never mints a Build. An attempt lost with its executor (no terminal receipt, the executor unheard) leaves the Build in progress (`Running`), and a successor claims the next attempt (`attempt + 1`); only an attempt that ends with a named terminal failure (`Failed { step, reason }`) makes the Build failed. An opening's first step is the fabric-primary's [`on_build_started`](fabric-node-hooks.md#on_build_started) notice, sent after the claim of the opening's first attempt is recorded; it writes no receipt and gates nothing. The ending's last step is the fabric-primary's [`on_build_ended`](fabric-node-hooks.md#on_build_ended) notice to the application, sent after the terminal (`Complete` or `Failed { step, reason }`) is recorded; it writes no receipt and gates nothing.
+and the events store carries what happened since: each mesh's dispatch and each step's outcome (§5).
+
+A primary or executor change during that active Build keeps the same `build_id`. A primary change is not a topology mutation and never mints a Build. Each mesh's section is one call from the fabric-primary, addressed to the mesh's primary under the call's one retry mechanism (Q344); a mesh's new mesh-primary runs the section from the events, and a step whose `rdm.build.step` event ended `complete` is not run again. A step that ends `failed { reason }`, or a section call that ends short of its end, ends its mesh's section, never the Build; the other sections run on, and nothing is reverted (Q346). The Build ends `complete` when every section finished, `incomplete` when it ran and not every section finished (what ran stands), and `failed` only when it could not start. The first step is the fabric-primary's [`on_build_started`](fabric-node-hooks.md#on_build_started) notice, sent from the write of `rdm.build.started`; it gates nothing. The last is [`on_build_ended`](fabric-node-hooks.md#on_build_ended), sent from the write of `rdm.build.ended` (`complete`, `incomplete { sections }` or `failed { reason }`); it gates nothing.
 
 ```text
 Build B123 in progress (the current Build)
@@ -243,7 +246,7 @@ continue remaining work
 
 A node lost after B123 completed is a repair, not a Build: the node's mesh-primary investigates it and re-creates it (a lost mesh-primary: the successor its election names; the fabric-primary only when no successor takes the role) at the same path and name ([node recovery](lifecycles/node-recovery.md)), recorded on the node record. B123 stays completed and is not written.
 
-Each topology change is its own Build with its own build_id (§1). A Build is the durable accepted topology plus the history of attempts to realize it.
+Each topology change is its own Build with its own build_id (§1). A Build is the request, the topology accepted from it, and its events.
 
 ### 4.2 Hydration of the accepted topology
 
@@ -261,28 +264,25 @@ Join admission and its answer are defined by [JoinNode](node-rpc-envelope.md#joi
 
 ### 4.3 The accepted topology changes first; the observed topology follows execution
 
-The accepted topology is the Build's; the observed topology follows the executor's steps and the provider's proof. The moment-by-moment table of what every node observes while a node is removed, and which status and overlay stop application routing, is [States: Routing](lifecycles/states.md#routing); the removal's steps are [node.delete](lifecycles/node-delete.md). The claim (the fabric-primary's for a topology attempt, the mesh-primary's for a drift attempt in its mesh), the fabric-primary's dispatch of build.attempt.run to the executor `executor_for` names, the hand-off between executors and a successor's resumption are the [Build carrier](node-rpc-envelope.md#calls-and-direction)'s.
+The accepted topology is the Build's; the observed topology follows the executor's steps and the provider's inspect answer. The moment-by-moment table of what every node observes while a node is removed, and which status and overlay stop application routing, is [States: Routing](lifecycles/states.md#routing); the removal's steps are [node.delete](lifecycles/node-delete.md). The fabric-primary's dispatch of each mesh's section to its mesh-primary and a successor's resumption are the [Build carrier](node-rpc-envelope.md#calls-and-direction)'s.
 
 ---
 
 ### 4.4 The gates before an operation
 
-Every operation on the topology, a Build or a standalone node.delete, passes the fabric-primary's
-gates in this order before anything runs. Each gate reads one source. A gate that fails refuses by
-name and nothing is written. A node command's checks are its own page's
+Every Build passes the fabric-primary's gates in this order before anything runs. Each gate reads
+one source. A gate that fails refuses by name and nothing is written. A node command's checks are its own page's
 ([node.stop](lifecycles/node-stop.md), [node.start](lifecycles/node-start.md),
 [node.connection.delete](lifecycles/node-connections-delete.md)).
 
 | Gate | Reads | Refusal |
 |---|---|---|
 | The receiver is the fabric-primary | its own view | `not-fabric-primary`, naming the fabric-primary |
-| The current Build is settled | the Build store (R-BI3) | `build-in-progress`, naming the Build; fabric.delete excepted (§1) |
-| The node's mesh holds no attempt of its own | the Build store (R-BI7) | `build-in-progress`, naming the mesh |
-| A node stands at the path | the fabric-primary's view by name; a `.old` path by node id through the row index | `unknown-node` |
-| The node's state admits the action: a start needs a stopped birth, a stop or a connections delete a live one, a delete a stopped one, one whose exit is proven, or a live one, which its own sequence stops first ([node.delete](lifecycles/node-delete.md) Live target) | the fabric-primary's view, which holds a peer mesh's births as that mesh's primary publishes them on the backbone ([gossip §3](gossip.md#3-hierarchical-topology)) | `node-not-live` |
+| The current Build is settled | the Build store and its events (R-BI3) | `build-in-progress`, naming the Build; fabric.delete excepted (§1) |
+| A created node's path and name are free, its mesh live or created in the request with a node-admin, its type declared | the fabric-primary's records | `name-held`, `unknown-mesh`, `unknown-type`, by name |
+| A deleted node.id stands | the fabric-primary's records by node.id | `unknown-node` |
 | The node's mesh is heard | the fabric-primary's view | refused by name, naming the mesh and how long it has gone unheard (R-D1) |
-| A primary's stop, connections delete or delete has a successor | the fabric-primary's view | refused by name, naming the primary |
-| The attempt is claimed | the Build store | `attempt-taken` |
+| A deleted primary has a successor | the fabric-primary's view | refused by name, naming the primary |
 
 The operation carries the exact birth the gates pinned (node id and incarnation). The mesh-primary
 that runs it verifies that birth again against its own view at execution, so a birth replaced
@@ -300,110 +300,85 @@ Build mechanics must not depend on one storage technology.
 ```rust
 #[async_trait]
 pub trait BuildStateAdapter: Send + Sync {
+    /// Write the Build record, once.
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError>;
-    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError>;
-    async fn publish_fabric(&self, record: &FabricIdentity) -> Result<(), BuildStateError>;
+    /// The Build's view: its record and its events.
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError>;
+    /// The current Build, read newest first by its events (§4).
     async fn current_build(&self) -> Result<CurrentBuild, BuildStateError>;
-    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError>;
+    /// The current Build's view, when one is.
     async fn current(&self) -> Result<Option<BuildProjection>, BuildStateError>;
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
-    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError>;
-    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError>;
-    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError>;
-    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError>;
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
+    /// The newest acceptance's time: the acceptance-order index's high-water mark.
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError>;
+    /// A finished Build leaves history (build.delete).
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
-    async fn note_blocked(&self, build_id: &BuildId, mesh: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str);
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
-    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
+    /// The Builds held, newest accepted first: the acceptance-order index.
+    async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError>;
+    /// The events store the Build's events are in.
+    fn events(&self) -> Arc<dyn EventsStorage>;
+    /// The path and name this admin holds, when the adapter knows it.
+    fn held_name(&self) -> Option<PathName>;
+    /// Write a step's `rdm.build.step` event, as the run's writer; only a run's step log writes one.
+    async fn write_step(&self, step: &StepWrite) -> Result<(), BuildStateError>;
+    /// The step in flight is blocked for `reason`: live progress, never durable.
+    async fn note_blocked(&self, build_id: &BuildId, operation: &OperationId, step: &str, reason: &str);
 }
 
 #[async_trait]
 pub trait EventsStorage: Send + Sync {
+    /// Append `event`.
     async fn append(&self, event: &Event) -> Result<(), StorageError>;
+    /// The event `id`, when the store holds it.
     async fn event(&self, id: &EventId) -> Result<Option<Event>, StorageError>;
+    /// The events of one Build (by `data.build_id`), in event.id order.
     async fn of_build(&self, build_id: &BuildId) -> Result<Vec<Event>, StorageError>;
+    /// The events of one node (by `subject`), in event.id order.
     async fn of_node(&self, node_id: &NodeId) -> Result<Vec<Event>, StorageError>;
+    /// The storage changes' events (`type` `rdm.storage.*`), in event.id order.
+    async fn of_storage_changes(&self) -> Result<Vec<Event>, StorageError>;
 }
 ```
 
-The exported semantic vocabulary (`BuildFact` variants) is append/fold friendly:
-
-```text
-BuildAccepted
-AttemptOpened
-BuildAttemptClaim
-BuildStepReceipt
-BuildAttemptReceipt
-```
-
-These facts describe reconciliation execution. The current Build is read from them newest first (§4, `current_build()` over the acceptance-order index, with `newest_accepted_at_ms()` as the acceptance high-water mark of every state and `recovery_of` answering the point read by exited birth); they also record what happened while executing it. They are not a second topology writer and not the current-runtime store. Completed Build records remain valid history for recovery, API views, diagnostics, audit and chaos evidence.
-
-What happened while executing a Build is also the events store's: one append-only record per event, a CloudEvents 1.0 envelope ([gossip.md §3.4](gossip.md#34-the-envelope)'s attributes, `id` a time-ordered UUIDv7, `datacontenttype` `application/json`), never gossiped:
+A Build is one record, `BuildAccepted`, written once. What happened while executing it is the events store's: one append-only record per event, a CloudEvents 1.0 envelope ([gossip.md §3.4](gossip.md#34-the-envelope)'s attributes, `id` a time-ordered UUIDv7, `datacontenttype` `application/json`), never gossiped:
 
 | `type` | Writer | `subject` | `data` |
 |---|---|---|---|
 | `rdm.build.started` | the fabric-primary | none | `build_id` |
 | `rdm.build.dispatched` | the fabric-primary | none | `build_id`, `mesh` |
 | `rdm.build.step` | the mesh's mesh-primary | the node acted on | `build_id`, `mesh`, `step`, `op`, `state` (`complete` or `failed { reason, code }`) |
-| `rdm.build.ended` | the fabric-primary | none | `build_id`, `state` (`complete` or `failed { step, reason, code }`) |
+| `rdm.build.ended` | the fabric-primary | none | `build_id`, `state` (`complete`; `incomplete { sections }`, each unfinished section's `mesh`, `op`, `step`, `reason` and `code`; or `failed { reason, code }`, why it could not start) |
 | `rdm.node.investigated` | the primary above the node | node.id | `incarnation`, `path`, `name`, `verdict`, `next` |
 | `rdm.storage.started`, `rdm.storage.committed`, `rdm.storage.ended` | the fabric-primary | none | `change_id`, `topology_storage_provider`, and for the ending its `state` |
 | `rdm.mesh.pending`, `rdm.mesh.ready`, `rdm.mesh.deleting`, `rdm.mesh.deleted` | the mesh's mesh-primary (the fabric-primary while the mesh has none) | none | `mesh_id`, `mesh` |
 | `rdm.fabric.pending`, `rdm.fabric.ready` | the fabric-primary | none | `fabric_id` |
 
-The store answers four reads: by event.id, the events of one Build (by `data.build_id`, in event.id order), the events of one node (by `subject`, in event.id order) and the storage changes' events (`type` `rdm.storage.*`, in event.id order).
+The store answers four reads: by event.id, the events of one Build (by `data.build_id`, in event.id order), the events of one node (by `subject`, in event.id order) and the storage changes' events (`type` `rdm.storage.*`, in event.id order). The current Build is read newest first (§4, `current_build()` over the acceptance-order index, with `newest_accepted_at_ms()` as the acceptance high-water mark). Neither is a second topology writer or the current-runtime store; completed Builds and their events remain history for API views, diagnostics, audit and chaos evidence.
 
 ### 5.1 RDM adapters
 
 RDM shows the contract without inventing a broker-backed database:
 
 - `MemoryBuildStateAdapter` for unit/functional evidence;
-- fabric-projected **active** Build facts for the fabric recovery workflow's executor;
-- local-file journal for same-node-admin restart, replay, and evidence artifacts.
+- `FileJournal`, the Build journal on the fabric's shared store root (`builds.jsonl`, §5.3), beside
+  `FileEventsStorage` (`events.jsonl`);
+- `FabricBuildStateAdapter`, a node-admin's Build state: that journal, read and written behind the
+  admin's primary records.
 
-Single-writer safety comes from one writer per record: the fabric-primary writes every Build record (acceptance, attempts, claims, step receipts, results) through the configured Build storage; a mesh-primary runs its mesh's attempt and reports each receipt up the attempt's `build.attempt.run` stream, and writes only its own mesh's rows. With that come idempotent operation keys and stable logical topology identities. When an unheard peer mesh is heard again, the election converges and the current fabric-primary reconciles reality rather than trusting attempt history.
+Single-writer safety comes from one writer per record: the fabric-primary writes each Build record, once, and the Build-level events; a mesh-primary writes the `rdm.build.step` events of its own mesh's steps and its own mesh's rows; each event is its own record. With that come idempotent operation keys and stable logical topology identities. When an unheard peer mesh is heard again, the election converges and the current fabric-primary reconciles reality rather than trusting a Build's history.
 
 ### 5.2 Rafka adapter
 
 Rafka maps the same semantic contract onto its durable application/control infrastructure.
 
-Rafka must not persist one mutable Build row and increment `attempt` by read-modify-write. Instead:
+Rafka implements the Build and events stores on its entity framework (Q341): the Build an entity written once at its build_id; each event an entity at its event.id with two declared index slots, (build.id, event.id) and (node.id, event.id), read in key order. Nothing is read-modify-written and no record is updated.
 
-```text
-BuildAccepted
-    insert-and-fail on build_id
+A live run is reattached, never re-run: the caller resubmits the same build_id through build.create and reads the Build's events ([Build carrier](node-rpc-envelope.md#build-op-0x20-rdm)); build.get is a read of the record and its events. The fabric-primary is the one writer of Builds.
 
-AttemptOpened(build_id, mesh, attempt)
-    insert-and-fail on (build_id, mesh, attempt)
-
-BuildAttemptClaim(build_id, mesh, attempt)
-    insert-and-fail claim on (build_id, mesh, attempt)
-
-BuildStepReceipt(...)
-    append
-
-BuildAttemptReceipt(...)
-    append
-
-current attempt
-    folded maximum/winning claim
-
-current Build
-    current_build() over the acceptance-order index
-
-recovery index
-    recovery_of(path, node_id, incarnation)
-```
-
-The claim is one record on the fabric's shared store root and names its claimant: the insert-and-fail is on the store, never on an admin's own log, and the mesh's in-flight row taken by another claimant for the same `(build_id, mesh, attempt)` is held, never won, so a second claimant of one attempt loses and runs nothing; an admin's log holds the record the store decided (Q142). The next attempt is claimed after the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is lost with the attempt unfinished, after the provider's inspection of the executor's exact runtime answers `exited` or `os-stopped` ([node investigation](lifecycles/node-investigation.md)): `running`, `unproven` and silence never let another claimant take it, and an os-stopped executor that resumes after the next attempt is claimed is a deleted birth whose writes every reader refuses ([node recovery](lifecycles/node-recovery.md)). A live run is reattached, never re-claimed: the caller resubmits the same build_id through build.create and the executor's build.attempt.run replays the held receipts ([Build carrier](node-rpc-envelope.md#build-op-0x20-rdm)); build.get is a read of the evidence, not a reattachment. Claims are the claimant's (the fabric-primary's for a topology attempt, the mesh's mesh-primary's for a drift attempt inside its mesh) and are insert-and-fail on `(build_id, mesh, attempt)`, which prevents two claims of one attempt; a call carrying a claim that is not the current folded attempt of the receiver's projection is refused `StaleClaim` naming the held and carried attempts, and `adopt_claim` moves an admin's view only to a claim its claimant decided Won, so a delayed dispatch or receipt of an earlier attempt never reopens a terminally closed run. The attempt counter is never read-modify-written.
-
-Rafka persists each accepted Build (its complete topology), written once, with its execution evidence behind `builds.storage`; the Fabric row carries no pointer to a Build. A `system.ops`-backed implementation is one option; the reconciler knows the storage interface, never a specific topic.
+Rafka persists each accepted Build (its complete topology), written once, behind `builds.storage`; the Fabric row carries no pointer to a Build. A `system.ops`-backed implementation is one option; the reconciler knows the storage interface, never a specific topic.
 
 The current Build cannot be deleted (build.delete refuses by name); an older Build is deletable history once a newer Build is current.
 
-A recovery-critical Build fact (the accepted Build, an attempt claim, a step receipt, a completion) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. The Build facts are the Build journal on the fabric's shared store root (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them there as it becomes fabric-primary. An executor, a starting node-admin and a node-admin taking a primary role read the named Build's committed records there too, fresh: the read answers the records it read or an explicit error, never a cached projection, and an unreadable store is not an empty Build (Q292). The fabric-primary stays the one writer, and a read grants no write and no claim. No command carries a copy of the Build: `build.attempt.run` names the Build and the claim, and a newer attempt on the store makes an older command stale. The accepted Build is recorded whole whatever its size: the store has no frame.
+A Build fact a successor needs (the accepted Build, a step's event, the ending) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. The Build facts are the Build journal on the fabric's shared store root (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them there as it becomes fabric-primary. An executor, a starting node-admin and a node-admin taking a primary role read the named Build's committed records there too, fresh: the read answers the records it read or an explicit error, never a cached projection, and an unreadable store is not an empty Build (Q292). The fabric-primary stays the one writer of Builds, and a read grants no write. No command carries a copy of the Build: `build.attempt.run` names the Build and the mesh. The accepted Build is recorded whole whatever its size: the store has no frame.
 
 Acceptance is crash-safe because a Build is accepted by one durable write of the Build itself:
 
@@ -429,23 +404,21 @@ No Build is current before it is recoverably durable.
 Control-plane state has six boundaries on the fabric's shared store root: fabric, meshes, nodes,
 connections, Builds and events. On the file backend these live under
 `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl,
-builds.jsonl, events.jsonl, locks/}`. Copy every boundary, current values and history, in source
-order together with held claims and in-flight operations.
+builds.jsonl, events.jsonl}`. Copy every boundary, current values and history, in source
+order.
 
-The fabric-primary writes the Fabric record, accepted Build definitions, Build-attempt records,
-and step receipts for operations it executes. Each mesh-primary
-writes its Mesh record and the status and role flags in its members' node records (Q323).
+The fabric-primary writes the Fabric record, each Build once, and the Build-level events. Each
+mesh-primary writes the step events of its mesh (the fabric-primary those of the steps it runs in process), its Mesh record and the status and role flags in its members' node records (Q323).
 Each node writes its own config, tags, bound addresses and declarations through its property
 writer, and its connection facts through the connection writer. The launching admin records the
 birth's runtime and immutable launch snapshot. A node has one record, keyed by its node.id,
 append-only, its latest line current; it has no revision or tenure counter (Q323).
 
-While the fabric-primary is unavailable, the existing fabric-recovery executor writes only the
-attempt facts and the node-record status its operations require for a mesh with no active
-mesh-primary. That exception grants no primary role (Q122).
+While the fabric-primary is unavailable, the fabric-recovery executor writes only the node-record
+status its operations require for a mesh with no active mesh-primary, and no Build record. That
+exception grants no primary role (Q122).
 
-The Build journal retains one fact at its semantic identity: the Build ID, an attempt under its
-mesh, a claim for that attempt, and each step receipt.
+The Build store retains each Build at its build_id; the events store each event at its event.id.
 The generic code uses these interfaces; the application supplies the backend.
 
 `fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once. It carries no pointer to a Build (RDM's `FabricRecord` in `rdm-admin`).
@@ -458,7 +431,7 @@ node-admin starts
     -> reconstruct local control-plane state
     -> the leadership election: mesh primaries and current fabric-primary
 new fabric-primary
-    -> reads the Builds newest first -> the current Build -> continues its remaining work while it is in progress
+    -> reads the Builds newest first -> the current Build -> its events -> continues its remaining work while it is in progress
 ```
 
 ---
@@ -592,9 +565,9 @@ fabric-primary accepts Build B21:
     B21 is the current Build
 ```
 
-The removal is the [node.delete](lifecycles/node-delete.md) of mesh2.node.south, which mesh2's primary
-executes under the fabric-primary's claim; the fabric-primary never commands mesh2.node.south and never
-publishes its events. A delete of mesh2's mesh-primary: it first runs
+The removal is `Delete { node_ids: [mesh2.node.south's node.id] }`, the [node.delete](lifecycles/node-delete.md)
+mesh2's primary executes on the fabric-primary's dispatch; the fabric-primary never commands
+mesh2.node.south and never publishes its events. A delete of mesh2's mesh-primary: it first runs
 [node.primary.update](lifecycles/node-primary-update.md), commanded by the fabric-primary; its successor,
 now mesh2's primary, executes the delete.
 
@@ -642,7 +615,7 @@ RDM rdm-admin
     Build/Reconciler
     RuntimeFact + current runtime metadata + provider-control-domain adoption contract
     the leadership election
-    executor/attempt rules
+    executor rules
     lifecycle/deployment contracts
         |
         v

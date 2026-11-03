@@ -1,4 +1,4 @@
-//! PrimaryRole gate, provider departure inspection, and the reconcile loop's wake.
+//! PrimaryRole gate and the reconcile loop's wake.
 
 use super::*;
 
@@ -35,7 +35,7 @@ impl crate::build_drive::Gate for RoleGate {
     /// fabric-primary commands a mesh-primary); any other type's primary through its mesh-primary, its
     /// commander; the fabric-primary's own primaries it moves itself, having nothing above it, both in
     /// one call when it is both ("Both primaries": the successor becomes both).
-    async fn update_primaries(&self, m: &crate::executor::RoleMove, build_id: &crate::build::BuildId, attempt: u32, run: u32, operation: &rdm_core::OperationId) -> Result<(), crate::build_drive::RoleMoveEnd> {
+    async fn update_primaries(&self, m: &crate::executor::RoleMove, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId) -> Result<(), crate::build_drive::RoleMoveEnd> {
         use crate::election::Moving;
         use crate::fabric_handover::update_operation;
         use rdm_core::PrimaryRole;
@@ -46,7 +46,7 @@ impl crate::build_drive::Gate for RoleGate {
             if m.mesh_role || m.node_type_role {
                 let role = if m.node_type_role { PrimaryRole::NodePrimary(m.primary.r#type.clone()) } else { PrimaryRole::MeshPrimary };
                 let update = update_operation(role, operation);
-                door.command_update_primary(&m.primary, build_id.as_str(), run, &update).await?;
+                door.command_update_primary(&m.primary, build_id.as_str(), &update).await?;
             }
             return Ok(());
         }
@@ -60,16 +60,16 @@ impl crate::build_drive::Gate for RoleGate {
             (false, false) => return Ok(()),
         };
         let update = update_operation(role, operation);
-        door.update_own_primaries(moving, build_id.as_str(), run, &update, m.successor.as_ref()).await?;
+        door.update_own_primaries(moving, build_id.as_str(), &update, m.successor.as_ref()).await?;
         Ok(())
     }
 
-    async fn primaries_updated(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId, attempt: u32) -> Result<(), String> {
+    async fn primaries_updated(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId) -> Result<(), String> {
         for u in updates {
             if u.primary.is_none() && u.mesh == self.handover.topology_view.mesh_name() {
                 continue;
             }
-            self.handover.row_acknowledged(&u.mesh, &u.operation, u.primary.as_ref(), build_id.as_str(), u.run).await?;
+            self.handover.row_acknowledged(&u.mesh, &u.operation, u.primary.as_ref(), build_id.as_str()).await?;
         }
         Ok(())
     }
@@ -77,20 +77,19 @@ impl crate::build_drive::Gate for RoleGate {
     /// What the node rows record of each member's executable (build-deployment.md §3), read from this
     /// admin's nodes.storage, every mesh's rows on the fabric's shared root.
     async fn mesh_rows(&self) -> Result<Vec<crate::storage::MeshRecord>, String> {
-        self.control.claims.meshes().await.map_err(|e| format!("{}: the Mesh rows could not be read: {e}", self.handover.node_id))
+        self.meshes.meshes().await.map_err(|e| format!("{}: the Mesh rows could not be read: {e}", self.handover.node_id))
     }
 
-    /// The birth this fabric-primary's atlas row holds at `path` (fabric-atlas.md R-FA1): the birth the
-    /// path's node row names current as the ops left it, the record Build acceptance read, never the
-    /// gossip view; `None` inside when no row is written at the path or an op deleted the birth.
+    /// The node records of `ids`, read through the reader (query.md §1): the births a fabric.delete's
+    /// begun node.deletes act on once the view has let them go.
+    async fn node_rows(&self, ids: &[rdm_core::NodeId]) -> Result<Vec<crate::storage::NodeRow>, String> {
+        let records = self.control.current_records().ok_or_else(|| format!("{}: this admin holds no node records to read", self.handover.node_id))?;
+        crate::atlas::subject_rows(&records, ids.iter()).await
+    }
+
+    /// The paths this Build's own creates hold in the atlas (fabric-atlas.md R-FA1).
     async fn atlas_created(&self, build: &crate::build_state::BuildProjection) -> std::collections::BTreeSet<rdm_core::PathName> {
         self.control.atlas.created_by(build)
-    }
-
-    async fn atlas_birth(&self, node_id: &rdm_core::NodeId, observed: &crate::topology::Topology) -> Result<Option<crate::accepted::AtlasBirth>, String> {
-        let row = self.control.atlas_row_id(node_id, observed).await.map_err(|r| format!("{}: {r:?}", self.handover.node_id))?;
-        let birth = row.filter(|r| r.status != crate::model::NodeStatus::Deleted).and_then(|r| r.incarnation.map(|incarnation| crate::build::PinnedBirth { r#type: r.r#type.clone(), mesh: r.mesh.clone(), node_id: r.node_id, incarnation }));
-        Ok(Some(crate::accepted::AtlasBirth(birth)))
     }
 
     /// The meshes of `observed` whose Mesh record is deleted: one point read of each record the view does
@@ -115,101 +114,37 @@ impl crate::build_drive::Gate for RoleGate {
         self.handover.records.fabric_state() == crate::fabric_state::FabricState::Ready
     }
 
-    /// The completed lifecycle receipts of the Build, taken into the fabric-primary's atlas
-    /// before the caller is answered `Complete` (fabric-atlas.md R-FA2): the atlas, never the gossip
-    /// view, is what Build acceptance reads them from (Q197). The receipts' subjects are read through the
-    /// reader (query.md §1), what names a receipt's birth its attempt pinned none of.
-    async fn attempt_completed(&self, build_id: &crate::build::BuildId, attempt: u32) {
+    /// The completed lifecycle steps of the Build, taken into the fabric-primary's atlas before the
+    /// caller is answered `Complete` (fabric-atlas.md R-FA2): the atlas, never the gossip view, is what
+    /// Build acceptance reads them from (Q197). The steps' subjects are read through the reader
+    /// (query.md §1), what names a step's birth its Build pinned none of.
+    async fn build_completed(&self, build_id: &crate::build::BuildId) {
         if let Ok(p) = self.builds.read_build(build_id).await {
             let rows = match self.control.current_records() {
                 Some(records) => {
-                    let operations: Vec<rdm_core::OperationId> = p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete).map(|s| s.operation.clone()).collect();
-                    match crate::atlas::subject_rows(&records, operations.iter()).await {
+                    let subjects: Vec<rdm_core::NodeId> = p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete).filter_map(|s| s.subject.clone()).collect();
+                    match crate::atlas::subject_rows(&records, subjects.iter()).await {
                         Ok(rows) => rows,
                         Err(e) => {
-                            tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, outcome = "subjects-unread", detail = %e, "otel.kind" = "internal")
-                                .in_scope(|| tracing::info!("the receipts' subjects could not be read: a receipt its attempt pinned no birth of takes no effect"));
+                            tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), outcome = "subjects-unread", detail = %e, "otel.kind" = "internal")
+                                .in_scope(|| tracing::info!("the steps' subjects could not be read: a step its Build pinned no birth of takes no effect"));
                             Vec::new()
                         }
                     }
                 }
                 None => Vec::new(),
             };
-            self.control.atlas.receipts(&p, attempt, &rows);
+            self.control.atlas.receipts(&p, &rows);
         }
     }
 
-    async fn receipt_streamed(&self, build_id: &crate::build::BuildId, attempt: u32, operation: &rdm_core::OperationId) {
-        self.control.take_streamed_receipt(&*self.builds, build_id, attempt, operation).await;
+    async fn step_streamed(&self, mesh: &str, build_id: &crate::build::BuildId, operation: &str) {
+        self.control.take_streamed_receipt(&*self.builds, build_id, mesh, operation).await;
     }
 
     fn now_ms(&self) -> u64 {
         self.control.time.now_ms()
     }
-
-    async fn receipt_streamed_in(&self, lane: &str, build_id: &crate::build::BuildId, attempt: u32, operation: &rdm_core::OperationId) {
-        let builds: Arc<dyn crate::build_state::BuildStateAdapter> = self.builds.clone();
-        let lane = crate::build_run::LaneBuilds::of(&builds, Some(lane));
-        self.control.take_streamed_receipt(&*lane, build_id, attempt, operation).await;
-    }
-
-    async fn attempt_failed(&self, build_id: &crate::build::BuildId, attempt: u32) {
-        self.control.atlas.ended(build_id, attempt);
-    }
-}
-
-/// Proof that an executor's birth deleted (build.md: "after exact departure proof"): the provider
-/// inspects the exact runtime the digest view or the durable runtime rows name for it, and only an
-/// exited runtime counts.
-pub(crate) struct ProviderDeparture {
-    /// The admin proving the departure: the reader its refusals name.
-    pub(crate) me_path: String,
-    /// This node's name, beside its path.
-    pub(crate) me_name: String,
-    /// Projects this admin's view now and installs it, so the next attempt is planned from the view
-    /// as it is now.
-    pub(crate) refresh: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
-    pub(crate) digest_view: DigestView,
-    pub(crate) provider: Arc<dyn DeploymentProvider>,
-    pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
-}
-
-impl ProviderDeparture {
-    /// The `(path, name)` lookup index key of me_path and me_name.
-    pub(crate) fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
-}
-
-impl ProviderDeparture {
-    pub(crate) fn held_name(&self) -> PathName {
-        self.digest_view.held_path_name().unwrap_or_else(|| self.me())
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::build_drive::ExecutorInspection for ProviderDeparture {
-    async fn exited_or_os_stopped(&self, executor: &rdm_core::framing::Birth) -> Result<(), String> {
-        let me = self.held_name();
-        let held_row = self.digest_view.get(executor.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == executor.incarnation);
-        // A newer incarnation or successor never supplies this birth's runtime evidence.
-        let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
-            None
-        } else {
-            Some(birth_runtime_row(&*self.nodes, &me, &executor.node_id, &executor.incarnation).await?.ok_or_else(|| {
-                format!("node {}, incarnation {} has no runtime in its digest and no durable runtime row was ever written", executor.node_id, executor.incarnation)
-            })?)
-        };
-        // Exited or os-stopped is proof (build.md, Q239): an os-stopped runtime is left as it is, and
-        // if it resumes after the next attempt is claimed it is a deleted birth whose writes every
-        // reader refuses. Running and unproven never are.
-        match crate::admin::inspection_of(&*self.provider, &held_row, row.as_ref()).await {
-            Inspected::Exited(_) | Inspected::OsStopped => {
-                (self.refresh)().await;
-                Ok(())
-            }
-            other => Err(format!("its exact runtime is neither exited nor os-stopped: {}", crate::admin::verdict_name(&other))),
-        }
-    }
-
 }
 
 /// The path and name the lost birth lived at, where fabric recovery re-creates the node-admin
@@ -319,12 +254,12 @@ impl ReconcileWake {
 /// admin's current Build with its attempt (the floor this admin's copy of that Build must reach), and
 /// its own mesh's held lifecycle state ([`adopt_held_mesh_state`]). The first entry and every repeat of
 /// it take them through here.
-pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepted: &AcceptedStore, entry_floor: &Mutex<Option<(crate::build::BuildId, u32)>>, records: &Records, mesh: &str, mesh_id: &MeshId) {
+pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepted: &AcceptedStore, entry_floor: &Mutex<Option<crate::build::BuildId>>, records: &Records, mesh: &str, mesh_id: &MeshId) {
     if let Some(r) = answer.control.fabric.clone() {
         accepted.learn(r, &answer.served_by.to_string()).await;
     }
     if let Some(floor) = answer.control.build.clone() {
-        *entry_floor.lock().unwrap() = Some((floor.build_id, floor.attempt));
+        *entry_floor.lock().unwrap() = Some(floor.build_id);
     }
     adopt_held_mesh_state(answer, records, mesh, mesh_id);
 }
@@ -382,18 +317,17 @@ pub(crate) fn mesh_state_of(status: &str) -> Result<rdm_core::status::MeshState,
 /// (its entry pull, or the fabric control topic).
 ///
 /// Ready also needs the facts of the Build the entry named, the answering admin's current Build: it
-/// must be readable from this admin's own log, and its folded attempt must reach the attempt that
-/// admin held of it (`floor`). An admin that was not served an entry (Day 0) owes no floor. The
+/// (`floor`) must be readable from this admin's own log. An admin that was not served an entry (Day 0) owes no floor. The
 /// reason is typed ([`crate::fetch_build::NodeAdminNotReady`]): the Ready check recovers each one with
 /// the request it names.
-pub async fn node_admin_not_ready(me: &PathName, builds: &dyn BuildStateAdapter, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::fetch_build::NodeAdminNotReady> {
+pub async fn node_admin_not_ready(me: &PathName, builds: &dyn BuildStateAdapter, floor: Option<crate::build::BuildId>) -> Option<crate::fetch_build::NodeAdminNotReady> {
     not_ready_in(me, &FromStore(builds), floor).await
 }
 
 /// [`node_admin_not_ready`] over the facts `log` holds now: a launched node-admin's Build floor at its
 /// start, the Build's committed records read from storage (Q292) and merged whole
 /// ([`crate::build_state::LocalBuildLog::absorb_build`]).
-pub(crate) async fn node_admin_not_ready_held(me: &PathName, log: &dyn crate::build_state::LocalBuildLog, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::fetch_build::NodeAdminNotReady> {
+pub(crate) async fn node_admin_not_ready_held(me: &PathName, log: &dyn crate::build_state::LocalBuildLog, floor: Option<crate::build::BuildId>) -> Option<crate::fetch_build::NodeAdminNotReady> {
     not_ready_in(me, &Held(log), floor).await
 }
 
@@ -430,11 +364,10 @@ impl Holdings for Held<'_> {
     }
 }
 
-async fn not_ready_in(me: &PathName, builds: &dyn Holdings, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::fetch_build::NodeAdminNotReady> {
+async fn not_ready_in(me: &PathName, builds: &dyn Holdings, floor: Option<crate::build::BuildId>) -> Option<crate::fetch_build::NodeAdminNotReady> {
     use crate::fetch_build::NodeAdminNotReady as B;
-    if let Some((id, attempt)) = floor {
+    if let Some(id) = floor {
         match builds.build(&id).await {
-            Ok(held) if held.attempt < attempt => return Some(B::BehindFloor { me_path: me.path.clone(), me_name: me.name.clone(), build_id: id, held: held.attempt, floor: attempt }),
             Ok(_) => {}
             Err(crate::build_state::BuildStateError::UnknownBuild(_)) => return Some(B::NoCurrentBuild { me_path: me.path.clone(), me_name: me.name.clone(), wanted: Some(id) }),
             Err(e) => return Some(B::UnreadableBuild { me_path: me.path.clone(), me_name: me.name.clone(), build_id: id, error: e.to_string() }),
@@ -452,10 +385,7 @@ mod tests {
     use super::*;
     use crate::accepted::FabricTopology;
     use crate::build::BuildId;
-    use crate::build_state::{
-        AttemptOpened, AttemptReason, BuildAccepted, BuildStepReceipt,
-        MemoryBuildStateAdapter, StepOutcome,
-    };
+    use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
     use crate::fabric_storage::{FabricIdentity, MemoryFabricStorage};
     use crate::fetch_build::NodeAdminNotReady;
     use crate::storage::{MemoryNodesStorage, NodesStorage, RuntimeRow};
@@ -544,7 +474,6 @@ mod tests {
                 fabric: Some(identity.clone()),
                 build: Some(BuildFloor {
                     build_id: build_id.clone(),
-                    attempt: 2,
                 }),
                 rafka_time_ms: 5_000,
                 member_cert: Vec::new(),
@@ -561,7 +490,7 @@ mod tests {
         };
         take_entry_control(&answer, &accepted, &entry_floor, &records, "mesh1", &mesh_id).await;
         assert_eq!(accepted.record().await.unwrap(), Some(identity));
-        assert_eq!(*entry_floor.lock().unwrap(), Some((build_id.clone(), 2)));
+        assert_eq!(*entry_floor.lock().unwrap(), Some(build_id.clone()));
         assert_eq!(
             records.declared.lock().unwrap().meshes.get(&mesh_id).copied(),
             Some(MeshState::Ready)
@@ -570,7 +499,7 @@ mod tests {
         // 3. `node_admin_not_ready_held` checks the in-memory `LocalBuildLog` against the entry floor.
         let log = MemoryBuildStateAdapter::new();
         assert_eq!(
-            node_admin_not_ready_held(&me, &log, Some((build_id.clone(), 2))).await,
+            node_admin_not_ready_held(&me, &log, Some(build_id.clone())).await,
             Some(NodeAdminNotReady::NoCurrentBuild {
                 me_path: me.path.clone(), me_name: me.name.clone(),
                 wanted: Some(build_id.clone()),
@@ -585,40 +514,6 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(
-            node_admin_not_ready_held(&me, &log, Some((build_id.clone(), 1))).await,
-            Some(NodeAdminNotReady::BehindFloor {
-                me_path: me.path.clone(), me_name: me.name.clone(),
-                build_id: build_id.clone(),
-                held: 0,
-                floor: 1,
-            })
-        );
-
-        log.open_attempt(&AttemptOpened {
-            build_id: build_id.clone(),
-            attempt: 1,
-            reason: AttemptReason::Requested,
-            action: None,
-            opened_by: rdm_core::NodeId::mint(),
-            opened_at_ms: 2_000,
-            mesh: None,
-            context: None,
-        })
-        .await
-        .unwrap();
-        log.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-            build_id: build_id.clone(),
-            attempt: 1,
-            executor: rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
-            claimant: Some(NodeId::mint()),
-            mesh: None,
-        })
-        .await
-        .unwrap();
-        assert_eq!(
-            node_admin_not_ready_held(&me, &log, Some((build_id, 1))).await,
-            None
-        );
+        assert_eq!(node_admin_not_ready_held(&me, &log, Some(build_id)).await, None, "it holds the entry's Build");
     }
 }

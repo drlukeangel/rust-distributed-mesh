@@ -40,11 +40,11 @@ pub struct FabricDesired {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuildState {
-    /// Accepted and not yet executed.
+    /// Accepted, and no `rdm.build.started` written yet.
     ///
     /// Serialized as `pending`.
     Pending,
-    /// An attempt is executing.
+    /// `rdm.build.started` written, no `rdm.build.ended`.
     ///
     /// Serialized as `running`.
     Running,
@@ -52,22 +52,22 @@ pub enum BuildState {
     ///
     /// Serialized as `complete`.
     Complete,
-    /// The current attempt failed.
+    /// A step ended `failed`.
     ///
     /// Serialized as `failed`.
     Failed,
 }
 
-/// One step receipt of a Build.
+/// One `rdm.build.step` event of a Build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepView {
-    /// The attempt the receipt belongs to.
-    pub attempt: u32,
-    /// The operation the step belongs to.
-    pub operation: crate::OperationId,
+    /// The mesh whose section the step belongs to.
+    pub mesh: String,
+    /// The operation the step belongs to, `noun.verb:<node_id>`.
+    pub operation: String,
     /// The step.
     pub step: String,
-    /// `"complete"` or `{"failed": {"reason"}}`.
+    /// `"complete"` or `{"failed": {"reason", "code"}}`.
     pub outcome: serde_json::Value,
 }
 
@@ -85,19 +85,10 @@ pub struct BuildView {
     pub time: u64,
     /// Where the Build is in its life.
     pub state: BuildState,
-    /// The current attempt, counting from 1.
-    pub attempt: u32,
-    /// The executor running the current attempt, when one is.
-    pub executor: Option<String>,
-    /// The step receipts of the Build.
+    /// The step events of the Build, in event.id order.
     pub steps: Vec<StepView>,
-    /// The reason the last attempt failed, when one did.
+    /// The failed step's reason, when the Build failed.
     pub last_failure: Option<String>,
-    /// Why the current attempt exists (`requested`, `proven-drift`, `stop`, `steps`, ...).
-    pub reason: String,
-    /// The targeted action the current attempt carries, if any.
-    #[serde(default)]
-    pub action: Option<serde_json::Value>,
 }
 
 /// Why a call did not succeed.
@@ -135,14 +126,11 @@ impl fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
-/// The 202 of a request that opens an attempt: the Build and the attempt this request opened
-/// (attempt 1 for a Build it accepted). Wait for exactly this attempt, never for the Build alone.
+/// The 202 of a request a Build runs: the Build it accepted or joined.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Accepted {
     /// The Build the request opened or joined.
     pub build_id: BuildId,
-    /// The attempt the request opened.
-    pub attempt: u32,
 }
 
 #[cfg(test)]

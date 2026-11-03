@@ -206,7 +206,6 @@ pub(crate) fn node_deleted_receipt(held: Option<&rdm_core::LifecycleOp>, offered
             frame = "node-deleted",
             operation_subject = ?offered.operation.subject,
             build_id = %offered.build_id,
-            attempt = offered.attempt,
             operation = %offered.operation.action, operation_step = ?offered.operation.step,
             node_id = %offered.node_id,
             incarnation_id = %offered.incarnation,
@@ -222,7 +221,6 @@ pub(crate) fn node_deleted_receipt(held: Option<&rdm_core::LifecycleOp>, offered
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct LifecycleIdentity {
     build_id: String,
-    attempt: u32,
     operation: rdm_core::OperationId,
     node_id: rdm_core::NodeId,
     incarnation: rdm_core::IncarnationId,
@@ -230,7 +228,7 @@ pub(crate) struct LifecycleIdentity {
 
 impl LifecycleIdentity {
     pub(crate) fn of(op: &rdm_core::LifecycleOp) -> Self {
-        Self { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() }
+        Self { build_id: op.build_id.clone(), operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() }
     }
 }
 
@@ -238,7 +236,7 @@ fn duplicate_lifecycle(frame: &str, op: &rdm_core::LifecycleOp) {
     tracing::info_span!(
         "rdm.mesh.topology.update.via-duplicate",
         frame,
-        build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject, operation_step = ?op.operation.step, node_id = %op.node_id, incarnation_id = %op.incarnation,
+        build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, operation_step = ?op.operation.step, node_id = %op.node_id, incarnation_id = %op.incarnation,
         outcome = "ignored",
     ).in_scope(|| tracing::info!("the lifecycle operation identity is already held or seen: ignored"));
 }
@@ -250,7 +248,7 @@ pub(crate) fn admit_overlay(frame: &str, op: &rdm_core::LifecycleOp, held: Optio
     if ended {
         tracing::info_span!(
             "rdm.mesh.topology.update.via-lifecycle-reconciled",
-            frame, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject,
+            frame, build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject,
             node_id = %op.node_id, incarnation_id = %op.incarnation,
             outcome = "ignored", evidence = "operation-ended",
         ).in_scope(|| tracing::info!("held completion or later lifecycle evidence already ended this exact operation: nothing reopens"));
@@ -541,7 +539,7 @@ mod tests {
         let renamed = PublisherId { ..publisher };
         let old = Frame::MeshTopology { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], deleted: vec![] };
         assert!(order.admit(&old).is_err());
-        let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), path: "mesh1.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let operation = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "b".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), path: "mesh1.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
         let relabeled = PublisherId { ..renamed };
         assert!(order.admit(&StatusEvent::Stopped.frame(operation, relabeled, 19)).is_err(), "a carried projection floor belongs to the birth, not its label");
@@ -611,7 +609,7 @@ mod tests {
     }
 
     fn op(d: &MeshDigest, action: &str) -> LifecycleOp {
-        LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "3qcfk1kq47m9".into(), attempt: 1, operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+        LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "3qcfk1kq47m9".into(), operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
     }
 
     /// CONTRACT (R-RX3: MeshTopology and MeshTopologyDelta order by `published_at_rafka_ms` then

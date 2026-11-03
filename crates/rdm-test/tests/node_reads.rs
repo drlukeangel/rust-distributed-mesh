@@ -553,7 +553,8 @@ fn builds_get_is_served_by_the_fabric_primary_alone_each_build_whole_the_current
         let current: Vec<&rdm_client::Build> = every.iter().filter(|b| b.current).collect();
         assert_eq!(current.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>(), vec![held.build_id.clone()], "the current Build alone is marked");
         let got = current[0];
-        assert_eq!((got.attempt, got.executor.clone(), got.last_failure.clone(), got.steps.len()), (held.attempt, held.executor.clone(), held.last_failure.clone(), held.steps.len()), "the header and receipts are the log's: {got:#?}");
+        let got_steps = got.events.iter().filter(|e| e["type"] == "rdm.build.step").count();
+        assert_eq!((format!("{:?}", got.phase), got_steps), (format!("{:?}", held.state), held.steps.len()), "the header and the step events are the log's: {got:#?}");
         let specs: Vec<rdm_core::meta::NodeSpec> = held.topology.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
         assert_eq!(got.nodes, specs, "the topology is every node's create spec");
         assert!(got.nodes.iter().any(|s| s.location() == fp.location()), "the Day-0 Build names mesh1.node-admin.1: {:?}", got.nodes);

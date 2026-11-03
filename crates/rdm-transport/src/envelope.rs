@@ -105,7 +105,7 @@ fn operation_parts(operation: &rdm_core::OperationId) -> Vec<String> {
     vec![operation.action.clone(), operation.step.map(|step| step.to_string()).unwrap_or_default(), operation.occurrence.as_ref().map(ToString::to_string).unwrap_or_default()]
 }
 fn operation(op: &rdm_core::LifecycleOp) -> Vec<String> {
-    let mut parts = vec![op.build_id.clone(), op.attempt.to_string()];
+    let mut parts = vec![op.build_id.clone()];
     parts.extend(operation_parts(&op.operation));
     parts.extend([op.mesh.clone(), op.node_id.to_string(), op.incarnation.to_string()]);
     parts
@@ -168,7 +168,7 @@ impl Context {
                 format!("fabric/{fabric}/status")
             }
             Frame::Reserved15 { hook, .. } | Frame::Reserved16 { hook, .. } | Frame::Reserved17 { hook, .. } | Frame::Reserved18 { hook, .. } => {
-                identity = vec![hook.fabric_id.to_string(), hook.build_id.clone(), hook.attempt.to_string()];
+                identity = vec![hook.fabric_id.to_string(), hook.build_id.clone()];
                 identity.extend(operation_parts(&hook.operation));
                 identity.extend([hook.node_id.to_string(), hook.incarnation.to_string()]);
                 time_ms = hook.event_at_rafka_ms;
@@ -486,7 +486,7 @@ mod tests {
     }
     #[test]
     fn operation_sequence_is_absent_and_source_survives_forwarding() {
-        let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "m".into(), build_id: "b".into(), attempt: 1, operation: rdm_core::OperationId::unscoped("o"), node_id: author().node, incarnation: author().incarnation, path: "m.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "m".into(), build_id: "b".into(), operation: rdm_core::OperationId::unscoped("o"), node_id: author().node, incarnation: author().incarnation, path: "m.node".into(), name: "1".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let event = Frame::NodeDeleted { op, forwarded_by: None }.authored(&author(), 0, 1);
         let forwarded = crate::topology::forward_of(event.clone(), "other.node-admin.1", "other").unwrap();
         assert_eq!(event.context(), forwarded.context());
@@ -501,7 +501,7 @@ mod tests {
         let base = rdm_core::OperationId::node("node.mesh.join", &node.node);
         let first = base.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint());
         let second = base.in_occurrence(rdm_core::OperationOccurrenceId::mint());
-        let event = |operation| Frame::NodeDeleted { op: rdm_core::LifecycleOp { r#type: "node".into(), mesh: "m".into(), build_id: "b".into(), attempt: 1, operation, node_id: node.node.clone(), incarnation: node.incarnation.clone(), path: "arbitrary".into(), name: "worker".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }, forwarded_by: None };
+        let event = |operation| Frame::NodeDeleted { op: rdm_core::LifecycleOp { r#type: "node".into(), mesh: "m".into(), build_id: "b".into(), operation, node_id: node.node.clone(), incarnation: node.incarnation.clone(), path: "arbitrary".into(), name: "worker".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }, forwarded_by: None };
         let first_event = event(first.clone());
         let first_context = Context::authored(&first_event, &node, 1, 1);
         assert_eq!(Context::authored(&event(first.clone()), &node, 1, 1).id, first_context.id);

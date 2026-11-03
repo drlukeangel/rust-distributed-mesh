@@ -24,7 +24,7 @@ fn birth(fabric: &FabricId, mesh: &MeshId, path: rdm_core::PathName, mesh_name: 
     MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { mesh: mesh_name.to_owned(), r#type: r#type.to_string(), node_id: NodeId::mint(), path: path.path.clone(), name: path.name.clone(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, load: None, gossip: None, is_primary: None, is_fabric_primary: None }
 }
 fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
-    LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "recovery-receive".into(), attempt: 1, operation: rdm_core::OperationId::node(format!("node.{command}"), &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
+    LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "recovery-receive".into(), operation: rdm_core::OperationId::node(format!("node.{command}"), &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None }
 }
 
 /// CONTRACT: topology RPC installs the held version, births, terminal/lifecycle evidence and roles.

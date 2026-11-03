@@ -1,41 +1,35 @@
 //! A node-admin's Build floor read from the Build storage (Q292; i143 R-G6): the Ready check names a
-//! typed blocker for the control facts it misses, and its `FetchBuild` reads the Build's committed
-//! records from the storage the fabric-primary writes, never a copy a peer serves, absorbs them into
-//! the admin's own log, and makes the read again after a failure, spaced by its backoff.
+//! typed blocker for the Build it misses, and its `FetchBuild` reads the Build's committed records from
+//! the storage the fabric-primary writes, never a copy a peer serves, absorbs them into the admin's own
+//! log, and makes the read again after a failure, spaced by its backoff.
 
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::admin::node_admin_not_ready;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, MemoryBuildStateAdapter, StepOutcome};
+use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildStateAdapter, BuildStateError, FactDerivation, LocalBuildLog, MemoryBuildStateAdapter};
 use rdm_admin::fetch_build::{FetchBuild, NodeAdminNotReady};
 use rdm_admin::model::PathName;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// A node-admin's Build state: its own log (whose newest Build in progress or completed is its
-/// current Build, R-BI3) and its entry floor (the Build the entry named, and the attempt to reach).
+/// A node-admin's Build state: its own log beside the fabric's Build storage (whose newest Build in
+/// progress or completed is its current Build, R-BI3), and its entry floor (the Build the entry named).
 struct Admin {
     name: PathName,
     log: Arc<MemoryBuildStateAdapter>,
-    floor: Mutex<Option<(BuildId, u32)>>,
+    floor: Mutex<Option<BuildId>>,
 }
 
-fn admin(name: PathName) -> Admin {
-    Admin { name, log: Arc::new(MemoryBuildStateAdapter::new()), floor: Mutex::new(None) }
+fn admin(name: PathName, storage: Arc<dyn LocalBuildLog>) -> Admin {
+    Admin { name, log: Arc::new(MemoryBuildStateAdapter::new().persisted_in(storage)), floor: Mutex::new(None) }
 }
 
-/// The Build storage holds Build `id` through attempt `attempts`, converged: the store's current Build.
-async fn stored(store: &MemoryBuildStateAdapter, id: &BuildId, attempts: u32) {
-    let executor_birth = rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+/// The Build storage holds Build `id`, complete: the store's current Build.
+async fn stored(store: &MemoryBuildStateAdapter, id: &BuildId) {
+    let fp = rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
     store.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 }).await.unwrap();
-    for attempt in 1..=attempts {
-        if attempt > 1 {
-            store.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("400000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
-        }
-        store.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: executor_birth.clone() }).await.unwrap();
-        store.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
-    }
+    crate::end_build(store, id, &fp, rdm_admin::events_storage::EndedState::Complete).await;
 }
 
 /// Drive the Ready check's turn until it finds no blocker, recording each distinct blocker kind.
@@ -61,48 +55,27 @@ async fn drive(a: &Admin, h: &mut FetchBuild, within: Duration) -> Result<Vec<&'
     }
 }
 
-fn read_of(a: &Admin, store: Arc<dyn BuildStateAdapter>) -> FetchBuild {
-    FetchBuild::new(a.name.clone(), store, a.log.clone() as Arc<dyn LocalBuildLog>)
+fn read_of(a: &Admin) -> FetchBuild {
+    FetchBuild::new(a.name.clone(), a.log.clone() as Arc<dyn LocalBuildLog>)
 }
 
 /// CONTRACT (Q292; node-start.md step 4): a joiner holds the Build its entry reply named and none of its
 /// records, so it holds no current Build. The Ready check names the typed blocker (the named Build
 /// wanted); the floor reads that Build's committed records from the Build storage into the joiner's
-/// own log, the Build is current through the entry's floor and the blocker clears.
+/// own log, the Build is current and the blocker clears.
 #[tokio::test]
 async fn a_build_the_entry_named_is_held_current_once_its_committed_records_are_read() {
     let store = Arc::new(MemoryBuildStateAdapter::new());
     let id = BuildId::mint();
-    stored(&store, &id, 2).await;
-    let joiner = admin(PathName::new("mesh1.node-admin", "2").unwrap());
-    *joiner.floor.lock().unwrap() = Some((id.clone(), 2));
+    stored(&store, &id).await;
+    let joiner = admin(PathName::new("mesh1.node-admin", "2").unwrap(), store.clone());
+    *joiner.floor.lock().unwrap() = Some(id.clone());
     let b = node_admin_not_ready(&joiner.name, &*joiner.log, joiner.floor.lock().unwrap().clone()).await.unwrap();
     assert!(matches!(&b, NodeAdminNotReady::NoCurrentBuild { wanted: Some(w), .. } if *w == id), "{b:?}");
-    let mut h = read_of(&joiner, store.clone());
+    let mut h = read_of(&joiner);
     let seen = drive(&joiner, &mut h, Duration::from_secs(10)).await.expect("reads the Build");
     assert_eq!(seen, vec!["no-current-build-wanted"], "the one blocker the joiner named");
     assert_eq!(joiner.log.current_build().await.unwrap().into_build_id(), Some(id.clone()), "the read Build is current");
-    assert_eq!(joiner.log.read_build(&id).await.unwrap().attempt, 2, "the joiner's own log holds the Build through the floor");
-}
-
-/// CONTRACT (Q292, V's release red at c164d693b: a 4,487-byte step receipt past one 4,032-byte Build
-/// message left a re-created admin's every read incomplete): a Build whose records include a failed
-/// step's reason far past any message is read whole into the joiner's log, and the joiner's floor
-/// clears. Must NOT happen: a record dropped or cut for its size, or the read counted incomplete.
-#[tokio::test]
-async fn a_build_with_a_record_far_past_one_message_is_read_whole() {
-    let store = Arc::new(MemoryBuildStateAdapter::new());
-    let id = BuildId::mint();
-    stored(&store, &id, 1).await;
-    let reason = "x".repeat(9_000);
-    let failed = BuildStepReceipt { mesh: None, build_id: id.clone(), attempt: 1, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node-admin", "1").unwrap())), step: "WaitForNodeReady".into(), outcome: StepOutcome::Failed { reason: reason.clone(), code: rdm_core::outcome::Code::DeadlineExceeded }, output: None, executor: None };
-    store.append_step_receipt(&failed).await.unwrap();
-    let joiner = admin(PathName::new("mesh2.node-admin", "1").unwrap());
-    *joiner.floor.lock().unwrap() = Some((id.clone(), 1));
-    let mut h = read_of(&joiner, store.clone());
-    drive(&joiner, &mut h, Duration::from_secs(10)).await.expect("reads the Build");
-    let held = joiner.log.facts().await.unwrap();
-    assert!(held.iter().any(|f| matches!(f, BuildFact::Step(s) if s.outcome == failed.outcome)), "the 9,000-byte reason is held whole");
 }
 
 /// CONTRACT (states.md "The check-in checklist"; Q292): a primary taking its role reads the storage's
@@ -112,10 +85,10 @@ async fn a_build_with_a_record_far_past_one_message_is_read_whole() {
 async fn a_primary_taking_its_role_reads_the_storages_current_build_once() {
     let store = Arc::new(MemoryBuildStateAdapter::new());
     let id = BuildId::mint();
-    stored(&store, &id, 2).await;
-    let taking = admin(PathName::new("mesh2.node-admin", "1").unwrap());
-    assert_eq!(taking.log.current_build().await.unwrap().into_build_id(), None, "the primary holds no Build before the read");
-    let mut h = read_of(&taking, store.clone());
+    stored(&store, &id).await;
+    let taking = admin(PathName::new("mesh2.node-admin", "1").unwrap(), store.clone());
+    assert!(taking.log.facts().await.unwrap().is_empty(), "the primary holds no Build record before the read");
+    let mut h = read_of(&taking);
     assert!(!h.absorbed().await, "nothing is taken before a read is made");
     let read = NodeAdminNotReady::NoCurrentBuild { me_path: taking.name.path.clone(), me_name: taking.name.name.clone(), wanted: None };
     let until = Instant::now() + Duration::from_secs(10);
@@ -131,28 +104,19 @@ async fn a_primary_taking_its_role_reads_the_storages_current_build_once() {
     assert_eq!(taking.log.current_build().await.unwrap().into_build_id(), Some(id), "the primary's log holds the storage's current Build");
 }
 
-/// CONTRACT (node-start.md step 4; Q292): a restarted admin whose own log lost the Build's records,
-/// and one whose log is behind the entry's attempt floor, each read the Build from the storage up to
-/// the floor; the blocker names which.
+/// CONTRACT (node-start.md step 4; Q292): a restarted admin whose own log lost the Build's records reads
+/// the Build the entry named from the storage; the blocker names it.
 #[tokio::test]
-async fn a_lost_or_behind_build_is_read_up_to_the_entry_floor() {
+async fn a_lost_build_is_read_from_the_storage_by_the_entry_floor() {
     let store = Arc::new(MemoryBuildStateAdapter::new());
     let id = BuildId::mint();
-    stored(&store, &id, 3).await;
-    // Behind: the admin's own log holds attempt 1 only.
-    let behind = admin(PathName::new("mesh1.node-admin", "2").unwrap());
-    stored(&behind.log, &id, 1).await;
-    *behind.floor.lock().unwrap() = Some((id.clone(), 3));
-    let mut h = read_of(&behind, store.clone());
-    let seen = drive(&behind, &mut h, Duration::from_secs(10)).await.expect("reads up to the floor");
-    assert_eq!(seen, vec!["behind-floor"], "the blocker named the floor");
-    assert_eq!(behind.log.read_build(&id).await.unwrap().attempt, 3);
-    // Lost: a restart's log holds nothing of the Build the entry named.
-    let restarted = admin(PathName::new("mesh1.node-admin", "3").unwrap());
-    *restarted.floor.lock().unwrap() = Some((id.clone(), 3));
-    let mut h = read_of(&restarted, store.clone());
-    drive(&restarted, &mut h, Duration::from_secs(10)).await.expect("reads the lost Build");
-    assert_eq!(restarted.log.read_build(&id).await.unwrap().attempt, 3);
+    stored(&store, &id).await;
+    let restarted = admin(PathName::new("mesh1.node-admin", "3").unwrap(), store.clone());
+    *restarted.floor.lock().unwrap() = Some(id.clone());
+    let mut h = read_of(&restarted);
+    let seen = drive(&restarted, &mut h, Duration::from_secs(10)).await.expect("reads the lost Build");
+    assert_eq!(seen, vec!["no-current-build-wanted"], "the blocker named the Build the entry named");
+    assert_eq!(restarted.log.current_build().await.unwrap().into_build_id(), Some(id));
 }
 
 /// A Build storage that cannot be read until it is let: every committed read fails, named, never
@@ -167,9 +131,6 @@ impl BuildStateAdapter for Unreadable {
     async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
         self.inner.publish_accepted(a).await
     }
-    async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(o).await
-    }
     async fn read_build(&self, id: &BuildId) -> Result<rdm_admin::build_state::BuildProjection, BuildStateError> {
         self.inner.read_build(id).await
     }
@@ -179,35 +140,33 @@ impl BuildStateAdapter for Unreadable {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<rdm_admin::build_state::BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
+    async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(id).await
     }
-    async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<rdm_admin::build_state::ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(c).await
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.inner.accepted_newest_first().await
     }
-    async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(c).await
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
     }
-    async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_step_receipt(r).await
+}
+
+#[async_trait::async_trait]
+impl LocalBuildLog for Unreadable {
+    async fn absorb_facts(&self, facts: &[BuildFact]) {
+        self.inner.absorb_facts(facts).await
     }
-    async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(r).await
+    async fn derive_on_every_fact(&self, derive: FactDerivation) {
+        self.inner.derive_on_every_fact(derive).await
     }
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
     async fn committed_facts(&self, build: Option<&BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
         if !self.open.load(Ordering::SeqCst) {
-            return Err(BuildStateError::Io("the Build storage cannot be read (the cell's fault)".into()));
+            return Err(BuildStateError::Io("the Build storage cannot be read: the cell holds it shut".into()));
         }
         self.inner.committed_facts(build).await
-    }
-    async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
-        self.inner.forget(id).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
     }
 }
 
@@ -218,11 +177,11 @@ impl BuildStateAdapter for Unreadable {
 async fn an_unreadable_storage_leaves_the_floor_blocked_and_is_read_again() {
     let inner = Arc::new(MemoryBuildStateAdapter::new());
     let id = BuildId::mint();
-    stored(&inner, &id, 1).await;
+    stored(&inner, &id).await;
     let store = Arc::new(Unreadable { inner, open: AtomicBool::new(false) });
-    let joiner = admin(PathName::new("mesh1.node-admin", "2").unwrap());
-    *joiner.floor.lock().unwrap() = Some((id.clone(), 1));
-    let mut h = read_of(&joiner, store.clone());
+    let joiner = admin(PathName::new("mesh1.node-admin", "2").unwrap(), store.clone());
+    *joiner.floor.lock().unwrap() = Some(id.clone());
+    let mut h = read_of(&joiner);
     assert!(drive(&joiner, &mut h, Duration::from_millis(600)).await.is_err(), "blocked while the storage cannot be read");
     assert!(joiner.log.facts().await.unwrap().is_empty(), "nothing is absorbed from a failed read");
     store.open.store(true, Ordering::SeqCst);

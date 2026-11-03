@@ -6,17 +6,14 @@
 //! Each cell drives the fabric-primary's control plane in process over the memory Build store, with
 //! the view set by the cell. Nothing here depends on timing.
 
-use rdm_admin::accepted::{AcceptedStore, AttemptAction, FabricTopology};
-use rdm_admin::build::{BuildId, BuildReject};
-use rdm_admin::build_claim::AttemptContexts;
-use rdm_admin::build_state::{
-    AttemptOpened, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, LocalBuildLog, MemoryBuildStateAdapter,
-};
+use rdm_admin::accepted::{AcceptedStore, FabricTopology};
+use rdm_admin::build::BuildReject;
+
+use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::{ControlPlane, Refusal};
 use rdm_admin::model::*;
 use rdm_admin::node_investigation::Finding;
 use rdm_admin::topology::Topology;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, status: NodeStatus, primary: bool, fabric_primary: bool) -> Node {
@@ -51,168 +48,27 @@ fn executor(t: &Topology) -> rdm_core::framing::Birth {
     rdm_core::framing::Birth { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap() }
 }
 
-/// The Build store; armed, a racer's open of another action takes the attempt number a request asks
-/// for the moment before the request's own open reaches the store (another writer's insert won).
-struct Raced {
-    inner: MemoryBuildStateAdapter,
-    armed: AtomicBool,
-}
-
-#[async_trait::async_trait]
-impl BuildStateAdapter for Raced {
-    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        self.inner.publish_accepted(accepted).await
-    }
-    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        if self.armed.swap(false, Ordering::SeqCst) {
-            let path: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
-            let racer = AttemptOpened { action: Some(AttemptAction::Delete { r#type: "node".into(), mesh: "mesh1".into(), path, node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() }), opened_by: rdm_core::NodeId::parse("500000000000").unwrap(), ..opened.clone() };
-            self.inner.open_attempt(&racer).await?;
-        }
-        self.inner.open_attempt(opened).await
-    }
-    async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        self.inner.read_build(build_id).await
-    }
-    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, BuildStateError> {
-        self.inner.current_build().await
-    }
-    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
-        self.inner.newest_accepted_at_ms().await
-    }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
-    }
-    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(claim).await
-    }
-    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(claim).await
-    }
-    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_step_receipt(receipt).await
-    }
-    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(receipt).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
-    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        self.inner.forget(build_id).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
-}
-
 struct Rig {
-    builds: Arc<Raced>,
-    contexts: Arc<MemoryBuildStateAdapter>,
+    builds: Arc<MemoryBuildStateAdapter>,
     cp: Arc<ControlPlane>,
 }
 
 async fn rig(t: Topology) -> Rig {
-    let builds = Arc::new(Raced { inner: MemoryBuildStateAdapter::new(), armed: AtomicBool::new(false) });
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor(&t), "mesh1").await.unwrap();
-    let contexts = Arc::new(MemoryBuildStateAdapter::new());
-    let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time())
-        .with_contexts(Arc::new(AttemptContexts::on(contexts.clone() as Arc<dyn LocalBuildLog>)));
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor(&t)).await.unwrap();
+    let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time());
     // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
     crate::bind_records(&cp, &[&t]).await;
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
-    Rig { builds, contexts, cp: Arc::new(cp) }
+    Rig { builds, cp: Arc::new(cp) }
 }
 
 fn reason(r: &Result<rdm_admin::control_plane::Opened, Refusal>) -> String {
     match r {
-        Ok(o) => format!("admitted as attempt {} of {}", o.attempt, o.build_id),
+        Ok(o) => format!("admitted as {}", o.build_id),
         Err(Refusal::Reject(j)) => j.reason().to_string(),
-        Err(Refusal::BuildInProgress(h)) => format!("build-in-progress (mesh {:?})", h.mesh),
+        Err(Refusal::BuildInProgress(h)) => format!("build-in-progress ({})", h.current_build_id),
         Err(other) => format!("{other:?}"),
-    }
-}
-
-/// CONTRACT (build.md §4.4, gate order): "The node's mesh holds no attempt of its own" (third) is
-/// read before "The node's state admits the action" (fifth): a node.delete Build in a mesh its own
-/// drift attempt holds is refused `build-in-progress` naming the mesh, whatever the node's state.
-/// Must NOT happen: the delete refused `node-not-live` by the later gate first.
-#[tokio::test]
-async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_before_the_state_gate() {
-    let r = rig(view(NodeStatus::PendingReconnect)).await;
-    let current = r.builds.current().await.unwrap().expect("the seeded Build is current");
-    let drift = AttemptOpened { mesh: Some("mesh1".into()), build_id: current.build_id.clone(), attempt: 1, reason: AttemptReason::Requested, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None };
-    r.builds.open_attempt(&drift).await.expect("mesh1's drift lane opens its attempt 1");
-    let out = r.cp.submit("gates-delete-held", crate::named_request(&r.cp, move |t: &rdm_admin::topology::Topology| crate::removed(t, &[rdm_core::PathName { path: "mesh1.node".into(), name: "1".into() }])).await).await;
-    match &out {
-        Err(Refusal::BuildInProgress(held)) => assert_eq!(held.mesh.as_deref(), Some("mesh1"), "the refusal names the held mesh"),
-        _ => panic!("the delete is refused build-in-progress naming mesh1 before its state is read, not {}", reason(&out)),
-    }
-}
-
-/// The Build store; every open is followed at once by a drive pass's claim of the attempt it opened,
-/// decided before the opener's call returns: what a drive pass already running does when it claims
-/// the attempt the moment the open lands.
-struct ClaimedInTheOpen {
-    executor: rdm_core::framing::Birth,
-    inner: MemoryBuildStateAdapter,
-    contexts: Arc<AttemptContexts>,
-    claims: rdm_admin::storage::MemoryMeshStorage,
-    claimed: std::sync::Mutex<Option<rdm_core::context::CallContext>>,
-}
-
-#[async_trait::async_trait]
-impl BuildStateAdapter for ClaimedInTheOpen {
-    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        self.inner.publish_accepted(accepted).await
-    }
-    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(opened).await?;
-        let claim = BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), build_id: opened.build_id.clone(), attempt: opened.attempt, executor: self.executor.clone(), claimant: Some(self.executor.node_id.clone()), mesh: None };
-        let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-        if let rdm_core::build_claim::BuildClaimReply::Won { context } = rdm_admin::build_claim::decide_claim(&me, &self.inner, &self.claims, &self.contexts, &claim, "mesh1", None).await {
-            *self.claimed.lock().unwrap() = Some(context);
-        }
-        Ok(())
-    }
-    async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        self.inner.read_build(build_id).await
-    }
-    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, BuildStateError> {
-        self.inner.current_build().await
-    }
-    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
-        self.inner.newest_accepted_at_ms().await
-    }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
-    }
-    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(claim).await
-    }
-    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(claim).await
-    }
-    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_step_receipt(receipt).await
-    }
-    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(receipt).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
-    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        self.inner.forget(build_id).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
     }
 }
 

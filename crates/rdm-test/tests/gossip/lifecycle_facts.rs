@@ -30,7 +30,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         let sender = TopologyView::join(&send_gossip, &send_ep, &fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let receiver = TopologyView::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
         let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Stopped => "stop" };
-        let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: rdm_core::BuildId::mint().to_string(), attempt: 1, operation: rdm_core::OperationId::node(format!("node.{command}"), &subject_id), node_id: subject_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: rdm_core::BuildId::mint().to_string(), operation: rdm_core::OperationId::node(format!("node.{command}"), &subject_id), node_id: subject_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let publisher = PublisherId { incarnation: IncarnationId::mint(), node_id: sender_id.clone() };
         // The publisher that takes the role after it: another birth, which re-publishes the operation its
         // predecessor published under the same identity (a resumed attempt replays its receipted step).
@@ -122,7 +122,7 @@ fn story(kind: StatusEvent, scenario: Story) {
     let apply_name = match kind { StatusEvent::Deleting => "rdm.mesh.topology.update.via-node-deleting", StatusEvent::Stopped => "rdm.mesh.topology.remove.via-node-stopped" };
     assert_eq!(spans.iter().filter(|s| s["name"] == apply_name && s["attributes"]["node_id"] == op.node_id.to_string()).count(), usize::from(!matches!(scenario, Story::Stale)), "exactly one ordinary apply, including the locally applied operation before completion; no apply of a version-refused fact");
     if !matches!(scenario, Story::Control) {
-        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate" && s["attributes"]["frame"] == kind.name() && s["attributes"]["build_id"] == op.build_id && s["attributes"]["attempt"] == op.attempt.to_string() && s["attributes"]["operation"] == op.operation.action && s["attributes"]["operation_subject"] == format!("{:?}", op.operation.subject) && s["attributes"]["node_id"] == op.node_id.as_str() && s["attributes"]["incarnation_id"] == op.incarnation.as_str() && s["attributes"]["outcome"] == "ignored"));
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate" && s["attributes"]["frame"] == kind.name() && s["attributes"]["build_id"] == op.build_id && s["attributes"]["operation"] == op.operation.action && s["attributes"]["operation_subject"] == format!("{:?}", op.operation.subject) && s["attributes"]["node_id"] == op.node_id.as_str() && s["attributes"]["incarnation_id"] == op.incarnation.as_str() && s["attributes"]["outcome"] == "ignored"));
     }
     if matches!(scenario, Story::Stale) {
         assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.topology.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["held_key"] == "topology_version=21" && s["attributes"]["frame_key"] == "topology_version=20"));

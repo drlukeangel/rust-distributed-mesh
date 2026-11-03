@@ -83,7 +83,6 @@ endpoint slot/freshness
 RuntimeFact
 provider locator/control domain
 current Build
-Build attempt
 ~~~
 
 Restart of the same logical node preserves NodeId. Permanent logical replacement mints a new NodeId, so

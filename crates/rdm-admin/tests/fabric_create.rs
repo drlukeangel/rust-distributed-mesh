@@ -153,7 +153,6 @@ fn day0_bootstrap_mints_identities_writes_fabric_and_mesh_rows_enters_ready_and_
             .expect("on_fabric_ready channel open");
 
         assert_eq!(ready_ctx.fabric_id, expected_fabric_id);
-        assert_eq!(ready_ctx.attempt, 1);
         assert!(!ready_ctx.build_id.is_empty());
 
         let view = running.control.topology.read().await.clone();

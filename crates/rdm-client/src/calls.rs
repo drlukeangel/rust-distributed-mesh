@@ -79,11 +79,11 @@ pub enum CallEnd {
         /// What carries it once it is backed.
         why: &'static str,
     },
-    /// A Build receipt names an operation or step this client does not recognise. A reader
+    /// A Build step event names an operation or step this client does not recognise. A reader
     /// that does not recognise a value refuses it by name.
     UnrecognisedReceipt {
-        /// The receipt's operation key.
-        operation: rdm_core::OperationId,
+        /// The step's operation, `noun.verb:<node_id>`.
+        operation: String,
         /// The receipt's step.
         step: String,
     },
@@ -107,7 +107,7 @@ impl std::fmt::Display for CallEnd {
             Self::Rejected { reason, detail } => write!(f, "rejected ({reason}): {detail}"),
             Self::BuildInProgress { current } => write!(f, "Build {current} is still reconciling; one Build at a time"),
             Self::NotBackedToday { op, why } => write!(f, "{} is not backed by an op today: {why}", op.name()),
-            Self::UnrecognisedReceipt { operation, step } => write!(f, "a receipt names operation {operation:?} step {step}, which this client does not recognise"),
+            Self::UnrecognisedReceipt { operation, step } => write!(f, "a step event names operation {operation} step {step}, which this client does not recognise"),
             Self::NotFound { read, detail } => write!(f, "{read}: not found: {detail}"),
         }
     }
@@ -554,12 +554,11 @@ impl<'a> NodeRpc<'a> {
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
     /// to move its primary (and the fabric-primary with it when it is both) to the successor the
     /// election names in its own view.
-    pub async fn primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
             r#type: "node-admin".to_string(),
             build_id: build_id.to_string(),
-            run: attempt,
             operation: rdm_core::OperationId::node("node.primary.update", primary),
             successor: None,
         };
@@ -577,12 +576,11 @@ impl<'a> NodeRpc<'a> {
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"):
     /// command the fabric-primary to move the fabric-primary: its own mesh first, so both
     /// move together when a same-mesh node-admin is Ready, else another mesh's mesh-primary.
-    pub async fn fabric_primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn fabric_primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
             r#type: rdm_core::handover::FABRIC.to_string(),
             build_id: build_id.to_string(),
-            run: attempt,
             operation: rdm_core::OperationId::node("node.fabric-primary.update", primary),
             successor: None,
         };

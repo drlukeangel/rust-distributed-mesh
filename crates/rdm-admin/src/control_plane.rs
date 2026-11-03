@@ -3,8 +3,8 @@
 //! Every topology route is a front door that submits one [`BuildChange`]
 //! to the fabric-primary, which compiles it once against the accepted topology
 //! into the next complete Build, persists it, which makes it the current Build, and
-//! answers `202 {"build_id"}`. A stop, a start or a replacement changes no topology:
-//! it opens the next attempt of the current Build with its action. A route
+//! answers `202 {"build_id"}`. A stop or a start changes no topology and is no Build:
+//! it is a node command of the primary above the node. A route
 //! never spawns, kills or restarts anything itself: there is no lifecycle
 //! handle in [`ControlPlane`] for it to call. `/api/shutdown` and runtime fault
 //! routes are runtime administration, outside Build.
@@ -65,7 +65,7 @@ pub struct ControlPlane {
     /// owns the digest view). Load is served beside the view, never inside it: it changes every
     /// digest and never moves the topology.
     pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, (Option<rdm_core::NodeLoad>, Option<rdm_core::GossipStats>)> + Send + Sync>>,
-    /// Woken on every accepted Build, every attempt opened and every mesh drift attempt's end on this
+    /// Woken on every accepted Build on this
     /// admin: the reconcile loop runs its next pass on it (`ReconcileWake`).
     pub build_submitted: Arc<Notify>,
     /// The fabric's change told of a Build this admin accepted, before the door answers it: a resize, a
@@ -73,20 +73,12 @@ pub struct ControlPlane {
     /// Resize and executable replacement), and the
     /// view this admin answers from holds it. Set once by the admin that owns the change.
     pub resize: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
-    /// Where each attempt this admin brings into being keeps its context, for the claim to return.
-    pub contexts: Arc<crate::build_claim::AttemptContexts>,
-    /// Each mesh's in-flight row (R-BI7 caveat 3, `crate::mesh_claims`): what a drift attempt this
-    /// admin opens as its mesh's primary takes before any fact of it is written.
-    pub claims: Arc<dyn crate::storage::MeshStorage>,
-    /// The rafka-time this admin stamps its Builds and attempts with.
+    /// The rafka-time this admin stamps its Builds with.
     pub time: rdm_transport::clock::RafkaTime,
-    /// Where this fabric-primary admits a Build or an attempt: held from the check that no Build is
+    /// Where this fabric-primary admits a Build: held from the check that no Build is
     /// reconciling to the durable write that makes the next one, by every path that starts work
-    /// (a submitted change, an opened attempt, the drift check).
+    /// (a submitted change, a resubmission).
     pub admission: Arc<tokio::sync::Mutex<()>>,
-    /// The exact departure proof of a drift lane's claimant (build.md: "after exact departure proof"),
-    /// set once the admin's drive is built; none proves nothing.
-    pub departure: std::sync::OnceLock<Arc<dyn crate::build_drive::ExecutorInspection>>,
     /// The node rows (nodes.storage, every mesh's rows on the fabric's shared root), set once the admin
     /// opens them: a complete-topology request is compiled against what each row records of its
     /// executable (proposal executable-bindings-at-create.md rule 5, R4).
@@ -119,7 +111,7 @@ impl ControlPlane {
 impl ControlPlane {
     /// A control plane for the admin `me` over its Build state, its accepted-Build store and an
     /// initial `topology`, stamping with `time`: the rafka-time its process adopted. A control
-    /// plane is never built without one, because every Build and attempt it opens is
+    /// plane is never built without one, because every Build it accepts is
     /// stamped from it.
     pub fn new(builds: Arc<dyn BuildStateAdapter>, accepted: Arc<AcceptedStore>, me: PathName, topology: Topology, time: rdm_transport::clock::RafkaTime) -> Self {
         Self {
@@ -137,11 +129,8 @@ impl ControlPlane {
             investigation: std::sync::OnceLock::new(),
             fabric_recovery: std::sync::OnceLock::new(),
             primaries: std::sync::OnceLock::new(),
-            contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
-            claims: Arc::new(crate::storage::MemoryMeshStorage::default()),
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
-            departure: std::sync::OnceLock::new(),
             node_rows: std::sync::OnceLock::new(),
             node_id: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
@@ -165,18 +154,6 @@ impl ControlPlane {
         self
     }
 
-    /// This control plane keeping attempt contexts in `contexts` (the admin's own data dir).
-    pub fn with_contexts(mut self, contexts: Arc<crate::build_claim::AttemptContexts>) -> Self {
-        self.contexts = contexts;
-        self
-    }
-
-    /// This control plane taking each mesh's in-flight row in `claims` (the fabric's store root).
-    pub fn with_claims(mut self, claims: Arc<dyn crate::storage::MeshStorage>) -> Self {
-        self.claims = claims;
-        self
-    }
-
     /// This admin's currently held `(path, name)`: what its Build state or its view names its birth,
     /// falling back to `self.me` before its birth is in the view.
     pub async fn held_name(&self) -> PathName {
@@ -186,7 +163,7 @@ impl ControlPlane {
         self.topology.read().await.held_name_of(&self.me(), None)
     }
 
-    /// Only the current fabric-primary changes topology or opens attempts.
+    /// Only the current fabric-primary changes topology.
     async fn require_fabric_primary(&self, route: &'static str) -> Result<(), Refusal> {
         let me = self.held_name().await;
         let primary = self.topology.read().await.fabric_primary().map(|n| n.node_id.clone());
@@ -222,11 +199,10 @@ impl ControlPlane {
     /// The fabric.delete in force, which a second fabric.delete answers and accepts nothing beside
     /// (build.md §1: "No other Build ends another"; a successor reads the delete as the current Build
     /// and continues it): the newest Build accepted, when it is a fabric.delete, in progress, complete,
-    /// or failed with its intent retained. Its attempt is the one its drive covers now; `true` when
-    /// that attempt follows a failed one.
+    /// or failed with its intent retained; `true` when it failed.
     pub async fn fabric_delete_in_force(&self) -> Result<Option<(Opened, bool)>, Refusal> {
         let in_force = crate::build_state::fabric_delete_in_force(&*self.builds).await.map_err(Refusal::State)?;
-        Ok(in_force.map(|(p, failed)| (Opened { build_id: p.build_id.clone(), attempt: p.attempt_to_drive(), mesh: None }, failed)))
+        Ok(in_force.map(|(p, failed)| (Opened { build_id: p.build_id.clone() }, failed)))
     }
 
     /// Compile `change` once against the current Build's topology into the next complete Build and
@@ -284,7 +260,7 @@ impl ControlPlane {
                 }
                 if let Some((resumed, _)) = self.fabric_delete_in_force().await? {
                     span.record("build_id", resumed.build_id.as_str());
-                    tracing::info!(build_id = %resumed.build_id.log(), attempt = resumed.attempt, "a fabric.delete is in force: this one answers it and accepts nothing");
+                    tracing::info!(build_id = %resumed.build_id.log(), "a fabric.delete is in force: this one answers it and accepts nothing");
                     return Ok(resumed);
                 }
             }
@@ -340,15 +316,6 @@ impl ControlPlane {
                     }
                 }
                 if let Some(n) = self.atlas_row(node, &observed).await? {
-                // The node's mesh held by its own attempt is the gate before the node's own gates
-                // (build.md §4.4): refused naming the mesh, whatever the node's state.
-                if let Some(held) = holding(&current, Some(&n.mesh)) {
-                    outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %n.mesh, held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""), node_path = %node.path, node_name = %node.name)
-                            .in_scope(|| tracing::info!("the node's mesh is held by its own drift attempt: one attempt in flight per mesh"))
-                    });
-                    return Err(Refusal::BuildInProgress(held));
-                }
                     match self.delete_gate(&n, &observed, &outer).await {
                         Some(crate::build::DeleteAdmitted::Exited) => exited_pins.extend(n.incarnation.clone().map(|incarnation| (node.clone(), crate::build::PinnedBirth { r#type: n.r#type.clone(), mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation }))),
                         Some(_) => {}
@@ -413,15 +380,6 @@ impl ControlPlane {
             if deletes && !interrupts {
                 settled(&current)?;
             }
-            // A mesh whose own drift attempt is open is held by it: a topology operation on that mesh
-            // is refused, naming the Build, the mesh and the mesh-primary holding it (R-BI7 caveat 3).
-            if let Some(held) = operations.iter().filter_map(op_mesh).find_map(|mesh| holding(&current, Some(&mesh))).filter(|_| !interrupts) {
-                outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""))
-                        .in_scope(|| tracing::info!("a topology operation acts in a mesh its own drift attempt holds: one attempt in flight per mesh"))
-                });
-                return Err(Refusal::BuildInProgress(held));
-            }
             // Gate 6 (build.md §4.4; Q221): every node the Build acts on is of a mesh the fabric-primary's
             // view hears, refused by name naming the mesh and how long it has gone unheard (R-D1). Each
             // operation is checked again before its claim or dispatch (the drive's own check).
@@ -440,8 +398,6 @@ impl ControlPlane {
             if let Some(reject) = operations.iter().find_map(|op| {
                 let (node, action) = match op {
                     crate::build::BuildOperation::DeleteLiveNode { .. } => (op.node().expect("a node operation names its node"), "delete"),
-                    crate::build::BuildOperation::DeleteConnections { .. } => (op.node().expect("a node operation names its node"), "node.connection.delete"),
-                    crate::build::BuildOperation::StopNode { .. } => (op.node().expect("a node operation names its node"), "stop"),
                     _ => return None,
                 };
                 last_admin(&node, action, &observed, observed.node(&self.me()).map(|n| n.mesh.as_str()).unwrap_or_default())
@@ -453,7 +409,7 @@ impl ControlPlane {
             span.record("previous_build_id", current.build_id.as_str());
             // The meshes this Build brings into the accepted topology, each under the id `compile`
             // minted for it now, once (node-identity-and-state.md §2.7, "Who mints it"): every run of
-            // the mesh's create-mesh, by any executor and any attempt, claims with that id.
+            // the mesh's create-mesh, by any executor, creates the mesh with that id.
             let minted: Vec<String> = topology.meshes.values().filter(|m| !current.topology.meshes.values().any(|c| c.mesh_id == m.mesh_id)).map(|m| format!("{}={}", m.name, m.mesh_id)).collect();
             if !minted.is_empty() {
                 span.record("minted_meshes", minted.join(",").as_str());
@@ -469,11 +425,6 @@ impl ControlPlane {
                 source: self.node_id.get().zip(self.incarnation.get()).map(|(node_id, incarnation)| crate::events_storage::EventSource { fabric_id: observed.fabric.id.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }.uri()),
                 time: self.time.now_ms().max(newest.max(current.time) + 1),
             };
-            // The attempt's context is on this fabric-primary before the Build exists to be claimed.
-            self.contexts
-                .put(&build_id, 1, &crate::build_claim::current_context())
-                .await
-                .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
             // The Build is current the moment it is durable in the builds store: nothing else is written.
             // It is the door's last write: the reconcile loop drives a current Build at once, and its first
             // step can move the fabric-primary role (a delete of this admin's own mesh), which refuses every gated
@@ -487,7 +438,7 @@ impl ControlPlane {
                 resize().await;
             }
             self.build_submitted.notify_waiters();
-            Ok::<Opened, Refusal>(Opened { build_id, attempt: 1, mesh: None })
+            Ok::<Opened, Refusal>(Opened { build_id })
         }
         .instrument(span.clone())
         .await
@@ -605,7 +556,7 @@ impl ControlPlane {
     }
 }
 
-/// What an attempt opened at a node route does to the exact birth it is targeted to.
+/// What a node command does to the exact birth it is targeted to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     /// `node.connection.delete:<path>`.
@@ -816,9 +767,7 @@ pub enum Refusal {
     NotFound(String),
     /// The request conflicts with the current state.
     Conflict(String),
-    /// Another attempt holds what the request needs: a topology Build in progress (a second topology
-    /// change), or the attempt holding the mesh the request acts in (one attempt in flight per mesh,
-    /// R-BI7 caveat 3).
+    /// A Build is in progress: a second topology change is refused (one Build in flight).
     BuildInProgress(InProgress),
     /// A storage change is in progress (storage.md §2 "Changing it"): the fabric-primary's own workflow,
     /// beside which no Build but fabric.delete is admitted, refused `build-in-progress` by name.
@@ -828,96 +777,37 @@ pub enum Refusal {
         /// The fabric-primary running it.
         held_by: Option<crate::model::NodeId>,
     },
-    /// This admin may not open or claim on the mesh the request acts in: a topology attempt is the
-    /// fabric-primary's, a drift attempt its mesh's primary's (R-BI7 caveat 2), as its view holds them.
-    NotClaimant {
-        /// The mesh the request acts in.
-        mesh: String,
-        /// The fabric-primary this admin's view holds, when one.
-        fabric_primary: Option<crate::model::NodeId>,
-        /// The mesh's primary this admin's view holds (the member's recoverer), when one.
-        mesh_primary: Option<crate::model::NodeId>,
-    },
     /// This admin is not the fabric-primary (named when known).
     NotPrimary(Option<crate::model::NodeId>),
-    /// The attempt number this request computed was opened first by another action.
-    AttemptTaken(String),
     /// The admin cannot decide the request yet (it holds no Build).
     Unavailable(String),
     /// The Build state could not be read or written.
     State(BuildStateError),
 }
 
-/// The Build and the attempt a request answered 202 for: the caller waits for exactly this
-/// attempt. A Build that is accepted starts at attempt 1; an opened attempt is the one it opened.
+/// The Build a request answered 202 for: the caller follows exactly this Build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opened {
     /// The Build.
     pub build_id: BuildId,
-    /// The attempt, numbered in its lane.
-    pub attempt: u32,
-    /// The attempt's lane: `None` the fabric lane, `Some(mesh)` that mesh's drift lane (R-BI7).
-    pub mesh: Option<String>,
 }
 
-/// What holds the Build or the mesh a refused request needed (R-BI7 caveat 3; envelope
-/// `BuildInProgress { current_build_id, mesh, held_by }`).
+/// The Build in progress a refused request met (envelope `BuildInProgress { current_build_id }`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InProgress {
-    /// The Build of the holding attempt.
+    /// The Build in progress.
     pub current_build_id: BuildId,
-    /// The mesh the holding attempt acts in, when known (a claimed attempt's).
-    pub mesh: Option<String>,
-    /// The admin that claimed the holding attempt, as its claim recorded it (never re-read from a
-    /// later role view); `None` for an attempt not yet claimed or claimed before claimants were
-    /// recorded.
-    pub held_by: Option<crate::model::NodeId>,
 }
 
-/// The attempt of `p` holding `mesh` in this admin's fold (R-BI7 caveat 3), or, for `None`, the
-/// fabric lane's attempt in progress named by the mesh it acts in: the fabric lane's claimed
-/// (running) attempt acts in its executor's mesh; a drift lane's open attempt holds its own mesh.
-/// A fabric-lane attempt opened and not yet claimed holds no mesh: its claim takes the mesh's row.
-fn holding(p: &crate::build_state::BuildProjection, mesh: Option<&str>) -> Option<InProgress> {
-    let fabric_mesh = (p.state == BuildState::Running).then(|| p.attempt_claimed_meshes.get(&p.attempt).cloned()).flatten();
-    match mesh {
-        None => (matches!(p.state, BuildState::Pending | BuildState::Running)).then(|| InProgress {
-            current_build_id: p.build_id.clone(),
-            held_by: fabric_mesh.as_ref().and(p.claimant.clone()),
-            mesh: fabric_mesh,
-        }),
-        Some(mesh) => {
-            if fabric_mesh.as_deref() == Some(mesh) {
-                return Some(InProgress { current_build_id: p.build_id.clone(), mesh: Some(mesh.to_string()), held_by: p.claimant.clone() });
-            }
-            drift_attempt_holding(p, mesh)
-        }
-    }
-}
-
-/// `mesh`'s own drift lane's open attempt of `p`, which holds the mesh whatever the fabric lane holds.
-fn drift_attempt_holding(p: &crate::build_state::BuildProjection, mesh: &str) -> Option<InProgress> {
-    p.lanes.get(mesh).filter(|l| l.is_open()).map(|l| InProgress { current_build_id: p.build_id.clone(), mesh: Some(mesh.to_string()), held_by: l.claimant.clone() })
-}
-
-/// The refusal of a second topology change while `current` is in progress (build.md §1, R-BI7): named
-/// by the mesh its claimed attempt acts in and its claimant, when claimed.
+/// The refusal of a second topology change while `current` is in progress (build.md §1): one Build in
+/// flight.
 fn settled(current: &crate::build_state::BuildProjection) -> Result<(), Refusal> {
     if !matches!(current.state, BuildState::Pending | BuildState::Running) {
         return Ok(());
     }
-    let held = holding(current, None).unwrap_or_else(|| InProgress { current_build_id: current.build_id.clone(), mesh: None, held_by: None });
-    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id.log(), state = ?current.state, mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_ref().map(|id| id.as_str()).unwrap_or(""))
+    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id.log(), state = ?current.state)
         .in_scope(|| tracing::info!("another Build is reconciling: one topology Build in flight"));
-    Err(Refusal::BuildInProgress(held))
-}
-
-/// The mesh `op` acts in.
-fn op_mesh(op: &crate::build::BuildOperation) -> Option<String> {
-    match op {
-        crate::build::BuildOperation::CreateMesh { mesh, .. } | crate::build::BuildOperation::ShutdownMesh { mesh, .. } => Some(mesh.clone()),
-        other => other.mesh().map(str::to_owned),
-    }
+    Err(Refusal::BuildInProgress(InProgress { current_build_id: current.build_id.clone() }))
 }
 
 #[cfg(test)]
@@ -959,13 +849,11 @@ mod tests {
             ],
             nodes: vec![node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, true), node(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", true, false), node(PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", false, false), node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true, false), node(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", true, false)],
         };
-        let stop = |path: PathName| crate::build::BuildOperation::StopNode { mesh: t.node(&path).unwrap().mesh.clone(), r#type: t.node(&path).unwrap().r#type.clone(), path: path.path.clone(), name: path.name.clone(), node_id: t.node(&path).unwrap().node_id.clone(), from_incarnation: t.node(&path).unwrap().incarnation_id.clone().unwrap() };
+        let stop = |path: PathName| crate::build::PinnedBirth::of(t.node(&path).unwrap()).unwrap();
         let primary_stop = stop(PathName::new("mesh1.node", "1").unwrap());
-        assert_eq!(crate::executor::role_move(&primary_stop, &t).map(|m| m.primary.location()), Some(PathName::new("mesh1.node", "1").unwrap()), "the rpc role moves before its primary's stop");
-        assert_eq!(crate::executor::executor_for(&primary_stop, &t), None, "no admin executes the primary's stop until its role moved");
+        assert_eq!(crate::executor::node_role_move(&primary_stop, false, &t).map(|m| m.primary.location()), Some(PathName::new("mesh1.node", "1").unwrap()), "the rpc role moves before its primary's stop");
         let other = stop(PathName::new("mesh1.node", "2").unwrap());
-        assert_eq!(crate::executor::role_move(&other, &t), None, "a node that holds no primary role moves none");
-        assert_eq!(crate::executor::executor_for(&other, &t), Some(t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().node_id.clone()), "its mesh's primary executes it");
+        assert_eq!(crate::executor::node_role_move(&other, false, &t), None, "a node that holds no primary role moves none");
         assert!(last_admin(&PathName::new("mesh1.node", "1").unwrap(), "stop", &t, "mesh1").is_none(), "mesh1's rpc primary has a secondary: admitted");
         for action in ["stop"] {
             match last_admin(&PathName::new("mesh2.node", "1").unwrap(), action, &t, "mesh1") {
@@ -1010,7 +898,7 @@ mod tests {
         // its mesh's records, pre-checks its successor over its own view and refuses by name
         // (node-primary-update.md step 2; D64). The fabric-primary decides nothing for it from its projection.
         assert!(last_admin(&PathName::new("mesh1.node-admin", "1").unwrap(), "stop", &t, "mesh2").is_none(), "the stop of another mesh's primary is that primary's own pre-check");
-        assert!(crate::executor::role_move(&crate::build::BuildOperation::StopNode { mesh: "mesh1".into(), r#type: "node-admin".into(), path: only.path.clone(), name: only.name.clone(), node_id: t.node(&only).unwrap().node_id.clone(), from_incarnation: t.node(&only).unwrap().incarnation_id.clone().unwrap() }, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
+        assert!(crate::executor::node_role_move(&crate::build::PinnedBirth::of(t.node(&only).unwrap()).unwrap(), false, &t).is_some_and(|m| m.mesh_role), "stop of mesh1's only node never skips the role move");
         assert_eq!(crate::executor::role_move(&crate::build::BuildOperation::DeleteLiveNode { mesh: "mesh1".into(), r#type: "node-admin".into(), birth: t.node(&only).and_then(crate::build::PinnedBirth::of), path: only.path.clone(), name: only.name.clone(), exited: None }, &t), None, "the delete of mesh1's only node skips the role move");
         assert_eq!(refusal(PathName::new("mesh2.node-admin", "1").unwrap(), "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }

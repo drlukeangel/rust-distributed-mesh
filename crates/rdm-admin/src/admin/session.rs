@@ -239,7 +239,7 @@ impl NodeObserver for TopologyObserver {
             let (admission, unreachable) = door.carry_lifecycle_reaching(node, cmd == crate::node_commands::NodeCommand::Start, ctx).await;
             if let Some(why) = &unreachable { self.mark_unreachable(node, cmd, ctx, why); }
             let detail = format!("{admission:?}");
-            tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node_path = %node.path, node_name = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
+            tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node_path = %node.path, node_name = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
             return admission;
         }
         // node.connection.delete { All } goes through this admin's own Status door, the birth's
@@ -296,7 +296,7 @@ pub(crate) struct AdminSession {
     pub(crate) rafka_time: rdm_transport::clock::RafkaTime,
     pub(crate) accepted: Arc<AcceptedStore>,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
-    pub(crate) entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>>,
+    pub(crate) entry_floor: Arc<Mutex<Option<crate::build::BuildId>>>,
     pub(crate) node_hooks: crate::node_hooks::NodeHooks,
     pub(crate) addressed: Arc<crate::node_hooks::Addressed>,
     pub(crate) pre_node_ready_cell: Arc<Mutex<Option<crate::node_hooks::PreNodeReadyHandle>>>,
@@ -507,7 +507,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 me_path: me.path.clone(), me_name: me.name.clone(),
                 builds: s.builds.clone(),
                 floor: s.entry_floor.clone(),
-                fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.builds.clone(), s.local.clone()),
+                fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.local.clone()),
                 progress: None,
                 held: Some(s.local.clone()),
             },
@@ -634,7 +634,7 @@ pub(crate) struct AdminFloor {
     /// This node's name, beside its path.
     pub(crate) me_name: String,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
-    pub(crate) floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>>,
+    pub(crate) floor: Arc<Mutex<Option<crate::build::BuildId>>>,
     pub(crate) fetch_build: crate::fetch_build::FetchBuild,
     /// Where the Ready check of a first start reads what the start waits on.
     pub(crate) progress: Option<StartProgress>,
@@ -654,7 +654,7 @@ impl AdminFloor {
     /// span, so each read it starts is a child of it.
     pub(crate) async fn until_held(&mut self, step: &tracing::Span) {
         let owed = self.floor.lock().unwrap().clone();
-        step.record("owed", owed.as_ref().map_or_else(|| "no floor named by the join".to_string(), |(b, a)| format!("{b} attempt {a}")).as_str());
+        step.record("owed", owed.as_ref().map_or_else(|| "no floor named by the join".to_string(), |b| b.to_string()).as_str());
         let mut seen: Vec<&'static str> = Vec::new();
         loop {
             let floor = self.floor.lock().unwrap().clone();
@@ -863,12 +863,11 @@ impl EntryState {
         // and the refusal says why.
         let rafka_time_ms = e.time.try_now_ms().ok_or_else(|| format!("{me}: this admin holds no rafka-time to answer a join with"))?;
         // The fabric control state a new admin fetches before it may be Ready: the answering admin's
-        // current Build (R-BI3) and the attempt it holds of it, the floor a joiner's own copy of that
-        // Build's attempt facts must reach before it is Ready.
+        // current Build (R-BI3), the floor whose record a joiner holds before it is Ready.
         // A store that cannot be read is no answer: the join is refused naming it, never answered as
         // an admin that holds no Build or no Fabric.
         let current = e.builds.current().await.map_err(|err| format!("{me}: its builds store cannot be read for the current Build: {err}"))?;
-        let build = current.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
+        let build = current.map(|b| crate::wire::BuildFloor { build_id: b.build_id });
         let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
         let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None };
         let me_str = e.node_id.to_string();

@@ -347,7 +347,7 @@ fn connections_deleting_mesh_primary_serves_status_checks_exact_birth() {
 }
 
 async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &std::path::Path) {
-    use rdm_admin::deployment::pipeline::{command_admission, CommandAdmission, Completion};
+    use rdm_admin::deployment::pipeline::{command_admission, CommandAdmission};
 
     // The subject: mesh1.node-admin.2, commanded by its owning mesh-admin mesh1.node-admin.1.
     let executor = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
@@ -393,9 +393,10 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
     let indeterminate = command_admission(&lost);
     assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
-    // Deadline: the delete pipeline's AwaitNodeLeft over an admitted command that never completes.
-    let deadline = deadline_arm().await;
-    assert_eq!(deadline, Completion::Deadline {});
+    // Deadline: the delete pipeline's AwaitNodeLeft over an admitted command that never completes. For
+    // a delete the deadline is an arm, never a failure: its step event ends `complete`.
+    let deadline = deadline_step().await;
+    assert_eq!(deadline, rdm_admin::build_state::StepOutcome::Complete, "a deadline is an arm of the delete's AwaitNodeLeft, never a failure");
 
     let spans = capture.spans();
     let commands = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-command").count();
@@ -420,8 +421,8 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
 }
 
 /// The delete pipeline run to its AwaitNodeLeft over a birth that admits the stop and never
-/// completes it: the step's receipt is the arm.
-async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
+/// completes it: the step's event, which names the arm.
+async fn deadline_step() -> rdm_admin::build_state::StepOutcome {
     use rdm_admin::build::BuildId;
     use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
     use rdm_admin::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, DeleteRequest, DeleteStep, Timeouts, TopologySink};
@@ -477,9 +478,10 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         fn remove_birth(&self, _: &rdm_admin::model::PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
     }
 
-    // The operation is claimed under an accepted Build by this exact executor birth.
+    // The operation runs under an accepted Build at this exact executor birth.
     let executor = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
-    let builds = MemoryBuildStateAdapter::new();
+    // The executing admin's step log: each step the pipeline runs is its `rdm.build.step` event.
+    let builds = crate::stepping(&executor.node_id, "mesh1");
     let build_id = BuildId::mint();
     builds
         .publish_accepted(&rdm_admin::build_state::BuildAccepted {
@@ -490,7 +492,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         })
         .await
         .unwrap();
-    builds.claim_attempt(&rdm_admin::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: executor.clone() }).await.unwrap();
+
     let node = birth(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", "mesh1", false, false).node;
     let template = LaunchTemplate { fabric: "fabric1".into(),
         fabric_id: rdm_core::FabricId::mint(),
@@ -525,7 +527,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: Some(build_id.clone()), attempt: 1, node, handle, unreached: false };
+    let req = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(node).node_id), build_id: Some(build_id.clone()), node, handle, unreached: false };
     let _ = pipeline.delete_node(&req).await;
     // The drawing's order, as far as this birth lets the delete go: NodeDeleting, the stop
     // command (StopNode), its completion wait (AwaitNodeLeft: the deadline arm); and never
@@ -536,8 +538,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
     let (deleting, marked, waited) = (pos(DeleteStep::NodeDeleting.name()), pos(DeleteStep::StopNode.name()), pos(DeleteStep::AwaitNodeLeft.name()));
     assert!(deleting.is_some() && deleting < marked && marked < waited, "NodeDeleting, then the stop, then its result: {order:?}");
     assert!(pos(DeleteStep::NodeDeleted.name()).is_none(), "no NodeDeleted without the provider's proof of death: {order:?}");
-    let step = &view.steps[waited.unwrap()];
-    serde_json::from_value(step.output.clone().expect("AwaitNodeLeft records its arm")).unwrap()
+    view.steps[waited.unwrap()].outcome.clone()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -606,15 +607,6 @@ impl MeshStorage for Refusing {
     }
     async fn meshes(&self) -> Result<Vec<rdm_admin::storage::MeshRecord>, rdm_admin::storage_error::StorageError> {
         self.meshes.meshes().await
-    }
-    async fn take_in_flight(&self, mesh: &str, claim: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::mesh_claims::Taken, rdm_admin::storage_error::StorageError> {
-        self.meshes.take_in_flight(mesh, claim).await
-    }
-    async fn release_in_flight(&self, mesh: &str, attempt: &rdm_admin::mesh_claims::InFlight) -> Result<(), rdm_admin::storage_error::StorageError> {
-        self.meshes.release_in_flight(mesh, attempt).await
-    }
-    async fn in_flight(&self, mesh: &str) -> Result<Option<rdm_admin::mesh_claims::InFlight>, rdm_admin::storage_error::StorageError> {
-        self.meshes.in_flight(mesh).await
     }
 }
 

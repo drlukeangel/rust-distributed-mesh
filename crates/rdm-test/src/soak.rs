@@ -570,7 +570,7 @@ where
 /// (node.stop, node.start), which belongs to no Build (Q342).
 fn accepted_json(a: Option<&Accepted>) -> Value {
     match a {
-        Some(a) => json!({"build_id": a.build_id.to_string(), "attempt": a.attempt}),
+        Some(a) => json!({"build_id": a.build_id.to_string()}),
         None => Value::Null,
     }
 }
@@ -1616,7 +1616,7 @@ impl Driver {
     async fn await_build(&mut self, mut stream: WorkflowStream) -> Result<Value, Broken> {
         let accepted = stream.accepted().cloned();
         let what = match &accepted {
-            Some(a) => format!("Build {} attempt {}", a.build_id, a.attempt),
+            Some(a) => format!("Build {}", a.build_id),
             None => format!("the node command {:?}", stream.kind()),
         };
         let until = tokio::time::Instant::now() + Duration::from_secs(120);
@@ -1637,7 +1637,7 @@ impl Driver {
                         .await
                         .resume(stream.kind().clone(), accepted)
                         .await
-                        .map_err(|end| broken("build-completes", format!("the fabric-primary role moved to {fabric_primary:?} and the new role does not stream Build {} from attempt {}: {end}", accepted.build_id, accepted.attempt)))?;
+                        .map_err(|end| broken("build-completes", format!("the fabric-primary role moved to {fabric_primary:?} and the new role does not stream Build {}: {end}", accepted.build_id)))?;
                 }
                 Ok(Some(Ok(_))) => {}
             }
@@ -1919,8 +1919,8 @@ impl Driver {
             fabric_home: home,
             primary_may_move: false,
             incarnation: [inc.clone(), during.as_ref().map(|x| s(&x["incarnation_id"])).unwrap_or_default(), s(&back["incarnation_id"])],
-            // The held birth's attempts: none before the hold, and the gained ones that acted on it.
-            attempts: [0, acted_during.len() as u64],
+            // The held birth's runs: none before the hold, and the step events that acted on it during it.
+            runs: [0, acted_during.len() as u64],
             exact_runtime_alive: alive,
             replaced_during: replaced || recreated,
             held_past_floor: recreated,

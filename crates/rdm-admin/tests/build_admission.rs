@@ -8,9 +8,7 @@
 use rdm_admin::accepted::{AcceptedStore, FabricTopology};
 use rdm_core::build::BuildChange;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, AttemptOpened, MemoryBuildStateAdapter,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::{ControlPlane, Refusal};
 use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
@@ -75,9 +73,6 @@ impl BuildStateAdapter for Held {
         }
         Ok(())
     }
-    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(opened).await
-    }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
     }
@@ -87,32 +82,14 @@ impl BuildStateAdapter for Held {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
-    }
-    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(claim).await
-    }
-    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(claim).await
-    }
-    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_step_receipt(receipt).await
-    }
-    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(receipt).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.inner.accepted_newest_first().await
+    }
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
     }
 }
 
@@ -121,7 +98,7 @@ async fn rig() -> (Arc<Held>, Arc<ControlPlane>) {
     let held = Arc::new(Held { predecessor: t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().node_id.clone(), successor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() }, inner: MemoryBuildStateAdapter::new(), first: AtomicBool::new(false), entered: Notify::new(), release: Notify::new(), moves_at_accept: AtomicBool::new(false), moved: AtomicBool::new(false) });
     // The seed is written before the hold is armed.
     held.first.store(true, Ordering::SeqCst);
-    let accepted = AcceptedStore::seeded(&*held, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*held, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap()).await.unwrap();
     held.first.store(false, Ordering::SeqCst);
     let mut cp = crate::control_plane(held.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time());
     cp.topology = Arc::new(tokio::sync::RwLock::new(t));
@@ -167,8 +144,7 @@ async fn two_concurrent_topology_submissions_admit_one_build_and_refuse_the_othe
         Some(Err(Refusal::BuildInProgress(running))) => assert_eq!(running.current_build_id, admitted, "the refusal names the running Build"),
         other => panic!("the second submission is refused BuildInProgress naming the first: {other:?}"),
     }
-    let active = held.list_active().await.unwrap();
-    assert_eq!(active.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>(), vec![admitted], "one Build is active");
+    assert_eq!(held.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(admitted), "one Build is in progress");
 }
 
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 8: "a
@@ -190,8 +166,7 @@ async fn a_primary_move_after_the_acceptance_leaves_the_door_answering_the_build
     held.moves_at_accept.store(true, Ordering::SeqCst);
     let opened = cp.submit("test-moved-at-accept", crate::named_request(&cp, add_rpc()).await).await.unwrap_or_else(|r| panic!("the door answers the Build it accepted, not {r:?}"));
     assert!(held.moved.load(Ordering::SeqCst), "the role moved at the acceptance");
-    let active = held.list_active().await.unwrap();
-    assert_eq!(active.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>(), vec![opened.build_id], "the Build the door answered is the one accepted");
+    assert_eq!(held.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(opened.build_id), "the Build the door answered is the one accepted");
 
     let (held, cp) = rig().await;
     held.first.store(true, Ordering::SeqCst);
@@ -200,5 +175,5 @@ async fn a_primary_move_after_the_acceptance_leaves_the_door_answering_the_build
         Err(Refusal::State(BuildStateError::RoleYielded { to, .. })) => assert_eq!(to.as_ref(), Some(&held.successor), "the refusal names the new role"),
         other => panic!("a role that moved before the door wrote anything refuses RoleYielded: {other:?}"),
     }
-    assert!(held.list_active().await.unwrap().is_empty(), "nothing was accepted");
+    assert!(!matches!(held.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(_)), "nothing was accepted");
 }

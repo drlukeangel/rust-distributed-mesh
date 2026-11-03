@@ -1889,9 +1889,9 @@ impl StatusDoor {
         use rdm_core::protocol::NodeProtocol;
         use tracing::Instrument;
         let Some(incarnation) = node.incarnation_id.clone() else { return A::NotSent { reason: "the command names no exact birth".into(), code: Code::FailedPrecondition }; };
-        let op = rdm_core::LifecycleOp { r#type: node.r#type.clone(), mesh: node.mesh.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone(), path: node.path.clone(), name: node.name.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+        let op = rdm_core::LifecycleOp { r#type: node.r#type.clone(), mesh: node.mesh.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone(), path: node.path.clone(), name: node.name.clone(), build_id: ctx.build_id.clone(), operation: ctx.operation.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
         let request = if start { Q::StartNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), operation: ctx.operation.clone() } } else { Q::StopNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), operation: ctx.operation.clone() } };
-        let key = crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() };
+        let key = crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation: incarnation.clone(), operation: ctx.operation.clone() };
         // A mesh-primary that replied `blocked` issues no new command until it is unblocked (storage.md §2).
         self.commands.admitted().await;
         let _ = self.commands.open(key.clone());
@@ -1901,9 +1901,9 @@ impl StatusDoor {
             let commander = self.node_id.clone();
             // This admin's own run commands its own birth: the command names that run's Build, so the
             // stop's hold spares the run's turns, which wait on it (node-stop.md step 3).
-            let (run_build, run_attempt) = (ctx.build_id.clone(), ctx.attempt);
+            let run_build = ctx.build_id.clone();
             tokio::spawn(async move {
-                let terminal = own.serve_node_command_of_run(Some(&commander), &run_build, run_attempt, &request, Box::new(crate::node_self::ChannelFrames(tx.clone()))).await;
+                let terminal = own.serve_node_command_of_run(Some(&commander), &run_build, &request, Box::new(crate::node_self::ChannelFrames(tx.clone()))).await;
                 let _ = tx.send(terminal);
             }.instrument(tracing::Span::current()));
             CarriedFrames::InProcess(rx)
@@ -1947,7 +1947,7 @@ impl StatusDoor {
                     let completed = self.declared.lock().unwrap().operations.contains_key(&operation_row(&declared, &identity).key());
                     if !start && !completed {
                         if let Some(digest_view) = &self.digest_view { let _ = set_member_status(digest_view, MemberStatusReceipt::StopAdmitted(&op)); }
-                        tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject).in_scope(|| tracing::info!("CommandAccepted reports the stop's admission; this mesh-primary sets stopping"));
+                        tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject).in_scope(|| tracing::info!("CommandAccepted reports the stop's admission; this mesh-primary sets stopping"));
                     }
                     // The node's acknowledgement sets its status on its row (states.md "Who sets each
                     // state", Q233: stopping from the stop's CommandAccepted, starting from a stopped
@@ -2049,7 +2049,7 @@ impl StatusDoor {
         // The command is over with its carry, admitted or not: its step receipt is the record
         // (node-recovery.md step 2 reads "open" as from the send to the completion).
         if let Some(incarnation) = node.incarnation_id.clone() {
-            self.commands.close(&crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation, build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() });
+            self.commands.close(&crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation, operation: ctx.operation.clone() });
         }
         (admission, unreachable)
     }
@@ -2404,7 +2404,7 @@ impl StatusDoor {
         let row = crate::status_rpc::Declaration { r#type: op.r#type.clone(), mesh: op.mesh.clone(), node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.location(), state: NodeState::Stopped };
         let operation = DeclaredOperation { operation: op.operation.clone() };
         let reply = self.persist_then_commit(Effect::Node(row, NodeState::Stopped, Some(operation))).await;
-        tracing::info_span!("rdm.node_admin.node.update.via-stop-received", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject, outcome = reply.name(), "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.node.update.via-stop-received", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject, outcome = reply.name(), "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the stop stream's stopped is recorded in the birth's declared-state row"));
         reply
     }
@@ -3096,7 +3096,7 @@ mod tests {
         // What a node declares: its stop's operation, keyed on its node.id, and nothing of a Build (Q342).
         let stop_of = |n: &crate::model::Node, kind: &str| DeclaredOperation { operation: rdm_core::OperationId::node(kind, &n.node_id) };
         let declare = |n: &crate::model::Node, operation: Option<DeclaredOperation>| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation };
-        let stream = |n: &crate::model::Node, op: &DeclaredOperation| rdm_core::LifecycleOp { r#type: n.r#type.clone(), mesh: n.mesh.clone(), build_id: rdm_core::LifecycleOp::NO_BUILD.into(), attempt: rdm_core::LifecycleOp::NO_ATTEMPT, operation: op.operation.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), path: n.path.clone(), name: n.name.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
+        let stream = |n: &crate::model::Node, op: &DeclaredOperation| rdm_core::LifecycleOp { r#type: n.r#type.clone(), mesh: n.mesh.clone(), build_id: rdm_core::LifecycleOp::NO_BUILD.into(), operation: op.operation.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), path: n.path.clone(), name: n.name.clone(), event_at_rafka_ms: 0, traceparent: None, tracestate: None };
 
         // The declaration first, then a repeat of it, then the stop stream's stopped.
         let stop = stop_of(&declared_first, "node.stop");
@@ -4202,7 +4202,6 @@ mod tests {
         digest_view.record(digest_of(&deleted, deleted.incarnation_id.clone().unwrap()));
         digest_view.depart(rdm_core::LifecycleOp { r#type: deleted.r#type.clone(), mesh: deleted.mesh.clone(),
             build_id: "build1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())),
             node_id: deleted.node_id.clone(),
             incarnation: deleted.incarnation_id.clone().unwrap(),

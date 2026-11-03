@@ -139,8 +139,6 @@ pub enum JoinReply {
     DeploymentAbandoned {
         /// The Build whose create deployed the birth.
         build_id: String,
-        /// The attempt of that Build.
-        attempt: u32,
         /// The abandoned birth's node id.
         node_id: NodeId,
         /// The abandoned birth's incarnation.
@@ -254,7 +252,7 @@ mod tests {
             (JoinReply::Joined { answer: vec![1, 2, 3] }, ReplyKind::Success),
             (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (JoinReply::NotPrimary { primary: Some(crate::NodeId::parse("0123456789ab").unwrap()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
-            (JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&crate::fixture_crockford60("i")).unwrap() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&crate::fixture_crockford60("i")).unwrap() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Join::not_ready("n".into()), ReplyKind::NotReady),

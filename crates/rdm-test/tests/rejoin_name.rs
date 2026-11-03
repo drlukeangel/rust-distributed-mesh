@@ -94,8 +94,8 @@ fn a_node_renamed_then_stopped_stops_and_starts_under_the_name_it_holds() {
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.clone() };
         assert_eq!(call(&admin, &target, &apply).await, StatusReply::Applied);
         let seq_at_apply = published();
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &node_id) };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), attempt: 2, operation: rdm_core::OperationId::node("node.start", &node_id) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), operation: rdm_core::OperationId::node("node.stop", &node_id) };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ggv7fthkf13d".into(), operation: rdm_core::OperationId::node("node.start", &node_id) };
         assert!(matches!(call(&admin, &target, &stop).await, StatusReply::Stopped { .. }));
 
         // The authority holds the birth under its row's name, and its held stopped digest names it too.

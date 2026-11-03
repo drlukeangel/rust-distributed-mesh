@@ -5,7 +5,7 @@
 
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, StepOutcome};
 use rdm_admin::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, DeleteRequest, DeleteStep, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::join::Joins;
@@ -98,7 +98,8 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
     let observer = Executor { sent: Mutex::new(Vec::new()) };
     let view = NoView;
     let (r, steps, trace_id) = cap.run(async {
-        let builds = MemoryBuildStateAdapter::new();
+        // The executing admin's step log: each step the pipeline runs is its `rdm.build.step` event.
+        let builds = crate::stepping(&rdm_core::NodeId::mint(), "mesh1");
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
@@ -125,22 +126,13 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
-            let req = DeleteRequest { operation: rdm_core::OperationId::node(if workflow == NodeCommand::Stop { "node.stop" } else { "node.connection.delete" }, &target_id), build_id: Some(build_id.clone()), attempt: 1, node: target, handle, unreached: false };
+            let req = DeleteRequest { operation: rdm_core::OperationId::node(if workflow == NodeCommand::Stop { "node.stop" } else { "node.connection.delete" }, &target_id), build_id: Some(build_id.clone()), node: target, handle, unreached: false };
             match workflow {
                 NodeCommand::Stop => pipeline.stop(&req).instrument(root).await,
                 _ => pipeline.delete_connections(&req).instrument(root).await,
             }
         };
-        let steps = builds
-            .facts()
-            .await
-            .unwrap()
-            .into_iter()
-            .filter_map(|f| match f {
-                BuildFact::Step(s) if s.build_id == build_id => Some((s.step, s.outcome)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let steps = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|s| (s.step, s.outcome)).collect::<Vec<_>>();
         (r, steps, trace_id)
     });
     let names: Vec<String> = cap.spans().iter().filter(|s| s["trace_id"] == trace_id.as_str()).map(|s| s["name"].as_str().unwrap_or("").to_string()).collect();
