@@ -160,7 +160,7 @@ pub async fn call_update(client: &NodeRpcClient, target: &NodeId, req: &Request,
 /// the Started frame is `Failed` with its code (the stream's order is `Started Data* Terminal`).
 pub fn after_updating(reply: Reply) -> Reply {
     match NodePrimaryUpdate::frame_kind(&reply) {
-        FrameKind::Refusal(kind) => Reply::failed(STEP, &format!("{}: {reply:?}", reply.name()), kind.code()),
+        FrameKind::Refusal(kind) => rdm_core::reply::handover::bounded_failed(STEP, &format!("{}: {reply:?}", reply.name()), kind.code()),
         _ => reply,
     }
 }
