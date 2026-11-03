@@ -932,7 +932,7 @@ impl SpanTail {
 }
 
 /// The peer mesh the fabric-primary of `nodes` (its own view) holds unheard, if any, with why: a peer
-/// mesh whose node-admin primary that view holds off ready. The Build door refuses every action on a node
+/// mesh whose node-admin primary that view holds off ready. The `BuildService` refuses every action on a node
 /// of a mesh unheard on the backbone past the staleness floor (R-D1, `unheard-mesh`, control_plane.rs),
 /// the floor the mesh-primary's silence mark is also taken at (node-recovery.md step 1), so a peer mesh
 /// whose primary is marked is one the driver does not act on until it is heard again.

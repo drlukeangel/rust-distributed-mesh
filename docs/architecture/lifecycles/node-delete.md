@@ -69,7 +69,7 @@ sequenceDiagram
     participant F as Fabric-primary
     participant M as Executor
     C->>F: build.create(Delete { node_ids })
-    F->>M: build.attempt.run (the mesh's section)
+    F->>M: build.section.run (the mesh's section)
     M-->>F: node.stop events for a live process
     Note over M: the provider's Exited of the exact runtime; row deleted
     M-->>F: node.deleted

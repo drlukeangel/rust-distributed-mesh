@@ -13,8 +13,8 @@ use rdm_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeSt
 use rdm_admin::build::{BuildId, BuildOperation};
 
 use rdm_admin::build_drive::{Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
-use rdm_admin::build_op::{local_dispatched, BuildDoor, BuildSlot};
-use rdm_admin::build_run::{FramedBuilds, RunDoor, SectionRuns};
+use rdm_admin::build_op::{local_dispatched, BuildService, BuildSlot};
+use rdm_admin::build_run::{FramedBuilds, SectionRunService, SectionRuns};
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::executor::{BuildExecutor, OperationRunner};
 use rdm_transport::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -207,19 +207,19 @@ fn mn() -> Topology {
     }
 }
 
-/// The fabric-primary's Build door over `rig`'s Build state: the control plane that accepts a change,
-/// the drive over the Build's events, and the door that runs the create pipeline.
-async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
-    door_via(rig, join, |run| Arc::new(Local(run))).await
+/// The fabric-primary's `BuildService` over `rig`'s Build state: the control plane that accepts a change,
+/// the drive over the Build's events, and the `SectionRunService` that runs the create pipeline.
+async fn build_service(rig: &Arc<Rig>, join: Duration) -> Arc<BuildService> {
+    build_service_via(rig, join, |run| Arc::new(Local(run))).await
 }
 
-/// [`door`], whose drive calls `dispatcher` (made over the in-process door).
-async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<RunDoor>) -> Arc<dyn Dispatcher>) -> Arc<BuildDoor> {
+/// [`build_service`], whose drive calls `dispatcher` (made over the in-process `SectionRunService`).
+async fn build_service_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<SectionRunService>) -> Arc<dyn Dispatcher>) -> Arc<BuildService> {
     let t = mn();
     let fabric_id = t.fabric.id.clone();
     let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap()).await.unwrap();
     let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-    // The fabric-primary's node records, one store for its door and its writer (boot.rs): its door
+    // The fabric-primary's node records, one store for its `BuildService` and its writer (boot.rs): its `BuildService`
     // accepts an action on a birth from its record, never from the gossip view (Q197).
     let records = crate::records_of(&t).await;
     let executor_birth = t.node(&me).unwrap().birth().unwrap();
@@ -227,7 +227,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     crate::bind_store(&control, records.clone());
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new(), moved: Default::default() });
+    let run = Arc::new(SectionRunService { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new(), moved: Default::default() });
     let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), records));
     let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
@@ -240,12 +240,12 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         notices: crate::written_by(rig.told.notices(), &*rig.builds, &fabric_id, &executor_birth),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
+    Arc::new(BuildService { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
-/// The Build door of `mesh1.node-admin.2`, a node-admin of the fabric that does not hold the fabric-primary
-/// role (`mesh1.node-admin.1` holds it): its Build door carries its own birth's node id.
-async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
+/// The `BuildService` of `mesh1.node-admin.2`, a node-admin of the fabric that does not hold the fabric-primary
+/// role (`mesh1.node-admin.1` holds it): its `BuildService` carries its own birth's node id.
+async fn build_service_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildService> {
     let mut t = mn();
     let fabric_id = t.fabric.id.clone();
     t.nodes.push(node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false));
@@ -255,7 +255,7 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let control = Arc::new(crate::control_plane(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join: Duration::from_millis(300) });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new(), moved: Default::default() });
+    let run = Arc::new(SectionRunService { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new(), moved: Default::default() });
     let node_id = control.topology.read().await.node(&me).expect("the admin is in the view").node_id.clone();
     let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(me.clone(), node_id.clone(), control.topology.clone(), Arc::new(rdm_admin::storage::MemoryNodesStorage::default())));
     let _ = rig.sink.1.set(rows);
@@ -269,16 +269,16 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         notices: crate::written_by(rig.told.notices(), &*rig.builds, &fabric_id, &executor_birth),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
+    Arc::new(BuildService { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
 /// The one admin of the fixture that runs a section is the fabric-primary itself.
-struct Local(Arc<RunDoor>);
+struct Local(Arc<SectionRunService>);
 
 #[async_trait::async_trait]
 impl Dispatcher for Local {
     async fn dispatch(&self, build_id: &BuildId, mesh: &str, context: rdm_core::context::CallContext) -> Dispatched {
-        local_dispatched(self.0.attempt_run(build_id, mesh, &context).await)
+        local_dispatched(self.0.section_run(build_id, mesh, &context).await)
     }
     async fn run_own(&self, turn: &rdm_admin::stop_gate::Turn, build_id: &BuildId, mesh: &str, context: rdm_core::context::CallContext, operations: Vec<BuildOperation>) -> Dispatched {
         local_dispatched(self.0.run_under(turn, build_id, mesh, &context, operations).await)
@@ -301,17 +301,17 @@ impl OperationRunner for RigRunner {
     }
 }
 
-/// A node-RPC server on loopback that serves the Build family from `door`, and a carrier to it.
+/// A node-RPC server on loopback that serves the Build family from `service`, and a carrier to it.
 struct Served {
     router: Router,
     carrier: BuildCarrier,
-    door: Arc<BuildDoor>,
+    service: Arc<BuildService>,
 }
 
-async fn serve(door: Arc<BuildDoor>) -> Served {
+async fn serve(service: Arc<BuildService>) -> Served {
     let (node_id, incarnation, key) = (NodeId::mint(), IncarnationId::mint(), SecretKey::generate());
     let slot: BuildSlot = Arc::new(OnceLock::new());
-    let _ = slot.set(door.clone());
+    let _ = slot.set(service.clone());
     let server = rdm_admin::build_op::serve(ServerBuilder::new(), slot)
         .build(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
@@ -319,22 +319,22 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
-    // The fabric-primary the door's view names resolves to this one served door too: a redirect it
-    // answers is followed once and ends at the door again.
-    let fabric_primary = door.control.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).filter(|id| *id != node_id);
+    // The fabric-primary the service's view names resolves to this one served `BuildService` too: a redirect it
+    // answers is followed once and ends at the `BuildService` again.
+    let fabric_primary = service.control.topology.read().await.fabric_primary().map(|n| n.node_id.clone()).filter(|id| *id != node_id);
     if let Some(fp) = fabric_primary {
         resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: fp, path: "mesh1.node-admin".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
     }
     resolver.insert(ResolvedNode { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id, path: "mesh1.node-admin".into(), name: "1".into(), endpoint_id: key.public(), transport_addr: addr, incarnation });
     let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(NodeRpcClient::new(caller, resolver).with_caller_system("rdm"));
-    Served { router, carrier: BuildCarrier::new(client, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), door }
+    Served { router, carrier: BuildCarrier::new(client, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), service }
 }
 
 /// `node.create` of mesh1's next node, named on its executable: a Create of that node alone
-/// (build.md §1), its path the one the count expands to against what `served`'s door reads.
+/// (build.md §1), its path the one the count expands to against what `served`'s `BuildService` reads.
 async fn create_rpc(nodes: &Nodes, served: &Served) -> Result<WorkflowStream, CallEnd> {
-    let rdm_core::build::BuildChange::Create { nodes: added, .. } = crate::named_request(&served.door.control, |t: &rdm_admin::topology::Topology| crate::grown_by_one(t, "mesh1", "node")).await else {
+    let rdm_core::build::BuildChange::Create { nodes: added, .. } = crate::named_request(&served.service.control, |t: &rdm_admin::topology::Topology| crate::grown_by_one(t, "mesh1", "node")).await else {
         unreachable!("a node is added by a Create")
     };
     nodes.create(added).await
@@ -498,7 +498,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     let cap = capture();
     let (frames, end, published) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let served = serve(door(&rig, Duration::from_millis(300)).await).await;
+        let served = serve(build_service(&rig, Duration::from_millis(300)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let (frames, end) = tokio::time::timeout(Duration::from_secs(20), collect_frames(&mut stream, Duration::from_secs(15))).await.expect("the stream ends within 20 s");
@@ -566,7 +566,7 @@ fn a_create_whose_node_answers_pending_streams_its_reason_once() {
         let rig = Arc::new(Rig::new());
         let why = "mesh1.node.3: pre_node_ready answered Pending: pulling its node-admin";
         *rig.topology_view.not_ready.lock().unwrap() = Some(rdm_admin::node_hooks::ProbeAnswer::Pending(why.to_string()));
-        let served = serve(door(&rig, Duration::from_secs(30)).await).await;
+        let served = serve(build_service(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -616,7 +616,7 @@ fn a_create_whose_nodes_start_ended_failed_at_its_hook_fails_its_ready_step_with
         let rig = Arc::new(Rig::new());
         let why = "mesh1.node.3: its start ended Failed at node.pre-node-ready: rows still not published (pre_node_ready answered Pending on each of its 3 attempts)";
         *rig.topology_view.not_ready.lock().unwrap() = Some(rdm_admin::node_hooks::ProbeAnswer::StartFailed(why.to_string()));
-        let served = serve(door(&rig, Duration::from_secs(30)).await).await;
+        let served = serve(build_service(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let started = std::time::Instant::now();
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
@@ -648,7 +648,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_pending_frame() {
     let (frames, end) = cap.run(async {
         let rig = Arc::new(Rig::new());
         *rig.topology_view.pending.lock().unwrap() = Some("mesh1.node.3 reports Pending".to_string());
-        let served = serve(door(&rig, Duration::from_secs(30)).await).await;
+        let served = serve(build_service(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -678,8 +678,8 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     let cap = capture();
     let (frames, end, build_after_cut, resume, build_after, final_frames, disposition, key) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let door = door(&rig, Duration::from_secs(60)).await;
-        let served = serve(door.clone()).await;
+        let service = build_service(&rig, Duration::from_secs(60)).await;
+        let served = serve(service.clone()).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -703,7 +703,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
             }
         };
         // Re-attach over a new transport to the same fabric-primary.
-        let again = serve(door).await;
+        let again = serve(service).await;
         let builds = Builds::new(again.carrier.clone());
         let build_after_cut = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
         let resume = Resume::from_step_events(&WorkflowKind::Create, &build_after_cut).unwrap();
@@ -762,7 +762,7 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
     let cap = capture();
     let (first, again, disposition) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let served = serve(door(&rig, Duration::from_secs(30)).await).await;
+        let served = serve(build_service(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -797,8 +797,8 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
     let cap = capture();
     let (build, kept, first, again, disposition) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let door = door(&rig, Duration::from_secs(30)).await;
-        let served = serve(door.clone()).await;
+        let service = build_service(&rig, Duration::from_secs(30)).await;
+        let served = serve(service.clone()).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -809,12 +809,12 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         });
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
-        let completed = door.drives.get(&build).expect("the drive that completed the Build is held");
+        let completed = service.drives.get(&build).expect("the drive that completed the Build is held");
         assert!(completed.completed(), "the drive ended Complete");
         // The reconcile loop's `ensure_active`, acting on a `list_active` read taken before the
         // verdict entered the log.
-        let ensured = door.drives.ensure(&door.env, &build);
-        let kept = Arc::ptr_eq(&ensured, &completed) && door.drives.get(&build).is_some_and(|d| Arc::ptr_eq(&d, &completed));
+        let ensured = service.drives.ensure(&service.env, &build);
+        let kept = Arc::ptr_eq(&ensured, &completed) && service.drives.get(&build).is_some_and(|d| Arc::ptr_eq(&d, &completed));
         let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
         let (again, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
@@ -879,9 +879,9 @@ fn a_reconcile_tick_whose_build_ended_incomplete_between_its_reads_drives_nothin
     let cap = capture();
     let (b0, read, ensured, held) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let door = door(&rig, Duration::from_secs(30)).await;
+        let service = build_service(&rig, Duration::from_secs(30)).await;
         let b0 = rig.builds.current_build().await.unwrap().into_build_id().unwrap();
-        let by = door.control.topology.read().await.node(&door.me()).unwrap().birth().unwrap();
+        let by = service.control.topology.read().await.node(&service.me()).unwrap().birth().unwrap();
         // A resubmitted run of the Build is in progress when the tick reads the current Build.
         crate::start_build(&*rig.builds, &b0, &by).await;
         let before = rig.builds.current_build().await.unwrap();
@@ -890,7 +890,7 @@ fn a_reconcile_tick_whose_build_ended_incomplete_between_its_reads_drives_nothin
         let short = EndedState::Incomplete { sections: vec![EndedSection { mesh: "mesh1".into(), op: "node.stop:000000000002".into(), step: "StopNode".into(), reason: "mesh1.node.2: stop-node was not admitted".into(), code: "DEADLINE_EXCEEDED".into() }] };
         crate::end_build(&*rig.builds, &b0, &by, short).await;
         let read = rig.builds.read_build(&b0).await.unwrap();
-        let e = &door.env;
+        let e = &service.env;
         let env = Arc::new(DriveEnv { me_mesh: e.me_mesh.clone(), me_path: e.me_path.clone(), me_name: e.me_name.clone(), birth: e.birth.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheEnd { inner: rig.builds.clone(), current: before }), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), notices: e.notices.clone(), turns: e.turns.clone() });
         let drives = Arc::new(Drives::default());
         let ensured = rdm_admin::build_op::ensure_active(&drives, &env).await.len();
@@ -914,7 +914,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_its_step_eve
     let cap = capture();
     let (first, again, disposition) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let before = door(&rig, Duration::from_secs(30)).await;
+        let before = build_service(&rig, Duration::from_secs(30)).await;
         let served = serve(before.clone()).await;
         let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -926,7 +926,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_its_step_eve
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         // The same Build log and executor under a fabric-primary that never drove this Build.
-        let after = Arc::new(BuildDoor { me_path: before.me_path.clone(), me_name: before.me_name.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
+        let after = Arc::new(BuildService { me_path: before.me_path.clone(), me_name: before.me_name.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
@@ -954,7 +954,7 @@ fn a_build_sends_started_then_ended_and_a_successor_that_adopts_it_sends_none() 
     let cap = capture();
     let (build, after_complete, after_adoption, disposition, state) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let before = door(&rig, Duration::from_secs(30)).await;
+        let before = build_service(&rig, Duration::from_secs(30)).await;
         let served = serve(before.clone()).await;
         let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -976,7 +976,7 @@ fn a_build_sends_started_then_ended_and_a_successor_that_adopts_it_sends_none() 
         let after_replay = rig.told.settled(2).await;
         assert_eq!(after_replay.len(), 2, "a replayed or re-read terminal sends no second notice: {after_replay:?}");
         // The same Build log under a fabric-primary that never drove this Build: it adopts it Complete.
-        let after = Arc::new(BuildDoor { me_path: before.me_path.clone(), me_name: before.me_name.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
+        let after = Arc::new(BuildService { me_path: before.me_path.clone(), me_name: before.me_name.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), primaries: before.primaries.clone(), incarnation: before.incarnation.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
@@ -1019,7 +1019,7 @@ fn a_build_whose_create_fails_sends_one_started_and_one_incomplete_ended_naming_
     let cap = capture();
     let (frames, told) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let served = serve(door(&rig, Duration::from_millis(300)).await).await;
+        let served = serve(build_service(&rig, Duration::from_millis(300)).await).await;
         let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
         let (frames, end) = tokio::time::timeout(Duration::from_secs(20), collect_frames(&mut stream, Duration::from_secs(15))).await.expect("the stream ends within 20 s");
         assert!(end.is_none(), "{end:?}");
@@ -1055,7 +1055,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
     let cap = capture();
     cap.run(async {
         let rig = Arc::new(Rig::new());
-        let served = serve(door(&rig, Duration::from_secs(1)).await).await;
+        let served = serve(build_service(&rig, Duration::from_secs(1)).await).await;
         let nodes = nodes_over(&served.carrier);
         let node_id = NodeId::mint();
         let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: IncarnationId::mint() };
@@ -1183,7 +1183,7 @@ impl InnerStream for Script {
 }
 
 /// CONTRACT: a Build call asked of a node-admin that does not hold the fabric-primary role is refused
-/// `not-fabric-primary`, naming the fabric-primary that admin sees, before either door admits anything,
+/// `not-fabric-primary`, naming the fabric-primary that admin sees, before either `BuildService` admits anything,
 /// and the refusal has its own span as every other Build refusal has (one honest name per reason,
 /// `rdm.node_admin.build.reject.via-<reason>`): `rdm.node_admin.build.reject.via-not-fabric-primary` carrying the
 /// call's route, the refusing admin and the fabric-primary it named. No `build.create` or `build.update`
@@ -1193,7 +1193,7 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     let cap = capture();
     let end = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let served = serve(door_not_fabric_primary(&rig).await).await;
+        let served = serve(build_service_not_fabric_primary(&rig).await).await;
         served.carrier.create(rdm_core::build::BuildChange::DeleteFabric).await.err()
     });
     match &end {
@@ -1205,11 +1205,11 @@ fn a_build_call_to_an_admin_that_is_not_fabric_primary_is_refused_under_its_own_
     }
     let spans = cap.spans();
     let refused = spans_named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary");
-    // Once at the first call and once at the redirect it named, the same door.
+    // Once at the first call and once at the redirect it named, the same `BuildService`.
     assert_eq!(refused.len(), 2, "the refusal has its own reject span: {spans:?}");
     let a = &refused[0]["attributes"];
     assert_eq!((a["route"].as_str(), a["node_path"].as_str(), a["node_name"].as_str(), a["fabric_primary"].as_str().is_some_and(|f| !f.is_empty())), (Some("build.create"), Some("mesh1.node-admin"), Some("2"), true), "the reject span names the call, the refusing admin and the fabric-primary it named: {}", refused[0]);
-    for door in ["rdm.node_admin.build.create.via-node-rpc", "rdm.node_admin.build.update.via-node-rpc"] {
-        assert!(spans_named(&spans, door).is_empty(), "nothing was admitted: no {door} span: {spans:?}");
+    for name in ["rdm.node_admin.build.create.via-node-rpc", "rdm.node_admin.build.update.via-node-rpc"] {
+        assert!(spans_named(&spans, name).is_empty(), "nothing was admitted: no {name} span: {spans:?}");
     }
 }

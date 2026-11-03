@@ -24,8 +24,8 @@ use std::sync::{Arc, OnceLock};
 use tracing::Instrument as _;
 
 /// What a node serves a topology read from.
-pub struct TopologyDoor {
-    /// The topology view the door reads held topology from.
+pub struct TopologyService {
+    /// The topology view the service reads held topology from.
     pub topology_view: TopologyView,
     /// This node's own digest, as it publishes it now.
     pub own: Arc<dyn Fn() -> MeshDigest + Send + Sync>,
@@ -66,8 +66,8 @@ pub type StoredSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Futur
 /// Stored nodes per `Stored` frame: a frame stays under the reply ceiling.
 const STORED_PER_FRAME: usize = 24;
 
-impl TopologyDoor {
-    /// A door over `topology_view`, the node's own digest and the rafka-time the node adopted.
+impl TopologyService {
+    /// A service over `topology_view`, the node's own digest and the rafka-time the node adopted.
     pub fn new(topology_view: TopologyView, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>, time: rdm_transport::clock::RafkaTime) -> Self {
         Self { topology_view, own, stored: None, gone: None, own_row: None, time, snapshots: AtomicU64::new(0) }
     }
@@ -78,7 +78,7 @@ impl TopologyDoor {
         self
     }
 
-    /// This node also answers a caller of its mesh its own whole row (Q234): a mesh-primary's door.
+    /// This node also answers a caller of its mesh its own whole row (Q234): a mesh-primary's `TopologyService`.
     pub fn with_own_row(mut self, own_row: OwnRowSource) -> Self {
         self.own_row = Some(own_row);
         self
@@ -95,8 +95,8 @@ impl TopologyDoor {
     }
 }
 
-/// The door a running node fills once it holds a view.
-pub type TopologySlot = Arc<OnceLock<Arc<TopologyDoor>>>;
+/// The `TopologyService` a running node fills once it holds a view.
+pub type TopologySlot = Arc<OnceLock<Arc<TopologyService>>>;
 
 /// The chunks of one held source as the replies that carry them, in the one chunking gossip uses.
 pub fn snapshot_replies(s: &SourceSnapshot, snapshot_id: u64) -> Vec<TopologyReply> {
@@ -111,7 +111,7 @@ pub fn snapshot_replies(s: &SourceSnapshot, snapshot_id: u64) -> Vec<TopologyRep
     }, |reply| rdm_transport::wire::encode(reply).expect("topology reply serializes"))
 }
 
-impl TopologyDoor {
+impl TopologyService {
     async fn serve(&self, caller: String, req: TopologyRequest, sink: rdm_transport::stream::ReplySink<Topology, rdm_transport::stream::NotStarted>) -> TopologyReply {
         let TopologyRequest::GetTopology { mesh, since } = req;
         let me = (self.own)();
@@ -279,10 +279,10 @@ pub fn serve(b: ServerBuilder, slot: TopologySlot) -> ServerBuilder {
         let slot = slot.clone();
         let caller = peer.endpoint_id.to_string();
         async move {
-            let Some(door) = slot.get().cloned() else {
+            let Some(service) = slot.get().cloned() else {
                 return Ok(rdm_core::reply::topology::not_ready("this node holds no topology view yet".into()));
             };
-            Ok(door.serve(caller, req, sink).await)
+            Ok(service.serve(caller, req, sink).await)
         }
     })
 }
@@ -572,7 +572,7 @@ mod tests {
     /// CONTRACT: docs/architecture/query.md:79
     /// "A node holds its own topology: the latest gossiped digest of every node it hears, the primaries and"
     #[tokio::test]
-    async fn with_gone_configures_topology_door_with_proven_gone_primary_incarnations() {
+    async fn with_gone_configures_topology_service_with_the_gone_primary_incarnations() {
         let ep = rdm_transport::endpoint::bind(
             iroh::SecretKey::from_bytes(&[19u8; 32]),
             "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
@@ -626,10 +626,10 @@ mod tests {
 
         let gone_inc = IncarnationId::mint();
         let gone_expected = gone_inc.clone();
-        let door = TopologyDoor::new(view, Arc::new(move || own_digest.clone()), rafka_time)
+        let service = TopologyService::new(view, Arc::new(move || own_digest.clone()), rafka_time)
             .with_gone(Arc::new(move || HashSet::from([gone_expected.clone()])));
 
-        let held_gone = door.gone.as_ref().expect("with_gone attaches the GoneSource")();
+        let held_gone = service.gone.as_ref().expect("with_gone attaches the GoneSource")();
         assert_eq!(held_gone, HashSet::from([gone_inc]));
         ep.close().await;
     }

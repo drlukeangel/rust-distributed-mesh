@@ -577,14 +577,14 @@ async fn start_booted(
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // node.primary.update (op 0x21) on a node that is not a node-admin (lifecycles/node-primary-update.md):
     // the primary its mesh-primary commands, and the successor that primary calls.
-    let primary_update_slot: crate::member_handover::MemberSlot = Arc::new(std::sync::OnceLock::new());
+    let primary_update_slot: crate::member_handover::NodePrimaryUpdateSlot = Arc::new(std::sync::OnceLock::new());
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-built", node_path = %launch.path, node_name = %launch.name);
     // Every connection this node accepts from a live peer is a recovery trigger for its own dial
     // toward that birth, never a Direct entry (R-CN1).
-    let server = serve_read(serve_node_command(serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone()), subject.clone())
+    let server = serve_read(serve_node_command(serve_kick(register(crate::member_handover::serve_node_primary_update(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone()), subject.clone())
         .carry::<rdm_core::status::Status>()
         .with_ready_gate(ready.clone())
         .with_delivery(delivery.clone())
@@ -706,7 +706,7 @@ async fn start_booted(
             let status = Arc::new(Mutex::new(MemberStatus::Pending));
             {
                 let (own, st, m) = (digest.clone(), status.clone(), topology_view.clone());
-                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(
+                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyService::new(
                     topology_view.clone(),
                     Arc::new(move || {
                         let mut d = own.clone();
@@ -791,7 +791,7 @@ async fn start_booted(
                                 pre_node_ready_cell: pre_node_ready_cell.clone(),
                                 listeners: listener_addrs.clone(),
                             }));
-                            let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.location(), &launch.r#type, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
+                            let _ = primary_update_slot.set(Arc::new(crate::member_handover::NodePrimaryUpdateService::new(launch.location(), &launch.r#type, launch.node_id.clone(), launch.incarnation.clone(), topology_view.clone(), client.clone())));
                             // The retained config and tags of this node ID are its own row as the hydration sync
                             // handed it (Q234), when that row carries the node's own part; else the launch
                             // snapshot. The start reads nothing from the store (Q227).
@@ -920,7 +920,7 @@ async fn start_booted(
     running.ok_or_else(|| anyhow!("{name}: the start ended without the node it brought up"))
 }
 
-/// Set this birth's own status, the one cell its digest cadence, its topology door and its answers
+/// Set this birth's own status, the one cell its digest cadence, its `TopologyService` and its answers
 /// read, to `to`, and hand back `digest` carrying it: the one place an rpc or role node sets its own
 /// status (every status its `NodeSelf` sets, and its Ready at node.started). The rule a set
 /// applies before it is made is its caller's.

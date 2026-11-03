@@ -101,7 +101,7 @@ pub enum CutSpec {
         /// The exact runtime's pid; every runtime when absent.
         #[serde(default)] pid: Option<u32>,
     },
-    /// A node's declaration (`DeclareNodeState`) reached this admin's status door and is not yet
+    /// A node's declaration (`DeclareNodeState`) reached this admin's `StatusService` and is not yet
     /// decided: held unanswered until the release, so its node still owes it (i146 Q39). `node`
     /// narrows the cut to one declaring node, `state` to one state (`Ready`, `Leaving`, ...).
     Declaration {
@@ -668,7 +668,7 @@ impl rdm_admin::wiring::ReadSeam for FaultedRead {
     }
 }
 
-/// The status door's seam: an armed [`CutSpec::Declaration`] holds a node's declaration unanswered
+/// The `StatusService`'s seam: an armed [`CutSpec::Declaration`] holds a node's declaration unanswered
 /// before it is decided, until the release.
 struct FaultedDeclaration(Arc<AdminFaults>);
 

@@ -2,9 +2,9 @@
 //! (node-rpc-envelope.md, "Mesh delete command pair": the workflow identity is `(mesh_id, build_id,
 //! operation)`, and a conflicting workflow identity or an incomplete manifest is refused by name with a
 //! typed Status refusal naming the mismatch). The leaving mesh-primary decides a `DeleteMesh` on
-//! the workflow of the leave it holds (`mesh_delete::MeshDeleteRuns::admit`, which its door
+//! the workflow of the leave it holds (`mesh_delete::MeshDeleteRuns::admit`, which
 //! `admin::mesh_delete::admit_delete_mesh` answers from); the fabric-primary decides a `MeshDeleted` on the
-//! workflows it holds open (`mesh_delete::MeshDeleteView::admitted_for`, which its door `validate_handoff`
+//! workflows it holds open (`mesh_delete::MeshDeleteView::admitted_for`, which `validate_handoff`
 //! answers from).
 // @feature: node-lifecycle
 

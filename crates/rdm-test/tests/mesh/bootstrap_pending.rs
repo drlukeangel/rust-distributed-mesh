@@ -50,7 +50,7 @@ fn end(sp: &Value) -> u64 {
 
 /// CONTRACT (#2805): mesh2's bootstrap admin is born, hydrates the Fabric identity and the complete
 /// accepted Build (its entry join), and only then receives MeshStatus::Pending from the fabric
-/// primary, applied once through its status door without making it the elected primary; no create
+/// primary, applied once through its `StatusService` without making it the elected primary; no create
 /// of mesh2's own membership starts before that Pending is applied; mesh2's primary is supplied by
 /// election afterwards; the creation Build's section calls run under its drive. What
 /// must NOT happen: a member of mesh2 created before Pending, a second Pending applied, or the
@@ -112,7 +112,7 @@ async fn pending_contract(cell: &str) {
     let handoff = applied[0];
     assert!(rdm_test::estate::names_location(handoff, "target", &bootstrap2.location()), "{handoff}");
     assert!(end(&joined) <= start(handoff), "the target hydrated ({}) before Pending was handed to it ({})", end(&joined), start(handoff));
-    // Decided at the target through its status door, not as an election.
+    // Decided at the target through its `StatusService`, not as an election.
     let decided: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
         .filter(|d| of(d, &bootstrap2) && d["attributes"]["op"] == "apply-mesh-state" && d["attributes"]["outcome"] == "applied")
@@ -153,7 +153,7 @@ async fn pending_contract(cell: &str) {
     // fabric-primary that accepted it drove it and dispatched the section.
     assert_eq!(runs, 1, "the creation Build ran once");
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's build.create span");
-    let sections: Vec<&Value> = named(&spans, "rdm.node_admin.build.serve.via-attempt-run").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str() && r["attributes"]["mesh"] == "mesh2").collect();
+    let sections: Vec<&Value> = named(&spans, "rdm.node_admin.build.serve.via-section-run").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str() && r["attributes"]["mesh"] == "mesh2").collect();
     assert!(!sections.is_empty(), "the creation Build's section of mesh2 was run");
     // The section call runs under a pass of the creation Build's drive at the fabric-primary that
     // accepted it, joined to the request by `build_id` (telemetry.md §4: each pass of the Build drive

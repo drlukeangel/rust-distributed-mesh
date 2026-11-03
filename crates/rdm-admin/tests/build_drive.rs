@@ -1205,7 +1205,7 @@ async fn a_commanded_update_that_ends_failed_ends_its_section_and_the_resubmit_r
 /// CONTRACT (R12 / i143 e12.s47 #64): a node-admin born as `mesh1.node-admin.9` and renamed in place by
 /// `node.name.update` to `mesh1.node-admin.1` acts and spans under the name it holds now, never the boot
 /// `PathName` its structs were constructed with. Its `ControlPlane` submits, its `DriveEnv` drives,
-/// its `RpcDispatcher` runs its own section in process through its own `RunDoor` and `BuildExecutor`,
+/// its `RpcDispatcher` runs its own section in process through its own `SectionRunService` and `BuildExecutor`,
 /// its `NodeRows` writes rows, and every control-plane, Build and node-row span names
 /// `mesh1.node-admin.1` and never `mesh1.node-admin.9`.
 #[test]
@@ -1265,7 +1265,7 @@ fn a_renamed_admin_drives_runs_and_spans_under_its_held_name_never_its_boot_name
             topology: topology.clone(),
             runner: Arc::new(crate::loopback::Steps::new(ran.clone(), steps.clone())),
         });
-        let run_door = Arc::new(rdm_admin::build_run::RunDoor {
+        let section_run_service = Arc::new(rdm_admin::build_run::SectionRunService {
             me_path: boot.path.clone(), me_name: boot.name.clone(),
             builds: steps,
             exec,
@@ -1278,7 +1278,7 @@ fn a_renamed_admin_drives_runs_and_spans_under_its_held_name_never_its_boot_name
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
         let rpc_dispatcher = Arc::new(rdm_admin::build_op::RpcDispatcher {
             me_path: boot.path.clone(), me_name: boot.name.clone(),
-            local: run_door,
+            local: section_run_service,
             client,
             topology: topology.clone(),
             send: rdm_transport::Send::default(),
@@ -1773,7 +1773,7 @@ fn a_member_create_that_fails_once_ends_the_build_incomplete_and_the_resubmit_ru
     assert!(resubmitted.iter().any(|ops| *ops == format!("{:?}", [each[1].clone()])), "the resubmit's section ran the failed create alone: {resubmitted:?}");
 }
 
-/// Refuses every `build.attempt.run` by name, as an admin that is not the mesh's primary in its view
+/// Refuses every `build.section.run` by name, as an admin that is not the mesh's primary in its view
 /// refuses (`NotExecutor`, node-rpc-envelope.md "Refusals").
 struct Refuses;
 
@@ -1787,7 +1787,7 @@ impl rdm_admin::build_drive::Dispatcher for Refuses {
     }
 }
 
-/// CONTRACT (node-rpc-envelope.md "Refusals": build.attempt.run "refuses by name when the recipient is
+/// CONTRACT (node-rpc-envelope.md "Refusals": build.section.run "refuses by name when the recipient is
 /// not" the mesh's primary (`NotExecutor { named, recipient }`); Q344: a call that ends without the
 /// section's terminal ends its section; Pending's "only source is the subject's Status `Pending` reply to
 /// the executor's ProbeNodeState"): mesh1's primary refuses its section by name. The section ends, named

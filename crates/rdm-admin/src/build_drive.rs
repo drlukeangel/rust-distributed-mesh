@@ -9,7 +9,7 @@
 //!    `rdm.build.step` event ended `complete`;
 //! 3. runs its own section in process (mesh creation and deletion, and the members of any mesh with
 //!    no mesh-primary) and dispatches every other mesh's section to that mesh's primary with
-//!    `build.attempt.run`, each after its `rdm.build.dispatched` event, all at once (Q250), passing
+//!    `build.section.run`, each after its `rdm.build.dispatched` event, all at once (Q250), passing
 //!    each section's frames into the Build's [`Drive`];
 //! 4. a step that ends `failed { reason }` ends the Build: `rdm.build.ended` `failed`, and the
 //!    application's `on_build_ended`; nothing left ends it `complete` the same way. A section lost
@@ -179,7 +179,7 @@ pub trait InnerStream: Send {
 /// How the drive reaches the admin that runs a section.
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync {
-    /// Send `mesh`'s section of `build_id` to the mesh's primary (`build.attempt.run`): one call,
+    /// Send `mesh`'s section of `build_id` to the mesh's primary (`build.section.run`): one call,
     /// addressed to the role under the call's one retry mechanism (Q344).
     async fn dispatch(&self, build_id: &BuildId, mesh: &str, context: CallContext) -> Dispatched;
     /// Send `mesh`'s section of `build_id` to `to`'s exact birth, the mesh-primary a node.primary.update
@@ -807,9 +807,9 @@ enum Section {
 }
 
 /// The section of `mesh` that ended short at `operation` because its call to the mesh's primary
-/// (`build.attempt.run`) ended without the section's terminal.
+/// (`build.section.run`) ended without the section's terminal.
 fn call_ended_short(mesh: &str, operation: &str, reason: String, code: rdm_core::outcome::Code) -> UnfinishedSection {
-    UnfinishedSection { mesh: mesh.to_string(), operation: operation.to_string(), step: "build.attempt.run".into(), reason: crate::build_run::bounded_reason(reason), code }
+    UnfinishedSection { mesh: mesh.to_string(), operation: operation.to_string(), step: "build.section.run".into(), reason: crate::build_run::bounded_reason(reason), code }
 }
 
 impl DriveEnv {

@@ -99,7 +99,7 @@ pub struct AdminRunner {
     pub leaves: Arc<crate::mesh_delete::MeshDeleteView>,
     /// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished.
     pub mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns,
-    /// This admin's own mesh.delete door: the fabric-primary that is its own mesh's primary (the last
+    /// This admin's own `MeshDeleteService`: the fabric-primary that is its own mesh's primary (the last
     /// mesh of fabric.delete, lifecycles/fabric-delete.md step 1) commands that mesh's delete here, in
     /// process, as a Node RPC client reaches no endpoint of its own.
     pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
@@ -111,7 +111,7 @@ pub struct AdminRunner {
     /// Build's step on one node run one after the other (node-recovery.md "Execution").
     pub node_work: Mutex<HashMap<NodeId, Arc<tokio::sync::Mutex<()>>>>,
     /// Set once this admin stops reconciling ([`crate::admin::Running::stop_reconciling`]): from then it
-    /// starts no repair, as it starts no Build drive or attempt run.
+    /// starts no repair, as it starts no Build drive or section run.
     pub repairs_stopped: std::sync::atomic::AtomicBool,
     /// This admin's nodes.storage: the facts on its mesh's births (cert dates among them).
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
@@ -151,17 +151,17 @@ pub struct GossipLifecycle {
     pub me_path: String,
     /// This node's name, beside its path.
     pub me_name: String,
-    /// This admin's mesh.delete door, once its runner exists: every birth this executor publishes
+    /// This admin's `MeshDeleteService`, once its runner exists: every birth this executor publishes
     /// deleted is handed to it (mesh-left follows the final primary's exited verdict, R-MD1 item 2).
     pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
     /// This admin's view projected and installed at once ([`view_projector`]): a stop this executor
     /// applied to its own digest view is in its view before the next step decides from it, as a moved row is.
     pub project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
-    /// This admin's Status door: a stop's `stopped` is recorded in the birth's declared-state
+    /// This admin's `StatusService`: a stop's `stopped` is recorded in the birth's declared-state
     /// row there, which publishes NodeStopped once, from the reply or the birth's declaration,
-    /// whichever arrives first (i146 Q29, Q36). An executor with no Status door (a rig) holds no
+    /// whichever arrives first (i146 Q29, Q36). An executor with no `StatusService` (a rig) holds no
     /// declared row: it publishes from the reply alone.
-    pub status_door: crate::status_rpc::StatusDoorSlot,
+    pub status_service: crate::status_rpc::StatusServiceSlot,
 }
 
 impl GossipLifecycle {
@@ -228,7 +228,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .await
     }
     async fn stopped(&self, op: &rdm_core::LifecycleOp) {
-        match self.status_door.get() {
+        match self.status_service.get() {
             Some(_) => {
                 // The command stream's owner already recorded NodeStopped before recovery.
             }
@@ -1382,8 +1382,8 @@ impl AdminRunner {
         // beside one) runs once its `mesh.unblock` has moved it onto the provider the change decided: the
         // recovery re-creates a node that will not move, or a lost one, before the mesh-primary replies
         // `unblocked`, which waits on it (step 4).
-        if let Some(status_door) = self.observer.status_door.get() {
-            status_door.commands.admitted().await;
+        if let Some(status_service) = self.observer.status_service.get() {
+            status_service.commands.admitted().await;
         }
         let ended: Result<(), crate::executor::RunEnd> = match op {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, self.node_id.as_str(), build_id, op).await.map_err(Into::into),
@@ -2126,7 +2126,7 @@ mod tests {
                 digest_view: topology_view.digest_view.clone(),
                 client: Some(node_rpc.client.clone()),
                 commands: Arc::default(),
-                status_door: Arc::default(),
+                status_service: Arc::default(),
                 primary_update: Arc::default(),
                 unreachable: records.unreachable.clone(),
             }),
@@ -2152,7 +2152,7 @@ mod tests {
                 me_path: me.path.clone(), me_name: me.name.clone(),
                 mesh_deleter: Arc::default(),
                 project: None,
-                status_door: Arc::default(),
+                status_service: Arc::default(),
             }),
             leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
             mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),

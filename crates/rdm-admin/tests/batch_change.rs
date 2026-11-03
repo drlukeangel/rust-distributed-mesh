@@ -68,7 +68,7 @@ fn a_create_of_two_meshes_composes_each_named_node_and_leaves_the_rest() {
 /// CONTRACT (build.md §1, `Create` "Refused by name": "a new mesh with no node-admin among its nodes; a
 /// node naming a mesh neither in the request nor live; a path and name already held; an undeclared
 /// type; a node with no executable, its own or its type's"): each is refused by its name and nothing is
-/// composed. The undeclared type is refused at the door, before composing, against the Fabric's types
+/// composed. The undeclared type is refused at the `BuildService`, before composing, against the Fabric's types
 /// (`declared_types::an_undeclared_type_is_refused_by_name_at_acceptance`).
 #[test]
 fn a_create_is_refused_by_name_for_each_rule_it_breaks() {

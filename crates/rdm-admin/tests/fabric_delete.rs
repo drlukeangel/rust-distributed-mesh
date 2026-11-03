@@ -257,7 +257,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial.clone(), &m1_a1.birth().unwrap()).await.unwrap();
     let mut cp = crate::control_plane(builds.clone(), accepted, m1_a1.location(), observed.read().await.clone(), crate::adopted_time());
     cp.topology = observed.clone();
-    // The fabric-primary's door reads the node records its writers wrote (boot.rs: one nodes store),
+    // The fabric-primary's `BuildService` reads the node records its writers wrote (boot.rs: one nodes store),
     // never a birth from the gossip view (Q197).
     crate::bind_store(&cp, nodes_storage.clone());
     let opened = cp.submit("POST /api/build", BuildChange::DeleteFabric).await.expect("DeleteFabric is accepted as a Build");

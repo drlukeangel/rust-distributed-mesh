@@ -1,4 +1,4 @@
-//! Snapshot/delta receiver contracts, through the live channel and real topology-read door.
+//! Snapshot/delta receiver contracts, through the live channel and real `TopologyService`.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rdm_transport::topology::{learn_addresses, mesh_channel, backbone_channel, Backbone, Frame, TopologyView};
 use rdm_transport::snapshot::{Chunk, PublisherId, Taken};

@@ -430,7 +430,7 @@ mod tests {
     /// A missing Ping reply is the trigger, never the verdict."
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:141
     /// "6. The fabric-primary claims the creation of the missing secondary node-admin on its own log
-    /// and calls the new mesh-primary with `build.attempt.run`; the executor adopts the won claim and
+    /// and calls the new mesh-primary with `build.section.run`; the executor adopts the won claim and
     /// runs it as an attempt of that same Build."
     /// CONTRACT: docs/architecture/lifecycles/node-create.md:186
     /// "| Fabric-primary | accepted Build / node.create | same Build attempt; the mesh's MeshId | `rdm.node_admin.node.update.via-build`, `rdm.node_admin.deployment.update.via-pipeline` |"
@@ -556,7 +556,7 @@ mod tests {
 
             let topo_slot: crate::topology_read::TopologySlot = Arc::new( std::sync::OnceLock::new());
             let own_d = local_digest.clone();
-            let _ = topo_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(
+            let _ = topo_slot.set(Arc::new(crate::topology_read::TopologyService::new(
                 local_view.clone(),
                 Arc::new(move || own_d.clone()),
                 local_time.clone(),

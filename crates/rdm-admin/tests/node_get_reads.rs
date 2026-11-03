@@ -145,10 +145,10 @@ async fn nodes_get_answers_the_rows_matching_every_pair_and_refuses_a_pair_its_s
     }
 }
 
-/// The fabric-primary `me`'s Status door over `view`, its atlas `atlas`, its nodes store
+/// The fabric-primary `me`'s `StatusService` over `view`, its atlas `atlas`, its nodes store
 /// `nodes_storage` (its config door bound to it, as boot binds it) and its mesh store `meshes`; every
 /// other store in memory.
-async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>, meshes: Arc<dyn rdm_admin::storage::MeshStorage>) -> rdm_admin::status_rpc::StatusDoor {
+async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atlas::Atlas>, nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>, meshes: Arc<dyn rdm_admin::storage::MeshStorage>) -> rdm_admin::status_rpc::StatusService {
     let records = nodes_storage.clone();
     let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
@@ -157,7 +157,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
     let slot = Arc::new(std::sync::OnceLock::new());
     let _ = slot.set(atlas);
     let loads: rdm_admin::views::Loads = Arc::new(BTreeMap::new);
-    rdm_admin::status_rpc::StatusDoor {
+    rdm_admin::status_rpc::StatusService {
         certs: None,
         primary_commands: Default::default(),
         app_channels: None,
@@ -196,7 +196,7 @@ async fn fabric_primary_at(me: &Node, view: Topology, atlas: Arc<rdm_admin::atla
     }
 }
 
-/// A plural read as the door answers it on op 0x23 (Q285).
+/// A plural read as the `StatusService` answers it on op 0x23 (Q285).
 fn get(entity: rdm_core::filter::Entity, filter: Filter) -> rdm_core::status::Read {
     rdm_core::status::Read { entity, node: None, filter }
 }

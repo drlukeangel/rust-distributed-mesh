@@ -10,7 +10,7 @@
 //!   a recovery's or a re-create's new birth included);
 //! - an operation accepted on a node and not yet complete is written at its acceptance;
 //! - a completed lifecycle operation is written from the receipts the fabric-primary's own attempts
-//!   returned (directly, or streamed up `build.attempt.run` for a peer mesh), before the caller is
+//!   returned (directly, or streamed up `build.section.run` for a peer mesh), before the caller is
 //!   answered `Complete`;
 //! - the effects a node row records of any admin's op (a mesh-primary's self-healing included), each
 //!   ordered against the fabric-primary's own by its Build's acceptance and its attempt.
@@ -513,7 +513,7 @@ impl Atlas {
     }
 
     /// The `Complete` step of `operation` in `mesh`'s section of `p`, taken the moment it streams up
-    /// `build.attempt.run` to this fabric-primary, whichever admin executed it (R-FA2: execution progress
+    /// `build.section.run` to this fabric-primary, whichever admin executed it (R-FA2: execution progress
     /// writes it as the steps stream up, before the caller is answered `Complete`): the lifecycle it
     /// leaves its birth in (stop, start, delete) and what it changed on the node's record. What it took,
     /// for its span; a create's is [`Taken::Created`], its birth, the one its node's record names, held
@@ -773,7 +773,7 @@ impl Atlas {
 
 impl crate::control_plane::ControlPlane {
     /// The `Complete` step of `operation` in `mesh`'s section of `build_id`, as it streams up
-    /// `build.attempt.run` to this fabric-primary (read from the Build's events), taken into its atlas
+    /// `build.section.run` to this fabric-primary (read from the Build's events), taken into its atlas
     /// before the frame is passed on (fabric-atlas.md R-FA2), whichever admin executed it. One
     /// `rdm.node_admin.fabric.update.via-atlas-receipt` span.
     pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, mesh: &str, operation: &str) {

@@ -1,7 +1,7 @@
 //! What the fabric-primary's executor pass reads from the fabric's nodes store.
 //!
 //! No executor pass of the fabric-primary reads the fabric's durable runtime rows. A runtime row is
-//! written by the launching admin (build.md §5.3), whose join door installs the birth's digest in its
+//! written by the launching admin (build.md §5.3), whose `JoinService` installs the birth's digest in its
 //! view; a lost member is recovered by its own mesh's primary as that primary's own workflow
 //! (node-recovery.md "Execution"; Q342: a repair is never a Build or part of one). Only reads of every
 //! runtime row are recorded (`NodesStorage::runtimes`).

@@ -4,7 +4,7 @@
 //! installing complete snapshots and refreshing rafka-time.
 
 pub use crate::topology_read::{
-    get_topology, ReadMesh, ServedTime, StoredMap, StoredMesh, TimeNotAdopted, TopologyDoor,
+    get_topology, ReadMesh, ServedTime, StoredMap, StoredMesh, TimeNotAdopted, TopologyService,
     TopologyFailure, TopologyRead, TopologySlot,
 };
 pub use crate::admin::{project, project_at, project_with, view_projector, ViewReads};
@@ -237,15 +237,15 @@ mod tests {
             });
 
             let slot: TopologySlot = Arc::new(OnceLock::new());
-            let own_for_door = own_digest.clone();
-            let door = TopologyDoor::new(
+            let own_for_service = own_digest.clone();
+            let service = TopologyService::new(
                 server_view.clone(),
-                Arc::new(move || own_for_door.clone()),
+                Arc::new(move || own_for_service.clone()),
                 server_time.clone(),
             )
             .with_own_row(own_row_fn)
             .with_stored(stored_fn);
-            let _ = slot.set(Arc::new(door));
+            let _ = slot.set(Arc::new(service));
 
             let rpc_server = crate::topology_read::serve(ServerBuilder::new(), slot.clone())
                 .build(ServedBirth {

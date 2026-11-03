@@ -2328,11 +2328,11 @@ fn check_steps_run_once(f: &Formed, a: &Run, inv: &mut Invariants) -> Value {
 /// spans of rejected writes are exactly the writer probes (and the deleted-path restart), each
 /// non-writer naming the fabric-primary the checkpoint held.
 ///
-/// Which door a Build call's span comes from (build_op.rs `BuildDoor::admit_change`): a create and a delete
+/// Which `BuildService` call a span comes from (build_op.rs `BuildService::admit_change`): a create and a delete
 /// of a node the topology names open `build.create.via-node-rpc`; a restart is node.stop then node.start,
 /// node commands that open no Build (Q342), so no `build.update.via-node-rpc` span names a Build. An admin
 /// that does not hold the fabric-primary role refuses
-/// the call before either door (`BuildDoor::serve`), under its own `build.reject.via-not-fabric-primary` (its `route` set; the drive's refusal of the same name carries none) naming
+/// the call before either call (`BuildService::serve`), under its own `build.reject.via-not-fabric-primary` (its `route` set; the drive's refusal of the same name carries none) naming
 /// the fabric-primary it sees.
 fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mut Invariants) -> Value {
     let creates = named(spans, "rdm.node_admin.build.create.via-node-rpc");
@@ -2353,15 +2353,15 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mu
     let formation = |sp: &&&Value| s(&sp["attributes"]["change"]).contains("\"reconcile\"") && sp["start_unix_nano"].as_u64().is_some_and(|t| t < formed_at);
     let formation_rejections = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).filter(formation).count();
     let rejected_creates = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && !formation(sp)).count();
-    // A write the cell sent to see it refused reaches the create door only at the fabric-primary: a non-writer
-    // refuses it before the door. A node.stop of a deleted path is a node command, refused by name at its
-    // caller, never at a Build door.
-    let at_a_door: Vec<&Value> = a.refused_writes.iter().filter(|r| r["reply"] != "not-fabric-primary").collect();
+    // A write the cell sent to see it refused reaches the `BuildService`'s build.create only at the fabric-primary: a non-writer
+    // refuses it before the `BuildService`. A node.stop of a deleted path is a node command, refused by name at its
+    // caller, never at a `BuildService`.
+    let at_the_build_service: Vec<&Value> = a.refused_writes.iter().filter(|r| r["reply"] != "not-fabric-primary").collect();
     let rejected_updates = updates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).count();
-    assert_eq!(rejected_updates, 0, "no Build door refused a node command: node commands are not Builds (Q342)");
-    // Each probe round's one writer answer (`unknown-node`) is a refused create; its non-writers refuse before the door.
-    assert_eq!(rejected_creates, a.probes.len() + at_a_door.len(), "every rejected topology write at the create door is a writer probe's answer or a write the cell sent the writer to see it refused");
-    let non_writer_refusals = a.probes.iter().map(|p| p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary").count()).sum::<usize>() + a.refused_writes.len() - at_a_door.len();
+    assert_eq!(rejected_updates, 0, "no BuildService refused a node command: node commands are not Builds (Q342)");
+    // Each probe round's one writer answer (`unknown-node`) is a refused create; its non-writers refuse before the `BuildService`.
+    assert_eq!(rejected_creates, a.probes.len() + at_the_build_service.len(), "every rejected topology write at the BuildService's build.create is a writer probe's answer or a write the cell sent the writer to see it refused");
+    let non_writer_refusals = a.probes.iter().map(|p| p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary").count()).sum::<usize>() + a.refused_writes.len() - at_the_build_service.len();
     let without_the_role = named(spans, "rdm.node_admin.build.reject.via-not-fabric-primary").into_iter().filter(|sp| !s(&sp["attributes"]["route"]).is_empty()).count();
     assert_eq!(without_the_role, non_writer_refusals, "every refusal by an admin without the fabric-primary role is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
     let mut rounds = Vec::new();

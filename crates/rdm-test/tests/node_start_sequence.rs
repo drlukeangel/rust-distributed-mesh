@@ -65,7 +65,7 @@ const TOPOLOGY_STEP: &str = "rdm.mesh.node.update.via-topology-taken";
 const CALL: &str = "rdm.node_rpc.request.update.via-call";
 /// The server's span of one streamed Node RPC call, with its `op` and the caller's endpoint (`peer`).
 const STREAM_SERVED: &str = "rdm.node_rpc.stream.serve.via-direct";
-/// The topology door's span of one `GetTopology` it served, with how many meshes it answered `Unchanged`.
+/// The `TopologyService`'s span of one `GetTopology` it served, with how many meshes it answered `Unchanged`.
 const TOPOLOGY_SERVED: &str = "rdm.mesh.topology.serve.via-read";
 /// `GetTopology`'s op, as a call span records it.
 const GET_TOPOLOGY_OP: &str = "30";

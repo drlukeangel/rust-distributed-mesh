@@ -67,7 +67,7 @@ fn a_real_topology_read_then_gossip_of_every_category_changes_nothing_it_install
         assert!(matches!(server_topology_view.take_read_chunk(Chunk{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:None,topology_version:100,snapshot_id:1,chunk_index:0,chunk_count:1,digests:full.clone(),in_flight:vec![],deleted:vec![delete.clone()]},"mesh1"),Taken::Installed(_)));
         let primary_of=|d:&MeshDigest,revision|Primary{mesh:"mesh1".into(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone(),revision};
         for (role,d) in [(PrimaryRole::MeshPrimary,&own),(PrimaryRole::FabricPrimary,&own),(PrimaryRole::NodePrimary("node".into()),&rpc_primary)] {server_topology_view.primaries().take(role,&primary_of(d,10));}
-        let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyDoor::new(server_topology_view.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
+        let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyService::new(server_topology_view.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
         let mut serial=0;
         for d in [&own,&restarted,&started,&deleted,&rpc_primary] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
         let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),rpc_primary.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();

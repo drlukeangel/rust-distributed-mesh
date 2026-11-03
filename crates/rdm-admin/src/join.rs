@@ -196,7 +196,7 @@ pub struct Joins {
     abandoned: Mutex<VecDeque<Abandoned>>,
     admitted: Mutex<VecDeque<Admitted>>,
     /// This admin's nodes.storage, where an admitted birth's report is kept durable (its runtime
-    /// row) at admission; `None` for a door that keeps none (a cell's).
+    /// row) at admission; `None` for a service that keeps none (a cell's).
     runtimes: Option<Arc<dyn NodesStorage>>,
 }
 
@@ -231,7 +231,7 @@ impl Joins {
 
     /// Keep the admitted birth's validated report durable before it is released: a blind put of the
     /// birth's runtime row (the exact node_id and incarnation, the runtime and data dir the report
-    /// carried). Nothing is kept by a door over no storage.
+    /// carried). Nothing is kept by a service over no storage.
     pub async fn keep_admitted(&self, d: &MeshDigest) -> Result<(), String> {
         let Some(runtimes) = &self.runtimes else { return Ok(()) };
         let runtime = d.node.runtime.clone().ok_or_else(|| format!("{}: the admitted report names no runtime", d.node.node_id))?;
@@ -333,7 +333,7 @@ impl Joins {
 }
 
 /// Fills the admin's side of a join once the admin holds a view.
-pub struct JoinDoor {
+pub struct JoinService {
     /// This admin's path.
     pub me_path: String,
     /// This node's name, beside its path.
@@ -365,23 +365,23 @@ pub struct JoinDoor {
     /// Where each admitted birth's cert dates are written on its node record before it is admitted
     /// (fabric-certs.md §Tracking), and a node-admin birth's signing cert dates when this admin minted
     /// the key it holds, through the records this admin holds, and the row a joiner's `(path, name)` is
-    /// reconciled to ([`crate::node_rows::WrittenRows::record_for_join`]); `None` for a door that keeps no
+    /// reconciled to ([`crate::node_rows::WrittenRows::record_for_join`]); `None` for a service that keeps no
     /// records (a testkit admin side): no row is held at any name.
     pub nodes: Option<(Arc<dyn crate::storage::NodesStorage>, Arc<crate::node_rows::WrittenRows>)>,
     /// This admin's atlas: a refused joiner is decided through its refused callers (Q207). `None` for a
-    /// door that keeps no records (a testkit admin side).
+    /// service that keeps no records (a testkit admin side).
     pub atlas: Option<Arc<crate::atlas::Atlas>>,
 }
 
-impl JoinDoor {
+impl JoinService {
     /// The `(path, name)` lookup index key of me_path and me_name.
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
-/// The door a running admin fills once it holds a view.
-pub type JoinSlot = Arc<OnceLock<Arc<JoinDoor>>>;
+/// The `JoinService` a running admin fills once it holds a view.
+pub type JoinSlot = Arc<OnceLock<Arc<JoinService>>>;
 
-impl JoinDoor {
+impl JoinService {
     /// Answer a `JoinNode` from `peer`: verify the digest against what was deployed, install its
     /// address and answer with the admin's entry answer.
     pub async fn serve(&self, peer: EndpointId, req: JoinRequest) -> JoinReply {
@@ -578,10 +578,10 @@ pub fn serve(b: ServerBuilder, slot: JoinSlot) -> ServerBuilder {
     b.serve::<Join, _, _>(OpOwner::Product("rdm".into()), move |peer: rdm_transport::PeerContext, req: JoinRequest| {
         let slot = slot.clone();
         async move {
-            let Some(door) = slot.get().cloned() else {
+            let Some(service) = slot.get().cloned() else {
                 return Ok(rdm_core::reply::join::not_ready("this admin holds no view yet".into()));
             };
-            Ok(door.serve(EndpointId(peer.endpoint_id.to_string()), req).await)
+            Ok(service.serve(EndpointId(peer.endpoint_id.to_string()), req).await)
         }
     })
 }
@@ -812,10 +812,10 @@ mod tests {
     /// - `docs/architecture/lifecycles/node-mesh-join.md:57-60`: "6. The primary answers `Joined`: who served it, the control snapshot (provider, fabric identity, shutdown if any, the Build floor, rafka-time now, the member cert, the row's name, the row's config) and the statuses it holds with their original authors and instants. An primary that holds no rafka-time answers `NotReady` naming why and builds no answer."
     /// - `docs/architecture/lifecycles/node-mesh-join.md:276`: "| Report served | primary | `rdm.node_rpc.request.serve.via-direct`, then `rdm.node_admin.node.update.via-join`; a mismatch `rdm.node_admin.node.reject.via-join-mismatch` naming the field | exact birth, field |"
     #[test]
-    fn join_door_serve_verifies_digest_installs_address_issues_cert_and_answers_joined_or_refusal() {
-        let dir = std::env::temp_dir().join(format!("rdm-join-door-test-{}", NodeId::mint()));
+    fn join_service_serve_verifies_digest_installs_address_issues_cert_and_answers_joined_or_refusal() {
+        let dir = std::env::temp_dir().join(format!("rdm-join-service-test-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-join-door-test")
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rdm-join-service-test")
             .expect("evidence capture starts");
 
         capture.run(2, async {
@@ -829,7 +829,7 @@ mod tests {
             let installed_addrs: Arc<Mutex<Vec<SocketAddr>>> = Arc::default();
             let installed_clone = installed_addrs.clone();
 
-            let door = JoinDoor {
+            let service = JoinService {
                 me_path: "mesh1.node-admin".into(), me_name: "1".into(),
                 joins: joins.clone(),
                 answer: Arc::new(|| {
@@ -877,7 +877,7 @@ mod tests {
                 listeners: Vec::new(),
             };
             assert_eq!(
-                door.serve(dep.endpoint_id.clone(), unknown_req).await,
+                service.serve(dep.endpoint_id.clone(), unknown_req).await,
                 JoinReply::NotPrimary {
                     primary: Some(NodeId::parse("0123456789ab").unwrap())
                 }
@@ -892,7 +892,7 @@ mod tests {
                 listeners: Vec::new(),
             };
             assert_eq!(
-                door.serve(dep.endpoint_id.clone(), ab_req).await,
+                service.serve(dep.endpoint_id.clone(), ab_req).await,
                 JoinReply::DeploymentAbandoned {
                     build_id: "3qcfk1kq47m9".into(),
                     node_id: dep.node_id.clone(),
@@ -911,7 +911,7 @@ mod tests {
                 listeners: Vec::new(),
             };
             assert!(matches!(
-                door.serve(dep.endpoint_id.clone(), bad_req).await,
+                service.serve(dep.endpoint_id.clone(), bad_req).await,
                 JoinReply::JoinMismatch { ref field, .. } if field == "incarnation"
             ));
             assert!(installed_addrs.lock().unwrap().is_empty());
@@ -925,14 +925,14 @@ mod tests {
                 listeners: Vec::new(),
             };
             assert!(matches!(
-                door.serve(dep.endpoint_id.clone(), good_req.clone()).await,
+                service.serve(dep.endpoint_id.clone(), good_req.clone()).await,
                 JoinReply::NotReady { ref reason } if reason.contains("rafka-time")
             ));
 
             // 5. Once rafka-time is held, `serve` issues the member cert, writes the cert row on `NodesStorage`,
             //    installs the reported address, releases `WaitForBind` / `WaitForMeshJoin`, and answers `Joined`.
             time.adopt(5_000_000);
-            match door.serve(dep.endpoint_id.clone(), good_req).await {
+            match service.serve(dep.endpoint_id.clone(), good_req).await {
                 JoinReply::Joined { answer } => {
                     let decoded = crate::wire::answer_from_wire(&answer).expect("decode JoinAnswer");
                     assert_eq!(decoded.served_by, NodeId::parse("0123456789ac").unwrap());

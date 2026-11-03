@@ -278,10 +278,10 @@ fn a_reserved_status_position_at_a_node_with_no_handler_for_it_closes_nothing_an
 
 /// CONTRACT (R24, Luke Q11: "the same variant at every Status door that can lack a handler for a
 /// request it receives: the node's, the node-admin's and the test rig's"): the test rig's admin
-/// side serves state check-ins and declarations only. A `fabric.get` reaching its Status door is
+/// side serves state check-ins and declarations only. A `fabric.get` reaching its `StatusService` is
 /// answered `RequestNotHandled` naming the request, decided by dispatch alone, on the admin side's
 /// reject span `rdm.node.status.reject.via-request-not-handled` naming the request and the admin side.
-/// Must NOT happen: an authority refusal or `NotReady` for a request the door has no handler for.
+/// Must NOT happen: an authority refusal or `NotReady` for a request the `StatusService` has no handler for.
 #[test]
 fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handled_by_name() {
     let cell = "a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handled_by_name";
@@ -293,14 +293,14 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
         }
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::Ready, serve_ping).await;
-        let dir = std::env::temp_dir().join(format!("connections-all-rig-door-{}", NodeId::mint()));
+        let dir = std::env::temp_dir().join(format!("connections-all-rig-status-service-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
         let (_launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
         let target = NodeTarget::ExactNode(admin.launcher.node_id.clone());
         let fabrics = StatusRequest::Get { entity: rdm_core::filter::Entity::Fabrics, node: None, filter: rdm_core::filter::Filter::new() };
         let reply = match seams.client.call::<Status>(&target, &fabrics, &CallOptions::default()).await.0 {
             RpcOutcome::Reply(r) => r.into_value(),
-            other => panic!("the admin side's Status door did not answer: {other:?}"),
+            other => panic!("the admin side's StatusService did not answer: {other:?}"),
         };
         assert_eq!(reply, StatusReply::RequestNotHandled { request: "fabric.get".into() }, "the rig's admin side answers a request it has no handler for not handled here");
         let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");

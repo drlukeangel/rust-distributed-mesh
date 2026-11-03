@@ -149,31 +149,31 @@ async fn two_concurrent_topology_submissions_admit_one_build_and_refuse_the_othe
 
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 8: "a
 /// planned role move mid-Build ends the caller's outer stream with the typed new-role frame", never a
-/// refusal; http.rs: "The Build is current the moment it is durable in the builds store"): the door's
+/// refusal; http.rs: "The Build is current the moment it is durable in the builds store"): the `BuildService`'s
 /// acceptance is its point of no return, and nothing it writes after it can be refused. The accepted
 /// Build's drive starts from the reconcile loop the moment the Build is current (admin.rs `ensure_active`)
 /// and may move the fabric-primary role at once (a delete of the fabric-primary's own mesh); here the role moves
-/// the moment the acceptance is durable. The door answers the Build it accepted, which the Build log
-/// holds as the current Build. A role that moved before the door wrote anything refuses the submission
+/// the moment the acceptance is durable. The `BuildService` answers the Build it accepted, which the Build log
+/// holds as the current Build. A role that moved before the `BuildService` wrote anything refuses the submission
 /// `RoleYielded` with nothing accepted.
-/// Must NOT happen: the door refusing a Build it accepted (the gate's red on 3355f190, build_op :439,
+/// Must NOT happen: the `BuildService` refusing a Build it accepted (the gate's red on 3355f190, build_op :439,
 /// trace f0e5d40db922f0c6f1015502974a03be: `publish_fabric` after the accept refused `RoleYielded`).
 #[tokio::test]
-async fn a_primary_move_after_the_acceptance_leaves_the_door_answering_the_build_it_accepted() {
+async fn a_primary_move_after_the_acceptance_leaves_the_build_service_answering_the_build_it_accepted() {
     let (held, cp) = rig().await;
     // No acceptance is held inside its write here.
     held.first.store(true, Ordering::SeqCst);
     held.moves_at_accept.store(true, Ordering::SeqCst);
-    let opened = cp.submit("test-moved-at-accept", crate::named_request(&cp, add_rpc()).await).await.unwrap_or_else(|r| panic!("the door answers the Build it accepted, not {r:?}"));
+    let opened = cp.submit("test-moved-at-accept", crate::named_request(&cp, add_rpc()).await).await.unwrap_or_else(|r| panic!("the BuildService answers the Build it accepted, not {r:?}"));
     assert!(held.moved.load(Ordering::SeqCst), "the role moved at the acceptance");
-    assert_eq!(held.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(opened.build_id), "the Build the door answered is the one accepted");
+    assert_eq!(held.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(opened.build_id), "the Build the BuildService answered is the one accepted");
 
     let (held, cp) = rig().await;
     held.first.store(true, Ordering::SeqCst);
     held.moved.store(true, Ordering::SeqCst);
     match cp.submit("test-moved-before", crate::named_request(&cp, add_rpc()).await).await {
         Err(Refusal::State(BuildStateError::RoleYielded { to, .. })) => assert_eq!(to.as_ref(), Some(&held.successor), "the refusal names the new role"),
-        other => panic!("a role that moved before the door wrote anything refuses RoleYielded: {other:?}"),
+        other => panic!("a role that moved before the BuildService wrote anything refuses RoleYielded: {other:?}"),
     }
     assert!(!matches!(held.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(_)), "nothing was accepted");
 }

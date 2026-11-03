@@ -152,7 +152,7 @@ impl Topology {
     /// Whether the birth `node_id` is the only node of `mesh` (R-MT1: the delete of a mesh's only node
     /// skips node.primary.update). A member that is silent, or `Dead` by the true-offline mark alone,
     /// is still a node of the mesh; a deleted one has left the view. The one place that rule lives: the
-    /// Build door (`http`) and the drive (`executor::role_move`) read it.
+    /// `BuildService` (`http`) and the drive (`executor::role_move`) read it.
     pub fn only_node(&self, mesh: &str, node_id: &NodeId) -> bool {
         self.births().filter(|n| n.mesh == mesh).all(|n| n.node_id == *node_id)
     }

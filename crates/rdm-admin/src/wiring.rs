@@ -53,7 +53,7 @@ pub trait ReadSeam: Send + Sync {
     async fn before_topology_read(&self, node: &str, primary: &str);
 }
 
-/// Asked by the status door before it decides a node's declaration (`DeclareNodeState`): a testkit
+/// Asked by the `StatusService` before it decides a node's declaration (`DeclareNodeState`): a testkit
 /// cut holds one there unanswered, so it stays owed across a primary change (i146 Q39). The product passes
 /// none, so a declaration is decided at once.
 #[async_trait::async_trait]
@@ -338,7 +338,7 @@ pub struct Wiring {
     pub announcement_seam: Option<Arc<dyn AnnouncementSeam>>,
     /// Asked by a joining admin's start before it makes its topology read.
     pub read_seam: Option<Arc<dyn ReadSeam>>,
-    /// Asked by the status door before it decides a node's declaration.
+    /// Asked by the `StatusService` before it decides a node's declaration.
     pub declaration_seam: Option<Arc<dyn DeclarationSeam>>,
     /// Asked before a command's stopped frame is recorded by its owner.
     pub command_frame_seam: Option<Arc<dyn CommandFrameSeam>>,

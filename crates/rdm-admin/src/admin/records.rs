@@ -1,4 +1,4 @@
-//! Admin configuration, durable records state, serving door, and peer recovery.
+//! Admin configuration, durable records state, readiness gate, and peer recovery.
 
 use super::*;
 
@@ -331,7 +331,7 @@ pub struct Records {
     pub offline: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
     /// The births the offline tick watches through durable rows alone (`durable_births`), as its last
     /// pass held them: none unless this admin is its mesh's primary (`TenureRows`). Shared with the
-    /// status door, which decides their declarations (Q11).
+    /// `StatusService`, which decides their declarations (Q11).
     pub durable: Arc<Mutex<Vec<Node>>>,
     /// The births a command of this admin's executor never reached for a reachability reason, marked
     /// `PendingReconnect` at once (node-tickle.md step 1): read by the mesh primary's tick.
@@ -405,8 +405,8 @@ pub struct Records {
     /// Where this admin's mesh's status rows live, read when this admin takes its mesh's role
     /// (`crate::status_rpc::RoleFold`). Set once at start.
     pub(crate) status: std::sync::OnceLock<crate::status_rpc::RoleFold>,
-    /// This admin's Node RPC door, opened by an installed view ([`ServingDoor`]). Set once at start.
-    pub(crate) door: std::sync::OnceLock<ServingDoor>,
+    /// This admin's Node RPC door, opened by an installed view ([`ReadinessGate`]). Set once at start.
+    pub(crate) readiness_gate: std::sync::OnceLock<ReadinessGate>,
     /// This admin's place on the backbone: it holds the meshes the installed view names, each deleted
     /// or not, which its publication of a deleted mesh reads ([`Backbone::publishes_deleted_mesh_of`]).
     /// Set once at start.
@@ -418,28 +418,28 @@ pub struct Records {
 /// waits until its Status authority is filled and its view holds it"): it opens once the authority is
 /// filled and a view this admin installs holds its exact birth, under whatever name it holds now (its
 /// join answer hands it its row's name, R-JN1), never by the name it booted under.
-pub struct ServingDoor {
+pub struct ReadinessGate {
     /// The router's gate.
     pub(crate) ready: Arc<std::sync::atomic::AtomicBool>,
     /// This admin's exact birth.
     pub(crate) birth: (NodeId, IncarnationId),
-    /// Whether the Status door is filled.
-    pub(crate) status_door_filled: Box<dyn Fn() -> bool + Send + Sync>,
+    /// Whether the `StatusService` is filled.
+    pub(crate) status_service_filled: Box<dyn Fn() -> bool + Send + Sync>,
     /// The name this admin booted under, for the span.
     pub(crate) boot_path: String,
     /// The boot name, beside its path.
     pub(crate) boot_name: String,
 }
 
-impl ServingDoor {
-    /// The door over the router's gate `ready` for the birth `birth`, booted as `boot_name`.
-    pub fn new(ready: Arc<std::sync::atomic::AtomicBool>, birth: (NodeId, IncarnationId), status_door_filled: Box<dyn Fn() -> bool + Send + Sync>, boot_name: PathName) -> Self {
-        Self { ready, birth, status_door_filled, boot_path: boot_name.path.clone(), boot_name: boot_name.name.clone()}
+impl ReadinessGate {
+    /// The readiness gate over the router's gate `ready` for the birth `birth`, booted as `boot_name`.
+    pub fn new(ready: Arc<std::sync::atomic::AtomicBool>, birth: (NodeId, IncarnationId), status_service_filled: Box<dyn Fn() -> bool + Send + Sync>, boot_name: PathName) -> Self {
+        Self { ready, birth, status_service_filled, boot_path: boot_name.path.clone(), boot_name: boot_name.name.clone()}
     }
 
     /// Open the door if it is closed, the authority is filled and `view` holds this admin's exact birth.
     pub(crate) fn open_if_held(&self, view: &Topology) {
-        if self.ready.load(std::sync::atomic::Ordering::SeqCst) || !(self.status_door_filled)() {
+        if self.ready.load(std::sync::atomic::Ordering::SeqCst) || !(self.status_service_filled)() {
             return;
         }
         if let Some(own) = view.births().find(|n| n.node_id == self.birth.0 && n.incarnation_id.as_ref() == Some(&self.birth.1)) {
@@ -517,9 +517,9 @@ impl Records {
 
     /// This admin's Node RPC door (set once, at start): every view installed from now on opens it
     /// once it holds the birth, and `installed`, the view in place when it is set, is checked at once.
-    pub fn set_door(&self, door: ServingDoor, installed: &Topology) {
-        door.open_if_held(installed);
-        let _ = self.door.set(door);
+    pub fn set_readiness_gate(&self, readiness_gate: ReadinessGate, installed: &Topology) {
+        readiness_gate.open_if_held(installed);
+        let _ = self.readiness_gate.set(readiness_gate);
     }
 
     /// This admin's place on the backbone (set once, at start): it holds the meshes `installed`, the
@@ -756,8 +756,8 @@ impl Records {
     /// Install `t` over the view `held` (its write lock held). The door opens here, before the lock is
     /// released, so no reader of the installed view sees this admin's birth while its door refuses.
     pub(crate) async fn install(&self, mut held: tokio::sync::RwLockWriteGuard<'_, Topology>, t: Topology) -> Topology {
-        if let Some(door) = self.door.get() {
-            door.open_if_held(&t);
+        if let Some(readiness_gate) = self.readiness_gate.get() {
+            readiness_gate.open_if_held(&t);
         }
         if *held != t {
             // The role of this admin's mesh taken with this view: its status rows are folded in

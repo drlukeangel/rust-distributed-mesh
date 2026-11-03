@@ -90,7 +90,7 @@ impl TopologySink for Discard {
 }
 
 /// The stopped birth whose start runs its whole sequence before it answers (a node-admin's hook runs
-/// inside its start): on `start-node` it joins its commander (the join door admits its digest), then
+/// inside its start): on `start-node` it joins its commander (the `JoinService` admits its digest), then
 /// reports node.started, and only then answers `Started`.
 struct StartsWhole<'a> {
     joins: &'a rdm_admin::join::Joins,

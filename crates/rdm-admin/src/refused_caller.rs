@@ -260,7 +260,7 @@ impl Atlas {
 
 #[cfg(test)]
 mod tests {
-    //! Q207 and Q217 through the declaration door: the chaos red's shape (#3211 red 3).
+    //! Q207 and Q217 through the `StatusService`: the chaos red's shape (#3211 red 3).
     use super::*;
     use crate::model::{Node};
     use crate::topology::Topology;
@@ -268,8 +268,8 @@ mod tests {
     use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest};
 
     /// The fabric-primary `admin`'s atlas scoped to its mesh, deciding its refused callers over mesh1's `rows`
-    /// through a recovery submitter that holds no Build door and no client: the decision's terminate
-    /// report is spanned and its open refused naming the missing door.
+    /// through a recovery submitter that holds no `BuildService` and no client: the decision's terminate
+    /// report is spanned and its open refused naming the missing `BuildService`.
     async fn atlas_deciding(admin: &Node, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> Arc<Atlas> {
         atlas_deciding_over(admin, topology, rows, builds, None).await.0
     }
@@ -289,7 +289,7 @@ mod tests {
             nodes_storage: rows.clone(),
             written,
             runner: Arc::default(),
-            door: Default::default(),
+            build_service: Default::default(),
             client,
             builds: builds.clone(),
             resubmits: Default::default(),
@@ -328,9 +328,9 @@ mod tests {
         (of(&spans), spans)
     }
 
-    /// The status door of `admin` over `topology`, `rows` and `builds`: no certs, no app channels.
-    fn status_door_of(admin: &Node, fabric_id: rdm_core::FabricId, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> crate::status_rpc::StatusDoor {
-        crate::status_rpc::StatusDoor {
+    /// The `StatusService` of `admin` over `topology`, `rows` and `builds`: no certs, no app channels.
+    fn status_service_of(admin: &Node, fabric_id: rdm_core::FabricId, topology: &Arc<tokio::sync::RwLock<Topology>>, rows: &Arc<crate::storage::MemoryNodesStorage>, builds: &Arc<crate::build_state::MemoryBuildStateAdapter>) -> crate::status_rpc::StatusService {
+        crate::status_rpc::StatusService {
             certs: None,
             primary_commands: Default::default(),
             app_channels: None,
@@ -389,7 +389,7 @@ mod tests {
     ///  which terminates its runtime under `node.terminate:<path>@<incarnation>`; each decision is one
     ///  `rdm.node_admin.node.update.via-refused-caller` span."
     #[tokio::test]
-    async fn a_deleted_birth_that_declares_stopped_is_refused_and_deleted_through_the_declaration_door() {
+    async fn a_deleted_birth_that_declares_stopped_is_refused_and_deleted_through_the_status_service() {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-declaration").expect("the cell's evidence file can be created");
@@ -415,21 +415,21 @@ mod tests {
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
-        let status = status_door_of(&admin, fabric_id, &topology, &rows, &builds);
+        let status = status_service_of(&admin, fabric_id, &topology, &rows, &builds);
         let _ = status.atlas.set(atlas.clone());
         let declare = StatusRequest::DeclareNodeState { node_id: caller.node_id.clone(), incarnation: caller_inc.clone(), state: NodeState::Stopped, operation: None };
         let reply = status.apply_from(None, None, &declare).await;
         assert_eq!(reply, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "the deleted birth's declaration is refused at once");
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
-        let d = d.unwrap_or_else(|| panic!("the declaration door decided the caller: {spans:?}"));
+        let d = d.unwrap_or_else(|| panic!("the `StatusService` decided the caller: {spans:?}"));
         assert_eq!(d["door"], "declaration", "{d}");
         assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.node"), Some("2")), "decided at the caller's (path, name): {d}");
         assert_eq!(d["own"], "delete-deleted-birth", "{d}");
         assert_eq!(d["decision"], "delete-deleted-birth", "a caller whose record is deleted is deleted, never re-admitted (Q217): {d}");
         assert_eq!(d["needed"], "true", "the current Build still needs the path: node recovery re-creates it: {d}");
         assert_eq!(d["root"], "self", "the fabric-primary decides from its own atlas: {d}");
-        // The rig builds no Build door: the termination's open is refused naming it (node_replace's
+        // The rig builds no `BuildService`: the termination's open is refused naming it (node_replace's
         // e2e runs it to the runtime's end).
         assert_eq!((d["outcome"].as_str(), d["detail"].as_str()), (Some("terminate-failed"), Some(format!("{}: its runner is not built yet", admin.node_id).as_str())), "{d}");
         let reported = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-returned-reported").map(|s| s["attributes"].clone()).unwrap_or_else(|| panic!("the caller was reported for node.terminate: {spans:?}"));
@@ -442,15 +442,15 @@ mod tests {
     /// gates-6-9af200cc4): a birth of mesh1.node.2 that its mesh-primary commanded back through
     /// node.mesh.join (a held deployment) is deleted and re-created while it is os-stopped. Resumed, it
     /// answers the command with its join report: the row at its path and name now holds the re-created
-    /// birth, so the join is refused `JoinMismatch` by name at once, and the join door decides the
+    /// birth, so the join is refused `JoinMismatch` by name at once, and the `JoinService` decides the
     /// caller by its path and name and the atlas: another birth is at its path and name, so it is deleted
     /// (`delete-path-held`), decided at the root itself, and reported for
-    /// `node.terminate` (`via-returned-reported` naming the exact birth; the rig builds no Build door,
+    /// `node.terminate` (`via-returned-reported` naming the exact birth; the rig builds no `BuildService`,
     /// so the open is refused naming it).
     /// Must NOT happen: the refusal and nothing decided (the red: the deleted birth leaves its mesh,
     /// silent, its runtime never terminated), the caller re-admitted, or the refusal held on the decision.
     #[tokio::test]
-    async fn a_deleted_births_join_refused_by_name_is_decided_and_deleted_through_the_join_door() {
+    async fn a_deleted_births_join_refused_by_name_is_decided_and_deleted_through_the_join_service() {
         let dir = std::env::temp_dir().join(format!("rdm-refused-caller-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
         let capture = rdm_transport::EvidenceCapture::start(&dir, "refused-caller-join").expect("the cell's evidence file can be created");
@@ -475,7 +475,7 @@ mod tests {
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
-        // The join door, the caller's deployment held: its mesh-primary commanded it back before the delete.
+        // The `JoinService`, the caller's deployment held: its mesh-primary commanded it back before the delete.
         let joins = Arc::new(crate::join::Joins::default());
         let deployed = crate::join::Deployed { mesh: caller.mesh.clone(), r#type: caller.r#type.clone(),
             path: caller.path.clone(), name: caller.name.clone(),
@@ -490,7 +490,7 @@ mod tests {
             listeners: Vec::new(),
         };
         let _commanded = joins.expect(deployed.clone());
-        let door = crate::join::JoinDoor {
+        let join_service = crate::join::JoinService {
             nodes: Some((rows.clone(), writer_holding(&rows, &admin.mesh).await)),
             me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
@@ -533,11 +533,11 @@ mod tests {
             is_fabric_primary: None,
         };
         let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), types: Default::default(), listeners: Vec::new() };
-        let reply = door.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
+        let reply = join_service.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
         assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "node_id" && deployed.contains(recreated.node_id.as_str())), "the deleted birth's join is refused at once by its node id, naming the re-created birth: {reply:?}");
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
-        let d = d.unwrap_or_else(|| panic!("the join door decided the caller: {spans:?}"));
+        let d = d.unwrap_or_else(|| panic!("the `JoinService` decided the caller: {spans:?}"));
         assert_eq!(d["door"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
         assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.node"), Some("2")), "decided at the caller's (path, name): {d}");
@@ -555,7 +555,7 @@ mod tests {
     /// a birth of mesh1.node.2 commanded back through node.mesh.join is deleted while it is os-stopped, and
     /// nothing is re-created at its path yet. Resumed, it answers the command with its join report: the row
     /// at its path and name is its own, deleted, so the join is refused `JoinMismatch` on `status` by name at
-    /// once, and the join door decides it `delete-deleted-birth` and reports it for `node.terminate`.
+    /// once, and the `JoinService` decides it `delete-deleted-birth` and reports it for `node.terminate`.
     /// Must NOT happen: the deleted birth issued a cert and admitted (the red), or re-admitted.
     #[tokio::test]
     async fn a_deleted_births_join_with_its_own_deleted_row_at_its_path_is_refused_and_deleted() {
@@ -582,7 +582,7 @@ mod tests {
             rows.put_node(&r).await.unwrap();
         }
         let atlas = atlas_deciding(&admin, &topology, &rows, &builds).await;
-        // The join door, the caller's deployment held: its mesh-primary commanded it back before the delete.
+        // The `JoinService`, the caller's deployment held: its mesh-primary commanded it back before the delete.
         let joins = Arc::new(crate::join::Joins::default());
         let deployed = crate::join::Deployed { mesh: caller.mesh.clone(), r#type: caller.r#type.clone(),
             path: caller.path.clone(), name: caller.name.clone(),
@@ -597,7 +597,7 @@ mod tests {
             listeners: Vec::new(),
         };
         let _commanded = joins.expect(deployed.clone());
-        let door = crate::join::JoinDoor {
+        let join_service = crate::join::JoinService {
             nodes: Some((rows.clone(), writer_holding(&rows, &admin.mesh).await)),
             me_path: admin.path.clone(), me_name: admin.name.clone(),
             joins,
@@ -640,11 +640,11 @@ mod tests {
             is_fabric_primary: None,
         };
         let join = rdm_core::join::JoinRequest::JoinNode { digest: rdm_core::wire::WireDigest::from(&report), types: Default::default(), listeners: Vec::new() };
-        let reply = door.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
+        let reply = join_service.serve(crate::model::EndpointId("caller-endpoint".into()), join).await;
         assert!(matches!(&reply, rdm_core::join::JoinReply::JoinMismatch { field, deployed, .. } if field == "status" && deployed.contains("is deleted")), "the deleted birth's join is refused at once by name, naming its deleted row: {reply:?}");
         // The decision runs on its own task: it ends once its one span closes.
         let (d, spans) = decided(&capture).await;
-        let d = d.unwrap_or_else(|| panic!("the join door decided the caller: {spans:?}"));
+        let d = d.unwrap_or_else(|| panic!("the `JoinService` decided the caller: {spans:?}"));
         assert_eq!(d["door"], "join", "{d}");
         assert_eq!((d["node_id"].as_str(), d["incarnation_id"].as_str()), (Some(caller.node_id.as_str()), Some(caller_inc.as_str())), "the exact birth that joined: {d}");
         assert_eq!((d["subject_path"].as_str(), d["subject_name"].as_str()), (Some("mesh1.node"), Some("2")), "decided at the caller's (path, name): {d}");
@@ -732,7 +732,7 @@ mod tests {
         let (atlas, callers) = atlas_deciding_over(&admin, &topology, &rows, &builds, Some(client)).await;
         let (views, installed) = tokio::sync::watch::channel(0u64);
         callers.watch_views(installed);
-        let status = status_door_of(&admin, fabric_id, &topology, &rows, &builds);
+        let status = status_service_of(&admin, fabric_id, &topology, &rows, &builds);
         let _ = status.atlas.set(atlas.clone());
         let declare = StatusRequest::DeclareNodeState { node_id: caller.node_id.clone(), incarnation: caller_inc.clone(), state: NodeState::Ready, operation: None };
         let reply = status.apply_from(None, None, &declare).await;
@@ -771,7 +771,7 @@ mod tests {
     /// replacement is born, is decided from what the primary holds: deleted, though its record still
     /// reads live (the recovery's delete not yet written, or a line the returned birth wrote since) and
     /// the topology still needs its path. The same records with no recovery held re-admit it. Must NOT
-    /// happen: the held birth re-admitted (the red: re-admitted at the declaration door, then deleted
+    /// happen: the held birth re-admitted (the red: re-admitted at the `StatusService`, then deleted
     /// 175 ms later once the NodeDeleted was applied).
     #[tokio::test]
     async fn a_birth_its_primarys_recovery_holds_deleted_is_decided_deleted_though_its_record_reads_live() {

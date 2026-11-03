@@ -1138,7 +1138,7 @@ where
 }
 
 /// What serves `DeleteMesh` (at the deleting mesh's primary) and `MeshDeleted` (at the
-/// fabric-primary); the status door hands each to it. The executor's lifecycle hooks hand it every
+/// fabric-primary); the `StatusService` hands each to it. The executor's lifecycle hooks hand it every
 /// birth they publish deleted, so the fabric-primary's mesh.delete observes the final birth's exit
 /// proof (mesh-left), while node.delete stays the ordinary workflow it is.
 #[async_trait::async_trait]
@@ -1153,7 +1153,7 @@ pub trait MeshDeleter: Send + Sync {
     async fn birth_deleted(&self, _op: &rdm_core::LifecycleOp) {}
 }
 
-/// The door a running admin fills once its runner exists.
+/// The `MeshDeleteService` a running admin fills once its runner exists.
 pub type MeshDeleterSlot = Arc<OnceLock<Arc<dyn MeshDeleter>>>;
 
 /// What an unanswered mesh (`mesh`, with no live `node-admin` primary in `view`) resolves to during

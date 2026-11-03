@@ -60,7 +60,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let topology_view = TopologyView::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), admin_birth.node_id.as_str(), Arc::new(time.clone()), vec![], &[]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: admin_birth.incarnation.clone(), node_id: admin_birth.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
-    let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me_path: "mesh1.node-admin".into(), me_name: "1".into(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_door: Default::default() };
+    let lifecycle = GossipLifecycle { topology_view: topology_view.clone(), backbone: backbone.clone(), me_path: "mesh1.node-admin".into(), me_name: "1".into(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, status_service: Default::default() };
 
     let rpc = member(&fabric, rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", 10);
     assert!(topology_view.digest_view.record(rpc.clone()), "the member's heartbeat is held");
@@ -94,7 +94,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     use rdm_admin::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
-    use rdm_admin::status_rpc::{Declared, StatusDoor};
+    use rdm_admin::status_rpc::{Declared, StatusService};
     use rdm_core::status::{NodeState, StatusReply, StatusRequest};
     let fabric = FabricId::mint();
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
@@ -127,7 +127,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
         meshes: Vec::new(),
         nodes: vec![me.clone(), subject.clone()],
     }));
-    let status_door = StatusDoor {
+    let status_service = StatusService {
         certs: None,
         app_channels: None,
         declaration_seam: None,
@@ -164,12 +164,12 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_view() {
     let status = || topology_view.digest_view.get(member.node.node_id.as_str()).map(|(h, _)| h.status);
     let declare = |state| StatusRequest::DeclareNodeState { node_id: member.node.node_id.clone(), incarnation: member.node.incarnation.clone(), state, operation: None };
     assert_eq!(status(), Some(MemberStatus::Pending));
-    assert_eq!(status_door.apply(Some(subject.clone()), &declare(NodeState::Ready)).await, StatusReply::Applied);
+    assert_eq!(status_service.apply(Some(subject.clone()), &declare(NodeState::Ready)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::Ready), "its node.started sets it ready");
-    assert_eq!(status_door.apply(Some(subject.clone()), &declare(NodeState::ConnectionsDeleting)).await, StatusReply::Applied);
+    assert_eq!(status_service.apply(Some(subject.clone()), &declare(NodeState::ConnectionsDeleting)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "its reported ConnectionsDeleting sets it ConnectionsDeleting");
     let backbone = Backbone::join(&gossip, &ep, &topology_view, "mesh1", rdm_core::PublisherId { incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() }, vec![]).await.unwrap();
     assert_eq!(backbone.own_members(&topology_view).into_iter().find(|d| d.node.node_id == member.node.node_id).map(|d| d.status), Some(MemberStatus::ConnectionsDeleting), "its projection carries it");
-    assert!(matches!(status_door.apply(Some(subject.clone()), &declare(NodeState::Pending)).await, StatusReply::RejectedInvalidNodeTransition { .. }), "a backward report is refused");
+    assert!(matches!(status_service.apply(Some(subject.clone()), &declare(NodeState::Pending)).await, StatusReply::RejectedInvalidNodeTransition { .. }), "a backward report is refused");
     assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "and sets nothing");
 }

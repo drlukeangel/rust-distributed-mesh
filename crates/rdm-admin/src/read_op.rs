@@ -1,7 +1,7 @@
 //! The plural reads served on op `0x23` (node-rpc-envelope.md "Read, op `0x23`, rdm"; Q285).
 //!
 //! `fabric.get`, `mesh.get` and `node.get` answer every row they match, never bounded as one frame:
-//! the rows are read once, in their stable order ([`crate::status_rpc::StatusDoor::read_rows`]: this
+//! the rows are read once, in their stable order ([`crate::status_rpc::StatusService::read_rows`]: this
 //! admin's atlas, or the primary's carried read), packed in order into data frames that each fit the
 //! reply frame (`rdm_client::read_frames`, over `rdm_transport::chunking::pack_in_order`, the one
 //! packer the Build facts and topology snapshots share), and streamed `Started`, the frames, `End { rows, frames }`. A row that fits no
@@ -16,22 +16,22 @@ use rdm_transport::stream::{NotStarted, ReplySink};
 use rdm_transport::ServerBuilder;
 use tracing::Instrument as _;
 
-/// Serve the plural reads on op `0x23` on this admin. Until `door` is filled the admin decides
+/// Serve the plural reads on op `0x23` on this admin. Until `service` is filled the admin decides
 /// nothing and a read is `NotReady` by name.
-pub fn serve(b: ServerBuilder, door: crate::status_rpc::StatusDoorSlot) -> ServerBuilder {
+pub fn serve(b: ServerBuilder, service: crate::status_rpc::StatusServiceSlot) -> ServerBuilder {
     b.serve_stream::<Read, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: ReadRequest, sink| {
-        let door = door.clone();
+        let service = service.clone();
         async move {
-            let Some(door) = door.get().cloned() else {
-                return Ok(ReadReply::NotReady { reason: "this admin holds no Status door yet: it reads nothing".into() });
+            let Some(service) = service.get().cloned() else {
+                return Ok(ReadReply::NotReady { reason: "this admin holds no StatusService yet: it reads nothing".into() });
             };
-            Ok(answer(&door, req, sink).await)
+            Ok(answer(&service, req, sink).await)
         }
     })
 }
 
 /// Answer one read: its rows streamed in frames, or its refusal.
-async fn answer(door: &crate::status_rpc::StatusDoor, req: ReadRequest, sink: ReplySink<Read, NotStarted>) -> ReadReply {
+async fn answer(service: &crate::status_rpc::StatusService, req: ReadRequest, sink: ReplySink<Read, NotStarted>) -> ReadReply {
     let read = req.op();
     let (entity, node, filter) = match req {
         ReadRequest::Get { entity, filter } => (entity, None, filter),
@@ -53,7 +53,7 @@ async fn answer(door: &crate::status_rpc::StatusDoor, req: ReadRequest, sink: Re
         if entity == Entity::Connections && node.is_none() {
             return refused(ReadReply::RejectedFilter { reason: format!("{read} is GetConnections (with its node and incarnation), never Get") });
         }
-        let rows = match door.read_rows(&rdm_core::status::Read { entity, node, filter }).await {
+        let rows = match service.read_rows(&rdm_core::status::Read { entity, node, filter }).await {
             Ok(rows) => rows,
             Err(r) => return refused(r),
         };

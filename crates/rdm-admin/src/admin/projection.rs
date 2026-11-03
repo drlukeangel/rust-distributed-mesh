@@ -307,7 +307,7 @@ pub(crate) async fn row_name(me: &PathName, store: &dyn crate::storage::NodesSto
     }
 }
 
-/// Projects the digest view into the view now: what the join door runs once it installed an admitted
+/// Projects the digest view into the view now: what the `JoinService` runs once it installed an admitted
 /// birth's address, so the view the status authority resolves senders from holds that birth.
 pub fn view_projector(me: PathName, topology: Arc<RwLock<Topology>>, fabric: String, fabric_id: FabricId, provider: ProviderKind, digest_view: DigestView, records: Arc<Records>) -> Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> {
     Arc::new(move || {

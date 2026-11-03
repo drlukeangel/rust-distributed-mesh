@@ -8,7 +8,7 @@ use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rdm_test::node;
 
 /// CONTRACT: a node whose launching admin answers every `JoinNode` with `NotReady` (the admin
-/// holds no join door) ends by name, the error naming the launching admin and the unreached cause.
+/// holds no `JoinService`) ends by name, the error naming the launching admin and the unreached cause.
 /// It never emits `rdm.mesh.node.update.via-ready` and the launcher never hears it ready.
 /// What must NOT happen: the node comes up on a "view fills from gossip" fallback.
 #[test]

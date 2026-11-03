@@ -353,18 +353,18 @@ impl Declarer {
     }
 
     /// One sweep: send every declaration that is due to its authority as the view names it now.
-    /// When the view names this admin, the declaration goes through this admin's own door
-    /// (`status_door`), decided exactly as a peer's would be; no role is assumed. `addressed` is
+    /// When the view names this admin, the declaration goes through this admin's own `StatusService`
+    /// (`status_service`), decided exactly as a peer's would be; no role is assumed. `addressed` is
     /// the authorities that sent this admin their down op since the last sweep.
-    pub async fn sweep(self: &Arc<Self>, me: &PathName, mesh: &str, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, status_door: Option<&crate::status_rpc::StatusDoor>, addressed: &BTreeSet<NodeId>, wake: &Arc<DeclareWake>) {
+    pub async fn sweep(self: &Arc<Self>, me: &PathName, mesh: &str, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, status_service: Option<&crate::status_rpc::StatusService>, addressed: &BTreeSet<NodeId>, wake: &Arc<DeclareWake>) {
         self.withdraw_unowned(me, mesh, me_id, view);
         self.reowe_moved(me, mesh, view);
         for (p, target) in self.due(me_id, view, addressed) {
             let addressed_now = addressed.contains(&target.node_id);
             if &target.node_id == me_id {
-                match status_door {
-                    Some(door) => {
-                        let reply = door.apply(Some(target.clone()), &p.request).await;
+                match status_service {
+                    Some(status_service) => {
+                        let reply = status_service.apply(Some(target.clone()), &p.request).await;
                         let (o, f) = self.recorded(&p, &reply, classify(&reply)).await;
                         self.declared(me, &p, &target, "self", addressed_now, o, f, true);
                         // Answered: the next of its own declarations owed after it is sent on the next sweep.
@@ -374,8 +374,8 @@ impl Declarer {
                     }
                     None => {
                         // Unreachable: the declarer starts after the authority is filled.
-                        tracing::error!(node_path = %me.path, node_name = %me.name, key = ?p.key, "authority is self, but the Status door is not filled: unreachable, the declarer starts after it is filled");
-                        debug_assert!(false, "authority is self, but the Status door is not filled");
+                        tracing::error!(node_path = %me.path, node_name = %me.name, key = ?p.key, "authority is self, but the StatusService is not filled: unreachable, the declarer starts after it is filled");
+                        debug_assert!(false, "authority is self, but the StatusService is not filled");
                         self.note(&p.key, 0, "authority is self, but this admin holds no view yet");
                     }
                 }

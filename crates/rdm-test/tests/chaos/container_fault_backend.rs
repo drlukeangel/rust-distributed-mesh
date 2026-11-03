@@ -823,7 +823,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
             (n.starts_with("rdm.node_admin.node.") && (n.contains(".create.") || n.contains(".delete.") || n.contains(".delete.") || n.contains(".update.via-build")) && on_isolated && wrote)
                 || (CONNECTIONS_DELETE.contains(&n) && on_isolated && wrote)
                 || (n == "rdm.node_admin.deployment.update.via-pipeline" && on_isolated)
-                || (n == "rdm.node_admin.build.serve.via-attempt-run" && sp["attributes"]["build_id"] == fabric_build.as_str())
+                || (n == "rdm.node_admin.build.serve.via-section-run" && sp["attributes"]["build_id"] == fabric_build.as_str())
         })
         .map(|sp| span_row(sp, &["node", "node_path", "node_name", "build_id", "pipeline", "action", "outcome"]))
         .collect();

@@ -25,8 +25,8 @@ fn requests_match_the_frozen_five_variant_wire_schema() {
     let fixtures = [
         // positions 0, 1 and 2 (Create, Delete, DeleteFabric): `a_change_is_a_create_a_delete_by_node_id_or_a_fabric_delete`
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into() } }, "00 01 01 62"),
-        // build.attempt.run names the Build and the mesh, never a copy of either (Q292)
-        (BuildRequest::AttemptRun { build_id: "b".into(), mesh: "m".into(), context: CallContext::default() }, "01 01 62 01 6d 00 00 00 00"),
+        // build.section.run names the Build and the mesh, never a copy of either (Q292)
+        (BuildRequest::SectionRun { build_id: "b".into(), mesh: "m".into(), context: CallContext::default() }, "01 01 62 01 6d 00 00 00 00"),
         (BuildRequest::Get { build_id: "b".into() }, "02 01 62"),
         (BuildRequest::Delete { build_id: "b".into() }, "03 01 62"),
         // builds.get (Q167 R-RD5): no pair, then one pair (phase, [failed]).
@@ -148,7 +148,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
 fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() {
     let r = BuildReply::Failed { build_id: "cq2tyb03krac".into(), reason: "r".repeat(16 * 1024), code: rdm_core::outcome::Code::FailedPrecondition };
     assert!(Build::encode_reply(&r).unwrap().len() <= Build::MAX_REPLY_FRAME_BYTES);
-    let q = BuildRequest::AttemptRun {
+    let q = BuildRequest::SectionRun {
         build_id: "cq2tyb03krac".into(),
         mesh: "mesh1".into(),
         context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("t".repeat(55)), tracestate: Some("s".repeat(512)), baggage: Some("b".repeat(8192)) },

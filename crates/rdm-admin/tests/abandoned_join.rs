@@ -7,7 +7,7 @@ use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateA
 use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Timeouts, TopologySink};
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rdm_admin::join::{JoinDoor, Joins};
+use rdm_admin::join::{JoinService, Joins};
 use rdm_admin::model::{Node, ProviderKind};
 use rdm_core::join::{JoinReply, JoinRequest};
 use serde_json::{json, Value};
@@ -181,7 +181,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
         };
         let installed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = installed.clone();
-        let door = JoinDoor {
+        let service = JoinService {
             nodes: None,
             me_path: "mesh1.node-admin".into(), me_name: "1".into(),
             joins: joins.clone(),
@@ -202,14 +202,14 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_and_birth
         };
         let ask = |d: &MeshDigest| JoinRequest::JoinNode { types: Vec::new(), digest: d.into(), listeners: Vec::new() };
 
-        let late = door.serve(endpoint_id.clone(), ask(&digest(&incarnation))).await;
+        let late = service.serve(endpoint_id.clone(), ask(&digest(&incarnation))).await;
         assert_eq!(
             late,
             JoinReply::DeploymentAbandoned { build_id: build_id.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() },
             "the late join names the Build and the exact birth"
         );
         let other = IncarnationId::mint();
-        let targeted = door.serve(endpoint_id.clone(), ask(&digest(&other))).await;
+        let targeted = service.serve(endpoint_id.clone(), ask(&digest(&other))).await;
         assert!(matches!(&targeted, JoinReply::JoinMismatch { field, .. } if field == "incarnation"), "another incarnation is not the abandoned birth: {targeted:?}");
         assert_eq!(installed.load(std::sync::atomic::Ordering::SeqCst), 0, "a refused join installs nothing");
         let _ = std::fs::remove_dir_all(&data_root);

@@ -18,7 +18,7 @@
 //! (`rdm.node_admin.primary.update.via-investigation`), and on its verdict submits that birth's node
 //! recovery (`rdm.node_admin.node.update.via-node-recovery`): no node-admin of mesh2 is left for the
 //! election to name, so the fabric-primary runs it; the resubmitted B's section call to mesh2 is served
-//! by mesh2's re-created mesh-primary (`rdm.node_admin.build.serve.via-attempt-run`).
+//! by mesh2's re-created mesh-primary (`rdm.node_admin.build.serve.via-section-run`).
 
 use rdm_core::PathName;
 use rdm_test::estate::location;
@@ -189,7 +189,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_has_its_mesh_primary_recovered_b
     // B's section ended short at the loss, named on the fabric-primary's drive.
     let unfinished = named(&spans, "rdm.node_admin.build.update.via-section-unfinished").into_iter().find(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2").cloned().unwrap_or_else(|| panic!("B's drive named mesh2's section unfinished"));
     // The resubmitted B's section call to mesh2 is served by mesh2's re-created admin, not by a mesh1 admin.
-    let section = named(&spans, "rdm.node_admin.build.serve.via-attempt-run")
+    let section = named(&spans, "rdm.node_admin.build.serve.via-section-run")
         .into_iter()
         .find(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2" && at(sp) > resubmitted_ns)
         .cloned()

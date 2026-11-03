@@ -380,7 +380,7 @@ async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follo
 /// fabric-primary (R14 item 2); the Fabric row carries no pointer to the newest Build (R-BI3): the growth
 /// Build is written once to the builds store after the Day-0 Build and mesh2's primary reads it as the
 /// current Build. The growth is a resize, which puts the fabric back to pending (states.md, Resize and
-/// executable replacement) before its build.create door answers.
+/// executable replacement) before its `BuildService` answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it() {
     let test = "the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it";
@@ -503,13 +503,13 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
     let spans = estate.spans();
 
     // The growth put the fabric back to pending inside the acceptance: the fabric-primary's reset for it
-    // starts before its build.create door answers it (the door's span ends at the answer).
-    let door_span = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the growth Build's build.create door is spanned"));
+    // starts before its `BuildService` answers it (the `BuildService`'s span ends at the answer).
+    let service_span = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the growth Build's build.create is spanned"));
     let resets = named(&spans, "rdm.node_admin.fabric.update.via-state-reset");
     let reset = resets.iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the fabric-primary put the fabric back to pending for the growth Build {second}: resets {:?}", resets.iter().map(|sp| &sp["attributes"]).collect::<Vec<_>>()));
     assert_eq!((s(&reset["attributes"]["node_path"]), s(&reset["attributes"]["node_name"]), s(&reset["attributes"]["from"])), ("mesh1.node-admin".to_string(), "1".to_string(), "ready".to_string()), "the fabric-primary put the ready fabric back to pending: {reset}");
-    let answered = door_span["end_unix_nano"].as_u64().unwrap();
-    assert!(start(reset) <= answered, "the fabric is pending before the door answers the growth Build: reset at {}, door answered at {answered} ({} us later than the answer): {reset}", start(reset), start(reset).saturating_sub(answered) / 1000);
+    let answered = service_span["end_unix_nano"].as_u64().unwrap();
+    assert!(start(reset) <= answered, "the fabric is pending before the BuildService answers the growth Build: reset at {}, the BuildService answered at {answered} ({} us later than the answer): {reset}", start(reset), start(reset).saturating_sub(answered) / 1000);
 
     // The growth Build was written once, by the fabric-primary, after the Day-0 Build (R-BI3: the Build is
     // its own entity, in acceptance order).

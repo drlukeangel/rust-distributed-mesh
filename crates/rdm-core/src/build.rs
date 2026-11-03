@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! Create     caller -> fabric-primary         a submitted change, or a re-submit by build_id
-//! AttemptRun fabric-primary -> mesh-primary   the steps (build_id, mesh) owes, start-or-reattach
+//! SectionRun fabric-primary -> mesh-primary   the steps (build_id, mesh) owes, start-or-reattach
 //! Get        caller -> fabric-primary         the Build and its events, for reattachment after a cut
 //! Delete     caller -> fabric-primary         a finished Build leaves history
 //! GetBuilds  caller -> fabric-primary         build.get: every Build the filter matches, each whole
@@ -19,7 +19,7 @@
 //! Step { build_id, mesh, operation, step, result }    after the step's `rdm.build.step` is written
 //! Pending { build_id, mesh, operation, step, reason } non-terminal, never durable, never a step outcome
 //! Complete | Failed { step, reason } | FabricPrimaryMoved { fabric_primary }
-//!                                                  the terminal of Create (Complete or Failed of AttemptRun)
+//!                                                  the terminal of Create (Complete or Failed of SectionRun)
 //! Got | Deleted                                    the terminal of Get / Delete
 //! End                                              the terminal of GetBuilds, after per Build its
 //!                                                  Topology and Events chunks and its Build header
@@ -146,13 +146,13 @@ pub enum BuildRequest {
         /// What is submitted.
         submit: BuildSubmit,
     },
-    /// `build.attempt.run`: run the steps `mesh` owes of `build_id` on the recipient, the mesh's
+    /// `build.section.run`: run the steps `mesh` owes of `build_id` on the recipient, the mesh's
     /// primary. Start-or-reattach: a repeat of the same `(build_id, mesh)` attaches to the run. It
     /// names the Build and the mesh and never carries a copy of either: the mesh-primary reads the
     /// Build and its events from storage before it plans (Q292).
     ///
     /// Position 1 on the wire.
-    AttemptRun {
+    SectionRun {
         /// The Build.
         build_id: String,
         /// The mesh whose section the recipient runs.
@@ -191,7 +191,7 @@ impl BuildRequest {
     pub fn op(&self) -> &'static str {
         match self {
             Self::Create { .. } => "create",
-            Self::AttemptRun { .. } => "attempt.run",
+            Self::SectionRun { .. } => "section.run",
             Self::Get { .. } => "get",
             Self::Delete { .. } => "delete",
             Self::GetBuilds { .. } => "build.get",
@@ -214,11 +214,11 @@ pub enum Disposition {
     ///
     /// Position 2 on the wire.
     AlreadyApplied,
-    /// `AttemptRun`: the recipient started the mesh's run.
+    /// `SectionRun`: the recipient started the mesh's run.
     ///
     /// Position 3 on the wire.
     Started,
-    /// `AttemptRun`: the recipient holds the mesh's run; this stream attached to it.
+    /// `SectionRun`: the recipient holds the mesh's run; this stream attached to it.
     ///
     /// Position 4 on the wire.
     Reattached,
@@ -282,7 +282,7 @@ impl BuildPhase {
 }
 
 /// A mesh's section that ended short of its end (Q346): the step it stopped at and why. A failed
-/// step names itself; a section call that ended short names the call, `build.attempt.run`.
+/// step names itself; a section call that ended short names the call, `build.section.run`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnfinishedSection {
     /// The mesh whose section it is.
@@ -408,7 +408,7 @@ pub enum BuildReply {
         /// The fabric-primary the receiver sees, when it sees one.
         fabric_primary: Option<crate::NodeId>,
     },
-    /// Refusal: the recipient of `AttemptRun` is not the mesh's primary.
+    /// Refusal: the recipient of `SectionRun` is not the mesh's primary.
     ///
     /// Position 8 on the wire.
     NotExecutor {

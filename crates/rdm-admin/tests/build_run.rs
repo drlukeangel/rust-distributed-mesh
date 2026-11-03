@@ -1,13 +1,13 @@
 //! A mesh-primary's run of its mesh's section is a turn of its admin's stop gate (stop_gate.rs: a task
 //! that takes the view lock begins each turn at its own wait point; a stop's quiesce waits for every
-//! turn already past it). A run the admin serves for a remote fabric-primary (`build.attempt.run`,
+//! turn already past it). A run the admin serves for a remote fabric-primary (`build.section.run`,
 //! op `0x20`) is its own task: it begins at its wait point and the stop's quiesce waits for it, so
 //! nothing it does follows the stop's cut (node-stop.md steps 3-4, R-ON1). A stopped admin keeps
 //! answering the call, and the run it starts waits at the gate until the admin starts.
 
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build::{BuildId, BuildOperation};
-use rdm_admin::build_run::{Attached, FramedBuilds, RunDoor, SectionRuns};
+use rdm_admin::build_run::{Attached, FramedBuilds, SectionRunService, SectionRuns};
 use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::executor::{BuildExecutor, OperationRunner, RunEnd};
 use rdm_admin::model::*;
@@ -124,9 +124,9 @@ async fn mesh1_section(admin: Node, memory: &MemoryBuildStateAdapter) -> (Arc<to
     (Arc::new(tokio::sync::RwLock::new(view)), section)
 }
 
-/// `mesh1.node-admin.1`'s door with its own gate and its step log, as mesh1's primary, for the cell's
-/// Build; and mesh1's section of it, which the door plans.
-async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, Vec<BuildOperation>) {
+/// `mesh1.node-admin.1`'s `SectionRunService` with its own gate and its step log, as mesh1's primary, for the cell's
+/// Build; and mesh1's section of it, which the service plans.
+async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (SectionRunService, StopGate, Vec<BuildOperation>) {
     let memory = Arc::new(MemoryBuildStateAdapter::new());
     let admin = ready("mesh1.node-admin", "1", "node-admin", true);
     let executor_birth = admin.birth().unwrap();
@@ -137,12 +137,12 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, V
     let gate = StopGate::new();
     let runner = Arc::new(crate::loopback::Steps::new(Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first }), builds.clone()));
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: builds.clone(), topology, runner });
-    let door = RunDoor { me_path: "mesh1.node-admin".into(), me_name: "1".into(), builds, exec, runs, local: memory.clone(), gate: gate.clone(), moved: Default::default() };
-    (door, gate, section)
+    let service = SectionRunService { me_path: "mesh1.node-admin".into(), me_name: "1".into(), builds, exec, runs, local: memory.clone(), gate: gate.clone(), moved: Default::default() };
+    (service, gate, section)
 }
 
 /// CONTRACT (node-stop.md steps 3-4, R-ON1; stop_gate.rs:5-11): `mesh1.node-admin.1` serves
-/// `build.attempt.run` (mesh1's section) for a fabric-primary elsewhere and its run is inside its first operation when
+/// `build.section.run` (mesh1's section) for a fabric-primary elsewhere and its run is inside its first operation when
 /// the admin's stop holds its gate. The stop's quiesce names the run (`build-run`) among the turns it
 /// waits for and resolves only once the run has ended: every call the run makes (its second
 /// operation, on the stopped gate, included) and its reconcile span end before the stop's cut. Must NOT happen: a quiesce
@@ -151,8 +151,8 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, V
 async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cut_and_calls_out_no_more() {
     let (capture, _guard) = capture("mesh1.node-admin.1");
     let calls = Arc::new(Calls::default());
-    let (door, gate, plan) = executor(&calls, true).await;
-    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), "mesh1", &CallContext::default()).await else { panic!("mesh1's section is started") };
+    let (service, gate, plan) = executor(&calls, true).await;
+    let Attached::Live { disposition, mut reader, .. } = service.section_run(&build_id(), "mesh1", &CallContext::default()).await else { panic!("mesh1's section is started") };
     assert_eq!(disposition, Disposition::Started);
     calls.entered.notified().await;
 
@@ -191,7 +191,7 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
 
 /// CONTRACT (node-stop: a stopped node does nothing outward until it is started; stop_gate.rs:5-11):
 /// `mesh1.node-admin.1` is stopped (its gate stopped) when a fabric-primary elsewhere calls
-/// `build.attempt.run` for mesh1's section. The stopped admin answers the call (the run
+/// `build.section.run` for mesh1's section. The stopped admin answers the call (the run
 /// is started, so a later call reattaches to it) and its run waits at the gate: it makes no call while
 /// the admin is stopped. Once the admin starts, the run makes its calls and reaches its terminal.
 /// Must NOT happen: a run of a stopped admin calling out.
@@ -199,9 +199,9 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
 async fn a_run_served_while_its_admin_is_stopped_calls_out_only_once_the_admin_starts() {
     let (capture, _guard) = capture("mesh1.node-admin.1");
     let calls = Arc::new(Calls::default());
-    let (door, gate, plan) = executor(&calls, false).await;
+    let (service, gate, plan) = executor(&calls, false).await;
     let _ = gate.quiesce().await;
-    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), "mesh1", &CallContext::default()).await else { panic!("the stopped admin answers the call for mesh1's section") };
+    let Attached::Live { disposition, mut reader, .. } = service.section_run(&build_id(), "mesh1", &CallContext::default()).await else { panic!("the stopped admin answers the call for mesh1's section") };
     assert_eq!(disposition, Disposition::Started);
     // Every task runs until it waits on something: a run that does not wait at the gate has called out by now.
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -233,7 +233,7 @@ async fn a_run_served_while_its_admin_is_stopped_calls_out_only_once_the_admin_s
 async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_under_its_turn_and_never_waits_at_the_gate() {
     let (capture, _guard) = capture("mesh1.node-admin.1");
     let calls = Arc::new(Calls::default());
-    let (door, gate, plan) = executor(&calls, false).await;
+    let (service, gate, plan) = executor(&calls, false).await;
     let pass = gate.turn("build-drive").await;
     let cut = tokio::spawn({
         let (gate, calls) = (gate.clone(), calls.clone());
@@ -245,7 +245,7 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
     });
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(gate.is_stopped(), "the stop held the gate while the pass was in its turn");
-    let Attached::Live { disposition, mut reader, .. } = door.run_under(&pass, &build_id(), "mesh1", &CallContext::default(), plan.clone()).await else { panic!("the pass's own section is started") };
+    let Attached::Live { disposition, mut reader, .. } = service.run_under(&pass, &build_id(), "mesh1", &CallContext::default(), plan.clone()).await else { panic!("the pass's own section is started") };
     assert_eq!(disposition, Disposition::Started);
     let terminal = tokio::time::timeout(Duration::from_secs(20), async {
         let mut terminal = None;
@@ -274,7 +274,7 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
 /// A rename changes the name at the same path while retaining the node ID and incarnation. The
 /// renamed admin, mesh1's primary by its birth in its view, runs mesh1's section under its new name,
 /// and its steps' events are its exact birth's. An admin of another node ID that presents the same
-/// incarnation is not mesh1's primary in that view: its door refuses the call `NotExecutor`, naming the
+/// incarnation is not mesh1's primary in that view: its `SectionRunService` refuses the call `NotExecutor`, naming the
 /// primary and itself.
 #[tokio::test(start_paused = true)]
 async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
@@ -292,9 +292,9 @@ async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
         let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()).writing_steps(steps, "mesh1"));
         let runner = Arc::new(crate::loopback::Steps::new(Arc::new(CallingOut { calls: calls.clone(), gate: StopGate::new(), hold_first: false }), builds.clone()));
         let exec = Arc::new(BuildExecutor { executor: birth, builds: builds.clone(), topology: topology.clone(), runner });
-        RunDoor { me_path: "mesh1.node-admin".into(), me_name: me_name.into(), builds, exec, runs, local: memory.clone(), gate: StopGate::new(), moved: Default::default() }
+        SectionRunService { me_path: "mesh1.node-admin".into(), me_name: me_name.into(), builds, exec, runs, local: memory.clone(), gate: StopGate::new(), moved: Default::default() }
     };
-    let door = door_of(executor_birth.clone(), "9");
+    let service = door_of(executor_birth.clone(), "9");
 
     // Only the name changes; the birth is the same.
     {
@@ -303,7 +303,7 @@ async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
         t.nodes[0].path = at.path;
         t.nodes[0].name = at.name;
     }
-    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), "mesh1", &CallContext::default()).await else {
+    let Attached::Live { disposition, mut reader, .. } = service.section_run(&build_id(), "mesh1", &CallContext::default()).await else {
         panic!("the renamed admin, mesh1's primary by its birth, starts mesh1's section")
     };
     assert_eq!(disposition, Disposition::Started);
@@ -319,7 +319,7 @@ async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
     // Another node ID with the same incarnation is not mesh1's primary in the view: refused.
     let other_birth = rdm_core::framing::Birth { node_id: NodeId::mint(), incarnation: executor_birth.incarnation.clone() };
     let other = door_of(other_birth.clone(), "1");
-    let Attached::Refused(refused) = other.attempt_run(&build_id(), "mesh1", &CallContext::default()).await else {
+    let Attached::Refused(refused) = other.section_run(&build_id(), "mesh1", &CallContext::default()).await else {
         panic!("a call to an admin that is not mesh1's primary must be refused")
     };
     assert!(
@@ -329,7 +329,7 @@ async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
 
     let spans = capture.spans();
     crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));
-    for name in ["rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.serve.via-run-turn"] {
+    for name in ["rdm.node_admin.build.serve.via-section-run", "rdm.node_admin.build.serve.via-run-turn"] {
         for s in spans.iter().filter(|s| s["name"] == name && s["attributes"]["outcome"] != "not-executor") {
             assert_eq!((s["attributes"]["node_path"].as_str(), s["attributes"]["node_name"].as_str()), (Some("mesh1.node-admin"), Some("1")), "{name} names the admin's held name: {s}");
         }

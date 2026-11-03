@@ -21,9 +21,9 @@ pub(crate) struct RecoverySubmitter {
     /// This admin's runner, once built: it runs the recovery and the terminate of a deleted birth
     /// heard again, the primary's own workflow (Q342).
     pub runner: Arc<std::sync::OnceLock<Arc<super::runner::AdminRunner>>>,
-    /// This admin's Build door: fabric recovery under an in-force fabric.delete claims the delete's next
+    /// This admin's `BuildService`: fabric recovery under an in-force fabric.delete claims the delete's next
     /// attempt through its control plane (fabric-recovery.md step 4, Q155); a fabric.delete is a Build.
-    pub door: crate::build_op::BuildSlot,
+    pub build_service: crate::build_op::BuildSlot,
     /// This admin's Node RPC client; none in a rig that runs no Node RPC.
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
     /// This admin's Build state: the current Build's paths a refused caller's decision reads (Q217).
@@ -314,7 +314,7 @@ impl RecoverySubmitter {
         let runner = self.runner.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary role but its runner is not built yet", self.me_id))?;
         span.record("route", route);
         // An admin that stopped reconciling (its stop, or a rig that runs no reconciler) starts no repair,
-        // as it starts no Build drive or attempt run: nothing is deleted or re-created by it (rdm#305).
+        // as it starts no Build drive or section run: nothing is deleted or re-created by it (rdm#305).
         if runner.repairs_stopped.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(RecoveryEnd::Failed { reason: format!("{} stopped reconciling: it starts no repair", self.me_id) });
         }

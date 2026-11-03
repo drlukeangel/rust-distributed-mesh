@@ -3,14 +3,14 @@
 //! R-ON8 = A′: the Build family on op `0x20`, with the fabric-primary the one driver of every
 //! Build. Every cell drives the estate through the typed objects of `rafka-node-admin-client`
 //! (`Builds`, `Nodes`) over Node RPC and awaits their reply streams. The one exception is cell 6,
-//! which sends `build.attempt.run` itself because that call is the fabric-primary's own, never a
+//! which sends `build.section.run` itself because that call is the fabric-primary's own, never a
 //! caller's. The one read made outside the client's typed objects is cell 8's precondition: the fabric's
 //! Build records, read from its store root (Q292) and awaited through the shared `build_log::log_fact`. The spans an estate exports are the flame of each cell; no cell asserts behaviour
 //! from them.
 //!
 //! The estate: `mesh1` (two node-admins, one node) holds the fabric-primary role, and `mesh2`
 //! (two node-admins, two nodes) is run by its own primary, so a node of `mesh2` is executed by
-//! an admin that is not the fabric-primary and every Build crosses a real `build.attempt.run`.
+//! an admin that is not the fabric-primary and every Build crosses a real `build.section.run`.
 
 use iroh::SecretKey;
 use rdm_core::{PathName};
@@ -158,7 +158,7 @@ async fn secondary_node(estate: &Estate) -> PathName {
 /// CONTRACT (acceptance 1): `node.delete` over `0x20` is one call. The stream is `Started`, a frame
 /// per step once its `rdm.build.step` event is written by the admin that ran it, and `Complete`,
 /// pushed by mesh2's primary through the fabric-primary: mesh2's section is one call to mesh2's own
-/// primary, so the Build crosses a real `build.attempt.run`. Every event the stop names arrives once, in
+/// primary, so the Build crosses a real `build.section.run`. Every event the stop names arrives once, in
 /// order, and nothing polls a Build to learn it. A stop is a node command, never a Build (Q342): the
 /// one-node Build is the delete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -186,7 +186,7 @@ async fn a_delete_over_the_build_family_is_one_call_that_pushes_every_step_frame
     // The flame: the call, the fabric-primary's drive and its dispatch of mesh2's section, and mesh2's
     // primary's run of the section are one trace.
     let build = &accepted.build_id.to_string();
-    let section = spans_named(&spans, "rdm.node_admin.build.serve.via-attempt-run")
+    let section = spans_named(&spans, "rdm.node_admin.build.serve.via-section-run")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["mesh"]) == "mesh2")
         .expect("mesh2's section call");
@@ -255,7 +255,7 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
     let drives: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
     assert!(!drives.is_empty());
     assert!(drives.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "terminal"), "the drive ended the Build with no caller attached: {drives:?}");
-    let reconcile = spans_named(&spans, "rdm.node_admin.build.serve.via-attempt-run")
+    let reconcile = spans_named(&spans, "rdm.node_admin.build.serve.via-section-run")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["mesh"]) == "mesh2")
         .expect("mesh2's section run");
@@ -304,7 +304,7 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     // Each reattachment read the Build's receipts before its stream again; the cell's own read is one more.
     let gets = spans_named(&spans, "rdm.node_admin.build.serve.via-node-rpc").into_iter().filter(|sp| s(&sp["attributes"]["call"]) == "build.get").count();
     assert!(gets as u32 > followed.reattached, "each reattachment read build.get [id] ({} reattachment(s), {gets} build.get read(s) with the cell's own)", followed.reattached);
-    let reconcile = spans_named(&spans, "rdm.node_admin.build.serve.via-attempt-run")
+    let reconcile = spans_named(&spans, "rdm.node_admin.build.serve.via-section-run")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["mesh"]) == "mesh2")
         .expect("mesh2's section run");
@@ -312,10 +312,10 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     estate.record_trace_url(reconcile["trace_id"].as_str().unwrap_or(""));
 }
 
-/// What a `build.attempt.run` of `mesh`'s section of `build` sent to `to` answers, whole: the refusal,
+/// What a `build.section.run` of `mesh`'s section of `build` sent to `to` answers, whole: the refusal,
 /// or the first frame.
-async fn attempt_run(caller: &Caller, to: &rdm_core::NodeId, build: &BuildId, mesh: &str) -> BuildReply {
-    let req = BuildRequest::AttemptRun { build_id: build.to_string(), mesh: mesh.to_string(), context: CallContext::default() };
+async fn section_run(caller: &Caller, to: &rdm_core::NodeId, build: &BuildId, mesh: &str) -> BuildReply {
+    let req = BuildRequest::SectionRun { build_id: build.to_string(), mesh: mesh.to_string(), context: CallContext::default() };
     let opts = CallOptions {
         send: rdm_transport::Send::with_time_limit(Duration::from_secs(10)),
         ..CallOptions::default()
@@ -335,13 +335,13 @@ async fn attempt_run(caller: &Caller, to: &rdm_core::NodeId, build: &BuildId, me
     }
 }
 
-/// CONTRACT (acceptance 6; build-envelope "build.attempt.run": the recipient is the mesh's primary):
-/// `build.attempt.run` of a mesh's section is refused by name, `NotExecutor`, when the recipient is not
+/// CONTRACT (acceptance 6; build-envelope "build.section.run": the recipient is the mesh's primary):
+/// `build.section.run` of a mesh's section is refused by name, `NotExecutor`, when the recipient is not
 /// that mesh's primary; it names the mesh's primary the recipient sees. A Build has no claims and no
 /// attempts (Q344), so nothing else is carried to refuse.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_attempt_run_to_a_node_that_is_not_the_meshs_primary_is_refused_by_name() {
-    let test = "an_attempt_run_to_a_node_that_is_not_the_meshs_primary_is_refused_by_name";
+async fn a_section_run_to_a_node_that_is_not_the_meshs_primary_is_refused_by_name() {
+    let test = "a_section_run_to_a_node_that_is_not_the_meshs_primary_is_refused_by_name";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
@@ -355,7 +355,7 @@ async fn an_attempt_run_to_a_node_that_is_not_the_meshs_primary_is_refused_by_na
     let recipient = views.iter().find(|n| n.is_fabric_primary).expect("fabric primary");
     let recipient_birth = birth_of(recipient);
     assert_ne!(mesh2_primary.node_id, recipient_birth.node_id, "the cell calls a node that is not mesh2's primary");
-    let wrong = attempt_run(&caller, &recipient.node_id, &accepted.build_id, "mesh2").await;
+    let wrong = section_run(&caller, &recipient.node_id, &accepted.build_id, "mesh2").await;
     assert_eq!(wrong, BuildReply::NotExecutor { named: mesh2_primary, recipient: recipient_birth });
 
     estate.stop().await;

@@ -1,20 +1,20 @@
 //! The Build family on op `0x20` as a node-admin serves and calls it (node-rpc-envelope.md "Build,
 //! op `0x20`, rdm"; R-ON8).
 //!
-//! The wire door is a thin decoder: `build.create` hands the change to the control plane's own cores
+//! The `BuildService` is a thin decoder: `build.create` hands the change to the control plane's own cores
 //! (`ControlPlane::submit_in`, the one the control routes use) and then reads
 //! the Build's [`Drive`]; `build.get` and `build.delete` read and forget
-//! through the same Build state; `build.attempt.run` is the executor's [`RunDoor`]. Only the
+//! through the same Build state; `build.section.run` is the executor's [`SectionRunService`]. Only the
 //! fabric-primary accepts the first three; any other admin refuses by name and names the one it sees.
 //!
 //! This module also holds the two callers of the family inside an admin: the fabric-primary's
-//! [`RpcDispatcher`] (`build.attempt.run` to a mesh's primary, in process when that is itself),
+//! [`RpcDispatcher`] (`build.section.run` to a mesh's primary, in process when that is itself),
 //! which names the Build and the mesh and never carries a copy of the Build: the mesh-primary reads the
 //! Build and its events from storage before it plans its section (Q292).
 
 use crate::build::{BuildId, BuildOperation};
 use crate::build_drive::{Dispatched, Dispatcher, Drive, DriveEnv, Drives, InnerItem, InnerStream, Read};
-use crate::build_run::{bounded_reason, Attached, RunDoor, RunReader};
+use crate::build_run::{bounded_reason, Attached, SectionRunService, RunReader};
 use crate::build_state::{BuildState, BuildStateError};
 use crate::control_plane::{ControlPlane, Refusal};
 use crate::model::PathName;
@@ -33,7 +33,7 @@ use tokio::sync::RwLock;
 use tracing::Instrument as _;
 
 /// What an admin answers a Build call from.
-pub struct BuildDoor {
+pub struct BuildService {
     /// This admin's path.
     pub me_path: String,
     /// This node's name, beside its path.
@@ -44,22 +44,22 @@ pub struct BuildDoor {
     pub drives: Arc<Drives>,
     /// What the fabric-primary drives a Build with.
     pub env: Arc<DriveEnv>,
-    /// The executor's door for `build.attempt.run`.
-    pub run: Arc<RunDoor>,
+    /// The executor's `SectionRunService` for `build.section.run`.
+    pub run: Arc<SectionRunService>,
     /// The primary records this admin holds: node.primary.update's successor installs into it before
     /// the executor's next step runs, so it names this birth the fabric-primary before the view does.
     pub primaries: PrimaryView,
-    /// This admin's exact birth (with `env.door.node_id`): what the primary view is read against.
+    /// This admin's exact birth (with `env.birth.node_id`): what the primary view is read against.
     pub incarnation: IncarnationId,
 }
 
-impl BuildDoor {
+impl BuildService {
     /// The `(path, name)` lookup index key of me_path and me_name.
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
-/// The door a running admin fills once it holds a view.
-pub type BuildSlot = Arc<OnceLock<Arc<BuildDoor>>>;
+/// The `BuildService` a running admin fills once it holds a view.
+pub type BuildSlot = Arc<OnceLock<Arc<BuildService>>>;
 
 /// The refusal reply a control-plane refusal is, with every non-leaking detail it carries.
 pub fn refusal_reply(r: Refusal) -> BuildReply {
@@ -87,7 +87,7 @@ enum Admitted {
     Resumed(crate::control_plane::Opened, Disposition),
 }
 
-impl BuildDoor {
+impl BuildService {
     /// A change a caller submitted: a new Build.
     async fn admit_change(&self, change: &BuildChange) -> Result<Admitted, BuildReply> {
         let cp = &self.control;
@@ -134,7 +134,7 @@ impl BuildDoor {
         self.primaries.fabric().is_some_and(|h| h.is_birth(&self.env.birth.node_id, &self.incarnation))
     }
 
-    /// This admin's currently held `(path, name)`: what its executor door (`RunDoor::held_name`) resolves.
+    /// This admin's currently held `(path, name)`: what its executor (`SectionRunService::held_name`) resolves.
     pub async fn held_name(&self) -> PathName {
         self.run.held_name().await
     }
@@ -147,8 +147,8 @@ impl BuildDoor {
         let call = req.op();
         let reply = async {
             match req {
-                BuildRequest::AttemptRun { build_id, mesh, context } => match build_id_of(&build_id) {
-                    Ok(id) => self.attempt_run(id, mesh, context, sink).await,
+                BuildRequest::SectionRun { build_id, mesh, context } => match build_id_of(&build_id) {
+                    Ok(id) => self.section_run(id, mesh, context, sink).await,
                     Err(refused) => Ok(refused),
                 },
                 other => {
@@ -180,7 +180,7 @@ impl BuildDoor {
                             Err(refused) => Ok(refused),
                         },
                         BuildRequest::GetBuilds { filter } => serve_builds(&me, &*self.control.builds, filter, sink).await,
-                        BuildRequest::AttemptRun { .. } => unreachable!("handled above"),
+                        BuildRequest::SectionRun { .. } => unreachable!("handled above"),
                     }
                 }
             }
@@ -285,13 +285,13 @@ impl BuildDoor {
         }
     }
 
-    /// `build.attempt.run`: `mesh`'s section of Build `id`, run by this admin as the mesh's primary. When
+    /// `build.section.run`: `mesh`'s section of Build `id`, run by this admin as the mesh's primary. When
     /// this admin became fabric-primary during the run (a step's own node.primary.update), the caller is
     /// no longer the driver: its stream ends here with FabricPrimaryMoved naming this admin. The run goes
     /// on in its own task; this admin's own drive reads the Build's events.
-    async fn attempt_run(&self, id: BuildId, mesh: String, context: CallContext, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+    async fn section_run(&self, id: BuildId, mesh: String, context: CallContext, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let held_at_start = self.is_fabric_primary();
-        match self.run.attempt_run(&id, &mesh, &context).await {
+        match self.run.section_run(&id, &mesh, &context).await {
             Attached::Refused(r) => Ok(r),
             Attached::Ended { replay, terminal } => {
                 let mut sink = started(sink, BuildReply::Started { build_id: id.to_string(), disposition: Disposition::Reattached }).await?;
@@ -505,18 +505,18 @@ pub fn serve(b: ServerBuilder, slot: BuildSlot) -> ServerBuilder {
     b.serve_stream::<Build, _, _>(OpOwner::Product("rdm".into()), move |peer, req: BuildRequest, sink| {
         let slot = slot.clone();
         async move {
-            let Some(door) = slot.get().cloned() else {
+            let Some(service) = slot.get().cloned() else {
                 return Ok(rdm_core::reply::build::not_ready("this admin holds no view yet".into()));
             };
             // The caller's endpoint key: a stop of this admin that the Build's run commands spares
             // its connection while it reads the Build's frames (`Drive::callers`).
-            door.serve(Some(peer.endpoint_id), req, sink).await
+            service.serve(Some(peer.endpoint_id), req, sink).await
         }
     })
 }
 
 /// What a section run in this process came to, as a dispatch: the fabric-primary running its own
-/// mesh's section, or a fixture routing to a mesh-primary's door.
+/// mesh's section, or a fixture routing to a mesh-primary's `SectionRunService`.
 pub fn local_dispatched(attached: Attached) -> Dispatched {
     match attached {
         Attached::Refused(r) => Dispatched::Refused(r),
@@ -551,7 +551,7 @@ impl InnerStream for LocalStream {
     }
 }
 
-/// The frames of a `build.attempt.run` stream from another admin.
+/// The frames of a `build.section.run` stream from another admin.
 struct RemoteStream {
     stream: rdm_transport::stream::ReplyStream<Build>,
 }
@@ -580,8 +580,8 @@ pub struct RpcDispatcher {
     pub me_path: String,
     /// This node's name, beside its path.
     pub me_name: String,
-    /// This admin's own door for `build.attempt.run`.
-    pub local: Arc<RunDoor>,
+    /// This admin's own `SectionRunService` for `build.section.run`.
+    pub local: Arc<SectionRunService>,
     /// The client a call to another admin is made through.
     pub client: Arc<NodeRpcClient>,
     /// The observed topology.
@@ -600,25 +600,25 @@ impl RpcDispatcher {
 impl Dispatcher for RpcDispatcher {
     async fn dispatch(&self, build_id: &BuildId, mesh: &str, context: CallContext) -> Dispatched {
         if self.topology.read().await.is_mesh_primary(mesh, &self.local.exec.executor.node_id) {
-            return local_dispatched(self.local.attempt_run(build_id, mesh, &context).await);
+            return local_dispatched(self.local.section_run(build_id, mesh, &context).await);
         }
-        let req = BuildRequest::AttemptRun { build_id: build_id.to_string(), mesh: mesh.to_string(), context: context.clone() };
+        let req = BuildRequest::SectionRun { build_id: build_id.to_string(), mesh: mesh.to_string(), context: context.clone() };
         let opts = CallOptions { send: self.send.clone(), context: Some(context), ..CallOptions::default() };
         // One call, addressed to the mesh's primary, under the call's one retry mechanism (Q344): its
         // attempts follow the birth the view names for the role; a spent call ends the section.
         let to = NodeTarget::Primary { mesh: Some(mesh.to_string()) };
-        self.attempt_run_at(&to, &req, &opts, mesh).await
+        self.section_run_at(&to, &req, &opts, mesh).await
     }
 
     async fn dispatch_to(&self, build_id: &BuildId, mesh: &str, to: &rdm_core::NodeId, context: CallContext) -> Dispatched {
         if *to == self.local.exec.executor.node_id {
-            return local_dispatched(self.local.attempt_run(build_id, mesh, &context).await);
+            return local_dispatched(self.local.section_run(build_id, mesh, &context).await);
         }
-        let req = BuildRequest::AttemptRun { build_id: build_id.to_string(), mesh: mesh.to_string(), context: context.clone() };
+        let req = BuildRequest::SectionRun { build_id: build_id.to_string(), mesh: mesh.to_string(), context: context.clone() };
         let opts = CallOptions { send: self.send.clone(), context: Some(context), ..CallOptions::default() };
         // The mesh-primary a node.primary.update of this Build named, by its exact birth: this admin's
         // view names the one it moved until gossip brings the change (node-primary-update.md step 6).
-        self.attempt_run_at(&NodeTarget::ExactNode(to.clone()), &req, &opts, mesh).await
+        self.section_run_at(&NodeTarget::ExactNode(to.clone()), &req, &opts, mesh).await
     }
 
     async fn run_own(&self, turn: &crate::stop_gate::Turn, build_id: &BuildId, mesh: &str, context: CallContext, operations: Vec<BuildOperation>) -> Dispatched {
@@ -627,8 +627,8 @@ impl Dispatcher for RpcDispatcher {
 }
 
 impl RpcDispatcher {
-    /// One `build.attempt.run` of `mesh`'s section on `to`, its stream or how it ended.
-    async fn attempt_run_at(&self, to: &NodeTarget, req: &BuildRequest, opts: &CallOptions, mesh: &str) -> Dispatched {
+    /// One `build.section.run` of `mesh`'s section on `to`, its stream or how it ended.
+    async fn section_run_at(&self, to: &NodeTarget, req: &BuildRequest, opts: &CallOptions, mesh: &str) -> Dispatched {
         match self.client.call_stream::<Build>(to, req, opts).await {
             // The mesh-primary writes its steps' events itself; the stream carries them as frames.
             Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream })),

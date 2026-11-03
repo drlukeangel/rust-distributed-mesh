@@ -79,7 +79,7 @@ These start a root of their own today:
 | Question | Read |
 |---|---|
 | A call and what it did on the target | one trace: the caller's call span, the target's serve span and its handler's spans |
-| A Build from request to Complete | the `build.create` trace for acceptance; each mesh's `build.attempt.run` by `build_id` and `mesh`; each step's span and `rdm.build.step` event by `operation` and `step` |
+| A Build from request to Complete | the `build.create` trace for acceptance; each mesh's `build.section.run` by `build_id` and `mesh`; each step's span and `rdm.build.step` event by `operation` and `step` |
 | The fabric's change a Build caused | the `via-change` root whose `build_id` is the Build's |
 | A node's birth | the `DeployRuntime` step's trace, through the node's boot span, to its join and `pre_node_ready` |
 | A gossip fact | the receive span's parent (the publishing span), and the frame's `publisher`, `topology_version`, `snapshot_id` and identity fields |

@@ -7,7 +7,7 @@ use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rdm_transport::topology::TopologyView;
 use rdm_transport::snapshot::{Chunk, SourceSnapshot, Taken};
-use rdm_admin::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyDoor, TopologyFailure, TopologySlot};
+use rdm_admin::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyService, TopologyFailure, TopologySlot};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::protocol::NodeProtocol;
@@ -87,7 +87,7 @@ fn own_digest(n: &Node, fabric: &FabricId) -> MeshDigest {
 
 fn open(n: &Node, fabric: &FabricId) {
     let d = own_digest(n, fabric);
-    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.topology_view.clone(), Arc::new(move || d.clone()), n.time.clone())));
+    let _ = n.slot.set(Arc::new(TopologyService::new(n.topology_view.clone(), Arc::new(move || d.clone()), n.time.clone())));
 }
 
 fn publisher(node_id: &NodeId) -> PublisherId {
@@ -124,7 +124,7 @@ fn target_of(from: &Node, to: &Node) -> NodeTarget {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a node that has not yet opened its topology door (it is mid-birth, serving calls
+/// CONTRACT: a node that has not yet opened its `TopologyService` (it is mid-birth, serving calls
 /// while its join is outstanding) answers NotReady by name, and the caller installs nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_mid_birth_answers_not_ready_and_the_caller_installs_nothing() {
@@ -573,7 +573,7 @@ fn open_with_stored(n: &Node, fabric: &FabricId, rows: Vec<rdm_core::topology::S
         let rows = rows.clone();
         Box::pin(async move { Ok(rdm_admin::topology_read::StoredMap { nodes: rows, mesh_ids: [("mesh1".to_string(), MeshId::parse("04raj09p3zp7").unwrap())].into_iter().collect() }) })
     });
-    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.topology_view.clone(), Arc::new(move || d.clone()), n.time.clone()).with_stored(source)));
+    let _ = n.slot.set(Arc::new(TopologyService::new(n.topology_view.clone(), Arc::new(move || d.clone()), n.time.clone()).with_stored(source)));
 }
 
 // @feature: node-lifecycle
@@ -673,7 +673,7 @@ async fn a_node_holding_no_rafka_time_answers_not_ready_by_name() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "1").unwrap(), "node", |b| b).await, node(&fabric, "mesh1", rdm_core::PathName::new("mesh1.node", "2").unwrap(), "node", |b| b).await);
     let d = own_digest(&server, &fabric);
-    let _ = server.slot.set(Arc::new(TopologyDoor::new(server.topology_view.clone(), Arc::new(move || d.clone()), rdm_transport::clock::RafkaTime::unadopted())));
+    let _ = server.slot.set(Arc::new(TopologyService::new(server.topology_view.clone(), Arc::new(move || d.clone()), rdm_transport::clock::RafkaTime::unadopted())));
     let t = target_of(&caller, &server);
     let err = get_topology(&caller.client, &t, "mesh1", &caller.topology_view, None, None).await.unwrap_err();
     assert!(matches!(&err, TopologyFailure::NotReady(r) if r.contains("holds no rafka-time")), "{err}");
@@ -893,7 +893,7 @@ fn a_one_mesh_topology_read_answers_what_the_whole_read_answers_for_that_mesh_un
                 [lost.clone()].into_iter().collect()
             });
             let _ = server.slot.set(Arc::new(
-                TopologyDoor::new(server.topology_view.clone(), Arc::new(move || d.clone()), server.time.clone())
+                TopologyService::new(server.topology_view.clone(), Arc::new(move || d.clone()), server.time.clone())
                     .with_stored(stored)
                     .with_gone(gone),
             ));

@@ -1,14 +1,14 @@
 //! product=mesh, feature=fabric-build, subfeature=build-sections, rung=MM, provider=process.
 //!
 //! A Build's progress is its `rdm.build.step` events (build.md §5); a section is one call to a
-//! mesh's primary, `build.attempt.run`; a failed step fails its mesh's section, never the Build; and a
+//! mesh's primary, `build.section.run`; a failed step fails its mesh's section, never the Build; and a
 //! Build ends `complete` when every section finished, `incomplete` when it ran and not every section
 //! finished (what ran stands), `failed` only when it could not start (Q346). An incomplete Build is
 //! resubmitted by its build_id, never a second Build (build.md §4).
 //!
 //! The estate: `mesh1` (two node-admins, one node) holds the fabric-primary role and `mesh2` (two
 //! node-admins, two nodes) is run by its own primary, so every section of `mesh2` crosses a real
-//! `build.attempt.run`. The spans an estate exports are each cell's flame.
+//! `build.section.run`. The spans an estate exports are each cell's flame.
 
 use rdm_client::{BuildFrame, BuildId, BuildStream, Change, NodeStatus, NodeView};
 use rdm_admin::build_state::{BuildState, StepOutcome};
@@ -122,7 +122,7 @@ async fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the
     estate.stop().await;
     let spans = estate.spans();
     let unfinished = named(&spans, "rdm.node_admin.build.update.via-section-unfinished").into_iter().find(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2" && start(sp) >= killed_ns).cloned().unwrap_or_else(|| panic!("the drive named mesh2's section unfinished after the loss"));
-    let sections: Vec<&Value> = named(&spans, "rdm.node_admin.build.serve.via-attempt-run").into_iter().filter(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2").collect();
+    let sections: Vec<&Value> = named(&spans, "rdm.node_admin.build.serve.via-section-run").into_iter().filter(|sp| attr(sp, "build_id") == b && attr(sp, "mesh") == "mesh2").collect();
     let between: Vec<&&Value> = sections.iter().filter(|sp| start(sp) > killed_ns && start(sp) < resubmitted_ns).collect();
     assert!(between.is_empty(), "nothing ran mesh2's section between the loss and the resubmit: {between:?}");
     let picked = sections.iter().find(|sp| start(sp) >= resubmitted_ns).copied().cloned().unwrap_or_else(|| panic!("the resubmit's section call to mesh2"));

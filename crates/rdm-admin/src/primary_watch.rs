@@ -227,7 +227,7 @@ pub struct Watch {
     pub recovery: Option<crate::admin::RecoverySubmitter>,
     /// Fabric recovery (Q122): this watch starts it at the first tick after the fabric-primary's mark when
     /// this admin is the lowest Ready node-admin of its mesh.
-    pub fabric_recovery: Arc<crate::fabric_recovery::FabricRecoveryDoor>,
+    pub fabric_recovery: Arc<crate::fabric_recovery::FabricRecoveryService>,
 }
 
 impl Watch {

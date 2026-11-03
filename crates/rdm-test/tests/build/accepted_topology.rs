@@ -149,8 +149,8 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     let quiet_name: PathName = rdm_test::estate::location(&quiet);
     let stopped = estate.pid_of(&quiet_name).await;
     // Stopped across the acceptance only, never past the staleness floor: the admin misses the Build's
-    // acceptance and is never silent, so no investigation looks at it. The build.create door answers once
-    // the acceptance is written, so the admin is back as soon as the door answers. A stop held on to the
+    // acceptance and is never silent, so no investigation looks at it. The `BuildService` answers once
+    // the acceptance is written, so the admin is back as soon as the `BuildService` answers. A stop held on to the
     // Build's later progress outlasts the floor on a slow host, and then the stopped birth is node
     // investigation's (node-investigation.md: an `os-stopped` verdict re-creates it at its path and name,
     // and the fabric-primary terminates the birth that comes back, an attempt of the fabric lane).

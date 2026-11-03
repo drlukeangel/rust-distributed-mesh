@@ -293,7 +293,7 @@ pub struct IssuerMint {
     pub renew_at: u64,
 }
 
-/// A node-admin's cert material together with the rafka-time it issues on: what the join door and
+/// A node-admin's cert material together with the rafka-time it issues on: what the `JoinService` and
 /// the deployment executor call.
 pub struct CertIssuer {
     /// The root and the fabric CA under it: renewed in place by `fabric.ca.renew`.

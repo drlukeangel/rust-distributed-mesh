@@ -86,7 +86,7 @@ pub enum AnswerPayload {
     },
 }
 
-/// What a door answered, by operation: an identical repeat is answered as the first was, a different
+/// What a service answered, by operation: an identical repeat is answered as the first was, a different
 /// payload for the same operation is `RejectedConflictingPayload` (node-rpc-envelope.md: "An identical
 /// retry answers the same PrimaryUpdated before any revision check").
 #[derive(Default)]
@@ -197,12 +197,12 @@ pub async fn call_successor(client: &NodeRpcClient, successor: &NodeId, entries:
 
 // ---- a node of a type that is not node-admin ----
 
-/// The 0x21 door of a node that is not a node-admin. As the successor it installs the election's result
+/// The 0x21 service of a node that is not a node-admin. As the successor it installs the election's result
 /// the call carries and answers node.primary.updated (step 4). As its type's primary, commanded by its
 /// mesh-primary, it calls the successor the command names (the mesh-primary's pre-check, step 2; no
 /// election of its own, Q129) and answers with its node.primary.updated. It writes no row: its
 /// mesh-primary records the change from the successor's digest (step 5).
-pub struct MemberDoor {
+pub struct NodePrimaryUpdateService {
     me_path: String,
     /// This node's name, beside its path.
     me_name: String,
@@ -219,13 +219,13 @@ pub struct MemberDoor {
     serving: tokio::sync::Mutex<()>,
 }
 
-impl MemberDoor {
+impl NodePrimaryUpdateService {
     /// The `(path, name)` lookup index key of me_path and me_name.
     fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
-impl MemberDoor {
-    /// The door of the birth `node_id`/`incarnation` at `me`, on its mesh channel `topology_view`, calling
+impl NodePrimaryUpdateService {
+    /// The service of the birth `node_id`/`incarnation` at `me`, on its mesh channel `topology_view`, calling
     /// through `client`.
     pub fn new(me: PathName, r#type: &str, node_id: NodeId, incarnation: IncarnationId, topology_view: TopologyView, client: Arc<NodeRpcClient>) -> Self {
         Self { me_path: me.path.clone(), me_name: me.name.clone(), r#type: r#type.to_string(), node_id, incarnation, topology_view, client, answered: Answered::default(), commanded: Answered::default(), serving: Default::default() }
@@ -337,7 +337,7 @@ impl MemberDoor {
     }
 }
 
-impl MemberDoor {
+impl NodePrimaryUpdateService {
     /// One `GetTopology` of `mesh` from the mesh-primary this node holds, installed into its view: the
     /// primary records the projection carries come with it.
     async fn read_own_mesh(&self, me: &PathName, mesh: &str) {
@@ -348,19 +348,19 @@ impl MemberDoor {
     }
 }
 
-/// Where a member's door is set once its process holds its mesh channel.
-pub type MemberSlot = Arc<std::sync::OnceLock<Arc<MemberDoor>>>;
+/// Where a node's `NodePrimaryUpdateService` is set once its process holds its mesh channel.
+pub type NodePrimaryUpdateSlot = Arc<std::sync::OnceLock<Arc<NodePrimaryUpdateService>>>;
 
-/// Serve node.primary.update on a node that is not a node-admin ([`MemberDoor`]). Until `slot` is
+/// Serve node.primary.update on a node that is not a node-admin ([`NodePrimaryUpdateService`]). Until `slot` is
 /// filled a call is `NotReady`.
-pub fn serve_member(b: ServerBuilder, slot: MemberSlot) -> ServerBuilder {
+pub fn serve_node_primary_update(b: ServerBuilder, slot: NodePrimaryUpdateSlot) -> ServerBuilder {
     b.serve_stream::<NodePrimaryUpdate, _, _>(OpOwner::Product("rdm".into()), move |_peer: PeerContext, req: Request, sink| {
         let slot = slot.clone();
         async move {
-            let Some(door) = slot.get().cloned() else {
+            let Some(service) = slot.get().cloned() else {
                 return Ok(rdm_core::reply::handover::not_ready("this node has not joined its mesh yet".into()));
             };
-            Ok(door.serve(req, sink).await)
+            Ok(service.serve(req, sink).await)
         }
     })
 }

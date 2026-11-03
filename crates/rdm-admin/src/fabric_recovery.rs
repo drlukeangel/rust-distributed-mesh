@@ -107,8 +107,8 @@ pub fn executes_for(read: Option<&Reader>, t: &Topology, me: &crate::storage::Bi
     read.and_then(|r| r(t)).is_some_and(|fr| fr.target.mesh == mesh && fr.executor.as_ref().is_some_and(|e| e.node_id == me.node_id && e.incarnation == me.incarnation_id)) && t.node_type_primary(mesh, "node-admin").is_none()
 }
 
-/// The workflow's door on one admin.
-pub struct FabricRecoveryDoor {
+/// The workflow's service on one admin.
+pub struct FabricRecoveryService {
     /// This admin's path as born; its held name is the view's.
     pub me_path: String,
     /// This node's name, beside its path.
@@ -150,19 +150,19 @@ pub struct FabricRecoveryDoor {
     gate: crate::stop_gate::StopGate,
 }
 
-impl FabricRecoveryDoor {
+impl FabricRecoveryService {
     /// The `(path, name)` lookup index key of me_path and me_name.
     pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
 }
 
-impl FabricRecoveryDoor {
-    /// A door for the admin these name.
+impl FabricRecoveryService {
+    /// A service for the admin these name.
     #[allow(clippy::too_many_arguments)]
     pub fn new(me: PathName, me_id: NodeId, me_incarnation: crate::model::IncarnationId, topology: Arc<tokio::sync::RwLock<Topology>>, digest_view: DigestView, records: Arc<crate::admin::Records>, looker: crate::primary_watch::Looker, recovery: crate::admin::RecoverySubmitter, primary_update: crate::primary_update::PrimaryUpdateSlot, launched_to_recover: bool, gate: crate::stop_gate::StopGate) -> Self {
         Self { me_path: me.path.clone(), me_name: me.name.clone(), me_id, me_incarnation, topology, digest_view, records, looker, recovery, primary_update, launched_to_recover, launched_at_new_path: false, running: Mutex::new(None), asked: Mutex::new(None), verdict: Mutex::new(None), gate }
     }
 
-    /// This door's admin is the adoption launch under an in-force fabric.delete, at its own new path and name
+    /// This service's admin is the adoption launch under an in-force fabric.delete, at its own new path and name
     /// (Q159), when `yes`.
     pub fn adopted_at_new_path(mut self, yes: bool) -> Self {
         self.launched_at_new_path = yes;
@@ -238,20 +238,20 @@ impl FabricRecoveryDoor {
             }
             *running = Some(target_birth.clone());
         }
-        let door = self.clone();
+        let service = self.clone();
         tokio::spawn(async move {
             // From the backbone the arm acts only "When the mesh has no node-admin left" (fabric-recovery.md
             // step 2, Q335): node investigation of each other node-admin birth of the fabric-primary's mesh,
             // once for this lost birth (`Looker::node_admin_left`); one left leaves the workflow to that
             // mesh's own arm, and this admin starts nothing for the birth (it stays the one `running` here).
             if !fr.own_mesh && fr.executor.is_some() {
-                let view = door.topology.read().await.clone();
-                if door.looker.node_admin_left(&view, &fr.target.mesh, &fr.target.node_id).await.is_some() {
+                let view = service.topology.read().await.clone();
+                if service.looker.node_admin_left(&view, &fr.target.mesh, &fr.target.node_id).await.is_some() {
                     return;
                 }
             }
-            door.run(fr.target.clone()).await;
-            let mut running = door.running.lock().unwrap();
+            service.run(fr.target.clone()).await;
+            let mut running = service.running.lock().unwrap();
             if running.as_ref() == Some(&target_birth) {
                 *running = None;
             }
@@ -279,10 +279,10 @@ impl FabricRecoveryDoor {
             restored = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
-        let (door, of) = (self.clone(), span.clone());
+        let (service, of) = (self.clone(), span.clone());
         let outcome = self
             .gate
-            .until_stopped(async move { door.run_in(&of, &target).instrument(of.clone()).await })
+            .until_stopped(async move { service.run_in(&of, &target).instrument(of.clone()).await })
             .await
             .unwrap_or_else(|| format!("node_id={} stop ended it where it stood", self.me_id));
         span.record("outcome", outcome.as_str());

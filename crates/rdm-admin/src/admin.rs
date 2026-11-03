@@ -60,7 +60,7 @@ pub(crate) mod runner;
 mod session;
 
 pub use boot::*;
-pub use mesh_delete::MeshDeleteDoor;
+pub use mesh_delete::MeshDeleteService;
 pub use projection::*;
 pub use reconcile::*;
 pub use records::*;
@@ -514,7 +514,7 @@ mod tests {
         server.primaries.take(rdm_core::PrimaryRole::MeshPrimary, &lost_record);
         server.primaries.take(rdm_core::PrimaryRole::FabricPrimary, &lost_record);
         server.primaries.mark_gone(lost.node.incarnation.clone());
-        // The Primaries frames its topology door serves (boot.rs: the records it holds, `gone` from its election's lost set).
+        // The Primaries frames its `TopologyService` serves (boot.rs: the records it holds, `gone` from its election's lost set).
         let lost_set = super::projection::incumbency_of(&server, &Records::default()).lost;
         let mut served: Vec<(rdm_core::PrimaryRole, rdm_core::Primary, bool)> = server.primaries.meshes().into_values().map(|p| (rdm_core::PrimaryRole::MeshPrimary, p)).chain(server.primaries.fabric().map(|p| (rdm_core::PrimaryRole::FabricPrimary, p))).map(|(s, p)| { let gone = lost_set.contains(&p.incarnation); (s, p, gone) }).collect();
         served.sort_by_key(|(s, _, _)| s.name());
@@ -583,7 +583,7 @@ mod tests {
         let mut node = Node::allocated(d.node.location(), d.node.mesh.clone(), &d.node.r#type);
         node.node_id = d.node.node_id.clone();
         node.incarnation_id = Some(d.node.incarnation.clone());
-        let observer = TopologyObserver { digest_view, client: None, commands: Arc::default(), status_door: Arc::default(), primary_update: Arc::default(), unreachable: Arc::default() };
+        let observer = TopologyObserver { digest_view, client: None, commands: Arc::default(), status_service: Arc::default(), primary_update: Arc::default(), unreachable: Arc::default() };
         assert_eq!(crate::deployment::pipeline::NodeObserver::ready(&observer, &node).await, Ok(()));
     }
 
@@ -1404,7 +1404,7 @@ mod tests {
             nodes_storage: nodes_storage.clone(),
             written: Default::default(),
             runner: Arc::default(),
-            door: Default::default(),
+            build_service: Default::default(),
             client: None,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             resubmits: Arc::default(),
@@ -1486,7 +1486,7 @@ mod tests {
         let (recovery, _, node) = recovery_of(&view, digest_view, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()));
         let birth = (node.node_id.clone(), node.incarnation_id.clone().expect("the member's birth"));
 
-        // The submitter's real tick: this rig builds no Build door, so the submit ends without the
+        // The submitter's real tick: this rig builds no `BuildService`, so the submit ends without the
         // recovery, and the birth is not due again at once. The submit's span carries its backoff.
         let capture = crate::span_capture::Capture::new("i143-3214-recovery-backoff");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -1611,7 +1611,7 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             written: Default::default(),
             runner: Arc::default(),
-            door: Default::default(),
+            build_service: Default::default(),
             client: None,
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             resubmits: Arc::default(),
@@ -2390,9 +2390,9 @@ mod tests {
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let filled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let records = Records::default();
-        let status_door = filled.clone();
+        let status_service = filled.clone();
         let topology = RwLock::new(view(&[primary.clone()]));
-        records.set_door(ServingDoor::new(ready.clone(), (me.node.node_id.clone(), me.node.incarnation.clone()), Box::new(move || status_door.load(std::sync::atomic::Ordering::SeqCst)), me.node.location()), &*topology.read().await);
+        records.set_readiness_gate(ReadinessGate::new(ready.clone(), (me.node.node_id.clone(), me.node.incarnation.clone()), Box::new(move || status_service.load(std::sync::atomic::Ordering::SeqCst)), me.node.location()), &*topology.read().await);
         let mut other = me.clone();
         other.node.incarnation = IncarnationId::mint();
         let opened = || ready.load(std::sync::atomic::Ordering::SeqCst);
@@ -2948,8 +2948,8 @@ mod tests {
     /// joined is decided for the subject it names.
     #[tokio::test]
     async fn an_admitted_node_admin_is_a_held_subject_before_its_digest_is_gossiped() {
-        use crate::join::{Deployed, JoinDoor, Joins};
-        use crate::status_rpc::{Declared, StatusDoor};
+        use crate::join::{Deployed, JoinService, Joins};
+        use crate::status_rpc::{Declared, StatusService};
         use rdm_core::status::{NodeState, NotPrimary, StatusReply, StatusRequest};
         use rdm_core::join::{JoinReply, JoinRequest};
         let digest_view = DigestView::default();
@@ -2957,7 +2957,7 @@ mod tests {
         digest_view.record(with_id(digest(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", MemberStatus::Ready), "100000000000"));
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)));
         let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric-primary role").clone();
-        let status_door = StatusDoor {
+        let status_service = StatusService {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -3014,7 +3014,7 @@ mod tests {
         let joins = Arc::new(Joins::default());
         let _wait = joins.expect(deployed);
         let installed = digest_view.clone();
-        let door = JoinDoor {
+        let join_service = JoinService {
             nodes: None,
             me_path: me.path.clone(), me_name: me.name.clone(),
             joins,
@@ -3042,19 +3042,19 @@ mod tests {
             })),
         };
         let endpoint = reported.node.endpoint_id.clone();
-        assert!(status_door.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
+        assert!(status_service.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
         let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::Ready, operation: None };
-        assert_eq!(status_door.apply(None, &declare).await, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "before the join the subject is not held");
-        let joined = door.serve(endpoint.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&reported).into(), listeners: Vec::new() }).await;
+        assert_eq!(status_service.apply(None, &declare).await, StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "before the join the subject is not held");
+        let joined = join_service.serve(endpoint.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&reported).into(), listeners: Vec::new() }).await;
         assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
 
         // Acceptance made the birth known; no projection tick ran since.
-        let sender = status_door.sender_of(&endpoint).await.expect("the admitted birth is known when its join is answered");
-        assert_eq!(status_door.apply(Some(sender), &declare).await, StatusReply::Applied);
+        let sender = status_service.sender_of(&endpoint).await.expect("the admitted birth is known when its join is answered");
+        assert_eq!(status_service.apply(Some(sender), &declare).await, StatusReply::Applied);
 
         // An endpoint that never joined sends the same declaration: decided for the subject it names.
-        assert!(status_door.sender_of(&EndpointId("key-never-joined".into())).await.is_none());
-        assert_eq!(status_door.apply(None, &declare).await, StatusReply::AlreadyApplied);
+        assert!(status_service.sender_of(&EndpointId("key-never-joined".into())).await.is_none());
+        assert_eq!(status_service.apply(None, &declare).await, StatusReply::AlreadyApplied);
     }
 
     #[test]

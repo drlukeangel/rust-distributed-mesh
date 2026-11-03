@@ -173,8 +173,8 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.node-admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         tokio::time::timeout(DECLARED, spans.recorded("rdm.node_admin.node.update.via-command-frame", |f| f.get("node_id").map(String::as_str) == Some(launch.node_id.as_str()) && f.get("frame").map(String::as_str) == Some("node-started"))).await.expect("the mesh-primary records NodeStarted on the open command stream");
-        let door = root.status_door().unwrap();
-        assert_eq!(door.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));
+        let status_service = root.status_service().unwrap();
+        assert_eq!(status_service.declared.lock().unwrap().node(&launch.node_id, &launch.incarnation), Some(rdm_core::status::NodeState::Ready));
         let started = tokio::time::timeout(DECLARED, async {
             loop {
                 let held: Vec<_> = own_declarations(&spans, &launch.location()).into_iter().filter(|f| f.get("key").is_some_and(|v| v.contains("Ready")) && f.get("operation").map(String::as_str) == Some("node.start")).collect();

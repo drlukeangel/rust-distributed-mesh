@@ -212,7 +212,7 @@ sees only the catalog.
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
 | `0x1F` | build-facts | rdm | reserved | | |
-| `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
+| `0x20` | build | rdm | live | canonical | build.create, build.section.run, build.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `UpdatePrimary`; replies `PrimaryUpdating`, `PrimaryUpdated`, `AlreadyApplied`; server-streaming |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `BlockMesh`, `UnblockMesh` (position 4 reserved): `StopNode`, `StartNode` and `DeleteConnections` from the caller to the node's mesh-primary, directly; every variant but `BlockMesh` and `UnblockMesh` from the mesh-primary to the exact node; `BlockMesh` and `UnblockMesh` from the fabric-primary to each mesh-primary; never forwarded; server-streaming; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
 | `0x23` | read | rdm | live | canonical | `Get`: fabric.get, mesh.get, node.get, server-streaming, never forwarded (Q285) |
@@ -366,7 +366,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updating, then node.primary.updated { node_id }; RejectedConflictingPayload; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | the same call, the fabric-primary as the `fabric` entry of `primaries` | node.fabric-primary.updated; the fabric arm's no-successor refusal | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build, writes it once and dispatches each mesh's section; the Build and its events are read from storage ([Build floor read](#build-floor-read-op-0x1f-reserved), Q292) | Started, step frames, Complete / Failed; reattachment reads; deletion result | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
-| build.attempt.run | [Build 0x20](#build-op-0x20-rdm); the fabric-primary dispatches a mesh's section to that mesh's primary | replay of the steps recorded complete, the current Pending, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
+| build.section.run | [Build 0x20](#build-op-0x20-rdm); the fabric-primary dispatches a mesh's section to that mesh's primary | replay of the steps recorded complete, the current Pending, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 
 Codec evidence: `crates/rdm-core/src/status.rs::StatusRequest`
 (DeclareNodeState, ProbeNodeState; ApplyNodeState, StopNode and StartNode are reserved there),
@@ -1237,7 +1237,7 @@ properties; a startup snapshot cannot overwrite later local changes.
 A reply beyond the existing frame bound is not silently truncated: the read span records
 `own_row=too-large` and the read ends without installing partial context.
 Serving: `crates/rdm-node/src/topology_read.rs::StoredMap` and
-`crates/rdm-node/src/topology_read.rs::TopologyDoor`.
+`crates/rdm-node/src/topology_read.rs::TopologyService`.
 
 Caller span: `rdm.node_rpc.request.update.via-call`, op=0x1E. Server:
 `rdm.node_rpc.request.serve.via-direct`, child `rdm.mesh.topology.serve.via-read`, with
@@ -1332,7 +1332,7 @@ REPLY_VARIANTS is 27. The [schema](#build-schema) gives both enums.
 | Call | Direction / caller → server | Request content | Reply / stream |
 |---|---|---|---|
 | build.create | upward, caller → fabric-primary | a `Create`, `Delete` or `DeleteFabric` change ([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)), or an existing build_id for resubmission | Started { build_id }, step frames, then Complete, Incomplete { sections } or Failed { reason }; a fabric-primary change ends with FabricPrimaryMoved, the typed frame naming the new one |
-| build.attempt.run | downward, fabric-primary → the mesh-primary of each mesh the Build touches, all at once (Q250) | (build_id, mesh) | replay of the mesh's steps whose `rdm.build.step` ended `complete`, the current Pending if still pending, then live step frames, then Complete or Incomplete naming the section; mesh-primary loss ends Indeterminate |
+| build.section.run | downward, fabric-primary → the mesh-primary of each mesh the Build touches, all at once (Q250) | (build_id, mesh) | replay of the mesh's steps whose `rdm.build.step` ended `complete`, the current Pending if still pending, then live step frames, then Complete or Incomplete naming the section; mesh-primary loss ends Indeterminate |
 | build.get | caller → fabric-primary | filter over id, current, phase | a stream: Started naming the current Build, then per Build newest first its Topology chunks, its Events chunks and its Build header, then End; the current Build selected once per read and its header marked current; a pair the Build header's schema refuses RejectedFilter, INVALID_ARGUMENT naming the pair; for reattachment after a cut, never progress polling |
 | build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the current Build ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)) cannot be deleted |
 
@@ -1377,7 +1377,7 @@ reads the Build and its events. Nothing reruns a step whose event ended `complet
 
 ### Refusals and bounds
 
-build.attempt.run refuses by name when the recipient is not the mesh's primary
+build.section.run refuses by name when the recipient is not the mesh's primary
 (NotExecutor { named, recipient }). The canonical Node RPC target remains node id + op.
 
 Every dispatch passes the fabric-primary check. A node-admin whose fabric-primary record names
@@ -1399,7 +1399,7 @@ Mechanism:
 `crates/rdm-admin/src/build_state.rs::BuildStateAdapter` (the Build store) and
 `crates/rdm-admin/src/events_storage.rs::EventsStorage` (the events store).
 
-build.attempt.run names the Build and the mesh and never carries a copy of either: the mesh-primary
+build.section.run names the Build and the mesh and never carries a copy of either: the mesh-primary
 reads the Build and its events from storage before it plans (Q292).
 
 ### Build schema
@@ -1433,7 +1433,7 @@ pub enum BuildSubmit {
 
 pub enum BuildRequest {
     Create { submit: BuildSubmit },
-    AttemptRun { build_id: String, mesh: String, context: CallContext },
+    SectionRun { build_id: String, mesh: String, context: CallContext },
     Get { build_id: String },
     Delete { build_id: String },
     GetBuilds { filter: Filter }, // build.get: (property, values) pairs over the Build header (id, current, phase)
@@ -1504,7 +1504,7 @@ event is the events store's envelope ([build.md §5](build.md#5-buildstateadapte
 
 A stream is one refusal, or Started, then Step, Pending or Events frames, then one terminal:
 Complete, Incomplete, Failed or FabricPrimaryMoved for Create; Complete, Incomplete or
-FabricPrimaryMoved for AttemptRun; Got for Get; Deleted for Delete; End for GetBuilds, after per
+FabricPrimaryMoved for SectionRun; Got for Get; Deleted for Delete; End for GetBuilds, after per
 Build its Topology and Events chunks and its Build header.
 
 <a id="primaryupdate-op-0x21-rdm"></a>

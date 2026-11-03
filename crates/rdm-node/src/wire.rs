@@ -42,8 +42,8 @@ pub struct JoinControl {
     /// certs.
     pub member_cert: Vec<u8>,
     /// The row's name for this birth, the name it was admitted under: the node installs it before
-    /// it publishes anything or declares readiness (R-JN1, node-start.md step 2). Filled by the join
-    /// door for the accepted birth; a node refuses an answer without it.
+    /// it publishes anything or declares readiness (R-JN1, node-start.md step 2). Filled by the
+    /// `JoinService` for the accepted birth; a node refuses an answer without it.
     pub name: Option<PathName>,
     /// The fabric's cert policy (fabric-certs.md §Tracking): its TTLs and renewal point, read once by
     /// the bootstrap admin and carried to every later admin in its entry pull the way the provider is.

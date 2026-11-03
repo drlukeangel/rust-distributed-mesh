@@ -116,9 +116,9 @@ pub struct TopologyObserver {
     pub client: Option<Arc<rdm_transport::NodeRpcClient>>,
     /// The commands this admin sent and awaits a completion call for.
     pub commands: Arc<crate::node_commands::CommandView>,
-    /// This admin's Status door, once it holds a view: a start begins a new cycle of the birth's
+    /// This admin's `StatusService`, once it holds a view: a start begins a new cycle of the birth's
     /// declared states.
-    pub status_door: crate::status_rpc::StatusDoorSlot,
+    pub status_service: crate::status_rpc::StatusServiceSlot,
     /// This admin's 0x21 door, once it holds a view: node.primary.update goes through it.
     pub primary_update: crate::primary_update::PrimaryUpdateSlot,
     /// The births a command never reached for a reachability reason, marked `PendingReconnect` at
@@ -210,17 +210,17 @@ impl NodeObserver for TopologyObserver {
         if d.status == MemberStatus::Ready {
             return Ok(());
         }
-        // This admin's Status door took the birth's node.started: fabric recovery's executor, of
+        // This admin's `StatusService` took the birth's node.started: fabric recovery's executor, of
         // another mesh, writes the records of the node it re-creates there while that mesh has no
         // mesh-primary (build.md §5.3, Q122), and its view holds no member status of another mesh.
-        if self.status_door.get().is_some_and(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation) == Some(rdm_core::status::NodeState::Ready)) {
+        if self.status_service.get().is_some_and(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation) == Some(rdm_core::status::NodeState::Ready)) {
             return Ok(());
         }
         let member = match self.digest_view.member_status(&node.node_id, &d.node.incarnation) {
             Some(s) => format!("the member status held for the birth is {s:?}"),
             None => "no member status is held for the birth (a birth of another mesh, or no node.joined taken here)".to_string(),
         };
-        let started = match self.status_door.get().map(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation)) {
+        let started = match self.status_service.get().map(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation)) {
             None => "node.started is not known here: this admin holds no declared states yet".to_string(),
             Some(None) => "this admin holds no declared state of the birth: it took no node.started".to_string(),
             Some(Some(rdm_core::status::NodeState::Pending)) => "this admin holds the birth declared Pending: it took no node.started".to_string(),
@@ -236,24 +236,24 @@ impl NodeObserver for TopologyObserver {
 
     async fn send_command(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext) -> crate::deployment::pipeline::CommandAdmission {
         if matches!(cmd, crate::node_commands::NodeCommand::Stop | crate::node_commands::NodeCommand::Start) {
-            let Some(door) = self.status_door.get() else {
+            let Some(status_service) = self.status_service.get() else {
                 return crate::deployment::pipeline::CommandAdmission::NotSent { reason: "this admin holds no status authority".into(), code: rdm_core::outcome::Code::Unavailable };
             };
-            let (admission, unreachable) = door.carry_lifecycle_reaching(node, cmd == crate::node_commands::NodeCommand::Start, ctx).await;
+            let (admission, unreachable) = status_service.carry_lifecycle_reaching(node, cmd == crate::node_commands::NodeCommand::Start, ctx).await;
             if let Some(why) = &unreachable { self.mark_unreachable(node, cmd, ctx, why); }
             let detail = format!("{admission:?}");
             tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node_path = %node.path, node_name = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation.action, operation_subject = ?ctx.operation.subject, build_id = %ctx.build_id, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
             return admission;
         }
-        // node.connection.delete { All } goes through this admin's own Status door, the birth's
+        // node.connection.delete { All } goes through this admin's own `StatusService`, the birth's
         // mesh-primary: it commands the birth and holds its node.connections.deleted for a rename.
-        let (Some(door), Some(incarnation)) = (self.status_door.get(), node.incarnation_id.clone()) else {
+        let (Some(status_service), Some(incarnation)) = (self.status_service.get(), node.incarnation_id.clone()) else {
             return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connection.delete to {}", node.node_id), code: rdm_core::outcome::Code::Unavailable };
         };
         // The carrier's end, in-process (i144 R22): a command never sent reaches the never-sent mark
         // as `NotSent` (node-recovery.md step 1); one broken after the node accepted it is
         // incomplete, never a completion.
-        let (admission, unreachable) = carried_admission(door.carry_connections_delete(&node.node_id, &incarnation, &rdm_core::status::ConnectionScope::All).await);
+        let (admission, unreachable) = carried_admission(status_service.carry_connections_delete(&node.node_id, &incarnation, &rdm_core::status::ConnectionScope::All).await);
         if let Some(why) = &unreachable {
             self.mark_unreachable(node, cmd, ctx, why);
         }

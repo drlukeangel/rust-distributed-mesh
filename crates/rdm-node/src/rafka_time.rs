@@ -17,7 +17,7 @@
 //! - Between pulls a node's rafka-time is disciplined from its own authority's heartbeats only. A
 //!   delta-gap top-up ([`crate::topology_read::top_up_fetch`]) is a topology read repair and adopts
 //!   nothing.
-//! - A node answers a pull with the rafka-time it adopted ([`crate::topology_read::TopologyDoor`],
+//! - A node answers a pull with the rafka-time it adopted ([`crate::topology_read::TopologyService`],
 //!   `admin`'s join answer), never its own clock, so every served time is one lineage.
 //!
 //! Neither side estimates network delay: the value is adopted as the authority read it.

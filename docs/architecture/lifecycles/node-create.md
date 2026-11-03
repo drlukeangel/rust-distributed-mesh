@@ -100,7 +100,7 @@ sequenceDiagram
     participant F as Fabric-primary
     participant M as Mesh-primary (executor)
     C->>F: build.create(node.create spec)
-    F->>M: build.attempt.run
+    F->>M: build.section.run
     Note over M: write the row, mint, launch; compose whole node.start with FirstStart (pre_node_ready, then on_node_ready)
     M-->>F: start events, node.started, node.created
     F-->>C: step frames, Complete

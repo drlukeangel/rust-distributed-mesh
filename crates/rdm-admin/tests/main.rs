@@ -125,7 +125,7 @@ impl Told {
 }
 
 /// The executable a test request names for a path of `type`: a file of its own per type, hashed once,
-/// so the door's acceptance (it hashes every executable a request creates a node on) passes.
+/// so the `BuildService`'s acceptance (it hashes every executable a request creates a node on) passes.
 pub fn test_executable(r#type: &str) -> rdm_core::binding::Binding {
     use std::os::unix::fs::PermissionsExt;
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -196,7 +196,7 @@ pub fn removed(t: &rdm_admin::topology::Topology, paths: &[rdm_core::PathName]) 
 
 /// A nodes store holding the record of every birth `t` names, each written as its create wrote it
 /// (`node_rows::write_record`: its name claimed, the record, its path index), its status
-/// `Ready`: the fabric-primary's node records, from which its door accepts an action on a
+/// `Ready`: the fabric-primary's node records, from which its `BuildService` accepts an action on a
 /// birth (the atlas, R-FA1), never from the gossip view (Q197).
 pub async fn records_of(t: &rdm_admin::topology::Topology) -> std::sync::Arc<rdm_admin::storage::MemoryNodesStorage> {
     records_of_views(&[t]).await

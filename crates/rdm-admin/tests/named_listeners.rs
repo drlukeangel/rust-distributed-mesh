@@ -1,7 +1,7 @@
 //! Functional cell for `named-listeners` (`docs/architecture/node-rpc-envelope.md:1033`).
 
 use rdm_admin::deployment::endpoint::ListenerNames;
-use rdm_admin::join::{Deployed, JoinDoor, Joins};
+use rdm_admin::join::{Deployed, JoinService, Joins};
 use rdm_admin::model::{
     EndpointId, FabricId, IncarnationId, NodeId, ProviderKind,
 };
@@ -68,7 +68,7 @@ impl Capture {
 ///  declared names, each once, on its assigned IP address with a nonzero OS-selected port; the node
 ///  writes them in its own part of its record (Q333)."
 #[test]
-fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verified_listeners(
+fn join_service_refuses_mismatched_listener_reports_and_the_node_records_its_verified_listeners(
 ) {
     let capture = Capture::new("named-listeners-functional");
     let _guard = tracing::dispatcher::set_default(&capture.dispatch);
@@ -140,7 +140,7 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
         let written_rows = Arc::new(WrittenRows::default());
 
         let admin_id = NodeId::mint();
-        let door = JoinDoor {
+        let service = JoinService {
             nodes: Some((nodes_storage.clone(), written_rows)),
             me_path: format!("{}.{}", "mesh1", "node-admin"), me_name: (1).to_string(),
             joins: joins.clone(),
@@ -225,7 +225,7 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
         ];
 
         for (listeners, why) in bad_reports {
-            let reply = door
+            let reply = service
                 .serve(
                     dep.endpoint_id.clone(),
                     JoinRequest::JoinNode {
@@ -271,7 +271,7 @@ fn join_door_refuses_mismatched_listener_reports_and_the_node_records_its_verifi
             ("kafka".into(), "127.0.0.1:41001".parse().unwrap()),
             ("rest".into(), "127.0.0.1:41002".parse().unwrap()),
         ];
-        let joined = door
+        let joined = service
             .serve(
                 dep.endpoint_id.clone(),
                 JoinRequest::JoinNode {

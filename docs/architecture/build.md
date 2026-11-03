@@ -164,7 +164,7 @@ Rafka shape vocabulary may remain product-facing input. It is expanded into the 
 
 RDM creates, drives, reads and deletes Builds only through the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm), which defines build.create,
-build.attempt.run, build.get and build.delete, their direction, streams and refusals.
+build.section.run, build.get and build.delete, their direction, streams and refusals.
 node.create and node.delete are submitted through build.create, as §1's `Create` and
 `Delete`; node.stop, node.start and node.connection.delete are node commands, never Build calls
 (§1). Application bootstrap and fault injection are application work, not
@@ -378,7 +378,7 @@ Rafka persists each accepted Build (its complete topology), written once, behind
 
 The current Build cannot be deleted (build.delete refuses by name); an older Build is deletable history once a newer Build is current.
 
-A Build fact a successor needs (the accepted Build, a step's event, the ending) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. The Build facts are the Build journal on the fabric's shared store root (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them there as it becomes fabric-primary. An executor, a starting node-admin and a node-admin taking a primary role read the named Build's committed records there too, fresh: the read answers the records it read or an explicit error, never a cached projection, and an unreadable store is not an empty Build (Q292). The fabric-primary stays the one writer of Builds, and a read grants no write. No command carries a copy of the Build: `build.attempt.run` names the Build and the mesh. The accepted Build is recorded whole whatever its size: the store has no frame.
+A Build fact a successor needs (the accepted Build, a step's event, the ending) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. The Build facts are the Build journal on the fabric's shared store root (§5.3), each record at its own key, written by the fabric-primary, so a successor reads them there as it becomes fabric-primary. An executor, a starting node-admin and a node-admin taking a primary role read the named Build's committed records there too, fresh: the read answers the records it read or an explicit error, never a cached projection, and an unreadable store is not an empty Build (Q292). The fabric-primary stays the one writer of Builds, and a read grants no write. No command carries a copy of the Build: `build.section.run` names the Build and the mesh. The accepted Build is recorded whole whatever its size: the store has no frame.
 
 Acceptance is crash-safe because a Build is accepted by one durable write of the Build itself:
 

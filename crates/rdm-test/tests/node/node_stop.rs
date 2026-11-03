@@ -1329,7 +1329,7 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
 
     let nodes = estate.nodes_obj().await;
 
-    // The old primary holds the node's node.started at its status door: the declaration stays owed.
+    // The old primary holds the node's node.started at its `StatusService`: the declaration stays owed.
     let door = Door::at(&estate, &primary).await;
     door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node, "state": "Ready"})).await;
     let request = estate.create_node_request("mesh2", "node").await;

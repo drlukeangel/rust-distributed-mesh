@@ -975,6 +975,6 @@ At minimum:
 30. two heartbeats of one birth are ordered by `digest_seq` alone: a stalled or repeated Rafka-time never makes a newer heartbeat look older;
 31. a forwarder that missed an intermediate source version emits one delta from the version it last published to the one it holds;
 32. a source Mesh whose nodes only heartbeat does not bump `topology_version`, and no delta travels;
-33. `NodeDeleting` is never emitted before the mesh's primary has received its section of the Build (`build.attempt.run`); a multi-mesh Build's second mesh emits its `NodeDeleting` only after the fabric-primary dispatches that mesh's section, never on Build acceptance;
+33. `NodeDeleting` is never emitted before the mesh's primary has received its section of the Build (`build.section.run`); a multi-mesh Build's second mesh emits its `NodeDeleting` only after the fabric-primary dispatches that mesh's section, never on Build acceptance;
 34. `NodeDeleted` is never emitted without node.delete's step event; silence, a failed RPC and an unheard peer never produce it; after it, `ExactNode(old)` is `Gone`, the path has no node until a new birth, and the current topology does not list the node;
 35. unplanned loss produces one `NodeDeleted` for the old identity, after evidence, from the recovery Build's node.delete.

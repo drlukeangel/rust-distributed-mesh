@@ -1,7 +1,7 @@
-//! The mesh-primary's side of `build.attempt.run` (op `0x20`; node-rpc-envelope.md "Build, op `0x20`").
+//! The mesh-primary's side of `build.section.run` (op `0x20`; node-rpc-envelope.md "Build, op `0x20`").
 //!
 //! The fabric-primary dispatches each mesh's section of a Build to that mesh's primary, all at once
-//! (Q250), with `AttemptRun { build_id, mesh, context }`, and runs its own section in process. This
+//! (Q250), with `SectionRun { build_id, mesh, context }`, and runs its own section in process. This
 //! module is what the admin running a section answers with:
 //!
 //! - **start-or-reattach on `(build_id, mesh)`.** A call for a section this admin is running
@@ -377,7 +377,7 @@ impl BuildStateAdapter for FramedBuilds {
     }
 }
 
-/// What `build.attempt.run` came to on this admin.
+/// What `build.section.run` came to on this admin.
 pub enum Attached {
     /// The section is running here: `replay` first, then the reader.
     Live {
@@ -400,8 +400,8 @@ pub enum Attached {
     Refused(BuildReply),
 }
 
-/// The door an admin answers `build.attempt.run` through.
-pub struct RunDoor {
+/// The service an admin answers `build.section.run` through.
+pub struct SectionRunService {
     /// This admin's path.
     pub me_path: String,
     /// This node's name, beside its path.
@@ -422,7 +422,7 @@ pub struct RunDoor {
     pub moved: crate::executor::PrimariesMoved,
 }
 
-impl RunDoor {
+impl SectionRunService {
     /// The `(path, name)` lookup index key of me_path and me_name.
     pub fn me(&self) -> rdm_core::PathName {
         rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() }
@@ -444,16 +444,16 @@ impl RunDoor {
         self.me()
     }
 
-    /// Answer `build.attempt.run` for `mesh`'s section of `build_id`: this admin plans the section
+    /// Answer `build.section.run` for `mesh`'s section of `build_id`: this admin plans the section
     /// itself from the Build and its events, read from storage (Q292).
-    pub async fn attempt_run(&self, build_id: &BuildId, mesh: &str, context: &CallContext) -> Attached {
+    pub async fn section_run(&self, build_id: &BuildId, mesh: &str, context: &CallContext) -> Attached {
         let me = self.held_name().await;
-        let span = tracing::info_span!("rdm.node_admin.build.serve.via-attempt-run", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), mesh, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.serve.via-section-run", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), mesh, outcome = tracing::field::Empty);
         let attached = self.attach_or_start(None, build_id, mesh, context, None).instrument(span.clone()).await;
         span.record("outcome", outcome_of(&attached));
         span.in_scope(|| match &attached {
-            Attached::Refused(r) => tracing::info!(reply = r.name(), "build.attempt.run refused"),
-            _ => tracing::info!("build.attempt.run accepted"),
+            Attached::Refused(r) => tracing::info!(reply = r.name(), "build.section.run refused"),
+            _ => tracing::info!("build.section.run accepted"),
         });
         attached
     }

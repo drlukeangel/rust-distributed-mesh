@@ -24,12 +24,12 @@ use rdm_core::status::{NotPrimary, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
 /// What serves `DeleteMesh` and `MeshDeleted` for a running admin.
-pub struct MeshDeleteDoor {
+pub struct MeshDeleteService {
     pub(super) runner: Arc<AdminRunner>,
 }
 
 #[async_trait::async_trait]
-impl MeshDeleter for MeshDeleteDoor {
+impl MeshDeleter for MeshDeleteService {
     async fn delete_mesh(&self, peer: Option<iroh::PublicKey>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
         self.runner.clone().admit_delete_mesh(peer, sender, req).await
     }
@@ -1183,7 +1183,7 @@ mod tests {
                 digest_view: topology_view.digest_view.clone(),
                 client: Some(node_rpc.client.clone()),
                 commands: Arc::default(),
-                status_door: Arc::default(),
+                status_service: Arc::default(),
                 primary_update: Arc::default(),
                 unreachable: records.unreachable.clone(),
             }),
@@ -1212,7 +1212,7 @@ mod tests {
                 me_path: me.path.clone(), me_name: me.name.clone(),
                 mesh_deleter: Arc::default(),
                 project: None,
-                status_door: Arc::default(),
+                status_service: Arc::default(),
             }),
             leaves: Arc::new(crate::mesh_delete::MeshDeleteView::default()),
             mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),

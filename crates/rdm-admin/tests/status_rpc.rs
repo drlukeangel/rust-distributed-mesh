@@ -10,7 +10,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{EndpointId, IncarnationId, MeshId, NodeId};
 use rdm_admin::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
-use rdm_admin::status_rpc::{Declared, StatusDoor};
+use rdm_admin::status_rpc::{Declared, StatusService};
 use rdm_admin::fabric_storage::{FabricStorage, MemoryFabricStorage};
 use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
 use rdm_admin::topology::Topology;
@@ -151,7 +151,7 @@ struct Rig {
     server: rdm_transport::NodeRpcServer,
     _router: Router,
     resolved: ResolvedNode,
-    door: Arc<StatusDoor>,
+    service: Arc<StatusService>,
     /// The router's ready gate: open unless a cell closes it.
     ready: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -171,7 +171,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         nodes,
     }));
     let fabric_id = topology.read().await.fabric.id.clone();
-    let door = Arc::new(StatusDoor {
+    let service = Arc::new(StatusService {
         certs: None,
         app_channels: None,
         declaration_seam: None,
@@ -206,8 +206,8 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         unreachable: Default::default(),
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     });
-    let slot: Arc<OnceLock<Arc<StatusDoor>>> = Arc::new(OnceLock::new());
-    let _ = slot.set(door.clone());
+    let slot: Arc<OnceLock<Arc<StatusService>>> = Arc::new(OnceLock::new());
+    let _ = slot.set(service.clone());
     let core = ServerBuilder::new().serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
         let PingRequest::Ping { payload } = req;
         Ok(PingReply::Pong { payload })
@@ -227,7 +227,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         transport_addr: addr,
         incarnation: me.node.incarnation_id.clone().unwrap(),
     };
-    Rig { me, server, _router: router, resolved, door, ready }
+    Rig { me, server, _router: router, resolved, service, ready }
 }
 
 /// `b`'s one client, over its one endpoint, resolving the rig's authority.
@@ -283,15 +283,15 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
 
     // Applied, its reply lost: Indeterminate at the caller, and the state is held once.
-    rig.door.hold_next_reply.store(true, Ordering::SeqCst);
+    rig.service.hold_next_reply.store(true, Ordering::SeqCst);
     let lost = call(&rig, &fabric_primary, &pending, &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
     assert!(matches!(lost, RpcOutcome::Indeterminate(_)), "{lost:?}");
-    let held_after_lost = rig.door.declared.lock().unwrap().meshes.clone();
+    let held_after_lost = rig.service.declared.lock().unwrap().meshes.clone();
     assert_eq!(held_after_lost.get(&mesh2), Some(&MeshState::Pending), "applied before the reply was lost");
     // The retry by the same natural key: AlreadyApplied, nothing written a second time.
     let retry = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
     assert_eq!(retry, StatusReply::AlreadyApplied, "one logical event");
-    assert_eq!(rig.door.declared.lock().unwrap().meshes, held_after_lost, "no second write");
+    assert_eq!(rig.service.declared.lock().unwrap().meshes, held_after_lost, "no second write");
 
     // Refusals, each by its name.
     let stale = StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 };
@@ -309,7 +309,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let never_born = birth(rdm_core::PathName::new("mesh2.node", "9").unwrap(), "node", "mesh2", false, false);
     let unknown = StatusRequest::DeclareNodeState { node_id: never_born.node.node_id.clone(), incarnation: never_born.node.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation: None };
     assert_eq!(reply(&call(&rig, &member, &unknown, &CallOptions::default()).await), StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }, "a birth this admin does not hold");
-    let meshes_final = rig.door.declared.lock().unwrap().meshes.clone();
+    let meshes_final = rig.service.declared.lock().unwrap().meshes.clone();
     assert_eq!(meshes_final.len(), 1, "one mesh held, by its own id");
 
     let spans = capture.spans();
@@ -331,7 +331,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2805): after the exact birth's server deletes its connections, its status door stays admitted while
+/// CONTRACT (#2805): after the exact birth's server deletes its connections, its `StatusService` stays admitted while
 /// every other call is refused `ConnectionsDeleting`: a probe answers the current state. A node command
 /// classifies as exactly one CommandAdmission arm and a refusal is never admitted: Refused (a
 /// stale incarnation, `ApplyNodeState` as a connections delete), NotSent (cut before the send), Indeterminate
@@ -343,10 +343,10 @@ fn connections_deleting_mesh_primary_serves_status_checks_exact_birth() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let capture = capture(cell);
-    capture.run(connections_deleting_status_door(&capture, cell, &dir));
+    capture.run(connections_deleting_status_service(&capture, cell, &dir));
 }
 
-async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &std::path::Path) {
+async fn connections_deleting_status_service(capture: &Capture, cell: &str, dir: &std::path::Path) {
     use rdm_admin::deployment::pipeline::{command_admission, CommandAdmission};
 
     // The subject: mesh1.node-admin.2, commanded by its owning mesh-admin mesh1.node-admin.1.
@@ -355,7 +355,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     let (node_id, incarnation) = (subject.node.node_id.clone(), subject.node.incarnation_id.clone().unwrap());
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
     // The exact-birth Status command control is JoinMesh; StopNode is now reserved (Q47).
-    // This cell still proves the admitted status door, its refusal and transport certainty arms.
+    // This cell still proves the admitted `StatusService`, its refusal and transport certainty arms.
     let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), primary: None };
 
     // Healthy control before connections-deleting: a ping is served.
@@ -364,7 +364,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     let (ping, _) = c.call::<Ping>(&target, &PingRequest::Ping { payload: b"before".to_vec() }, &CallOptions::default()).await;
     assert!(matches!(&ping, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. })), "{ping:?}");
 
-    // The server deletes its connections: every ordinary call is refused as ConnectionsDeleting, the status door stays admitted.
+    // The server deletes its connections: every ordinary call is refused as ConnectionsDeleting, the `StatusService` stays admitted.
     rig.server.begin_connections_delete();
     let (refused_ping, _) = c.call::<Ping>(&target, &PingRequest::Ping { payload: b"after".to_vec() }, &CallOptions::default()).await;
     assert!(matches!(&refused_ping, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::ConnectionsDeleting { .. })), "a non-status call is refused as ConnectionsDeleting: {refused_ping:?}");
@@ -389,7 +389,7 @@ async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &s
     let not_sent = command_admission(&cut);
     assert!(matches!(not_sent, CommandAdmission::NotSent { .. }), "{not_sent:?}");
     // Indeterminate: decided, the reply lost.
-    rig.door.hold_next_reply.store(true, Ordering::SeqCst);
+    rig.service.hold_next_reply.store(true, Ordering::SeqCst);
     let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { send: rdm_transport::Send::with_time_limit(Duration::from_millis(800)), ..Default::default() }).await;
     let indeterminate = command_admission(&lost);
     assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
@@ -646,7 +646,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
 
         let refused = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
         assert!(matches!(&refused, StatusReply::NotReady { reason } if reason.contains("mesh.storage refused the record") && reason.contains("the disk refused the put")), "{refused:?}");
-        assert!(rig.door.declared.lock().unwrap().meshes.is_empty(), "a refused row holds nothing as applied");
+        assert!(rig.service.declared.lock().unwrap().meshes.is_empty(), "a refused row holds nothing as applied");
         assert!(store.meshes.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>().is_empty());
 
         store.refuse.store(false, Ordering::SeqCst);
@@ -662,7 +662,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
         let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rdm_core::status::FabricEvent::Ready };
         let ev_refused = reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await);
         assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("fabric.storage does not hold the Fabric event")), "{ev_refused:?}");
-        assert!(rig3.door.declared.lock().unwrap().fabric.is_empty());
+        assert!(rig3.service.declared.lock().unwrap().fabric.is_empty());
         // The fabric-primary puts the fact on the fabric, then applies it.
         { let mut r = store.fabric.fabric().await.unwrap().unwrap_or(rdm_admin::fabric_storage::FabricRecord { fabric_id: fabric.clone(), name: "fabric1".into(), state: rdm_admin::fabric_state::FabricState::Pending, types: Vec::new(), provider: None, topology_storage_provider: None, previous_topology_storage_providers: Vec::new(), ca: None, roots: None}); r.state = rdm_admin::fabric_state::FabricState::Ready; store.fabric.put_fabric(&r).await.unwrap(); }
         assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
@@ -687,7 +687,7 @@ fn mesh_primary_answers_applied_only_after_its_row_is_acknowledged() {
     });
 }
 
-/// CONTRACT (#2805, adversary): every backward move through the door is refused by its name with
+/// CONTRACT (#2805, adversary): every backward move through the `StatusService` is refused by its name with
 /// the current state it ran into, for each of the four node states and each of the four Mesh
 /// states; the same state again is AlreadyApplied, three times over, the same typed reply; a skip
 /// forward applies. Each sender speaks from its one endpoint, so its calls ride one connection.
@@ -725,7 +725,7 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
                 assert_eq!(reply(&call(&node_rig, s, &decl(*start), &CallOptions::default()).await), StatusReply::AlreadyApplied, "a repeat of {start:?}");
                 repeats += 1;
             }
-            assert_eq!(node_rig.door.declared.lock().unwrap().node(&s.node.node_id, s.node.incarnation_id.as_ref().unwrap()), Some(*start), "refusals moved nothing");
+            assert_eq!(node_rig.service.declared.lock().unwrap().node(&s.node.node_id, s.node.incarnation_id.as_ref().unwrap()), Some(*start), "refusals moved nothing");
         }
         for start in meshes {
             let id = MeshId::mint();
@@ -738,7 +738,7 @@ fn mesh_primary_refuses_every_backward_move_by_name() {
             }
             assert_eq!(reply(&call(&mesh_rig, &fp, &apply(start), &CallOptions::default()).await), StatusReply::AlreadyApplied);
             repeats += 1;
-            assert_eq!(mesh_rig.door.declared.lock().unwrap().meshes.get(&id), Some(&start));
+            assert_eq!(mesh_rig.service.declared.lock().unwrap().meshes.get(&id), Some(&start));
         }
         // A skip forward is a forward move.
         let skip = MeshId::mint();
@@ -796,7 +796,7 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
         let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::Ready, changed_at_rafka_ms: 0 }, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "fabric-primary"), "{r:?}");
         // The fabric-primary applies an event at an admin that is not a mesh primary.
-        let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.door.fabric_id.clone(), event: rdm_core::status::FabricEvent::Ready };
+        let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.service.fabric_id.clone(), event: rdm_core::status::FabricEvent::Ready };
         let r = reply(&call(&rig, &fp, &event, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotPrimary { why: NotPrimary::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
         // The fabric-primary applies a Mesh state at an admin of another mesh.
@@ -819,10 +819,10 @@ fn status_declaration_to_a_secondary_is_refused_naming_the_mesh_primary() {
         let rig2 = rig_with(mp_receiver, &[&fp], ids, Refusing::memory(), Declared::default(), None).await;
         let wrong_fabric = rdm_core::FabricId::mint();
         let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rdm_core::status::FabricEvent::Ready }, &CallOptions::default()).await);
-        assert_eq!(r, StatusReply::RejectedStaleFabric { held: rig2.door.fabric_id.clone() });
+        assert_eq!(r, StatusReply::RejectedStaleFabric { held: rig2.service.fabric_id.clone() });
         let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh1".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleMesh { held });
-        assert!(rig.door.declared.lock().unwrap().nodes.is_empty() && rig.door.declared.lock().unwrap().meshes.is_empty() && rig.door.declared.lock().unwrap().fabric.is_empty(), "nothing applied by any refusal");
+        assert!(rig.service.declared.lock().unwrap().nodes.is_empty() && rig.service.declared.lock().unwrap().meshes.is_empty() && rig.service.declared.lock().unwrap().fabric.is_empty(), "nothing applied by any refusal");
 
         let spans = finish(&capture, &dir, json!({"cell": cell, "refusals": 10}));
         for outcome in ["rejected-not-primary", "rejected-stale-fabric", "rejected-stale-mesh"] {
@@ -859,7 +859,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
         // The role moves: fp2 holds it, fp1 does not.
         {
-            let mut t = rig.door.topology.write().await;
+            let mut t = rig.service.topology.write().await;
             for n in t.nodes.iter_mut() {
                 if n.location() == fp1.node.location() {
                     n.is_fabric_primary = false;
@@ -877,7 +877,7 @@ fn applied_events_survive_a_mesh_primary_change_and_each_applies_once_whoever_se
         let receiver2 = birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false);
         let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), store.clone(), folded, Some(fabric.clone())).await;
         {
-            let mut t = rig2.door.topology.write().await;
+            let mut t = rig2.service.topology.write().await;
             for n in t.nodes.iter_mut().filter(|n| n.location() == fp1.node.location()) {
                 n.is_fabric_primary = false;
             }
@@ -914,15 +914,15 @@ fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_appli
         // The restart: same node and key, a new incarnation, now what the view holds.
         let new_inc = IncarnationId::mint();
         {
-            let mut t = rig.door.topology.write().await;
+            let mut t = rig.service.topology.write().await;
             t.nodes.iter_mut().find(|n| n.node_id == subject.node.node_id).unwrap().incarnation_id = Some(new_inc.clone());
         }
         let in_flight = reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Stopped), &CallOptions::default()).await);
         assert_eq!(in_flight, StatusReply::RejectedStaleIncarnation { held: new_inc.clone() });
-        assert_eq!(rig.door.declared.lock().unwrap().node(&subject.node.node_id, &old_inc), Some(NodeState::ConnectionsDeleting), "the stale declaration moved nothing");
+        assert_eq!(rig.service.declared.lock().unwrap().node(&subject.node.node_id, &old_inc), Some(NodeState::ConnectionsDeleting), "the stale declaration moved nothing");
         let fresh = reply(&call(&rig, &subject, &decl(&new_inc, NodeState::Pending), &CallOptions::default()).await);
         assert_eq!(fresh, StatusReply::Applied, "the new birth starts on a clean key: Pending after the old birth's connections-deleting is not backward");
-        assert_eq!(rig.door.declared.lock().unwrap().node(&subject.node.node_id, &new_inc), Some(NodeState::Pending));
+        assert_eq!(rig.service.declared.lock().unwrap().node(&subject.node.node_id, &new_inc), Some(NodeState::Pending));
         let spans = finish(&capture, &dir, json!({"cell": cell, "in_flight": format!("{in_flight:?}"), "fresh": format!("{fresh:?}"), "new_incarnation": new_inc.to_string()}));
         let stale = spans_where(&spans, DECLARATION, &[("outcome", "rejected-stale-incarnation")]);
         assert_eq!(stale.len(), 1, "{stale:?}");
@@ -955,10 +955,10 @@ fn status_route_loss_never_synthesizes_dead() {
         let (out, _) = routeless.call::<Status>(&to, &again, &CallOptions::default()).await;
         assert!(matches!(out, RpcOutcome::NotSent(_)), "no route is NotSent, nothing dispatched: {out:?}");
         assert!(out.proves_not_dispatched());
-        let t = rig.door.topology.read().await;
+        let t = rig.service.topology.read().await;
         assert!(t.nodes.iter().all(|n| n.status == NodeStatus::Ready), "no node became Dead or Leaving: {:?}", t.nodes.iter().map(|n| (n.name.clone(), n.status)).collect::<Vec<_>>());
         drop(t);
-        assert_eq!(rig.door.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the applied state is unchanged");
+        assert_eq!(rig.service.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Ready), "the applied state is unchanged");
         let spans = finish(&capture, &dir, json!({"cell": cell, "no_route": out.name(), "declaration_spans_before": served_before}));
         assert_eq!(spans_where(&spans, DECLARATION, &[]).len(), served_before, "the unsent call reached no handler");
         assert!(spans.iter().all(|s| !s["name"].as_str().unwrap_or("").contains("dead")), "no span names a death");
@@ -984,7 +984,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
     capture.run(async {
         let fp = birth(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin", "mesh1", true, true);
         let handoff = |rig: &Rig, mesh_id: MeshId, target: Node| {
-            let (topology, me, me_id) = (rig.door.topology.clone(), fp.node.location(), fp.node.node_id.clone());
+            let (topology, me, me_id) = (rig.service.topology.clone(), fp.node.location(), fp.node.node_id.clone());
             let fp = &fp;
             async move {
                 let ep = fp.endpoint().await;
@@ -1006,7 +1006,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let other = MeshId::mint();
         let e1 = handoff(&r1, other, target_of(&r1)).await.expect_err("a stale MeshId is refused");
         assert!(e1.contains("no replacement id is minted") && e1.contains(&held.to_string()), "{e1}");
-        assert!(r1.door.declared.lock().unwrap().meshes.is_empty(), "nothing applied under the wrong id");
+        assert!(r1.service.declared.lock().unwrap().meshes.is_empty(), "nothing applied under the wrong id");
 
         // Arm 2: the target is already past Pending.
         let mesh_id = MeshId::mint();
@@ -1022,12 +1022,12 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let mesh_id3 = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id3.clone())].into_iter().collect();
         let r3 = rig(birth(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "node-admin", "mesh2", true, false), &[&fp], ids).await;
-        r3.door.hold_next_reply.store(true, Ordering::SeqCst);
+        r3.service.hold_next_reply.store(true, Ordering::SeqCst);
         let t3 = std::time::Instant::now();
         let e3 = handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect_err("a lost reply is not certainty: the step fails and is not retried inside");
         let lost_reply_wall = t3.elapsed();
         assert!(e3.contains("Indeterminate") && e3.contains("Pending is not certain"), "{e3}");
-        assert_eq!(r3.door.declared.lock().unwrap().meshes.get(&mesh_id3), Some(&MeshState::Pending), "applied once");
+        assert_eq!(r3.service.declared.lock().unwrap().meshes.get(&mesh_id3), Some(&MeshState::Pending), "applied once");
         handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect("the rectifier's next hand-off of the same key is AlreadyApplied");
 
         // Arm 4: the target cannot be reached at all: the reachability wait ends when its Ping's Send is spent and
@@ -1040,7 +1040,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let e4 = handoff(&r4, mesh_id4.clone(), dark).await.expect_err("an unreachable target is never certain");
         let dark_wall = t4.elapsed();
         assert!(e4.contains("unreachable before the") && e4.contains("nothing was sent"), "{e4}");
-        assert!(r4.door.declared.lock().unwrap().meshes.is_empty(), "nothing applied at an unreached target");
+        assert!(r4.service.declared.lock().unwrap().meshes.is_empty(), "nothing applied at an unreached target");
 
         let spans = finish(
             &capture,
@@ -1080,7 +1080,7 @@ fn pending_handoff_waits_for_an_elected_mesh_primary_before_its_one_call() {
         r.ready.store(false, Ordering::SeqCst);
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
-        let (topology, me, me_id) = (r.door.topology.clone(), fp.node.location(), fp.node.node_id.clone());
+        let (topology, me, me_id) = (r.service.topology.clone(), fp.node.location(), fp.node.node_id.clone());
         let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
         let client = NodeRpcClient::new(fp.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let gate = r.ready.clone();
@@ -1093,7 +1093,7 @@ fn pending_handoff_waits_for_an_elected_mesh_primary_before_its_one_call() {
         let waited = started.elapsed();
         opener.await.unwrap();
         assert!(waited >= Duration::from_millis(1000), "the hand-off did not pass while the gate was closed: {waited:?}");
-        assert_eq!(r.door.declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Pending));
+        assert_eq!(r.service.declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Pending));
         let spans = finish(&capture, &dir, json!({"cell": cell, "waited_ms": waited.as_millis() as u64}));
         let reach = spans_where(&spans, "rdm.node_admin.mesh.update.via-pending-reachability", &[]);
         assert_eq!(reach.len(), 1);
@@ -1127,7 +1127,7 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
         let rig = rig(me, &[&mesh1_primary, &mesh1_other], records).await;
         {
             use rdm_admin::model::Mesh;
-            let mut t = rig.door.topology.write().await;
+            let mut t = rig.service.topology.write().await;
             t.meshes = vec![
                 Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::Ready },
                 Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::Ready },
@@ -1245,10 +1245,10 @@ async fn carried_connections_delete_ends(capture: &Capture) {
     let others: Vec<&Birth> = members.iter().collect();
     let rig = rig(mp, &others, BTreeMap::new()).await;
     let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
-    let _ = rig.door.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
+    let _ = rig.service.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
     let carry = |i: usize| {
-        let (door, node_id, incarnation) = (rig.door.clone(), members[i].node.node_id.clone(), members[i].node.incarnation_id.clone().unwrap());
-        async move { door.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await }
+        let (service, node_id, incarnation) = (rig.service.clone(), members[i].node.node_id.clone(), members[i].node.incarnation_id.clone().unwrap());
+        async move { service.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await }
     };
     let mut ends = vec![carry(0).await, carry(1).await];
     // The third member accepts, reports connections-deleting and holds its stream: once the mesh-primary
@@ -1269,7 +1269,7 @@ async fn carried_connections_delete_ends(capture: &Capture) {
     assert!(matches!(&ends[2], CarryEnd::Incomplete { reported: true, .. }), "a break after the acceptance is incomplete, the node's report standing: {:?}", ends[2]);
     assert!(matches!(&ends[3], CarryEnd::RefusedByNode(N::RejectedStaleIncarnation { .. })), "{:?}", ends[3]);
     assert!(matches!(&ends[4], CarryEnd::NotSent(_)), "a member that cannot be resolved is never sent the command: {:?}", ends[4]);
-    let held = rig.door.declared.lock().unwrap().connections_deleted.keys().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+    let held = rig.service.declared.lock().unwrap().connections_deleted.keys().map(|(n, _)| n.clone()).collect::<Vec<_>>();
     assert!(held.contains(&members[0].node.node_id) && held.contains(&members[1].node.node_id), "both completions are held for the births' rename: {held:?}");
     for b in &members[2..] {
         assert!(!held.contains(&b.node.node_id), "{:?}: no completion is held: {held:?}", b.node.name);
@@ -1314,16 +1314,16 @@ fn a_deadline_all_leaves_the_row_connections_deleting_and_a_new_attempt_ending_e
         resolver.insert(resolved);
         let rig = rig(mp, &[&member], BTreeMap::new()).await;
         let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
-        let _ = rig.door.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
-        rig.door.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.location(), member.node.mesh.clone(), &member.node.r#type, member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
+        let _ = rig.service.configs.set(Arc::new(crate::bound_configs(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Arc::new(rdm_admin::node_rows::WrittenRows::default()))).await));
+        rig.service.nodes_storage.put_node(&rdm_admin::storage::NodeRow::new(member.node.location(), member.node.mesh.clone(), &member.node.r#type, member.node.node_id.clone(), NodeStatus::Ready)).await.unwrap();
         let (node_id, incarnation) = (member.node.node_id.clone(), member.node.incarnation_id.clone().unwrap());
-        let status = || async { rig.door.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
+        let status = || async { rig.service.nodes_storage.node(&node_id).await.unwrap().expect("the member's row").status };
 
-        let first = rig.door.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await;
+        let first = rig.service.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await;
         assert!(matches!(&first, CarryEnd::Deleted { receipt: Some(r), .. } if *r == deadline), "{first:?}");
         assert_eq!(status().await, NodeStatus::ConnectionsDeleting, "a Deadline leaves the row connections-deleting");
 
-        let second = rig.door.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await;
+        let second = rig.service.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await;
         assert!(matches!(&second, CarryEnd::Deleted { receipt: Some(r), .. } if *r == established), "{second:?}");
         assert_eq!(status().await, NodeStatus::ConnectionsDeleted, "the new attempt's Established sets connections-deleted");
         drop(router);

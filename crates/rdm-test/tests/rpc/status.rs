@@ -64,7 +64,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     );
     let view = declared_by_birth.iter().find(|n| n["node_id"] == rpc1["node_id"]).unwrap().clone();
     assert_eq!(view["status"], "ready", "topology view's status is untouched");
-    // The authority itself: its own Ready goes through the same door, applied by itself.
+    // The authority itself: its own Ready goes through the same `StatusService`, applied by itself.
     let self_declared = declared_by_birth.iter().find(|n| n["node_id"] == primary["node_id"]).unwrap();
     assert_eq!(self_declared["declared"], "Ready", "the mesh primary declared its own birth to itself: {self_declared}");
 
@@ -136,7 +136,7 @@ async fn a_node_declares_its_state_to_its_mesh_primary_and_the_mesh_primary_deci
     assert_eq!(root_pending[0]["attributes"]["receiver_is_primary"], "false", "applied before any election: {root_pending:?}");
     // The other admin's own birth was applied by its mesh's primary (this primary) too.
     assert!(decided.iter().any(|s| s["attributes"]["sender"] == other_admin["node_id"] && s["attributes"]["outcome"] == "applied"), "{decided:?}");
-    // And the primary's own birth: the sender is the authority, through the same door.
+    // And the primary's own birth: the sender is the authority, through the same `StatusService`.
     assert!(
         decided.iter().any(|s| actor_is(s, &primary) && s["attributes"]["sender"] == primary["node_id"] && s["attributes"]["op"] == "declare-node-state" && s["attributes"]["outcome"] == "applied"),
         "the authority applied its own declaration to itself: {decided:?}"

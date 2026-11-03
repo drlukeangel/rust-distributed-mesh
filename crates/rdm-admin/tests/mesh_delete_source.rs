@@ -1,13 +1,13 @@
 //! The mesh delete command pair's refusals when what the receiver must read to decide a call fails
 //! (node-rpc-envelope.md, "Mesh delete command pair"; CLAUDE.md error rule: "Name what failed and
 //! where ... 'Never written' and 'could not be read' are different errors"). The leaving
-//! mesh-primary resolves the owner a `DeleteMesh` hands back to (`mesh_delete::leave_owner`, which its
-//! door `admin::mesh_delete::admit_delete_mesh` answers from); the fabric-primary adopts the final primary's
+//! mesh-primary resolves the owner a `DeleteMesh` hands back to (`mesh_delete::leave_owner`, which
+//! `admin::mesh_delete::admit_delete_mesh` answers from); the fabric-primary adopts the final primary's
 //! runtime and reads its manifest before it accepts a `MeshDeleted` (`mesh_delete::adopt_final_runtime`
-//! and `mesh_delete::handoff_verdict_from_read`, which its door `validate_handoff` answers from). A
+//! and `mesh_delete::handoff_verdict_from_read`, which `validate_handoff` answers from). A
 //! read that fails is `RejectedSourceFailed` naming what failed, the operation and the cause, under
 //! the reject span `rdm.node_admin.mesh.reject.via-source-failed`; it is never this admin's own
-//! `NotReady`, which is the readiness door's answer (node-rpc-envelope.md, "Node RPC readiness
+//! `NotReady`, which is the readiness gate's answer (node-rpc-envelope.md, "Node RPC readiness
 //! gate").
 // @feature: node-lifecycle
 

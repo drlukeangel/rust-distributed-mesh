@@ -75,7 +75,7 @@ async fn day0_root(dir: &std::path::Path) -> Running {
 }
 
 /// A launch of `name` by `launcher` into its mesh, admitting on the fabric's root (`RDM_ROOTS`), its
-/// deployment expected by the launcher's join door.
+/// deployment expected by the launcher's `JoinService`.
 fn launched_by(launcher: &Running, name: rdm_core::PathName, r#type: &str, launcher_dir: &std::path::Path) -> (rdm_core::launch::Launch, std::path::PathBuf) {
     let d = launcher.digest.lock().unwrap().clone();
     let dir = temp_dir("app-dials-launched");

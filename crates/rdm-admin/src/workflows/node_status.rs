@@ -4,9 +4,9 @@
 
 pub use crate::status_rpc::{
     declared_of_member, member_of_declared, ConnectionsDeletedReceipt, Declared, MeshReport,
-    Reporter, RoleFold, StatusDoor,
+    Reporter, RoleFold, StatusService,
 };
-pub use crate::admin::ServingDoor;
+pub use crate::admin::ReadinessGate;
 
 #[cfg(test)]
 mod tests {
@@ -301,7 +301,7 @@ mod tests {
         let topology = Arc::new(tokio::sync::RwLock::new(view));
         let stopped_published: Arc<Mutex<Vec<(Declaration, DeclaredOperation)>>> = Arc::default();
         let republished = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let door = Arc::new(StatusDoor {
+        let service = Arc::new(StatusService {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -340,14 +340,14 @@ mod tests {
         });
         {
             let stopped_published = stopped_published.clone();
-            let _ = door.stopped.set(Arc::new(move |decl, op| {
+            let _ = service.stopped.set(Arc::new(move |decl, op| {
                 let stopped_published = stopped_published.clone();
                 Box::pin(async move {
                     stopped_published.lock().unwrap().push((decl, op));
                 })
             }));
             let republished = republished.clone();
-            let _ = door.republish.set(Arc::new(move || {
+            let _ = service.republish.set(Arc::new(move || {
                 let republished = republished.clone();
                 Box::pin(async move {
                     republished.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -366,16 +366,16 @@ mod tests {
             let channels = rdm_transport::topology::TopologyView::join(&gossip, &ep, &snapshot.fabric.id, "mesh1", &mesh1_id, admin_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
             configs.uses_records(Arc::new(crate::storage::MemoryNodesStorage::default()), || "memory".into(), channels);
             configs.bound_own(snapshot.own(&admin_id).unwrap(), Default::default()).await.unwrap();
-            let _ = door.configs.set(Arc::new(configs));
+            let _ = service.configs.set(Arc::new(configs));
         }
         let config_req = StatusRequest::ApplyNodeConfig {
             node_id: admin_id.clone(),
             incarnation: admin_inc.clone(),
             config: BTreeMap::from([("zone".to_string(), "eu-1".to_string())]),
         };
-        let config_reply = door.apply(Some(admin_node.clone()), &config_req).await;
+        let config_reply = service.apply(Some(admin_node.clone()), &config_req).await;
         assert_eq!(config_reply, StatusReply::Applied);
-        assert_eq!(door.declared.lock().unwrap().node(&admin_id, &admin_inc), None, "config put never moves node status");
+        assert_eq!(service.declared.lock().unwrap().node(&admin_id, &admin_inc), None, "config put never moves node status");
 
         // node-status.md:26-30 — Node reports Pending and start's Ready, then stop's Stopped naming DeclaredOperation;
         // mesh-primary sets status on the node's row and publishes NodeStopped on Stopped.
@@ -385,8 +385,8 @@ mod tests {
             state: NodeState::Pending,
             operation: None,
         };
-        assert_eq!(door.apply(Some(rpc_node.clone()), &pending_req).await, StatusReply::Applied);
-        assert_eq!(door.declared.lock().unwrap().node(&rpc_id, &rpc_inc), Some(NodeState::Pending));
+        assert_eq!(service.apply(Some(rpc_node.clone()), &pending_req).await, StatusReply::Applied);
+        assert_eq!(service.declared.lock().unwrap().node(&rpc_id, &rpc_inc), Some(NodeState::Pending));
 
         let ready_req = StatusRequest::DeclareNodeState {
             node_id: rpc_id.clone(),
@@ -394,8 +394,8 @@ mod tests {
             state: NodeState::Ready,
             operation: Some(start_op.clone()),
         };
-        assert_eq!(door.apply(Some(rpc_node.clone()), &ready_req).await, StatusReply::Applied);
-        assert_eq!(door.declared.lock().unwrap().node(&rpc_id, &rpc_inc), Some(NodeState::Ready));
+        assert_eq!(service.apply(Some(rpc_node.clone()), &ready_req).await, StatusReply::Applied);
+        assert_eq!(service.declared.lock().unwrap().node(&rpc_id, &rpc_inc), Some(NodeState::Ready));
 
         let stop_op = DeclaredOperation {
             operation: rdm_core::OperationId::node("node.stop", &rpc_id),
@@ -406,8 +406,8 @@ mod tests {
             state: NodeState::Stopped,
             operation: Some(stop_op.clone()),
         };
-        assert_eq!(door.apply(Some(rpc_node.clone()), &stop_req).await, StatusReply::Applied);
-        assert_eq!(door.declared.lock().unwrap().node(&rpc_id, &rpc_inc), Some(NodeState::Stopped));
+        assert_eq!(service.apply(Some(rpc_node.clone()), &stop_req).await, StatusReply::Applied);
+        assert_eq!(service.declared.lock().unwrap().node(&rpc_id, &rpc_inc), Some(NodeState::Stopped));
         let published = stopped_published.lock().unwrap().clone();
         assert_eq!(published.len(), 1, "mesh-primary publishes NodeStopped from stop's Stopped report");
         assert_eq!(published[0].0.node_id, rpc_id);
@@ -421,7 +421,7 @@ mod tests {
             node_id: admin_id.clone(),
             incarnation: admin_inc.clone(),
         };
-        let probe_reply = door.apply(Some(admin_node.clone()), &probe_req).await;
+        let probe_reply = service.apply(Some(admin_node.clone()), &probe_req).await;
         assert_eq!(
             probe_reply,
             StatusReply::Current {
@@ -431,13 +431,13 @@ mod tests {
             }
         );
         assert_eq!(republished.load(std::sync::atomic::Ordering::SeqCst), 1, "ProbeNodeState reasserts held status");
-        assert_eq!(door.declared.lock().unwrap().node(&admin_id, &admin_inc), None, "ProbeNodeState manufactures no transition");
+        assert_eq!(service.declared.lock().unwrap().node(&admin_id, &admin_inc), None, "ProbeNodeState manufactures no transition");
         let stale_probe = StatusRequest::ProbeNodeState {
             node_id: admin_id.clone(),
             incarnation: IncarnationId::mint(),
         };
         assert_eq!(
-            door.apply(Some(admin_node.clone()), &stale_probe).await,
+            service.apply(Some(admin_node.clone()), &stale_probe).await,
             StatusReply::RejectedStaleIncarnation { held: admin_inc.clone() }
         );
         let unknown_decl = StatusRequest::DeclareNodeState {
@@ -447,7 +447,7 @@ mod tests {
             operation: None,
         };
         assert_eq!(
-            door.apply(Some(admin_node.clone()), &unknown_decl).await,
+            service.apply(Some(admin_node.clone()), &unknown_decl).await,
             StatusReply::RejectedNotPrimary { why: NotPrimary::SubjectUnknown }
         );
 
@@ -460,7 +460,7 @@ mod tests {
             incarnation: admin_inc.clone(),
             state: NodeState::ConnectionsDeleting,
         };
-        let apply_reply = door.apply(Some(admin_node.clone()), &apply_cd).await;
+        let apply_reply = service.apply(Some(admin_node.clone()), &apply_cd).await;
         assert_eq!(
             apply_reply,
             StatusReply::RejectedInvalidNodeTransition { current: NodeState::Ready }

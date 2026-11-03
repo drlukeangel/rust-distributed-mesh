@@ -6,7 +6,7 @@
 //! to every later admin in its entry pull; a stall is surfaced on `fabric.get`.
 //!
 //! The cells run a real Day-0 node-admin in this process, holding the testkit's fabric root, and
-//! births deployed by hand (the admin reconciles nothing): its ticks and Status door are the
+//! births deployed by hand (the admin reconciles nothing): its ticks and `StatusService` are the
 //! product's. Members register a product ALPN and are launched with the testkit's root set, so
 //! their dials are admitted by `node.connection.create` on it. A cell that needs a member's Node RPC
 //! to fail cuts its admin's calls to it (the client's admission block, its pooled connection to the
@@ -175,17 +175,17 @@ fn signed(bytes: &[u8]) -> SignedCert {
     certs::cert_from_bytes(bytes).expect("a signed member cert")
 }
 
-/// `node.get [id: node]` on `admin`'s Status door, as op 0x23 reads it (Q285).
+/// `node.get [id: node]` on `admin`'s `StatusService`, as op 0x23 reads it (Q285).
 async fn node_get(admin: &Running, node: &NodeId) -> Option<NodeView> {
-    match admin.status_door()?.read_rows(&rdm_core::status::Read { entity: Entity::Nodes, node: None, filter: Filter::new().eq("id", [node.to_string()]) }).await {
+    match admin.status_service()?.read_rows(&rdm_core::status::Read { entity: Entity::Nodes, node: None, filter: Filter::new().eq("id", [node.to_string()]) }).await {
         Ok(rdm_core::read::Rows::Nodes(mut nodes)) => nodes.pop(),
         _ => None,
     }
 }
 
-/// `fabric.get` on `admin`'s Status door, as op 0x23 reads it (Q285).
+/// `fabric.get` on `admin`'s `StatusService`, as op 0x23 reads it (Q285).
 async fn fabric_get(admin: &Running) -> Option<FabricView> {
-    match admin.status_door()?.read_rows(&rdm_core::status::Read { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
+    match admin.status_service()?.read_rows(&rdm_core::status::Read { entity: Entity::Fabrics, node: None, filter: Filter::new() }).await {
         Ok(rdm_core::read::Rows::Fabrics(mut fabrics)) => fabrics.pop(),
         _ => None,
     }
@@ -1128,17 +1128,17 @@ fn a_root_update_rotates_the_fabric_to_the_new_anchor_through_its_four_phases() 
         let root = boot_root(&dir, &policy(&[])).await;
         let (second, second_env) = launched_admin(&root, &dir).await;
         let a = member(&root, &dir, "1").await;
-        let door = root.status_door().expect("the fabric-primary's Status door");
+        let status_service = root.status_service().expect("the fabric-primary's StatusService");
         let new = certs::mint_key();
         let hex = |k: &certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
         // The call goes to the fabric-primary once its view names it so.
         let root_id = root.digest.lock().unwrap().node.node_id.clone();
         until("mesh1.node-admin.1's view names it the fabric-primary", BOUND, async || fabric_get(&root).await.and_then(|f| f.fabric_primary).filter(|p| *p == root_id)).await;
-        let answered = door.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&new)) }).await;
+        let answered = status_service.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&new)) }).await;
         assert_eq!(answered, StatusReply::RootUpdated { phase: RootsPhase::Minted }, "the rotation is accepted at minted");
-        let same = door.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&new)) }).await;
+        let same = status_service.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&new)) }).await;
         assert_eq!(same, StatusReply::RejectedRootAlreadyTrusted { root: hex(&new.verifying_key()) }, "the same root is trusted already");
-        let other = door.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&certs::mint_key())) }).await;
+        let other = status_service.apply(None, &StatusRequest::UpdateRoot { secret: RootSecretHex(certs::encode_key(&certs::mint_key())) }).await;
         assert!(matches!(other, StatusReply::RejectedRotationInProgress { .. }), "another root while one is in flight: {other:?}");
 
         let moved = |phase: &'static str| {

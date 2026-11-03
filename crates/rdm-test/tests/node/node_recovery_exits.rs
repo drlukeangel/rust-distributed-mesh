@@ -141,7 +141,7 @@ fn assert_mesh_primary_ran_the_recovery(run: &[Value], mp: &Value, before: &Valu
     }
     let calls = |op: u8| named(run, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| calls_op(sp, op)).count();
     assert_eq!((calls(0x20), calls(0x1C)), (0, 0), "no Build call and no claim call in the recovery's run");
-    for name in ["rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.serve.via-own-section", "rdm.node_admin.build.update.via-dispatched"] {
+    for name in ["rdm.node_admin.build.serve.via-section-run", "rdm.node_admin.build.serve.via-own-section", "rdm.node_admin.build.update.via-dispatched"] {
         assert!(named(run, name).is_empty(), "the recovery is no Build: {name} in its run");
     }
 }

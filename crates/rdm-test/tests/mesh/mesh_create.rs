@@ -13,7 +13,7 @@
 //! birth, build.md §5) and from the evidence: every `node.create.via-build` /
 //! `node.delete.via-build` span sits under the run of its section (`build.update.via-reconcile`,
 //! naming its `executor_node_id`) at the expected admin, whether the section came by
-//! `build.attempt.run` or is the fabric-primary's own.
+//! `build.section.run` or is the fabric-primary's own.
 
 use crate::build_log;
 use rdm_core::{NodeId, PathName};
@@ -187,7 +187,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
         .min()
         .expect("the shape's creates");
     assert!(handed <= shape_started, "Pending Applied ({handed}) precedes Build(shape) ({shape_started})");
-    // The target decided it through the same door as every declaration, and accepting Pending did
+    // The target decided it through the same `StatusService` call as every declaration, and accepting Pending did
     // not make it the elected mesh primary.
     let decided: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()

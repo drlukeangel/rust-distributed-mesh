@@ -17,14 +17,14 @@ use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use std::sync::Arc;
 use tracing::Instrument;
 
-/// The primary's node command door: this admin's runner and its control plane's atlas.
-pub(crate) struct PrimaryCommandDoor {
+/// The primary's `NodeCommandService`: this admin's runner and its control plane's atlas.
+pub(crate) struct NodeCommandService {
     pub(crate) runner: Arc<AdminRunner>,
     pub(crate) control: Arc<ControlPlane>,
 }
 
 #[async_trait::async_trait]
-impl crate::node_commands::PrimaryCommands for PrimaryCommandDoor {
+impl crate::node_commands::PrimaryCommands for NodeCommandService {
     async fn run(&self, caller: Option<NodeId>, req: NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         let (node_id, incarnation, operation, kind) = match &req {
             NodeCommandRequest::StopNode { node_id, incarnation, operation } => (node_id.clone(), incarnation.clone(), operation.clone(), ActionKind::Stop),
@@ -111,7 +111,7 @@ async fn forward<T>(mut recorded: tokio::sync::mpsc::UnboundedReceiver<NodeComma
     (ended, sent)
 }
 
-impl PrimaryCommandDoor {
+impl NodeCommandService {
     async fn run_command(&self, req: &NodeCommandRequest, node_id: &NodeId, incarnation: &IncarnationId, operation: &rdm_core::OperationId, kind: ActionKind, frames: &mut Box<dyn CommandFrames>) -> NodeCommandReply {
         // Work on one node is serialized at its primary (node-recovery.md "Execution"): this command runs
         // before or after a repair or a Build's step on the node, never beside it.
@@ -146,14 +146,14 @@ impl PrimaryCommandDoor {
                 }
             }
         }
-        let Some(door) = self.runner.observer.status_door.get().cloned() else {
-            return rdm_core::reply::node_command::not_ready(format!("{}: this admin holds no Status door yet; {} is refused", self.runner.node_id, req.op()));
+        let Some(status_service) = self.runner.observer.status_service.get().cloned() else {
+            return rdm_core::reply::node_command::not_ready(format!("{}: this admin holds no StatusService yet; {} is refused", self.runner.node_id, req.op()));
         };
-        let (_caller, recorded) = door.commands.caller_stream(node_id, incarnation);
+        let (_caller, recorded) = status_service.commands.caller_stream(node_id, incarnation);
         if let Some(scope) = named {
             // The named connections: the carrier the `All` body reaches, with these ids. It sets no
             // node-wide status (node-connections-delete.md "`Connections([id, …])`").
-            let (end, sent) = forward(recorded, door.carry_connections_delete(node_id, incarnation, scope), frames).await;
+            let (end, sent) = forward(recorded, status_service.carry_connections_delete(node_id, incarnation, scope), frames).await;
             use crate::status_rpc::CarryEnd;
             return match end {
                 CarryEnd::Deleted { closed, not_open, held, receipt } => sent.terminal.unwrap_or(NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt }),

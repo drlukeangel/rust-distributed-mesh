@@ -1,6 +1,6 @@
 //! A fabric-primary's dispatcher over admins that live in this process: each admin of the fixture has
-//! its own door (`RunDoor`) over the fixture's Build store, its view and its runner, and
-//! `build.attempt.run` reaches it without a transport. Each admin writes the steps it runs as its own
+//! its own `SectionRunService` over the fixture's Build store, its view and its runner, and
+//! `build.section.run` reaches it without a transport. Each admin writes the steps it runs as its own
 //! `rdm.build.step` events into the fixture's one events store (`FramedBuilds`), as a mesh-primary
 //! writes its mesh's steps (build.md §5). An admin the fixture has lost is unreachable, as a dead
 //! admin's address is.
@@ -8,7 +8,7 @@
 use rdm_admin::build::{BuildId, BuildOperation};
 use rdm_admin::build_drive::{Dispatched, Dispatcher};
 use rdm_admin::build_op::local_dispatched;
-use rdm_admin::build_run::{FramedBuilds, RunDoor, SectionRuns};
+use rdm_admin::build_run::{FramedBuilds, SectionRunService, SectionRuns};
 use rdm_admin::build_state::{BuildStateAdapter, LocalBuildLog, StepOutcome, StepWrite};
 use rdm_admin::executor::{BuildExecutor, OperationRunner, RunEnd};
 use rdm_admin::topology::Topology;
@@ -23,7 +23,7 @@ pub struct Loopback {
     local: Arc<dyn LocalBuildLog>,
     topology: Arc<RwLock<Topology>>,
     runner: Arc<dyn OperationRunner>,
-    doors: Mutex<std::collections::HashMap<Birth, Arc<RunDoor>>>,
+    services: Mutex<std::collections::HashMap<Birth, Arc<SectionRunService>>>,
     /// The view an admin plans its section from, when it is not the fixture's one.
     views: Mutex<BTreeMap<NodeId, Arc<RwLock<Topology>>>>,
     lost: Mutex<BTreeSet<NodeId>>,
@@ -65,7 +65,7 @@ impl OperationRunner for Steps {
 
 impl Loopback {
     pub fn new(builds: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>, topology: Arc<RwLock<Topology>>, runner: Arc<dyn OperationRunner>) -> Arc<Self> {
-        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(std::collections::HashMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()) })
+        Arc::new(Self { builds, local, topology, runner, services: Mutex::new(std::collections::HashMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()) })
     }
 
     /// `admin` plans its section from `view`, which may disagree with the fabric-primary's.
@@ -83,16 +83,16 @@ impl Loopback {
         self.dispatched.lock().unwrap().clone()
     }
 
-    /// `admin`'s own door for `build.attempt.run`: its view, its runner, and its step log over the
+    /// `admin`'s own `SectionRunService` for `build.section.run`: its view, its runner, and its step log over the
     /// fixture's Build store, writing as `admin` of its own mesh.
-    pub fn door(&self, admin: &Birth) -> Arc<RunDoor> {
-        self.doors
+    pub fn service(&self, admin: &Birth) -> Arc<SectionRunService> {
+        self.services
             .lock()
             .unwrap()
             .entry(admin.clone())
             .or_insert_with(|| {
                 let (me, mesh, fabric_id) = {
-                    let t = self.topology.try_read().expect("fixture topology is unlocked while opening a door");
+                    let t = self.topology.try_read().expect("fixture topology is unlocked while opening a `SectionRunService`");
                     let n = t.own(&admin.node_id).expect("fixture admin is listed");
                     (n.location(), n.mesh.clone(), t.fabric.id.clone())
                 };
@@ -103,7 +103,7 @@ impl Loopback {
                 let topology = self.views.lock().unwrap().get(&admin.node_id).cloned().unwrap_or_else(|| self.topology.clone());
                 let runner = Arc::new(Steps { inner: self.runner.clone(), builds: builds.clone() });
                 let exec = Arc::new(BuildExecutor { executor: admin.clone(), builds: builds.clone(), topology, runner });
-                Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new(), moved: Default::default() })
+                Arc::new(SectionRunService { me_path: me.path.clone(), me_name: me.name.clone(), builds, exec, runs, local: self.local.clone(), gate: rdm_admin::stop_gate::StopGate::new(), moved: Default::default() })
             })
             .clone()
     }
@@ -125,12 +125,12 @@ impl Dispatcher for Loopback {
             return Dispatched::Unreached(format!("{primary} is gone: nothing answers at its address"));
         }
         self.dispatched.lock().unwrap().push((primary.clone(), mesh.to_string()));
-        local_dispatched(self.door(&primary).attempt_run(build_id, mesh, &context).await)
+        local_dispatched(self.service(&primary).section_run(build_id, mesh, &context).await)
     }
 
     async fn run_own(&self, turn: &rdm_admin::stop_gate::Turn, build_id: &BuildId, mesh: &str, context: CallContext, operations: Vec<BuildOperation>) -> Dispatched {
         let me = self.fabric_primary().await;
         self.dispatched.lock().unwrap().push((me.clone(), mesh.to_string()));
-        local_dispatched(self.door(&me).run_under(turn, build_id, mesh, &context, operations).await)
+        local_dispatched(self.service(&me).run_under(turn, build_id, mesh, &context, operations).await)
     }
 }

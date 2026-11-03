@@ -63,7 +63,7 @@ async fn own_view(r: &Running) -> rdm_core::views::NodeView {
     tokio::time::timeout(BOUND, async {
         loop {
             let answer = r
-                .status_door()
+                .status_service()
                 .unwrap()
                 .read_rows(&rdm_core::status::Read {
                     entity: rdm_core::filter::Entity::Nodes,

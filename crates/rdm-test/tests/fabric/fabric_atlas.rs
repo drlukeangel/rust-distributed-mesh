@@ -62,7 +62,7 @@ fn path_of(n: &Value) -> PathName {
 }
 
 /// CONTRACT (fabric-atlas.md R-FA5, Q189; R-FA2: "execution progress writes it from each attempt's
-/// receipts as they stream up `build.attempt.run`, before the caller is answered `Complete`"): a
+/// receipts as they stream up `build.section.run`, before the caller is answered `Complete`"): a
 /// `node.start` of another mesh's node, sent the moment that node's `node.stop` streams `Complete`
 /// with no wait of any kind, is accepted and completes, the same birth ready again; for every node of
 /// the other mesh, a primary's stop moving its primary first included. Must NOT happen: the start
@@ -103,7 +103,7 @@ async fn a_start_of_another_meshs_node_sent_the_moment_its_stop_completes_is_adm
 }
 
 /// CONTRACT (fabric-atlas.md R-FA2: "execution progress writes it from each attempt's receipts as they
-/// stream up `build.attempt.run`, before the caller is answered `Complete`"; R-FA1: admission reads it
+/// stream up `build.section.run`, before the caller is answered `Complete`"; R-FA1: admission reads it
 /// and nothing else): a `node.stop` of another mesh's node, sent the moment that node's `node.start`
 /// streams `Complete` with no wait of any kind, is accepted and completes, for every node of the other
 /// mesh. Must NOT happen: the stop refused `node-not-live` ("a stop needs a live node") because the

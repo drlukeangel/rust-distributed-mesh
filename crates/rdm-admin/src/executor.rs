@@ -2,7 +2,7 @@
 //! op `0x20`").
 //!
 //! A Build is driven by the fabric-primary alone (`build_drive`): it dispatches each mesh's section to
-//! the admin that [`executor_for`] names, that mesh's primary, with `build.attempt.run` (`build_run`),
+//! the admin that [`executor_for`] names, that mesh's primary, with `build.section.run` (`build_run`),
 //! and runs its own section in process. The executor here runs one section's operations
 //! ([`BuildExecutor::run_section`]).
 
@@ -329,7 +329,7 @@ fn is_primary(node: &PathName, t: &Topology) -> bool {
 /// "Successor search for the commanded transfer", step 2: "only when that mesh has none ... the lowest
 /// NodeId among the other Ready mesh-primaries"). `None` for any other operation, a target
 /// that holds no role, and the delete of a mesh's only node that holds no fabric-primary role. A primary with no
-/// other node-admin in its mesh is still named: node.primary.update refuses it by name (the Build door
+/// other node-admin in its mesh is still named: node.primary.update refuses it by name (the `BuildService`
 /// refuses it first, `control_plane::last_admin`).
 pub fn role_move(op: &BuildOperation, t: &Topology) -> Option<RoleMove> {
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
@@ -354,7 +354,7 @@ pub fn node_role_move(birth: &crate::build::PinnedBirth, delete: bool, t: &Topol
         // Any other node type's role: its primary's role moves first, by node.primary.update its mesh-primary
         // commands and writes (proposal Part C1, Q3), except when deleting the node type's only live node. A primary with
         // no other node of its type is still named for non-delete actions: the update refuses it by Q7's
-        // name (the Build door refuses it first, `control_plane::last_admin`).
+        // name (the `BuildService` refuses it first, `control_plane::last_admin`).
         let primary = subject.clone();
         let only_of_node_type = t.nodes_of_type(&subject.mesh, &subject.r#type).all(|n| n.node_id == primary.node_id);
         if !t.node_type_primary(&subject.mesh, &subject.r#type).is_some_and(|p| p.node_id == primary.node_id) || (delete && only_of_node_type) {
@@ -454,7 +454,7 @@ pub enum SectionEnd {
 ///
 /// The fabric-primary runs its own section in process (mesh creation and deletion, and the members
 /// of any mesh with no mesh-primary); a mesh's primary runs its mesh's section when the
-/// fabric-primary dispatches it (`build.attempt.run`, `build_run`), planning the section itself from
+/// fabric-primary dispatches it (`build.section.run`, `build_run`), planning the section itself from
 /// the Build and its events (Q292). A step whose `rdm.build.step` event ended `complete` is never
 /// run again. It never mints a build id and never resumes from a saved instruction pointer.
 ///
@@ -509,7 +509,7 @@ impl BuildExecutor {
     async fn run_operations(&self, build_id: &BuildId, operations: &[BuildOperation], span: &tracing::Span) -> SectionEnd {
         let build = match self.builds.read_build(build_id).await {
             Ok(b) => b,
-            Err(e) => return SectionEnd::Incomplete { operation: rdm_core::OperationId::unscoped("build.attempt.run"), reason: format!("reading Build {build_id}: {e}") },
+            Err(e) => return SectionEnd::Incomplete { operation: rdm_core::OperationId::unscoped("build.section.run"), reason: format!("reading Build {build_id}: {e}") },
         };
         span.record("operations", tracing::field::debug(operations.iter().map(BuildOperation::key).collect::<Vec<_>>()));
         let ran = |upto: usize| -> Vec<BuildOperation> { operations[..upto].to_vec() };

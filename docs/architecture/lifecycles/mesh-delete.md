@@ -203,7 +203,7 @@ sequenceDiagram
     opt the mesh-primary is the fabric-primary
         F->>F: node.fabric-primary.update → node.fabric-primary.updated
     end
-    F->>M: build.attempt.run (the mesh's section)
+    F->>M: build.section.run (the mesh's section)
     M->>B: mesh topology: mesh deleting (mesh.deleting)
     B-->>R: hold the mesh deleting and each member's own state
     loop tiers: ordinary nodes, then the other node-admins
@@ -246,7 +246,7 @@ Failed steps and stream certainty follow the
 
 | Step | Actor | Span / evidence | Correlation |
 |---|---|---|---|
-| mesh.delete Build | fabric-primary | build.create, build.attempt.run to the mesh-primary | Build, `mesh.delete:<mesh_id>` |
+| mesh.delete Build | fabric-primary | build.create, build.section.run to the mesh-primary | Build, `mesh.delete:<mesh_id>` |
 | Fabric-primary change | fabric-primary | [node.fabric-primary.update](node-primary-update.md#observability-contract) when the mesh-primary is the fabric-primary | same trace |
 | Member delete | mesh-primary and each member | [node.delete](node-delete.md#observability-contract) per member; its exact Exited, in the step event | outer operation plus `node.delete:<node_id>` |
 | mesh.deleted | mesh-primary | manifest validated by the fabric-primary; mesh row deleted; mesh topology carries the mesh deleted | outer operation; complete roster |

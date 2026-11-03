@@ -5,7 +5,7 @@
 //!
 //! The defect this cell pins (lane 1's gate at 11bb3b90d, trace ec9ddcfd3696a66fb9006c639361fe0f):
 //! mesh2.node-admin.2's start read rafka-time from its mesh-primary with `GetTopology`, and the primary's
-//! topology door read the fabric's nodes store on every read, unconditionally; the store's tail held
+//! `TopologyService` read the fabric's nodes store on every read, unconditionally; the store's tail held
 //! an object another writer was still writing, so the read was refused `not-ready` ("the stored map
 //! could not be read: ... an unended object") and the start failed at `node.rafka-time`.
 

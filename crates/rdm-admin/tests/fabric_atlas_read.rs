@@ -9,7 +9,7 @@ use rdm_admin::model::{
     EndpointId, Fabric, FabricId, IncarnationId, MeshId, Node, NodeId, NodeStatus,
     PathName, ProviderKind, ScopeStatus,
 };
-use rdm_admin::status_rpc::{Declared, StatusDoor};
+use rdm_admin::status_rpc::{Declared, StatusService};
 use rdm_admin::storage::{MemoryMeshStorage, MemoryNodesStorage, NodeRow, NodesStorage};
 use rdm_admin::topology::Topology;
 use rdm_core::outcome::RpcOutcome;
@@ -188,7 +188,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         let mut mesh_ids = BTreeMap::new();
         mesh_ids.insert("mesh1".to_string(), mesh_id);
 
-        let door = Arc::new(StatusDoor {
+        let service = Arc::new(StatusService {
             certs: None,
             app_channels: None,
             declaration_seam: None,
@@ -227,7 +227,7 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
         });
 
         let slot = Arc::new(OnceLock::new());
-        let _ = slot.set(door);
+        let _ = slot.set(service);
         let server = rdm_admin::status_rpc::serve(ServerBuilder::new(), slot)
             .build(ServedBirth {
                 node_id: admin_id.to_string(),

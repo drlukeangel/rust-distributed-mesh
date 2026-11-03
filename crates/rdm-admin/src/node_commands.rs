@@ -339,7 +339,7 @@ pub trait PrimaryCommands: Send + Sync {
     async fn run(&self, caller: Option<NodeId>, req: rdm_core::node_command::NodeCommandRequest, frames: Box<dyn crate::node_self::CommandFrames>) -> rdm_core::node_command::NodeCommandReply;
 }
 
-/// The primary's node command door, set once the admin's runner is built.
+/// The primary's `NodeCommandService`, set once the admin's runner is built.
 pub type PrimaryCommandsSlot = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<dyn PrimaryCommands>>>;
 
 #[cfg(test)]

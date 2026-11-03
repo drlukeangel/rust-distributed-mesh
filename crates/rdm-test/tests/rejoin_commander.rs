@@ -248,7 +248,7 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
 /// path of the call that commanded it"; node-rpc-envelope.md "Status": a start's natural key is
 /// `(node_id, incarnation, Pending)`, so a later start of the birth joins the one under way): the rpc
 /// node is stopped, then commanded to start by an admin of its mesh (`mesh1.node-admin.3`) that is lost
-/// while the start joins it: its join door takes no join, then its endpoint closes, as an executor
+/// while the start joins it: its `JoinService` takes no join, then its endpoint closes, as an executor
 /// killed mid-restart. A second admin of the mesh (`mesh1.node-admin.2`, the successor) commands the start
 /// while the first start is still under way. The successor's start is answered `Started`: the start
 /// joined the successor over the successor's own call, and the node is the same birth,
@@ -265,8 +265,8 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             return;
         }
         let Rig { primary, commander: successor, _carried, running, launch, key, dir, target, node_id, incarnation, commander_key: successor_key, .. } = rig("rejoin-successor").await;
-        // The lost commander: an admin of the mesh, carried in the primary's projection, whose join
-        // door takes no join.
+        // The lost commander: an admin of the mesh, carried in the primary's projection, whose
+        // `JoinService` takes no join.
         let lost = crate::common::admin_side_silent_deaf_as("127.0.0.1".parse().unwrap(), &primary, &rdm_core::PathName::new("mesh1.node-admin", "3").unwrap()).await;
         let _lost_carried = primary.carry_in_projection(&lost);
         let lost_key = lost.seed.0.clone();
@@ -291,7 +291,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         let left = call(&lost, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the stop is answered Stopped: {left:?}");
 
-        // The lost commander's start: its join door answers no join, and once the start's first join
+        // The lost commander's start: its `JoinService` answers no join, and once the start's first join
         // attempt reached it, its endpoint closes.
         let lost_short = lost_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
         let first_req = start(2);

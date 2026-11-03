@@ -170,7 +170,7 @@ fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the_step_
         }
         assert!(builds.read_build(&build).await.unwrap().operation_completed(&op2), "A wrote mesh2.node.2's complete step");
         // A is lost: its process and its run go, and its section's stream breaks.
-        loopback.door(&a).runs.stop().await;
+        loopback.service(&a).runs.stop().await;
         gone.notify_one();
         let end = tokio::time::timeout(Duration::from_secs(10), running).await.expect("the first run ends once A is lost").unwrap();
         let first = (end, builds.read_build(&build).await.unwrap());

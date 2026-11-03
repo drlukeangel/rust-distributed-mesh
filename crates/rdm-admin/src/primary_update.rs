@@ -130,7 +130,7 @@ pub struct PrimaryUpdate {
     /// an install, so a decision in flight completes before the primaries move.
     pub decisions: Arc<tokio::sync::Mutex<()>>,
     /// Projects this admin's view from the records it holds now. Run once an install is held, before
-    /// the call that depends on it is answered: every reader of the view (the Build door, the claim
+    /// the call that depends on it is answered: every reader of the view (the `BuildService`, the claim
     /// door, the drive, the executor plan, the rows writers) decides from it.
     pub project_view: ProjectView,
     /// Finishes every write this admin issued, before its call (node-primary-update.md step 3).
@@ -733,7 +733,7 @@ impl PrimaryUpdate {
 
 // ---- a node of a type that is not node-admin (re-exported from rdm-node) ----
 
-pub use rdm_node::member_handover::{serve_member, MemberDoor, MemberSlot};
+pub use rdm_node::member_handover::{serve_node_primary_update, NodePrimaryUpdateService, NodePrimaryUpdateSlot};
 
 /// Where a running admin sets its [`PrimaryUpdate`] once it holds a view.
 pub type PrimaryUpdateSlot = Arc<OnceLock<Arc<PrimaryUpdate>>>;

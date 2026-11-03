@@ -7,7 +7,7 @@ use super::*;
 pub(crate) struct RoleGate {
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
     /// The control plane whose R-D1 reader (how long a peer mesh has gone unheard past the staleness
-    /// floor) the admin installs once its digest view runs: read when asked, as the Build door reads it.
+    /// floor) the admin installs once its digest view runs: read when asked, as the `BuildService` reads it.
     pub(crate) control: Arc<ControlPlane>,
     /// node.primary.update at this admin (op 0x21), commanded and run through it, which holds what each update
     /// was answered and said (`PrimaryUpdate::memo`).

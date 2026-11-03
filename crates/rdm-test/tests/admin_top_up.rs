@@ -10,7 +10,7 @@
 //! The defect this cell pins (gate 784e5974, node_stop, rdm-node-admin.308223): mesh1.node-admin.2, a
 //! non-primary node-admin, took an own-mesh delta out of order (`via-version-gap`, held 11, base 12)
 //! and never topped up: only the testkit node spawned the top-up. A non-primary serves its own mesh
-//! from its mesh-channel sources, and a desynchronized source is not served, so its topology door
+//! from its mesh-channel sources, and a desynchronized source is not served, so its `TopologyService`
 //! answered `unknown-mesh` for mesh1 until the run ended.
 
 use iroh::protocol::Router;
@@ -148,7 +148,7 @@ async fn gossip_node() -> GossipNode {
 /// baseline of its own mesh on that channel; it is the Mesh's primary, so it has no primary to top up
 /// from and says so by name (`rdm.mesh.entry.reject.via-top-up`,
 /// `reason=this-node-is-the-mesh-primary`), dialing nobody. Must NOT happen: a node-admin holding a
-/// desynchronized source with no top-up (its topology door answering `unknown-mesh` for its own mesh),
+/// desynchronized source with no top-up (its `TopologyService` answering `unknown-mesh` for its own mesh),
 /// or a primary dialing itself for a top-up.
 #[test]
 fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {

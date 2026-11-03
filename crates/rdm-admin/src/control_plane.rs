@@ -834,7 +834,7 @@ mod tests {
     /// mesh1.node.1 holds mesh1's rpc role with mesh1.node.2 beside it, and mesh2.node.1 is mesh2's sole
     /// node. The stop of mesh1.node.1 moves its role first (`executor::role_move` names it) and no
     /// admin executes the stop until it has; the stop of mesh1.node.2, which holds no role, moves nothing
-    /// and its mesh's primary executes it. The Build door admits a stop of mesh1.node.1 and refuses a
+    /// and its mesh's primary executes it. The `BuildService` admits a stop of mesh1.node.1 and refuses a
     /// stop of mesh2.node.1 by name with Q7's text; its delete, by the node.delete route or a
     /// re-birth's delete, skips the update as its removal does (R5).
     /// Must NOT happen: a node-type primary stopped with its role unmoved, or the sole node of its type in a
@@ -910,8 +910,8 @@ mod tests {
     /// mesh-primary Ready` ... the commanding workflow fails with that reason"; C1: "the
     /// delete of a mesh's only node skips the update"): the fabric primary `mesh2.node-admin.1` is mesh2's
     /// only node. Its delete skips node.primary.update, and its fabric role moves out of
-    /// mesh2: with mesh1's primary Ready the Build door admits them; with no other
-    /// mesh-primary Ready the door refuses them `last-admin` with C2 step 3's text.
+    /// mesh2: with mesh1's primary Ready the `BuildService` admits them; with no other
+    /// mesh-primary Ready the `BuildService` refuses them `last-admin` with C2 step 3's text.
     /// Must NOT happen: a Build admitted whose fabric-primary role has nowhere to go.
     #[test]
     fn the_delete_of_a_fabric_primary_that_is_its_meshs_only_node_needs_another_ready_mesh_primary() {

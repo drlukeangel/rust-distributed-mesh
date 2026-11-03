@@ -1,5 +1,5 @@
 //! The launcher half of a functional fabric: an in-process node-admin side (a gossip seed, a Node
-//! RPC client, the `JoinNode` and `GetTopology` doors a launched node calls first) and the observer
+//! RPC client, the `JoinService` and `TopologyService` a launched node calls first) and the observer
 //! the deployment pipeline waits on. Behind the `rig` feature: test crates share this one rig.
 #![allow(missing_docs)]
 
@@ -107,7 +107,7 @@ impl NodeObserver for LiveMesh {
             me.incarnation_id = Some(birth.incarnation.clone());
             me.is_primary = true;
             let fabric_id = self.topology_view.digest_view.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
-            let door = rdm_admin::status_rpc::StatusDoor {
+            let service = rdm_admin::status_rpc::StatusService {
                 certs: None,
                 app_channels: None,
                 me: me.location(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
@@ -124,14 +124,14 @@ impl NodeObserver for LiveMesh {
                 republish: Default::default(), pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), rejoin: Default::default(), loads: None,
                 digest_view: Some(self.topology_view.digest_view.clone()), unreachable: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
-            assert!(door.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default()))).is_ok());
+            assert!(service.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default()))).is_ok());
             if cmd == rdm_admin::node_commands::NodeCommand::DeleteConnections {
                 let Some(incarnation) = node.incarnation_id.clone() else {
                     return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.node_id), code: rdm_core::outcome::Code::FailedPrecondition };
                 };
-                return rdm_admin::admin::carried_admission(door.carry_connections_delete(&node.node_id, &incarnation, &rdm_core::status::ConnectionScope::All).await).0;
+                return rdm_admin::admin::carried_admission(service.carry_connections_delete(&node.node_id, &incarnation, &rdm_core::status::ConnectionScope::All).await).0;
             }
-            door.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await
+            service.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await
         }
     }
 
@@ -243,7 +243,7 @@ pub struct AdminSide {
     pub fabric: FabricId,
     /// The births this admin side deployed and awaits a `JoinNode` from.
     pub joins: Arc<rdm_admin::join::Joins>,
-    /// This admin side's nodes.storage: where its join door keeps an admitted birth's report durable
+    /// This admin side's nodes.storage: where its `JoinService` keeps an admitted birth's report durable
     /// (the birth's runtime row). A restarted admin side over the same store reads it back.
     pub nodes_storage: Arc<dyn rdm_admin::storage::NodesStorage>,
     /// The admin every launch from `template` names as its launcher.
@@ -252,7 +252,7 @@ pub struct AdminSide {
     /// sent it: the admin side answers each `ConfigUpdated` for the birth it names, as the fabric-primary
     /// answers once the command completed.
     pub config_updates: Arc<std::sync::Mutex<Vec<(iroh::PublicKey, rdm_core::status::StatusRequest)>>>,
-    /// The node rows this admin side holds as its mesh's writer (Q234): its join door reconciles a
+    /// The node rows this admin side holds as its mesh's writer (Q234): its `JoinService` reconciles a
     /// joiner's `(path, name)` to the row there, as a mesh-primary does.
     rows: Arc<rdm_admin::node_rows::WrittenRows>,
     /// The digest this admin side publishes as itself, on the topology cadence as a node-admin does.
@@ -332,7 +332,7 @@ impl AdminSide {
     /// The writer of this admin side's mesh's node rows, as its mesh's primary and the fabric-primary
     /// (Q234): what a node-admin's executor writes a create's rows through, over `storage` (the
     /// fabric's store root, where a birth writes its own part of its record) and the record this admin
-    /// side's join door reads.
+    /// side's `JoinService` reads.
     pub fn node_rows_on(&self, storage: Arc<dyn rdm_admin::storage::NodesStorage>) -> Arc<rdm_admin::node_rows::NodeRows> {
         let me = rdm_core::PathName::new(&self.launcher.path, &self.launcher.name).expect("the launcher's path and name");
         let mut admin = Node::allocated(me.clone(), &self.launcher.mesh, "node-admin");
@@ -408,7 +408,7 @@ pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, nam
     admin_side_taking_joins_elected(ip, &primary.fabric, name, true, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs(), SideRole::Silent { seed }).await
 }
 
-/// [`admin_side_silent_as`] whose `JoinNode` door is never opened: a node that joins it is answered
+/// [`admin_side_silent_as`] whose `JoinService` is never opened: a node that joins it is answered
 /// `NotReady` by name, always, so a join to it is never accepted.
 pub async fn admin_side_silent_deaf_as(ip: std::net::IpAddr, primary: &AdminSide, name: &rdm_core::PathName) -> AdminSide {
     let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
@@ -416,7 +416,7 @@ pub async fn admin_side_silent_deaf_as(ip: std::net::IpAddr, primary: &AdminSide
     admin_side_taking_joins_elected(ip, &primary.fabric, name, false, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs(), SideRole::Silent { seed }).await
 }
 
-/// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
+/// [`admin_side`] whose `JoinService` is never opened: a launched node's join is answered
 /// `NotReady` by name, always.
 pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), false, None, |b| b, rdm_core::digest::MemberStatus::Ready, no_certs()).await
@@ -426,7 +426,7 @@ fn no_certs() -> rdm_admin::certs::CertChoice {
     rdm_admin::certs::CertChoice::NoCerts
 }
 
-/// [`admin_side_on_rafka_time`] whose join door issues each admitted birth's member cert with the
+/// [`admin_side_on_rafka_time`] whose `JoinService` issues each admitted birth's member cert with the
 /// material `certs` names, on the admin side's rafka-time (the reference, when given).
 pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: Option<u64>, certs: rdm_admin::certs::CertChoice) -> AdminSide {
     admin_side_taking_joins(ip, fabric, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), true, reference_ms, |b| b, rdm_core::digest::MemberStatus::Ready, certs).await
@@ -472,9 +472,9 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     let joins = Arc::new(rdm_admin::join::Joins::over(nodes_storage.clone()));
     let rows: Arc<rdm_admin::node_rows::WrittenRows> = Arc::default();
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
-    let door = {
+    let join_service = {
         let learner = topology_view.clone();
-        Arc::new(rdm_admin::join::JoinDoor { nodes: Some((nodes_storage.clone(), rows.clone())), types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        Arc::new(rdm_admin::join::JoinService { nodes: Some((nodes_storage.clone(), rows.clone())), types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             me_path: name.path.clone(), me_name: name.name.clone(),
             joins: joins.clone(),
             answer: Arc::new({
@@ -514,7 +514,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
         })
     };
     if takes_joins {
-        let _ = join_slot.set(door);
+        let _ = join_slot.set(join_service);
     }
     let own_digest_slot: Arc<std::sync::OnceLock<rdm_core::digest::MeshDigest>> = Arc::new(std::sync::OnceLock::new());
     // The admin side holds its own mesh at a version its primary put into the mesh, as a running
@@ -647,7 +647,7 @@ async fn admin_side_taking_joins_elected(ip: std::net::IpAddr, fabric: &FabricId
     };
     let _ = own_digest_slot.set(admin_digest.clone());
     let own_topology_view = topology_view.clone();
-    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
+    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyService::new(topology_view.clone(), Arc::new(move || own_topology_view.reported(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
         observer: LiveMesh { topology_view, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, path: name.path.clone(), name: name.name.clone()},

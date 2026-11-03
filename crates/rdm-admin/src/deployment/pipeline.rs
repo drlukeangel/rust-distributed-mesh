@@ -94,7 +94,7 @@ pub enum CreateStep {
     /// publishes with its own topology digest.
     PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata,
     /// A mesh's first admin only: the fabric primary applies `MeshStatus::Pending` at this exact
-    /// birth, through its Status door, as soon as the birth is bound and published and before it
+    /// birth, through its `StatusService`, as soon as the birth is bound and published and before it
     /// is heard or asked to be Ready (e4.s11): a peer mesh's admin is heard on the backbone only
     /// once it is its mesh's primary, which needs Ready, which needs this.
     ApplyMeshPending,
@@ -2229,7 +2229,7 @@ impl DeploymentPipeline<'_> {
             }
         }
         let _forget = Forget(self.joins, node.node_id.clone(), build_log(run.build_id));
-        // Register the exact birth expected at the join door. This writes no lifecycle state.
+        // Register the exact birth expected at the `JoinService`. This writes no lifecycle state.
         let _reported = self.joins.expect(deployed.clone());
         let _: () = self
             .step_with(run, steps[0], async {

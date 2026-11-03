@@ -1,4 +1,4 @@
-//! fabric.delete at the Build door before the initial fabric is ready (build.md §1: "The
+//! fabric.delete at the `BuildService` before the initial fabric is ready (build.md §1: "The
 //! one exception is fabric.delete, which may interrupt the Build in progress because its target is
 //! nothing"; fabric-delete.md "Precondition"). Every cell reads the Build log it decides from: nothing
 //! here depends on timing.

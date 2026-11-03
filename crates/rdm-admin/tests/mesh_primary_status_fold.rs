@@ -260,7 +260,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                 let mut projected: Vec<(rdm_core::PathName, MemberStatus)> = backbone.own_members(&topology_view).into_iter().filter(|d| d.node.r#type == "node").map(|d| (d.node.location(), d.status)).collect();
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
-                let door = rdm_admin::status_rpc::StatusDoor {
+                let service = rdm_admin::status_rpc::StatusService {
                     certs: None,
                     app_channels: None,
                     declaration_seam: None,
@@ -295,7 +295,7 @@ fn a_new_mesh_primary_adopts_the_folded_member_statuses_into_its_view_and_projec
                     unreachable: Default::default(),
                     builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                 };
-                let declared = door.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None }).await;
+                let declared = service.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::Ready, operation: None }).await;
                 let after_declare = status(&rpc1);
                 let _ = std::fs::remove_dir_all(&dir);
                 (trace_id, after_take, rpc2_heard, projected, declared, after_declare)
@@ -383,7 +383,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let rpc = before.nodes.iter().find(|n| n.location() == rdm_core::PathName::new("mesh1.node", "1").unwrap()).unwrap().clone();
                 let predecessor_root = rdm_admin::store_root::StoreRoot::at(&dir);
                 let storage = stores(&predecessor_root, a.incarnation_id.as_ref().unwrap()).await;
-                let door = rdm_admin::status_rpc::StatusDoor {
+                let service = rdm_admin::status_rpc::StatusService {
                     certs: None,
                     app_channels: None,
                     declaration_seam: None, command_frame_seam: None,
@@ -399,7 +399,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                     pre_node_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), rejoin: Default::default(),
                     loads: None, digest_view: None, unreachable: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                 };
-                let reply = door.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState {
+                let reply = service.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState {
                     node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(),
                     state: NodeState::Ready, operation: None,
                 }).await;
@@ -411,7 +411,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 { let mut r = storage.meshes.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh1")); r.state = MeshState::Ready; storage.meshes.put_mesh(&r).await.unwrap(); }
                 assert_eq!(independent.meshes.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>().len(), 1, "the mesh row is on the root at its write");
                 drop(independent);
-                drop(door);
+                drop(service);
                 drop(storage);
                 drop(predecessor_root);
                 // A successor is an independent process: it reads what its predecessor wrote to the root.
