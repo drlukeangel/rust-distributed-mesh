@@ -790,7 +790,7 @@ mod tests {
         let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready };
         let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone(), caller.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap(), "mesh1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap()).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone()] }));
         // Both records live: the caller's delete is not written.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
