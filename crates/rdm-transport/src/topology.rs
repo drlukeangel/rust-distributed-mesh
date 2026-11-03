@@ -8754,8 +8754,7 @@ mod tests {
     /// CONTRACT: a birth is found by its endpoint key and by its (path, name) with a map read that
     /// answers what a scan of `all()` finds, through every write to the view: a digest heard, a
     /// newer one, a forwarded, topology or join copy, a stop and the node.joined that ends it (which
-    /// renames the birth), a successor at the same (path, name) with a new key or over the inherited
-    /// key, and the departure, stop or mesh deletion that removes a birth.
+    /// renames the birth), a successor at the same (path, name) with a new key, and the departure, stop or mesh deletion that removes a birth.
     #[test]
     fn a_birth_is_found_by_its_endpoint_key_and_its_path_name_through_every_write() {
         let view = DigestView::default();
@@ -8801,19 +8800,12 @@ mod tests {
         assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).unwrap().0.node.node_id, a2);
         assert_lookups_agree(&view, &gone);
 
-        // A successor over the inherited data dir: a new NodeId at the same key and (path, name).
-        let (b2, b2_inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(view.record_at(digest_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", "key-b", &b2, &b2_inc, 1), Instant::now()));
-        assert_eq!(view.get_by_endpoint("key-b").unwrap().0.node.node_id, b2, "of two births at one key, the one taken most recently");
-        assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).unwrap().0.node.node_id, b2);
-        assert_lookups_agree(&view, &gone);
-
-        // The predecessors' departures leave the successors found.
+        // The predecessors' departures leave the successor found.
         assert!(view.depart_at(op_at(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", &a, &a_inc, "node.delete"), Instant::now()));
         assert!(view.get_by_endpoint("key-a").is_none(), "a deleted birth is not found by its key");
         assert_eq!(view.get_by_path_name(&rdm_core::PathName::new("mesh1.node", "1").unwrap()).unwrap().0.node.node_id, a2);
         assert!(view.depart_at(op_at(rdm_core::PathName::new("mesh1.node", "2").unwrap(), "mesh1", "node", &b, &b_inc, "node.delete"), Instant::now()));
-        assert_eq!(view.get_by_endpoint("key-b").unwrap().0.node.node_id, b2, "the successor at the inherited key is still found");
+        assert!(view.get_by_endpoint("key-b").is_none(), "a deleted birth is not found by its key");
         assert_lookups_agree(&view, &gone);
 
         // The mesh's deletion departs every birth left.

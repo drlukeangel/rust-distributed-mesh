@@ -515,7 +515,7 @@ fn a_renewal_terminates_nothing_and_publishes_nothing() {
 /// blocked, each renewal is refused by its own client before any attempt (`NotSent`,
 /// `AdmissionBlocked`): no attempt is spent and no reply missed, so nothing marks the birth (no
 /// `via-call-failed` of it) and a later tick sends it again: at least two `not-sent` renewals. The
-/// member stays ready in the view at the same incarnation, no data-dir-lost is recorded of it, and its
+/// member stays ready in the view at the same incarnation, and its
 /// cert row is still the join's (Q141: a renewal not answered writes nothing). Once the block lifts,
 /// the next tick installs the renewal. (A spent call's mark, which holds the tick back, is
 /// `cert_renewal::tests::a_marked_birth_is_sent_no_renewal_until_its_mark_ends` in rdm-admin.)
