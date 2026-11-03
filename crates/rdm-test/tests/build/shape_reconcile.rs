@@ -9,16 +9,17 @@
 //!   `is_fabric_primary`, a node-admin that is its own mesh's admin primary;
 //! - the evidence links Build -> deployment -> lifecycle by parent span id,
 //!   across processes: every node this Build created booted under the
-//!   `DeployRuntime` step that launched it, which runs under a reconcile of
-//!   the Build (an MM's second mesh's members run on that mesh's own primary,
-//!   a later attempt), which descends from the request that accepted it; and
-//!   every node's `Pending -> Ready` transition descends from it too.
+//!   `DeployRuntime` step that launched it, which runs under a section run of
+//!   the Build (`build.update.via-reconcile`; an MM's second mesh's members run
+//!   on that mesh's own primary), under a fabric-primary's drive of the Build,
+//!   the first section in the trace of the request that accepted it; and every
+//!   node's `Pending -> Ready` transition descends from a section run too.
 //!
 //! The shapes run one after another in one test, each on its own fabric.
 
 use crate::build_log;
 use rdm_client::{FabricDesired, MeshDesired};
-use rdm_test::estate::{claim_decider, descends_from, named, Estate, Owner};
+use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -86,25 +87,22 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         .find(|s| s["attributes"]["build_id"] == build_id.as_str())
         .unwrap_or_else(|| panic!("{shape}: no span accepted build {build_id}"))
         .clone();
-    // The fabric primary runs the attempt that creates the node-admins; a
-    // new mesh's own primary runs a later attempt for its members. Every
-    // attempt descends from the accepting request, and the last converges.
+    // The fabric primary runs the section that creates the node-admins; a new mesh's own primary runs
+    // a later section for its members. Every section runs under a fabric-primary's drive of the Build,
+    // and one ends complete.
     let reconciles: Vec<Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .filter(|s| s["attributes"]["build_id"] == build_id.as_str())
         .cloned()
         .collect();
-    assert!(reconciles.iter().any(|r| r["attributes"]["outcome"] == "converged"), "{shape}: no converged reconcile of {build_id}");
-    // The accepting fabric-primary holds the request's context: every attempt it decides descends
-    // from the request; an attempt decided after the role moved starts its own trace.
-    let accepting = claim_decider(&spans, build_id.as_str(), "1").expect("attempt 1 was claimed");
+    assert!(reconciles.iter().any(|r| r["attributes"]["outcome"] == "complete"), "{shape}: no section run of {build_id} ended complete");
+    let drives: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|d| d["attributes"]["build_id"] == build_id.as_str()).collect();
     for r in &reconciles {
-        if claim_decider(&spans, build_id.as_str(), r["attributes"]["attempt"].as_str().unwrap_or_default()).is_none_or(|d| d == accepting) {
-            assert!(descends_from(&spans, r, &accepted_span), "{shape}: every reconcile the accepting fabric-primary decided descends from the accepting request: {r}");
-        } else {
-            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "{shape}: an attempt decided after the role moved starts its own trace: {r}");
-        }
+        assert!(drives.iter().any(|d| descends_from(&spans, r, d)), "{shape}: every section runs under a fabric-primary's drive of the Build: {r}");
     }
+    // The accepting fabric-primary holds the request's context: its drive, and the first section run
+    // under it, continue the request's trace; a drive after the role moved starts its own trace.
+    assert!(reconciles.iter().any(|r| r["trace_id"] == accepted_span["trace_id"]), "{shape}: the first section continues the accepting request's trace");
     let bootstrap_location = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     let created: Vec<_> = views.iter().filter(|n| n.location() != bootstrap_location).collect();
     for node in created {

@@ -671,9 +671,6 @@ async fn the_sole_admin_lost_with_its_members_serving_is_adopted_by_a_launch_at_
     let spans = estate.spans();
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
-    // The adoption is fabric recovery, the primary's own workflow, never a Build (Q342): it claims nothing.
-    let claims: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-adoption-claim").into_iter().filter(|sp| at(sp) >= lost_at).collect();
-    assert!(claims.is_empty(), "the adoption claims no attempt: {claims:#?}");
     let released: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| at(sp) >= lost_at && attr(sp, "node_id") == lost_id).collect();
     let release = released.iter().copied().min_by_key(|sp| at(sp)).expect("the lost birth's name released");
     let pulled: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted").into_iter().filter(|sp| at(sp) >= lost_at && attr(sp, "node") == s(&new["node_id"])).collect();
