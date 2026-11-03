@@ -70,11 +70,12 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
     (Step { build_id, deleted }, nodes)
 }
 
-/// Every deleted node's removal descends from the request that accepted its Build.
+/// Every deleted node's removal runs under a drive of the Build a request accepted.
 fn deletes_are_causal(estate: &Estate, steps: &[Step]) {
     let spans = estate.spans();
     for step in steps {
-        let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
+        // The Build was accepted by a request (`build.create`).
+        let _accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
             .into_iter()
             .find(|s| s["attributes"]["build_id"] == step.build_id.as_str())
             .unwrap_or_else(|| panic!("no span accepted build {}", step.build_id))
@@ -87,7 +88,11 @@ fn deletes_are_causal(estate: &Estate, steps: &[Step]) {
                 .find(|s| rdm_test::estate::at_location(s, &at) && s["attributes"]["build_id"] == step.build_id.as_str())
                 .unwrap_or_else(|| panic!("{node}: no removal under build {}", step.build_id))
                 .clone();
-            assert!(descends_from(&spans, &delete, &accepted), "{node}: its removal descends from its Build");
+            // The removal runs under a pass of its Build's drive, joined to the request that accepted the
+            // Build by `build_id` (telemetry.md §4: each pass of the Build drive is a root per pass,
+            // joined by `build_id`).
+            let drives: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|d| d["attributes"]["build_id"] == step.build_id.as_str()).collect();
+            assert!(drives.iter().any(|d| descends_from(&spans, &delete, d)), "{node}: its removal runs under a drive of its Build {}", step.build_id);
             let delete = named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
                 .into_iter()
                 .find(|s| rdm_test::estate::at_location(s, &at) && s["attributes"]["pipeline"] == "delete" && descends_from(&spans, s, &delete));

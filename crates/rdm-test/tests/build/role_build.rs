@@ -38,6 +38,12 @@ fn type_of(r#type: &str) -> String {
     }
 }
 
+/// Whether `sp` runs under a pass of Build `build_id`'s drive (telemetry.md §4: each pass of the Build
+/// drive is a root per pass, joined to the request that accepted the Build by `build_id`).
+fn under_drive(spans: &[Value], sp: &Value, build_id: &str) -> bool {
+    named(spans, "rdm.node_admin.build.update.via-drive").into_iter().any(|d| d["attributes"]["build_id"] == build_id && descends_from(spans, sp, d))
+}
+
 /// `(type, count)` of mesh1 beside its one node-admin.
 async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, Vec<Value>) {
     let mesh = MeshDesired::of("mesh1", std::iter::once(("node-admin".to_string(), 1)).chain(roles.iter().map(|(r#type, n)| (type_of(r#type), *n))));
@@ -138,7 +144,7 @@ async fn roles_are_born_by_build_under_their_type() {
             .unwrap_or_else(|| panic!("no span accepted build {id}"))
             .clone()
     };
-    let (first_accepted, second_accepted) = (accepted(&first), accepted(&second));
+    let (first_accepted, _second_accepted) = (accepted(&first), accepted(&second));
     for (t, _) in &roles {
         let node = PathName::new(format!("mesh1.{t}"), "1").unwrap();
         let view = nodes.iter().find(|n| location(n) == node).expect("fixture role node");
@@ -147,7 +153,7 @@ async fn roles_are_born_by_build_under_their_type() {
             .find(|s| s["attributes"]["node_path"] == node.path && s["attributes"]["node_name"] == node.name && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == first.as_str())
             .unwrap_or_else(|| panic!("no DeployRuntime step for {node:?}"))
             .clone();
-        assert!(descends_from(&spans, &step, &first_accepted), "{node:?}'s deployment runs under the Build that asked for it");
+        assert!(under_drive(&spans, &step, first.as_str()), "{node:?}'s deployment runs under a drive of the Build that asked for it");
         let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
             .into_iter()
             .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])
@@ -167,7 +173,7 @@ async fn roles_are_born_by_build_under_their_type() {
         .find(|s| s["attributes"]["node_id"] == compute["node_id"] && s["attributes"]["incarnation_id"] == compute["incarnation_id"] && s["attributes"]["build_id"] == second.as_str())
         .unwrap_or_else(|| panic!("no removal of mesh1.compute.1 under build {second}"))
         .clone();
-    assert!(descends_from(&spans, &delete, &second_accepted), "the compute's removal descends from the second Build");
+    assert!(under_drive(&spans, &delete, second.as_str()), "the compute's removal runs under a drive of the second Build");
     estate.record_trace_url(first_accepted["trace_id"].as_str().unwrap_or(""));
 }
 
@@ -203,7 +209,7 @@ async fn a_build_with_explicit_role_bindings_launches_every_role_from_the_one_no
             .find(|s| s["attributes"]["node_path"] == node.path && s["attributes"]["node_name"] == node.name && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
             .unwrap_or_else(|| panic!("no DeployRuntime step for {node:?}"))
             .clone();
-        assert!(descends_from(&spans, &step, &accepted), "{node:?}'s launch runs under the Build that asked for it");
+        assert!(under_drive(&spans, &step, build_id.as_str()), "{node:?}'s launch runs under a drive of the Build that asked for it");
         let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
             .into_iter()
             .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])

@@ -155,7 +155,11 @@ async fn pending_contract(cell: &str) {
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's build.create span");
     let sections: Vec<&Value> = named(&spans, "rdm.node_admin.build.serve.via-attempt-run").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str() && r["attributes"]["mesh"] == "mesh2").collect();
     assert!(!sections.is_empty(), "the creation Build's section of mesh2 was run");
-    assert!(sections.iter().any(|r| descends_from(&spans, r, &accepted)), "mesh2's section call descends from the creation Build's request: {sections:?}");
+    // The section call runs under a pass of the creation Build's drive at the fabric-primary that
+    // accepted it, joined to the request by `build_id` (telemetry.md §4: each pass of the Build drive
+    // is a root per pass, joined by `build_id`).
+    let drives: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|d| d["attributes"]["build_id"] == create.as_str() && of(d, &fabric_primary)).collect();
+    assert!(sections.iter().any(|r| drives.iter().any(|d| descends_from(&spans, r, d))), "mesh2's section call runs under the fabric-primary's drive of the creation Build: {sections:?}");
 
     let result = json!({
         "cell": cell,
