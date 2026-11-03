@@ -671,12 +671,6 @@
           "dir": "target/i143-acceptance/2777/process/seed_runner_completes_every_operation_on_process"
         },
         {
-          "name": "restart_during_an_inflight_build_is_refused_and_opens_no_attempt",
-          "source": "crates/rdm-test/tests/node/restart_canary_seed.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/restart_during_an_inflight_build_is_refused_and_opens_no_attempt/estate cargo test -p rdm-test --test main restart_canary_seed::restart_during_an_inflight_build_is_refused_and_opens_no_attempt -- --exact",
-          "dir": "target/i143-acceptance/2777/process/restart_during_an_inflight_build_is_refused_and_opens_no_attempt"
-        },
-        {
           "name": "restart_of_an_unknown_node_is_refused_by_name_and_writes_no_build_event",
           "source": "crates/rdm-test/tests/node/restart_canary_seed.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/restart_of_an_unknown_node_is_refused_by_name_and_writes_no_build_event/estate cargo test -p rdm-test --test main restart_canary_seed::restart_of_an_unknown_node_is_refused_by_name_and_writes_no_build_event -- --exact",

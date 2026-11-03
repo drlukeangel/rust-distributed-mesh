@@ -5,8 +5,7 @@
 //! mesh-primary hears the birth fall silent, proves it gone by its exact runtime's own terminal
 //! status (the provider inspecting the immutable container id in its control domain), and its
 //! recovery, the mesh-primary's own workflow (Q342), re-creates the node at the same path and name in
-//! a new container. Nothing here signals the fabric: the Build and runtime-adoption path does the
-//! recovery.
+//! a new container. Nothing here signals the fabric: the mesh-primary's recovery does it.
 //!
 //! The Day-0 node-admin runs in the fabric's container network and drives the same Docker
 //! daemon through its mounted socket. Every runtime shares the mounted fabric store.
@@ -36,7 +35,10 @@ fn docker_state(id: &str) -> String {
 /// provider step on its exact immutable id, and that verdict starts the mesh-primary's recovery (Q342),
 /// which re-creates the node
 /// at the same path and name in a new container under a new node id and incarnation; the
-/// container id never stands for the new runtime.
+/// container id never stands for the new runtime. The recovery belongs to no Build: its span
+/// (`rdm.node_admin.node.update.via-node-recovery`) carries the mesh, the node's path, name, node_id
+/// and incarnation_id, the submitter, the verdict and the outcome, and no build_id; its own steps
+/// (`rdm.node_admin.deployment.update.via-step`) run in its trace with an empty build_id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it() {
     if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
@@ -56,7 +58,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
         "mesh1",
     )
     .await;
-    let build_id = estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await.build_id.to_string();
+    estate.resize_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settles_to(&[("mesh1", 1, 2)], Duration::from_secs(30)).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
 
@@ -90,7 +92,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
 
     // Evidence: the proof started the recovery, and the recovery re-created the node through every
     // create step.
-    let is_recovery = |sp: &&Value| s(&sp["attributes"]["build_id"]) == build_id
+    let is_recovery = |sp: &&Value| sp["attributes"]["mesh"] == "mesh1"
         && sp["attributes"]["node_id"] == before["node_id"]
         && sp["attributes"]["incarnation_id"] == before["incarnation_id"]
         && s(&sp["attributes"]["outcome"]).starts_with("complete");
@@ -107,9 +109,9 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     assert_eq!(s(&recovery["attributes"]["verdict"]), "exited", "node investigation's provider step read the killed container's exact id exited: {recovery}");
     let deployed = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| {
         let at = &sp["attributes"];
-        s(&at["build_id"]) == build_id && at["node_path"] == "mesh1.node" && at["node_name"] == "1" && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
+        sp["trace_id"] == recovery["trace_id"] && s(&at["build_id"]).is_empty() && at["node_path"] == "mesh1.node" && at["node_name"] == "1" && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
     });
-    assert!(deployed, "{build_id} deployed the successor anew");
+    assert!(deployed, "the recovery deployed the successor anew, in its own trace and under no Build");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
 
     estate.stop().await;
