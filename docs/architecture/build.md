@@ -403,7 +403,7 @@ What happened while executing a Build is also the events store's: one append-onl
 | `rdm.mesh.pending`, `rdm.mesh.ready`, `rdm.mesh.deleting`, `rdm.mesh.deleted` | the mesh's mesh-primary (the fabric-primary while the mesh has none) | none | `mesh_id`, `mesh` |
 | `rdm.fabric.pending`, `rdm.fabric.ready` | the fabric-primary | none | `fabric_id` |
 
-The store answers three reads: by event.id, the events of one Build (by `data.build_id`, in event.id order) and the events of one node (by `subject`, in event.id order).
+The store answers four reads: by event.id, the events of one Build (by `data.build_id`, in event.id order), the events of one node (by `subject`, in event.id order) and the storage changes' events (`type` `rdm.storage.*`, in event.id order).
 
 ### 5.1 RDM adapters
 

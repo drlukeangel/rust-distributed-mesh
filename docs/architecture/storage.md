@@ -46,8 +46,8 @@ Rules:
 - **Defaults are the application's.** Rafka's per-kind defaults (broker and node-admin persistent,
   gateway and compute ephemeral) belong to its ingress adapter; normalization happens before Build
   acceptance, and an accepted Build carries the explicit value for every path.
-- **A change of `storage_persistence` alone is a property Build**: the fabric stays ready
-  ([states.md](lifecycles/states.md), "Resize and executable replacement").
+- **`storage_persistence` changes only with a new node** ([node replace](lifecycles/node-replace.md)): a
+  Build states it only for a node it creates.
 
 A caller reads it as a field of the node's row, `node.get [storage_persistence: persistent]`.
 
@@ -87,19 +87,21 @@ value is the intent, the node's is the fact, and during a change they differ, wh
 | | who sets it | from |
 |---|---|---|
 | Day 0 | the bootstrap admin, on the Fabric row | its environment, `RDM_TOPOLOGY_STORAGE_PROVIDER`, `file` when unset |
-| every launch | the launching admin, into the node's environment | the Fabric row and any Build in progress |
+| every launch | the launching admin, into the node's environment | the Fabric row and any change in progress |
 | a restart with no launcher (the adoption launch) | the node itself | its own row in its data dir |
-| a change | the application, by `build.create` naming the new value, once its store exists | the Build; a Build that omits the property leaves it unchanged (Q166) |
+| a change | the application, by `fabric.storage.update { topology_storage_provider }` to the fabric-primary, once its store exists | the change's events |
 | the end of a change | the fabric-primary, on the Fabric row | the commit |
 
 ### Changing it
 
-A storage change is a Build that carries the complete topology with the same meshes and the new
-`topology_storage_provider` ([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine)). It
-is admitted and refused as any Build is, one in progress at a time, and it is a property Build: the
+A storage change is the fabric-primary's own workflow, never a Build: it adds and removes no node
+([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine), Q342). The application requests
+it with `fabric.storage.update { topology_storage_provider }`, a single call to the fabric-primary as
+[`fabric.root.update`](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) is. One change runs
+at a time and never beside a Build in progress: each refuses the other `build-in-progress` by name. The
 fabric, every mesh and every node stay ready, no node restarts, and no node changes
 state. Acceptance refuses by name a provider the fabric-primary's wiring does not register or cannot
-open. The change has a durable `change_id`, recorded with its Build before its first command; its
+open. The change has a durable `change_id`, recorded as its `rdm.storage.started` event before its first command; its
 commands carry it, and a node refuses by name a command of an older one (`rejected-stale-change`).
 It is four steps:
 
@@ -116,29 +118,30 @@ It is four steps:
    with its exact claimant. A copy resumed after a lost answer appends nothing twice; a new provider
    holding lines the old one does not is refused by name, and nothing switches.
 3. **Switch.** The fabric-primary appends the change's `rdm.storage.committed` event for
-   `(build_id, change_id)` to the new provider's events store, then appends the Fabric row's line naming the new
+   its `change_id` to the new provider's events store, then appends the Fabric row's line naming the new
    provider current and the old in `previous_topology_storage_providers`. Whoever resumes the change
    learns the decision only from that record.
 4. **Unblock.** The fabric-primary sends `mesh.unblock` to every mesh-primary. Each mesh-primary moves
    its nodes to the new provider, then replies `unblocked` and issues commands again.
-   A mesh-primary told to run an unblock attempt reads the change's `rdm.storage.committed` event on the new
-   provider first (a Build-storage read by name, Q292); present, it moves its own stores there before
-   it reads the attempt's claim; absent, the change is not committed and it reads its claim where it
-   is. A read error fails the attempt by name, never as absence.
-   A node that refuses its move is re-created at its `path.name` on the new provider, an attempt of
-   the change's own Build, before its mesh-primary replies `unblocked`.
+   A mesh-primary told `mesh.unblock` reads the change's `rdm.storage.committed` event on the new
+   provider first (an events-store read by name, Q292); present, it moves its own stores there;
+   absent, the change is not committed and it stays where it is. A read error fails the unblock by
+   name, never as absence.
+   A node that refuses its move is re-created on the new provider by its mesh-primary's node
+   recovery, never part of the change, before its mesh-primary replies `unblocked`.
 
 A mesh-primary that does not reply `blocked` or `unblocked` is a lost node, as any node is
 ([node investigation](lifecycles/node-investigation.md)): it is investigated, and on any verdict but
-`reached` node recovery re-creates it at its `path.name`, an attempt of the change's own Build. After
-the switch the Build completes once every mesh-primary has replied `unblocked`; nothing else waits.
+`reached` node recovery re-creates it, the primary's own workflow, never part of the change. After
+the switch the change completes, its `rdm.storage.ended` event written, once every mesh-primary has
+replied `unblocked`; nothing else waits.
 
-No Build is admitted while a change is in progress, a change of `topology_storage_provider`
-included; `fabric.delete` alone is admitted, and it interrupts the change as it interrupts any Build,
-the records on both providers kept. A step that fails before the switch fails the Build only once the
-fabric-primary has read that no `rdm.storage.committed` event exists for `(build_id, change_id)`; the fabric-primary then
+No Build and no other change is admitted while a change is in progress; `fabric.delete` alone is
+admitted, and it interrupts the change as it interrupts any Build,
+the records on both providers kept. A step that fails before the switch fails the change only once the
+fabric-primary has read that no `rdm.storage.committed` event exists for its `change_id`; the fabric-primary then
 sends `mesh.unblock` on the old provider, the new provider closed and the Fabric row unchanged. No timer ends a block. The previous provider is kept as it was at the switch, named on
-the Fabric row, written no more and never deleted by RDM. A later Build naming it again copies into
+the Fabric row, written no more and never deleted by RDM. A later change naming it again copies into
 it only the lines it lacks.
 
 A caller reads the fabric's with `fabric.get` and each node's with

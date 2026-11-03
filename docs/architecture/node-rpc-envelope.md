@@ -214,7 +214,7 @@ sees only the catalog.
 | `0x1F` | build-facts | rdm | reserved | | |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
-| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `LeaveMesh`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `LeaveMesh`, the mesh-primary to the exact node, and `BlockMesh`, `UnblockMesh`, the fabric-primary to each mesh-primary; server-streaming, never forwarded; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
 | `0x23` | read | rdm | live | canonical | `Get`: fabric.get, mesh.get, node.get, server-streaming, never forwarded (Q285) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
@@ -356,6 +356,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [node.connection.create](lifecycles/node-connections-admit.md) | The acceptor's verification of the dialer's member cert on the first bi-stream of an inbound connection of a registered product ALPN; RDM framing, not a Node RPC op | `admitted` or `refused { reason }`, a connection fact ([connections.md](connections.md#12-connection-state)) | — (typed connection fact; no Node RPC) |
 | mesh.get | mesh.get answers every mesh the answering admin holds that matches every pair (id, name, status, primary_admin), by name, [Read 0x23](#read-op-0x23-rdm) `Get { entity: Meshes, filter }`, streamed in `Meshes` frames, the empty list when none matches; a mesh's nodes are node.get [mesh: name]; a mesh's tags are its own property, mesh.tag.get / mesh.tag.create { label \| [labels] } / mesh.tag.delete { All \| [labels] }, the same shape and label grammar as node.tag; dedicated request mapping for mesh.tag is open | read result | `OK`; AlreadyApplied `ALREADY_EXISTS`, malformed config `INVALID_ARGUMENT`, state/row refusal `FAILED_PRECONDITION` |
 | [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | A single call to the fabric-primary with a new root secret, the trust anchor: [Status 0x1B](#status-op-0x1b-rdm) `UpdateRoot { secret }`, answered `RootUpdated { phase }`; starts the root rotation's phases; refused `rotation-in-progress` or `root-already-trusted` by name; `fabric.get` carries `roots { phase, expires_at }` and `ca { expires_at }` | fabric.root.updated | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| fabric.storage.update | A single call to the fabric-primary naming the fabric's new provider: [Status 0x1B](#status-op-0x1b-rdm) `UpdateStorage { topology_storage_provider }`, answered `StorageUpdated { change_id }` once its `rdm.storage.started` event is written; refused `build-in-progress` while a Build or another change is in progress, and by name for a provider the fabric-primary's wiring does not register or cannot open (`topology-storage-provider-not-registered`, `topology-storage-provider-not-opened`); its end is its `rdm.storage.ended` event | fabric.storage.updated | `OK` for served result; `FAILED_PRECONDITION` for named state refusal |
 | fabric.get | fabric.get answers the fabric the answering admin holds when it matches every pair (id, name, status, provider, fabric_primary): its id, name, state, provider, fabric-primary and meshes, [Read 0x23](#read-op-0x23-rdm) `Get { entity: Fabrics, filter }`, streamed in `Fabrics` frames; its nodes are node.get | read result | `OK` |
 | [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh's mesh-primary is the fabric-primary; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [fabric.create](lifecycles/fabric-create.md) | The first node-admin, started with no mesh and no durable topology, is the executor and the fabric-primary; the accepted topology rides [build.create 0x20](#build-op-0x20-rdm) | fabric.created when the fabric is ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
@@ -1672,7 +1673,7 @@ after StopNode or StartNode acceptance:
   ← Failed { step, reason, code } (Terminal; appended reply 15)
 before lifecycle acceptance:
   ← RejectedInvalidNodeTransition { current } (Refusal; appended reply 16, FAILED_PRECONDITION)
-StorageStep { node_id, incarnation, build_id, change_id, provider } (appended request 3)
+StorageStep { node_id, incarnation, change_id, provider } (appended request 3)
   ← CommandAccepted { node_id, incarnation } (Started)
   ← StorageStepped { provider } (Terminal; appended reply 17)
   ← Failed { step, reason, code } (Terminal)
@@ -1685,9 +1686,7 @@ before LeaveMesh acceptance:
   ← BusyHoldingConnections { connections } (Refusal; appended reply 22, UNAVAILABLE, as on 0x1B)
 ```
 
-A storage change's `mesh.block` and `mesh.unblock` are operations of its Build, each claimed and
-dispatched by the fabric-primary to the mesh's mesh-primary on [Build 0x20](#build-op-0x20-rdm)
-(`build.attempt.run`) and ending in its receipt. In its `mesh.unblock` the mesh-primary moves each
+A storage change's `mesh.block` and `mesh.unblock` are commands of the fabric-primary's own workflow to each mesh-primary, never part of a Build ([storage.md](storage.md#changing-it)), `BlockMesh` and `UnblockMesh` on this op. In its `mesh.unblock` the mesh-primary moves each
 node of its mesh to the provider the change's `rdm.storage.committed` event decided with `StorageStep` on this op, its own
 birth in-process; `StorageStepped` answers once the birth writes `provider`, and the mesh-primary then
 records `provider` on the birth's row. A command of a change older than the one the birth acted on is
