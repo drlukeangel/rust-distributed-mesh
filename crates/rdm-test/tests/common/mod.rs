@@ -2,7 +2,7 @@
 //! i143.e2.s4 container): a node is deployed through the create
 //! `DeploymentPipeline`, every step leaves a receipt, and every step runs as a
 //! child span of the pipeline span carrying `step`, `build_id`, `provider`,
-//! `outcome`, `attempt` and `elapsed_ms`.
+//! `outcome` and `elapsed_ms` (a Build has no attempts, Q344).
 //!
 //! The admin side is in-process (a gossip seed plus a Node RPC client); the
 //! node is a real `testkit-node` runtime started by the provider the
@@ -299,8 +299,20 @@ pub struct Published {
     pub removed: Mutex<Vec<PathName>>,
     /// The exact births removed from their path, in order.
     pub removed_births: Mutex<Vec<(PathName, NodeId, IncarnationId)>>,
+    /// The node rows the executor writes a create's rows through, where the cell keeps a nodes store
+    /// (`AdminSide::node_rows`): a rerun reads its completed steps' values from them (D67).
+    pub rows: Option<std::sync::Arc<rdm_admin::node_rows::NodeRows>>,
+}
+impl Published {
+    /// A sink writing node rows through `rows`.
+    pub fn with_rows(rows: std::sync::Arc<rdm_admin::node_rows::NodeRows>) -> Self {
+        Self { rows: Some(rows), ..Self::default() }
+    }
 }
 impl TopologySink for Published {
+    fn node_rows(&self) -> Option<std::sync::Arc<rdm_admin::node_rows::NodeRows>> {
+        self.rows.clone()
+    }
     fn publish(&self, node: Node) {
         self.nodes.lock().unwrap().push(node);
     }
@@ -509,7 +521,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
         assert_eq!(f.get("build_id"), Some(&build_id.log().to_string()), "{}", step.name());
         assert_eq!(f.get("provider").map(String::as_str), Some(expected_provider.as_str()), "{}", step.name());
         assert_eq!(f.get("outcome").map(String::as_str), Some("complete"), "{}", step.name());
-        assert_eq!(f.get("attempt").map(String::as_str), Some("1"), "{}", step.name());
+        assert!(f.get("attempt").is_none(), "{}: a step carries no attempt (Q344): {f:?}", step.name());
         assert!(f.get("elapsed_ms").is_some_and(|v| v.parse::<u64>().is_ok()), "{}: elapsed_ms {f:?}", step.name());
     }
 

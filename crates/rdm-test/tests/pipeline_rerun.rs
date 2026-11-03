@@ -1,9 +1,9 @@
 //! i143.e2.s5 functional: a create pipeline killed mid-step is re-run as the
-//! next attempt of the same Build and completes without duplicating effects:
+//! next run of the same Build and completes without duplicating effects:
 //! one runtime, the address it reported, every step `Complete` exactly once.
 //!
 //! The kill drops the pipeline's future at a chosen point (the executor
-//! dying), so nothing after that point runs, not even the receipt.
+//! dying), so nothing after that point runs, not even its step event.
 
 use crate::common;
 
@@ -28,9 +28,9 @@ use tokio::sync::Notify;
 /// Where the executor dies.
 #[derive(Clone, Copy, PartialEq)]
 enum KillAt {
-    /// The runtime is spawned; the `DeployRuntime` receipt is never written.
+    /// The runtime is spawned; the `DeployRuntime` step event is never written.
     AfterSpawn,
-    /// `WaitForMeshJoin` completed from the birth's report; its receipt is never written.
+    /// `WaitForMeshJoin` completed from the birth's report; its step event is never written.
     InWaitForMeshJoin,
 }
 
@@ -132,14 +132,14 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let template = template(&admin);
     let builds = crate::common::stepping(&fabric, "mesh1");
     let build_id = publish_build(&builds, add_node()).await;
-    let sink = Published::default();
+    let sink = Published::with_rows(admin.node_rows());
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
     // The node.id the Build minted for the node, one per cell: a cell beside it never runs a runtime of it.
     let node_id = rdm_core::NodeId::mint();
-    let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+    let req = || CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
-    // Attempt 1 dies at the kill point.
+    // The first run dies at the kill point.
     let first = Killable {
         inner: process.clone(),
         kill_at: (kill_at == KillAt::AfterSpawn).then_some(kill_at),
@@ -157,16 +157,16 @@ async fn killed_then_rerun(kill_at: KillAt) {
         template: &template,
         timeouts: Timeouts::default(),
     };
-    let attempt1 = req(1);
+    let first_run = req();
     tokio::select! {
-        r = pipeline.create(&attempt1) => panic!("attempt 1 was to die mid-step, but finished: {:?}", r.map(|c| c.node.name)),
+        r = pipeline.create(&first_run) => panic!("the first run was to die mid-step, but finished: {:?}", r.map(|c| c.node.name)),
         _ = reached.notified() => {}
     }
-    let first_pid = *first.spawned.lock().unwrap().first().expect("attempt 1 spawned the runtime");
-    // Where the first attempt's birth reported it bound, when it got as far as publishing it.
+    let first_pid = *first.spawned.lock().unwrap().first().expect("the first run spawned the runtime");
+    // Where the first run's birth reported it bound, when it got as far as publishing it.
     let reported_before_kill = sink.nodes.lock().unwrap().first().and_then(|n| n.transport_addr);
 
-    // Attempt 2: the real provider and observer, the same Build.
+    // The rerun: the real provider and observer, the same Build.
     let second = Killable { inner: process.clone(), kill_at: None, reached, spawned: Mutex::new(vec![]) };
     let pipeline = DeploymentPipeline {
         provider: &second,
@@ -178,10 +178,10 @@ async fn killed_then_rerun(kill_at: KillAt) {
         template: &template,
         timeouts: Timeouts::default(),
     };
-    let attempt2 = req(2);
-    let created = pipeline.create(&attempt2).await.unwrap_or_else(|e| panic!("the re-run failed: {e}"));
+    let rerun = req();
+    let created = pipeline.create(&rerun).await.unwrap_or_else(|e| panic!("the re-run failed: {e}"));
 
-    // No duplicated effect: one runtime (the one attempt 1 started), the
+    // No duplicated effect: one runtime (the one the first run started), the
     // same endpoints, no extra port held.
     assert!(second.spawned.lock().unwrap().is_empty(), "the re-run spawned a second runtime");
     assert_eq!(created.handle.pid, Some(first_pid));
@@ -225,7 +225,7 @@ impl NodeObserver for NoGossip<'_> {
 /// CONTRACT (node-create.md step 5: the accepting authority completes WaitForBind / WaitForMeshJoin
 /// "from the validated report, never from gossip"; "Join completion and failure evidence": a digest
 /// is insufficient): the admin process is restarted after the birth's join was admitted and before
-/// the WaitForMeshJoin receipt. The re-run, holding nothing of the admitted birth in memory,
+/// the WaitForMeshJoin step event. The re-run, holding nothing of the admitted birth in memory,
 /// completes the step from the report the authority kept durable at admission (the birth's runtime
 /// row in nodes.storage: the exact birth, the runtime and data dir the report carried), reading no
 /// gossip; the birth never sends its JoinNode twice, one runtime runs, and every step is Complete
@@ -240,15 +240,15 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         let template = template(&admin);
         let builds = crate::common::stepping(&fabric, "mesh1");
         let build_id = publish_build(&builds, add_node()).await;
-        let sink = Published::default();
+        let sink = Published::with_rows(admin.node_rows());
         let reached = Arc::new(Notify::new());
         let process = Arc::new(ProcessDeploymentProvider::new());
         // The node.id the Build minted for the node, one per cell: a cell beside it never runs a runtime of it.
         let node_id = rdm_core::NodeId::mint();
-        let req = |attempt| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = || CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
-        // Attempt 1 dies after the join was admitted (WaitForBind's receipt is written) and before the
-        // WaitForMeshJoin receipt.
+        // The first run dies after the join was admitted (WaitForBind's step event is written) and before
+        // the WaitForMeshJoin step event.
         let first = Killable { inner: process.clone(), kill_at: None, reached: reached.clone(), spawned: Mutex::new(vec![]) };
         let paused = Pausing { inner: &builds, before: Some(CreateStep::WaitForMeshJoin.name()), reached: reached.clone() };
         let pipeline = DeploymentPipeline {
@@ -261,12 +261,12 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
             template: &template,
             timeouts: Timeouts::default(),
         };
-        let attempt1 = req(1);
+        let first_run = req();
         tokio::select! {
-            r = pipeline.create(&attempt1) => panic!("attempt 1 was to die before the WaitForMeshJoin receipt, but finished: {:?}", r.map(|c| c.node.name)),
+            r = pipeline.create(&first_run) => panic!("the first run was to die before the WaitForMeshJoin step event, but finished: {:?}", r.map(|c| c.node.name)),
             _ = reached.notified() => {}
         }
-        let first_pid = *first.spawned.lock().unwrap().first().expect("attempt 1 spawned the runtime");
+        let first_pid = *first.spawned.lock().unwrap().first().expect("the first run spawned the runtime");
 
         // The admin process restarts: nothing of the admitted birth is in memory; its durable rows stand.
         let restarted = Joins::over(admin.nodes_storage.clone());
@@ -282,8 +282,8 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
             template: &template,
             timeouts: Timeouts { join: Duration::from_secs(5), ..Timeouts::default() },
         };
-        let attempt2 = req(2);
-        let created = pipeline.create(&attempt2).await.unwrap_or_else(|e| panic!("the re-run on the restarted admin failed: {e}"));
+        let rerun = req();
+        let created = pipeline.create(&rerun).await.unwrap_or_else(|e| panic!("the re-run on the restarted admin failed: {e}"));
 
         assert!(second.spawned.lock().unwrap().is_empty(), "the re-run spawned a second runtime");
         assert_eq!(created.handle.pid, Some(first_pid));
@@ -294,7 +294,7 @@ fn a_pipeline_rerun_on_a_restarted_admin_completes_the_join_from_the_durable_rep
         assert_eq!(Some(row.runtime), created.handle.fact(), "the row carries the runtime the report carried");
         assert_eq!(row.data_dir, created.node.data_dir, "the row carries the data dir the report carried");
 
-        // Every step Complete exactly once across both attempts; WaitForMeshJoin and after are attempt 2's.
+        // Every step Complete exactly once across both runs; WaitForMeshJoin and after are the rerun's.
         let view = builds.read_build(&build_id).await.unwrap();
         let split_at = CreateStep::ORDER.iter().position(|s| *s == CreateStep::WaitForMeshJoin).unwrap();
         for (i, step) in CreateStep::ORDER.iter().enumerate() {

@@ -329,6 +329,25 @@ impl AdminSide {
         });
     }
 
+    /// The writer of this admin side's mesh's node rows, as its mesh's primary and the fabric-primary
+    /// (Q234): what a node-admin's executor writes a create's rows through, over this admin side's
+    /// nodes.storage and the record its join door reads.
+    pub fn node_rows(&self) -> Arc<rdm_admin::node_rows::NodeRows> {
+        let me = rdm_core::PathName::new(&self.launcher.path, &self.launcher.name).expect("the launcher's path and name");
+        let mut admin = Node::allocated(me.clone(), &self.launcher.mesh, "node-admin");
+        admin.node_id = self.launcher.node_id.clone();
+        admin.incarnation_id = Some(self.launcher.incarnation.clone());
+        admin.status = rdm_admin::model::NodeStatus::Ready;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let view = rdm_admin::topology::Topology {
+            fabric: rdm_admin::model::Fabric { id: self.fabric.clone(), name: "fabric1".into(), status: rdm_admin::model::ScopeStatus::Ready, provider: rdm_admin::model::ProviderKind::Process },
+            meshes: vec![rdm_admin::model::Mesh { id: Some(MeshId::parse(TEST_MESH_ID).unwrap()), name: self.launcher.mesh.clone(), status: rdm_admin::model::ScopeStatus::Ready }],
+            nodes: vec![admin],
+        };
+        Arc::new(rdm_admin::node_rows::NodeRows::new(me, self.launcher.node_id.clone(), Arc::new(tokio::sync::RwLock::new(view)), self.nodes_storage.clone()).with_written(self.rows.clone()))
+    }
+
     /// Hold `row` as the node row at its `path.name`, a blind put of its own key.
     pub fn put_row(&self, row: rdm_admin::storage::NodeRow) {
         self.rows.hold(&row);

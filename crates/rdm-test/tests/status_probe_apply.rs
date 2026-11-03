@@ -105,7 +105,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
                 field: "command".into(),
                 expected: "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call".into(),
                 // The operation is structured (action, subject), reported as it is held.
-                reported: format!("node-left {stop:?} (build 08zd8rg6hhjh, attempt 1)"),
+                reported: format!("node-left {stop:?} (build 08zd8rg6hhjh)"),
             }
         );
         // ApplyNodeState sets no state: refused with the held state, nothing moves.
