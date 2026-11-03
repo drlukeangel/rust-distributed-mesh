@@ -607,17 +607,35 @@ impl Dispatcher for RpcDispatcher {
         // One call, addressed to the mesh's primary, under the call's one retry mechanism (Q344): its
         // attempts follow the birth the view names for the role; a spent call ends the section.
         let to = NodeTarget::Primary { mesh: Some(mesh.to_string()) };
-        match self.client.call_stream::<Build>(&to, &req, &opts).await {
+        self.attempt_run_at(&to, &req, &opts, mesh).await
+    }
+
+    async fn dispatch_to(&self, build_id: &BuildId, mesh: &str, to: &rdm_core::NodeId, context: CallContext) -> Dispatched {
+        if *to == self.local.exec.executor.node_id {
+            return local_dispatched(self.local.attempt_run(build_id, mesh, &context).await);
+        }
+        let req = BuildRequest::AttemptRun { build_id: build_id.to_string(), mesh: mesh.to_string(), context: context.clone() };
+        let opts = CallOptions { send: self.send.clone(), context: Some(context), ..CallOptions::default() };
+        // The mesh-primary a node.primary.update of this Build named, by its exact birth: this admin's
+        // view names the one it moved until gossip brings the change (node-primary-update.md step 6).
+        self.attempt_run_at(&NodeTarget::ExactNode(to.clone()), &req, &opts, mesh).await
+    }
+
+    async fn run_own(&self, turn: &crate::stop_gate::Turn, build_id: &BuildId, mesh: &str, context: CallContext, operations: Vec<BuildOperation>) -> Dispatched {
+        local_dispatched(self.local.run_under(turn, build_id, mesh, &context, operations).await)
+    }
+}
+
+impl RpcDispatcher {
+    /// One `build.attempt.run` of `mesh`'s section on `to`, its stream or how it ended.
+    async fn attempt_run_at(&self, to: &NodeTarget, req: &BuildRequest, opts: &CallOptions, mesh: &str) -> Dispatched {
+        match self.client.call_stream::<Build>(to, req, opts).await {
             // The mesh-primary writes its steps' events itself; the stream carries them as frames.
             Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream })),
             Err((RpcOutcome::Reply(r), _)) => Dispatched::Refused(r.value().clone()),
             Err((RpcOutcome::Unserved(u), _)) => Dispatched::Refused(rdm_core::reply::build::not_ready(format!("mesh {mesh}'s primary does not serve the Build family: {u:?}"))),
             Err((other, _)) => Dispatched::Unreached(format!("the call to mesh {mesh}'s primary ended {}: {other:?}", other.name())),
         }
-    }
-
-    async fn run_own(&self, turn: &crate::stop_gate::Turn, build_id: &BuildId, mesh: &str, context: CallContext, operations: Vec<BuildOperation>) -> Dispatched {
-        local_dispatched(self.local.run_under(turn, build_id, mesh, &context, operations).await)
     }
 }
 

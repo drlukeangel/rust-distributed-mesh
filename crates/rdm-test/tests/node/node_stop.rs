@@ -1192,8 +1192,9 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let moved = frames(nodes.stop(&primary).await.expect("the stop of mesh2's primary was accepted")).await;
     assert_eq!(moved.last(), Some(&Frame::Complete), "{moved:?}");
-    let now = estate.mesh_node_views("mesh2").await;
-    assert!(now.iter().any(|n| n.location() == successor && n.is_primary), "{successor:?} holds mesh2's role: {now:?}");
+    // The fabric-primary, the stop's commander, records nothing from the update's answer: its view takes
+    // mesh2's new primary from gossip (node-primary-update.md "The commander", Q352).
+    estate.until_view(&format!("{successor:?} holds mesh2's role in the fabric-primary's view"), Duration::from_secs(10), |view| view.iter().any(|n| n.location() == successor && n.is_primary).then_some(())).await;
     let started = frames(nodes.start(&stopped_node).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     // Start completes at the mesh-primary's ready apply. This entry admin is in another mesh:

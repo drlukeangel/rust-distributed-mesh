@@ -12,6 +12,7 @@ use rdm_core::framing::Birth;
 use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::{DecodeFailure, NodeProtocol};
+use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use rdm_core::{IncarnationId, NodeId};
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -65,18 +66,19 @@ fn requests_match_the_frozen_two_variant_wire_schema() {
     assert_eq!(NodePrimaryUpdate::decode_request(&[2]), Err(DecodeFailure::UnknownVariant));
 }
 
-/// CONTRACT: the family's thirteen replies. `PrimaryUpdated` (node.primary.updated) first, then the
-/// receiver's refusals (a conflicting payload, the initial fabric not ready, not the primary the call
-/// needs, a take-over at a stale revision), the framework's outcomes, `Failed` (the commanded update
-/// ended failed) and `AlreadyApplied` (a take-over applied already to the successor named). There is no
-/// wrong-birth refusal (R-UC1a, R-RX5).
+/// CONTRACT: the family's fourteen replies. `PrimaryUpdated { node_id }` (node.primary.updated, the
+/// new primary's node id; Q352) first, then the receiver's refusals (a conflicting payload, the initial
+/// fabric not ready, not the primary the call needs, a take-over at a stale revision), the framework's
+/// outcomes, `Failed` (the commanded update ended failed), `AlreadyApplied` (a take-over applied already
+/// to the successor named) and, appended, `PrimaryUpdating` (node.primary.updating, the stream's Started
+/// frame). There is no wrong-birth refusal (R-UC1a, R-RX5).
 #[test]
-fn replies_match_the_frozen_thirteen_variant_wire_schema() {
+fn replies_match_the_frozen_fourteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use NodePrimaryUpdateReply::*;
     let fixtures = [
-        // revisions (len 1) | "fabric" | primary | successor | revision 8
-        (PrimaryUpdated { revisions: vec![fabric_entry()] }, format!("00 01 06 666162726963 {PRIMARY} {SUCCESSOR} 08")),
+        // node_id "0123456789cd": the new primary
+        (PrimaryUpdated { node_id: successor().node_id }, "00 0c 303132333435363738396364".to_string()),
         (RejectedConflictingPayload { operation: rdm_core::OperationId::unscoped("o") }, "01 01 6f 00 00 00".to_string()),
         (Reserved2 { reason: "r".into() }, "02 01 72".to_string()),
         (RejectedNotPrimary { reason: "a".into() }, "03 01 61".to_string()),
@@ -91,6 +93,8 @@ fn replies_match_the_frozen_thirteen_variant_wire_schema() {
         // step "s" | reason "r" | code FailedPrecondition 9
         (Failed { step: "s".into(), reason: "r".into(), code: rdm_core::outcome::Code::FailedPrecondition }, "0b 0173 0172 09".to_string()),
         (AlreadyApplied { revisions: vec![fabric_entry()] }, format!("0c 01 06 666162726963 {PRIMARY} {SUCCESSOR} 08")),
+        // appended position 13, no fields
+        (PrimaryUpdating, "0d".to_string()),
     ];
     for (r, hex) in fixtures {
         variants.insert(NodePrimaryUpdate::encode_reply(&r).unwrap()[0]);
@@ -98,20 +102,32 @@ fn replies_match_the_frozen_thirteen_variant_wire_schema() {
         assert_eq!(NodePrimaryUpdate::encode_reply(&r).unwrap(), bytes(&hex), "{r:?}");
         assert_eq!(NodePrimaryUpdate::decode_reply(&bytes(&hex)).unwrap(), r);
     }
-    assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 13);
-    assert_eq!(NodePrimaryUpdate::decode_reply(&[13]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 14);
+    assert_eq!(NodePrimaryUpdate::decode_reply(&[14]), Err(DecodeFailure::UnknownVariant));
     assert_eq!(variants.len(), NodePrimaryUpdate::REPLY_VARIANTS as usize);
     crate::outcome_codes::check_malformed::<NodePrimaryUpdate>();
 }
 
+/// CONTRACT (node-rpc-envelope.md "PrimaryUpdate, op `0x21`, rdm"; Q352): every call is
+/// server-streaming and not forwardable: `PrimaryUpdating` is the Started frame, `PrimaryUpdated` and
+/// `Failed` the Terminal frames, and every other reply a refusal, the stream's one frame.
 #[test]
-fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classified() {
+fn the_family_is_op_0x21_server_streaming_and_not_forwardable_and_every_refusal_is_classified() {
     use NodePrimaryUpdateReply::*;
     use rdm_core::outcome::Code;
     assert_eq!(NodePrimaryUpdate::OP, 0x21);
     assert_eq!(NodePrimaryUpdate::NAME, "node-primary-update");
     assert!(!NodePrimaryUpdate::FORWARDABLE);
-    assert_eq!(NodePrimaryUpdate::classify_reply(&PrimaryUpdated { revisions: vec![fabric_entry()] }), ReplyKind::Success);
+    assert_eq!(NodePrimaryUpdate::classify_reply(&PrimaryUpdated { node_id: successor().node_id }), ReplyKind::Success);
+    assert_eq!(NodePrimaryUpdate::frame_kind(&PrimaryUpdating), FrameKind::Started);
+    assert_eq!(NodePrimaryUpdate::frame_kind(&PrimaryUpdated { node_id: successor().node_id }), FrameKind::Terminal);
+    assert_eq!(NodePrimaryUpdate::frame_kind(&Failed { step: "s".into(), reason: "r".into(), code: Code::Unavailable }), FrameKind::Terminal);
+    assert!(matches!(NodePrimaryUpdate::frame_kind(&RejectedConflictingPayload { operation: rdm_core::OperationId::unscoped("o") }), FrameKind::Refusal(_)));
+    assert!(matches!(NodePrimaryUpdate::frame_kind(&AlreadyApplied { revisions: vec![fabric_entry()] }), FrameKind::Refusal(_)));
+    let mut order = rdm_core::streaming::FrameOrder::new();
+    for f in [PrimaryUpdating, PrimaryUpdated { node_id: successor().node_id }] {
+        order.admit(NodePrimaryUpdate::frame_kind(&f)).unwrap_or_else(|e| panic!("{f:?}: {e}"));
+    }
     for (r, code) in [
         (RejectedConflictingPayload { operation: rdm_core::OperationId::unscoped("o") }, Code::Aborted),
         (Reserved2 { reason: "r".into() }, Code::FailedPrecondition),
@@ -131,7 +147,7 @@ fn the_largest_request_fits_the_frame_ceiling() {
     let primaries = vec![(long.clone(), b(), b(), u64::MAX), (long.clone(), b(), b(), u64::MAX)];
     let q = NodePrimaryUpdateRequest::PrimaryUpdate { primaries: primaries.clone(), build_id: long.clone(), operation: rdm_core::OperationId::unscoped(long.clone()) };
     assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
-    let r = NodePrimaryUpdateReply::PrimaryUpdated { revisions: primaries };
+    let r = NodePrimaryUpdateReply::AlreadyApplied { revisions: primaries };
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);
     // A failed step whose step and reason are each longer than the bound is cut to its budgets, never reset.
     let huge = "x".repeat(4 * NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);
@@ -144,7 +160,7 @@ fn the_largest_request_fits_the_frame_ceiling() {
 
 #[test]
 fn every_reply_variant_of_node_primary_update_classifies_to_one_code() {
-    replies_match_the_frozen_thirteen_variant_wire_schema();
+    replies_match_the_frozen_fourteen_variant_wire_schema();
 }
 
 #[test]

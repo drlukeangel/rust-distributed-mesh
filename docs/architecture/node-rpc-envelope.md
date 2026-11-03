@@ -213,7 +213,7 @@ sees only the catalog.
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
 | `0x1F` | build-facts | rdm | reserved | | |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete |
-| `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`, `AlreadyApplied` |
+| `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `UpdatePrimary`; replies `PrimaryUpdating`, `PrimaryUpdated`, `AlreadyApplied`; server-streaming |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, `StorageStep`, `BlockMesh`, `UnblockMesh` (position 4 reserved): `StopNode`, `StartNode` and `DeleteConnections` from the caller to the node's mesh-primary, directly; every variant but `BlockMesh` and `UnblockMesh` from the mesh-primary to the exact node; `BlockMesh` and `UnblockMesh` from the fabric-primary to each mesh-primary; never forwarded; server-streaming; the request and reply variants are on the rustdoc of [`NodeCommand`](../../api/rdm_core/node_command/struct.NodeCommand.html) |
 | `0x23` | read | rdm | live | canonical | `Get`: fabric.get, mesh.get, node.get, server-streaming, never forwarded (Q285) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
@@ -363,7 +363,7 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh's mesh-primary is the fabric-primary; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [fabric.create](lifecycles/fabric-create.md) | The first node-admin, started with no mesh and no durable topology, is the executor and the fabric-primary; the accepted topology rides [build.create 0x20](#build-op-0x20-rdm) | fabric.created when the fabric is ready | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [fabric.delete](lifecycles/fabric-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow, one Build the fabric-primary drives: every mesh removed leaf-inward, its own mesh last | fabric.deleted from the fabric-primary, still alive; its own node.delete is a separate call from outside the fabric | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updated { revisions }; RejectedConflictingPayload; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
+| [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the primary to its successor's exact birth | node.primary.updating, then node.primary.updated { node_id }; RejectedConflictingPayload; on the commanded arm, `Failed { step, reason }` when the update ends failed | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#the-fabric-primary-nodefabric-primaryupdate) | the same call, the fabric-primary as the `fabric` entry of `primaries` | node.fabric-primary.updated; the fabric arm's no-successor refusal | `OK`; stale/conflict `ABORTED`, absent record `NOT_FOUND`, other state refusal `FAILED_PRECONDITION` |
 | build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build, writes it once and dispatches each mesh's section; the Build and its events are read from storage ([Build floor read](#build-floor-read-op-0x1f-reserved), Q292) | Started, step frames, Complete / Failed; reattachment reads; deletion result | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 | build.attempt.run | [Build 0x20](#build-op-0x20-rdm); the fabric-primary dispatches a mesh's section to that mesh's primary | replay of the steps recorded complete, the current Pending, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
@@ -1510,14 +1510,14 @@ Build its Topology and Events chunks and its Build header.
 
 RDM owns this family. It carries [node.primary.update and node.fabric-primary.update](lifecycles/node-primary-update.md),
 which owns sequencing and the failure contract. Direction: the primary calls its successor's exact birth;
-only node-admins and the nodes of a type the mesh-primary commands serve it. Every call is unary and not forwardable. Requests use the canonical target and
-CallContext; replies use the canonical unary reply frame. Field order and enum positions are the order
+only node-admins and the nodes of a type the mesh-primary commands serve it. Every call is server-streaming and not forwardable. Requests use the canonical target and
+CallContext; replies use the canonical stream reply frames: `PrimaryUpdating` (Started), then `PrimaryUpdated { node_id }` or `Failed { step, reason, code }` (Terminal); a refusal is the stream's one frame. Field order and enum positions are the order
 shown. Births are exact identities, never names.
 
 ```text
-primary → successor   PrimaryUpdate { primaries: [(type, primary: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, run, operation }
+primary → successor   PrimaryUpdate { primaries: [(type, primary: { node_id, incarnation }, successor: { node_id, incarnation }, revision)], build_id, operation }
 successor             becomes primary: installs the election's result in its topology view and announces it in its digest; the mesh-primary records it afterwards
-successor → primary   PrimaryUpdated { revisions }   (on that call's reply stream)
+successor → primary   PrimaryUpdating (Started), then PrimaryUpdated { node_id } (Terminal)   (on that call's reply stream)
 ```
 
 `primaries` carries the election's result the successor installs, one entry or two: the fabric-primary
@@ -1539,7 +1539,7 @@ The commanded arm rides the same op: the fabric-primary commands a mesh-primary'
 `UpdatePrimary { type, build_id, operation, successor }` on the primary, `successor` none: a node-admin
 computes the election itself. The mesh-primary commands another type's primary the same way, `successor` the exact
 birth its pre-check named (step 2), and that primary calls it without an election of its own; commanded with
-none, it is refused by name. The primary runs the sequence and answers `PrimaryUpdated { revisions }` when it completes,
+none, it is refused by name. The primary answers `node.primary.updating` once it admitted the command, runs the sequence and answers `PrimaryUpdated { node_id }` when it completes, `node_id` the new primary,
 or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when it ends failed; `Incomplete` is never
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text.
 

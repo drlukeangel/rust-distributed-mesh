@@ -3,8 +3,8 @@
 //!
 //! The fabric-primary is commanded and moves itself: to a ready node-admin of its own mesh first, so the
 //! fabric-primary and that mesh's primary move together; when its mesh has no ready successor, to
-//! another mesh's mesh-primary. The successor installs itself and answers `PrimaryUpdated` with the
-//! revisions it installed. A Build stream open across the move ends `FabricPrimaryMoved` naming the new
+//! another mesh's mesh-primary. The successor installs itself; the command's stream answers
+//! `PrimaryUpdating`, then `PrimaryUpdated { node_id }`, the new fabric-primary. A Build stream open across the move ends `FabricPrimaryMoved` naming the new
 //! fabric-primary, and the caller re-submits its Build id there (`examples/build_reattach.rs`).
 //!
 //! As with `node.primary.update`, the command names the Build it runs under, which keys the operation:
@@ -39,11 +39,8 @@ async fn main() -> Result<()> {
     let build_id = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabric.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
 
     match nodes.fabric_primary_update(&fabric.name, &fabric_primary, &build_id).await? {
-        NodePrimaryUpdateReply::PrimaryUpdated { revisions } => {
-            println!("node.fabric-primary.update at {fabric_primary}: updated");
-            for (r#type, from, to, revision) in revisions {
-                println!("  {}: {from:?} -> {to:?} at revision {revision}", r#type);
-            }
+        NodePrimaryUpdateReply::PrimaryUpdated { node_id } => {
+            println!("node.fabric-primary.update at {fabric_primary}: updated; the new fabric-primary is {node_id}");
         }
         refused => println!("node.fabric-primary.update at {fabric_primary}: {refused:?}"),
     }

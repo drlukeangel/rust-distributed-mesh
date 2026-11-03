@@ -260,7 +260,7 @@ pub const PRIMARY_FRAME_CELLS: &str = "crates/rdm-transport/tests/primary_frames
 pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build floor read (Q292): a starting or role-taking admin reads the committed records from storage.
 pub const FETCH_BUILD: &str = "crates/rdm-admin/src/fetch_build.rs";
-/// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21): the primary calls its successor with the election's result, the successor installs it and answers `PrimaryUpdated`; its door and the cells that prove its postcard shape.
+/// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21, server-streaming): the primary calls its successor with the election's result, the successor installs it and answers `PrimaryUpdating` then `PrimaryUpdated { node_id }`; its server and the cells that prove its postcard shape.
 pub const PRIMARY_UPDATE_SOURCE: &str = "crates/rdm-admin/src/primary_update.rs";
 pub const HANDOVER_CELLS: &str = "crates/rdm-core/tests/handover_wire.rs";
 
@@ -684,7 +684,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rdm-node/src/store_log/tests.rs", &["fn a_line_states_its_own_length_first_and_its_checksum_last"], ratchet, &mut out);
         }
         Ratchet::PrimaryUpdateWireIsAtomic => {
-            require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 2;", "const REPLY_VARIANTS: u32 = 13;", "code: crate::outcome::Code"], ratchet, &mut out);
+            require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 2;", "const REPLY_VARIANTS: u32 = 14;", "code: crate::outcome::Code"], ratchet, &mut out);
             require(root, "crates/rdm-core/tests/handover_wire.rs", &["fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::ForwardWireIsAtomic => {
@@ -777,7 +777,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             // absorbs them whole (Q292; op 0x1F reserved): `committed_facts`, `absorb_build`.
             require(root, FETCH_BUILD, &["committed_facts", "absorb_build", "rdm.node_admin.build.update.via-read-committed"], ratchet, &mut out);
             require(root, PRIMARY_UPDATE_SOURCE, &["rdm.node_admin.primary.update.via-primary-updated", "rdm.node_admin.primary.reject.via-primary-update", "call_successor"], ratchet, &mut out);
-            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_two_variant_wire_schema", "fn replies_match_the_frozen_thirteen_variant_wire_schema"], ratchet, &mut out);
+            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_two_variant_wire_schema", "fn replies_match_the_frozen_fourteen_variant_wire_schema"], ratchet, &mut out);
             require(root, PRIMARY_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }

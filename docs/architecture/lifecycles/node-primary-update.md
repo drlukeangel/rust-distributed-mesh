@@ -32,7 +32,8 @@ primary row, no move log, nothing to fold.
 | The record | `is_primary` (and `is_fabric_primary`) at the next revision on the successor's row, written by the mesh-primary after the successor installed itself. The record follows the role; it never makes it. There is no path back |
 | Both primaries | When the mesh-primary is also the fabric-primary and the successor is in the same mesh, the successor becomes both and records both on its own row |
 | Precondition | None on the fabric's state (Q171) |
-| Completion | `node.primary.updated { revisions }`, answered by the successor on the primary's call; `node.fabric-primary.updated` for the fabric-primary |
+| Completion | The primary answers its commander `node.primary.updating` (its acknowledgement, Started) once it admitted the command, then `node.primary.updated { node_id }` (its completion, Terminal), `node_id` the new primary; `node.fabric-primary.updating` and `node.fabric-primary.updated { node_id }` for the fabric-primary. The successor answers the primary's call `node.primary.updated { node_id }` |
+| The commander | Records nothing from the answer: it learns the new primary from gossip, as every node does (for a mesh-primary, also from the backbone). It sends the action's next command to the node's commander as it stands after the update: the new primary `node_id` names, for a mesh-primary or the fabric-primary; its mesh-primary, for a node-type primary. No command spans two nodes (Q352) |
 | Wire | [PrimaryUpdate / PrimaryUpdated on 0x21](../node-rpc-envelope.md#primaryupdate-op-0x21-rdm) |
 
 ## Numbered end-to-end sequence
@@ -53,7 +54,7 @@ and recording it are separate for every type.
 4. The primary calls `node.primary.update` on the successor's exact birth: for a type other than `node-admin`,
    the birth the mesh-primary's command names (step 2). The successor becomes
    primary: it installs the election's result the call carries in its own topology view, answers
-   `node.primary.updated { revisions }` on that call, and its next `Digest` carries the change
+   `node.primary.updated { node_id }` on that call, and its next `Digest` carries the change
    (`is_primary`, and `is_fabric_primary` when both moved, at the next revision), its normal
    announcement and the only one ([gossip.md §3.1](../gossip.md#31-frame-catalog)). A non-admin primary
    then answers its commander's command. For the `node-admin` type NA2 is the mesh's writer from this
@@ -64,10 +65,7 @@ and recording it are separate for every type.
    records the successor's row from the successor's digest, the way it records every member fact it
    hears. The write records the role; it does not grant it. No frame of its own announces a primary
    change.
-6. The commanding Build continues on the successor's direct acknowledgement of step 4, never on
-   gossip: step 5 is the recording of a change that has already happened, and the Build waits for
-   neither the digest nor the record. The successor is now the old primary's primary (for the `node-admin`
-   type, its mesh-primary) and commands the old primary's connections delete, stop or delete.
+6. The commander continues on the primary's `node.primary.updated { node_id }`, never on gossip: step 5 is the recording of a change that has already happened, and the commander waits for neither the digest nor the record. It records nothing from the answer. The action's next command goes to the old primary's commander as it stands now: for the `node-admin` type, the new mesh-primary `node_id` names, which runs the old primary's connections delete, stop or delete as for any node of its mesh; for any other type, the mesh-primary, which runs it itself.
 
 ## Failure contract
 
@@ -102,8 +100,7 @@ and recording it are separate for every type.
 - **The commanded arm.** When a node.primary.update the fabric-primary commanded ends, the old primary
   answers it with the Build carrier's terminal, `Failed { step, reason }` on op `0x21`; `Incomplete` is
   never used for a step that ended. The fabric-primary fails the step on that variant, never on the
-  reason's text. The reason records the step, the successor's node id and incarnation, the revisions the
-  row moved, who the ordinary election named, and the investigation's verdict on the successor.
+  reason's text. The reason records the step, the successor's node id and incarnation, who the ordinary election named, and the investigation's verdict on the successor.
 - **Indeterminate after the update:** the election resolves it. An identical retry of the call replays the
   same result before any revision check; a call with a conflicting payload for the same operation is
   refused by name.
@@ -112,9 +109,7 @@ and recording it are separate for every type.
   `node-admin` type) records it. Completion needs neither gossip delivery nor the old primary's
   survival.
 - **Discovery is not installation.** A later attempt that reads the record has discovered the update, not
-  installed it. The resuming executor installs from the election locally and obtains the successor's
-  `node.primary.updated` (its installation acknowledgement) before it commands the departing primary's
-  destructive step. A successor node investigation found unheard is handled above.
+  installed it. The commander obtains the primary's `node.primary.updated { node_id }` before the departing primary's destructive step is commanded; it installs nothing itself. A successor node investigation found unheard is handled above.
 - The workflow continues only after the result is installed and acknowledged: `node.primary.updated`
   answered to the resuming executor's call, never a read alone.
 
@@ -188,8 +183,8 @@ writer                    pre-check: a Ready successor of the type in the mesh, 
 primary                   issued writes finished (node-admin type)
 primary → successor       node.primary.update (PrimaryUpdate)
 successor                 becomes primary: installs the election's result in its topology view
-  ← node.primary.updated { revisions }   (PrimaryUpdated)
-commander's Build continues under the successor
+  ← node.primary.updated { node_id }   (PrimaryUpdated)
+primary → commander  node.primary.updating, then node.primary.updated { node_id }; the next command goes to the node's commander as it stands after the update
 successor → mesh channel  its next Digest carries is_primary (its normal announcement)
 mesh-primary              records is_primary at the next revision on the successor's row from what it hears (NA2 its own row); its next MeshTopology projection carries it
 ```
@@ -211,8 +206,9 @@ sequenceDiagram
     Note over NA1: issued writes finished
     NA1->>NA2: node.primary.update
     Note over NA2: becomes primary: installs the election's result
-    NA2-->>NA1: node.primary.updated { revisions }
-    Note over FP,NA2: the Build continues; NA2 commands NA1's destructive step
+    NA2-->>NA1: node.primary.updated { node_id }
+    NA1-->>FP: node.primary.updating, then node.primary.updated { node_id }
+    Note over FP,NA2: FP sends NA1's next command to NA2, which runs it as NA1's mesh-primary
     NA2->>G: Digest (is_primary, next revision)
     Note over NA2: records is_primary on its own row; MeshTopology projection carries it
 ```
@@ -221,5 +217,5 @@ sequenceDiagram
 
 Trace propagation, step spans and correlation follow the
 [runtime spans](../node-rpc-envelope.md#runtime-spans). The update's spans carry the operation, the node
-type, both exact births and the revisions: the successor's install, the record's write, and every
+type, both exact births and the new primary's node_id: the successor's install, the record's write, and every
 refusal by its typed reason.

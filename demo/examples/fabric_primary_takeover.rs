@@ -65,7 +65,8 @@ async fn main() -> Result<()> {
 
     let fp_carrier = peers.carrier_for(before_fp.clone());
     let to_id = match Nodes::new(fp_carrier).fabric_primary_update(&before.name, &before_fp, &build_id).await? {
-        NodePrimaryUpdateReply::PrimaryUpdated { revisions } | NodePrimaryUpdateReply::AlreadyApplied { revisions } => {
+        NodePrimaryUpdateReply::PrimaryUpdated { node_id } => node_id,
+        NodePrimaryUpdateReply::AlreadyApplied { revisions } => {
             revisions.iter().find(|(t, _, _, _)| t == rdm_core::handover::FABRIC).map(|(_, _, to, _)| to.node_id.clone()).ok_or_else(|| anyhow!("no fabric entry in revisions"))?
         }
         other => return Err(anyhow!("node.fabric-primary.update at {before_fp}: {other:?}")),

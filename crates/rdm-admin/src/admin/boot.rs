@@ -1779,6 +1779,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     runs: runs.clone(),
                                     local: journal.clone(),
                                     gate: stop_gate.clone(),
+                                    moved: primary_update.memo.moved.clone(),
                                 });
                                 let refresh_view = view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, digest_view.clone(), records.clone());
                                 let env = Arc::new(crate::build_drive::DriveEnv { me_mesh: cfg.mesh.clone(),

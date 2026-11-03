@@ -3,8 +3,9 @@
 //! real Node RPC on op `0x21`. The primary, commanded from above, computes its successor by the election
 //! over its own view with itself excluded, finishes the writes it issued (a node-admin), and calls
 //! `PrimaryUpdate` on the successor, which installs the election's result and answers
-//! `node.primary.updated`; the answer goes up. No row and no frame of its own record the change. Each cell
-//! reads the spans the update emitted, in the order they happened.
+//! `node.primary.updating`, then `node.primary.updated { node_id }`; the primary answers its commander the
+//! same, naming the new primary, and the commander records nothing from it (Q352). No row and no frame of
+//! its own record the change. Each cell reads the spans the update emitted, in the order they happened.
 // @feature: node-lifecycle
 
 use iroh::protocol::Router;
@@ -318,9 +319,29 @@ fn entry(r#type: &str, from: &ResolvedNode, to: &ResolvedNode, revision: u64) ->
 }
 
 /// One call; a call with no reply panics naming the outcome and the leg it used.
+/// Every frame of one `0x21` stream from `from` to `to`, in order: `PrimaryUpdating` then the answer,
+/// or a refusal alone.
+async fn frames(from: &NodeRpcClient, to: &NodeId, req: Request) -> Vec<Reply> {
+    use rdm_transport::stream::StreamItem;
+    match from.call_stream::<NodePrimaryUpdate>(&NodeTarget::ExactNode(to.clone()), &req, &CallOptions::default()).await {
+        Ok((stream, _)) => {
+            let mut stream = stream.read_only();
+            let mut out = Vec::new();
+            while let Some(item) = stream.next().await {
+                match item {
+                    StreamItem::Frame(_, f) => out.push(f),
+                    StreamItem::Failed(f) => panic!("the 0x21 stream to {to} failed after {out:?}: {f:?}"),
+                }
+            }
+            out
+        }
+        Err((out, ev)) => vec![out.reply().unwrap_or_else(|| panic!("no reply: {out:?} evidence {ev:?}")).value().clone()],
+    }
+}
+
+/// The answer of one `0x21` call from `from` to `to`: its stream's last frame.
 async fn send(from: &Admin, to: &Admin, req: Request) -> Reply {
-    let (out, ev) = from.client.call::<NodePrimaryUpdate>(&NodeTarget::ExactNode(to.resolved.node_id.clone()), &req, &CallOptions::default()).await;
-    out.reply().unwrap_or_else(|| panic!("no reply: {out:?} evidence {ev:?}")).value().clone()
+    frames(&from.client, &to.resolved.node_id, req).await.pop().expect("a 0x21 stream ends with a frame")
 }
 
 /// The primary record `primary` holds for `role` in `a`'s view (the election's input).
@@ -651,7 +672,8 @@ async fn node_at(a: &Admin, name: &rdm_core::PathName) -> Node {
 /// `is_primary` (and `is_fabric_primary`) at the next revision"): P, mesh1's mesh-primary and the
 /// fabric-primary, moves both to N, the successor the election over its own view names with P excluded
 /// (never X, the lowest NodeId of the fabric, of another mesh). In order: P finishes the writes it
-/// issued, then N installs the election's result and answers node.primary.updated, which P installs: N
+/// issued, then N installs the election's result and answers node.primary.updated naming N, and P installs
+/// the result it sent (its own roles left it): N
 /// is mesh-primary at 4 and fabric-primary at 8 in N's view and P's, P's view names N both, and N's next
 /// digest carries `is_primary` 4 and `is_fabric_primary` 8, which its rows writer records on its own row
 /// (`admin::tests::a_row_the_store_refused_is_written_on_the_writers_own_clock_once_the_store_recovers`).
@@ -665,8 +687,8 @@ fn a_mesh_primary_hands_over_to_its_same_mesh_successor_which_answers_directly_a
     cap.run(async {
         let f = primaries_fabric(FabricPrimary::P).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
-        let revisions = f.p.primary_update.update_own_primaries(Moving::BothRoles, "b1", &op, None).await.expect("both primaries move");
-        assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4), entry("fabric", &f.p.resolved, &f.n.resolved, 8)]);
+        let node_id = f.p.primary_update.update_own_primaries(Moving::BothRoles, "b1", &op, None).await.expect("both primaries move");
+        assert_eq!(node_id, f.n.resolved.node_id, "the answer names N, the new primary");
         for a in [&f.p, &f.n] {
             assert_eq!(a.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{:?}", a.resolved.name);
             assert_eq!(a.primary_update.topology_view.primaries().fabric(), Some(primary_of(&f.n, 8)), "{:?}", a.resolved.name);
@@ -720,12 +742,16 @@ fn an_update_named_for_a_node_that_was_never_primary_is_no_update_and_calls_no_o
 /// the commander is the fabric-primary"; node-rpc-envelope.md: "the fabric-primary commands a
 /// mesh-primary's update with `UpdatePrimary { type, build_id, operation, successor }` on the
 /// primary, `successor` none: a node-admin computes the election itself ...
-/// The primary runs the sequence and answers `PrimaryUpdated { revisions }`"): X, the fabric-primary,
-/// commands P's update. P names N by the election over its own view, calls it, and answers X with N's
-/// node.primary.updated, which X installs before its Build continues: X, P and N hold N mesh-primary of
-/// mesh1 at 4; the fabric-primary stays X at 7. One command span at X, sent to P.
+/// The primary answers `node.primary.updating` once it admitted the command, runs the sequence and
+/// answers `PrimaryUpdated { node_id }` when it completes, `node_id` the new primary"; node-primary-update.md
+/// "The commander": "Records nothing from the answer: it learns the new primary from gossip"; Q352): X,
+/// the fabric-primary, commands P's update. P names N by the election over its own view, calls it, and
+/// answers X with N's node id. X records nothing from it: P and N hold N mesh-primary of mesh1 at 4, X
+/// still holds P at 3 (no gossip runs here), and X holds the move for Build `b1` alone, where its next
+/// command goes. The fabric-primary stays X at 7. One command span at X, sent to P. What must NOT
+/// happen: X installing the successor from the answer.
 #[test]
-fn the_fabric_primary_commands_a_mesh_primarys_update_and_installs_the_successors_answer() {
+fn the_fabric_primary_commands_a_mesh_primarys_update_and_records_nothing_from_its_answer() {
     let cap = trace_capture("primary-update");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
@@ -733,15 +759,55 @@ fn the_fabric_primary_commands_a_mesh_primarys_update_and_installs_the_successor
         let f = primaries_fabric(FabricPrimary::X).await;
         let p = node_at(&f.x, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
-        let revisions = f.x.primary_update.command_update_primary(&p, "b1", &op).await.expect("the command answers node.primary.updated");
-        assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]);
-        for a in [&f.x, &f.p, &f.n] {
+        let node_id = f.x.primary_update.command_update_primary(&p, "b1", &op).await.expect("the command answers node.primary.updated");
+        assert_eq!(node_id, f.n.resolved.node_id, "the answer names N, the new mesh-primary");
+        for a in [&f.p, &f.n] {
             assert_eq!(a.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "{:?}", a.resolved.name);
+        }
+        assert_eq!(f.x.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "X, the commander, records nothing from the answer");
+        for a in [&f.x, &f.p, &f.n] {
             assert_eq!(a.primary_update.topology_view.primaries().fabric(), Some(primary_of(&f.x, 7)), "{:?}: the fabric-primary stays X", a.resolved.name);
         }
+        assert_eq!(
+            f.x.primary_update.memo.moved.of("b1"),
+            vec![rdm_admin::executor::PrimaryMoved { mesh: "mesh1".into(), r#type: "node-admin".into(), primary: f.p.resolved.node_id.clone(), node_id: f.n.resolved.node_id.clone() }],
+            "X holds the move for its Build, where P's next command goes"
+        );
+        assert!(spans.named(UPDATED).iter().all(|s| s["node_path"] == f.n.resolved.path && s["node_name"] == f.n.resolved.name), "no install at the commander: {:?}", spans.named(UPDATED));
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| (c["to"].clone(), c["outcome"].clone())).collect::<Vec<_>>(), vec![(f.p.resolved.node_id.to_string(), "updated".to_string())], "{commands:?}");
         let _ = &f.m;
+    });
+}
+
+/// CONTRACT (node-rpc-envelope.md 0x21: "Every call is server-streaming and not forwardable ...
+/// `PrimaryUpdating` (Started), then `PrimaryUpdated { node_id }` or `Failed { step, reason, code }`
+/// (Terminal); a refusal is the stream's one frame"; node-primary-update.md Completion; Q352): X's
+/// `UpdatePrimary` on P streams `PrimaryUpdating`, then `PrimaryUpdated { node_id }` naming N, the
+/// election's next lowest ranked Ready node-admin of mesh1 (N `000000000003` before M `000000000009`);
+/// P's call on N streams the same two frames, N naming itself. A command on a node that is not the
+/// mesh-primary is one frame, its refusal. X holds no primary record from the answer: its view names
+/// P still, and no install span is X's. What must NOT happen: an `updated` before `updating`, an answer
+/// naming a node the election did not name, or the commander installing it.
+#[test]
+fn the_commanded_update_streams_updating_then_updated_naming_the_next_ready_node_admin() {
+    let cap = trace_capture("primary-update");
+    let spans = cap.spans.clone();
+    let _file = SpanFile(spans.clone());
+    cap.run(async {
+        let f = primaries_fabric(FabricPrimary::X).await;
+        let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
+        let command = |_to: &Admin| Request::UpdatePrimary { r#type: "node-admin".into(), build_id: "b1".into(), operation: op.clone(), successor: None };
+        let refused = frames(&f.x.client, &f.m.resolved.node_id, command(&f.m)).await;
+        assert!(matches!(refused.as_slice(), [Reply::RejectedNotPrimary { .. }]), "a command on M, no mesh-primary, is its refusal alone: {refused:?}");
+        let streamed = frames(&f.x.client, &f.p.resolved.node_id, command(&f.p)).await;
+        assert_eq!(streamed, vec![Reply::PrimaryUpdating, Reply::PrimaryUpdated { node_id: f.n.resolved.node_id.clone() }], "updating, then updated naming N");
+        let received: Vec<String> = spans.named("rdm.node_rpc.stream.update.via-received-frame").iter().map(|s| s["detail"].clone()).collect();
+        let at = |d: &str| received.iter().position(|r| r == d).unwrap_or_else(|| panic!("{d} received: {received:?}"));
+        assert!(at("primary-updating") < at("primary-updated"), "updating is received before updated: {received:?}");
+        assert_eq!(f.x.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.p, 3)), "X holds no primary record from the answer");
+        assert_eq!(f.n.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "N installed itself");
+        assert!(spans.named(UPDATED).iter().all(|s| s["node_path"] == f.n.resolved.path && s["node_name"] == f.n.resolved.name), "the one install is N's: {:?}", spans.named(UPDATED));
     });
 }
 
@@ -758,7 +824,7 @@ fn an_identical_retry_is_answered_as_the_first_and_another_payload_for_the_opera
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
         let call = |revision| Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, revision)], build_id: "b1".into(), operation: op.clone() };
         let first = send(&f.p, &f.n, call(4)).await;
-        assert_eq!(first, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
+        assert_eq!(first, Reply::PrimaryUpdated { node_id: f.n.resolved.node_id.clone() });
         assert_eq!(send(&f.p, &f.n, call(4)).await, first, "an identical retry answers the same");
         assert_eq!(send(&f.p, &f.n, call(5)).await, Reply::RejectedConflictingPayload { operation: op.clone() });
         assert_eq!(f.n.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)), "the conflicting payload installs nothing");
@@ -770,7 +836,7 @@ fn an_identical_retry_is_answered_as_the_first_and_another_payload_for_the_opera
 /// CONTRACT (node-primary-update.md failure contract: "The receiver never refuses the call for the birth
 /// it names (R-UC1a, R-RX5); it installs from the election's result the call carries and answers"): P's
 /// call reaches M, a node-admin that is not the successor it names (N). M installs the election's result
-/// it carries and answers node.primary.updated; nothing is refused.
+/// it carries and answers node.primary.updated with its own node id; nothing is refused.
 #[test]
 fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
     let cap = trace_capture("primary-update");
@@ -779,7 +845,7 @@ fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
         let f = primaries_fabric(FabricPrimary::X).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
         let r = send(&f.p, &f.m, Request::PrimaryUpdate { primaries: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)], build_id: "b1".into(), operation: op.clone() }).await;
-        assert_eq!(r, Reply::PrimaryUpdated { revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)] });
+        assert_eq!(r, Reply::PrimaryUpdated { node_id: f.m.resolved.node_id.clone() });
         assert_eq!(f.m.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&f.n, 4)));
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         let _ = &f.x;
@@ -844,8 +910,8 @@ fn the_fabric_primary_moved_outside_its_mesh_leaves_its_old_primary_mesh_primary
         let (p, x) = lone_fabric(NodeStatus::Ready).await;
         let op = update_operation(PrimaryRole::FabricPrimary, &rdm_core::OperationId::new("mesh.delete", rdm_core::OperationSubject::Mesh(p.primary_update.topology_view.mesh_id().clone())));
         assert!(p.primary_update.fabric_primary_updated("mesh1", &op).await.is_err(), "before the update the fabric-primary is of mesh1");
-        let revisions = p.primary_update.update_own_primaries(Moving::FabricRoleOutside, "b1", &op, None).await.expect("the fabric-primary moves to mesh2");
-        assert_eq!(revisions, vec![entry("fabric", &p.resolved, &x.resolved, 8)]);
+        let node_id = p.primary_update.update_own_primaries(Moving::FabricRoleOutside, "b1", &op, None).await.expect("the fabric-primary moves to mesh2");
+        assert_eq!(node_id, x.resolved.node_id, "the answer names X, the new fabric-primary");
         for a in [&p, &x] {
             assert_eq!(a.primary_update.topology_view.primaries().fabric(), Some(primary_of(&x, 8)), "{:?}", a.resolved.name);
             assert_eq!(a.primary_update.topology_view.primaries().mesh("mesh1"), Some(primary_of(&p, 3)), "{:?}: P stays mesh1's mesh-primary", a.resolved.name);
@@ -871,8 +937,8 @@ fn a_successor_that_does_not_answer_is_investigated_and_reached_the_call_is_made
     cap.run(async {
         let f = fabric_n_ready_on_probe(FabricPrimary::P).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.stop", &f.p.resolved.node_id));
-        let revisions = f.p.primary_update.update_own_primaries(Moving::BothRoles, "b1", &op, None).await.expect("the call made again is answered");
-        assert_eq!(revisions, vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4), entry("fabric", &f.p.resolved, &f.n.resolved, 8)]);
+        let node_id = f.p.primary_update.update_own_primaries(Moving::BothRoles, "b1", &op, None).await.expect("the call made again is answered");
+        assert_eq!(node_id, f.n.resolved.node_id);
         let looked = spans.named(INVESTIGATION);
         assert_eq!(looked.iter().map(|l| (l["verdict"].clone(), l["retry"].clone())).collect::<Vec<_>>(), vec![("reached".to_string(), "primary-updated".to_string())], "{looked:?}");
         let _ = (&f.m, &f.x);
@@ -906,8 +972,9 @@ fn an_update_whose_successor_is_unheard_fails_by_name_with_the_investigations_ve
 /// mesh-primary is commander and writer, and the primary only makes the call"; step 2: the writer
 /// pre-checks; steps 4-5; node-rpc-envelope.md: "the mesh-primary commands another type's primary the same
 /// way, `successor` the exact birth its pre-check named"): P, mesh1's mesh-primary, commands B1, mesh1's
-/// node primary, naming B2. B1 calls B2, and answers P with B2's node.primary.updated, which P
-/// installs: P, B1 and B2 hold B2 node primary of mesh1 at 3. P finished no writes for it: a non-admin
+/// node primary, naming B2. B1 calls B2, and answers P with node.primary.updated naming B2, which P
+/// records nothing from (Q352): B1 and B2 hold B2 node primary of mesh1 at 3, P still holds B1 at 2 until
+/// B2's digest reaches it, and P holds the move for its Build. P finished no writes for it: a non-admin
 /// primary has no mesh rows, and B2's row is recorded from its digest.
 #[test]
 fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_found_and_the_primary_calls_it() {
@@ -918,10 +985,11 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
         let f = type_fabric(true).await;
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
-        let revisions = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await.expect("mesh1's node primary moves");
-        assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.p.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
-        assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
+        let node_id = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await.expect("mesh1's node primary moves");
+        assert_eq!(node_id, f.b2().resolved.node_id);
+        assert_eq!(f.p.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "P, the commander, records nothing from the answer");
+        assert_eq!(f.p.primary_update.memo.moved.of("b1").iter().map(|m| (m.primary.clone(), m.node_id.clone())).collect::<Vec<_>>(), vec![(f.b1.resolved.node_id.clone(), f.b2().resolved.node_id.clone())]);
+        assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2, the successor it called");
         assert_eq!(f.b2().door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B2 installed itself");
         assert_eq!(f.p.finished(), 0, "the mesh-primary finished no writes for another type's update");
         let _ = &f.x;
@@ -930,9 +998,9 @@ fn a_mesh_primary_commands_its_rpc_primary_naming_the_successor_its_pre_check_fo
 
 /// CONTRACT (Q129; node-primary-update.md step 4: "for a type other than `node-admin`, the birth the
 /// mesh-primary's command names (step 2)"): P's view holds B2 Ready; B1's own view has not heard
-/// B2 at all. P's stop-time update of B1 completes: B1 calls the B2 P named and answers with B2's
-/// node.primary.updated, with no election of its own and no `cannot transfer` refusal. A command naming no
-/// successor at B1 is refused by name. What must NOT happen: B1 refusing because its own view holds no
+/// B2 at all. P's stop-time update of B1 completes: B1 calls the B2 P named and answers with
+/// node.primary.updated naming B2, with no election of its own and no `cannot transfer` refusal. A command
+/// naming no successor at B1 answers node.primary.updating, then fails by name. What must NOT happen: B1 refusing because its own view holds no
 /// secondary (the land-gate red at 1918053cb, memory_estate).
 #[test]
 fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_one_its_mesh_primary_named() {
@@ -941,11 +1009,11 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
         let f = type_fabric_heard(true, false).await;
         let b1 = node_at(&f.p, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
-        let revisions = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await.expect("the hand-over completes on the successor P named");
-        assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2's answer");
-        let bare = f.b1.door.serve(Request::UpdatePrimary { r#type: "node".into(), build_id: "b1".into(), operation: update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b2.as_ref().unwrap().resolved.node_id)), successor: None }).await;
-        assert!(matches!(&bare, Reply::Failed { reason, .. } if reason == r#"path "mesh1.node", name "1" is a node primary: its mesh-primary's command names no successor"#), "{bare:?}");
+        let node_id = f.p.primary_update.update_node_type_primary(&b1, None, "b1", &op).await.expect("the update completes on the successor P named");
+        assert_eq!(node_id, f.b2().resolved.node_id);
+        assert_eq!(f.b1.door.topology_view().primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)), "B1 installed B2, the successor it called");
+        let bare = frames(&f.p.client, &f.b1.resolved.node_id, Request::UpdatePrimary { r#type: "node".into(), build_id: "b1".into(), operation: update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b2.as_ref().unwrap().resolved.node_id)), successor: None }).await;
+        assert!(matches!(bare.as_slice(), [Reply::PrimaryUpdating, Reply::Failed { reason, .. }] if reason == r#"path "mesh1.node", name "1" is a node primary: its mesh-primary's command names no successor"#), "{bare:?}");
         let _ = &f.x;
     });
 }
@@ -953,7 +1021,8 @@ fn an_rpc_primary_whose_own_view_has_not_heard_the_successor_hands_over_to_the_o
 /// CONTRACT (CLAUDE.md "commands go down": fabric-primary -> mesh-primary -> node; node-primary-update.md
 /// Commander: "a command the fabric-primary originates for one of them reaches it as a forwarded command
 /// through the mesh-primary, never directly"): X, the fabric-primary, commands the update of mesh1's
-/// node primary: its command goes to P, mesh1's mesh-primary, which commands B1. X installs B2's answer.
+/// node primary: its command goes to P, mesh1's mesh-primary, which commands B1. The answer names B2, and
+/// X records nothing from it.
 #[test]
 fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
     let cap = trace_capture("primary-update");
@@ -963,9 +1032,9 @@ fn the_fabric_primary_commands_an_rpc_primary_only_through_its_mesh_primary() {
         let f = type_fabric(true).await;
         let b1 = node_at(&f.x, &rdm_core::PathName::new("mesh1.node", "1").unwrap()).await;
         let op = update_operation(PrimaryRole::NodePrimary(RPC.to_string()), &rdm_core::OperationId::node("node.stop", &f.b1.resolved.node_id));
-        let revisions = f.x.primary_update.command_update_primary(&b1, "b1", &op).await.expect("the command answers");
-        assert_eq!(revisions, vec![entry("node", &f.b1.resolved, &f.b2().resolved, 3)]);
-        assert_eq!(f.x.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(f.b2(), 3)));
+        let node_id = f.x.primary_update.command_update_primary(&b1, "b1", &op).await.expect("the command answers");
+        assert_eq!(node_id, f.b2().resolved.node_id);
+        assert_eq!(f.x.primary_update.topology_view.primaries().node_type_primary("mesh1", RPC), Some(member_primary(&f.b1, 2)), "X records nothing from the answer");
         let commands = spans.named(COMMAND);
         assert_eq!(commands.iter().map(|c| c["to"].clone()).collect::<Vec<_>>(), vec![f.p.resolved.node_id.to_string()], "X's command goes to mesh1's mesh-primary: {commands:?}");
     });
@@ -1031,16 +1100,13 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
         // runs node investigation on N (`verdict = reached`), retries `PrimaryUpdate`, and succeeds.
         f.p.writes_finish.send_replace(true);
         let p_at_x = node_at(&f.x, &rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await;
-        let revisions = f
+        let node_id = f
             .x
             .primary_update
             .command_update_primary(&p_at_x, "b-fault", &op)
             .await
             .expect("commanded update recovers via node investigation retry when N is reached");
-        assert_eq!(
-            revisions,
-            vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]
-        );
+        assert_eq!(node_id, f.n.resolved.node_id);
         let looked = spans.named(INVESTIGATION);
         assert_eq!(
             looked
@@ -1064,12 +1130,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
             },
         )
         .await;
-        assert_eq!(
-            replay,
-            Reply::PrimaryUpdated {
-                revisions: vec![entry("node-admin", &f.p.resolved, &f.n.resolved, 4)]
-            }
-        );
+        assert_eq!(replay, Reply::PrimaryUpdated { node_id: f.n.resolved.node_id.clone() });
         let conflict = send(
             &f.p,
             &f.n,
@@ -1137,7 +1198,7 @@ fn node_primary_update_step_faults_recover_or_fail_as_the_page_specifies() {
 /// - `docs/architecture/lifecycles/node-primary-update.md:74-75` ("- **Refused before the row** (step 2, or the writer's own pre-check of the call's revision): refused by name, nothing changed, the Build's step fails by name.")
 /// - `docs/architecture/lifecycles/node-primary-update.md:111-114` ("- **The old primary lost after the update:** the successor and every reader take the primary from the election; the successor's digest carries its role, and the mesh-primary (the successor itself for the `node-admin` type) records it. Completion needs neither gossip delivery nor the old primary's survival.")
 /// - `docs/architecture/lifecycles/node-primary-update.md:157-158` ("1. the fabric-primary's own mesh: the lowest Ready node-admin NodeId there, where the fabric-primary stays by preference;")
-/// - `docs/architecture/lifecycles/node-primary-update.md:223-226` ("Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The update's spans carry the operation, the node type, both exact births and the revisions: the successor's install, the record's write, and every refusal by its typed reason.")
+/// - `docs/architecture/lifecycles/node-primary-update.md` "Observability contract" ("Trace propagation, step spans and correlation follow the [runtime spans](../node-rpc-envelope.md#runtime-spans). The update's spans carry the operation, the node type, both exact births and the new primary's node_id: the successor's install, the record's write, and every refusal by its typed reason.")
 #[test]
 fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_and_records_observability_spans() {
     use rdm_admin::build_drive::RoleMoveEnd;
@@ -1184,20 +1245,13 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
         // Ready node-admin NodeId there.
         let f = primaries_fabric(FabricPrimary::P).await;
         let op = update_operation(PrimaryRole::MeshPrimary, &rdm_core::OperationId::node("node.delete", &f.p.resolved.node_id));
-        let revisions = f
+        let node_id = f
             .p
             .primary_update
             .update_own_primaries(Moving::BothRoles, "b-conformance", &op, None)
             .await
             .expect("fabric-primary and mesh-primary move to lowest Ready node-admin in own mesh");
-        assert_eq!(
-            revisions,
-            vec![
-                entry("node-admin", &f.p.resolved, &f.n.resolved, 4),
-                entry("fabric", &f.p.resolved, &f.n.resolved, 8),
-            ],
-            "fabric-primary stays in own mesh (N over X) and selects lowest Ready NodeId (N over M)"
-        );
+        assert_eq!(node_id, f.n.resolved.node_id, "fabric-primary stays in own mesh (N over X) and selects lowest Ready NodeId (N over M)");
 
         // 3. Old primary lost after the update: shut down P's router immediately after the update.
         // N and every reader take the primary from the election; N's digest carries its role
@@ -1221,8 +1275,8 @@ fn primary_update_prefers_own_mesh_lowest_ready_admin_survives_old_primary_loss_
         );
 
         // 4. Observability contract: the successor's install span (`via-primary-updated`) carries
-        // `operation`, the node type (`node-admin`, `fabric`), both exact births (`P` and `N`), and
-        // the revisions (`4`, `8`).
+        // `operation`, the node type (`node-admin`, `fabric`), both exact births (`P` and `N`, the new
+        // primary), and each entry's revision (`4`, `8`).
         let updated = spans.named(UPDATED);
         let p_birth = format!("{}/{}", f.p.resolved.node_id, f.p.resolved.incarnation);
         let n_birth = format!("{}/{}", f.n.resolved.node_id, f.n.resolved.incarnation);

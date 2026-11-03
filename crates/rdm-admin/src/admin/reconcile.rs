@@ -66,6 +66,10 @@ impl crate::build_drive::Gate for RoleGate {
         Ok(())
     }
 
+    fn moved(&self, build_id: &crate::build::BuildId) -> Vec<crate::executor::PrimaryMoved> {
+        self.primary_update.memo.moved.of(build_id.as_str())
+    }
+
     async fn primaries_updated(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId) -> Result<(), String> {
         for u in updates {
             if u.primary.is_none() && u.mesh == self.primary_update.topology_view.mesh_name() {

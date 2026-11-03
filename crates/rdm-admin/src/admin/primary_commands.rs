@@ -94,11 +94,6 @@ impl Sent {
     }
 }
 
-/// The mesh-primary a node.primary.update's revisions name the successor of (the `node-admin` record).
-fn mesh_successor(revisions: &[rdm_node::member_handover::Entry]) -> Option<NodeId> {
-    revisions.iter().find(|(t, ..)| t == rdm_core::NODE_ADMIN).map(|(_, _, successor, _)| successor.node_id.clone())
-}
-
 /// Run `body` while each frame the primary records for the command goes on to the caller: its
 /// acceptance and progress at once, its terminal and a refusal held for the end ([`Sent::take`]).
 async fn forward<T>(mut recorded: tokio::sync::mpsc::UnboundedReceiver<NodeCommandReply>, body: impl std::future::Future<Output = T>, frames: &mut Box<dyn CommandFrames>) -> (T, Sent) {
@@ -133,9 +128,9 @@ impl PrimaryCommandDoor {
         };
         tracing::Span::current().record("subject_path", path.path.as_str()).record("subject_name", path.name.as_str());
         // A primary's roles move first by node.primary.update (R-MT1; node-primary-update.md §1,
-        // node-connections-delete.md step 0). A node-admin's command is then its mesh's new mesh-primary's,
-        // which the caller's command goes on to. A delete of named connections moves no role: step 0 is
-        // `All`'s alone.
+        // node-connections-delete.md step 0). A node-admin's command then goes on to its commander as it
+        // stands after the update, the new primary the update's node.primary.updated names (step 6). A
+        // delete of named connections moves no role: step 0 is `All`'s alone.
         if !start && named.is_none() {
             let view = self.runner.topology.read().await.clone();
             if let Some(m) = crate::executor::node_role_move(&pin, false, &view) {
@@ -202,7 +197,7 @@ impl PrimaryCommandDoor {
     /// fabric-primary's drive moves them before a Build's step (`RoleGate::update_primaries`): a
     /// mesh-primary or another type's primary commanded from above; this admin's own roles moved by
     /// itself, having nothing above it. A node command belongs to no Build: the update names none.
-    /// Answers the mesh-primary the update named its successor, when it moved that role.
+    /// Answers the new primary the update's node.primary.updated names, when it moved a role.
     async fn move_roles(&self, m: &crate::executor::RoleMove, operation: &rdm_core::OperationId) -> Result<Option<NodeId>, crate::build_drive::RoleMoveEnd> {
         use crate::election::Moving;
         use crate::primary_update::update_operation;
@@ -212,7 +207,7 @@ impl PrimaryCommandDoor {
         if m.primary.node_id != primary_update.node_id {
             if m.mesh_role || m.node_type_role {
                 let role = if m.node_type_role { PrimaryRole::of_type(&m.primary.r#type) } else { PrimaryRole::MeshPrimary };
-                return Ok(mesh_successor(&primary_update.command_update_primary(&m.primary, build, &update_operation(role, operation)).await?));
+                return Ok(Some(primary_update.command_update_primary(&m.primary, build, &update_operation(role, operation)).await?));
             }
             return Ok(None);
         }
@@ -222,14 +217,14 @@ impl PrimaryCommandDoor {
             (false, true) => (Moving::FabricRoleOutside, PrimaryRole::FabricPrimary),
             (false, false) => return Ok(None),
         };
-        Ok(mesh_successor(&primary_update.update_own_primaries(moving, build, &update_operation(role, operation), m.successor.as_ref()).await?))
+        Ok(Some(primary_update.update_own_primaries(moving, build, &update_operation(role, operation), m.successor.as_ref()).await?))
     }
 
-    /// The caller's command `req` on the node-admin `node_id`, its roles moved, sent on to its mesh
-    /// `mesh`'s mesh-primary now (commands go down: the primary above the node runs it), whose frames go
-    /// on to the caller as they arrive. The mesh-primary is the successor the update named
-    /// (`successor`), and is stopped by it (node-stop.md "Primary"); the view's, when the update moved
-    /// no mesh-primary role.
+    /// The caller's command `req` on the node-admin `node_id`, its roles moved, sent on to its
+    /// commander as it stands after the update (commands go down: the primary above the node runs it),
+    /// whose frames go on to the caller as they arrive: the new primary the update's
+    /// node.primary.updated names (`successor`), by which it is stopped (node-stop.md "Primary",
+    /// node-primary-update.md step 6); the view's mesh-primary of `mesh`, when the answer names none.
     async fn hand_on(&self, req: &NodeCommandRequest, mesh: &str, node_id: &NodeId, successor: Option<NodeId>, frames: &mut Box<dyn CommandFrames>) -> NodeCommandReply {
         use rdm_transport::stream::StreamItem;
         self.runner.refresh_view().await;

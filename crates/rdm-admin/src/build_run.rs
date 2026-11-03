@@ -417,6 +417,9 @@ pub struct RunDoor {
     pub local: Arc<dyn LocalBuildLog>,
     /// This admin's stop gate (stop_gate.rs): a stopped admin's tasks are held at it.
     pub gate: crate::stop_gate::StopGate,
+    /// The roles the node.primary.updates this admin commanded for each Build moved, as their answers
+    /// name them (`PrimaryUpdate`'s memo): a section is planned on them, never on gossip.
+    pub moved: crate::executor::PrimariesMoved,
 }
 
 impl RunDoor {
@@ -499,7 +502,7 @@ impl RunDoor {
                     Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(rdm_core::reply::build::unknown_build(build_id.to_string())),
                     Err(e) => return Attached::Refused(rdm_core::reply::build::not_ready(format!("node_id={me_id}: Build {build_id} could not be read: {e}"))),
                 };
-                let ops = section_of(&p, mesh, &t, me_id);
+                let ops = section_of(&p, mesh, &t, me_id, &self.moved.of(build_id.as_str()));
                 if ops.is_empty() {
                     return ended(build_id, mesh, &p);
                 }
@@ -566,13 +569,14 @@ fn outcome_of(attached: &Attached) -> &'static str {
     }
 }
 
-/// `mesh`'s section of `p` as admin `me` plans it in view `t` (Q292): the operations left of the
-/// Build that `me` executes on `mesh`, in plan order. A step whose event ended `complete` is done.
-pub fn section_of(p: &BuildProjection, mesh: &str, t: &crate::topology::Topology, me: &rdm_core::NodeId) -> Vec<BuildOperation> {
+/// `mesh`'s section of `p` as admin `me` plans it in view `t` after the updates `moved` it commanded
+/// (Q292; node-primary-update.md step 6): the operations left of the Build that `me` executes on
+/// `mesh`, in plan order. A step whose event ended `complete` is done.
+pub fn section_of(p: &BuildProjection, mesh: &str, t: &crate::topology::Topology, me: &rdm_core::NodeId, moved: &[crate::executor::PrimaryMoved]) -> Vec<BuildOperation> {
     let plan = crate::accepted::plan_for_build_created(p, t, &Default::default());
     plan.operations
         .into_iter()
-        .filter(|op| op.mesh() == Some(mesh) && crate::executor::executor_for(op, t).as_ref() == Some(me) && !p.operation_completed(&op.key()))
+        .filter(|op| op.mesh() == Some(mesh) && crate::executor::executor_after(op, t, moved).as_ref() == Some(me) && !p.operation_completed(&op.key()))
         .collect()
 }
 

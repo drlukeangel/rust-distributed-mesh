@@ -1272,6 +1272,7 @@ fn a_renamed_admin_drives_runs_and_spans_under_its_held_name_never_its_boot_name
             runs,
             local: builds.clone(),
             gate: rdm_admin::stop_gate::StopGate::new(),
+            moved: Default::default(),
         });
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));

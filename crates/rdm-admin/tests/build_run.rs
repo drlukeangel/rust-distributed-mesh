@@ -119,7 +119,7 @@ async fn mesh1_section(admin: Node, memory: &MemoryBuildStateAdapter) -> (Arc<to
     topology.pinned = deleted.iter().map(|n| (n.location(), rdm_admin::build::PinnedBirth::of(n).unwrap())).collect();
     memory.publish_accepted(&BuildAccepted { build_id: build_id(), topology, change: rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: Vec::new() }, source: None, time: 0 }).await.unwrap();
     let view = rdm_admin::topology::Topology { fabric, meshes, nodes: [vec![admin], deleted.to_vec()].concat() };
-    let section = rdm_admin::build_run::section_of(&memory.read_build(&build_id()).await.unwrap(), "mesh1", &view, &me);
+    let section = rdm_admin::build_run::section_of(&memory.read_build(&build_id()).await.unwrap(), "mesh1", &view, &me, &[]);
     assert_eq!(section.len(), 2, "mesh1's section is the two deletes: {section:?}");
     (Arc::new(tokio::sync::RwLock::new(view)), section)
 }
@@ -137,7 +137,7 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, V
     let gate = StopGate::new();
     let runner = Arc::new(crate::loopback::Steps::new(Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first }), builds.clone()));
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: builds.clone(), topology, runner });
-    let door = RunDoor { me_path: "mesh1.node-admin".into(), me_name: "1".into(), builds, exec, runs, local: memory.clone(), gate: gate.clone() };
+    let door = RunDoor { me_path: "mesh1.node-admin".into(), me_name: "1".into(), builds, exec, runs, local: memory.clone(), gate: gate.clone(), moved: Default::default() };
     (door, gate, section)
 }
 
@@ -292,7 +292,7 @@ async fn a_renamed_admin_runs_its_meshs_section_under_its_new_name() {
         let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()).writing_steps(steps, "mesh1"));
         let runner = Arc::new(crate::loopback::Steps::new(Arc::new(CallingOut { calls: calls.clone(), gate: StopGate::new(), hold_first: false }), builds.clone()));
         let exec = Arc::new(BuildExecutor { executor: birth, builds: builds.clone(), topology: topology.clone(), runner });
-        RunDoor { me_path: "mesh1.node-admin".into(), me_name: me_name.into(), builds, exec, runs, local: memory.clone(), gate: StopGate::new() }
+        RunDoor { me_path: "mesh1.node-admin".into(), me_name: me_name.into(), builds, exec, runs, local: memory.clone(), gate: StopGate::new(), moved: Default::default() }
     };
     let door = door_of(executor_birth.clone(), "9");
 

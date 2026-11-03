@@ -4,8 +4,9 @@
 //! Who is primary is the election's result over the mesh's ready node-admins. A planned move does not
 //! pick the successor: the mesh-primary is commanded, the election over its own view with itself
 //! excluded names a ready successor (none is refused by name, and nothing changes), the mesh-primary
-//! finishes the writes it has issued and calls the successor, which installs itself and answers
-//! `PrimaryUpdated` with the revisions it installed. When the mesh-primary is also the fabric-primary
+//! finishes the writes it has issued and calls the successor, which installs itself. The command's
+//! stream answers `PrimaryUpdating`, then `PrimaryUpdated { node_id }`, the new mesh-primary, from which
+//! the caller records nothing. When the mesh-primary is also the fabric-primary
 //! and the successor is in its mesh, both primaries move together. The successor's row records the
 //! change after it happened; a read made at once may still name the old primary.
 //!
@@ -43,11 +44,8 @@ async fn main() -> Result<()> {
     let build_id = BuildId::parse(fabric.build_id.as_deref().ok_or_else(|| anyhow!("fabric.get names no current Build"))?).map_err(|e| anyhow!("the current Build id: {e}"))?;
 
     match nodes.primary_update(&fabric.name, &primary, &build_id).await? {
-        NodePrimaryUpdateReply::PrimaryUpdated { revisions } => {
-            println!("node.primary.update of {mesh} at {primary}: updated");
-            for (r#type, from, to, revision) in revisions {
-                println!("  {}: {from:?} -> {to:?} at revision {revision}", r#type);
-            }
+        NodePrimaryUpdateReply::PrimaryUpdated { node_id } => {
+            println!("node.primary.update of {mesh} at {primary}: updated; the new mesh-primary is {node_id}");
         }
         refused => println!("node.primary.update of {mesh} at {primary}: {refused:?}"),
     }

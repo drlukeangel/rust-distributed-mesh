@@ -551,11 +551,33 @@ impl<'a> NodeRpc<'a> {
         Ok(frames)
     }
 
+    /// One `0x21` stream (`lifecycles/node-primary-update.md`) read to its end: the receiver's
+    /// `PrimaryUpdating` (Started), then its answer, `PrimaryUpdated { node_id }` naming the new primary
+    /// or `Failed` (Terminal); or its refusal, the stream's one frame. A stream that breaks before its
+    /// terminal is `Indeterminate`.
+    async fn read_primary_update(&self, primary: &NodeId, req: &rdm_core::handover::NodePrimaryUpdateRequest, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        use rdm_core::handover::NodePrimaryUpdate;
+        // The caller records nothing of the frames: reading the answer is its recovery.
+        let mut stream = match self.client.call_stream::<NodePrimaryUpdate>(&NodeTarget::ExactNode(primary.clone()), req, opts).await {
+            Ok((stream, _)) => stream.read_only(),
+            Err((out, _)) => return ended(out),
+        };
+        while let Some(item) = stream.next().await {
+            match item {
+                StreamItem::Frame(FrameKind::Started, _) => {}
+                StreamItem::Frame(_, answer) => return Ok(answer),
+                StreamItem::Failed(f) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the node-primary-update stream failed before its terminal: {f:?}") }),
+            }
+        }
+        Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unavailable, reason: "the node-primary-update stream ended without its terminal".into() })
+    }
+
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md`): command the mesh-primary
     /// to move its primary (and the fabric-primary with it when it is both) to the successor the
-    /// election names in its own view.
+    /// election names in its own view. Its stream answers `PrimaryUpdating`, then
+    /// `PrimaryUpdated { node_id }`, the new primary, which this returns.
     pub async fn primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
-        use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateRequest};
+        use rdm_core::handover::NodePrimaryUpdateRequest;
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
             r#type: "node-admin".to_string(),
             build_id: build_id.to_string(),
@@ -563,8 +585,7 @@ impl<'a> NodeRpc<'a> {
             successor: None,
         };
         let span = NodeOp::PrimaryUpdate.span();
-        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::ExactNode(primary.clone()), &req, opts), span.clone()).await;
-        let r = ended(out);
+        let r = tracing::Instrument::instrument(self.read_primary_update(primary, &req, opts), span.clone()).await;
         span.record("outcome", match &r {
             Ok(_) => "ok",
             Err(e) => e.outcome(),
@@ -575,9 +596,10 @@ impl<'a> NodeRpc<'a> {
 
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` "The fabric-primary"):
     /// command the fabric-primary to move the fabric-primary: its own mesh first, so both
-    /// move together when a same-mesh node-admin is Ready, else another mesh's mesh-primary.
+    /// move together when a same-mesh node-admin is Ready, else another mesh's mesh-primary. Its stream
+    /// answers `PrimaryUpdating`, then `PrimaryUpdated { node_id }`, the new fabric-primary.
     pub async fn fabric_primary_update(&self, _fabric: &str, primary: &NodeId, build_id: &BuildId, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
-        use rdm_core::handover::{NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
+        use rdm_core::handover::{NodePrimaryUpdateReply, NodePrimaryUpdateRequest};
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
             r#type: rdm_core::handover::FABRIC.to_string(),
             build_id: build_id.to_string(),
@@ -585,8 +607,7 @@ impl<'a> NodeRpc<'a> {
             successor: None,
         };
         let span = NodeOp::FabricPrimaryUpdate.span();
-        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::ExactNode(primary.clone()), &req, opts), span.clone()).await;
-        let r: Result<NodePrimaryUpdateReply, CallEnd> = ended(out);
+        let r: Result<NodePrimaryUpdateReply, CallEnd> = tracing::Instrument::instrument(self.read_primary_update(primary, &req, opts), span.clone()).await;
         span.record("outcome", match &r {
             Ok(_) => "ok",
             Err(e) => e.outcome(),

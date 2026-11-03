@@ -5,9 +5,13 @@
 //! [`NodePrimaryUpdateRequest::UpdatePrimary`], computes its successor by the election over its own view
 //! with itself excluded and calls [`NodePrimaryUpdateRequest::PrimaryUpdate`] on the successor's exact
 //! birth, carrying the election's result: one entry per primary that moves, `(type, primary,
-//! successor, revision)`, the fabric-primary a second entry of node type `fabric`. The successor
-//! installs it in its own view and answers [`NodePrimaryUpdateReply::PrimaryUpdated`]
-//! (node.primary.updated); the primary hands that answer up to its commander. The receiver refuses
+//! successor, revision)`, the fabric-primary a second entry of node type `fabric`. Every call is
+//! server-streaming: the receiver answers [`NodePrimaryUpdateReply::PrimaryUpdating`]
+//! (node.primary.updating, the Started frame) once it admitted the call, then
+//! [`NodePrimaryUpdateReply::PrimaryUpdated`] (node.primary.updated, the Terminal frame) naming the
+//! new primary's `node_id`, or `Failed`; a refusal is the stream's one frame. The successor installs
+//! the election's result in its own view and answers; the primary answers its commander with the
+//! successor's `node_id`, and the commander records nothing from it. The receiver refuses
 //! only a conflicting payload for the same operation and a fabric not first ready; it never
 //! refuses a call for the birth it names (R-UC1a, R-RX5). No row and no frame of its own record the
 //! change: the successor's digest carries it and the mesh-primary records it on the node's row. The
@@ -17,6 +21,7 @@
 use crate::framing::Birth;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
+use crate::streaming::{FrameKind, StreamingProtocol};
 pub use crate::role::transfer::HandoverBirth;
 use serde::{Deserialize, Serialize};
 
@@ -75,12 +80,13 @@ impl NodePrimaryUpdateRequest {
 /// The answer to a node.primary.update call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodePrimaryUpdateReply {
-    /// node.primary.updated: the successor installed the election's result, every entry at its revision.
+    /// node.primary.updated, the Terminal frame: the update completed, and `node_id` is the new
+    /// primary (the successor that installed the election's result).
     ///
     /// Position 0 on the wire.
     PrimaryUpdated {
-        /// The entries installed, as [`NodePrimaryUpdateRequest::PrimaryUpdate`] carries them.
-        revisions: Vec<(String, Birth, Birth, u64)>,
+        /// The new primary's node id.
+        node_id: crate::NodeId,
     },
     /// The operation was answered for another payload.
     ///
@@ -176,6 +182,10 @@ pub enum NodePrimaryUpdateReply {
         /// The fabric-primary's entry, at its revision.
         revisions: Vec<(String, Birth, Birth, u64)>,
     },
+    /// node.primary.updating, the Started frame: the receiver admitted the call and runs it.
+    ///
+    /// Position 13 on the wire.
+    PrimaryUpdating,
 }
 
 /// The most bytes of the `step` a `Failed` reply names.
@@ -217,6 +227,7 @@ impl NodePrimaryUpdateReply {
             Self::Unauthorized { .. } => "unauthorized",
             Self::Failed { .. } => "failed",
             Self::AlreadyApplied { .. } => "already-applied",
+            Self::PrimaryUpdating => "primary-updating",
         }
     }
 }
@@ -227,7 +238,8 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// Two entries, each a node type, two exact births and a revision, a Build id and an
     /// operation identity.
     const MAX_REQUEST_FRAME_BYTES: usize = 2048;
-    /// One reply: an enum tag and at most one reason string, or two entries, within their budgets.
+    /// One reply frame: an enum tag and at most one reason string, a node id, or two entries, within
+    /// their budgets.
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// An update is decided by the receiver's own view; a carried call is decided by no one.
     const FORWARDABLE: bool = false;
@@ -235,7 +247,7 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// calls (node.connection.delete): a lost reply's identical retry is answered as the first was.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
     const REQUEST_VARIANTS: u32 = 2;
-    const REPLY_VARIANTS: u32 = 13;
+    const REPLY_VARIANTS: u32 = 14;
 
     type Request = NodePrimaryUpdateRequest;
     type Reply = NodePrimaryUpdateReply;
@@ -255,6 +267,7 @@ impl NodeProtocol for NodePrimaryUpdate {
             NodePrimaryUpdateReply::Unauthorized { .. } => "unauthorized",
             NodePrimaryUpdateReply::Failed { .. } => "failed",
             NodePrimaryUpdateReply::AlreadyApplied { .. } => "already-applied",
+            NodePrimaryUpdateReply::PrimaryUpdating => "primary-updating",
         }
     }
 
@@ -273,6 +286,7 @@ impl NodeProtocol for NodePrimaryUpdate {
             NodePrimaryUpdateReply::Unauthorized { .. } => ReplyKind::Unauthorized,
             NodePrimaryUpdateReply::Failed { code, .. } => ReplyKind::new(*code),
             NodePrimaryUpdateReply::AlreadyApplied { .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),
+            NodePrimaryUpdateReply::PrimaryUpdating => ReplyKind::Success,
         }
     }
 
@@ -293,5 +307,17 @@ impl NodeProtocol for NodePrimaryUpdate {
     }
     fn unauthorized(reason: String) -> NodePrimaryUpdateReply {
         NodePrimaryUpdateReply::Unauthorized { reason }
+    }
+}
+
+impl StreamingProtocol for NodePrimaryUpdate {
+    /// `PrimaryUpdating` opens the stream (the receiver admitted the call), `PrimaryUpdated` and `Failed`
+    /// end it, and every other reply is a refusal, the stream's one frame.
+    fn frame_kind(frame: &NodePrimaryUpdateReply) -> FrameKind {
+        match frame {
+            NodePrimaryUpdateReply::PrimaryUpdating => FrameKind::Started,
+            NodePrimaryUpdateReply::PrimaryUpdated { .. } | NodePrimaryUpdateReply::Failed { .. } => FrameKind::Terminal,
+            other => FrameKind::Refusal(Self::classify_reply(other)),
+        }
     }
 }
