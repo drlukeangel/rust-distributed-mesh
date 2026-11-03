@@ -80,8 +80,8 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   (Q345), and so is any node that is added (§2.3).
 - **A node PROCESS has an incarnation.** The `Node` row carries `incarnation_id`, an opaque id minted by the
   one minter at node.create, naming the exact runtime that serves the node's id and `path` and `name`. It stays the
-  same through stop and start (the process never exits) and ends at delete; recover and replace create
-  a new node with its own. The process reads it once at boot (`RDM_INCARNATION_ID`, written by node-admin at launch). A reader
+  same through stop and start (the process never exits) and ends at delete; a recovery or a new node gets
+  its own. The process reads it once at boot (`RDM_INCARNATION_ID`, written by node-admin at launch). A reader
   compares incarnations for EQUALITY only: it is not a counter, and it is not the writer incarnation that refuses stale writes
   a writer's rows. `node.get` returns it per node.
 - **A node has a `type`.** `type` is a field of the node record, a string the caller sets in
@@ -150,8 +150,8 @@ follows the `path` and `name` (§2.2), so nothing stored changes when a new node
 - **Node certs:** [fabric-certs.md](fabric-certs.md).
 - **node.delete releases the node's identity and name; its row stays.** The node's mesh-primary
   writes Deleted lifecycle state, which frees the pair. The predecessor's own properties
-  remain at its ID. True recovery inherits its acknowledged properties; replacement uses the new
-  Build entry, including an empty config or tag set. The workflow is [node delete](lifecycles/node-delete.md).
+  remain at its ID. True recovery inherits its acknowledged properties; a new node uses its
+  Create entry, including an empty config or tag set. The workflow is [node delete](lifecycles/node-delete.md).
 
 ### Day zero
 
@@ -471,17 +471,18 @@ Readiness is the end of [node start](lifecycles/node-start.md), reported by the 
 1. **The gates are the start's.** The join (its cert and rafka-time, the mesh channel joined), the
    application's [`pre_node_ready` hook](fabric-node-hooks.md) returning Ok, complete topology
    installed, the required Build floor held, rafka-time refreshed last. Nothing else makes a node
-   ready; a partial snapshot or a Blocked hook makes none.
+   ready; a partial snapshot or a `Pending` hook makes none.
 2. **The application's one contribution is the hook.** Whatever an application must hold before it
    can serve
-   it does inside `pre_node_ready`, which it may answer Ok, Blocked with a retry event, or Failed by
-   name ([Outcomes and the gate](fabric-node-hooks.md#outcomes-and-the-gate)). A node with nothing to
+   it does inside `pre_node_ready`, which it answers `Ok`, `Pending { reason }` or `Failed { reason }`, under the `Send` its own code
+   gives (Q350) ([Outcomes and the gate](fabric-node-hooks.md#outcomes-and-the-gate)). A node with nothing to
    hold is trivially ready.
 3. **The node reports `node.started` once every gate holds** — not on listener-bind, not on a
    timeout; its mesh-primary sets Ready on that report.
-4. **Failure surfaces; nothing times out.** A failed hook fails the start by name
-   (`Failed { step, reason }`); a blocked one answers `Blocked` until its retry event. The node stays
-   pending. There is no timeout fallback: a flip that can fire with nothing held means nothing.
+4. **Failure surfaces by name.** A `Failed` hook, or one whose `Send` attempts are spent answering `Pending`,
+   fails the start by name (`Failed { step, reason }`) back to whoever started the node. The node stays
+   pending, and nothing retries until someone acts. There is no readiness fallback: a flip that can fire
+   with nothing held means nothing.
 5. **No surface is readier than another.** A node is ready or it is not; an application that
    served on one surface before the report would be a defect.
 
@@ -547,14 +548,14 @@ selects candidates and submits ordinary Builds.
 | Field | Contract |
 |---|---|
 | Setting | `stopped_node_ttl` (`RDM_STOPPED_NODE_TTL`), read by the fabric-primary only. Blank means forever: no sweep, a stopped node stays until its own start or delete. RDM's shipped config sets 30 minutes; Rafka's deployment sets 1 hour |
-| Who | The fabric-primary, the sole Build driver. On a fabric-primary handover the successor sweeps from the same durable receipts |
+| Who | The fabric-primary, the sole Build driver. On a fabric-primary handover the successor sweeps from the same node records |
 | Cadence | A sweep every ttl. A node is eligible after one ttl and is normally collected between one and two ttl, plus Build contention |
-| Age | The current stopped period's own stop, recorded on the node record, never an earlier stop before a later start. A birth whose receipt cannot be read is skipped by name, never treated as expired |
+| Age | The current stopped period's own stop, recorded on the node record, never an earlier stop before a later start. A node whose stop record cannot be read is skipped by name, never treated as expired |
 | Selection | Every node stopped longer than the ttl, except a birth an open Build still references |
 | Action | One ordinary node.delete Build per selected node, one at a time: one topology Build runs at a time, so the other candidates wait for the next sweep; a `BuildInProgress` refusal loses nothing, the candidate is seen again. The sweep itself deletes nothing |
 | Recheck | The stopped and open-Build checks run again at the delete Build's admission, serialized with it: a node started or referenced by a new Build after the scan is refused there, never deleted from a stale decision |
 | Effect | The delete's own: row deleted, name released, NodeDeleted in the mesh topology, deleted retention, Gone |
-| Wire | Nothing. No frame gains a field; the age lives in the receipt |
+| Wire | Nothing. No frame gains a field; the age lives on the node record |
 | Span | `rdm.node_admin.node.delete.via-stopped-ttl` with node, stopped_at, ttl, build_id |
 
 ## 7. node-admin — who drives a node's lifecycle
@@ -577,28 +578,28 @@ node can reach any node. The fabric-primary accepts and drives every Build and d
 to `executor_for`'s executor, in its own mesh or another
 ([Build carrier](node-rpc-envelope.md#build-op-0x20-rdm),
 [build.md](build.md)). Every node is an independent process — nothing
-binds it to the admin's life — so a fleet keeps running through its admin's replacement, as it
+binds it to the admin's life — so a fleet keeps running through the loss of its admin, as it
 would in its own container. A test suite tears a mesh down by the tag it created the mesh with
 ([mesh delete](lifecycles/mesh-delete.md)).
 
 <a id="72-node-admins-own-lifecycle-birth-scale-replace-reap"></a>
-### 7.2 node-admin's own lifecycle: create, scale, replace, delete
+### 7.2 node-admin's own lifecycle: create, scale, delete
 
 A node-admin is created, stopped, started, renamed and deleted like any node
 ([node create](lifecycles/node-create.md), [node stop](lifecycles/node-stop.md), [node start](lifecycles/node-start.md),
 [node name update](lifecycles/node-name-update.md), [node delete](lifecycles/node-delete.md)); its launch,
-start modes and replacement rules are [node-admin-lifecycle.md](node-admin-lifecycle.md), and its
+start modes and rules are [node-admin-lifecycle.md](node-admin-lifecycle.md), and its
 the fabric-primary moves as [elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover)
 defines.
 
 - **The shape is the accepted Build's.** A mesh may run N node-admins for HA; scaling up never
   implies a paired deletion.
 - **Every mesh always has a LISTENING node-admin**: ready and holding a live backbone
-  mesh topology it RECEIVED from every other mesh. No delete, stop or
-  replace leaves a mesh without one; the separate node.delete of a mesh's last node-admin after
+  mesh topology it RECEIVED from every other mesh. No delete or stop
+  leaves a mesh without one; the separate node.delete of a mesh's last node-admin after
   mesh.deleted is the one exception ([mesh delete](lifecycles/mesh-delete.md)).
-- **A node-admin executable replacement replaces a non-primary admin first**, so the mesh keeps another listening
-  admin before the current primary goes; the next primary is whatever the election resolves.
+- **A node-admin on a new executable is a new node-admin**, created by a Build before a non-primary admin is
+  deleted (Q345), so the mesh keeps another listening admin before the current primary goes; the next primary is whatever the election resolves.
 - **A created node-admin adopts, it does not mint.** Only the bootstrap admin mints the fabric and
   its mesh; every later node-admin takes its mesh's held state from its maker's entry answer (Q56)
   and pulls the current projections on entry. A second admin that mints a divergent fabric is a defect.
@@ -627,10 +628,10 @@ inspection. An application's own record of an outage and the work it owes on a r
 its name back: a digest from a deleted incarnation is refused by name as deleted and by the
 peer-location view ([gossip.md §3.1](gossip.md#31-frame-catalog)); its data dir stays.
 
-**A replace across a STORAGE-FORMAT move is not a replace.** Preserved data under
+**A new executable across a STORAGE-FORMAT move cannot take the old data.** Preserved data under
 new-format binaries refuses at the record header's checksum on the first read — the correct
 failure, and the reason a durable format move takes the mesh down and deploys it again rather
-than replacing members in place.
+than creating new nodes over the old data.
 
 ### 7.4 The fabric-primary writes topology
 
