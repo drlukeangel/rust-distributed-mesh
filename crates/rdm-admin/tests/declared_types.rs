@@ -49,7 +49,7 @@ async fn submit_adding(types: Vec<rdm_core::NodeType>, added: NodeSpec) -> (Resu
     let mut nodes: Vec<NodeSpec> = held.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
     nodes.push(added);
     let based_on = builds.current().await.unwrap().expect("day 0's Build is current").build_id;
-    (cp.submit("test", TopologyChange::Reconcile { topology_storage_provider: None, based_on, nodes }).await, builds)
+    (cp.submit("test", TopologyChange::Reconcile { based_on, nodes }).await, builds)
 }
 
 // @feature: node-types
