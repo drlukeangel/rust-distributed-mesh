@@ -126,15 +126,11 @@ impl NodeAdminNotReady {
     }
 }
 
-/// How long a target that failed is left alone: doubling per consecutive failure from `BACKOFF_BASE`
-/// to `BACKOFF_CAP`. Luke explicitly authorized this backoff (R-G6) as READ-ONLY recovery: it spaces
-/// repeated reads of a peer and gates nothing else; it retries no write and no decision.
-pub const BACKOFF_BASE: Duration = Duration::from_millis(250);
-/// The longest wait after repeated failures.
-pub const BACKOFF_CAP: Duration = Duration::from_secs(4);
-
+/// How long a target that failed is left alone: the one schedule's delay for its consecutive
+/// failures (node-rpc.md §43, `rdm_transport::Pacing`; Q344: no per-site constants). It spaces
+/// repeated reads and gates nothing else; it retries no write and no decision (R-G6).
 fn backoff_for(failures: u32) -> Duration {
-    BACKOFF_BASE.saturating_mul(1u32 << failures.saturating_sub(1).min(8)).min(BACKOFF_CAP)
+    rdm_transport::Pacing::from_cadences().after(failures.max(1))
 }
 
 #[derive(Default)]
@@ -375,14 +371,10 @@ mod tests {
         assert_eq!(store_unreadable.kind(), "build-store-unreadable");
         assert_eq!(store_unreadable.need(), Need::Nothing);
 
-        assert_eq!(BACKOFF_BASE, Duration::from_millis(250));
-        assert_eq!(BACKOFF_CAP, Duration::from_secs(4));
-        assert_eq!(backoff_for(1), Duration::from_millis(250));
-        assert_eq!(backoff_for(2), Duration::from_millis(500));
-        assert_eq!(backoff_for(3), Duration::from_millis(1000));
-        assert_eq!(backoff_for(4), Duration::from_millis(2000));
-        assert_eq!(backoff_for(5), Duration::from_secs(4));
-        assert_eq!(backoff_for(6), Duration::from_secs(4));
-        assert_eq!(backoff_for(20), Duration::from_secs(4));
+        // The one schedule (node-rpc.md §43): the first delay the gossip interval, capped at the floor,
+        // each with its ±25 % jitter.
+        let (cadence, floor) = (rdm_transport::topology::gossip_interval(), rdm_transport::topology::staleness_floor());
+        assert!(backoff_for(1) >= cadence.mul_f64(0.75) && backoff_for(1) <= cadence.mul_f64(1.25), "the first delay is the gossip interval");
+        assert!(backoff_for(20) <= floor.mul_f64(1.25), "every delay is capped at the staleness floor");
     }
 }

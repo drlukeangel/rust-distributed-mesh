@@ -420,7 +420,7 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
     renew_ca(r, view, now).await;
     rotate_roots(r, view).await;
     for m in &view.meshes {
-        let admins: Vec<(Node, IncarnationId)> = view.births().filter(|n| n.mesh == m.name && rdm_core::is_node_admin(&n.r#type)).filter_map(|n| Some((n.clone(), n.incarnation_id.clone()?))).collect();
+        let admins: Vec<(Node, IncarnationId)> = view.births().filter(|n| n.mesh == m.name && rdm_core::is_node_admin(&n.r#type)).filter_map(|n| Some((n.clone(), n.incarnation_id.clone()?))).filter(|(n, i)| !r.marked(&n.node_id, i)).collect();
         // Every admin's dates of the mesh, a re-created admin's predecessor's included: the schedule is theirs.
         // The signing cert dates are written by the admin's mesh-primary (node-issuer-update.md step 4):
         // this fabric-primary writes them only for the mesh whose primary it is, never as the stand-in
@@ -586,7 +586,7 @@ async fn distribute_roots(r: &Arc<Renewals>, view: &Topology, roots: &[String], 
     let secret = r.issuer.next_root_secret().map(rdm_core::status::RootSecretHex);
     let mut births: Vec<(Node, IncarnationId)> = view.births().filter(|n| n.status.is_live()).filter_map(|n| Some((n.clone(), n.incarnation_id.clone()?))).collect();
     births.sort_by_key(|(n, _)| !rdm_core::is_node_admin(&n.r#type));
-    let owed: Vec<(Node, IncarnationId)> = births.into_iter().filter(|(n, i)| !r.roots_acked.lock().unwrap().contains(&roots_key(&n.node_id, i, phase))).collect();
+    let owed: Vec<(Node, IncarnationId)> = births.into_iter().filter(|(n, i)| !r.roots_acked.lock().unwrap().contains(&roots_key(&n.node_id, i, phase)) && !r.marked(&n.node_id, i)).collect();
     let sends = owed.iter().map(|(n, incarnation)| {
         let secret = (rdm_core::is_node_admin(&n.r#type)).then(|| secret.clone()).flatten();
         let req = StatusRequest::UpdateRoots { node_id: n.node_id.clone(), incarnation: incarnation.clone(), roots: roots.to_vec(), phase, secret: secret.clone() };
