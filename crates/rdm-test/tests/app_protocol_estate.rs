@@ -17,7 +17,7 @@
 
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Change, Fabrics, MeshDesired, NodeStatus, Nodes, PathName};
+use rdm_client::{BuildCarrier, BuildId, Fabrics, MeshDesired, NodeStatus, Nodes, PathName};
 use rdm_test::estate::{bin_dir, Estate};
 use rdm_test::executables::{Current, Executables};
 use rdm_test::node::{app_protocol, echo_streams, APP_PROTOCOL, APP_PROTOCOL_KNOB};
@@ -138,14 +138,16 @@ async fn day0(dir: &Path) -> Day0 {
 }
 
 impl Day0 {
-    /// Reconcile the fabric to `meshes` (each as the compiler's count form resizes it) and follow the
+    /// Take the fabric to `meshes` (a Create, then a Delete: [`Current::change_to`]) and follow each
     /// Build to its end.
     async fn reconcile(&self, meshes: &[MeshDesired]) {
         let executables = Executables::testkit("process");
         let current = Current::read(&self.carrier).await.unwrap_or_else(|e| panic!("the current topology: {e}"));
         let nodes = current.resized(meshes, true, &executables);
-        let mut stream = self.carrier.create(Change::Reconcile { based_on: current.based_on.clone(), nodes }).await.unwrap_or_else(|e| panic!("the fabric-primary refused {meshes:?}: {e}"));
-        Estate::until_complete(&mut stream).await;
+        for change in current.change_to(nodes) {
+            let mut stream = self.carrier.create(change).await.unwrap_or_else(|e| panic!("the fabric-primary refused {meshes:?}: {e}"));
+            Estate::until_complete(&mut stream).await;
+        }
     }
 
     /// `node` listed ready by the admin's `mesh.nodes.get` of its mesh.

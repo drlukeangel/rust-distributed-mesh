@@ -2,8 +2,7 @@
 
 use rdm_client::{NodeStatus, NodeView};
 use rdm_core::{NodeId, PathName};
-use rdm_node::nodes_storage::NodesStorage as _;
-use rdm_node::nodes_storage::{NodeRow, NodeRowsStorage as _, NodesStorage as _};
+use rdm_node::nodes_storage::{NodeRow, NodeRowsStorage as _};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -289,22 +288,6 @@ fn own_update(estate: &Estate, v: &NodeView, value: &str) {
     assert_eq!(answer["own_config"], "config-updated", "the own update was acknowledged: {answer}");
 }
 
-fn nodes_file(estate: &Estate) -> std::path::PathBuf {
-    estate.fabric_store_root().join(rdm_node::store_root::NODES_FILE)
-}
-
-/// Every line of `node`'s one record in the nodes store (Q323, Q331: keyed by its node id alone),
-/// oldest first: the record's history, never a writer's key.
-fn lines_of(estate: &Estate, node: &NodeId) -> Vec<NodeRow> {
-    let file = nodes_file(estate);
-    rdm_node::store_log::read_file(&file)
-        .unwrap_or_else(|e| panic!("the nodes store {} reads whole: {e}", file.display()))
-        .iter()
-        .filter(|l| l.kind() == rdm_node::nodes_storage::RECORD_KIND && l.key == node.as_str())
-        .map(|l| l.decode(&file).unwrap_or_else(|e| panic!("a record line of {node} decodes: {e}")))
-        .collect()
-}
-
 /// `node`'s record: its latest line at its node id in the nodes store (query.md §1, Q323), read as the
 /// store answers it.
 async fn latest(estate: &Estate, node: &NodeId) -> Option<NodeRow> {
@@ -328,24 +311,6 @@ fn fields(r: &NodeRow) -> Value {
         "executable": r.executable, "storage_persistence": r.storage_persistence, "topology_storage_provider": r.topology_storage_provider,
         "allocated": r.allocated, "initial_properties": r.initial_properties, "predecessor": r.predecessor, "renamed_from": r.renamed_from,
     })
-}
-
-/// The fabric's nodes store as a late-completing provider put commits it: the put of `record` at its
-/// node id, issued earlier, lands now as the record's latest line. The line is appended under a writer
-/// birth of its own (the store log's write sequence, never the record's key), so its sequence meets no
-/// live process's.
-async fn late_record_put(estate: &Estate, record: &NodeRow) {
-    let root = estate.fabric_store_root();
-    let store = rdm_node::nodes_storage::FileNodesStorage::open(&root, &rdm_node::store_root::StoreRoot::at(&root), &record.mesh, &rdm_node::store_log::LogWriter::mint()).await.expect("the fabric's nodes store opens");
-    store.put_node(record).await.expect("the late record put is durable");
-    store.finish_issued_writes().await;
-}
-
-async fn late_properties_put(estate: &Estate, record: &rdm_node::node_records::NodeProperties) {
-    let root = estate.fabric_store_root();
-    let store = rdm_node::nodes_storage::FileNodesStorage::open(&root, &rdm_node::store_root::StoreRoot::at(&root), "", &rdm_node::store_log::LogWriter::mint()).await.expect("the fabric's nodes store opens");
-    store.put_properties(record).await.expect("the late property put is durable");
-    store.finish_issued_writes().await;
 }
 
 /// Each named field of `a` and `b` (both serialized) that differs, as `field: a -> b`; a field absent

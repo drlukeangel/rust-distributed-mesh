@@ -11,7 +11,6 @@
 use iroh::endpoint::presets;
 use iroh::{Endpoint, SecretKey};
 use rdm_admin::accepted::{AcceptedStore, FabricTopology};
-use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, BuildOperation, MeshDesired};
 use rdm_admin::build_state::{BuildState, BuildStateAdapter};
 use rdm_admin::build_drive::{Drive, DriveEnv, DriveEnd};
@@ -120,25 +119,11 @@ impl OperationRunner for Runner {
     }
 }
 
-/// The drive's gate over the fixture's view: the node rows record what each live node of the view runs, the executable its entry names (the create's claim records it,
-/// build-deployment.md §2.3), as production rows do.
-struct RowsGate {
-    view: Arc<RwLock<Topology>>,
-}
+/// The drive's gate: every check at its default.
+struct RowsGate;
 
 #[async_trait::async_trait]
 impl rdm_admin::build_drive::Gate for RowsGate {
-    async fn recorded_executables(&self, topology: &FabricTopology) -> Result<rdm_admin::accepted::Recorded, String> {
-        let v = self.view.read().await;
-        Ok(v.nodes
-            .iter()
-            .filter(|n| n.status.is_live())
-            .filter_map(|n| {
-                let entry = rdm_admin::accepted::target_executable(topology, &n.location())?;
-                Some((n.location(), rdm_admin::accepted::RecordedRow { mesh: n.mesh.clone(), r#type: n.r#type.clone(), config: None, tags: None, storage_persistence: None, node_id: n.node_id.clone(), sha256: Some(entry.sha256.clone()) }))
-            })
-            .collect())
-    }
 }
 
 /// A fabric-primary's drive of the Build over `builds`: its claim door is its own log, and
@@ -165,7 +150,7 @@ fn drive_env(me: &PathName, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatc
             claimed: Default::default(),
         }),
         dispatcher: dispatch,
-        gate: Arc::new(RowsGate { view: topology.clone() }),
+        gate: Arc::new(RowsGate),
         departure: exits,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         notices: told.notices(),
@@ -253,7 +238,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let mut cp = crate::control_plane(a.builds.clone(), a.accepted.clone(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), topology.read().await.clone(), crate::adopted_time());
     cp.topology = topology.clone();
     let build_id = cp
-        .submit("POST /api/build", crate::named_request(&cp, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [("node-admin", 2), ("node", 3)]) }).await)
+        .submit("POST /api/build", crate::named_request(&cp, move |t: &rdm_admin::topology::Topology| crate::grown(t, &[MeshDesired::of("mesh1".to_string(), [("node-admin", 2), ("node", 3)])])).await)
         .await
         .unwrap()
         .build_id;

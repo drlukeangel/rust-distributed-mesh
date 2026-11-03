@@ -50,8 +50,6 @@ mod estate_teardown;
 mod accepted_topology;
 #[path = "build/build_op.rs"]
 mod build_op;
-#[path = "build/executables.rs"]
-mod executables;
 #[path = "build/mesh_self_heal.rs"]
 mod mesh_self_heal;
 #[path = "build/admission_gates.rs"]
@@ -195,8 +193,6 @@ mod successor_adoption;
 mod live_resize;
 #[path = "build/role_build.rs"]
 mod role_build;
-#[path = "build/reconcile_variants.rs"]
-mod reconcile_variants;
 #[path = "build/shape_reconcile.rs"]
 mod shape_reconcile;
 #[path = "node/admin_restart.rs"]

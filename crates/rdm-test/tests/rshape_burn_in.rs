@@ -1547,12 +1547,12 @@ async fn build_now(e: &Estate, id: &str) -> Value {
 /// naming the fabric-primary it sees; `build-in-progress` naming the Build in flight; a topology rule's own
 /// name (`unknown-node`, `node-not-live`, `unheard-mesh`) with its detail; or `ended` with how the call ended
 /// without a reply. The first item of the call is read as `BuildCarrier::open` reads it.
-/// `node.create` of one more `kind` node in `mesh` as the complete topology read at `admin`, the path
-/// named on the estate's executable for it.
+/// `node.create` of one more `kind` node in `mesh`, read at `admin`: a Create of that node, named on the
+/// estate's executable for it.
 async fn created(e: &Estate, admin: &PathName, mesh: &str, kind: String) -> BuildChange {
     let current = rdm_test::executables::Current::read(&e.carrier_at(admin).await).await.unwrap_or_else(|end| panic!("the current topology at {admin:?}: {end}"));
-    let nodes = current.with_one_more(mesh, &kind, &e.executables);
-    BuildChange::Reconcile { based_on: current.based_on, nodes }
+    let node = current.one_more(mesh, &kind, &e.executables).unwrap_or_else(|end| panic!("{end}"));
+    BuildChange::Create { meshes: Vec::new(), nodes: vec![node] }
 }
 
 async fn ask(e: &Estate, admin: &PathName, change: BuildChange) -> Value {

@@ -9,7 +9,6 @@
 //! entities says which Build is current.
 
 use rdm_admin::accepted::{AcceptedStore, FabricTopology};
-use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, MeshDesired};
 use rdm_admin::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::{ControlPlane, Refusal};
@@ -66,9 +65,9 @@ async fn fail(builds: &MemoryBuildStateAdapter, id: &BuildId, executor: &rdm_cor
 #[tokio::test]
 async fn a_change_after_a_failed_build_compiles_against_the_newest_completed_build() {
     let (cp, builds, b0) = fabric_primary().await;
-    let b1 = cp.submit("POST /api/meshes", crate::named_request(&cp, TopologyChange::CreateMesh { desired: mesh("mesh2") }).await).await.expect("B1 is accepted").build_id;
+    let b1 = cp.submit("POST /api/meshes", crate::named_request(&cp, move |t: &rdm_admin::topology::Topology| crate::grown(t, &[mesh("mesh2")])).await).await.expect("B1 is accepted").build_id;
     fail(&builds, &b1, &cp.topology.read().await.node(&cp.me()).unwrap().birth().unwrap()).await;
-    let b2 = cp.submit("POST /api/meshes", crate::named_request(&cp, TopologyChange::CreateMesh { desired: mesh("mesh3") }).await).await.expect("B2 is accepted over the completed B0, the failed B1 skipped").build_id;
+    let b2 = cp.submit("POST /api/meshes", crate::named_request(&cp, move |t: &rdm_admin::topology::Topology| crate::grown(t, &[mesh("mesh3")])).await).await.expect("B2 is accepted over the completed B0, the failed B1 skipped").build_id;
     let meshes: Vec<String> = builds.read_build(&b2).await.unwrap().topology.meshes.keys().cloned().collect();
     assert_eq!(meshes, vec!["mesh1".to_string(), "mesh3".to_string()], "B2 compiled against B0 ({b0}), never the failed B1 ({b1})");
 }
@@ -84,7 +83,7 @@ async fn an_accepted_build_is_current_from_the_build_store_alone() {
     let topology = builds.read_build(&b0).await.unwrap().topology;
     let b1 = BuildId::mint();
     builds.publish_accepted(&BuildAccepted { build_id: b1.clone(), topology, submitted_change: None, source: None, submitted_at_ms: 5 }).await.unwrap();
-    match cp.submit("POST /api/meshes", TopologyChange::CreateMesh { desired: mesh("mesh2") }).await {
+    match cp.submit("POST /api/meshes", crate::named_request(&cp, move |t: &rdm_admin::topology::Topology| crate::grown(t, &[mesh("mesh2")])).await).await {
         Err(Refusal::BuildInProgress(held)) => assert_eq!(held.current_build_id, b1, "the refusal names the Build in progress"),
         Err(other) => panic!("refused, but not as the Build in progress {b1}: {other:?}"),
         Ok(o) => panic!("a change was accepted as {} while B1 ({b1}), newer than B0 ({b0}), is in progress", o.build_id),

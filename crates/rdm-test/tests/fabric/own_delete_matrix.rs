@@ -293,7 +293,7 @@ async fn in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_
     let test = "in_a_two_mesh_fabric_a_primarys_delete_with_no_successor_is_refused_by_name_and_an_ordinary_admins_delete_ends_it_inside_the_bound";
     let (mut estate, views) = ready(test, &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
     let nodes = estate.nodes_obj().await;
-    let fp_refused = refused_by_name("node.delete of the fabric-primary, mesh1's only admin", "would-leave-mesh-without-admin", nodes.delete(vec![views.iter().find(|n| n.name == path("mesh1.node-admin", "1")).expect("the fabric-primary's view").node_id.clone()]).await);
+    let fp_refused = refused_by_name("node.delete of the fabric-primary, mesh1's only admin", "would-leave-mesh-without-admin", nodes.delete(vec![views.iter().find(|n| n.location() == path("mesh1.node-admin", "1")).expect("the fabric-primary's view").node_id.clone()]).await);
     let primary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).map(|n| n.location()).expect("mesh2's primary");
     let ordinary = views.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && !n.is_primary).map(|n| n.location()).expect("mesh2's other admin");
     let ordinary_id = views.iter().find(|n| n.location() == ordinary).unwrap().node_id.clone();

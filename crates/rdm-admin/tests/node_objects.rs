@@ -402,15 +402,9 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
 /// `node.create` of mesh1's next node, named on its executable: a Create of that node alone
 /// (build.md §1), its path the one the count expands to against what `served`'s door reads.
 async fn create_rpc(nodes: &Nodes, served: &Served) -> Result<WorkflowStream, CallEnd> {
-    let rdm_core::build::BuildChange::Reconcile { nodes: entries, .. } = crate::named_request(&served.door.control, rdm_core::build::BuildChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await else {
-        unreachable!("a create is named as the complete topology")
+    let rdm_core::build::BuildChange::Create { nodes: added, .. } = crate::named_request(&served.door.control, |t: &rdm_admin::topology::Topology| crate::grown_by_one(t, "mesh1", "node")).await else {
+        unreachable!("a node is added by a Create")
     };
-    let held = served.door.control.topology.read().await.clone();
-    let added: Vec<rdm_core::build::Nodes> = entries
-        .into_iter()
-        .filter(|s| held.node(&s.path).is_none())
-        .map(|s| rdm_core::build::Nodes { path: s.path.path, name: s.path.name, mesh: s.mesh, r#type: s.r#type, storage_persistence: Some(s.storage_persistence), executable: s.executable, tags: s.tags, config: s.config })
-        .collect();
     nodes.create(added).await
 }
 

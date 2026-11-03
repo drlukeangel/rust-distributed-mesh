@@ -525,8 +525,8 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         deleted.birth_mut(&deleted_inc, &PathName::new("mesh1.node", "3").unwrap());
         // Each later birth's row names its predecessor's exact birth.
         let created = |n: &Node, pred: &NodeId, inc: &IncarnationId| {
-            let mut row = NodeRow::new(n.name.clone(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Starting);
-            row.allocated = Some(rdm_admin::storage::Allocation { predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.clone(), incarnation_id: inc.clone() }), build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.name)), incarnation: n.incarnation_id.clone().unwrap(), deployment_id: DeploymentId::mint() });
+            let mut row = NodeRow::new(n.location(), n.mesh.clone(), &n.r#type, n.node_id.clone(), NodeStatus::Starting);
+            row.allocated = Some(rdm_admin::storage::Allocation { predecessor: Some(rdm_admin::storage::BirthRef { node_id: pred.clone(), incarnation_id: inc.clone() }), build_id: Some(BuildId::mint()), operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), incarnation: n.incarnation_id.clone().unwrap(), deployment_id: DeploymentId::mint() });
             row
         };
         for row in [live, renamed, deleted, created(&successor, &old_pred, &old_inc), created(&fresh, &deleted_pred, &deleted_inc)] {

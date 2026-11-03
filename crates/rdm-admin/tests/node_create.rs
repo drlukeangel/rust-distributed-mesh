@@ -372,21 +372,6 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             timeouts: Timeouts::default(),
         };
 
-        // The entry target is a receipt decision, shared by config and tag steps.
-        let property_path: PathName = rdm_core::PathName::new("mesh1.node", "9").unwrap();
-        let property_birth = rdm_admin::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        assert_eq!(pipeline.property_target(&build_id, 1, &property_path, &property_birth.node_id, async { Ok(property_birth.clone()) }).await.unwrap(), property_birth);
-        let failed_apply = pipeline.apply_in_place(&build_id, 1, &property_path,
-            rdm_core::OperationId::node("node.config.update", &property_birth.node_id), "UpdateConfig", async { Err("reply lost after send".into()) }).await;
-        assert!(failed_apply.is_err());
-        for attempt in [1, 2] {
-            let pinned = pipeline.property_target(&build_id, attempt, &property_path, &property_birth.node_id, async { panic!("same entry must not repin after a failed child step") }).await.unwrap();
-            assert_eq!(pinned, property_birth);
-        }
-        let mut successor_view = view.read().await.clone();
-        successor_view.nodes.push(Node::allocated(property_path.clone(), "mesh1", "node"));
-        assert!(property_birth.held_in(&successor_view, &rdm_core::OperationId::node("node.properties.apply", &property_birth.node_id), &property_path).is_err(), "an unanswered old target is never replaced by the current path's new node");
-
         // Endpoint key (node-create.md:16): mint into a new data dir, or load the key from an
         // inherited data dir.
         let key_dir = data_root.join("inherited-key-check");
@@ -464,7 +449,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         //    the validated join report while gossip is silent.
         let new_path: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
         let create_op = rdm_admin::build::BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(),
-            node_id: rdm_core::fixture_node_id(&new_path.clone()), node: new_path.clone(),
+            node_id: rdm_core::fixture_node_id(&new_path), path: new_path.path.clone(), name: new_path.name.clone(),
             over: None,
             executable: None,
             entry: None,

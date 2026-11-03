@@ -356,8 +356,8 @@ fn writer_view(records: &[Node], primary: Option<&NodeId>, fabric_primary: Optio
 /// Every node's row in `storage` as its create left it (live, its config), held by `rows`.
 async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
     for n in records {
-        storage.write_record(&NodeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
-        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.name)), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        storage.write_record(&NodeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
+        assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
     }
 }
 
@@ -1665,7 +1665,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
             storage.write_record(&NodeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(), initial_properties: None, topology_storage_provider: None, path: n.path.clone(), name: n.name.clone(), node_id: n.node_id.clone(), status: NodeStatus::Ready, allocated: None, renamed_from: None, executable: None, births: Vec::new(), predecessor: None, mesh_id: None, storage_persistence: None, writer: None }).await.unwrap();
         }
         for n in &records {
-            assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.name)), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+            assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         }
         let builds = WireBuilds(MemoryBuildStateAdapter::new());
         let build_id = BuildId::mint();

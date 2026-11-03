@@ -9,10 +9,9 @@
 //! workflow fails that workflow and the next tick recovers the member.
 
 use crate::build_log;
-use rdm_client::{BuildFrame, CallEnd, Change, Frame, NodeEvent, NodeStatus, Nodes, PathName};
-use rdm_test::estate::{at_location, descends_from, is_operation, location, named, wait_for, Estate, Owner};
+use rdm_client::{Change, Frame, NodeStatus, Nodes, PathName};
+use rdm_test::estate::{at_location, descends_from, location, named, wait_for, Estate, Owner};
 use rdm_core::{NodeId, OperationSubject};
-use rdm_test::faults::{binding_set, candidate_sha, Door};
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -35,16 +34,6 @@ fn ready(node: &Value) -> bool {
 /// A birth that holds or contends for a role and serves (`NodeStatus::is_live`).
 fn live(node: &Value) -> bool {
     matches!(node["status"].as_str(), Some("pending" | "ready" | "connections-deleting"))
-}
-
-/// The node id a view row names.
-fn node_id_of(v: &Value) -> NodeId {
-    serde_json::from_value(v["node_id"].clone()).expect("a view row names its node id")
-}
-
-/// A reconcile span's `operations`: the attempt's operations as the executor lists them.
-fn operations(ops: &[rdm_core::OperationId]) -> String {
-    format!("{ops:?}")
 }
 
 /// Every admin's view at `admins` holds at most one live birth at `path`. An admin that does not answer
@@ -79,15 +68,6 @@ async fn until_new_birth(estate: &Estate, name: &PathName, before: &Value, withi
 /// first reached ready (states.md "The initial fabric before ready").
 async fn fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
     born_at(Estate::bootstrap(owner(test), "fabric1", "mesh1").await, shape, settle).await
-}
-
-/// [`fabric_of`] with every node-admin the testkit's faulted node-admin (`faults::binding_set`): its
-/// fault door (testkit Node RPC op 0x75) holds the admin at a cut the cell arms, and nothing else of it
-/// differs.
-async fn faulted_fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
-    let sha = candidate_sha();
-    let estate = Estate::bootstrap_on(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"]).await.expect("the faulted-admin binding set is accepted");
-    born_at(estate, shape, settle).await
 }
 
 /// `estate`'s fabric born at `shape` by `build.create`, followed to its terminal frame, the view settled
@@ -496,10 +476,6 @@ fn end(sp: &Value) -> u64 {
     sp["end_unix_nano"].as_u64().expect("a span end")
 }
 
-fn events(frames: &[Frame]) -> Vec<NodeEvent> {
-    frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect()
-}
-
 fn alive(pid: u64) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -564,7 +540,7 @@ async fn a_replace_is_node_commands_then_one_create_and_the_predecessor_stays_st
     assert_eq!(deleted.last(), Some(&Frame::Complete), "{deleted:?}");
     wait_for(&format!("the predecessor's process {pid} exits at its delete"), Duration::from_secs(30), || async { (!alive(pid)).then_some(()) }).await;
     let after = estate.nodes_obj().await.get(&rdm_client::Filter::new().eq("mesh", ["mesh1"])).await.expect("node.get [mesh]");
-    assert!(!after.iter().any(|n| n.name == old), "nothing is listed at {old:?}: {after:#?}");
+    assert!(!after.iter().any(|n| n.location() == old), "nothing is listed at {old:?}: {after:#?}");
     assert_eq!(std::fs::read(&segment).unwrap(), b"records", "node.delete keeps storage, and RDM moved no data: {segment:?}");
     assert!(estate.builds_obj().await.get(&rdm_client::Filter::new()).await.expect("build.get").len() > builds_before, "the successor's Create is a Build of its own");
 
@@ -1121,20 +1097,6 @@ fn tickle_span<'a>(spans: &'a [Value], observer: &str, node_id: &Value) -> Optio
     found.into_iter().next()
 }
 
-/// The span that ends the `caller`'s first tickle ladder for `node_id` with nobody reaching it: the
-/// ladder's result span (`rdm.node.tickle.returns-unknown.via-unreached`, node-tickle.md), closed by
-/// the ladder itself when the ladder ends (offline.rs `OfflineTickle::tick`), once exported. The TRUE
-/// OFFLINE span ([`tickle_span`]) is the loop's fold of that result, made by the first pass after the
-/// ladder ended.
-fn ladder_end_span<'a>(spans: &'a [Value], caller: &str, node_id: &Value) -> Option<&'a Value> {
-    let mut found: Vec<&Value> = named(spans, "rdm.node.tickle.returns-unknown.via-unreached")
-        .into_iter()
-        .filter(|sp| sp["attributes"]["caller"] == caller && sp["attributes"]["node_id"] == *node_id && sp["attributes"]["next"].is_string())
-        .collect();
-    found.sort_by_key(|sp| start(sp));
-    found.into_iter().next()
-}
-
 /// A span attribute that is a number, exported as a string or a number.
 fn num_attr(sp: &Value, k: &str) -> u64 {
     let v = &sp["attributes"][k];
@@ -1631,12 +1593,6 @@ async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_ret
 }
 
 
-
-/// The executable `node`'s process runs, as the OS names it.
-async fn exe_of(estate: &Estate, node: &PathName) -> std::path::PathBuf {
-    let pid = estate.pid_of(node).await;
-    std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_else(|e| panic!("{node:?} (pid {pid}): /proc exe: {e}"))
-}
 
 /// CONTRACT (node-investigation.md: "A node that comes back after it was re-created is refused ... The
 /// node that refused it reports it to the fabric-primary, which terminates its runtime"; Q110, Q128): a

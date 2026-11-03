@@ -164,7 +164,7 @@ pub fn grown(t: &rdm_admin::topology::Topology, desired: &[rdm_admin::build::Mes
         let mut types: Vec<(String, u32)> = d.counts().into_iter().collect();
         types.sort_by_key(|(r#type, _)| !rdm_core::is_node_admin(r#type));
         for (r#type, want) in types {
-            let held = |p: &rdm_core::PathName| t.nodes.iter().any(|n| &n.name == p && n.status.is_live());
+            let held = |p: &rdm_core::PathName| t.nodes.iter().any(|n| n.location() == *p && n.status.is_live());
             let mut have = t.nodes.iter().filter(|n| n.mesh == d.name && n.r#type == r#type && n.status.is_live()).count() as u32;
             let mut ordinal = 1;
             while have < want {
@@ -179,6 +179,12 @@ pub fn grown(t: &rdm_admin::topology::Topology, desired: &[rdm_admin::build::Mes
         }
     }
     rdm_core::build::BuildChange::Create { meshes, nodes }
+}
+
+/// The Create of one more `type` node in `mesh` than `t` holds there.
+pub fn grown_by_one(t: &rdm_admin::topology::Topology, mesh: &str, r#type: &str) -> rdm_core::build::BuildChange {
+    let have = t.nodes.iter().filter(|n| n.mesh == mesh && n.r#type == r#type && n.status.is_live()).count() as u32;
+    grown(t, &[rdm_admin::build::MeshDesired::of(mesh, [(r#type, have + 1)])])
 }
 
 /// The Delete of the node `t` holds at each of `paths`, by its node.id.

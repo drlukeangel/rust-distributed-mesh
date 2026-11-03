@@ -81,10 +81,11 @@ async fn running(r: &Rig, build: &rdm_admin::build::BuildId, attempt: u32) {
 #[tokio::test]
 async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress_and_standalone_deletes_stay_refused() {
     let r = rig(ScopeStatus::Pending).await;
-    let grow = r.cp.submit("test", crate::named_request(&r.cp, TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await).await.expect("growth is admitted before the first ready");
+    let grow = r.cp.submit("test", crate::named_request(&r.cp, move |t: &rdm_admin::topology::Topology| crate::grown_by_one(t, "mesh1", "node")).await).await.expect("growth is admitted before the first ready");
     running(&r, &grow.build_id, 1).await;
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(grow.build_id.clone()), "the growth Build is in progress");
-    for change in [TopologyChange::RemoveMesh { mesh: "mesh2".into() }, TopologyChange::RemoveNode { path: "mesh1.node".into(), name: "1".into()}] {
+    let view = r.cp.topology.read().await.clone();
+    for change in [BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() }, crate::removed(&view, &[rdm_core::PathName::new("mesh1.node", "1").unwrap()])] {
         match r.cp.submit("test", change.clone()).await {
             Err(Refusal::BuildInProgress(_)) => {}
             other => panic!("the standalone {change:?} was not refused build-in-progress: {other:?}"),
@@ -96,7 +97,7 @@ async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress
     assert_eq!((delete.attempt, delete.mesh.as_deref()), (1, None));
     assert_eq!(r.facts().await, before + 1, "the delete's acceptance is the one fact written");
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(delete.build_id.clone()), "the delete is the current Build from its acceptance");
-    match r.cp.submit("test", TopologyChange::RemoveMesh { mesh: "mesh2".into() }).await {
+    match r.cp.submit("test", crate::named_request(&r.cp, move |_: &rdm_admin::topology::Topology| rdm_core::build::BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() }).await).await {
         Err(Refusal::BuildInProgress(_)) => {}
         other => panic!("a standalone mesh.delete beside the delete was not refused build-in-progress: {other:?}"),
     }

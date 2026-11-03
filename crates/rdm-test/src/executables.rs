@@ -1,19 +1,18 @@
-//! The harness's executables and its complete-topology requests (proposal
-//! executable-bindings-at-create.md rule 1 and §2, Q157): every Build the harness submits names each
-//! path's executable, `build.create { Change(Reconcile { based_on, nodes }) }`. A cell's counts are
-//! expanded here into named paths with their configs, reading the current topology, as Rafka's door
-//! expands its per-type input into per-path entries before the typed call: RDM is never handed a count
-//! by the harness, and nothing it launches is taken from a directory with no sha.
+//! The harness's executables and the Builds it names (build.md §1): every node a Create adds names its
+//! executable. A cell's counts are expanded here into named nodes, reading the current topology, as
+//! Rafka's door expands its per-type input before the typed call, into a Create of what is added and a
+//! Delete of what is removed ([`Current::change_to`]): RDM is never handed a count by the harness, and
+//! nothing it launches is taken from a directory with no sha.
 //!
 //! [`Executables`] is where each type's executable comes from (the testkit's own binaries, each file
 //! hashed once per process, or an explicit set); [`Current`] is the read a request is built from (the
-//! current Build at the fabric-primary, its accepted topology and every node's row) and expands counts
-//! the way the compiler's count form resized them (`accepted::resize`): a grow takes the lowest free
+//! current Build at the fabric-primary, its accepted topology and every node's row) and expands counts:
+//! a grow takes the lowest free
 //! ordinal of the type, a shrink drops the highest ordinal that is not the type's primary.
 
 use rdm_client::binding::{sha256_file, Binding, BindingSet};
 use rdm_client::{BuildCarrier, BuildId, Builds, Filter, MeshDesired, NodeStatus, NodeView, PathName};
-use rdm_core::meta::{NodeSpec, StoragePersistence};
+use rdm_core::meta::NodeSpec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -90,8 +89,8 @@ fn counts(mesh: &MeshDesired, held: &BTreeMap<PathName, NodeSpec>) -> Vec<(Strin
 /// accepted topology, and every node's row as `fabric.nodes.get` answers it.
 #[derive(Debug, Clone)]
 pub struct Current {
-    /// The current Build: the request's `based_on`.
-    pub based_on: BuildId,
+    /// The current Build.
+    pub build_id: BuildId,
     /// That Build's accepted topology: every node's create spec, by mesh and `path.name`.
     pub topology: BTreeMap<String, BTreeMap<PathName, NodeSpec>>,
     /// Every node of the fabric, from the rows.
@@ -110,7 +109,7 @@ impl Current {
         }
         // Every row in one read: node.get streams its rows on op 0x23 (Q285).
         let rows = rdm_client::Nodes::new(carrier.clone()).get(&rdm_client::Filter::new()).await.map_err(|e| format!("node.get at {:?}: {e}", carrier.target()))?;
-        Ok(Self { based_on: build.build_id, topology, rows })
+        Ok(Self { build_id: build.build_id, topology, rows })
     }
 
     /// The executable the row at `path` records, a live birth's first.
@@ -218,9 +217,37 @@ impl Current {
         let held = |p: &PathName| self.topology.values().any(|m| m.contains_key(p));
         specs
             .into_iter()
-            .filter(|s| !held(&s.path))
-            .map(|s| rdm_core::build::Nodes { path: s.path.path, name: s.path.name, mesh: s.mesh, r#type: s.r#type, storage_persistence: Some(s.storage_persistence), executable: s.executable, tags: s.tags, config: s.config })
+            .filter(|s| !held(&s.location()))
+            .map(|s| rdm_core::build::Nodes { path: s.path, name: s.name, mesh: s.mesh, r#type: s.r#type, storage_persistence: Some(s.storage_persistence), executable: s.executable, tags: s.tags, config: s.config })
             .collect()
+    }
+
+    /// The Builds that take the topology to `desired` (build.md §1: every add or remove is its own Build):
+    /// a Create of each node and mesh `desired` names that the topology does not hold, then a Delete of
+    /// each mesh it no longer names and of each other node it no longer names, by the node.id its live
+    /// row holds. Either is left out when it would name nothing.
+    pub fn change_to(&self, desired: Vec<NodeSpec>) -> Vec<rdm_core::build::BuildChange> {
+        let meshes: std::collections::BTreeSet<String> = desired.iter().map(|s| s.mesh.clone()).collect();
+        let wanted: std::collections::BTreeSet<PathName> = desired.iter().map(|s| s.location()).collect();
+        let mut out = Vec::new();
+        let new_meshes: Vec<rdm_core::build::Meshes> = meshes.iter().filter(|m| !self.topology.contains_key(*m)).map(|m| rdm_core::build::Meshes { name: m.clone() }).collect();
+        let nodes = self.added(desired);
+        if !nodes.is_empty() || !new_meshes.is_empty() {
+            out.push(rdm_core::build::BuildChange::Create { meshes: new_meshes, nodes });
+        }
+        let gone_meshes: Vec<String> = self.topology.keys().filter(|m| !meshes.contains(*m)).cloned().collect();
+        let node_ids: Vec<rdm_core::NodeId> = self
+            .topology
+            .iter()
+            .filter(|(m, _)| meshes.contains(*m))
+            .flat_map(|(_, paths)| paths.keys())
+            .filter(|p| !wanted.contains(*p))
+            .filter_map(|p| self.live_row(p).map(|r| r.node_id.clone()))
+            .collect();
+        if !node_ids.is_empty() || !gone_meshes.is_empty() {
+            out.push(rdm_core::build::BuildChange::Delete { meshes: gone_meshes, node_ids });
+        }
+        out
     }
 
     /// The one node a Create adds for one more `type` in `mesh`: the path [`Self::with_one_more`] adds,
@@ -273,7 +300,7 @@ mod tests {
             mesh.insert(p.clone(), created_spec(p, "mesh1", "node", binding("node", "r0")));
         }
         let topology = [("mesh1".to_string(), mesh)].into_iter().collect();
-        Current { based_on: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, "a0"), row(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", true, "r0")] }
+        Current { build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), topology, rows: vec![row(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true, "a0"), row(PathName::new("mesh1.node", "3").unwrap(), "mesh1", "node", true, "r0")] }
     }
 
     fn names(request: &[NodeSpec]) -> Vec<PathName> {

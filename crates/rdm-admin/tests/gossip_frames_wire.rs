@@ -17,7 +17,7 @@ use rdm_transport::topology::Frame;
 use rdm_transport::snapshot::{chunks_of, Full, PublisherId};
 use rdm_admin::accepted::{AttemptAction, FabricTopology, MeshTopology};
 use rdm_core::build::BuildChange;
-use rdm_admin::build::{BuildId, FabricDesired, MeshDesired};
+use rdm_admin::build::{BuildId, MeshDesired};
 use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, StepOutcome};
 use rdm_admin::deployment::pipeline::Bound;
 use rdm_admin::deployment::pipeline::{CommandAdmission, Completion, CreateStep, DeleteStep, StorageDisposition};
@@ -171,19 +171,15 @@ fn topology() -> FabricTopology {
     t
 }
 
-fn changes() -> Vec<Option<TopologyChange>> {
-    let desired = MeshDesired::of("mesh2", [("node-admin", 1), ("broker", 3)]);
+fn changes() -> Vec<Option<BuildChange>> {
+    let node = |path: &str, name: &str, mesh: &str, r#type: &str| rdm_core::build::Nodes { path: path.into(), name: name.into(), mesh: mesh.into(), r#type: r#type.into(), storage_persistence: None, executable: None, tags: Default::default(), config: Default::default() };
     vec![
         None,
-        Some(TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric-1".into(), meshes: vec![desired.clone(), MeshDesired::of("mesh1", [("node-admin", 1)])] } }),
-        Some(TopologyChange::ReconcileMesh { desired: desired.clone() }),
-        Some(TopologyChange::AddNode { mesh: "mesh2".into(), r#type: "gateway".into() }),
-        Some(TopologyChange::RemoveNode { path: "mesh2.node".into(), name: "2".into()}),
-        Some(TopologyChange::CreateMesh { desired }),
-        Some(TopologyChange::RemoveMesh { mesh: "mesh2".into() }),
-        // A stored change of the removed operation, read as history: its reserved position (proposal
-        // executable-bindings-at-create.md §1).
-        Some(TopologyChange::Reserved {}),
+        Some(BuildChange::Create { meshes: vec![rdm_core::build::Meshes { name: "mesh2".into() }], nodes: vec![node("mesh2.node-admin", "1", "mesh2", "node-admin"), node("mesh2.broker", "1", "mesh2", "broker")] }),
+        Some(BuildChange::Create { meshes: Vec::new(), nodes: vec![node("mesh2.gateway", "1", "mesh2", "gateway")] }),
+        Some(BuildChange::Delete { meshes: Vec::new(), node_ids: vec![rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "2").unwrap())] }),
+        Some(BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() }),
+        Some(BuildChange::DeleteFabric),
     ]
 }
 
@@ -478,11 +474,9 @@ fn without_executables(t: &FabricTopology) -> FabricTopology {
 fn the_accepted_fact_on_the_build_topic_carries_no_executable_and_a_twelve_node_fabric_fits_one_message() {
     let named = twelve_node_topology();
     assert_eq!(named.meshes.values().map(|m| m.nodes.len()).sum::<usize>(), 12);
-    let nodes: Vec<NodeSpec> = named.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
-    let fact = |t: FabricTopology, nodes: Vec<NodeSpec>| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: Some(TopologyChange::Reconcile { based_on: bid("2qcfk1kq47m8"), nodes }), source: None, submitted_at_ms: 1_700_000_000_000 });
-    let stripped_nodes: Vec<NodeSpec> = nodes.iter().map(|s| NodeSpec { executable: None, tags: Default::default(), config: Default::default(), ..s.clone() }).collect();
-    let with = fact(named.clone(), nodes);
-    let without = fact(without_executables(&named), stripped_nodes);
+    let fact = |t: FabricTopology| BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: t, submitted_change: None, source: None, submitted_at_ms: 1_700_000_000_000 });
+    let with = fact(named.clone());
+    let without = fact(without_executables(&named));
 
     let (messages, refused) = encode_chunks(vec![with.clone()]);
     assert!(refused.is_empty(), "a twelve-node fabric's accepted fact fits one gossip message: {refused:?}");

@@ -128,8 +128,8 @@ async fn rig() -> (Arc<Held>, Arc<ControlPlane>) {
     (held, Arc::new(cp))
 }
 
-fn add_rpc() -> BuildChange {
-    TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }
+fn add_rpc() -> impl FnOnce(&rdm_admin::topology::Topology) -> BuildChange {
+    move |t: &rdm_admin::topology::Topology| crate::grown_by_one(t, "mesh1", "node")
 }
 
 /// CONTRACT: two topology submissions that both arrive while the accepted Build is settled admit

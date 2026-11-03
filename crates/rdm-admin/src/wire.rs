@@ -276,7 +276,6 @@ pub(crate) enum WireOutput {
     RosterAmended(RosterAmended),
     /// The recorded transition under an in-force fabric.delete (Q160).
     PrimariesTaken(crate::build_state::PrimariesTaken),
-    PropertyTarget(crate::build::PinnedBirth),
 }
 
 /// A runtime step's receipt: the runtime by fingerprint.
@@ -418,7 +417,6 @@ enum Produces {
     ExitManifest,
     RosterAmended,
     PrimariesTaken,
-    PropertyTarget,
 }
 
 fn produces(operation: &rdm_core::OperationId, step: &str) -> Option<Produces> {
@@ -430,9 +428,7 @@ fn produces(operation: &rdm_core::OperationId, step: &str) -> Option<Produces> {
         return Some(Produces::LifecycleOp);
     }
     let ret = |r: DeleteStep| r.name() == step;
-    Some(if step == "PinPropertyTarget" {
-        Produces::PropertyTarget
-    } else if is(CreateStep::AllocateIdentity) {
+    Some(if is(CreateStep::AllocateIdentity) {
         Produces::Identity
     } else if is(CreateStep::WaitForBind) {
         Produces::Bound
@@ -532,7 +528,6 @@ fn output_to_wire(operation: &rdm_core::OperationId, step: &str, v: &serde_json:
         Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
         Produces::RosterAmended => WireOutput::RosterAmended(typed(v)?),
         Produces::PrimariesTaken => WireOutput::PrimariesTaken(typed(v)?),
-        Produces::PropertyTarget => WireOutput::PropertyTarget(typed(v)?),
     })
 }
 
@@ -570,7 +565,6 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
         WireOutput::ExitManifest(m) => json(&m),
         WireOutput::RosterAmended(a) => json(&a),
         WireOutput::PrimariesTaken(t) => json(&t),
-        WireOutput::PropertyTarget(t) => json(&t),
     }
 }
 
@@ -791,17 +785,6 @@ mod tests {
     fn a_bound_output_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "transport": "127.0.0.1:4000", "listeners": [["http", "127.0.0.1:4001"]] });
         unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.create"), CreateStep::WaitForBind.name(), valid, "");
-    }
-
-    /// An endpoint id is the endpoint's key as one string: it has no field to add, so what the reader
-    /// refuses is an object where the string is.
-    // @feature: node-records
-    /// CONTRACT (i150 R8): exact property targets have a typed receipt shape; an unknown
-    /// target field is refused by name, never dropped before durable commit.
-    #[test]
-    fn a_property_target_output_with_an_unknown_field_is_refused_by_name() {
-        let pin = crate::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        unknown_field_is_refused_by_name(&rdm_core::OperationId::unscoped("node.properties.update"), "PinPropertyTarget", serde_json::to_value(&pin).unwrap(), "");
     }
 
     #[test]

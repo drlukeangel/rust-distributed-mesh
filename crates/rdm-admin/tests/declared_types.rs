@@ -5,7 +5,6 @@
 //! again").
 
 use rdm_admin::accepted::{AcceptedStore, FabricTopology};
-use rdm_core::build::BuildChange;
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::Refusal;
 use rdm_admin::fabric_storage::FabricStorage as _;
@@ -33,7 +32,7 @@ fn view() -> Topology {
 }
 
 /// The fabric-primary's control plane over `view`, its Fabric record declaring `types`, and the
-/// complete-topology request that adds `added` to what Day 0 accepted.
+/// Create that adds `added` to what Day 0 accepted.
 async fn submit_adding(types: Vec<rdm_core::NodeType>, added: NodeSpec) -> (Result<rdm_admin::control_plane::Opened, Refusal>, Arc<MemoryBuildStateAdapter>) {
     let t = view();
     let admin = t.node(&path("mesh1.node-admin", "1")).unwrap();
@@ -47,10 +46,8 @@ async fn submit_adding(types: Vec<rdm_core::NodeType>, added: NodeSpec) -> (Resu
     accepted.storage().put_fabric(&record).await.unwrap();
     let cp = crate::control_plane(builds.clone(), accepted, path("mesh1.node-admin", "1"), t.clone(), crate::adopted_time());
     let _ = cp.node_rows.set(crate::records_of(&t).await);
-    let mut nodes: Vec<NodeSpec> = held.meshes.values().flat_map(|m| m.spec_by_path.values().cloned()).collect();
-    nodes.push(added);
-    let based_on = builds.current().await.unwrap().expect("day 0's Build is current").build_id;
-    (cp.submit("test", TopologyChange::Reconcile { based_on, nodes }).await, builds)
+    let node = rdm_core::build::Nodes { path: added.path, name: added.name, mesh: added.mesh, r#type: added.r#type, storage_persistence: None, executable: added.executable, tags: added.tags, config: added.config };
+    (cp.submit("test", rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: vec![node] }).await, builds)
 }
 
 // @feature: node-types

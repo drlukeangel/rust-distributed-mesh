@@ -720,26 +720,27 @@ impl Estate {
         crate::executables::Current::read(&self.carrier().await).await.unwrap_or_else(|e| panic!("the current topology could not be read: {e}"))
     }
 
-    /// `build.create { Change(Reconcile) }` of the complete topology `nodes` builds from the current
-    /// read, accepted. A request built from a read another Build overtook is refused
-    /// `based-on-not-current` and read again (the caller re-reads, proposal executable-bindings-at-create.md
-    /// rule 1); any other refusal is a defect of the cell, named with `what`.
+    /// The Builds that take the topology to the complete topology `nodes` builds from the current read
+    /// ([`crate::executables::Current::change_to`]: a Create, then a Delete), each accepted; every Build
+    /// but the last followed to its terminal, the last one's stream answered. A refusal is a defect of the
+    /// cell, named with `what`; so is a shape that changes nothing.
     pub async fn submit_named(&self, what: &str, nodes: impl Fn(&crate::executables::Current, &crate::executables::Executables) -> Vec<rdm_core::meta::NodeSpec>) -> BuildStream {
-        let mut tries = 0;
-        loop {
-            let current = self.current().await;
-            let change = Change::Reconcile { based_on: current.based_on.clone(), nodes: nodes(&current, &self.executables) };
-            match self.carrier().await.create(change.clone()).await {
-                Ok(stream) => return stream,
-                Err(CallEnd::Rejected { reason, .. }) if reason == "based-on-not-current" && tries < 3 => tries += 1,
-                Err(e) => panic!("the fabric-primary refused {what} as {change:?}: {e}"),
-            }
+        let current = self.current().await;
+        let mut changes = current.change_to(nodes(&current, &self.executables));
+        let last = changes.pop().unwrap_or_else(|| panic!("{what} changes nothing: no Build is submitted"));
+        for change in changes {
+            let stream = self.carrier().await.create(change.clone()).await.unwrap_or_else(|e| panic!("the fabric-primary refused {what} as {change:?}: {e}"));
+            self.follow(stream).await;
+        }
+        match self.carrier().await.create(last.clone()).await {
+            Ok(stream) => stream,
+            Err(e) => panic!("the fabric-primary refused {what} as {last:?}: {e}"),
         }
     }
 
-    /// The complete-topology request (`Change::Reconcile`) of the fabric shape `desired`, read now at the
-    /// admin the estate asks, every created path named: for a cell that submits it itself, at an admin it
-    /// names, or that asserts a refusal.
+    /// The one Build (a Create or a Delete) that takes the fabric to the shape `desired`, read now at the
+    /// admin the estate asks, every created node named: for a cell that submits it itself, at an admin it
+    /// names, or that asserts a refusal. A shape that both adds and removes is two Builds, never one.
     pub async fn shape_change(&self, desired: &FabricDesired) -> Change {
         self.shape_change_at(&self.carrier().await, desired).await
     }
@@ -747,8 +748,11 @@ impl Estate {
     /// [`Self::shape_change`], read through `carrier`.
     pub async fn shape_change_at(&self, carrier: &BuildCarrier, desired: &FabricDesired) -> Change {
         let current = crate::executables::Current::read(carrier).await.unwrap_or_else(|e| panic!("the current topology could not be read through {:?}: {e}", carrier.target()));
-        let nodes = current.resized(&desired.meshes, true, &self.executables);
-        Change::Reconcile { based_on: current.based_on, nodes }
+        let mut changes = current.change_to(current.resized(&desired.meshes, true, &self.executables));
+        match changes.len() {
+            1 => changes.pop().unwrap(),
+            n => panic!("the shape {desired:?} is {n} Builds, not one: a cell submits each itself"),
+        }
     }
 
     /// `node.create` of one more `type` node in `mesh`, at the lowest free ordinal of its type, on the

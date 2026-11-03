@@ -7,7 +7,6 @@
 //! the view set by the cell. Nothing here depends on timing.
 
 use rdm_admin::accepted::{AcceptedStore, AttemptAction, FabricTopology};
-use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildId, BuildReject};
 use rdm_admin::build_claim::AttemptContexts;
 use rdm_admin::build_state::{
@@ -147,7 +146,7 @@ async fn a_delete_in_a_mesh_its_own_attempt_holds_is_refused_build_in_progress_b
     let current = r.builds.current().await.unwrap().expect("the seeded Build is current");
     let drift = AttemptOpened { mesh: Some("mesh1".into()), build_id: current.build_id.clone(), attempt: 1, reason: AttemptReason::Requested, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None };
     r.builds.open_attempt(&drift).await.expect("mesh1's drift lane opens its attempt 1");
-    let out = r.cp.submit("gates-delete-held", TopologyChange::RemoveNode { path: "mesh1.node".into(), name: "1".into()}).await;
+    let out = r.cp.submit("gates-delete-held", crate::named_request(&r.cp, move |t: &rdm_admin::topology::Topology| crate::removed(t, &[rdm_core::PathName { path: "mesh1.node".into(), name: "1".into() }])).await).await;
     match &out {
         Err(Refusal::BuildInProgress(held)) => assert_eq!(held.mesh.as_deref(), Some("mesh1"), "the refusal names the held mesh"),
         _ => panic!("the delete is refused build-in-progress naming mesh1 before its state is read, not {}", reason(&out)),
@@ -248,7 +247,7 @@ fn birth_of(t: &Topology, path: &PathName) -> (NodeId, IncarnationId) {
 }
 
 async fn delete_of(r: &Rig, path: &PathName) -> Result<rdm_admin::control_plane::Opened, Refusal> {
-    r.cp.submit("gates-delete", TopologyChange::RemoveNode { path: path.path.clone(), name: path.name.clone()}).await
+    r.cp.submit("gates-delete", crate::named_request(&r.cp, move |t: &rdm_admin::topology::Topology| crate::removed(t, &[rdm_core::PathName { path: path.path.clone(), name: path.name.clone() }])).await).await
 }
 
 /// CONTRACT (build.md §4.4 gate 5: "a delete a stopped one, one whose exit is proven, or a live one";

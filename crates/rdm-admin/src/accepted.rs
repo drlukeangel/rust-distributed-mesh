@@ -926,10 +926,6 @@ mod tests {
         all
     }
 
-    fn counts(name: &str, a: u32, r: u32) -> MeshDesired {
-        MeshDesired::of(name.to_string(), [("node-admin", a), ("node", r)])
-    }
-
     /// CONTRACT (fabric.delete is its own Build compiled from the current topology plus its change;
     /// lifecycles/fabric-delete.md, "Numbered end-to-end sequence"): a `DeleteFabric` change compiles
     /// the current topology to the Fabric with no mesh, and that Build's plan is the page's sequence:
@@ -1396,31 +1392,6 @@ mod tests {
     /// The binding `tag` names for the node at `path`: its type's launch id, a path and sha of `tag`.
     fn exe(tag: &str, r#type: &str) -> rdm_core::binding::Binding {
         rdm_core::binding::Binding { launch_id: r#type.into(), executable: format!("/{tag}/{}", r#type).into(), sha256: format!("{tag}-{}", r#type), image: None }
-    }
-
-    /// `path`'s entry in a complete-topology request: its type's default create spec on `tag`'s executable.
-    fn entry(path: PathName, mesh: &str, r#type: &str, tag: Option<&str>) -> NodeSpec {
-        let p: PathName = path.clone();
-        let executable = tag.map(|t| exe(t, r#type));
-        NodeSpec { executable, ..NodeSpec::default_for(p.clone(), mesh, r#type) }
-    }
-
-    fn receipt(attempt: u32, operation: &rdm_core::OperationId, step: &str, output: Option<serde_json::Value>) -> crate::build_state::BuildStepReceipt {
-        crate::build_state::BuildStepReceipt {
-            mesh: None,
-            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
-            attempt,
-            operation: operation.clone(),
-            step: step.into(),
-            outcome: crate::build_state::StepOutcome::Complete,
-            output,
-            executor: None,
-        }
-    }
-
-    fn deleted_receipt(attempt: u32, name: PathName, mesh: &str, r#type: &str, b: &crate::build::ExitedBirth) -> crate::build_state::BuildStepReceipt {
-        let op = rdm_core::LifecycleOp { mesh: mesh.to_owned(), r#type: r#type.to_string(), build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: rdm_core::OperationId::node("node.delete", &b.node_id), node_id: b.node_id.clone(), incarnation: b.incarnation.clone(), path: name.path.clone(), name: name.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
-        receipt(attempt, &rdm_core::OperationId::node("node.delete", &b.node_id), "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
     }
 
     /// CONTRACT (storage.md §2: the Build's topology carries `topology_storage_provider`): the journal's

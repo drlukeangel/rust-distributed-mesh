@@ -2815,28 +2815,6 @@ impl DeploymentPipeline<'_> {
         .instrument(span))
     }
 
-    /// Pin an entry's exact target with the existing durable step receipts before any apply.
-    /// Unlike runtime preparation, this decision survives failed and completed diff steps.
-    pub async fn property_target(&self, build_id: &BuildId, attempt: u32, node: &PathName, node_id: &NodeId, decide: impl std::future::Future<Output = Result<crate::build::PinnedBirth, String>> + Send) -> Result<crate::build::PinnedBirth, PipelineError> {
-        let operation = rdm_core::OperationId::node("node.properties.apply", node_id);
-        let view = self.builds.read_build(build_id).await.map_err(|error| PipelineError { step: "PinPropertyTarget", reason: error.to_string(), code: rdm_core::outcome::Code::FailedPrecondition })?;
-        let mut pin = None;
-        for receipt in view.steps.iter().filter(|receipt| receipt.build_id == *build_id && receipt.mesh == self.builds.receipt_mesh() && receipt.attempt <= attempt && receipt.operation == operation && receipt.step == "PinPropertyTarget" && receipt.outcome == StepOutcome::Complete) {
-            let birth: crate::build::PinnedBirth = serde_json::from_value(receipt.output.clone().unwrap_or(serde_json::Value::Null))
-                .map_err(|error| PipelineError { step: "PinPropertyTarget", reason: format!("{operation:?}: invalid target receipt: {error}"), code: rdm_core::outcome::Code::FailedPrecondition })?;
-            if birth.node_id != *node_id {
-                return Err(PipelineError { step: "PinPropertyTarget", reason: format!("{operation:?}: receipt targets another node {}", birth.node_id), code: rdm_core::outcome::Code::FailedPrecondition });
-            }
-            if pin.as_ref().is_some_and(|prior| *prior != birth) {
-                return Err(PipelineError { step: "PinPropertyTarget", reason: format!("{operation:?}: conflicting exact target receipts"), code: rdm_core::outcome::Code::FailedPrecondition });
-            }
-            pin = Some(birth);
-        }
-        if let Some(pin) = pin { return Ok(pin); }
-        let mut run = self.begin(Some(build_id), attempt, node, operation).await?;
-        self.step(&mut run, "PinPropertyTarget", decide).await
-    }
-
 }
 
 #[cfg(test)]
@@ -3027,27 +3005,6 @@ mod tests {
         let build_id = BuildId::mint();
         builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, source: None, submitted_at_ms: 0 }).await.unwrap();
         build_id
-    }
-
-    #[tokio::test]
-    async fn property_target_keeps_planned_id_and_pinned_incarnation_after_rename() {
-        let provider = Suspended { terminated: Default::default(), modes: Default::default() };
-        let builds = crate::build_state::MemoryBuildStateAdapter::new();
-        let build_id = accepted_build(&builds).await;
-        let template = cell_template("property-pin-rename");
-        builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: template.executor_birth() }).await.unwrap();
-        let joins = Joins::default();
-        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let location = PathName::new("opaque.location", "north").unwrap();
-        let pin = crate::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: "mesh1".into(), r#type: "node".into() };
-        assert_eq!(pipeline.property_target(&build_id, 1, &location, &pin.node_id, async { Ok(pin.clone()) }).await.unwrap(), pin);
-        let renamed = location.with_name("south").unwrap();
-        assert_eq!(pipeline.property_target(&build_id, 1, &renamed, &pin.node_id, async { panic!("a retry must recover its pin before consulting current topology") }).await.unwrap(), pin);
-        let successor = crate::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), ..pin.clone() };
-        assert_eq!(pipeline.property_target(&build_id, 1, &location, &successor.node_id, async { Ok(successor.clone()) }).await.unwrap(), successor, "another ID at the old location has a distinct operation");
-        builds.append_step_receipt(&BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, operation: rdm_core::OperationId::node("node.properties.apply", &pin.node_id), step: "PinPropertyTarget".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&successor).unwrap()), executor: Some(template.executor_birth()) }).await.unwrap();
-        assert!(pipeline.property_target(&build_id, 1, &location, &pin.node_id, async { panic!("invalid recorded pins must refuse before topology lookup") }).await.is_err());
-        std::fs::remove_dir_all(template.data_root).unwrap();
     }
 
     /// A provider whose exact runtime the operating system holds suspended until it is terminated:

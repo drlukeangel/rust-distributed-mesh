@@ -8,7 +8,6 @@
 //! executing mesh-primary checks it against. Nothing here depends on timing.
 
 use rdm_admin::accepted::{plan_for_build, AcceptedStore, FabricTopology};
-use rdm_core::build::BuildChange;
 use rdm_admin::build::{BuildOperation, PinnedBirth};
 use rdm_admin::build_claim::AttemptContexts;
 use rdm_admin::build_state::{BuildStateAdapter, LocalBuildLog, MemoryBuildStateAdapter};
@@ -80,7 +79,7 @@ async fn a_node_delete_build_carries_the_birth_it_was_accepted_on() {
     let t = view();
     let pinned = birth(&t, &PathName::new("mesh1.node", "2").unwrap());
     let (builds, cp) = control_plane(&t).await;
-    let opened = cp.submit("pinned-delete", TopologyChange::RemoveNode { path: "mesh1.node".into(), name: "2".into()}).await.expect("the delete is accepted");
+    let opened = cp.submit("pinned-delete", crate::named_request(&cp, move |t: &rdm_admin::topology::Topology| crate::removed(t, &[rdm_core::PathName { path: "mesh1.node".into(), name: "2".into() }])).await).await.expect("the delete is accepted");
     let build = builds.read_build(&opened.build_id).await.unwrap();
     let ops = plan_for_build(&build, &t).operations;
     let delete = ops.iter().find(|op| op.key() == rdm_core::OperationId::node("node.delete", &pinned.node_id)).unwrap_or_else(|| panic!("the delete is planned: {ops:?}"));

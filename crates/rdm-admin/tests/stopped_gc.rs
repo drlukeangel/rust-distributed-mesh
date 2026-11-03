@@ -154,7 +154,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     assert_eq!(*node, old.0);
     assert_ne!(build_id, b0, "a new topology Build, never an attempt of the settled one");
     let p = builds.read_build(&build_id).await.unwrap();
-    assert_eq!(p.submitted_change, Some(TopologyChange::RemoveNode { path: old.0.path.clone(), name: old.0.name.clone()}), "the ordinary node.delete Build");
+    assert_eq!(p.submitted_change, Some(BuildChange::Delete { meshes: Vec::new(), node_ids: vec![old.1.clone()] }), "the ordinary node.delete Build");
     assert!(!p.topology.contains(&old.0) && p.topology.contains(&young.0), "only the expired node leaves the topology: {:?}", p.topology);
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(build_id.clone()), "the current build_id names the delete");
 
@@ -230,7 +230,7 @@ async fn a_candidate_refused_build_in_progress_is_collected_on_a_later_sweep() {
     let cp = plane(builds.clone(), t, &PathName::new("mesh1.node-admin", "1").unwrap()).await;
     period(&cp, &builds, &a, true, 1).await;
     period(&cp, &builds, &b, true, 2).await;
-    let other = cp.submit("build.create", crate::named_request(&cp, TopologyChange::AddNode { mesh: "mesh1".into(), r#type: "node".into() }).await).await.expect("a topology change is accepted").build_id;
+    let other = cp.submit("build.create", crate::named_request(&cp, move |t: &rdm_admin::topology::Topology| crate::grown_by_one(t, "mesh1", "node")).await).await.expect("a topology change is accepted").build_id;
 
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::BuildInProgress { path: a.0.path.clone(), name: a.0.name.clone(), current_build_id: other.clone() });
     assert_eq!(cp.builds.current_build().await.unwrap().into_build_id(), Some(other.clone()));

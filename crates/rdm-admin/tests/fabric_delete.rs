@@ -172,7 +172,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
             row.birth_mut(incarnation, &n.location());
         }
         storage.write_record(&row).await.unwrap();
-        assert!(matches!(rows.create_row(&n.name, &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.name)), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
+        assert!(matches!(rows.create_row(&n.location(), &n.mesh.clone(), &n.r#type, &n.node_id, &rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&n.location())), None, None, RowFor::Create).await, Ok(RowCreated::HeldByNode(_))), "the writer holds {:?}'s row", n.name);
         let h = handle(50_000);
         storage
             .put_runtime(&RuntimeRow { r#type: n.r#type.clone(), mesh: n.mesh.clone(),

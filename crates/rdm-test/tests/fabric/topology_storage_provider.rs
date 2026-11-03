@@ -174,7 +174,7 @@ async fn an_unsupported_provider_changes_nothing() {
     let test = "an_unsupported_provider_changes_nothing";
     let (mut estate, views) = two_mesh_estate(test, &[]).await;
     let before = births(&views);
-    let current = estate.current().await.based_on;
+    let current = estate.current().await.build_id;
     let refused = estate.fabrics_obj().await.update_storage(UNREGISTERED).await;
     let (reason, detail) = match refused {
         Err(CallEnd::Rejected { reason, detail }) => (reason, detail),
@@ -185,7 +185,7 @@ async fn an_unsupported_provider_changes_nothing() {
     assert_eq!(reason, "topology-storage-provider-not-registered", "refused by name: {detail}");
     assert!(detail.contains(UNREGISTERED) && detail.contains(FILE), "the refusal names the provider and the ones the fabric-primary registers: {detail}");
     // Nothing accepted: the current Build stands and no record on the store root names the provider.
-    assert_eq!(estate.current().await.based_on, current, "the current Build is the one before the request");
+    assert_eq!(estate.current().await.build_id, current, "the current Build is the one before the request");
     let (file_root, _) = roots(&estate);
     for (store, lines) in store_lines(&file_root) {
         assert!(!lines.iter().any(|l| l.contains(UNREGISTERED)), "{store}: no record names {UNREGISTERED}");
@@ -214,7 +214,7 @@ async fn a_provider_that_does_not_open_changes_nothing() {
     let test = "a_provider_that_does_not_open_changes_nothing";
     let (estate, views) = two_mesh_estate(test, &[]).await;
     let before = births(&views);
-    let current = estate.current().await.based_on;
+    let current = estate.current().await.build_id;
     let (_, target_root) = roots(&estate);
     std::fs::create_dir_all(target_root.parent().expect("the root is under its provider's place")).expect("test-target's place");
     let _ = std::fs::remove_dir_all(&target_root);
@@ -235,7 +235,7 @@ async fn not_opened(mut estate: Estate, provider: &str, before: &BTreeMap<PathNa
     estate.artifact("refusal.json", &json!({ "reason": reason, "detail": detail }));
     assert_eq!(reason, "topology-storage-provider-not-opened", "refused by name: {detail}");
     assert!(detail.contains(provider) && detail.contains(why), "the refusal names the provider and why: {detail}");
-    assert_eq!(&estate.current().await.based_on, current, "the current Build is the one before the request");
+    assert_eq!(&estate.current().await.build_id, current, "the current Build is the one before the request");
     fabric_names(&estate.fabric_view().await, FILE, &[]);
     let after = estate.node_views().await;
     assert_eq!(&births(&after), before, "every node is the same birth");
@@ -258,7 +258,7 @@ async fn not_opened(mut estate: Estate, provider: &str, before: &BTreeMap<PathNa
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_whose_lines_do_not_open_changes_nothing() {
     let (estate, views) = two_mesh_estate("a_provider_whose_lines_do_not_open_changes_nothing", &[]).await;
-    let current = estate.current().await.based_on;
+    let current = estate.current().await.build_id;
     not_opened(estate, TOPOLOGY_STORAGE_MEMORY, &births(&views), &current, "answers no lines").await;
 }
 
@@ -271,7 +271,7 @@ async fn a_provider_whose_lines_do_not_open_changes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_that_refuses_its_list_at_acceptance_changes_nothing() {
     let (estate, views) = two_mesh_estate("a_provider_that_refuses_its_list_at_acceptance_changes_nothing", &[]).await;
-    let current = estate.current().await.based_on;
+    let current = estate.current().await.build_id;
     let knob = refuse_list_knob(estate.fabric_store_root().parent().expect("the root is under the store dir"));
     std::fs::create_dir_all(knob.parent().unwrap()).unwrap();
     std::fs::write(&knob, b"").unwrap();
@@ -845,7 +845,7 @@ async fn a_build_other_than_fabric_delete_is_refused_during_a_change() {
     let (run, change_id) = change_to(&estate, TOPOLOGY_STORAGE_TARGET).await;
     let blocked = blocked_at(&estate, &change_id, "mesh2").await;
     let mut refusals = Vec::new();
-    let current = estate.current().await.based_on;
+    let current = estate.current().await.build_id;
     // A Build beside the change: refused `build-in-progress`, naming no Build.
     let build = estate.carrier().await.create(estate.shape_change(&two_meshes()).await).await;
     match build {
@@ -867,7 +867,7 @@ async fn a_build_other_than_fabric_delete_is_refused_during_a_change() {
     let done = ended(&estate, &run).await;
     estate.artifact("ended.json", &done);
     fabric_names(&estate.fabric_view().await, TOPOLOGY_STORAGE_TARGET, &[FILE]);
-    assert_eq!(estate.current().await.based_on, current, "no Build was accepted beside the change");
+    assert_eq!(estate.current().await.build_id, current, "no Build was accepted beside the change");
     assert!(completed(&done), "the change completes: {done}");
     estate.stop().await;
     let spans = estate.spans();

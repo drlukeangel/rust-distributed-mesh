@@ -1,12 +1,10 @@
 //! Functional test for `fabric-states` (`docs/architecture/lifecycles/states.md`).
 
-use rdm_core::build::BuildChange;
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::build_state::BuildState;
 use rdm_admin::model::ScopeStatus;
 use rdm_admin::storage_backend::{MemoryBackend, TopologyStorageProviders};
 use rdm_admin::wiring::{FabricHooks, FabricReadyCtx, MeshReadyCtx, Wiring};
-use rdm_core::meta::NodeSpec;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -60,12 +58,11 @@ impl Capture {
 
 /// CONTRACT: docs/architecture/lifecycles/states.md:52 "When every mesh the accepted Build names is ready and the Build's attempt is claimed, the fabric-primary sets the fabric ready, publishes FabricStatus ready under the frame catalog, and the application receives one `on_fabric_ready` notice"
 /// docs/architecture/lifecycles/states.md:56 "The fabric-primary's change span (`rdm.node_admin.fabric.update.via-change`) holds, in order, `rdm.node_admin.fabric.update.via-every-mesh-ready`, `rdm.node_admin.fabric.update.via-state-entered` (to ready) and `rdm.node_admin.fabric.update.via-on-fabric-ready`."
-/// docs/architecture/lifecycles/states.md:167 "A Build that changes only a node's `config`, `tags`, `storage` or `placement` is neither: it applies them as build.md §1 states, and the fabric stays ready."
 /// docs/architecture/lifecycles/states.md:169 "A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete."
 #[test]
-fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_on_resize() {
+fn fabric_ready_trace_resets_to_pending_on_a_create() {
     let capture = Capture::new(
-        "fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_on_resize",
+        "fabric_ready_trace_resets_to_pending_on_a_create",
     );
     let dispatch = capture.dispatch.clone();
     let d = dispatch.clone();
@@ -92,7 +89,7 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
     })
     .expect("valid Day-0 AdminConfig");
 
-    let (prop_build_log, resize_build_log) = rt.block_on(async move {
+    let resize_build_log = rt.block_on(async move {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FabricReadyCtx>();
         let hooks = FabricHooks {
             on_fabric_ready: Some(Arc::new(move |ctx| {
@@ -132,73 +129,15 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
         .await
         .expect("Day-0 Build settles to Complete");
 
-        let admin_path: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-        let mut admin_spec = root_build
-            .topology
-            .mesh("mesh1")
-            .unwrap()
-            .spec(&admin_path)
-            .unwrap()
-            .clone();
-        admin_spec.tags.insert("tier-control".into());
-        admin_spec.config.insert("custom_key".into(), "custom_val".into());
-
-        // A Build changing only tags and config keeps the fabric ready.
-        let prop_opened = running
-            .control
-            .submit(
-                "reconcile-props",
-                TopologyChange::Reconcile {
-                    based_on: root_build.build_id.clone(),
-                    nodes: vec![admin_spec.clone()]
-                },
-            )
-            .await
-            .expect("property-only Reconcile Build is accepted");
-
-        let view_after_props = running.control.topology.read().await.clone();
-        assert_eq!(
-            view_after_props.fabric.status,
-            ScopeStatus::Ready,
-            "fabric stays ready on tags/config Build"
-        );
-        assert_eq!(
-            view_after_props.meshes[0].status,
-            ScopeStatus::Ready,
-            "mesh1 stays ready on tags/config Build"
-        );
-
-        // Wait for the property-only Build to complete before submitting a resize Build.
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                if let Some(b) = running.control.builds.current().await.unwrap() {
-                    if b.build_id == prop_opened.build_id && b.state == BuildState::Complete {
-                        break;
-                    }
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("property-only Build settles to Complete");
-
         // Quiesce background execution so the resize Build is observed at acceptance before any process spawns.
         running.gate().quiesce().await;
 
-        let mut rpc_spec = NodeSpec::default_for(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node");
-        rpc_spec.executable = Some(crate::test_executable("node"));
-
+        let rpc = rdm_core::build::Nodes { path: "mesh1.node".into(), name: "1".into(), mesh: "mesh1".into(), r#type: "node".into(), storage_persistence: None, executable: Some(crate::test_executable("node")), tags: Default::default(), config: Default::default() };
         let resize_opened = running
             .control
-            .submit(
-                "reconcile-resize",
-                TopologyChange::Reconcile {
-                    based_on: prop_opened.build_id.clone(),
-                    nodes: vec![admin_spec, rpc_spec]
-                },
-            )
+            .submit("create", rdm_core::build::BuildChange::Create { meshes: Vec::new(), nodes: vec![rpc] })
             .await
-            .expect("resize Reconcile Build is accepted");
+            .expect("the Create is accepted");
 
         let view_after_resize = running.control.topology.read().await.clone();
         assert_eq!(
@@ -228,7 +167,7 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
 
         running.leave().await;
 
-        (prop_opened.build_id.log().to_string(), resize_opened.build_id.log().to_string())
+        resize_opened.build_id.log().to_string()
     });
     // The on_fabric_ready span closes after the hook returns, on a spawned task (`fabric_status.rs`,
     // `notify_fabric_ready`): the runtime's shutdown waits for it, so every span below is finished
@@ -259,17 +198,8 @@ fn fabric_ready_trace_preserves_ready_on_property_change_and_resets_to_pending_o
     assert_eq!(on_ready.len(), 1);
     assert_eq!(&on_ready[0].trace_id, change_trace);
 
-    let recorded = capture.named("rdm.node_admin.fabric.update.via-executables-recorded");
-    assert!(
-        recorded.iter().any(|s| {
-            s.attributes.get("build_id").map(String::as_str) == Some(prop_build_log.as_str())
-                && s.attributes.get("state").map(String::as_str) == Some("ready")
-        }),
-        "property-only Build records via-executables-recorded with state=ready"
-    );
-
     let resets = capture.named("rdm.node_admin.fabric.update.via-state-reset");
-    assert_eq!(resets.len(), 1, "only the resize Build resets the fabric state");
+    assert_eq!(resets.len(), 1, "the Create resets the fabric state");
     assert_eq!(
         resets[0].attributes.get("build_id").map(String::as_str),
         Some(resize_build_log.as_str())

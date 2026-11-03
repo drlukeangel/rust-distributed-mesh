@@ -361,8 +361,8 @@ async fn a_name_update_served_at_another_meshs_primary_is_read_at_the_fabric_pri
 /// context only; R-FA2; node-primary-update.md "No-successor cases"): with the fabric-primary's gossip
 /// view holding mesh2's non-primary node-admin stopped, that node-admin is started by the
 /// fabric-primary; the moment its start streams `Complete`,
-/// with no wait, a complete-topology Reconcile removing mesh2's primary, whose only other node-admin is
-/// the one just started, is accepted and completes. Must NOT happen: the Reconcile refused `last-admin`
+/// with no wait, a Delete of mesh2's primary, whose only other node-admin is
+/// the one just started, is accepted and completes. Must NOT happen: the Delete refused `last-admin`
 /// (`rdm.node_admin.build.reject.via-last-admin`) because the gossip view still holds the started
 /// node-admin stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -378,11 +378,9 @@ async fn a_reconcile_removing_a_primary_right_after_its_only_other_admins_start_
     // The fabric-primary's gossip view holds the stop: the birth dropped and its stop overlay held.
     estate.peers().await.fact(&fp_view, "mesh2", "the fabric-primary's view holds the stopped node-admin stopped", |v| v.birth(&other_id).is_none() && v.overlay(&other_id, "node.stop").is_some()).await;
     Estate::workflow(&format!("node.start of {other:?}"), estate.nodes_obj().await.start(&other).await).await;
-    // No wait: the Reconcile goes out on the start's Complete.
-    let current = estate.current().await;
-    let mut held = current.held(&estate.executables).unwrap_or_else(|e| panic!("{e}"));
-    held.get_mut("mesh2").expect("the topology holds mesh2").remove(&primary);
-    let change = rdm_client::Change::Reconcile { based_on: current.based_on.clone(), nodes: held.into_values().flat_map(|m| m.into_values()).collect() };
+    // No wait: the Delete goes out on the start's Complete.
+    let primary_id = estate.node_view(&primary).await.node_id;
+    let change = rdm_client::Change::Delete { meshes: Vec::new(), node_ids: vec![primary_id] };
     let submitted = estate.carrier().await.create(change).await;
     let refused = match submitted {
         Ok(stream) => {
