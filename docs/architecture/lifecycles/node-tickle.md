@@ -56,7 +56,7 @@ The direct probe, op `0x1B` (27):
     "caller_system": "rdm",
     "traceparent": "00-c9e5a1b3d7f2460c8e0a2b4c6d8e0f1a-8888888888888888-01",
     "tracestate": null,
-    "baggage": "operation=node.tickle%3Amesh1.rpc.1"
+    "baggage": "operation=node.tickle%3Amesh1.node.1"
   },
   "body": {
     "ProbeNodeState": { "node_id": "k8pag1qx95gw", "incarnation": "0000000000000008" }
@@ -83,7 +83,7 @@ peer makes one direct inner call and chooses no other target:
     "caller_system": "rdm",
     "traceparent": "00-c9e5a1b3d7f2460c8e0a2b4c6d8e0f1a-9999999999999999-01",
     "tracestate": null,
-    "baggage": "operation=node.tickle%3Amesh1.rpc.1"
+    "baggage": "operation=node.tickle%3Amesh1.node.1"
   },
   "body": {
     "Forward": {

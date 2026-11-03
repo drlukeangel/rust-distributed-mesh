@@ -560,7 +560,7 @@ fn expected_counts(model: &Model) -> BTreeMap<String, BTreeMap<&'static str, u32
     model.meshes.keys().map(|m| (m.clone(), classes.iter().map(|c| (c.type_name(), model.count(m, *c))).collect())).collect()
 }
 
-/// A node that serves the testkit store: every kind but the node-admin.
+/// A node that serves the testkit store: every type but the node-admin.
 fn serves_testkit_store(n: &Value) -> bool {
     n["type"].as_str().is_some_and(|k| !rdm_core::is_node_admin(&k))
 }

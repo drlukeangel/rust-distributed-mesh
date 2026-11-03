@@ -55,7 +55,7 @@ The command, from the mesh-primary to a member whose connections are deleted, No
     "caller_system": "rdm",
     "traceparent": "00-b8d4f0a2c6e3591b7d9f1a2b3c4d5e6f-7777777777777777-01",
     "tracestate": null,
-    "baggage": "operation=node.stop%3Amesh1.rpc.1"
+    "baggage": "operation=node.stop%3Amesh1.node.1"
   },
   "body": {
     "LeaveMesh": {

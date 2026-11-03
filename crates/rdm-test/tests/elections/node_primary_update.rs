@@ -224,7 +224,7 @@ async fn a_lost_fabric_primary_is_succeeded_by_the_surviving_admin_of_its_own_me
     let mesh = mesh_of(&old);
     let heir = sibling(&old);
     let other_mesh = if mesh == "mesh1" { "mesh2" } else { "mesh1" };
-    let other_primary = nodes.iter().find(|n| n["mesh"] == other_mesh && n["is_primary"] == true).map(|n| (location(&n), s(&n["node_id"]))).unwrap();
+    let other_primary = nodes.iter().find(|n| n["mesh"] == other_mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| (location(&n), s(&n["node_id"]))).unwrap();
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     let discriminating = other_primary.1 < heir_id;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -376,7 +376,7 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
     let (mut estate, nodes) = fabric("a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone").await;
     let fp = fabric_primary(&nodes).expect("one fabric primary");
     let mesh = if mesh_of(&fp) == "mesh1" { "mesh2" } else { "mesh1" };
-    let old = nodes.iter().find(|n| n["mesh"] == mesh && n["is_primary"] == true).map(|n| location(&n)).unwrap();
+    let old = nodes.iter().find(|n| n["mesh"] == mesh && n["type"] == "node-admin" && n["is_primary"] == true).map(|n| location(&n)).unwrap();
     let heir = sibling(&old);
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     kill(&mut estate, &old).await;

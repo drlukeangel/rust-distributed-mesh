@@ -26,7 +26,7 @@ pub(crate) struct Wire {
 
 /// A fabric shape of counts a cell asks for: [`Estate::submit`] expands it against the current topology
 /// into the complete-topology request (`Change::Reconcile`), every created path on the estate's
-/// executable for its kind. The Build wire carries no count form (proposal
+/// executable for its type. The Build wire carries no count form (proposal
 /// executable-bindings-at-create.md §3.10(a)): this is the harness's shorthand, never a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildSpec {
@@ -744,7 +744,7 @@ impl Estate {
         Change::Reconcile { based_on: current.based_on, nodes }
     }
 
-    /// `node.create` of one more `kind` node in `mesh`, at the lowest free ordinal of its kind, on the
+    /// `node.create` of one more `type` node in `mesh`, at the lowest free ordinal of its type, on the
     /// estate's executable for it: the complete topology with the path added
     /// ([`rdm_client::Nodes::create_named`]). Not accepted: how the call ended.
     pub async fn create_node(&self, mesh: &str, r#type: &str) -> Result<WorkflowStream, CallEnd> {

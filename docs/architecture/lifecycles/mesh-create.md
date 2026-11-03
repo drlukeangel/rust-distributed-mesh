@@ -80,7 +80,7 @@ node-admin, op `0x1B` (27):
     "caller_system": "rdm",
     "traceparent": "00-c4e2a9b1d6f30857a1b2c3d4e5f60718-3333333333333333-01",
     "tracestate": null,
-    "baggage": "operation=node.create%3Amesh2.admin.1"
+    "baggage": "operation=node.create%3Amesh2.node-admin.1"
   },
   "body": {
     "ApplyMeshState": {

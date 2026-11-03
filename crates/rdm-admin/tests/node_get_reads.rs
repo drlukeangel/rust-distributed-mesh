@@ -375,8 +375,8 @@ async fn nodes_get_and_fabrics_get_answer_each_nodes_cert_from_its_record() {
 
     match fp.read_rows(&get(rdm_core::filter::Entity::Nodes, Filter::new().eq("mesh", ["mesh1"]))).await {
         Ok(rdm_core::read::Rows::Nodes(nodes)) => {
-            assert_eq!(nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), [path("mesh1.node-admin", "1"), path("mesh1.gateway", "1")], "{nodes:#?}");
-            assert_eq!(nodes[1].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the node's record's");
+            assert_eq!(nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>(), [path("mesh1.gateway", "1"), path("mesh1.node-admin", "1")], "in path order: {nodes:#?}");
+            assert_eq!(nodes[0].cert.as_ref().map(|c| c.expires_at), Some(7_000_000), "the cert is the node's record's");
         }
         other => panic!("node.get answers from the nodes' records, not {other:?}"),
     }

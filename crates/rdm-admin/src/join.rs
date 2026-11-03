@@ -63,7 +63,7 @@ pub struct Deployed {
     /// inferred from the last accepted name, which an admin that joined after the stop lacks
     /// (`TopologyView::stopped_unheard`).
     pub held: bool,
-    /// The listeners the birth was assigned (Q151): each declared name of its kind on the birth's
+    /// The listeners the birth was assigned (Q151): each declared name of its type on the birth's
     /// address, port 0. Its report carries exactly these names, each on its assigned address with the
     /// port the operating system selected, or it is refused whole.
     pub listeners: Vec<(String, SocketAddr)>,

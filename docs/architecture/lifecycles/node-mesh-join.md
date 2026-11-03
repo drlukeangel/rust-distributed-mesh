@@ -91,7 +91,7 @@ The standalone command, from the mesh-primary to a node its tickle reached off i
     "caller_system": "rdm",
     "traceparent": "00-a7c3e9f1b5d2480a6c8e0f1a2b3c4d5e-6666666666666666-01",
     "tracestate": null,
-    "baggage": "operation=node.mesh.join%3Amesh1.rpc.1"
+    "baggage": "operation=node.mesh.join%3Amesh1.node.1"
   },
   "body": {
     "JoinMesh": {
@@ -115,7 +115,7 @@ The node's report, its own call to its primary, op `0x1D` (29); here a first sta
     "caller_system": "rdm",
     "traceparent": "00-f16a8b75a1b2c3d4e5f60718293a4b5c-2222222222222222-01",
     "tracestate": null,
-    "baggage": "operation=node.create%3Amesh1.rpc.1"
+    "baggage": "operation=node.create%3Amesh1.node.1"
   },
   "body": {
     "JoinNode": {

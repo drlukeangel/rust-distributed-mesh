@@ -368,7 +368,7 @@ mod tests {
             // The clean-dir refusal, seeds, rafka-time's peers, the PendingReconnect publication and the stored topology.
             let mut births = rows_writer::recorded_births(&*meshes, &*nodes, "mesh1").await.unwrap();
             births.sort_by_key(|b| b.name.clone());
-            let want: Vec<crate::reenter::MapNode> = [&admin, &rpc, &other]
+            let want: Vec<crate::reenter::MapNode> = [&rpc, &admin, &other]
                 .into_iter()
                 .map(|d| crate::reenter::MapNode { mesh: d.node.mesh.clone(), r#type: d.node.r#type.clone(), node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone(), transition: None, ready: false, data_dir: None, admin_api_base: None })
                 .collect();

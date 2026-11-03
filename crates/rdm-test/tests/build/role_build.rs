@@ -3,9 +3,9 @@
 //!
 //! One fresh fabric; one `build.create` asks for `{node_admin: 1, broker: 1, gateway: 1,
 //! compute: 1}`; from public surfaces only:
-//! - the Build completes and every desired node is `ready` under its kind;
+//! - the Build completes and every desired node is `ready` under its type;
 //! - every node type of each mesh has exactly one primary; the fabric exactly one fabric primary;
-//! - every role's boot and ready spans name its kind, and each boot runs under the deployment
+//! - every role's boot and ready spans name its type, and each boot runs under the deployment
 //!   step that launched it;
 //! - a second Build without the compute deletes `mesh1.compute.1` under that Build, and the
 //!   other roles keep their birth.
@@ -38,28 +38,28 @@ fn type_of(r#type: &str) -> String {
     }
 }
 
-/// `(kind, count)` of mesh1 beside its one node-admin.
+/// `(type, count)` of mesh1 beside its one node-admin.
 async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, Vec<Value>) {
     let mesh = MeshDesired::of("mesh1", std::iter::once(("node-admin".to_string(), 1)).chain(roles.iter().map(|(r#type, n)| (type_of(r#type), *n))));
     let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh] }).await.build_id.to_string();
     estate.artifact(&format!("build-{label}.json"), &build_log::build_value(&estate, &build_id).await);
     let mut expected = BTreeMap::from([(PathName::new("mesh1.node-admin", "1").unwrap(), "node-admin")]);
-    for (kind, n) in roles {
-        expected.extend((1..=*n).map(|i| (PathName::new(format!("mesh1.{kind}"), i.to_string()).unwrap(), *kind)));
+    for (t, n) in roles {
+        expected.extend((1..=*n).map(|i| (PathName::new(format!("mesh1.{t}"), i.to_string()).unwrap(), *t)));
     }
     let want = expected.keys().cloned().collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     for n in &nodes {
         let name = location(n);
-        assert_eq!(n["type"], expected[&name], "{label}: {name:?} has the explicit fixture kind: {n}");
+        assert_eq!(n["type"], expected[&name], "{label}: {name:?} has the explicit fixture type: {n}");
         assert_eq!(n["status"], "ready", "{label}: {n}");
     }
     (build_id, nodes)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn roles_are_born_by_build_under_their_kind() {
-    let mut estate = Estate::bootstrap(owner("roles_are_born_by_build_under_their_kind"), "fabric1", "mesh1").await;
+async fn roles_are_born_by_build_under_their_type() {
+    let mut estate = Estate::bootstrap(owner("roles_are_born_by_build_under_their_type"), "fabric1", "mesh1").await;
     let roles = [("broker", 1), ("gateway", 1), ("compute", 1)];
     let (first, nodes) = build(&estate, "roles", &roles).await;
     estate.artifact("nodes.json", &json!(nodes));
@@ -80,7 +80,7 @@ async fn roles_are_born_by_build_under_their_kind() {
     assert_eq!(fabric_primaries.len(), 1, "{fabric_primaries:?}");
     assert_eq!(fabric_primaries[0]["type"], "node-admin");
 
-    // Every node, whatever its kind, publishes its own CPU and RAM in its mesh digest, and the
+    // Every node, whatever its type, publishes its own CPU and RAM in its mesh digest, and the
     // node-admin's view serves it. The load travels on the node's own digest only (the primary's
     // mesh topology omits loads, rafka-mesh-transport topology.rs `publish`), so the view serves it once
     // this admin has heard that digest, which can follow the status the mesh topology carried.
@@ -139,8 +139,8 @@ async fn roles_are_born_by_build_under_their_kind() {
             .clone()
     };
     let (first_accepted, second_accepted) = (accepted(&first), accepted(&second));
-    for (kind, _) in &roles {
-        let node = PathName::new(format!("mesh1.{kind}"), "1").unwrap();
+    for (t, _) in &roles {
+        let node = PathName::new(format!("mesh1.{t}"), "1").unwrap();
         let view = nodes.iter().find(|n| location(n) == node).expect("fixture role node");
         let step = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
@@ -153,14 +153,14 @@ async fn roles_are_born_by_build_under_their_kind() {
             .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])
             .unwrap_or_else(|| panic!("{node:?} wrote no boot span"))
             .clone();
-        assert_eq!(boot["attributes"]["type"], *kind, "{node:?}'s boot names its kind: {boot}");
+        assert_eq!(boot["attributes"]["type"], *t, "{node:?}'s boot names its type: {boot}");
         assert!(descends_from(&spans, &boot, &step), "{node:?} booted under the step that launched it");
         let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
             .find(|s| s["attributes"]["node_id"] == view["node_id"] && s["attributes"]["incarnation_id"] == view["incarnation_id"])
             .unwrap_or_else(|| panic!("{node:?} wrote no ready span"))
             .clone();
-        assert_eq!(ready["attributes"]["type"], *kind, "{node:?}'s ready span names its kind: {ready}");
+        assert_eq!(ready["attributes"]["type"], *t, "{node:?}'s ready span names its type: {ready}");
     }
     let delete = named(&spans, "rdm.node_admin.node.delete.via-build")
         .into_iter()
@@ -178,7 +178,7 @@ const NODE_EXECUTABLE: &str = "rdm-node";
 /// node-admin and the shared node executable. A broker, gateway and compute created by one Build
 /// each run that explicitly selected node executable, and each boots as the
 /// type its launch names: the boot span (`rdm.mesh.node.create.via-deployment`) names the
-/// executable the process runs and the kind it took from its launch, and runs under the
+/// executable the process runs and the type it took from its launch, and runs under the
 /// DeployRuntime step that launched it. No product role binary is launched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_build_with_explicit_role_bindings_launches_every_role_from_the_one_node_executable() {

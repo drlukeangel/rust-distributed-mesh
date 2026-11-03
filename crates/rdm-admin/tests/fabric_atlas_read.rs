@@ -287,14 +287,14 @@ fn fabrics_atlas_get_over_status_rpc_refuses_when_atlas_unset_and_answers_planne
             RpcOutcome::Reply(r) => match r.into_value() {
                 StatusReply::Atlas { atlas } => {
                     assert_eq!(atlas.nodes.len(), 2);
-                    assert_eq!(atlas.nodes[0].name, admin_name);
-                    assert_eq!(atlas.nodes[0].node_id, admin_id);
-                    assert_eq!(atlas.nodes[0].incarnation_id, Some(admin_inc));
-                    assert_eq!(atlas.nodes[0].status, rdm_core::views::NodeStatus::Ready);
-                    assert_eq!(atlas.nodes[1].name, rpc_name);
-                    assert_eq!(atlas.nodes[1].node_id, rpc_id);
-                    assert_eq!(atlas.nodes[1].incarnation_id, Some(rpc_inc));
+                    assert_eq!(atlas.nodes[1].name, admin_name);
+                    assert_eq!(atlas.nodes[1].node_id, admin_id);
+                    assert_eq!(atlas.nodes[1].incarnation_id, Some(admin_inc));
                     assert_eq!(atlas.nodes[1].status, rdm_core::views::NodeStatus::Ready);
+                    assert_eq!(atlas.nodes[0].name, rpc_name);
+                    assert_eq!(atlas.nodes[0].node_id, rpc_id);
+                    assert_eq!(atlas.nodes[0].incarnation_id, Some(rpc_inc));
+                    assert_eq!(atlas.nodes[0].status, rdm_core::views::NodeStatus::Ready);
                 }
                 other => panic!("expected StatusReply::Atlas, got {other:?}"),
             },

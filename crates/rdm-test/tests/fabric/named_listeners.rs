@@ -2,7 +2,7 @@
 //! container, opt-in).
 //!
 //! A product kind's listeners (Q151; node-create.md "Bound endpoint and join admission"; the
-//! deployment-provider page's assigned endpoints): the application's wiring names each kind's
+//! deployment-provider page's assigned endpoints): the application's wiring names each type's
 //! listeners. A create assigns each the birth's address with port 0 (`RDM_LISTENERS`); the node binds
 //! them, keeps every bind open through its join and reports the ports the operating system selected;
 //! the accepting primary verifies the report against the assignment and the node appends its property record with them.
@@ -27,7 +27,7 @@ fn owner(test: &str, provider: &str) -> Owner {
     Owner { product: "mesh".into(), feature: "deployment".into(), subfeature: "named-listeners".into(), rung: "MM".into(), provider: provider.into(), test: test.into() }
 }
 
-/// A fabric of the faulted node-admin with the role kinds bound, on `provider`.
+/// A fabric of the faulted node-admin with the role types bound, on `provider`.
 async fn estate_on(test: &str, provider: &str) -> Estate {
     let sha = candidate_sha();
     let mut set = binding_set_with_roles(&sha);
@@ -38,7 +38,7 @@ async fn estate_on(test: &str, provider: &str) -> Estate {
     }
     Estate::bootstrap_on_with_env(owner(test, provider), "fabric1", "mesh1", &set, &sha, &["broker", "gateway", "compute"], &[])
         .await
-        .expect("the faulted-admin binding set with the role kinds is accepted")
+        .expect("the faulted-admin binding set with the role types is accepted")
 }
 
 /// mesh1 with `gateways` gateways beside its two node-admins.

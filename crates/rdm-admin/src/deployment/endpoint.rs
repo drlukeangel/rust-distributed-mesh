@@ -315,7 +315,7 @@ mod tests {
             let e = ListenerNames::read(&decl).unwrap_err();
             assert!(e.starts_with("refusing to start") && e.contains(says), "{says}: {e}");
         }
-        assert!(ListenerNames::read(&[declared("gateway", &["kafka", "rest"]), declared("broker", &["kafka"])]).is_ok(), "a name is unique within its kind, not across kinds");
+        assert!(ListenerNames::read(&[declared("gateway", &["kafka", "rest"]), declared("broker", &["kafka"])]).is_ok(), "a name is unique within its type, not across kinds");
     }
 
     /// CONTRACT: a TCP port this process listens on is named as held by this process (listen

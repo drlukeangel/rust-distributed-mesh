@@ -661,7 +661,7 @@ pub fn decide(door: &StatusDoor, view: &Topology, declared: &Declared, req: &Sta
                     }
                 }
             };
-            // The receiver's role: every kind, a node-admin included, reports to its mesh's primary,
+            // The receiver's role: every type, a node-admin included, reports to its mesh's primary,
             // which sets its status (node-status.md "Status report"). While fabric recovery runs and the
             // mesh has no mesh-primary, its executor takes the declarations of the node it re-creates at
             // the target's path and name: its own node.create waits on them (build.md §5.3, Q122).
@@ -3871,7 +3871,7 @@ mod tests {
     /// its own mesh's primary like every other kind's. mesh2's primary applies mesh2.node-admin.2's
     /// Ready; the fabric-primary, of mesh1, refuses it naming the role it needs, the
     /// mesh-primary of mesh2. Must NOT happen: a node-admin's status set by the fabric-primary.
-    /// CONTRACT (Q11 = a; node-status.md "Status report": every kind reports to its mesh's primary, which
+    /// CONTRACT (Q11 = a; node-status.md "Status report": every type reports to its mesh's primary, which
     /// sets its status): a mesh-primary decides a declaration for a birth its offline tick watches through
     /// durable rows alone (born while this admin was silent: its view holds nothing at the path) as the
     /// birth's authority: the exact birth's Ready is applied. A node id neither its view nor its

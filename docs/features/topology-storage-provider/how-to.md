@@ -33,7 +33,7 @@ async fn main() {
 ```
 
 A role node registers the same names with `rdm_node::storage_backend::NodeStorageProviders` (the
-testkit's rpc node, `crates/rdm-test/src/node.rs`):
+testkit's node, `crates/rdm-test/src/node.rs`):
 
 ```rust
 use rdm_node::storage_backend::{FileNodeBackend, NodeStorageProviders};

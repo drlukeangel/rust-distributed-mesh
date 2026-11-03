@@ -134,7 +134,7 @@ pub(crate) fn product_ledger() -> Vec<LedgerEntry> {
     vec![LedgerEntry { op: BrokerData::OP, family: BrokerData::NAME.into(), owner: OpOwner::Product(crate::PRODUCT.into()), state: OpState::Live }]
 }
 
-/// The families `kind` serves, composed into `b`; `served_by` is this node's id, named in every reply. Every kind carries the forwardable families
+/// The families `type` serves, composed into `b`; `served_by` is this node's id, named in every reply. Every type carries the forwardable families
 /// for others (a gateway is the carrier of `broker_data`); only a broker serves it.
 pub(crate) fn for_type(r#type: &str, served_by: &str, b: ServerBuilder, _client: Arc<NodeRpcClient>) -> ServerBuilder {
     let b = b.ledger(product_ledger()).carry::<BrokerData>();

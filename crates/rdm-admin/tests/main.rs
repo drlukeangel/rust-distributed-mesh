@@ -124,7 +124,7 @@ impl Told {
     }
 }
 
-/// The executable a test request names for a path of `kind`: a file of its own per kind, hashed once,
+/// The executable a test request names for a path of `type`: a file of its own per type, hashed once,
 /// so the door's acceptance (it hashes every executable a request creates a node on) passes.
 pub fn test_executable(r#type: &str) -> rdm_core::binding::Binding {
     use std::os::unix::fs::PermissionsExt;
@@ -147,7 +147,7 @@ pub fn test_executable(r#type: &str) -> rdm_core::binding::Binding {
 /// `change`, a count form, as the complete-topology request a caller builds from what it reads
 /// (proposal executable-bindings-at-create.md rule 1: the count is the door's vocabulary, expanded into
 /// named paths before the typed call): compiled against `cp`'s current Build, every path it creates
-/// named on [`test_executable`] of its kind, every held path listed as its entry holds it; a change
+/// named on [`test_executable`] of its type, every held path listed as its entry holds it; a change
 /// that creates no path is returned as it is. `cp` reads its node rows from an empty store when it has
 /// none.
 pub async fn named_request(cp: &rdm_admin::control_plane::ControlPlane, change: rdm_admin::accepted::TopologyChange) -> rdm_admin::accepted::TopologyChange {

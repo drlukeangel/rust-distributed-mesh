@@ -24,14 +24,14 @@
 //!    and rafka-time. No topology has been read: topology follows the hook.
 //! 4. Once the hook passed (step 4), in the start itself, or in the task a blocked or spawned hook runs
 //!    on in:
-//!    - `rdm.mesh.node.update.via-build-floor`: the kind's Build floor, on every start (a node-admin
+//!    - `rdm.mesh.node.update.via-build-floor`: the type's Build floor, on every start (a node-admin
 //!      reads the Build's committed records it is missing from storage, Q292; a node owes none).
 //!      It reads no topology;
 //!    - `rdm.mesh.node.update.via-topology-taken`: then one `GetTopology` from the authority that
 //!      answered the join, the final startup read, with no conditional source version (`since: None`):
 //!      installed per mesh only from a complete snapshot, and the rafka-time of the same reply adopted
 //!      after the install. No second topology request is made to refresh rafka-time.
-//! 5. `rdm.mesh.node.update.via-ready` (step 5): the kind's node.started report.
+//! 5. `rdm.mesh.node.update.via-ready` (step 5): the type's node.started report.
 
 use crate::node_hooks::{AcceptingPrimary, AcceptingPrimarySource, Birth, End, Events, HookDriver, NodeReadyCtx, NodeHooks, PreNodeReadyHandle, NoAcceptingPrimary, StartKind, Step};
 use crate::model::{NodeId, PathName};
@@ -209,7 +209,7 @@ pub struct HookParts {
     pub state: Arc<Mutex<Option<PreNodeReadyHandle>>>,
     /// How the hook runs.
     pub runs: HookRuns,
-    /// The kind's part of the steps after the hook.
+    /// The type's part of the steps after the hook.
     pub after: Box<dyn AfterHook>,
 }
 
@@ -235,7 +235,7 @@ pub trait AfterHook: Send + 'static {
         step.record("outcome", "this node holds no Build log: it owes no Build floor");
     }
 
-    /// node.started: the kind's report once every step before it ended.
+    /// node.started: the type's report once every step before it ended.
     async fn report(self: Box<Self>);
 
     /// A step failed: `inside` the start (which answers the failure; the kind ends what the start
@@ -259,7 +259,7 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
     /// [`JoinTo::Commander`], whatever the node type.
     async fn resolve_join_to(&mut self) -> Result<JoinTo, StartFailed>;
     /// The operation the start's join runs for, when the start was commanded with one (a start after
-    /// a stop: its `node.start`; a commanded `node.mesh.join`: that command's); `None` names the kind's.
+    /// a stop: its `node.start`; a commanded `node.mesh.join`: that command's); `None` names the type's.
     fn operation(&self) -> Option<rdm_core::OperationId> {
         None
     }

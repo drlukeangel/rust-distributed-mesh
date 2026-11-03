@@ -1335,7 +1335,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
 /// at acceptance"): each binding of a path `next` creates, or replaces because its row records another,
 /// in the topology's order, first held, under the container provider, to `executable_dirs` (a
 /// containerized admin reads only what is mounted, so its place is checked before its file is read),
-/// then checked as its launch checks it: its launch id and image per kind, then its hash. Each distinct
+/// then checked as its launch checks it: its launch id and image per type, then its hash. Each distinct
 /// file (path and sha) is hashed once, however many kinds share it, and every one at once, each on the
 /// blocking pool (rdm#148); no file is read past the first binding refused before its file is read. The
 /// refusal is the first binding's in that order, whichever check refuses it.
@@ -1902,7 +1902,7 @@ mod tests {
     /// as its launch checks it): a request creating a broker, a gateway and a compute node on the one
     /// file the three kinds share hashes that file once at acceptance: one
     /// `rdm.node_admin.deployment.resolve.via-executable-hash` span with `from = request`, and each
-    /// kind's launch id is still checked. Must NOT happen: the shared file read once per kind.
+    /// type's launch id is still checked. Must NOT happen: the shared file read once per type.
     #[tokio::test]
     async fn a_file_several_kinds_share_is_hashed_once_at_acceptance() {
         let dir = crate::test_support::tempdir("hash-once-shared");
@@ -1914,11 +1914,11 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             named_executable_refusal(&current, &next, &crate::accepted::Recorded::new(), ProviderKind::Process, &[]).await
         };
-        assert_eq!(refused, None, "the shared file is hash-true for every kind");
+        assert_eq!(refused, None, "the shared file is hash-true for every type");
         let hashes: Vec<_> = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|s| s.attributes.get("from").map(String::as_str) == Some("request")).collect();
         assert_eq!(hashes.len(), 1, "one hash of the one file the three kinds share: {hashes:#?}");
         assert_eq!(hashes[0].attributes.get("outcome").map(String::as_str), Some("hashed"), "{hashes:#?}");
-        // Each kind's launch id is still checked: the shared file bound for the node-admin at a broker path.
+        // Each type's launch id is still checked: the shared file bound for the node-admin at a broker path.
         let (current, next) = creating(&[(PathName::new("mesh1.broker", "1").unwrap(), &("broker".to_string()), as_kind("broker")), (PathName::new("mesh1.gateway", "1").unwrap(), &("gateway".to_string()), as_kind("node-admin"))]);
         match named_executable_refusal(&current, &next, &crate::accepted::Recorded::new(), ProviderKind::Process, &[]).await {
             Some(BuildReject::ExecutableRefused { node, detail }) => assert_eq!(node, PathName::new("mesh1.gateway", "1").unwrap(), "{detail}"),
@@ -1941,7 +1941,7 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             named_executable_refusal(&current, &next, &crate::accepted::Recorded::new(), ProviderKind::Process, &[]).await
         };
-        assert_eq!(refused, None, "every file is hash-true for its kind");
+        assert_eq!(refused, None, "every file is hash-true for its type");
         let hashes: Vec<_> = capture.named("rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|s| s.attributes.get("from").map(String::as_str) == Some("request")).collect();
         assert_eq!(hashes.len(), 3, "one hash per distinct file: {hashes:#?}");
         let (latest_start, earliest_end) = (hashes.iter().map(|s| s.start).max().unwrap(), hashes.iter().map(|s| s.end).min().unwrap());

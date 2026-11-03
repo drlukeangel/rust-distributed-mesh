@@ -46,7 +46,7 @@ pub struct Birth {
     pub fabric_id: FabricId,
     /// Its mesh.
     pub mesh_id: MeshId,
-    /// Its kind.
+    /// Its type.
     pub r#type: String,
 }
 

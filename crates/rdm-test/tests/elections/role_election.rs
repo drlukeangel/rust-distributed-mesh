@@ -1,6 +1,6 @@
 //! i143.e11.s4 process E2E: a node type's role is the one election (PRD §11, §13.1).
 //!
-//! One fabric, `{node_admin: 1, broker: 3, gateway: 1, compute: 1}`. From public surfaces only:
+//! One fabric, `{node-admin: 1, broker: 3, gateway: 1, compute: 1}`. From public surfaces only:
 //! - every node type of each mesh advertises exactly one primary (`roles_as_expected`), a node type like rpc
 //!   nodes;
 //! - kill the broker primary (SIGKILL): the next-lowest ready broker is announced by a

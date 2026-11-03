@@ -474,7 +474,7 @@ postcard, not JSON): a StopNode on NodeCommand op `0x22` (34).
     "caller_system": "rdm",
     "traceparent": "00-f16a8b75a1b2c3d4e5f60718293a4b5c-1111111111111111-01",
     "tracestate": null,
-    "baggage": "operation=node.stop%3Amesh1.rpc.1"
+    "baggage": "operation=node.stop%3Amesh1.node.1"
   },
   "body": {
     "StopNode": {

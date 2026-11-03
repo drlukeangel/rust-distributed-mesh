@@ -872,7 +872,7 @@ pub struct LaunchTemplate {
     /// own (`AdminConfig::connections_delete_deadline`).
     pub connections_delete_deadline: Duration,
     /// The app's declared secrets and the values the launching admin holds (Q150): a launch sets the
-    /// values its kind is named for, withholds every declared name from inheritance, and a node-admin's
+    /// values its type is named for, withholds every declared name from inheritance, and a node-admin's
     /// launch carries every value in custody (`RDM_DECLARED_SECRETS`).
     pub declared: super::declared::DeclaredSecrets,
 }

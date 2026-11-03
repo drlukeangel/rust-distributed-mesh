@@ -5,11 +5,11 @@
 //! expands its per-type input into per-path entries before the typed call: RDM is never handed a count
 //! by the harness, and nothing it launches is taken from a directory with no sha.
 //!
-//! [`Executables`] is where each kind's executable comes from (the testkit's own binaries, each file
+//! [`Executables`] is where each type's executable comes from (the testkit's own binaries, each file
 //! hashed once per process, or an explicit set); [`Current`] is the read a request is built from (the
 //! current Build at the fabric-primary, its accepted topology and every node's row) and expands counts
 //! the way the compiler's count form resized them (`accepted::resize`): a grow takes the lowest free
-//! ordinal of the kind, a shrink drops the highest ordinal that is not the kind's primary.
+//! ordinal of the type, a shrink drops the highest ordinal that is not the type's primary.
 
 use rdm_client::binding::{sha256_file, Binding, BindingSet};
 use rdm_client::{BuildCarrier, BuildId, Builds, Filter, MeshDesired, NodeStatus, NodeView, PathName};
@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// Where each kind's executable comes from.
+/// Where each type's executable comes from.
 #[derive(Debug, Clone)]
 pub enum Executables {
     /// The testkit's own binaries in [`crate::estate::bin_dir`]: `rdm-node-admin`, `rdm-rpc-node`, and
@@ -129,13 +129,13 @@ impl Current {
         self.rows.iter().find(|n| n.mesh == mesh && n.r#type == r#type && n.is_primary && !matches!(n.status, NodeStatus::Deleted | NodeStatus::Dead)).map(|n| n.name.clone())
     }
 
-    /// The executable a path the request creates runs: `executables`' for its kind.
+    /// The executable a path the request creates runs: `executables`' for its type.
     fn created_executable(&self, r#type: &str, executables: &Executables) -> Result<Binding, String> {
         executables.binding(r#type)
     }
 
     /// Every path the topology holds, with its create spec: its entry's, the executable its entry names,
-    /// else the one its row records, else `executables`' for its kind (a path no birth was claimed at); the
+    /// else the one its row records, else `executables`' for its type (a path no birth was claimed at); the
     /// tags and the config a live birth's row carries, so the request names what the node holds and the
     /// Build, which applies every property that differs from the row (build.md §1), changes neither.
     pub fn held(&self, executables: &Executables) -> Result<BTreeMap<String, BTreeMap<PathName, NodeSpec>>, String> {
@@ -161,7 +161,7 @@ impl Current {
 
     /// The complete request that resizes each of `meshes` to its counts, as the compiler's count form
     /// resized it: a grow takes the lowest free ordinal of the kind, a shrink drops the highest ordinal
-    /// that is not the kind's primary (else the highest). Every path the topology holds keeps its spec
+    /// that is not the type's primary (else the highest). Every path the topology holds keeps its spec
     /// ([`Self::held`]); every created path is named on its executable. A mesh the topology holds that
     /// `meshes` leaves out is left out of the request (its mesh.delete) when `whole`, the fabric's
     /// complete shape, and kept as it is otherwise.
@@ -169,7 +169,7 @@ impl Current {
         self.try_resized(meshes, whole, executables).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// [`Self::resized`], a path that cannot be named (its kind unbound) named in the error.
+    /// [`Self::resized`], a path that cannot be named (its type unbound) named in the error.
     pub fn try_resized(&self, meshes: &[MeshDesired], whole: bool, executables: &Executables) -> Result<Vec<NodeSpec>, String> {
         let mut by_mesh = self.held(executables)?;
         if whole {
@@ -267,20 +267,20 @@ mod tests {
     /// paths with configs, reading the current topology for the ordinals"; `accepted::resize`): a grow
     /// takes the lowest free ordinals and names each created path's executable; a held path keeps its
     /// entry's executable, else the one its row records; a shrink drops the highest ordinal that is not
-    /// the kind's primary; a whole-fabric shape leaves out a mesh it does not list, a mesh's own shape
+    /// the type's primary; a whole-fabric shape leaves out a mesh it does not list, a mesh's own shape
     /// keeps the others.
     #[test]
     fn counts_expand_into_named_paths_the_way_the_compiler_resized_them() {
         let c = current();
         let grown = c.resized(&[MeshDesired::of("mesh1", [("node-admin", 2), ("node", 3)]), MeshDesired::of("mesh2", [("node-admin", 1), ("node", 1)])], true, &set());
-        assert_eq!(names(&grown), [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node", "2").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap(), PathName::new("mesh2.node", "1").unwrap()]);
+        assert_eq!(names(&grown), [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node", "2").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node-admin", "2").unwrap(), PathName::new("mesh2.node", "1").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap()], "the request lists the paths in order");
         let sha = |p: PathName| grown.iter().find(|s| s.path.clone() == p).and_then(|s| s.executable.clone()).map(|b| b.sha256).unwrap();
         assert_eq!((sha(PathName::new("mesh1.node-admin", "1").unwrap()), sha(PathName::new("mesh1.node-admin", "2").unwrap()), sha(PathName::new("mesh1.node", "2").unwrap()), sha(PathName::new("mesh2.node", "1").unwrap())), ("a0".into(), "a".into(), "r0".into(), "r".into()));
         let shrunk = c.resized(&[MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])], true, &set());
-        assert_eq!(names(&shrunk), [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node", "3").unwrap()], "the primary mesh1.node.3 is kept");
+        assert_eq!(names(&shrunk), [PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap()], "the primary mesh1.node.3 is kept");
         let one_more = c.with_one_more("mesh1", "node", &set());
-        assert_eq!(names(&one_more), [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node", "2").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node", "4").unwrap()]);
+        assert_eq!(names(&one_more), [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node", "2").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node", "4").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap()]);
         let other = c.resized(&[MeshDesired::of("mesh2", [("node-admin", 1)])], false, &set());
-        assert_eq!(names(&other), [PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node", "2").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap()]);
+        assert_eq!(names(&other), [PathName::new("mesh1.node", "1").unwrap(), PathName::new("mesh1.node", "2").unwrap(), PathName::new("mesh1.node", "3").unwrap(), PathName::new("mesh1.node-admin", "1").unwrap(), PathName::new("mesh2.node-admin", "1").unwrap()]);
     }
 }

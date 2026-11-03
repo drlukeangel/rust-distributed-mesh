@@ -2845,7 +2845,7 @@ async fn failed_steps(nodes: &Nodes, steps: Vec<Step>) -> String {
 /// records it beside `config`"; node-recovery.md "Retained": "config and the executable (both seeded
 /// from the deleted row: a recovered node runs the bin its row records, never the recovering
 /// admin's)"; build-deployment.md §2: every create names its executable): the fabric is born on
-/// binding set A (`rpc_node` = the built node), every path named on set A's executable of its kind,
+/// binding set A (`rpc_node` = the built node), every path named on set A's executable of its type,
 /// and mesh1's and mesh2's admins alike launch set A's. A Create binding, a copy the set does not name, is the Create step of a
 /// replace steps of `mesh1.node.1` (run by mesh1's admin) and of `mesh2.node.1` (run by mesh2's admin):
 /// both successors run that copy. `mesh1.node.1` is then killed and recovered over its inherited data

@@ -97,7 +97,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let built = build_log::build_value(&estate, &a).await;
-    assert_eq!(paths(&built, "mesh1"), [location("mesh1.node-admin", "1"), location("mesh1.node-admin", "2"), location("mesh1.node", "1"), location("mesh1.node", "2"), location("mesh1.node", "3")], "{built}");
+    assert_eq!(paths(&built, "mesh1"), [location("mesh1.node", "1"), location("mesh1.node", "2"), location("mesh1.node", "3"), location("mesh1.node-admin", "1"), location("mesh1.node-admin", "2")], "{built}");
     // The change is history the fabric-primary records with the Build, whole, in the journal on the store
     // root, and the Build read from there carries it (Q292).
     let recorded = rdm_admin::store_log::read_record(&estate.fabric_store_root().join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&format!("{a}/accepted"))).unwrap_or_else(|| panic!("the journal holds Build {a}'s acceptance"));

@@ -1,6 +1,6 @@
 //! A birth is one trace with its boot steps, and a running node marks its heartbeat.
 //!
-//! CONTRACT: `{node_admin: 1, rpc_node: 1}`. Each node's birth is one trace rooted at
+//! CONTRACT: `{node-admin: 1, node: 1}`. Each node's birth is one trace rooted at
 //! `rdm.mesh.node.create.via-boot`; its identity, endpoint, gossip, ALPN, accept-loop and
 //! topology steps and its `rdm.mesh.node.update.via-ready` are children of that root in the same
 //! trace, every step finishing inside the root; the launched node also shows the join it took.

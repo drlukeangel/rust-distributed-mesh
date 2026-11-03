@@ -392,16 +392,15 @@ shape: SN
 fabric: fabric1
 meshes:
   - name: mesh1
-    node_admin: 1
-    rpc_node: 2
+    counts: { node-admin: 1, node: 2 }
 operations:
-  - put: { target: {path: mesh1.rpc, name: \"1\"}, key: 10, value: \"a\" }
-  - put: { target: {path: mesh1.rpc, name: \"2\"}, key: 11, value: \"b\" }
-  - cas: { target: {path: mesh1.rpc, name: \"1\"}, key: 10, expected: \"a\", value: \"a2\" }
-  - delete: { target: {path: mesh1.rpc, name: \"2\"}, key: 11 }
+  - put: { target: {path: mesh1.node, name: \"1\"}, key: 10, value: \"a\" }
+  - put: { target: {path: mesh1.node, name: \"2\"}, key: 11, value: \"b\" }
+  - cas: { target: {path: mesh1.node, name: \"1\"}, key: 10, expected: \"a\", value: \"a2\" }
+  - delete: { target: {path: mesh1.node, name: \"2\"}, key: 11 }
 assert:
-  - get: { target: {path: mesh1.rpc, name: \"1\"}, key: 10, equals: \"a2\" }
-  - get: { target: {path: mesh1.rpc, name: \"2\"}, key: 11, absent: true }
+  - get: { target: {path: mesh1.node, name: \"1\"}, key: 10, equals: \"a2\" }
+  - get: { target: {path: mesh1.node, name: \"2\"}, key: 11, absent: true }
 ";
 
 const SEED: u64 = 2776;

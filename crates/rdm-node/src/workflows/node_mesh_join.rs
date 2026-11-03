@@ -1,5 +1,5 @@
 //! `node.mesh.join` (node-mesh-join.md), the one primitive that puts a node on its mesh: `JoinNode`
-//! to its primary, the handed name and rafka-time taken from the answer, then the kind's
+//! to its primary, the handed name and rafka-time taken from the answer, then the type's
 //! channels entered holding them (its mesh, and the backbone for a node-admin), nothing published
 //! before. It is run by [node.start](super::node_start) step 2, by the mesh-primary's standalone
 //! `JoinMesh`, and by a node-admin entering a mesh; each of them calls this, never a copy of it.
@@ -31,7 +31,7 @@ pub trait MeshJoin: Send {
     /// binds none.
     fn join_listeners(&self) -> Vec<(String, std::net::SocketAddr)> { Vec::new() }
 
-    /// Enter the kind's channels holding the name the join handed (`None` with no primary), before
+    /// Enter the type's channels holding the name the join handed (`None` with no primary), before
     /// anything is published, emitting `rdm.node.mesh.update.via-joined` per channel. `step` is the
     /// channel step's span: the kind drops it when its channel part ends.
     async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<TopologyView, Self::Error>;
