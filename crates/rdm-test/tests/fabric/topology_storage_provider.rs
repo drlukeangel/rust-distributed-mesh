@@ -832,8 +832,8 @@ async fn a_provider_that_refuses_its_list_fails_the_copy_and_unblocks_on_the_old
 /// CONTRACT (storage.md §2 "Changing it": "No Build is admitted while a change is in progress, a change
 /// of `topology_storage_provider` included; `fabric.delete` alone is admitted"; "It is admitted and
 /// refused as any Build is, one in progress at a time"; i149 R17, R18): while a change to `test-target`
-/// is held after every mesh-primary replied `blocked`, a Build of the complete topology that names no
-/// provider and one naming `file` are each refused `build-in-progress` naming the change's Build, and
+/// is held after every mesh-primary replied `blocked`, a Create of one more node and a change back to
+/// `file` are each refused `build-in-progress` naming the change's Build, and
 /// nothing of them is accepted; the change then completes, the Fabric row naming `test-target` with
 /// `file` previous. Must NOT happen: a Build accepted during the change, or the change ended by the
 /// refusals.
@@ -847,7 +847,8 @@ async fn a_build_other_than_fabric_delete_is_refused_during_a_change() {
     let mut refusals = Vec::new();
     let current = estate.current().await.build_id;
     // A Build beside the change: refused `build-in-progress`, naming no Build.
-    let build = estate.carrier().await.create(estate.shape_change(&two_meshes()).await).await;
+    let request = estate.create_node_request("mesh1", "node").await;
+    let build = estate.carrier().await.create(rdm_client::Change::Create { meshes: Vec::new(), nodes: vec![request] }).await;
     match build {
         Err(CallEnd::Rejected { reason, detail }) if reason == "build-in-progress" => refusals.push(json!({"what": "a Build", "reason": reason, "detail": detail})),
         Err(other) => panic!("a Build during the change ended otherwise than build-in-progress: {other}"),

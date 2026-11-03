@@ -804,7 +804,7 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
     let admins: Vec<&Value> = nodes.iter().filter(|n| n["type"] == "node-admin").collect();
     assert_eq!(admins.len(), 2, "{nodes:#?}");
     let before = admins.iter().find(|n| n["is_primary"] != true && n["is_fabric_primary"] != true).map(|n| (*n).clone()).expect("an admin that holds no primary role");
-    let stays = serde_json::from_value::<PathName>(admins.iter().find(|n| n["node_id"] != before["node_id"]).unwrap()["name"].clone()).expect("structured location");
+    let stays = rdm_test::estate::location(admins.iter().find(|n| n["node_id"] != before["node_id"]).unwrap());
     assert_eq!(estate.entry().await, stays, "the admin that stays is the entry the typed objects ask");
     let node: PathName = rdm_test::estate::location(&before);
     let node_path = node.clone();
