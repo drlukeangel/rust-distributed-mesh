@@ -3,21 +3,21 @@
 //! desired {mesh1} -> {mesh1, mesh2}, through one fabric Build:
 //! - the fabric primary creates mesh2's first node-admin; mesh2's own admin primary (that
 //!   first admin) creates mesh2's second;
-//! - mesh2's own admin primary creates mesh2's members (the same Build, a
-//!   later attempt claimed by that admin);
+//! - mesh2's own admin primary creates mesh2's members (the same Build, mesh2's
+//!   section, one call to that admin);
 //! - the test reads mesh2's control endpoint from the advertised topology, asks
 //!   from there to grow and shrink mesh2 (`node.create`, `node.delete`, which the
 //!   fabric-primary accepts); mesh2's admin primary executes those Builds.
 //!
-//! "Who executed" is read from each Build as the Build log holds it (`executor` of the
-//! attempt) and from the evidence: every `node.create.via-build` /
-//! `node.delete.via-build` span sits under a `build.update.via-reconcile`
-//! whose `executor` is the expected admin, by parent span id.
+//! "Who executed" is read from each Build's step events (each event's `source` is its writer's
+//! birth, build.md §5) and from the evidence: every `node.create.via-build` /
+//! `node.delete.via-build` span sits under the section span (`build.serve.via-attempt-run`, or
+//! `build.serve.via-own-section` on the fabric-primary's own mesh) of the expected admin.
 
 use crate::build_log;
 use rdm_core::{NodeId, PathName};
 use rdm_client::{FabricDesired, MeshDesired, NodeStatus};
-use rdm_test::estate::{claim_decider, descends_from, named, Estate, Owner};
+use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -66,30 +66,28 @@ fn operation<'a>(spans: &'a [Value], span_name: &str, node: &PathName, build_id:
         .unwrap_or_else(|| panic!("no {span_name} for {node:?} under {build_id}"))
 }
 
-/// The admin whose reconcile ran `span_name` for `node` under `build_id`.
-fn executed_by(spans: &[Value], span_name: &str, node: &PathName, build_id: &str) -> String {
+/// The node id of the admin whose section ran `span_name` for `node` under `build_id`: the section span
+/// above the operation, its admin by path and name among `nodes`.
+fn executed_by(spans: &[Value], span_name: &str, node: &PathName, build_id: &str, nodes: &[Value]) -> String {
     let op = named(spans, span_name)
         .into_iter()
         .find(|s| actor_is(s, node) && s["attributes"]["build_id"] == build_id)
         .unwrap_or_else(|| panic!("no {span_name} for {node:?} under {build_id}"))
         .clone();
-    let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
-        .into_iter()
+    let section = ["rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.serve.via-own-section"]
+        .iter()
+        .flat_map(|name| named(spans, name))
         .find(|r| r["attributes"]["build_id"] == build_id && descends_from(spans, &op, r))
-        .unwrap_or_else(|| panic!("{node:?}: no reconcile of {build_id} above its operation"));
-    s(&reconcile["attributes"]["executor_node_id"])
+        .unwrap_or_else(|| panic!("{node:?}: no section of {build_id} above its operation"));
+    let at = location(section["attributes"]["node_path"].as_str().unwrap_or_default(), section["attributes"]["node_name"].as_str().unwrap_or_default());
+    nodes.iter().find(|n| n["path"] == at.path.as_str() && n["name"] == at.name.as_str()).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("the section's admin {at:?} is in the view"))
 }
 
-/// The executor of the last attempt of `build` (the Build view's JSON) that ran a step. The Build put the
-/// fabric back to pending, so it is Complete only once the fabric is ready again from its own
-/// change (Q154; states.md "Resize and executable replacement"); no page makes that Complete an attempt of
-/// its own. The fabric-primary sets ready once every mesh the accepted Build names is ready and
-/// its attempt is claimed (states.md "The fabric's ready"): a removal's meshes are ready at the
-/// claim, so its run may be planned on a fabric already ready from this Build and end Complete
-/// itself, while a run planned on a pending fabric hands back and the next attempt completes the Build.
+/// The node id of the writer of `build`'s last step event (the Build view's JSON): each event's
+/// `source` is `rdm://<fabric_id>/<node_id>/<incarnation>` (build.md §5).
 fn last_run_executor(build: &Value) -> String {
-    let stepped = build["steps"].as_array().into_iter().flatten().filter_map(|r| r["attempt"].as_u64()).max().expect("the Build ran steps");
-    s(&build["attempt_executors"][stepped.to_string()]["node_id"])
+    let source = build["steps"].as_array().into_iter().flatten().filter_map(|r| r["source"].as_str()).last().expect("the Build ran steps");
+    source.rsplit('/').nth(1).unwrap_or_default().to_string()
 }
 
 /// Build `id` complete in the Build log of the admin the estate asks, as the JSON the view serializes to.
@@ -160,15 +158,15 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     // test is not the creator's role. The second admin is created by mesh2's own primary, which at
     // that moment is the only admin mesh2 has (node-admin-lifecycle.md 4.3).
     let op = operation(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "1"), &create);
-    let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "1"), &create);
+    let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "1"), &create, &nodes);
     assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "mesh2.node-admin.1: created by the admin holding the fabric-primary role when it ran");
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "2"), &create), s(&first_admin["node_id"]), "mesh2.node-admin.2: created by mesh2's own primary");
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node-admin", "2"), &create, &nodes), s(&first_admin["node_id"]), "mesh2.node-admin.2: created by mesh2's own primary");
     for name in ["1", "2", "3"] {
         let r = location("mesh2.node", name);
-        assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &r, &create), mesh2_primary, "{r:?}: mesh2's primary creates its members");
+        assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &r, &create, &nodes), mesh2_primary, "{r:?}: mesh2's primary creates its members");
     }
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node", "4"), &grow), mesh2_primary);
-    assert_eq!(executed_by(&spans, "rdm.node_admin.node.delete.via-build", &location("mesh2.node", "4"), &shrink), mesh2_primary);
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", &location("mesh2.node", "4"), &grow, &nodes), mesh2_primary);
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.delete.via-build", &location("mesh2.node", "4"), &shrink, &nodes), mesh2_primary);
     // The Pending hand-off (e4.s11): once mesh2's first admin is born, the fabric primary applies
     // MeshStatus::Pending at that exact birth, and only then does the shape proceed. Evidence names
     // the sender's birth, the target's birth, the exact mesh identity and the applied state.
@@ -199,20 +197,11 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(decided.len(), 1, "{decided:?}");
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election: {}", decided[0]);
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).unwrap().clone();
-    // The accepting fabric-primary holds the request's context: every attempt it decides descends
-    // from the request. The role moves to mesh2's lower NodeId during the creation; an attempt the
-    // new fabric-primary decides starts its own trace (the context is the old primary's local record).
-    let accepting = claim_decider(&spans, create.as_str(), "1").expect("attempt 1 of the creation Build was claimed");
-    let mut continued = 0;
-    for r in named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()) {
-        if claim_decider(&spans, create.as_str(), r["attributes"]["attempt"].as_str().unwrap_or_default()).is_none_or(|d| d == accepting) {
-            assert!(descends_from(&spans, r, &accepted), "an attempt the accepting fabric-primary decided descends from its request: {r}");
-            continued += 1;
-        } else {
-            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the role moved starts its own trace: {r}");
-        }
-    }
-    assert!(continued >= 1, "the first attempt continues the request's trace");
+    // The accepting fabric-primary holds the request's context: the sections it dispatches descend from
+    // the request. The role may move to mesh2's lower NodeId during the creation; a section the new
+    // fabric-primary dispatches starts its own trace (the context is the old primary's local record).
+    let continued = named(&spans, "rdm.node_admin.build.serve.via-attempt-run").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str() && descends_from(&spans, r, &accepted)).count();
+    assert!(continued >= 1, "the first section continues the request's trace");
     // node-identity-and-state.md §2.7: "The mesh's primary node-admin writes its row at creation", the
     // name checked "against the mesh records at the key `(path, name)`", the same MeshId writing its own
     // row again accepted; R13: the fabric-primary writes as the acting primary of a mesh with no

@@ -97,34 +97,27 @@ pub struct DriftHold {
 /// answers before its hook returned `Ok`.
 pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
 
-/// What `on_fabric_ready` is told: the fabric, the accepted Build and attempt whose change made it
-/// ready, and that attempt's observability context (`docs/architecture/fabric-node-hooks.md`).
+/// What `on_fabric_ready` is told: the fabric, the accepted Build whose change made it ready, and its
+/// observability context (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FabricReadyCtx {
     /// The fabric.
     pub fabric_id: rdm_core::FabricId,
     /// The accepted Build whose change made the fabric ready.
     pub build_id: String,
-    /// Its attempt.
-    pub attempt: u32,
-    /// The attempt's observability context.
+    /// The Build's observability context.
     pub context: CallContext,
 }
 
-/// What `on_build_started` is told: the fabric, the Build, the attempt whose claim opened it (its first,
-/// or the attempt that reopens it after it ended), that attempt's reason and its observability context
-/// (`docs/architecture/fabric-node-hooks.md`).
+/// What `on_build_started` is told, from the write of the Build's `rdm.build.started` event: the fabric,
+/// the Build and its observability context (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildStartedCtx {
     /// The fabric.
     pub fabric_id: rdm_core::FabricId,
     /// The Build.
     pub build_id: String,
-    /// The attempt whose claim opened it.
-    pub attempt: u32,
-    /// Why that attempt exists: `requested` at acceptance, or the reopening attempt's.
-    pub reason: crate::build_state::AttemptReason,
-    /// The attempt's observability context.
+    /// The Build's observability context.
     pub context: CallContext,
 }
 
@@ -132,19 +125,24 @@ pub struct BuildStartedCtx {
 /// (`docs/architecture/fabric-node-hooks.md`, `docs/architecture/build.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildEndedState {
-    /// The Build is `Complete`.
+    /// The Build is `Complete`: every section finished.
     ///
     /// `as_str()` is `complete`.
     Complete,
-    /// The Build is `Failed`, naming the step that failed, its reason and its code.
+    /// The Build is `Incomplete`: it ran and not every section finished, each named (Q346).
+    ///
+    /// `as_str()` is `incomplete`.
+    Incomplete {
+        /// Each section that ended short of its end.
+        sections: Vec<rdm_core::build::UnfinishedSection>,
+    },
+    /// The Build is `Failed`: it could not start, why and its code (Q346).
     ///
     /// `as_str()` is `failed`.
     Failed {
-        /// The step that failed.
-        step: String,
-        /// Why it failed.
+        /// Why it could not start.
         reason: String,
-        /// The standard code captured where it failed.
+        /// The standard code captured where it could not start.
         code: rdm_core::outcome::Code,
     },
 }
@@ -154,27 +152,23 @@ impl BuildEndedState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Complete => "complete",
+            Self::Incomplete { .. } => "incomplete",
             Self::Failed { .. } => "failed",
         }
     }
 }
 
-/// What `on_build_ended` is told: the fabric, the Build, the attempt that ended it, that attempt's
-/// reason, the terminal state and that attempt's observability context
-/// (`docs/architecture/fabric-node-hooks.md`).
+/// What `on_build_ended` is told, from the write of the Build's `rdm.build.ended` event: the fabric,
+/// the Build, its terminal state and its observability context (`docs/architecture/fabric-node-hooks.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildEndedCtx {
     /// The fabric.
     pub fabric_id: rdm_core::FabricId,
     /// The Build.
     pub build_id: String,
-    /// The attempt that ended it.
-    pub attempt: u32,
-    /// Why that attempt exists: `requested`, or a later attempt's (a drift repair, a stop, a takeover).
-    pub reason: crate::build_state::AttemptReason,
-    /// `Complete`, or `Failed { step, reason, code }`.
+    /// `Complete`, `Incomplete { sections }` or `Failed { reason, code }`.
     pub state: BuildEndedState,
-    /// The attempt's observability context.
+    /// The Build's observability context.
     pub context: CallContext,
 }
 

@@ -48,8 +48,6 @@ pub enum BuildSpec {
 pub struct Completed {
     /// The Build.
     pub build_id: BuildId,
-    /// The attempt the call opened.
-    pub attempt: u32,
     /// Every frame the stream carried after `Started`, `Complete` last.
     pub frames: Vec<BuildFrame>,
 }
@@ -680,10 +678,6 @@ impl Estate {
         None
     }
 
-    /// The attempt the accepted Build `build_id` has reached, as `build.get` reads it.
-    pub async fn attempt_of_build(&self, build_id: &str) -> u64 {
-        u64::from(self.carrier().await.build(&BuildId::parse(build_id).unwrap_or_else(|e| panic!("build.get [id: {build_id}]: {e}"))).await.unwrap_or_else(|e| panic!("build.get [id: {build_id}]: {e}")).attempt)
-    }
 
     /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The harness names every
     /// path ([`crate::executables`]): a shape of counts (`Fabric`, `CreateMesh`) is expanded
@@ -782,22 +776,49 @@ impl Estate {
         self.follow(stream).await
     }
 
+    /// How many times the accepted Build `build_id` was started, as `build.get` reads its events (each
+    /// `rdm.build.started`, build.md §5): a repair, a recovery or a node command starts none.
+    pub async fn starts_of_build(&self, build_id: &str) -> usize {
+        let id = BuildId::parse(build_id).unwrap_or_else(|e| panic!("build.get [id: {build_id}]: {e}"));
+        let build = self.carrier().await.build(&id).await.unwrap_or_else(|e| panic!("build.get [id: {build_id}]: {e}"));
+        build.events.iter().filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("rdm.build.started")).count()
+    }
+
     /// A Build stream to its `Complete`, followed by the client's watcher ([`rdm_client::follow_with`]):
     /// a stream that breaks (its connection closed) or ends `FabricPrimaryMoved` (a planned fabric-primary
-    /// handover) is reattached by its build id from the attempt it carried, at the role the carrier
-    /// reaches now. A failed Build or a reattachment refused is a defect of the cell, named.
+    /// handover) is reattached by its build id, at the role the carrier reaches now. A Build that ends
+    /// incomplete or failed, or a reattachment refused, is a defect of the cell, named.
     pub async fn follow(&self, stream: BuildStream) -> Completed {
-        let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
-        let followed = rdm_client::follow_with(stream, |id, _from| async move { self.carrier().await.reattach(&id).await })
+        let build_id = stream.build_id().clone();
+        let followed = rdm_client::follow_with(stream, |id| async move { self.carrier().await.reattach(&id).await })
             .await
-            .unwrap_or_else(|e| panic!("Build {build_id} could not be followed to its terminal from attempt {attempt}: {e}"));
+            .unwrap_or_else(|e| panic!("Build {build_id} could not be followed to its terminal: {e}"));
         match followed.frames.last() {
             Some(BuildFrame::Complete { .. }) => {}
-            Some(BuildFrame::Failed { attempt, operation, step, reason, .. }) => panic!("Build {build_id} attempt {attempt} failed at {operation:?} {step}: {reason}"),
+            Some(BuildFrame::Failed { reason, .. }) => panic!("Build {build_id} could not start: {reason}"),
+            Some(BuildFrame::Incomplete { sections }) => panic!("Build {build_id} ended incomplete: {sections:?}"),
             other => panic!("Build {build_id} ended at {other:?}, not Complete: {:?}", followed.frames),
         }
         self.refresh().await;
-        Completed { build_id, attempt, frames: followed.frames }
+        Completed { build_id, frames: followed.frames }
+    }
+
+    /// A Build stream followed as [`Self::follow`] follows it, to whichever terminal it ends at:
+    /// `Complete`, `Incomplete { sections }` (it ran and not every section finished, Q346) or `Failed`
+    /// (it could not start). A reattachment refused is a defect of the cell, named.
+    pub async fn follow_to_terminal(&self, stream: BuildStream) -> Completed {
+        let build_id = stream.build_id().clone();
+        let followed = rdm_client::follow_with(stream, |id| async move { self.carrier().await.reattach(&id).await })
+            .await
+            .unwrap_or_else(|e| panic!("Build {build_id} could not be followed to its terminal: {e}"));
+        self.refresh().await;
+        Completed { build_id, frames: followed.frames }
+    }
+
+    /// `build.create` re-submitting the Build `build_id` (build.md §4: an incomplete or failed Build is
+    /// resubmitted by its build_id, never a second Build), accepted: its stream.
+    pub async fn resubmit(&self, build_id: &BuildId) -> BuildStream {
+        self.carrier().await.resubmit(build_id).await.unwrap_or_else(|e| panic!("the fabric-primary accepts the resubmit of Build {build_id}: {e}"))
     }
 
     /// Take the fabric to `meshes`, each `(name, node_admin, rpc_node)`: [`Self::resize`].
@@ -825,26 +846,27 @@ impl Estate {
     /// The stream's frames to `Complete`, or to the `FabricPrimaryMoved` that ends it (the frames read and the
     /// new role the old one named).
     async fn read_to_end(stream: &mut BuildStream) -> Result<Completed, (Vec<BuildFrame>, Option<rdm_core::NodeId>)> {
-        let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
+        let build_id = stream.build_id().clone();
         let mut frames = Vec::new();
         while let Some(frame) = stream.next().await {
-            let frame = frame.unwrap_or_else(|e| panic!("the stream of Build {build_id} attempt {attempt} broke before its terminal frame: {e}"));
+            let frame = frame.unwrap_or_else(|e| panic!("the stream of Build {build_id} broke before its terminal frame: {e}"));
             frames.push(frame.clone());
             match frame {
-                BuildFrame::Complete { .. } => return Ok(Completed { build_id, attempt, frames }),
-                BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("Build {build_id} attempt {attempt} failed at {operation:?} {step}: {reason}"),
+                BuildFrame::Complete { .. } => return Ok(Completed { build_id, frames }),
+                BuildFrame::Failed { reason, .. } => panic!("Build {build_id} could not start: {reason}"),
+                BuildFrame::Incomplete { sections } => panic!("Build {build_id} ended incomplete: {sections:?}"),
                 BuildFrame::FabricPrimaryMoved { fabric_primary } => return Err((frames, fabric_primary)),
                 _ => {}
             }
         }
-        panic!("the stream of Build {build_id} attempt {attempt} ended without a terminal frame: {frames:?}")
+        panic!("the stream of Build {build_id} ended without a terminal frame: {frames:?}")
     }
 
-    /// Re-submit Build `build_id` from `from_attempt` and await the stream to the first `Complete`:
-    /// the Build goes on at the current fabric-primary, and a later attempt is what converges it.
-    pub async fn resume(&self, build_id: &BuildId, from_attempt: u32) -> Completed {
+    /// Re-submit Build `build_id` and await the stream to its `Complete`: the Build goes on at the
+    /// current fabric-primary, and the rerun runs only the steps whose event did not end `complete`.
+    pub async fn resume(&self, build_id: &BuildId) -> Completed {
         let carrier = self.carrier().await;
-        let stream = carrier.resubmit(build_id, from_attempt).await.unwrap_or_else(|e| panic!("the fabric-primary does not stream Build {build_id} from attempt {from_attempt}: {e}"));
+        let stream = carrier.resubmit(build_id).await.unwrap_or_else(|e| panic!("the fabric-primary does not stream Build {build_id}: {e}"));
         self.follow(stream).await
     }
 

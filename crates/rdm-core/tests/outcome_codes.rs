@@ -32,10 +32,9 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
         0x01 => &[0,5,14,14,14,15,7],
         0x1A => &[0,14,12,10,2,9,5,14,14,14,15,7,14,14],
         0x1B => &[0,6,0,0,10,10,10,9,9,9,5,14,14,14,15,7,9,0,0,9,0,0,9,9,9,0,0,9,6,9,9,9,9,0,0,0,0,5,8,10,9,9,9,3,9,0,0,3,14,0,0,12,0,0,3,0,0,3,0,9,0,9,9,0,9,9],
-        0x1C => &[0,10,9,9,5,14,14,14,15,7,14],
         0x1D => &[0,9,9,5,14,14,14,15,7,9,9],
         0x1E => &[0,0,0,14,5,5,14,14,15,7,0,0,0,0,0],
-        0x20 => &[0,0,0,0,0,9,0,0,0,9,9,10,5,9,14,10,9,9,5,14,14,14,15,7,0,9,0,0,0,3],
+        0x20 => &[0,0,0,0,9,0,0,9,9,5,9,14,9,9,5,14,14,14,15,7,0,0,0,0,0,3,9],
         0x21 => &[0,10,9,9,10,14,15,5,14,14,7,9,6],
         0x22 => &[0,0,0,3,10,14,5,14,14,15,7,0,0,0,0,13,9,0,10,0,0,0,14,0,0,0,9],
         0x23 => &[0,0,0,0,0,3,8,9,14,5,14,14,15,7,0],
@@ -105,7 +104,7 @@ fn every_reply_variant_of_join_classifies_to_one_code() {
             JoinReply::Joined { answer: vec![1, 2, 3] },
             JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() },
             JoinReply::NotPrimary { primary: Some(rdm_core::NodeId::mint()) },
-            JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() },
+            JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() },
             JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() },
             Join::peer_unresolved("p".into()),
             Join::not_ready("n".into()),
@@ -118,31 +117,6 @@ fn every_reply_variant_of_join_classifies_to_one_code() {
     for r in fixtures { variants.insert(Join::encode_reply(&r).unwrap()[0]); check::<Join>(&r); }
     assert_eq!(variants.len(), Join::REPLY_VARIANTS as usize);
     check_malformed::<Join>();
-}
-
-#[test]
-fn every_reply_variant_of_build_claim_classifies_to_one_code() {
-    use rdm_core::context::CallContext;
-    use rdm_core::build_claim::*;
-    use rdm_core::outcome::MalformedKind;
-
-    let fixtures = [
-            BuildClaimReply::Won { context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None } },
-            BuildClaimReply::Lost { holder: rdm_core::NodeId::parse("0123456789ab").unwrap() },
-            BuildClaimReply::NotOpen { next: Some(7) },
-            BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()), mesh_primary: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) },
-            BuildClaim::peer_unresolved("p".into()),
-            BuildClaim::not_ready("n".into()),
-            BuildClaim::busy("b".into()),
-            BuildClaim::connections_deleting("d".into()),
-            BuildClaim::malformed(MalformedKind::Corrupt),
-            BuildClaim::unauthorized("u".into()),
-            BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some(rdm_core::NodeId::parse("0123456789ab").unwrap()) },
-        ];
-    let mut variants = std::collections::BTreeSet::new();
-    for r in fixtures { variants.insert(BuildClaim::encode_reply(&r).unwrap()[0]); check::<BuildClaim>(&r); }
-    assert_eq!(variants.len(), BuildClaim::REPLY_VARIANTS as usize);
-    check_malformed::<BuildClaim>();
 }
 
 #[test]

@@ -377,7 +377,7 @@ mod tests {
         // The current Build names both paths: the deleted caller's path is still needed.
         let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone(), caller.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap(), "mesh1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap()).await.unwrap();
         // This admin's view holds itself only: the caller's Digest is refused as a deleted birth.
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone()] }));
         // The node records: the admin's live, the caller's deleted.
@@ -438,7 +438,7 @@ mod tests {
         let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready };
         let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone(), recreated.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap(), "mesh1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap()).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone(), recreated.clone()] }));
         // The node records: the admin's and the re-created birth's live, the caller's deleted.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
@@ -545,7 +545,7 @@ mod tests {
         let mesh = crate::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: crate::model::ScopeStatus::Ready };
         let planned = Topology { fabric: fabric.clone(), meshes: vec![mesh.clone()], nodes: vec![admin.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap(), "mesh1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap()).await.unwrap();
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes: vec![mesh], nodes: vec![admin.clone()] }));
         // The node records: the admin's live, the caller's deleted, and no re-created birth yet.
         let rows = Arc::new(crate::storage::MemoryNodesStorage::default());
@@ -662,7 +662,7 @@ mod tests {
         // The current Build names the caller's path: it is needed.
         let planned = Topology { fabric: fabric.clone(), meshes: meshes.clone(), nodes: vec![fp.clone(), admin.clone(), caller.clone()] };
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
-        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap(), "mesh1").await.unwrap();
+        crate::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), crate::accepted::FabricTopology::of_observed(&planned), &planned.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap()).await.unwrap();
         // mesh2.node-admin.2's view across the cut: itself only, no fabric-primary.
         let topology = Arc::new(tokio::sync::RwLock::new(Topology { fabric, meshes, nodes: vec![admin.clone()] }));
         // The node records of mesh2: the admin's and the caller's, both live.

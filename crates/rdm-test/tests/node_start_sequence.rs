@@ -42,7 +42,7 @@ use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::status::{StatusReply, StatusRequest};
 use rdm_test::pre_node_ready_probe::{Mode, TestPreNodeReady};
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild};
+use rdm_admin::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, CurrentBuild};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -147,7 +147,7 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 }
 
 fn stop(launch: &Launch) -> StatusRequest {
-    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &launch.node_id) }
+    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), operation: rdm_core::OperationId::node("node.stop", &launch.node_id) }
 }
 
 /// `req` sent by `root` over Node RPC to the birth `launch` names, as a commanding node-admin sends
@@ -162,7 +162,7 @@ async fn command(root: &Running, launch: &Launch, req: &StatusRequest) -> Status
 }
 
 fn start(launch: &Launch) -> StatusRequest {
-    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 2, operation: rdm_core::OperationId::node("node.start", &launch.node_id) }
+    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), operation: rdm_core::OperationId::node("node.start", &launch.node_id) }
 }
 
 /// The start steps of `node` that are children of a span named `root`, in the order they began:
@@ -318,9 +318,6 @@ impl BuildStateAdapter for NoCurrentWhileHeld {
     async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
         self.inner.publish_accepted(a).await
     }
-    async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(o).await
-    }
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(id).await
     }
@@ -333,44 +330,24 @@ impl BuildStateAdapter for NoCurrentWhileHeld {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
-    }
-    async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        self.inner.claim_attempt(c).await
-    }
-    async fn in_flight_live(&self, held: &rdm_admin::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
-        self.inner.in_flight_live(held).await
-    }
-    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &dyn rdm_admin::storage::MeshStorage, mesh: &str, row: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::build_state::InFlightClaim, BuildStateError> {
-        self.inner.claim_in_flight(claim, claims, mesh, row).await
-    }
-    async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(c).await
-    }
-    async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_step_receipt(r).await
-    }
-    async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(r).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
+
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
     }
-    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
+    async fn note_blocked(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        self.inner.note_blocked(build_id, operation, step, reason).await
     }
-    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
+    async fn write_step(&self, step: &rdm_admin::build_state::StepWrite) -> Result<(), BuildStateError> {
+        self.inner.write_step(step).await
     }
     fn held_name(&self) -> Option<rdm_admin::model::PathName> {
         self.inner.held_name()
+    }
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.inner.accepted_newest_first().await
+    }
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
     }
 }
 

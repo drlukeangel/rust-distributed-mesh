@@ -27,7 +27,6 @@ use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName, EndpointId
 pub use rdm_client::NameHeld;
 #[cfg(feature = "file-backend")]
 use crate::record_store::FileRecords;
-use crate::mesh_claims::{InFlight, Taken};
 use crate::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
 use rdm_core::status::{MeshState, NodeState};
@@ -164,27 +163,12 @@ pub trait MeshStorage: Send + Sync {
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError>;
     /// Every mesh record held.
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError>;
-    /// Take `mesh`'s in-flight row for `claim` (R-BI7 caveat 3, [`crate::mesh_claims`]): the insert of
-    /// the row's key decides. A row standing for the same attempt by the same claimant is a repeat take:
-    /// `Won`. A row standing for another attempt, or for the same attempt by another claimant, is
-    /// `Held`, naming it: the second claimant of one attempt loses and runs nothing (build.md §5.2, Q142). A row the insert met and the read no longer
-    /// finds was released between the two: refused by name, never answered as either outcome. An
-    /// attempt claim is a Build fact, durable when it is taken (Q61, build.md §5.2).
-    async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError>;
-    /// Release `mesh`'s in-flight row held for `attempt`, at that attempt's verdict: the row goes only
-    /// while it names that attempt, so a release never removes another attempt's row. Its one writer
-    /// is the admin that durably recorded the verdict (the role that holds the attempt's lane), so no
-    /// two releases of one row race.
-    async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError>;
-    /// The attempt holding `mesh`, when one does: a point read of its in-flight row.
-    async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError>;
 }
 
-/// A mesh store held in memory: the records at their ids and each mesh's in-flight row.
+/// A mesh store held in memory: the records at their ids.
 #[derive(Debug, Default)]
 pub struct MemoryMeshStorage {
     records: Mutex<BTreeMap<String, MeshRecord>>,
-    in_flight: Mutex<BTreeMap<String, InFlight>>,
 }
 
 #[async_trait]
@@ -202,28 +186,6 @@ impl MeshStorage for MemoryMeshStorage {
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
         Ok(self.records.lock().unwrap().values().cloned().collect())
     }
-    async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError> {
-        // The map's key is the row's: the look and the insert are one step under its lock.
-        let mut rows = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(match rows.get(mesh) {
-            Some(held) if held.same_claim(claim) => Taken::Won,
-            Some(held) => Taken::Held(held.clone()),
-            None => {
-                rows.insert(mesh.to_string(), claim.clone());
-                Taken::Won
-            }
-        })
-    }
-    async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError> {
-        let mut rows = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
-        if rows.get(mesh).is_some_and(|held| held.same_attempt(attempt)) {
-            rows.remove(mesh);
-        }
-        Ok(())
-    }
-    async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
-        Ok(self.in_flight.lock().unwrap_or_else(|e| e.into_inner()).get(mesh).cloned())
-    }
 }
 
 #[cfg(feature = "file-backend")]
@@ -231,20 +193,12 @@ const MESH_FORMAT: &str = "mesh-record/4";
 #[cfg(feature = "file-backend")]
 const MESH_KIND: &str = "mesh-record";
 
-#[cfg(feature = "file-backend")]
-/// The format of a mesh's in-flight lock's record.
-const IN_FLIGHT_FORMAT: &str = "mesh-in-flight/2";
-
-#[cfg(feature = "file-backend")]
-use crate::store_log::{lock_claim, lock_content};
 
 #[cfg(feature = "file-backend")]
 /// Each write of a Mesh record, whole, one line of the root's `meshes.jsonl` at its mesh id (R-SR1,
-/// R-SR2), the latest line the record; and each mesh name's attempt in flight, the lock
-/// `locks/in-flight/<mesh name>` ([`crate::mesh_claims`]; R-SR5).
+/// R-SR2), the latest line the record.
 pub struct FileMeshStorage {
     records: crate::store_log::StoreLog,
-    locks: crate::store_log::StoreLocks,
     log_writer: crate::store_log::LogWriter,
 }
 
@@ -257,12 +211,9 @@ impl std::fmt::Debug for FileMeshStorage {
 
 #[cfg(feature = "file-backend")]
 impl FileMeshStorage {
-    /// Open the store under the fabric's store root, written by `writer`: its in-flight locks taken at
-    /// once (an attempt claim is a Build fact, durable when it is taken: Q61,
-    /// build.md §5.2).
+    /// Open the store under the fabric's store root, written by `writer`.
     pub async fn open(root: &crate::store_root::StoreRoot, writer: &crate::store_log::LogWriter) -> Result<Self, StorageError> {
-        let locks = crate::store_log::StoreLocks::at(root.dir(), writer);
-        Ok(Self { records: root.log(crate::store_root::MESHES_FILE, crate::store_log::Formats::new().with::<MeshRecord>(MESH_FORMAT)).await?, locks, log_writer: writer.clone() })
+        Ok(Self { records: root.log(crate::store_root::MESHES_FILE, crate::store_log::Formats::new().with::<MeshRecord>(MESH_FORMAT)).await?, log_writer: writer.clone() })
     }
 
     /// Finishes every write of the Mesh records this store has issued
@@ -271,9 +222,6 @@ impl FileMeshStorage {
         self.records.finish_issued_writes().await;
     }
 
-    fn in_flight_path(&self, mesh: &str) -> std::path::PathBuf {
-        self.locks.path(crate::store_log::LockKind::InFlight, mesh)
-    }
 }
 
 #[cfg(feature = "file-backend")]
@@ -291,25 +239,6 @@ impl MeshStorage for FileMeshStorage {
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
         self.records.latest_of(MESH_KIND).await?.iter().map(|l| l.decode(self.records.path())).collect()
-    }
-    async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError> {
-        match self.locks.take(crate::store_log::LockKind::InFlight, mesh, &lock_content(IN_FLIGHT_FORMAT, claim, &self.log_writer)).await? {
-            crate::store_log::LockTaken::Won => Ok(Taken::Won),
-            crate::store_log::LockTaken::Held(bytes) => {
-                let held: InFlight = lock_claim(&self.in_flight_path(mesh), &bytes, IN_FLIGHT_FORMAT)?;
-                Ok(if held.same_claim(claim) { Taken::Won } else { Taken::Held(held) })
-            }
-        }
-    }
-    async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError> {
-        let (file, attempt) = (self.in_flight_path(mesh), attempt.clone());
-        self.locks.release(crate::store_log::LockKind::InFlight, mesh, move |b| lock_claim::<InFlight>(&file, b, IN_FLIGHT_FORMAT).is_ok_and(|held| held.same_attempt(&attempt))).await.map(|_| ())
-    }
-    async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
-        match self.locks.read(crate::store_log::LockKind::InFlight, mesh).await? {
-            Some(bytes) => lock_claim(&self.in_flight_path(mesh), &bytes, IN_FLIGHT_FORMAT).map(Some),
-            None => Ok(None),
-        }
     }
 }
 
@@ -882,15 +811,12 @@ mod tests {
         assert_eq!(live_records(&m1, &n1, "mesh1").await.unwrap().len(), 6, "a restart reads every mesh's records");
     }
 
-    /// CONTRACT (R-ML2 item 4 as amended: the recreated mesh shares the in-flight lock under its name,
-    /// not a directory; §5.4): mesh2 created again under its name, a new mesh with a new id, takes the
-    /// mesh's name over the deleted mesh's record, its node-admin's path and name over the Deleted record
-    /// there, and its records carry the new MeshId; a delayed release
-    /// of an attempt on the old mesh against the name's in-flight lock finds it naming the recreated
-    /// mesh's attempt and releases nothing. Must NOT happen: the recreated mesh refused its name, or the
-    /// old attempt's release freeing the new attempt's lock.
+    /// CONTRACT (R-ML2 item 4; §5.4): mesh2 created again under its name, a new mesh with a new id,
+    /// takes the mesh's name over the deleted mesh's record, its node-admin's path and name over the
+    /// Deleted record there, and its records carry the new MeshId. Must NOT happen: the recreated mesh
+    /// refused its name.
     #[tokio::test]
-    async fn a_recreated_mesh_takes_its_names_over_the_dead_ones_and_an_old_attempts_release_frees_nothing() {
+    async fn a_recreated_mesh_takes_its_names_over_the_dead_ones() {
         use crate::node_rows::RecordAt as _;
         let d = crate::test_support::tempdir("recreated-mesh");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
@@ -901,13 +827,9 @@ mod tests {
         write_mesh(&meshes, None, &old).await.unwrap().expect("the first mesh2 writes its record at its name");
         let first = NodeRow { mesh_id: Some(old.mesh_id.clone()), ..NodeRow::new(admin.clone(), "mesh2", "node-admin", NodeId::mint(), crate::model::NodeStatus::Pending) };
         assert_eq!(crate::node_rows::write_record(&nodes, &first).await.unwrap(), Ok(()));
-        let build = crate::build::BuildId::mint();
-        let old_attempt = InFlight { build_id: build.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: first.node_id.clone(), };
-        assert_eq!(meshes.take_in_flight("mesh2", &old_attempt).await.unwrap(), Taken::Won);
-        // mesh2 is removed: its node Deleted, its record deleted, its attempt's verdict released.
+        // mesh2 is removed: its node Deleted, its record deleted.
         nodes.put_node(&NodeRow { status: crate::model::NodeStatus::Deleted, ..first.clone() }).await.unwrap();
         write_mesh(&meshes, Some(&old), &MeshRecord { state: MeshState::Deleted, ..old.clone() }).await.unwrap().expect("the deleted record is written");
-        meshes.release_in_flight("mesh2", &old_attempt).await.unwrap();
         // mesh2 created again.
         let new = MeshRecord::new(MeshId::mint(), "mesh2");
         assert_eq!(write_mesh(&meshes, None, &new).await.unwrap(), Ok(MeshWritten::Written), "the recreated mesh takes its name over the deleted mesh's");
@@ -915,10 +837,6 @@ mod tests {
         let second = NodeRow { mesh_id: Some(new.mesh_id.clone()), ..NodeRow::new(admin.clone(), "mesh2", "node-admin", NodeId::mint(), crate::model::NodeStatus::Pending) };
         assert_eq!(crate::node_rows::write_record(&nodes, &second).await.unwrap(), Ok(()), "its node-admin's record takes the name over the Deleted record");
         assert_eq!(nodes.record_at(&admin).await.unwrap().and_then(|r| r.mesh_id), Some(new.mesh_id.clone()), "its records carry the new MeshId");
-        let new_attempt = InFlight { build_id: crate::build::BuildId::mint(), ..old_attempt.clone() };
-        assert_eq!(meshes.take_in_flight("mesh2", &new_attempt).await.unwrap(), Taken::Won);
-        meshes.release_in_flight("mesh2", &old_attempt).await.unwrap();
-        assert_eq!(meshes.in_flight("mesh2").await.unwrap(), Some(new_attempt), "the old attempt's delayed release frees nothing");
     }
 
     /// CONTRACT (R-SR2: "a create withdrawn before the node ran appends the record marked Withdrawn";

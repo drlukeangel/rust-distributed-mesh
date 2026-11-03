@@ -392,7 +392,7 @@ impl Prepared {
                 nodes.write_record(&row).await.unwrap();
                 launched.push((location, node_id));
             }
-            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await.unwrap();
+            let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &incarnation)).await;
             let accepted = rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
@@ -750,10 +750,16 @@ fn append_record(file: &std::path::Path, format: &str, key: &str, record: serde_
 /// The bound of an adoption launch's refusal, or of its claim and its first writes.
 const ADOPTS_WITHIN: Duration = Duration::from_secs(40);
 
-/// The span an adoption launch's claim of the fabric-recovery attempt leaves.
 /// The adoption launch's checks before its first mutation: node investigation of the lost birth, then
 /// whether any node-admin answers (adoption.rs `check`). The launch takes no lock first (Q342).
 const ADOPTION_CHECK: &str = "rdm.node_admin.fabric.update.via-adoption-check";
+
+/// The Build journal on `root`, over the root's events store, written as `writer`: what the store
+/// backend opens (`storage_backend.rs`).
+async fn journal_on(root: &rdm_admin::store_root::StoreRoot, writer: &rdm_admin::store_log::LogWriter) -> rdm_admin::build_state::FileJournal {
+    let events = std::sync::Arc::new(rdm_admin::events_storage::FileEventsStorage::open(root, writer).await.unwrap());
+    rdm_admin::build_state::FileJournal::open_on_root(root, writer, events).await.unwrap()
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
@@ -960,11 +966,11 @@ fn an_adoption_launch_whose_spawn_type_differs_from_the_fabric_records_provider_
 
 /// CONTRACT (Q156; fabric-recovery.md "Nothing alive": "runs node investigation on the lost birth: reached,
 /// or any node-admin answering before its first mutation, it is refused NameHeld and exits, its adoption
-/// recorded failed"; the adoption is fabric recovery, never a Build's attempt, Q342): a fabric's one
+/// recorded failed"; the adoption is fabric recovery, never a Build, Q342): a fabric's one
 /// admin is alive when an adoption launch starts at its path.name. Its answer reaches the launch's
 /// checks before its first mutation: the launch is refused NameHeld, naming the admin that answered,
-/// and writes no Build attempt and no in-flight row. Must NOT happen: the live fabric-primary's row deleted or its name
-/// taken, a Build attempt opened, or the launch running on as a second admin at the path.
+/// and writes no Build. Must NOT happen: the live fabric-primary's row deleted or its name
+/// taken, a Build written, or the launch running on as a second admin at the path.
 #[test]
 fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_and_nothing_is_deleted() {
     let d = Day0::at("an_admin_answering_before_the_adopters_first_mutation");
@@ -975,31 +981,31 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
         v["record"]["node_id"].as_str().unwrap().to_string()
     };
     let custody = custody_of(&d.data_dir);
-    // The Day-0 Build is Complete from its own ready: its attempt reads Converged on the journal
-    // and then releases mesh1's in-flight row. The admin is held only once both stand, so the launch's
-    // claim meets no attempt of Day 0.
+    // The Day-0 Build is complete from its own ready: its view reads complete on the journal. The
+    // admin is held only once it stands, so the launch meets no running Day 0.
     let until = Instant::now() + ADOPTS_WITHIN;
     while !tokio::runtime::Runtime::new().unwrap().block_on(async {
         use rdm_admin::build_state::BuildStateAdapter as _;
-        use rdm_admin::storage::MeshStorage as _;
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
         let writer = rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader);
-        let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader-day0"), &writer).await.unwrap();
-        let converged = journal.facts().await.unwrap().iter().any(|f| matches!(f, rdm_admin::build_state::BuildFact::Attempt(r) if matches!(r.outcome, rdm_admin::build_state::AttemptOutcome::Converged)));
-        let released = rdm_admin::storage::FileMeshStorage::open(&root, &writer).await.unwrap().in_flight("mesh1").await.unwrap().is_none();
-        converged && released
+        let journal = journal_on(&root, &writer).await;
+        let converged = match journal.accepted_newest_first().await.unwrap().last() {
+            Some(day0) => journal.read_build(day0).await.unwrap().state == rdm_admin::build_state::BuildState::Complete,
+            None => false,
+        };
+        converged
     }) {
-        assert!(Instant::now() < until, "the Day-0 Build did not read Converged with mesh1's in-flight row released");
+        assert!(Instant::now() < until, "the Day-0 Build did not read complete");
         std::thread::sleep(Duration::from_millis(50));
     }
     let builds_before = tokio::runtime::Runtime::new().unwrap().block_on(async {
-        use rdm_admin::build_state::BuildStateAdapter as _;
+        use rdm_admin::build_state::LocalBuildLog as _;
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
-        rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader-before"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap().facts().await.unwrap().len()
+        journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.facts().await.unwrap().len()
     });
     // Nothing precedes the launch's checks (no lock, Q342): the live admin answers them.
     let mut a = adopter(&d.dir, "adopter", &d.store, &fabric_id, &custody);
@@ -1010,37 +1016,33 @@ fn an_admin_answering_before_the_adopters_first_mutation_refuses_the_adoption_an
     let spans = spans_of(&d.dir, a.pid);
     let written: Vec<&serde_json::Value> = spans.iter().filter(|s| ["rdm.node_admin.node.delete.via-node-row", "rdm.node_admin.node.create.via-node-row"].contains(&s["name"].as_str().unwrap_or_default())).collect();
     assert!(written.is_empty(), "the refused launch deleted or claimed a row: {written:?}");
-    let (row, in_flight, facts) = tokio::runtime::Runtime::new().unwrap().block_on(async {
-        use rdm_admin::build_state::BuildStateAdapter as _;
-        use rdm_admin::storage::MeshStorage as _;
+    let (row, facts) = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        use rdm_admin::build_state::LocalBuildLog as _;
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
         let nodes = rdm_admin::storage::FileNodesStorage::open(&d.dir.join("reader"), &root, "mesh1", &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-        let meshes = rdm_admin::storage::FileMeshStorage::open(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-        let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap();
-        (nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap(), meshes.in_flight("mesh1").await.unwrap(), journal.facts().await.unwrap())
+        let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await;
+        (nodes.record_at(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).await.unwrap(), journal.facts().await.unwrap())
     });
     let row = row.expect("the live fabric-primary's row");
     assert!(row.node_id.to_string() == live_id && row.status != rdm_admin::model::NodeStatus::Deleted && row.newest_birth().is_some_and(|b| b.is_fabric_primary.is_some()), "the live fabric-primary's row is intact: {row:?}");
-    assert!(in_flight.is_none(), "the adoption launch takes no in-flight row: {in_flight:?}");
     assert_eq!(facts.len(), builds_before, "the adoption launch writes nothing on the Build journal: {facts:?}");
     assert_eq!(attr_of(&check, "outcome"), "name-held", "{check}");
     // The refused adoption owes nothing: two staleness floors on, the live fabric-primary ran no recovery
-    // of its own birth and the journal holds no attempt in mesh1's lane.
+    // of its own birth and the journal holds no Build beyond the ones before the launch.
     let floor = Duration::from_millis(std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000));
     std::thread::sleep(floor * 2);
     let recoveries: Vec<serde_json::Value> = spans_of(&d.dir, live.pid).into_iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-recovery" && attr_of(s, "node_id") == live_id).collect();
     assert!(recoveries.is_empty(), "the live fabric-primary opened a recovery of its own birth: {recoveries:?}");
     let later = tokio::runtime::Runtime::new().unwrap().block_on(async {
-        use rdm_admin::build_state::BuildStateAdapter as _;
+        use rdm_admin::build_state::LocalBuildLog as _;
         let fid = rdm_admin::model::FabricId::parse(&fabric_id).unwrap();
         let root = rdm_admin::store_root::StoreRoot::open(&d.store, &fid).unwrap();
         let reader = rdm_admin::model::IncarnationId::mint();
-        rdm_admin::build_state::FileJournal::open_on_root(&root, &d.dir.join("reader-after"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.unwrap().facts().await.unwrap()
+        journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &reader)).await.facts().await.unwrap()
     });
-    let opened_after: Vec<&rdm_admin::build_state::BuildFact> = later.iter().filter(|f| matches!(f, rdm_admin::build_state::BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh1"))).collect();
-    assert!(opened_after.is_empty(), "an attempt in mesh1's lane was opened: {opened_after:?}");
+    assert_eq!(later.len(), builds_before, "a Build was written after the refused launch: {later:?}");
     assert!(live.child.try_wait().unwrap().is_none(), "the live admin is still running");
     d.stop(live);
     println!("trace_id={}", check["trace_id"].as_str().unwrap_or(""));
@@ -1054,7 +1056,7 @@ impl Prepared {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let root = rdm_admin::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
             let writer = rdm_admin::model::IncarnationId::mint();
-            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &self.dir.join("fixture"), &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await.unwrap();
+            let journal = journal_on(&root, &rdm_admin::store_log::LogWriter::new(&rdm_admin::model::NodeId::mint(), &writer)).await;
             let delete = rdm_admin::build_state::BuildAccepted {
                 build_id: rdm_admin::build::BuildId::mint(),
                 topology: rdm_admin::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() },

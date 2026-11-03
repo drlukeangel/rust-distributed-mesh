@@ -56,9 +56,9 @@ impl Capture {
     }
 }
 
-/// CONTRACT: docs/architecture/lifecycles/states.md:52 "When every mesh the accepted Build names is ready and the Build's attempt is claimed, the fabric-primary sets the fabric ready, publishes FabricStatus ready under the frame catalog, and the application receives one `on_fabric_ready` notice"
-/// docs/architecture/lifecycles/states.md:56 "The fabric-primary's change span (`rdm.node_admin.fabric.update.via-change`) holds, in order, `rdm.node_admin.fabric.update.via-every-mesh-ready`, `rdm.node_admin.fabric.update.via-state-entered` (to ready) and `rdm.node_admin.fabric.update.via-on-fabric-ready`."
-/// docs/architecture/lifecycles/states.md:169 "A resize, a Create or a Delete, puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete."
+/// CONTRACT: docs/architecture/lifecycles/states.md, the fabric's ready "When every mesh the accepted Build names is ready, the fabric-primary sets the fabric ready, publishes FabricStatus ready under the frame catalog, and the application receives one `on_fabric_ready` notice"
+/// docs/architecture/lifecycles/states.md, the fabric's ready "The fabric-primary's change span (`rdm.node_admin.fabric.update.via-change`) holds, in order, `rdm.node_admin.fabric.update.via-every-mesh-ready`, `rdm.node_admin.fabric.update.via-state-entered` (to ready) and `rdm.node_admin.fabric.update.via-on-fabric-ready`."
+/// docs/architecture/lifecycles/states.md "A resize, a Create or a Delete, puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete."
 #[test]
 fn fabric_ready_trace_resets_to_pending_on_a_create() {
     let capture = Capture::new(
@@ -367,16 +367,16 @@ fn mesh_primary_fires_on_mesh_ready_once_after_mesh_record_commits_ready_and_wit
 }
 
 // @feature: on-fabric-ready
-/// CONTRACT: docs/architecture/fabric-node-hooks.md:131
+/// CONTRACT: docs/architecture/fabric-node-hooks.md, on_fabric_ready
 /// "After the ready state is set, the fabric-primary sends the application one `on_fabric_ready`
 /// notice (lifecycles/states.md#the-fabrics-ready), with
-/// `FabricReadyCtx { fabric_id, build_id, attempt, context }`: the accepted Build and attempt
-/// whose change made the fabric ready and that attempt's observability context. Rafka opens client
-/// traffic on that notice. The notice gates nothing in RDM."
+/// `FabricReadyCtx { fabric_id, build_id, context }`: the accepted Build whose change made the fabric
+/// ready and its observability context. Rafka opens client traffic on that notice. The notice gates
+/// nothing in RDM."
 #[test]
-fn on_fabric_ready_delivers_accepted_build_and_attempt_context_without_gating_build_completion() {
+fn on_fabric_ready_delivers_the_accepted_build_and_its_context_without_gating_build_completion() {
     let capture = Capture::new(
-        "on_fabric_ready_delivers_accepted_build_and_attempt_context_without_gating_build_completion",
+        "on_fabric_ready_delivers_the_accepted_build_and_its_context_without_gating_build_completion",
     );
     let dispatch = capture.dispatch.clone();
     let d = dispatch.clone();
@@ -471,11 +471,10 @@ fn on_fabric_ready_delivers_accepted_build_and_attempt_context_without_gating_bu
 
     assert_eq!(ready_ctx.fabric_id, expected_fabric_id);
     assert_eq!(ready_ctx.build_id, root_build_id);
-    assert_eq!(ready_ctx.attempt, 1);
     assert_eq!(
         ready_ctx.context.caller_system.as_deref(),
-        Some(rdm_admin::build_claim::CALLER_SYSTEM),
-        "FabricReadyCtx carries the attempt's observability context from AttemptContexts: {:?}",
+        Some(rdm_admin::build::CALLER_SYSTEM),
+        "FabricReadyCtx carries the Build's observability context: {:?}",
         ready_ctx.context
     );
 
@@ -490,13 +489,6 @@ fn on_fabric_ready_delivers_accepted_build_and_attempt_context_without_gating_bu
             .get("build_id")
             .map(String::as_str),
         Some(root_build_log.as_str())
-    );
-    assert_eq!(
-        on_ready_spans[0]
-            .attributes
-            .get("attempt")
-            .map(String::as_str),
-        Some("1")
     );
     assert_eq!(
         on_ready_spans[0]

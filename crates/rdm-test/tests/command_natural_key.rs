@@ -169,15 +169,15 @@ impl Birth {
     }
 
     fn command_key(&self, attempt: u32, operation: rdm_core::OperationId) -> CommandKey {
-        CommandKey { build_id: BUILD.into(), attempt, operation, node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone() }
+        CommandKey { operation, node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone() }
     }
 
     fn stop(&self, attempt: u32) -> StatusRequest {
-        StatusRequest::StopNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: rdm_core::OperationId::node("node.stop", &self.launch.node_id) }
+        StatusRequest::StopNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), operation: rdm_core::OperationId::node("node.stop", &self.launch.node_id) }
     }
 
     fn start(&self, attempt: u32) -> StatusRequest {
-        StatusRequest::StartNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: rdm_core::OperationId::node("node.start", &self.launch.node_id) }
+        StatusRequest::StartNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), operation: rdm_core::OperationId::node("node.start", &self.launch.node_id) }
     }
 }
 

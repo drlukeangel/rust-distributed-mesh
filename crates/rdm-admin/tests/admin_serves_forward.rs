@@ -85,7 +85,7 @@ async fn rig() -> Rig {
     ));
     connections.held().lock().unwrap().set_topology_view(live.clone());
     let node_rpc = rdm_admin::node_rpc::ProcessNodeRpc::new(live.clone(), admin_ep.clone());
-    let admin_server = rdm_admin::admin::rpc_server(connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
+    let admin_server = rdm_admin::admin::rpc_server(connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
         .build(served(&admin_birth))
         .unwrap();
     let admin_router = Router::builder(admin_ep).accept(rdm_transport::ALPN, admin_server.clone()).spawn();

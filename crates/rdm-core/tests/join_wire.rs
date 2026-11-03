@@ -65,7 +65,7 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
         (ConnectionsDeleting { reason: "d".into() }, "060164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0702"),
         (Unauthorized { reason: "u".into() }, "080175"),
-        (DeploymentAbandoned { build_id: "b".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }, "09016202 0c 303132333435363738396162 0c79727a34396a333033796834"),
+        (DeploymentAbandoned { build_id: "b".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }, "090162 0c 303132333435363738396162 0c79727a34396a333033796834"),
         (CertRefused { name: "n".into(), detail: "d".into() }, "0a016e0164"),
     ];
     for (reply, hex) in fixtures {

@@ -2,9 +2,7 @@
 
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{
     CommandAdmission, CommandContext, Completion, CreateRequest, CreateStep, DeploymentPipeline,
@@ -314,7 +312,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             pending_report: Mutex::new(None),
             spawn_calls: Mutex::new(0),
         };
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::stepping(&rdm_core::NodeId::mint(), "mesh1");
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted {
@@ -326,16 +324,6 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
                 ),
                 change: None,
                 source: None, time: 0,
-            })
-            .await
-            .unwrap();
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 1,
-                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -403,7 +391,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
                 spec_by_path: [(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), rdm_core::meta::NodeSpec::default_for(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin"))].into(),
             },
         );
-        let planned_ops = rdm_admin::accepted::plan(&accepted_top, &*view.read().await, None).operations;
+        let planned_ops = rdm_admin::accepted::plan(&accepted_top, &*view.read().await).operations;
         assert!(
             planned_ops.contains(&rdm_admin::build::BuildOperation::CreateMesh {
                 mesh: "mesh2".into(),
@@ -419,7 +407,6 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         // 1. A held name at `mesh1.node.1` is refused at PrepareStorage before DeployRuntime is called.
         let held_req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(held_path))), node_id: (rdm_core::fixture_node_id(&(held_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id.clone()),
-            attempt: 1,
             path: held_path.path.clone(), name: held_path.name.clone(),
             spec: &NODE_SPEC,
             data_dir: None,
@@ -468,7 +455,6 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         };
         let create_req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(new_path))), node_id: (rdm_core::fixture_node_id(&(new_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id.clone()),
-            attempt: 1,
             path: new_path.path.clone(), name: new_path.name.clone(),
             spec: &NODE_SPEC,
             data_dir: None,
@@ -565,7 +551,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
             "mismatched join report installs nothing and releases no wait"
         );
         { let at = exp_path; wrong_name_digest.node.path = at.path; wrong_name_digest.node.name = at.name; }
-        joins.end(&exp_id, &build_id.to_string(), 1);
+        joins.end(&exp_id, &build_id.to_string());
         assert!(
             matches!(
                 joins.standing(&wrong_name_digest, &[]),
@@ -578,7 +564,7 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
         let rpc2_steps: Vec<(&str, StepOutcome)> = proj
             .steps
             .iter()
-            .filter(|r| r.operation == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())))
+            .filter(|r| r.operation == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "2").unwrap())).to_string())
             .map(|r| (r.step.as_str(), r.outcome.clone()))
             .collect();
         let expected: Vec<(&str, StepOutcome)> = CreateStep::ORDER
@@ -820,7 +806,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             published: Mutex::new(Vec::new()),
         };
 
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::stepping(&rdm_core::NodeId::mint(), "mesh1");
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted {
@@ -832,16 +818,6 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
                 ),
                 change: None,
                 source: None, time: 0,
-            })
-            .await
-            .unwrap();
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 1,
-                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -923,7 +899,6 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         let created_cut = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(cut_path))), node_id: (rdm_core::fixture_node_id(&(cut_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
-                attempt: 1,
                 path: cut_path.path.clone(), name: cut_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -946,7 +921,6 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         let lost_reply_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
-                attempt: 1,
                 path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -961,21 +935,10 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
 
         // 2b. Kill at WaitForBind: runtime exits before reporting where it bound -> Unavailable,
         //     and the name claim is withdrawn.
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 2,
-                executor: executor_birth.clone(),
-            })
-            .await
-            .unwrap();
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Exited { code: Some(137) };
         let kill_bind_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
-                attempt: 2,
                 path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -990,23 +953,12 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         assert!(kill_bind_err.reason.contains("runtime exited"));
 
         // 2c. Kill at WaitForNodeReady: join report arrives, then runtime exits while waiting for Ready.
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 3,
-                executor: executor_birth.clone(),
-            })
-            .await
-            .unwrap();
         *provider.deliver_join_on_inspect.lock().unwrap() = true;
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Running;
         *observer.kill_on_first_ready_check.lock().unwrap() = Some(provider.clone());
         let kill_ready_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
-                attempt: 3,
                 path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -1025,22 +977,11 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         //     during WaitForNodeReady while the runtime is held OsStopped; attempt 5 inspects the
         //     handle as OsStopped (alive), keeps the exact same birth without spawning a second runtime,
         //     and completes once resumed and ready.
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 4,
-                executor: executor_birth.clone(),
-            })
-            .await
-            .unwrap();
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Running;
         *observer.ready_ok.lock().unwrap() = false;
         let entered = observer.ready_entered.notified();
         let req4 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id.clone()),
-            attempt: 4,
             path: fault_path.path.clone(), name: fault_path.name.clone(),
             spec: &NODE_SPEC,
             data_dir: None,
@@ -1055,8 +996,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         let proj4 = builds.read_build(&build_id).await.unwrap();
         assert!(
             proj4.steps.iter().any(|r| {
-                r.attempt == 4
-                    && r.operation == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&fault_path))
+                r.operation == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&fault_path)).to_string()
                     && r.step == CreateStep::WaitForMeshJoin.name()
                     && r.outcome == StepOutcome::Complete
             }),
@@ -1064,22 +1004,11 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         );
 
         // Now the OS holds the runtime OsStopped at attempt 5's start, then resumes it so Ready succeeds.
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 5,
-                executor: executor_birth.clone(),
-            })
-            .await
-            .unwrap();
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::OsStopped;
         *observer.ready_ok.lock().unwrap() = true;
         let resumed_created = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(build_id.clone()),
-                attempt: 5,
                 path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,

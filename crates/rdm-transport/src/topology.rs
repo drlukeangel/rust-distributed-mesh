@@ -1603,7 +1603,7 @@ impl Channel {
                                         let receipt = match f.data() {
                                             Frame::NodeDeleting { op, topology_version, .. } | Frame::NodeStopped { op, topology_version, .. } => Some(tracing::info_span!(
                                                 "rdm.mesh.topology.update.via-lifecycle-receipt",
-                                                node = %node, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject,
+                                                node = %node, build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject,
                                                 node_id = %op.node_id, incarnation_id = %op.incarnation, "type" = %op.r#type, topology_version,
                                             )),
                                             _ => None,
@@ -2180,7 +2180,6 @@ impl View {
                     subject_id = %op.node_id,
                     incarnation_id = %op.incarnation,
                     build_id = %op.build_id,
-                    attempt = op.attempt,
                     operation = %op.operation.action, operation_subject = ?op.operation.subject,
                     forwarded_by = forwarded_by.as_deref().unwrap_or(""),
                     via,
@@ -2232,7 +2231,6 @@ impl View {
                 subject_id = %op.node_id,
                 incarnation_id = %op.incarnation.as_str(),
                 build_id = %op.build_id,
-                attempt = op.attempt,
                 operation = %op.operation.action, operation_subject = ?op.operation.subject,
                 publisher = %publisher,
                 topology_version,
@@ -2606,9 +2604,9 @@ impl View {
             }
         }
         if let Some(op) = final_delete {
-            let (mesh, build_id, attempt, at_rafka_ms) = (op.mesh.clone(), op.build_id.clone(), op.attempt, op.event_at_rafka_ms);
+            let (mesh, build_id, at_rafka_ms) = (op.mesh.clone(), op.build_id.clone(), op.event_at_rafka_ms);
             self.digest_view.depart(op);
-            self.digest_view.depart_mesh_births(&mesh, &build_id, attempt, at_rafka_ms);
+            self.digest_view.depart_mesh_births(&mesh, &build_id, at_rafka_ms);
         }
         carried
     }
@@ -4136,7 +4134,6 @@ impl Backbone {
             subject_id = %op.node_id,
             incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
-            attempt = op.attempt,
             operation = %op.operation.action, operation_subject = ?op.operation.subject,
             publisher = %publisher,
             topology_version = version,
@@ -4380,9 +4377,9 @@ pub struct DigestView {
     /// The departures the deleted target refused, by the NodeId of the departure held: each operation
     /// key refused by name once. Its publisher carries it in every mesh topology for the retention, and a
     /// later copy is a copy of a refusal already made. Forgotten with the departure it was refused by.
-    refused_departures: Arc<Mutex<HashMap<String, BTreeSet<(String, u32, rdm_core::OperationId)>>>>,
+    refused_departures: Arc<Mutex<HashMap<String, BTreeSet<(String, rdm_core::OperationId)>>>>,
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
-    in_flight: Arc<Mutex<HashMap<(String, u32, rdm_core::OperationId), LifecycleOp>>>,
+    in_flight: Arc<Mutex<HashMap<(String, rdm_core::OperationId), LifecycleOp>>>,
     /// The deleted births heard again on this node's mesh channel by their own digest, by (NodeId,
     /// incarnation): each refused, each owed a report to the fabric-primary (Q128).
     returned: Arc<Mutex<BTreeMap<(String, String), MeshDigest>>>,
@@ -4517,7 +4514,6 @@ fn reject_deleted_overlay(observer: &str, op: &LifecycleOp, frame: &'static str)
         incarnation_id = %op.incarnation.as_str(),
         frame,
         build_id = %op.build_id,
-        attempt = op.attempt,
         operation = %op.operation.action, operation_subject = ?op.operation.subject,
     )
     .in_scope(|| tracing::info!("a lifecycle overlay of a deleted birth: refused, the departure stands"));
@@ -4729,7 +4725,6 @@ impl DigestView {
             node_id = %op.node_id,
             incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
-            attempt = op.attempt,
             operation = %op.operation.action, operation_subject = ?op.operation.subject,
             was_held = removed,
         )
@@ -4746,7 +4741,7 @@ impl DigestView {
     /// `attempt-converged`: the Build facts know which lane a removal's attempt is numbered in, and
     /// one attempt number names one attempt per lane. A copy of a closed overlay opens nothing again.
     /// Stops are not removals: their own facts end them.
-    pub fn deletions_from_facts(&self, by_verdict: &std::collections::BTreeMap<(String, u32, rdm_core::OperationId), &'static str>, forgotten: &BTreeSet<String>) {
+    pub fn deletions_from_facts(&self, by_verdict: &std::collections::BTreeMap<(String, rdm_core::OperationId), &'static str>, forgotten: &BTreeSet<String>) {
         let mut cleared = Vec::new();
         {
             let mut in_flight = self.in_flight.lock().unwrap();
@@ -4778,11 +4773,10 @@ impl DigestView {
                 node_id = %op.node_id,
                 incarnation_id = %op.incarnation.as_str(),
                 build_id = %op.build_id,
-                attempt = op.attempt,
                 operation = %op.operation.action, operation_subject = ?op.operation.subject,
                 by,
             )
-            .in_scope(|| tracing::info!("the Build facts end the removal's attempt: its overlay closes and the node is held as its digests say"));
+            .in_scope(|| tracing::info!("the Build facts end the removal: its overlay closes and the node is held as its digests say"));
         }
     }
 
@@ -4881,7 +4875,6 @@ impl DigestView {
             node_id = %op.node_id,
             incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
-            attempt = op.attempt,
             operation = %op.operation.action, operation_subject = ?op.operation.subject,
             was_held = removed,
             held_status = held.as_ref().map(|(_, _, st)| format!("{st:?}")).unwrap_or_default(),
@@ -5004,7 +4997,6 @@ impl DigestView {
             node_id = %op.node_id,
             incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
-            attempt = op.attempt,
             operation = %op.operation.action, operation_subject = ?op.operation.subject,
             stops_cleared = ?cleared,
             status = ?status,
@@ -5061,7 +5053,6 @@ impl DigestView {
             node_id = %op.node_id,
             incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
-            attempt = op.attempt,
             operation = %op.operation.action, operation_subject = ?op.operation.subject,
             status = ?status,
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
@@ -5459,7 +5450,6 @@ impl DigestView {
                 node_path = %op.path, node_name = %op.name,
                 node_id = %op.node_id,
                 build_id = %op.build_id,
-                attempt = op.attempt,
                 operation = %op.operation.action, operation_subject = ?op.operation.subject,
                 held = held_status.is_some(),
                 held_status = held_status.as_deref().unwrap_or("not held"),
@@ -6061,7 +6051,7 @@ impl DigestView {
     /// Depart every remaining birth of `mesh` this digest view still holds (in the view, projected or
     /// stopped by its stop), so a deleted mesh's final mesh topology or `MeshLeft` leaves no crashed
     /// predecessor birth of the mesh in the active topology and holds it deleted for the retention.
-    pub fn depart_mesh_births(&self, mesh: &str, build_id: &str, attempt: u32, at_rafka_ms: u64) {
+    pub fn depart_mesh_births(&self, mesh: &str, build_id: &str, at_rafka_ms: u64) {
         let mut roster: BTreeMap<String, (IncarnationId, rdm_core::PathName, String)> = BTreeMap::new();
         for d in self.all().into_iter().filter(|d| d.node.mesh == mesh) {
             roster.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.location(), d.node.r#type));
@@ -6082,7 +6072,7 @@ impl DigestView {
                 continue;
             }
             let Ok(node_id) = NodeId::parse(&id) else { continue };
-            let op = LifecycleOp { r#type, mesh: mesh.to_string(), build_id: build_id.to_string(), attempt, operation: rdm_core::OperationId::node("node.delete", &node_id), node_id, incarnation, path: path.path.clone(), name: path.name.clone(), event_at_rafka_ms: at_rafka_ms, traceparent: None, tracestate: None };
+            let op = LifecycleOp { r#type, mesh: mesh.to_string(), build_id: build_id.to_string(), operation: rdm_core::OperationId::node("node.delete", &node_id), node_id, incarnation, path: path.path.clone(), name: path.name.clone(), event_at_rafka_ms: at_rafka_ms, traceparent: None, tracestate: None };
             if self.depart_quiet(op) {
                 changed = true;
             }
@@ -6460,7 +6450,6 @@ mod tests {
     fn op(id: &NodeId, inc: &IncarnationId, action: &str) -> LifecycleOp {
         LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
             build_id: "b1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::new(action, rdm_core::OperationSubject::Birth { node_id: id.clone(), incarnation: inc.clone() }),
             node_id: id.clone(),
             incarnation: inc.clone(),
@@ -6668,7 +6657,7 @@ mod tests {
         assert!(digest_view.routable(id.as_str()), "its ready restores selection");
         // A departure ends a stop for good.
         let o2 = op(&id, &inc, "node.stop");
-        assert!(digest_view.stopped(LifecycleOp { attempt: 2, ..o2 }));
+        assert!(digest_view.stopped(o2));
         assert!(digest_view.depart(op(&id, &inc, "node.delete")));
         assert!(digest_view.in_flight().is_empty(), "the departure cleared the stop overlay");
         assert!(!digest_view.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a deleted node never returns");
@@ -7990,7 +7979,7 @@ mod tests {
         d.node.mesh = "mesh1".into();
         d.mesh_id = Some(mesh_id.clone());
         assert!(digest_view.record(d));
-        assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), attempt: 1, ..op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, "node.delete") }));
+        assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), ..op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, "node.delete") }));
         let late_stop = op_at(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", &id, &inc, "node.stop");
         let late_stop = LifecycleOp { build_id: "b0".into(), ..late_stop };
         assert!(!digest_view.stopped(late_stop.clone()), "a late NodeStopped opens nothing");
@@ -8023,8 +8012,8 @@ mod tests {
         d.node.mesh = "mesh2".into();
         d.mesh_id = Some(mesh_id.clone());
         assert!(digest_view.record(d));
-        assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), attempt: 1, ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") }));
-        let replaced = LifecycleOp { build_id: "b2".into(), attempt: 2, ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") };
+        assert!(digest_view.depart(LifecycleOp { build_id: "b1".into(), ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") }));
+        let replaced = LifecycleOp { build_id: "b2".into(), ..op_at(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", &id, &inc, "node.delete") };
         for copy in 0..3 {
             assert!(!digest_view.depart(replaced.clone()), "copy {copy} of the refused departure departs nothing again");
         }
@@ -8448,7 +8437,7 @@ mod tests {
         assert!(!hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop", &primary, 5), &fabric, Side::MeshChannel), "the version-refused identity is already seen, whoever carries its repeat");
         // A new operation tests the publisher's projection independently of that repeated fact.
         let mut fresh = event(StatusEvent::Stopped, &s4, "node.stop", &primary, 5);
-        if let Frame::NodeStopped { op, .. } = &mut fresh { op.attempt += 1; }
+        if let Frame::NodeStopped { op, .. } = &mut fresh { op.operation = op.operation.clone().in_occurrence(rdm_core::OperationOccurrenceId::mint()); }
         assert!(hear(&mut channel, &member, &fresh, &fabric, Side::MeshChannel), "a new fact at mesh1.node-admin.1's v5 is never ordered against mesh1.node-admin.2's v7");
         assert!(member.digest_view.in_flight().iter().any(|op| op.node_id == s4.node.node_id));
 
@@ -8827,7 +8816,7 @@ mod tests {
         assert_lookups_agree(&view, &gone);
 
         // The mesh's deletion departs every birth left.
-        view.depart_mesh_births("mesh1", "b9", 1, 9);
+        view.depart_mesh_births("mesh1", "b9", 9);
         assert!(view.all().is_empty());
         for (name, key) in &gone {
             assert!(view.get_by_endpoint(key).is_none() && view.get_by_path_name(name).is_none(), "nothing is found once the mesh is deleted");

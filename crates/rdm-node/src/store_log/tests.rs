@@ -667,35 +667,6 @@ async fn capture_spans<F: std::future::Future<Output = T>, T>(f: impl FnOnce() -
     Captured { spans, offered, max_level }
 }
 
-// ---------------------------------------------------------------- the locks (R-SR5)
-
-fn locks(tag: &str) -> StoreLocks {
-    StoreLocks::at(&crate::record_store::tempdir(tag), &LogWriter::mint())
-}
-
-fn names(claimant: &'static str) -> impl Fn(&[u8]) -> bool + Send + 'static {
-    move |b: &[u8]| b == claimant.as_bytes()
-}
-
-/// CONTRACT (R-SR5: "one winner stays one winner"; the in-flight lock "taken and released as
-/// mesh_claims.rs does today"): a lock is taken once across two claimants, the second answered the
-/// standing lock's content; a release by an attempt that does not hold it removes nothing, and the
-/// holder's release frees it for the next take. Must NOT happen: two claimants both holding one lock,
-/// or a release removing another claimant's lock.
-#[tokio::test]
-async fn a_lock_is_taken_once_and_released_only_by_its_claimant() {
-    let l = locks("store-locks-once");
-    for kind in [LockKind::InFlight] {
-        assert_eq!(l.take(kind, "mesh2", b"a").await.unwrap(), LockTaken::Won, "{kind:?}: the first claimant takes it");
-        assert_eq!(l.take(kind, "mesh2", b"b").await.unwrap(), LockTaken::Held(b"a".to_vec()), "{kind:?}: the second is answered the claimant holding it");
-        assert!(!l.release(kind, "mesh2", names("b")).await.unwrap(), "{kind:?}: a release naming another claimant removes nothing");
-        assert_eq!(l.read(kind, "mesh2").await.unwrap(), Some(b"a".to_vec()));
-        assert!(l.release(kind, "mesh2", names("a")).await.unwrap(), "{kind:?}: the claimant's release removes it");
-        assert_eq!(l.take(kind, "mesh2", b"b").await.unwrap(), LockTaken::Won, "{kind:?}: the next take decides on the free lock");
-    }
-    assert!(l.take(LockKind::InFlight, "../x", b"a").await.is_err(), "a name that is not one path segment names no lock");
-}
-
 /// CONTRACT (i150 R6): cancelling a caller must not release the disk job's ordering lock.
 /// A takeover append through the same store follows the unresolved append, and reopening the
 /// retained file returns the takeover value rather than the predecessor's late value.

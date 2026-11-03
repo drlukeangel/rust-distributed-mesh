@@ -71,8 +71,8 @@ where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, S
                     },
                     JoinReply::JoinMismatch { field, deployed, reported } => ("refused", Err(JoinFailure::Refused(format!("{field}: deployed {deployed}, reported {reported}")))),
                     JoinReply::NotPrimary { primary } => ("refused", Err(JoinFailure::Refused(format!("the admin deployed no such birth (it sees mesh primary {primary:?})")))),
-                    JoinReply::DeploymentAbandoned { build_id, attempt, node_id, incarnation } => {
-                        ("refused", Err(JoinFailure::Refused(format!("the admin ended the deployment of this birth before it reported (build {build_id}, attempt {attempt}, node {node_id}, incarnation {incarnation})"))))
+                    JoinReply::DeploymentAbandoned { build_id, node_id, incarnation } => {
+                        ("refused", Err(JoinFailure::Refused(format!("the admin ended the deployment of this birth before it reported (build {build_id}, node {node_id}, incarnation {incarnation})"))))
                     }
                     JoinReply::CertRefused { name, detail } => ("refused", Err(JoinFailure::Refused(format!("the admin's cert signer refused the birth's member cert ({name}): {detail}")))),
                     JoinReply::Unauthorized { reason } => ("refused", Err(JoinFailure::Refused(reason))),

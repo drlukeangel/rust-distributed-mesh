@@ -12,13 +12,11 @@
 //!   connections.jsonl                 every connection fact of every source
 //!   builds.jsonl                      every Build fact
 //!   events.jsonl                      every event of a Build, and each node's investigations
-//!   locks/in-flight/<mesh name>       the one attempt in flight on that mesh name, create-exclusive
 //! ```
 //!
 //! One append-only JSONL file per storage boundary ([`crate::store_log`]): every write is one line
 //! carrying the whole record, the latest complete line for a key is the current state, nothing is
-//! ever removed, and the indexes are the fold. The conditional operations keep their guarantees in the
-//! locks, because an append cannot refuse. The writers are exactly the writer ladder
+//! ever removed, and the indexes are the fold. The writers are exactly the writer ladder
 //! (node-identity-and-state.md §4.3), one writer per key. A node's data dir keeps only its own runtime
 //! material. A `store_dir` that is missing or unreadable fails the boot by name; nothing falls back to
 //! the data dir and nothing creates the `store_dir` (the provider supplies it).
@@ -52,9 +50,6 @@ pub const CONNECTIONS_FILE: &str = "connections.jsonl";
 pub const BUILDS_FILE: &str = "builds.jsonl";
 /// The events' store file: every event (build.md §5).
 pub const EVENTS_FILE: &str = "events.jsonl";
-/// The locks' directory: the attempt in flight on each mesh name.
-pub const LOCKS_DIR: &str = "locks";
-
 /// The kind of the Fabric record's lines.
 pub const FABRIC_RECORD_KIND: &str = "fabric-record";
 
@@ -205,8 +200,7 @@ fn mark(dir: &Path) {
 /// Providers qualified for the shared store namespace (R14 item 6): the process provider
 /// supplies a host directory; the container provider bind-mounts that directory at the same
 /// absolute path in every runtime. `container_proof` proves item 5's guarantees across two
-/// containers: serialized `O_APPEND` lines with checked writes and file fsync, create-exclusive
-/// insertion under `locks/` with its directory fsync, and coherent reads and `locks/` listings.
+/// containers: serialized `O_APPEND` lines with checked writes and file fsync, and coherent reads.
 pub fn qualify(provider: crate::model::ProviderKind) -> Result<(), String> {
     match provider {
         crate::model::ProviderKind::Process | crate::model::ProviderKind::Container => Ok(()),

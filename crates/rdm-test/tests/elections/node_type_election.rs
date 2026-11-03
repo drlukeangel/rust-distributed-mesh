@@ -87,6 +87,12 @@ async fn build(estate: &Estate, meshes: &[(&str, u32, u32)]) {
 }
 
 /// The workflow `call` was accepted by the fabric-primary: await its reply stream to `Complete`.
+/// A node command (a stop, a start) awaited to its `Complete`: never a Build (Q342).
+async fn command(what: &str, call: Result<WorkflowStream, CallEnd>) {
+    let opened = Estate::workflow(what, call).await;
+    assert!(opened.is_none(), "{what} is a node command and opens no Build (Q342): {opened:?}");
+}
+
 async fn complete(what: &str, call: Result<WorkflowStream, CallEnd>) -> rdm_core::BuildId {
     let mut stream = call.unwrap_or_else(|end| panic!("the fabric-primary refused {what}: {end}"));
     Estate::complete(&mut stream).await.expect("the call opened a Build").build_id
@@ -155,13 +161,16 @@ fn next_lowest(nodes: &[Value], c: &NodeType, primary: &str) -> (PathName, Strin
 /// `operation` (a Build operation with a separate action and subject) and answered
 /// node.primary.updated (lifecycles/node-primary-update.md step 4: its `via-primary-updated` span's
 /// start), if it did.
-fn primary_updated(spans: &[Value], c: &NodeType, operation: &rdm_core::OperationId, successor: &str) -> Option<u64> {
+/// When `successor` first installed itself as `c`'s primary by the node.primary.update that precedes
+/// `preceding` (a node command's operation, e.g. `node.stop`) of `node_id`: the command is a node
+/// command, never a Build (Q342), so it is matched by its action and subject, whatever its occurrence.
+fn primary_updated(spans: &[Value], c: &NodeType, preceding: &str, node_id: &str, successor: &str) -> Option<u64> {
     let entry = format!("{} ", c.1.replace('_', "-"));
     named(spans, "rdm.node_admin.primary.update.via-primary-updated")
         .iter()
         .filter(|sp| {
             let a = &sp["attributes"];
-            a["operation"] == operation.action && a["operation_subject"] == format!("{:?}", operation.subject) && a["primaries"].as_str().is_some_and(|v| v.starts_with(&entry) && v.contains(&format!("-> {successor}/")))
+            a["operation"] == "node.primary.update" && a["operation_subject"].as_str().is_some_and(|v| v.contains(&format!("\"{preceding}\"")) && v.contains(node_id)) && a["primaries"].as_str().is_some_and(|v| v.starts_with(&entry) && v.contains(&format!("-> {successor}/")))
         })
         .filter_map(|sp| sp["start_unix_nano"].as_u64())
         .min()
@@ -236,9 +245,9 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     let other_rpc: Vec<String> = nodes.iter().filter(|n| n["type"] == "node" && n["is_primary"] == false).map(|n| s(&n["node_id"])).collect();
     let before = other_rpc[1].clone();
     let other_location = location_of(&nodes, &before);
-    complete(&format!("node.stop of {}", other_rpc[1]), estate.nodes_obj().await.stop(&location_of(&nodes, &other_rpc[1])).await).await;
+    command(&format!("node.stop of {}", other_rpc[1]), estate.nodes_obj().await.stop(&location_of(&nodes, &other_rpc[1])).await).await;
     estate.until_stopped_at_the_fabric_primary(&location_of(&nodes, &other_rpc[1])).await;
-    complete(&format!("node.start of {}", other_rpc[1]), estate.nodes_obj().await.start(&location_of(&nodes, &other_rpc[1])).await).await;
+    command(&format!("node.start of {}", other_rpc[1]), estate.nodes_obj().await.start(&location_of(&nodes, &other_rpc[1])).await).await;
     // The Build completed on the executor; the asked admin's view holds the re-born node once its
     // Ready has reached it (one gossip interval): wait for the shape, as after the Build above.
     estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
@@ -251,18 +260,9 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     // started node keeps its NodeId and never takes the role back (elections §5)
     let rpc_p_id = rpc_p.clone();
     let (succ_r, succ_r_id) = next_lowest(&nodes, &rpc, &rpc_p_id);
-    let stopped_build = complete(&format!("node.stop of {rpc_p}"), estate.nodes_obj().await.stop(&location_of(&nodes, &rpc_p)).await).await;
-    let facts = crate::build_log::log_read(&estate, stopped_build.as_str()).await.expect("completed stop receipts");
-    let stop_operations: Vec<_> = facts.iter().filter_map(|fact| match fact {
-        // The primary's own stop: a standalone stop is an attempt of the accepted Build, whose log also
-        // holds the earlier stop of the non-primary above.
-        rdm_admin::build_state::BuildFact::Step(receipt) if receipt.operation.action == "node.stop" && receipt.operation.subject == Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse(&rpc_p).expect("the primary's node id"))) => Some(receipt.operation.clone()),
-        _ => None,
-    }).collect();
-    let stop_operation = stop_operations.first().expect("stop has a receipt").clone();
-    assert!(stop_operations.iter().all(|operation| *operation == stop_operation), "one admitted stop operation: {stop_operations:?}");
+    command(&format!("node.stop of {rpc_p}"), estate.nodes_obj().await.stop(&location_of(&nodes, &rpc_p)).await).await;
     estate.until_stopped_at_the_fabric_primary(&location_of(&nodes, &rpc_p)).await;
-    complete(&format!("node.start of {rpc_p}"), estate.nodes_obj().await.start(&location_of(&nodes, &rpc_p)).await).await;
+    command(&format!("node.start of {rpc_p}"), estate.nodes_obj().await.start(&location_of(&nodes, &rpc_p)).await).await;
     let nodes = settle(&estate, &admin1, "restart primary").await;
     assert!(nodes.iter().any(|n| n["node_id"] == rpc_p_id && n["status"] == "ready"), "restart keeps the NodeId");
     assert_eq!(primary_of(&nodes, &rpc).as_deref(), Some(succ_r_id.as_str()), "node.primary.update moved the role of {rpc_p} to {succ_r:?} before the stop, and the started node never displaces it: {nodes:#?}");
@@ -421,7 +421,7 @@ async fn every_mn_node_type_elects_the_lowest_ready_node_id_through_the_matrix()
     assert!(announced(&spans, &rpc, &succ2_id, &removed_id), "the successor to the removed primary was announced");
     // The restart's node.primary.update moved the node primary to the next-lowest ready NodeId,
     // which installed itself and answered (node-primary-update.md step 4).
-    let role_moved_at = primary_updated(&spans, &rpc, &rdm_core::OperationId::primary_update(rdm_core::PrimaryRole::NodePrimary("node".into()), &stop_operation), &succ_r_id)
+    let role_moved_at = primary_updated(&spans, &rpc, "node.stop", &rpc_p, &succ_r_id)
         .unwrap_or_else(|| panic!("{succ_r:?} ({succ_r_id}) installed itself as the node primary before the restart of {rpc_p}"));
     // The restarted node never took its role back while the primary lived: from the restart's role move
     // until the kill. Before that move the node type's first election (no primary record) names the lowest

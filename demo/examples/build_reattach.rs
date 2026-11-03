@@ -1,5 +1,5 @@
-//! Reattach to a Build after the caller lost its stream (node-rpc-envelope.md "Frames, durable receipts
-//! and reattachment"; build.md: a live run is reattached, never claimed again).
+//! Reattach to a Build after the caller lost its stream (node-rpc-envelope.md "Frames, durable events
+//! and reattachment"; build.md: a live run is reattached, never re-run).
 //!
 //! A Build call answers `Started { build_id, attempt }` and then streams its step frames to the
 //! terminal. The frames are the executor's receipts, recorded before they are sent, so a caller that

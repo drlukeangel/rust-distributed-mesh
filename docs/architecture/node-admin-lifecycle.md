@@ -53,7 +53,7 @@ in the launch contract (`rafka_mesh_entity::launch`):
 | fabric primary | `RDM_FABRIC_PRIMARY` | this node-admin starts as the fabric primary (total-loss recovery). |
 
 The fabric's store root (`RDM_STORE_DIR`) is required: every node of the fabric reaches the same
-root, laid out `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl, builds.jsonl, locks/}` (R-SR1; a birth's runtime row is a `node-runtime` line in `nodes.jsonl`),
+root, laid out `<store_dir>/<fabric_id>/{layout, fabric.jsonl, meshes.jsonl, nodes.jsonl, connections.jsonl, builds.jsonl}` (R-SR1; a birth's runtime row is a `node-runtime` line in `nodes.jsonl`),
 and a missing or unreadable root fails the boot by name; nothing falls back to the data dir.
 The node-admin's own data dir (`RDM_DATA_DIR`) holds only its runtime material (endpoint key,
 identity, runtime record) and the recovery copy (§7): its attached last-ready snapshot, a
@@ -147,7 +147,7 @@ The Pending hand-off to a mesh's first admin is a row of [States: who sets each 
 ### 6.1 A delete of a birth absent from the view
 
 A node.delete of a birth absent from the executor's view runs against its exact runtime, rebuilt
-from the Build action and the data-root runtime record. It emits
+from the birth its operation pins ([build.md §4.4](build.md#44-the-gates-before-an-operation)), the node record and the data-root runtime record. It emits
 `rdm.node_admin.node.update.via-rebuilt-birth` and refuses by name when no record names
 the birth. Completion requires the NodeDeleted receipt of that exact birth. Source:
 RDM's `rebuild_absent_birth` in `rdm-admin`.

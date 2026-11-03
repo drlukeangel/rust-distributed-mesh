@@ -10,7 +10,6 @@
 
 use crate::accepted::FabricTopology;
 use crate::admin::Records;
-use crate::build_claim::AttemptContexts;
 use crate::build_state::BuildStateAdapter;
 use crate::fabric_state::FabricState;
 use crate::model::{FabricId, IncarnationId, Node, NodeId, PathName};
@@ -57,8 +56,6 @@ pub(crate) struct StatesEnv {
     pub client: Arc<NodeRpcClient>,
     /// The Build log.
     pub builds: Arc<dyn BuildStateAdapter>,
-    /// The attempts' observability contexts.
-    pub contexts: Arc<AttemptContexts>,
     /// The records whose fabric state the projection reads.
     pub records: Arc<Records>,
     /// The application hooks.
@@ -260,7 +257,7 @@ impl FabricStates {
                 if !self.may_advance() {
                     return false;
                 }
-                tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-state-reset", node_path = %me.path, node_name = %me.name, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), attempt = build.attempt, from = self.env.records.fabric_state().as_str(), reason = "the accepted topology changed", "otel.kind" = "internal")
+                tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-state-reset", node_path = %me.path, node_name = %me.name, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), from = self.env.records.fabric_state().as_str(), reason = "the accepted topology changed", "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a Build that adds or removes a node puts the fabric back to pending"));
                 change.tracked = None;
                 change.tracked_build = None;
@@ -374,10 +371,10 @@ impl FabricStates {
             self.block(change, &[Missing { who: "build".into(), why: "no-accepted-build" }], "ready names the accepted Build", &me);
             return;
         };
-        // The change names the accepted Build's attempt: a Build whose first attempt no executor has
-        // claimed yet has none, and the change names the attempt that exists.
-        if build.attempt == 0 {
-            self.block(change, &[Missing { who: "build".into(), why: "no-attempt-claimed" }], "ready names the accepted Build's attempt", &me);
+        // The change names the accepted Build once it runs: a Build whose `rdm.build.started` is not
+        // written yet has not begun.
+        if build.state == crate::build_state::BuildState::Pending {
+            self.block(change, &[Missing { who: "build".into(), why: "build-not-started" }], "ready names the accepted Build once it runs", &me);
             return;
         }
         if !self.may_advance() {
@@ -387,7 +384,7 @@ impl FabricStates {
         change.tracked = Some(build.topology.clone());
         change.tracked_build = Some(build.build_id.clone());
         change.named = None;
-        tracing::info_span!(parent: &root, "rdm.node_admin.fabric.update.via-every-mesh-ready", node_path = %me.path, node_name = %me.name, build_id = %build.build_id.log(), attempt = build.attempt, "otel.kind" = "internal")
+        tracing::info_span!(parent: &root, "rdm.node_admin.fabric.update.via-every-mesh-ready", node_path = %me.path, node_name = %me.name, build_id = %build.build_id.log(), "otel.kind" = "internal")
             .in_scope(|| tracing::info!("every mesh is ready: the fabric is ready"));
         change.root = Some(root.clone());
         self.enter(change, FabricState::Ready, &me).await;
@@ -421,17 +418,18 @@ impl FabricStates {
     /// The one notice to the application: the fabric is ready (Q175, `on_fabric_ready`). It is
     /// fire and forget and gates nothing.
     fn notify_fabric_ready(&self, build: &crate::build_state::BuildProjection, parent: tracing::Span, me: PathName) {
-        let (hook, contexts) = (self.env.hooks.on_fabric_ready.clone(), self.env.contexts.clone());
-        let (fabric_id, build_id, attempt) = (self.env.fabric_id.clone(), build.build_id.clone(), build.attempt);
+        let hook = self.env.hooks.on_fabric_ready.clone();
+        let (fabric_id, build_id) = (self.env.fabric_id.clone(), build.build_id.clone());
         tokio::spawn(async move {
-            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-on-fabric-ready", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), attempt, bound = hook.is_some(), "otel.kind" = "internal");
+            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-on-fabric-ready", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), bound = hook.is_some(), "otel.kind" = "internal");
             async {
                 let Some(hook) = hook else {
                     tracing::info!("no on_fabric_ready hook is registered");
                     return;
                 };
-                let context = contexts.get(&build_id, attempt).await.ok().flatten().unwrap_or_default();
-                hook(FabricReadyCtx { fabric_id, build_id: build_id.to_string(), attempt, context }).await;
+                // The Build's observability context: this notice's own span, under the Build's.
+                let context = crate::build::current_context();
+                hook(FabricReadyCtx { fabric_id, build_id: build_id.to_string(), context }).await;
                 tracing::info!("the application was told the fabric is ready");
             }
             .instrument(span)
@@ -699,19 +697,16 @@ mod tests {
             topology: Arc::new(RwLock::new(view)),
             client: Arc::new(NodeRpcClient::new(ep, resolver)),
             builds,
-            contexts: Arc::new(AttemptContexts::in_memory()),
             records,
             hooks: FabricHooks::no_app_work(),
         })
     }
 
-    /// Open (after the first) and claim `attempt` of `id`.
-    async fn claim(builds: &crate::build_state::MemoryBuildStateAdapter, id: &crate::build::BuildId, attempt: u32, executor: &rdm_core::framing::Birth) {
-        use crate::build_state::{AttemptOpened, AttemptReason, BuildAttemptClaim};
-        if attempt > 1 {
-            builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
-        }
-        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: executor.clone() }).await.unwrap();
+    /// `id`'s `rdm.build.started`, written by `executor`: the Build is running.
+    async fn claim(builds: &crate::build_state::MemoryBuildStateAdapter, id: &crate::build::BuildId, executor: &rdm_core::framing::Birth) {
+        use crate::build_state::BuildStateAdapter as _;
+        let source = crate::events_storage::EventSource { fabric_id: FabricId::parse("fab000000001").unwrap(), node_id: executor.node_id.clone(), incarnation: executor.incarnation.clone() };
+        builds.events().append(&crate::events_storage::Event::build_started(&source, 1, id)).await.unwrap();
     }
 
     /// The fabric-primary `mesh1.node-admin.1` and mesh2's primary, both ready.
@@ -755,9 +750,6 @@ mod tests {
         async fn publish_accepted(&self, a: &crate::build_state::BuildAccepted) -> Result<(), crate::build_state::BuildStateError> {
             self.inner.publish_accepted(a).await
         }
-        async fn open_attempt(&self, o: &crate::build_state::AttemptOpened) -> Result<(), crate::build_state::BuildStateError> {
-            self.inner.open_attempt(o).await
-        }
         async fn read_build(&self, id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
             self.inner.read_build(id).await
         }
@@ -770,32 +762,14 @@ mod tests {
         async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
             self.inner.newest_accepted_at_ms().await
         }
-        async fn list_active(&self) -> Result<Vec<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
-            self.inner.list_active().await
-        }
-        async fn claim_attempt(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, crate::build_state::BuildStateError> {
-            self.inner.claim_attempt(c).await
-        }
-        async fn adopt_claim(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<(), crate::build_state::BuildStateError> {
-            self.inner.adopt_claim(c).await
-        }
-        async fn append_step_receipt(&self, r: &crate::build_state::BuildStepReceipt) -> Result<(), crate::build_state::BuildStateError> {
-            self.inner.append_step_receipt(r).await
-        }
-        async fn append_attempt_receipt(&self, r: &crate::build_state::BuildAttemptReceipt) -> Result<(), crate::build_state::BuildStateError> {
-            self.inner.append_attempt_receipt(r).await
-        }
-        async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
-            self.inner.facts().await
-        }
-        async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
-            self.inner.committed_facts(build).await
-        }
-        async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
-            self.inner.mesh_deleted_of(node_id, incarnation).await
-        }
         async fn forget(&self, id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
             self.inner.forget(id).await
+        }
+        async fn accepted_newest_first(&self) -> Result<Vec<crate::build::BuildId>, crate::build_state::BuildStateError> {
+            self.inner.accepted_newest_first().await
+        }
+        fn events(&self) -> std::sync::Arc<dyn crate::events_storage::EventsStorage> {
+            self.inner.events()
         }
     }
 
@@ -819,7 +793,7 @@ mod tests {
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: None, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
-        claim(&builds.inner, &id, 1, &fp.birth().unwrap()).await;
+        claim(&builds.inner, &id, &fp.birth().unwrap()).await;
         // The fabric-primary alone in its one-mesh fabric, its mesh ready; pending went out.
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
@@ -862,7 +836,7 @@ mod tests {
         let mesh1 = ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [("node-admin", 1)])));
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: [mesh1].into() }, change: None, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
-        claim(&builds, &id, 1, &fp.birth().unwrap()).await;
+        claim(&builds, &id, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
         every_mesh_ready(&records, None);
@@ -994,7 +968,7 @@ mod tests {
         let a = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
         builds.publish_accepted(&BuildAccepted { build_id: a.clone(), topology: topology(Some("aa")), change: None, source: None, time: 1_000 }).await.unwrap();
         let (fp, _) = fabric_primary_and_mesh2();
-        claim(&builds, &a, 1, &fp.birth().unwrap()).await;
+        claim(&builds, &a, &fp.birth().unwrap()).await;
         let view = projected(vec![fp.clone()]);
         let records = Arc::new(Records::default());
         let states = states_of(&fp, view, builds.clone(), records.clone(), FabricId::mint()).await;
@@ -1010,7 +984,7 @@ mod tests {
         assert_eq!(records.fabric_state(), FabricState::Ready, "the same Build read from the store root is no resize: the fabric stays ready");
         let b = crate::build::BuildId::parse("bnrrv6tggykq").unwrap();
         builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology(Some("bb")), change: None, source: None, time: 2_000 }).await.unwrap();
-        claim(&builds, &b, 1, &fp.birth().unwrap()).await;
+        claim(&builds, &b, &fp.birth().unwrap()).await;
         {
             let mut change = states.change.lock().await;
             states.step_ready(&mut change, &states.env.builds.current().await).await;
@@ -1347,12 +1321,12 @@ mod tests {
 
     // @feature: on-fabric-ready
     #[test]
-    fn notify_fabric_ready_delivers_attempt_context_once_skips_when_adopting_ready_and_fires_again_after_resize_re_enters_ready() {
+    fn notify_fabric_ready_delivers_the_build_once_skips_when_adopting_ready_and_fires_again_after_resize_re_enters_ready() {
         // docs/architecture/fabric-node-hooks.md:131 — "After the ready state is set, the
         // fabric-primary sends the application one `on_fabric_ready` notice
         // (lifecycles/states.md#the-fabrics-ready), with
-        // `FabricReadyCtx { fabric_id, build_id, attempt, context }`: the accepted Build and
-        // attempt whose change made the fabric ready and that attempt's observability context."
+        // `FabricReadyCtx { fabric_id, build_id, context }`: the accepted Build whose change made the
+        // fabric ready, and the notice's observability context."
         // docs/architecture/lifecycles/states.md:187 — "When the fabric-primary changes, the new
         // fabric-primary adopts the published fabric status; it does not reset to pending and does
         // not re-send `on_fabric_ready`."
@@ -1380,7 +1354,6 @@ mod tests {
 
         let (first_ctx, second_ctx) = rt.block_on(async move {
             let builds = Arc::new(MemoryBuildStateAdapter::new());
-            let contexts = Arc::new(AttemptContexts::in_memory());
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FabricReadyCtx>();
             let hooks = FabricHooks {
                 on_fabric_ready: Some(Arc::new(move |ctx| {
@@ -1410,8 +1383,8 @@ mod tests {
                 .await
                 .unwrap();
             let (fp, _) = fabric_primary_and_mesh2();
-            claim(&builds, &build_a, 1, &fp.birth().unwrap()).await;
-            let ctx_a = rdm_core::context::CallContext {
+            claim(&builds, &build_a, &fp.birth().unwrap()).await;
+            let _ = rdm_core::context::CallContext {
                 traceparent: Some(
                     "00-11111111111111111111111111111111-2222222222222222-01".into(),
                 ),
@@ -1419,7 +1392,6 @@ mod tests {
                 baggage: Some("build=a".into()),
                 caller_system: Some("test".into()),
             };
-            contexts.put(&build_a, 1, &ctx_a).await.unwrap();
             let view_a = projected(vec![fp.clone()]);
             let records = Arc::new(Records::default());
             every_mesh_ready(&records, None);
@@ -1440,7 +1412,6 @@ mod tests {
                     Arc::new(rdm_transport::StaticResolver::new()),
                 )),
                 builds: builds.clone(),
-                contexts: contexts.clone(),
                 records: records.clone(),
                 hooks: hooks.clone(),
             });
@@ -1484,7 +1455,6 @@ mod tests {
                     Arc::new(rdm_transport::StaticResolver::new()),
                 )),
                 builds: builds.clone(),
-                contexts: contexts.clone(),
                 records: successor_records.clone(),
                 hooks,
             });
@@ -1526,9 +1496,8 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            claim(&builds, &build_b, 1, &fp.birth().unwrap()).await;
-            claim(&builds, &build_b, 2, &fp.birth().unwrap()).await;
-            let ctx_b = rdm_core::context::CallContext {
+            claim(&builds, &build_b, &fp.birth().unwrap()).await;
+            let _ = rdm_core::context::CallContext {
                 traceparent: Some(
                     "00-33333333333333333333333333333333-4444444444444444-01".into(),
                 ),
@@ -1536,7 +1505,6 @@ mod tests {
                 baggage: Some("build=b".into()),
                 caller_system: Some("resize".into()),
             };
-            contexts.put(&build_b, 2, &ctx_b).await.unwrap();
 
             assert!(states.accepted().await, "resize puts fabric back to Pending");
             assert_eq!(records.fabric_state(), FabricState::Pending);
@@ -1568,19 +1536,11 @@ mod tests {
 
         assert_eq!(first_ctx.fabric_id, fabric_id_for_assert);
         assert_eq!(first_ctx.build_id, build_a_for_assert.to_string());
-        assert_eq!(first_ctx.attempt, 1);
-        assert_eq!(
-            first_ctx.context.baggage.as_deref(),
-            Some("build=a")
-        );
+        assert_eq!(first_ctx.context.caller_system.as_deref(), Some(crate::build::CALLER_SYSTEM), "the notice's own span's context");
 
         assert_eq!(second_ctx.fabric_id, fabric_id_for_assert);
         assert_eq!(second_ctx.build_id, build_b_for_assert.to_string());
-        assert_eq!(second_ctx.attempt, 2);
-        assert_eq!(
-            second_ctx.context.baggage.as_deref(),
-            Some("build=b")
-        );
+        assert_eq!(second_ctx.context.caller_system.as_deref(), Some(crate::build::CALLER_SYSTEM));
 
         let on_ready = capture.named("rdm.node_admin.fabric.update.via-on-fabric-ready");
         assert_eq!(
@@ -1594,19 +1554,17 @@ mod tests {
             on_ready.iter().any(|s| {
                 s.attributes.get("build_id").map(String::as_str)
                     == Some(build_a_log.as_str())
-                    && s.attributes.get("attempt").map(String::as_str) == Some("1")
                     && s.attributes.get("bound").map(String::as_str) == Some("true")
             }),
-            "expected via-on-fabric-ready for build_a attempt 1"
+            "expected via-on-fabric-ready for build_a"
         );
         assert!(
             on_ready.iter().any(|s| {
                 s.attributes.get("build_id").map(String::as_str)
                     == Some(build_b_log.as_str())
-                    && s.attributes.get("attempt").map(String::as_str) == Some("2")
                     && s.attributes.get("bound").map(String::as_str) == Some("true")
             }),
-            "expected via-on-fabric-ready for build_b attempt 2"
+            "expected via-on-fabric-ready for build_b"
         );
     }
 }

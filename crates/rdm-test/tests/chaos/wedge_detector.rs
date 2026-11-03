@@ -107,7 +107,7 @@ fn healthy(family: Family) -> Evidence {
         fabric_home: "mesh1.node-admin.1".into(),
         primary_may_move: false,
         incarnation: ["inc-a".into(), "inc-a".into(), "inc-a".into()],
-        attempts: [1, 1],
+        runs: [1, 1],
         exact_runtime_alive: true,
         replaced_during: false,
         held_past_floor: false,
@@ -174,7 +174,7 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
         }),
         ("a running silent runtime is replaced", SILENT_RUNTIME_JUDGED_DEAD, |e| e.control.as_mut().unwrap().replaced_during = true),
         ("a running silent runtime is re-born", SILENT_RUNTIME_JUDGED_DEAD, |e| e.control.as_mut().unwrap().incarnation[2] = "inc-b".into()),
-        ("a running silent runtime gets a new attempt", SILENT_RUNTIME_JUDGED_DEAD, |e| e.control.as_mut().unwrap().attempts[1] = 2),
+        ("a running silent runtime's Build is run again", SILENT_RUNTIME_JUDGED_DEAD, |e| e.control.as_mut().unwrap().runs[1] = 2),
         ("never released", NO_RELEASE, |e| e.release = None),
         ("release not acknowledged", NO_RELEASE, |e| e.release.as_mut().unwrap().acked = false),
         ("hold does not end", NO_RELEASE, |e| e.release.as_mut().unwrap().hold_ended = false),
@@ -299,6 +299,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 // ---------------------------------------------------------------------------------------------
 
 use crate::build_log;
+use rdm_admin::build::BuildId;
 use rdm_client::{BuildStream, CallEnd, MeshDesired, NodeStatus, Nodes, PathName, WorkflowStream};
 use rdm_test::typed::BuildSpec;
 use rdm_admin::build_state::BuildState;
@@ -326,54 +327,43 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-/// An operation as its receipts are keyed: its action and its admitted subject.
+/// A Build operation as its `rdm.build.step` events name it, `noun.verb:<node_id>` (build.md §5).
 #[derive(Clone, Debug)]
-struct Op {
-    action: &'static str,
-    subject: Value,
-}
+struct Op(String);
 
 impl Op {
-    /// A create, keyed by the location it creates at.
-    fn create(node: &PathName) -> Self {
-        Op { action: "node.create", subject: json!({"Location": node}) }
+    /// The create Build `build_id` makes at `node`: keyed by the node.id its record minted there (D58).
+    async fn create(estate: &Estate, build_id: &str, node: &PathName) -> Self {
+        Op(format!("node.create:{}", build_log::created_id(estate, build_id, node).await))
     }
 
     /// A delete, keyed by the node id it deletes.
     fn delete(node_id: &str) -> Self {
-        Op { action: "node.delete", subject: json!({"Node": node_id}) }
+        Op(format!("node.delete:{node_id}"))
     }
 
-    /// Whether receipt `r` is one of this operation.
+    /// Whether step event `r` (a step of the Build view's JSON) is one of this operation.
     fn keys(&self, r: &Value) -> bool {
-        r["operation"]["action"] == self.action && r["operation"]["subject"] == self.subject
+        r["operation"] == self.0.as_str()
     }
 }
 
-/// The steps of `operation` at `attempt` the Build holds a `complete` receipt for, in order.
-fn done_steps(build: &Value, operation: &Op, attempt: u64) -> Vec<String> {
-    build["steps"].as_array().into_iter().flatten().filter(|r| operation.keys(r) && r["outcome"] == "complete" && r["attempt"] == attempt).map(|r| s(&r["step"])).collect()
+/// The steps of `operation` whose event ended `complete`, in event.id order.
+fn done_steps(build: &Value, operation: &Op) -> Vec<String> {
+    build["steps"].as_array().into_iter().flatten().filter(|r| operation.keys(r) && r["outcome"] == "complete").map(|r| s(&r["step"])).collect()
 }
 
-/// How many receipts each step of `operation` holds at `attempt`.
-
-/// The latest attempt a Build that put the fabric back to pending ends at when its one run ran every
-/// operation: the run, attempt 1, completes it when the fabric is already ready at its dispatch (no
-/// planned member is unready: states.md "The fabric's ready", build.md "every planned member ready"),
-/// else the attempt claimed once the fabric changed to ready, which runs no step. The order (the
-/// fabric's ready before the completing dispatch, Q154) is fabric_states.rs's cell's to prove; the
-/// attempt count follows from timing, never from the page.
-const RUN_THEN_CHANGE: u64 = 2;
-
-/// Whether every step receipt of `build` (the Build view's JSON) is of its one run, attempt 1: the
-/// Complete after the fabric's change runs no step.
-fn run_alone_stepped(build: &Value) -> bool {
-    build["steps"].as_array().into_iter().flatten().all(|r| r["attempt"] == 1)
+/// Whether the Build (the Build view's JSON) ran each of its steps once: no step has two `complete`
+/// events (build.md §1: a step whose event ended `complete` is never run again).
+fn each_step_once(build: &Value) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    build["steps"].as_array().into_iter().flatten().filter(|r| r["outcome"] == "complete").all(|r| seen.insert((s(&r["mesh"]), s(&r["operation"]), s(&r["step"]))))
 }
 
-fn step_counts(build: &Value, operation: &Op, attempt: u64) -> BTreeMap<String, usize> {
+/// How many step events each step of `operation` holds.
+fn step_counts(build: &Value, operation: &Op) -> BTreeMap<String, usize> {
     let mut m = BTreeMap::new();
-    for r in build["steps"].as_array().into_iter().flatten().filter(|r| operation.keys(r) && r["attempt"] == attempt) {
+    for r in build["steps"].as_array().into_iter().flatten().filter(|r| operation.keys(r)) {
         *m.entry(s(&r["step"])).or_default() += 1;
     }
     m
@@ -450,9 +440,9 @@ impl Run {
     /// `held-by-no-log`.
     async fn build_if_held(&self, id: &str) -> Value {
         let facts = build_log::log_read(&self.estate, id).await.ok();
-        match facts.and_then(|f| build_log::projection(&f, id)) {
+        match facts.and_then(|f| build_log::projection(&self.estate, &f, id)) {
             Some(p) => serde_json::to_value(p).expect("a Build view serializes"),
-            None => json!({"state": "held-by-no-log", "attempt": 0, "steps": []}),
+            None => json!({"state": "held-by-no-log", "steps": []}),
         }
     }
 
@@ -461,11 +451,13 @@ impl Run {
         self.estate.accepted_build_id().await
     }
 
-    /// The highest attempt of Build `id` the fabric's Build records hold, the records every admin reads
-    /// (Q292): an unaccepted Build has none.
-    async fn attempt_anywhere(&self, id: &str) -> u64 {
-        let Ok(facts) = build_log::log_read(&self.estate, id).await else { return 0 };
-        build_log::projection(&facts, id).map(|held| u64::from(held.attempt)).unwrap_or(0)
+    /// How many runs Build `id` has had on the fabric's store root (its `rdm.build.started` events):
+    /// an unaccepted Build has none.
+    fn runs(&self, id: &str) -> u64 {
+        if BuildId::parse(id).is_err() {
+            return 0;
+        }
+        build_log::runs(&self.estate, id)
     }
 
     async fn door_of(&self, name: &PathName) -> Door {
@@ -583,10 +575,10 @@ impl Run {
 /// One progress read of the Build a cut holds.
 async fn read(run: &Run, build_id: &str, op: &Option<Op>) -> (String, bool, u64) {
     let b = run.build_if_held(build_id).await;
-    let attempt = b["attempt"].as_u64().unwrap_or(0);
-    let done = op.as_ref().map(|o| done_steps(&b, o, attempt)).unwrap_or_default();
-    let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "current_build": run.fabric_build_id().await, "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
-    (marker, b["state"] == "complete", attempt)
+    let runs = run.runs(build_id);
+    let done = op.as_ref().map(|o| done_steps(&b, o)).unwrap_or_default();
+    let marker = json!({"state": b["state"], "runs": runs, "done": done, "current_build": run.fabric_build_id().await}).to_string();
+    (marker, b["state"] == "complete", runs)
 }
 
 /// Arm `id`, make the Build that reaches it, hold, observe, release, complete: one wedge, judged.
@@ -632,7 +624,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         assert_eq!(held["hit"]["build_id"], build_id.as_str(), "`{id}` holds a call of the Build that triggered it: {held}");
     }
     let op = match &shape {
-        Shape::Create { node: Some(n) } => Some(Op::create(n)),
+        Shape::Create { node: Some(n) } => Some(Op::create(&run.estate, &build_id, n).await),
         Shape::Delete { node_id, .. } => Some(Op::delete(node_id)),
         Shape::Create { node: None } => None,
     };
@@ -640,20 +632,20 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     // Progress reads taken while the fault stays active: one executor turn (300 ms) apart.
     let mut reads = Vec::new();
     let mut complete_while_held = false;
-    let (mut attempts, mut last_attempt) = ([0u64; 2], 0);
+    let (mut runs, mut last_runs) = ([0u64; 2], 0);
     for i in 0..3 {
         if i > 0 {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        let (marker, complete, attempt) = read(run, &build_id, &op).await;
+        let (marker, complete, n) = read(run, &build_id, &op).await;
         if i == 0 {
-            attempts[0] = attempt;
+            runs[0] = n;
         }
-        last_attempt = attempt;
+        last_runs = n;
         complete_while_held |= complete;
         reads.push(marker);
     }
-    attempts[1] = last_attempt;
+    runs[1] = last_runs;
     let still = door.cut(id).await;
     ev.fault = Some(FaultAck { held: held["held"] == true, names: (!held["hit"].is_null()).then(|| held["hit"].clone()), held_at_last_read: still["held"] == true });
     ev.progress = Some(Progress { reads: reads.clone(), complete_while_held });
@@ -665,8 +657,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let (fp_during, inc_during) = (fabric_primary(&nodes_during), admin_view(&nodes_during));
     let held_pid = run.admin_pid(&door.location()).await;
     let alive = held_pid.and_then(proc_state).is_some_and(|c| c != 'Z');
-    let replaced = pid_before != held_pid || inc_before != inc_during || attempts[0] != attempts[1];
-    let during_marker_attempt = attempts[1];
+    let replaced = pid_before != held_pid || inc_before != inc_during || runs[0] != runs[1];
 
     // Release.
     let rel = door.release(id).await;
@@ -697,14 +688,14 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         fabric_home: fp_before,
         primary_may_move: may_move,
         incarnation: [inc_before, inc_during, admin_view(&nodes_after)],
-        attempts: [attempts[0], during_marker_attempt],
+        runs,
         exact_runtime_alive: alive,
         replaced_during: replaced,
         held_past_floor: false,
     });
     let mut rec = Reconciliation::default();
-    let attempt = done["attempt"].as_u64().unwrap_or(0);
-    rec.check("the Build completed at its one run and the Complete after the fabric's change", done["state"] == "complete" && (1..=RUN_THEN_CHANGE).contains(&attempt) && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
+    let n = run.runs(&build_id);
+    rec.check("the Build completed in its one run, each step once", done["state"] == "complete" && n == 1 && each_step_once(&done), format!("state {} runs {n}", done["state"]));
     let current = run.fabric_build_id().await;
     rec.check("the current build_id names the Build", current == build_id, format!("{current} vs {build_id}"));
     rec.check("the Build is current, not the previous Build", current_before != build_id, format!("previous {current_before}"));
@@ -713,8 +704,8 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         Shape::Delete { node, node_id } => {
             let order: Vec<String> = DeleteStep::ORDER.iter().map(|x| x.name().to_string()).collect();
             let op = Op::delete(node_id);
-            let counts = step_counts(&done, &op, 1);
-            rec.check("every documented delete step has one receipt, in order", done_steps(&done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
+            let counts = step_counts(&done, &op);
+            rec.check("every documented delete step has one step event, in order", done_steps(&done, &op) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
             run.node_gone(node).await;
             let left = run.runtimes(node).await;
             rec.check("no runtime of the node is left", left == 0, format!("{left}"));
@@ -730,13 +721,14 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
 
 /// The reconciled final state of a create: every documented step once, the node serving, one runtime.
 async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
-    // The create is keyed by the location it creates at.
-    let allocated = done["steps"].as_array().and_then(|a| a.iter().find(|r| r["step"] == "AllocateIdentity")).map(|r| r["operation"]["subject"]["Location"].clone()).unwrap_or(Value::Null);
-    let node: PathName = serde_json::from_value(allocated).unwrap_or_else(|e| panic!("the create's AllocateIdentity names its location: {e}: {done}"));
+    // The create is keyed by the node.id its record minted (D58), the subject of its step events.
+    let allocated = done["steps"].as_array().and_then(|a| a.iter().find(|r| r["step"] == "AllocateIdentity")).cloned().unwrap_or_else(|| panic!("the create has an AllocateIdentity step: {done}"));
+    let node_id = s(&allocated["subject"]);
+    let node = run.estate.node_views().await.into_iter().find(|n| n.node_id.to_string() == node_id).map(|n| n.location()).unwrap_or_else(|| panic!("the created node {node_id} is in the view"));
     let order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    let op = Op::create(&node);
-    let counts = step_counts(done, &op, 1);
-    rec.check("every documented create step has one receipt, in order", done_steps(done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
+    let op = Op(s(&allocated["operation"]));
+    let counts = step_counts(done, &op);
+    rec.check("every documented create step has one step event, in order", done_steps(done, &op) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
     let view = run.node_ready(&node).await;
     rec.check("the node serves", view["status"] == "ready", s(&view["status"]));
     let serving = run.runtimes(&node).await;
@@ -766,24 +758,24 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
     let build_id = Run::id_of(&stream);
     let door = Door::at(&run.estate, admin).await;
     let held = door.wait_held(id).await;
-    let op = Op::create(admin);
+    let op = Op::create(&run.estate, &build_id, admin).await;
     let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
-    build_log::build_fact(&run.estate, &build_id, &format!("the Build reaches the held admin (complete receipts exactly {want:?})"), Duration::from_secs(60), |b| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, 1) == want)
+    build_log::build_fact(&run.estate, &build_id, &format!("the Build reaches the held admin (complete step events exactly {want:?})"), Duration::from_secs(60), |b| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op) == want)
         .await
         .unwrap_or_else(|end| panic!("`{id}`: {end}"));
     let mut reads = Vec::new();
     let mut complete_while_held = false;
-    let mut attempts = [0u64; 2];
+    let mut runs = [0u64; 2];
     for i in 0..3 {
         if i > 0 {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        let (marker, complete, attempt) = read(run, &build_id, &Some(op.clone())).await;
+        let (marker, complete, n) = read(run, &build_id, &Some(op.clone())).await;
         if i == 0 {
-            attempts[0] = attempt;
+            runs[0] = n;
         }
-        attempts[1] = attempt;
+        runs[1] = n;
         complete_while_held |= complete;
         reads.push(marker);
     }
@@ -812,14 +804,14 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &rdm
         fabric_home: fp_before,
         primary_may_move: true,
         incarnation: [inc_before.clone(), inc_during.clone(), nodes_after.iter().find(|n| location(n) == exec.location()).map(|n| s(&n["incarnation_id"])).unwrap_or_default()],
-        attempts,
+        runs,
         exact_runtime_alive: alive,
-        replaced_during: inc_before != inc_during || attempts[0] != attempts[1],
+        replaced_during: inc_before != inc_during || runs[0] != runs[1],
         held_past_floor: false,
     });
     let mut rec = Reconciliation::default();
-    let attempt = done["attempt"].as_u64().unwrap_or(0);
-    rec.check("the Build completed at its one run and the Complete after the fabric's change", done["state"] == "complete" && (1..=RUN_THEN_CHANGE).contains(&attempt) && run_alone_stepped(&done), format!("state {} attempt {attempt}", done["state"]));
+    let n = run.runs(&build_id);
+    rec.check("the Build completed in its one run, each step once", done["state"] == "complete" && n == 1 && each_step_once(&done), format!("state {} runs {n}", done["state"]));
     rec.check("the current build_id names the Build", run.fabric_build_id().await == build_id && current_before != build_id, format!("previous {current_before}"));
     create_checks(run, &mut rec, &done).await;
     rec.check("the advertised primaries equal the public candidates' after the release", roles_after, detail_after);
@@ -849,8 +841,7 @@ async fn silent_case(run: &Run) {
     let pid = run.estate.pid_of(&name).await;
     let data_dir = run.estate.data_dir(&name).await;
     let fabric_build = run.fabric_build_id().await;
-    let attempt_of = |b: &Value| b["attempt"].as_u64().unwrap_or(0);
-    let attempt_before = attempt_of(&build_log::build_value(&run.estate, &fabric_build).await);
+    let runs_before = run.runs(&fabric_build);
 
     // The held proof mutation: stored by the live node before it is frozen.
     let put = run.estate.probe(&["put", "--target", &exact, "--key", "77", "--value", "before-freeze"]);
@@ -881,7 +872,7 @@ async fn silent_case(run: &Run) {
     let nodes_during = run.estate.node_values().await;
     let (roles_during, detail_during) = primaries(&nodes_during);
     let during_node = nodes_during.iter().find(|n| location(n) == name).cloned();
-    let attempt_during = attempt_of(&build_log::build_value(&run.estate, &fabric_build).await);
+    let runs_during = run.runs(&fabric_build);
     let alive = proc_state(pid).is_some_and(|c| c != 'Z');
     let inc_during = during_node.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let replaced = during_node.as_ref().is_none_or(|n| s(&n["node_id"]) != node_id) || run.fabric_build_id().await != fabric_build;
@@ -918,7 +909,7 @@ async fn silent_case(run: &Run) {
         fabric_home: fp_before,
         primary_may_move: false,
         incarnation: [inc_before, inc_during, s(&back["incarnation_id"])],
-        attempts: [attempt_before, attempt_during],
+        runs: [runs_before, runs_during],
         exact_runtime_alive: alive,
         replaced_during: replaced,
         held_past_floor: false,
@@ -929,7 +920,7 @@ async fn silent_case(run: &Run) {
     rec.check("the node keeps its process and its data dir", run.estate.pid_of(&name).await == pid && run.estate.data_dir(&name).await == data_dir, format!("pid {pid}, {data_dir}"));
     let serving = run.runtimes(&name).await;
     rec.check("exactly one runtime serves the node", serving == 1, format!("{serving}"));
-    rec.check("the current build_id is the Build it was and that Build gained no attempt", run.fabric_build_id().await == fabric_build && attempt_of(&build_log::build_value(&run.estate, &fabric_build).await) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
+    rec.check("the current build_id is the Build it was and that Build was not run again", run.fabric_build_id().await == fabric_build && run.runs(&fabric_build) == runs_before, format!("{fabric_build} runs {runs_before}"));
     rec.check("the advertised primaries equal the public candidates' after the thaw", roles_after, detail_after);
     ev.reconciliation = Some(rec);
     run.rows.lock().unwrap().push(json!({
@@ -948,11 +939,11 @@ async fn silent_case(run: &Run) {
 /// held at the topology read it makes while it hydrates (node-start.md step 4), and a non-primary node
 /// frozen in place (its tasks but the leader held by a tracer). Each: the
 /// injector acknowledged the active fault and named it; progress read three times (a Build's
-/// receipts and attempt on every admin, the current Build; a frozen node's process state, CPU use and the
+/// step events and runs, the current Build; a frozen node's process state, CPU use and the
 /// typed outcome of calls to it) stood still while held; the routing effect the cut's position
 /// implies; the roles equal what the public candidates compute and the held, running admin or
-/// frozen, running node was neither replaced, re-attempted nor re-born; the release; the work
-/// completed with its receipts once, one runtime, the Build current, and for the frozen node
+/// frozen, running node was neither replaced, run again nor re-born; the release; the work
+/// completed with each step event once, one runtime, the Build current, and for the frozen node
 /// the value stored before the freeze served by the same birth afterwards. What must NOT happen: an
 /// election move or a new birth caused by silence, a
 /// step receipt twice, a stalled-progress reading that moves while the fault is held.
@@ -979,13 +970,13 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     let control_door = run.member_door("mesh1").await;
     let b = run.complete(&mut control_stream).await;
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    assert_eq!(done_steps(&b, &Op::create(node), 1), create_order, "the healthy create runs every documented step once: {b}");
+    assert_eq!(done_steps(&b, &Op::create(&run.estate, &control_create, node).await), create_order, "the healthy create runs every documented step once: {b}");
     let control_id = s(&run.node_ready(node).await["node_id"]);
     let mut control_stream = run.delete(node).await;
     let control_delete = Run::id_of(&control_stream);
     let b = run.complete(&mut control_stream).await;
     let delete_order: Vec<String> = DeleteStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    assert_eq!(done_steps(&b, &Op::delete(&control_id), 1), delete_order, "the healthy removal runs every documented step once: {b}");
+    assert_eq!(done_steps(&b, &Op::delete(&control_id)), delete_order, "the healthy removal runs every documented step once: {b}");
     run.node_gone(node).await;
     run.rows.lock().unwrap().push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "delete_build_id": control_delete, "delete_steps": delete_order, "door_admin": control_door.name}));
 
@@ -998,7 +989,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         &run,
         Family::DeploymentStep,
         &format!("create:{step}"),
-        json!({"kind": "receipt", "step": step, "operation": "node.create", "node": Op::create(node).subject}),
+        json!({"kind": "receipt", "step": step, "operation": "node.create", "at": node}),
         &door,
         Trigger::Spawn,
         Shape::Create { node: Some(node.clone()) },
@@ -1015,7 +1006,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         &run,
         Family::BuildStep,
         &format!("delete:{step}"),
-        json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": Op::delete(&node_id).subject}),
+        json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": {"Node": node_id}}),
         &door,
         Trigger::Delete(node.clone()),
         Shape::Delete { node: node.clone(), node_id: node_id.clone() },
@@ -1054,7 +1045,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         &run,
         Family::PendingBeforeBuild,
         "pending:mesh-first-admin",
-        json!({"kind": "receipt", "step": step, "operation": "node.create", "node": Op::create(admin).subject}),
+        json!({"kind": "receipt", "step": step, "operation": "node.create", "at": admin}),
         &fdoor,
         Trigger::CreateMesh("mesh2".into()),
         Shape::Create { node: Some(admin.clone()) },

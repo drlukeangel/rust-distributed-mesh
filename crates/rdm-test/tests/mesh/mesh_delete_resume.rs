@@ -73,7 +73,7 @@ pub(crate) enum Rpc1 {
 /// as such: nothing here panics before the estate is stopped.
 async fn build_now(estate: &Estate, id: &str) -> Value {
     match build_log::log_read(&estate, id).await {
-        Ok(facts) => build_log::projection(&facts, id).map(|p| serde_json::to_value(p).expect("a Build view serializes")).unwrap_or_else(|| json!({"unaccepted": facts.len()})),
+        Ok(facts) => build_log::projection(estate, &facts, id).map(|p| serde_json::to_value(p).expect("a Build view serializes")).unwrap_or_else(|| json!({"unaccepted": facts.len()})),
         Err(end) => json!({"read_ended": end.to_string()}),
     }
 }
@@ -223,7 +223,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
                     Some(Frame::Failed { .. }) => "failed",
                     _ => "ended",
                 };
-                json!({"build_id": accepted.build_id.to_string(), "attempt": accepted.attempt, "state": state, "frames": format!("{frames:?}"), "end": end})
+                json!({"build_id": accepted.build_id.to_string(), "state": state, "frames": format!("{frames:?}"), "end": end})
             }
             Err(e) => json!({"refused": e.to_string()}),
         };

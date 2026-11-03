@@ -53,7 +53,6 @@ pub mod accepted;
 pub mod build;
 pub mod certs;
 pub mod cert_renewal;
-pub mod build_claim;
 pub mod build_drive;
 pub mod build_op;
 pub mod build_run;
@@ -79,7 +78,6 @@ pub mod control_plane;
 /// The control plane module (`control_plane`).
 pub use control_plane as control;
 pub mod lifecycle;
-pub mod mesh_claims;
 pub mod mesh_delete;
 /// Fabric, Mesh, and Node domain model types (`docs/architecture/node-identity-and-state.md` §2).
 pub use rdm_core::model;

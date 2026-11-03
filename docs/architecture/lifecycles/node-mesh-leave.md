@@ -76,7 +76,7 @@ the backbone) is left before the pool; the node publishes nothing at any step.
 
 ## Failure and receipts
 
-A mesh that cannot be left is reported by name with which one, the primitive stays `leaving`, and the workflow's next attempt resumes it; the node never
+A mesh that cannot be left is reported by name with which one, the primitive stays `leaving`, and the workflow's rerun resumes it; the node never
 re-publishes meanwhile. Failures and stream certainty follow the
 [caller execution contract](../node-rpc-envelope.md#caller-execution-and-certainty).
 

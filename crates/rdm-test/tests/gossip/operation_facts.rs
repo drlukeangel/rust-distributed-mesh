@@ -29,7 +29,7 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         let sender = TopologyView::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, sender_id.as_str(), rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         crate::declare_gossip_probe(&sender);
         let receiver = TopologyView::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, receiver_id.as_str(), rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
-        let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "deletion-build".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &target_id), node_id: target_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(), build_id: "deletion-build".into(), operation: rdm_core::OperationId::node("node.delete", &target_id), node_id: target_id, incarnation: IncarnationId::mint(), path: "mesh1.node".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(receiver.digest_view.record(MeshDigest { held_hash: Default::default(),
             fabric_id: fabric.clone(), node: MeshNode { mesh: "mesh1".to_owned(), r#type: "node".into(), node_id: op.node_id.clone(), path: op.path.clone(), name: op.name.clone(), endpoint_id: EndpointId(sender_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None },
             status: MemberStatus::Ready, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1,
@@ -100,7 +100,7 @@ fn node_deleted_repeat_is_ignored_by_its_operation_and_exact_birth() {
     let (spans, op) = node_deleted_story(true);
     assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.remove.via-node-deleted").count(), 1);
     assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.topology.update.via-duplicate"
-        && s["attributes"]["frame"] == "node-deleted" && s["attributes"]["build_id"] == op.build_id && s["attributes"]["attempt"] == op.attempt.to_string()
+        && s["attributes"]["frame"] == "node-deleted" && s["attributes"]["build_id"] == op.build_id
         && s["attributes"]["operation"] == op.operation.action && s["attributes"]["operation_subject"] == format!("{:?}", op.operation.subject)
         && s["attributes"]["operation_step"] == format!("{:?}", op.operation.step)
         && s["attributes"]["node_id"] == op.node_id.as_str() && s["attributes"]["incarnation_id"] == op.incarnation.as_str()

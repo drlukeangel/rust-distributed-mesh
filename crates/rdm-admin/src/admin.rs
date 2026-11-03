@@ -13,8 +13,8 @@
 //! with every primary role resolved by `election` (the lowest ready `NodeId` of each
 //! `(mesh, kind)` group; the lowest-`NodeId` `mesh-primary` is the `fabric-primary`,
 //! `docs/architecture/fabric-node-lifecycle-elections.md`). Admins execute Builds (`executor`): the
-//! `fabric-primary` and each mesh's `mesh-primary` claim the attempts whose next operation is
-//! theirs and run what is left through the deployment pipeline (create,
+//! `fabric-primary` and each mesh's `mesh-primary` run the steps their mesh still owes, as the
+//! Build's step events say, through the deployment pipeline (create,
 //! delete) and the lifecycle pipeline (a node's `Pending -> Ready`).
 
 use crate::build::BuildOperation;
@@ -223,7 +223,6 @@ mod tests {
         assert_eq!(mesh1(&t), Some((Some(id.clone()), ScopeStatus::Dead)), "mesh.deleted accepted: mesh1 is deleted");
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: last.node.r#type.clone(), mesh: last.node.mesh.clone(),
             build_id: "b7".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap())),
             node_id: last.node.node_id.clone(),
             incarnation: last.node.incarnation.clone(),
@@ -265,7 +264,6 @@ mod tests {
             assert!(digest_view.record(successor.clone()));
             assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: successor.node.r#type.clone(), mesh: successor.node.mesh.clone(),
                 build_id: "b9".into(),
-                attempt: 9,
                 operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap())),
                 node_id: successor.node.node_id.clone(),
                 incarnation: successor.node.incarnation.clone(),
@@ -988,7 +986,7 @@ mod tests {
         let change = crate::test_support::create_of(&["mesh2"], &[("mesh2.node-admin", "1", "mesh2", "node-admin"), ("mesh2.node", "1", "mesh2", "node")]);
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
         let create_mesh_of = |plan: crate::build::BuildPlan| plan.operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
-        let (first_op, successor_op) = (create_mesh_of(crate::accepted::plan(&accepted, &observed, None)), create_mesh_of(crate::accepted::plan(&accepted, &observed, None)));
+        let (first_op, successor_op) = (create_mesh_of(crate::accepted::plan(&accepted, &observed)), create_mesh_of(crate::accepted::plan(&accepted, &observed)));
         let (BuildOperation::CreateMesh { mesh: first_mesh, mesh_id: first_id }, BuildOperation::CreateMesh { mesh: successor_mesh, mesh_id: successor_id }) = (&first_op, &successor_op) else { unreachable!() };
         let minted = &accepted.mesh("mesh2").expect("the accepted topology holds mesh2").mesh_id;
         assert_eq!((first_id, successor_id), (minted, minted), "every plan of the Build carries the MeshId minted when mesh2 was accepted");
@@ -1014,41 +1012,47 @@ mod tests {
         let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
         let change = crate::test_support::create_of(&["mesh2"], &[("mesh2.node-admin", "1", "mesh2", "node-admin"), ("mesh2.node", "1", "mesh2", "node")]);
         let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
-        let op = crate::accepted::plan(&accepted, &observed, None).operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
+        let op = crate::accepted::plan(&accepted, &observed).operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
         let build_id = crate::build::BuildId::parse("jrr142w4840j").unwrap();
         builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: accepted, change: Some(change), source: None, time: 0 }).await.expect("the Build is accepted");
         (build_id, op)
     }
 
-    /// The receipts of `operation` the Build holds: `(attempt, step, outcome, executor)`.
-    async fn receipts_of(builds: &crate::build_state::MemoryBuildStateAdapter, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId) -> Vec<(u32, String, crate::build_state::StepOutcome, Option<rdm_core::framing::Birth>)> {
-        builds.read_build(build_id).await.expect("the Build is held").steps.into_iter().filter(|r| r.operation == *operation).map(|r| (r.attempt, r.step, r.outcome, r.executor)).collect()
+    /// The Build store `memory` whose steps the admin `fixture_actor(second)` of mesh1 writes as events.
+    fn stepping(memory: &Arc<crate::build_state::MemoryBuildStateAdapter>, second: bool) -> crate::build_run::FramedBuilds {
+        crate::build_run::FramedBuilds::stepping(memory.clone(), &fabric1(), &fixture_actor(second).node_id, "mesh1")
     }
 
-    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: "completed step receipts are read and replayed, never
-    /// executed again"; Build carrier: "Completed steps are not rerun"): `create-mesh:mesh2` runs at the
-    /// fabric-primary, writes mesh2's row and commits its `Complete` receipt. A successor fabric-primary
-    /// that runs the same Build's `create-mesh:mesh2` reads that receipt: it makes no second write, writes
-    /// no second receipt, and holds the MeshId the Build carries for its launches of mesh2. One
-    /// `rdm.node_admin.mesh.create.via-mesh-row` span (the first run's `row-written`), and a
-    /// `rdm.node_admin.mesh.create.via-receipt` span per run: `complete`, then `replayed`. Must NOT happen:
-    /// the successor writing again (`row-held-by-mesh`), or a second `Complete` receipt of the step.
+    /// The `rdm.build.step` events of `operation` the Build holds: `(step, outcome, writer's node.id)`.
+    async fn steps_of(builds: &crate::build_state::MemoryBuildStateAdapter, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId) -> Vec<(String, crate::build_state::StepOutcome, String)> {
+        let writer = |source: &str| source.split('/').nth(3).unwrap_or_default().to_string();
+        builds.read_build(build_id).await.expect("the Build is held").steps.into_iter().filter(|r| r.operation == operation.to_string()).map(|r| (r.step, r.outcome, writer(&r.source))).collect()
+    }
+
+    /// CONTRACT (build.md §1: a step whose `rdm.build.step` event ended `complete` is never run again):
+    /// `create-mesh:mesh2` runs at the fabric-primary, writes mesh2's row and its `Complete` step event.
+    /// A successor fabric-primary that runs the same Build's `create-mesh:mesh2` reads that event: it
+    /// makes no second write, writes no second event, and holds the MeshId the Build carries for its
+    /// launches of mesh2. One `rdm.node_admin.mesh.create.via-mesh-row` span (the first run's
+    /// `row-written`), and a `rdm.node_admin.mesh.create.via-receipt` span per run: `complete`, then
+    /// `replayed`. Must NOT happen: the successor writing again (`row-held-by-mesh`), or a second
+    /// `Complete` event of the step.
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn a_completed_create_mesh_is_receipted_and_a_successor_replays_the_receipt_instead_of_writing_again() {
+    async fn a_completed_create_mesh_is_written_as_its_step_event_and_a_successor_replays_it_instead_of_writing_again() {
         let meshes = crate::storage::MemoryMeshStorage::default();
-        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let (build_id, op) = build_creating_mesh2(&builds).await;
         let BuildOperation::CreateMesh { mesh_id, .. } = &op else { unreachable!() };
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-receipt");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let (first, successor) = (Records::default(), Records::default());
-        create_mesh_step(&first, &meshes, &builds, &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect("the first run writes mesh2's row at its free name");
-        create_mesh_step(&successor, &meshes, &builds, &fixture_actor(true), "200000000000", &build_id, 2, &op).await.expect("the successor's run of the same step");
+        create_mesh_step(&first, &meshes, &stepping(&builds, false), "100000000000", &build_id, &op).await.expect("the first run writes mesh2's row at its free name");
+        create_mesh_step(&successor, &meshes, &stepping(&builds, true), "200000000000", &build_id, &op).await.expect("the successor's run of the same step");
         assert_eq!(
-            receipts_of(&builds, &build_id, &op.key()).await,
-            vec![(1, "Complete".to_string(), crate::build_state::StepOutcome::Complete, Some(fixture_actor(false)))],
-            "the step is receipted once, by the run that executed it"
+            steps_of(&builds, &build_id, &op.key()).await,
+            vec![("Complete".to_string(), crate::build_state::StepOutcome::Complete, "100000000000".to_string())],
+            "the step's event is written once, by the run that executed it"
         );
         assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(mesh_id), "the successor's launches of mesh2 carry the id the Build carries");
         let writes = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
@@ -1060,27 +1064,26 @@ mod tests {
         eprintln!("span rdm.node_admin.mesh.create.via-receipt trace_id={} {:?}", steps[1].trace_id, steps[1].attributes);
     }
 
-    /// CONTRACT (node-rpc-envelope.md, Build carrier: "Settle an idempotent uncertain step by its natural
-    /// key"; node-identity-and-state.md §2.7: the same MeshId writing its own row again is idempotent): the
-    /// fabric-primary wrote mesh2's row and was lost before it receipted the step, so the Build holds no
-    /// receipt of it. The successor's run is uncertain: it writes by the step's natural key, the mesh's
-    /// own row answers `row-held-by-mesh`, and the step is receipted `Complete` at the successor's
-    /// attempt. Must NOT happen: a refused write, or a step that ends with no receipt.
+    /// CONTRACT (build.md §1, a step is settled by its natural key; node-identity-and-state.md §2.7: the
+    /// same MeshId writing its own row again is idempotent): the fabric-primary wrote mesh2's row and was
+    /// lost before it wrote the step's event, so the Build holds none. The successor's run writes by the
+    /// step's natural key, the mesh's own row answers `row-held-by-mesh`, and the step's `Complete` event
+    /// is the successor's. Must NOT happen: a refused write, or a step that ends with no event.
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn a_create_mesh_whose_receipt_was_never_written_settles_by_its_natural_key_and_is_receipted() {
+    async fn a_create_mesh_whose_step_event_was_never_written_settles_by_its_natural_key() {
         let meshes = crate::storage::MemoryMeshStorage::default();
-        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let (build_id, op) = build_creating_mesh2(&builds).await;
         let BuildOperation::CreateMesh { mesh, mesh_id } = &op else { unreachable!() };
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-uncertain");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        // The lost fabric-primary: its row landed, and its receipt did not.
+        // The lost fabric-primary: its row landed, and its step event did not.
         create_mesh(&Records::default(), &meshes, "100000000000", mesh, mesh_id).await.expect("the lost fabric-primary's row");
-        assert_eq!(receipts_of(&builds, &build_id, &op.key()).await, vec![], "the lost run left no receipt");
+        assert_eq!(steps_of(&builds, &build_id, &op.key()).await, vec![], "the lost run left no step event");
         let successor = Records::default();
-        create_mesh_step(&successor, &meshes, &builds, &fixture_actor(true), "200000000000", &build_id, 2, &op).await.expect("the uncertain step settles by its natural key");
-        assert_eq!(receipts_of(&builds, &build_id, &op.key()).await, vec![(2, "Complete".to_string(), crate::build_state::StepOutcome::Complete, Some(fixture_actor(true)))]);
+        create_mesh_step(&successor, &meshes, &stepping(&builds, true), "200000000000", &build_id, &op).await.expect("the uncertain step settles by its natural key");
+        assert_eq!(steps_of(&builds, &build_id, &op.key()).await, vec![("Complete".to_string(), crate::build_state::StepOutcome::Complete, "200000000000".to_string())]);
         assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(mesh_id));
         let writes = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
         let written: Vec<(String, String)> = writes.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
@@ -1091,109 +1094,55 @@ mod tests {
         eprintln!("span rdm.node_admin.mesh.create.via-receipt trace_id={} {:?}", steps[0].trace_id, steps[0].attributes);
     }
 
-    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: a receipt is read and replayed by the run it belongs
-    /// to; `BuildProjection::opened`: a step receipt from the attempt a reopen opened on is the current
-    /// run's): `create-mesh:mesh2` completed in the Build's first run, which ended `Converged`; the Build
-    /// is reopened (attempt 2, a drift repair) and its plan names `create-mesh:mesh2` again because the
-    /// mesh is not yet in the executor's view. The earlier run's receipt is not this run's: the step runs
-    /// by its natural key (the mesh's own row answers `row-held-by-mesh`) and is receipted at attempt 2.
-    /// Must NOT happen: a receipt of a finished run replayed into the run a reopen began.
+    /// CONTRACT (build.md §5, a step ends `complete` or `failed { reason, code }`): mesh2's name is held
+    /// by another mesh's live row, so `create-mesh:mesh2` is refused by name. The step `ClaimMeshName`'s
+    /// event ends `failed` with the refusal's reason (the holder named), no id is held for mesh2, and the
+    /// operation's `Complete` step never ends `complete`. Must NOT happen: a `complete` event beside a
+    /// refused write.
     // @feature: mesh-lifecycle
     #[tokio::test]
-    async fn a_reopened_builds_create_mesh_runs_by_its_natural_key_and_is_receipted_in_the_new_run() {
+    async fn a_create_mesh_refused_by_name_ends_its_step_failed_naming_the_holder() {
         let meshes = crate::storage::MemoryMeshStorage::default();
-        let builds = crate::build_state::MemoryBuildStateAdapter::new();
-        let (build_id, op) = build_creating_mesh2(&builds).await;
-        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-reopened");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let claim = |attempt: u32, executor: &rdm_core::framing::Birth| crate::build_state::BuildAttemptClaim { executor_mesh: "mesh1".into(), claimed_mesh: None, claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: executor.clone() };
-        assert_eq!(builds.claim_attempt(&claim(1, &fixture_actor(false))).await.unwrap(), crate::build_state::ClaimOutcome::Won);
-        create_mesh_step(&Records::default(), &meshes, &builds, &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect("the first run");
-        builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged }).await.unwrap();
-        builds
-            .open_attempt(&crate::build_state::AttemptOpened { mesh: None, build_id: build_id.clone(), attempt: 2, reason: crate::build_state::AttemptReason::Requested, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, context: None })
-            .await
-            .expect("the Build is reopened");
-        assert_eq!(builds.read_build(&build_id).await.unwrap().opened, 2, "attempt 2 begins the Build's current run");
-        assert_eq!(builds.claim_attempt(&claim(2, &fixture_actor(true))).await.unwrap(), crate::build_state::ClaimOutcome::Won);
-        create_mesh_step(&Records::default(), &meshes, &builds, &fixture_actor(true), "200000000000", &build_id, 2, &op).await.expect("the reopened run");
-        let receipts = receipts_of(&builds, &build_id, &op.key()).await;
-        assert_eq!(receipts.iter().map(|r| (r.0, r.1.as_str())).collect::<Vec<_>>(), vec![(1, "Complete"), (2, "Complete")], "each run receipts its own step: {receipts:?}");
-        let writes: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-mesh-row").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
-        assert_eq!(writes, ["row-written", "row-held-by-mesh"], "the reopened run writes by the natural key");
-        let steps: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-receipt").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
-        assert_eq!(steps, ["complete", "complete"]);
-    }
-
-    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: "Durable step outcomes remain Complete and Failed"):
-    /// mesh2's name is held by another mesh's live row, so `create-mesh:mesh2` is refused by name. The
-    /// step `ClaimMeshName` is receipted `Failed` with the refusal's reason (the holder named), holds no id
-    /// for mesh2, and the operation is never receipted `Complete`. Must NOT happen: a `Complete` receipt beside a refused write.
-    // @feature: mesh-lifecycle
-    #[tokio::test]
-    async fn a_create_mesh_refused_by_name_is_receipted_failed_naming_the_holder() {
-        let meshes = crate::storage::MemoryMeshStorage::default();
-        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let (build_id, op) = build_creating_mesh2(&builds).await;
         let holder = MeshId::mint();
         crate::storage::write_mesh(&meshes, None, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), state: rdm_core::status::MeshState::Pending }).await.unwrap().unwrap();
         let records = Records::default();
-        let refused = create_mesh_step(&records, &meshes, &builds, &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect_err("mesh2's name is held by another mesh");
+        let refused = create_mesh_step(&records, &meshes, &stepping(&builds, false), "100000000000", &build_id, &op).await.expect_err("mesh2's name is held by another mesh");
         assert!(refused.contains("create-mesh:mesh2") && refused.contains(&holder.to_string()), "{refused}");
-        let receipts = receipts_of(&builds, &build_id, &op.key()).await;
-        assert_eq!(receipts.len(), 1, "{receipts:?}");
-        let (attempt, step, outcome, executor) = &receipts[0];
-        assert_eq!((*attempt, step.as_str(), executor.as_ref()), (1, "ClaimMeshName", Some(&fixture_actor(false))));
-        assert!(matches!(outcome, crate::build_state::StepOutcome::Failed { reason, .. } if reason.contains(&holder.to_string())), "the Failed receipt names the holder: {outcome:?}");
+        let steps = steps_of(&builds, &build_id, &op.key()).await;
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        let (step, outcome, writer) = &steps[0];
+        assert_eq!((step.as_str(), writer.as_str()), ("ClaimMeshName", "100000000000"));
+        assert!(matches!(outcome, crate::build_state::StepOutcome::Failed { reason, .. } if reason.contains(&holder.to_string())), "the failed step names the holder: {outcome:?}");
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), None, "no id is held for a mesh whose row was refused");
     }
 
-    /// A Build state over `0` whose step receipts are refused: nothing else differs.
-    struct RefusesReceipts(Arc<crate::build_state::MemoryBuildStateAdapter>);
+    /// A Build store over `0` whose step events are refused: nothing else differs.
+    struct RefusesSteps(Arc<crate::build_state::MemoryBuildStateAdapter>);
 
     #[async_trait::async_trait]
-    impl BuildStateAdapter for RefusesReceipts {
+    impl BuildStateAdapter for RefusesSteps {
         async fn publish_accepted(&self, a: &crate::build_state::BuildAccepted) -> Result<(), crate::build_state::BuildStateError> {
             self.0.publish_accepted(a).await
-        }
-        async fn open_attempt(&self, o: &crate::build_state::AttemptOpened) -> Result<(), crate::build_state::BuildStateError> {
-            self.0.open_attempt(o).await
         }
         async fn read_build(&self, id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
             self.0.read_build(id).await
         }
-        async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
-            self.0.current_build().await
-        }
         async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
             self.0.newest_accepted_at_ms().await
-        }
-        async fn list_active(&self) -> Result<Vec<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
-            self.0.list_active().await
-        }
-        async fn claim_attempt(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, crate::build_state::BuildStateError> {
-            self.0.claim_attempt(c).await
-        }
-        async fn adopt_claim(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<(), crate::build_state::BuildStateError> {
-            self.0.adopt_claim(c).await
-        }
-        async fn append_step_receipt(&self, r: &crate::build_state::BuildStepReceipt) -> Result<(), crate::build_state::BuildStateError> {
-            Err(crate::build_state::BuildStateError::Io(format!("the journal refused the {} receipt of {:?}", r.step, r.operation)))
-        }
-        async fn append_attempt_receipt(&self, r: &crate::build_state::BuildAttemptReceipt) -> Result<(), crate::build_state::BuildStateError> {
-            self.0.append_attempt_receipt(r).await
-        }
-        async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
-            self.0.facts().await
-        }
-        async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
-            self.0.committed_facts(build).await
         }
         async fn forget(&self, id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
             self.0.forget(id).await
         }
-        async fn mesh_deleted_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
-            self.0.mesh_deleted_of(n, i).await
+        async fn accepted_newest_first(&self) -> Result<Vec<crate::build::BuildId>, crate::build_state::BuildStateError> {
+            self.0.accepted_newest_first().await
+        }
+        fn events(&self) -> Arc<dyn crate::events_storage::EventsStorage> {
+            self.0.events()
+        }
+        async fn write_step(&self, w: &crate::build_state::StepWrite) -> Result<(), crate::build_state::BuildStateError> {
+            Err(crate::build_state::BuildStateError::Io(format!("the events store refused the {} event of {}", w.step, w.operation)))
         }
     }
 
@@ -1214,27 +1163,17 @@ mod tests {
         async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: "mesh-records".into(), reason: "the disk did not answer".into() })
         }
-        async fn take_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<crate::mesh_claims::Taken, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
-        }
-        async fn release_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<(), crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
-        }
-        async fn in_flight(&self, mesh: &str) -> Result<Option<crate::mesh_claims::InFlight>, crate::storage_error::StorageError> {
-            Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
-        }
     }
 
-
-    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: a step is committed by its receipt; CLAUDE.md: an
-    /// error state names what failed and where, distinct facts distinct arms): `create-mesh:mesh2` fails
-    /// by its own name when (1) the Build cannot be read for its receipts, so it writes nothing, (2) the
-    /// mesh store does not answer the write, so it receipts nothing, and (3) the Build state refuses the
-    /// `Complete` receipt after the row is written: the step is uncommitted, and the next run settles it by its
-    /// natural key (`row-held-by-mesh`) and receipts it. One
-    /// `rdm.node_admin.mesh.create.via-receipt` span per run, `outcome` `build-unreadable`,
-    /// `store-unanswered`, `receipt-refused`, then `complete`. Must NOT happen: a `Complete` receipt of a
-    /// step that was not decided, or a step reported done whose receipt the Build state refused.
+    /// CONTRACT (build.md §5: a step is done by its `rdm.build.step` event; CLAUDE.md: an error state
+    /// names what failed and where, distinct facts distinct arms): `create-mesh:mesh2` fails by its own
+    /// name when (1) the Build cannot be read for its steps, so it writes nothing, (2) the mesh store does
+    /// not answer the write, so it writes no event, and (3) the events store refuses the `Complete` event
+    /// after the row is written: the step is not done, and the next run settles it by its natural key
+    /// (`row-held-by-mesh`) and writes its event. One `rdm.node_admin.mesh.create.via-receipt` span per
+    /// run, `outcome` `build-unreadable`, `store-unanswered`, `receipt-refused`, then `complete`. Must NOT
+    /// happen: a `complete` event of a step that was not decided, or a step reported done whose event was
+    /// refused.
     // @feature: mesh-lifecycle
     #[tokio::test]
     async fn a_create_mesh_that_cannot_read_decide_or_commit_fails_by_name_and_the_next_run_settles_it() {
@@ -1246,27 +1185,26 @@ mod tests {
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         // (1) A Build the log never accepted: nothing is written.
         let unknown = crate::build::BuildId::parse("kpnnk1nrvac1").unwrap();
-        let unread = create_mesh_step(&Records::default(), &meshes, &*memory, &fixture_actor(false), "100000000000", &unknown, 1, &op).await.expect_err("the Build is not held");
+        let unread = create_mesh_step(&Records::default(), &meshes, &stepping(&memory, false), "100000000000", &unknown, &op).await.expect_err("the Build is not held");
         assert!(unread.contains("could not be read for its receipts") && unread.contains("kpnnk1nrvac1"), "{unread}");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap(), None, "nothing was written beside a Build that could not be read");
-        // (2) The mesh store does not answer: nothing is receipted.
-        let unanswered = create_mesh_step(&Records::default(), &UnansweredMeshes, &*memory, &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect_err("the mesh store does not answer");
+        // (2) The mesh store does not answer: no event is written.
+        let unanswered = create_mesh_step(&Records::default(), &UnansweredMeshes, &stepping(&memory, false), "100000000000", &build_id, &op).await.expect_err("the mesh store does not answer");
         assert!(unanswered.contains("did not answer") && unanswered.contains("mesh2"), "{unanswered}");
-        assert_eq!(receipts_of(&memory, &build_id, &op.key()).await, vec![], "an undecided step is not receipted");
-        // (3) The row is written and the receipt is refused: the step is uncommitted.
-        let refused = create_mesh_step(&Records::default(), &meshes, &RefusesReceipts(memory.clone()), &fixture_actor(false), "100000000000", &build_id, 1, &op).await.expect_err("the Build state refuses the receipt");
-        assert!(refused.contains(&format!("Complete receipt of {:?}", op.key())) && refused.contains("was not written") && refused.contains("journal refused"), "{refused}");
+        assert_eq!(steps_of(&memory, &build_id, &op.key()).await, vec![], "an undecided step writes no event");
+        // (3) The row is written and its event is refused: the step is not done.
+        let refused = create_mesh_step(&Records::default(), &meshes, &RefusesSteps(memory.clone()), "100000000000", &build_id, &op).await.expect_err("the events store refuses the step event");
+        assert!(refused.contains(&format!("the Complete event of {}", op.key())) && refused.contains("was not written") && refused.contains("events store refused"), "{refused}");
         assert_eq!(crate::storage::MeshStorage::mesh_named(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(mesh_id.clone()), "the row stands");
-        assert_eq!(receipts_of(&memory, &build_id, &op.key()).await, vec![], "the refused receipt is not in the log");
+        assert_eq!(steps_of(&memory, &build_id, &op.key()).await, vec![], "the refused event is not in the store");
         // The next run settles the uncertain step by its natural key.
-        create_mesh_step(&Records::default(), &meshes, &*memory, &fixture_actor(true), "200000000000", &build_id, 2, &op).await.expect("the next run settles the step");
-        assert_eq!(receipts_of(&memory, &build_id, &op.key()).await.len(), 1);
+        create_mesh_step(&Records::default(), &meshes, &stepping(&memory, true), "200000000000", &build_id, &op).await.expect("the next run settles the step");
+        assert_eq!(steps_of(&memory, &build_id, &op.key()).await.len(), 1);
         let outcomes: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-receipt").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
         assert_eq!(outcomes, ["build-unreadable", "store-unanswered", "receipt-refused", "complete"]);
         let writes: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-mesh-row").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
         assert_eq!(writes, ["row-refused", "row-written", "row-held-by-mesh"], "the write made beside the unanswered store is refused by name; the settled run finds the mesh's own row");
     }
-
     /// CONTRACT (node-identity-and-state.md §2.7: "The fabric-primary writes the fabric's row at Day 0,
     /// idempotent for the same FabricId"; a different FabricId's identity at the key is held, and nothing
     /// else of the fabric is written beside it): `fabric/` holds another Fabric's identity (a root an embedding app
@@ -1450,164 +1388,6 @@ mod tests {
         }
         async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
             self.0.records_at(name).await
-        }
-    }
-
-    /// A nodes.storage over memory that counts every list of the runtime rows and answers the point
-    /// read of one birth's row as `point` says: the row held (`None`), or the store's refusal.
-    #[derive(Default)]
-    struct CountsRuntimeLists {
-        inner: crate::storage::MemoryNodesStorage,
-        lists: std::sync::atomic::AtomicUsize,
-        point_refused: bool,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::storage::NodesStorage for CountsRuntimeLists {
-        async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_runtime(row).await
-        }
-        async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.inner.runtimes().await
-        }
-        async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
-            if self.point_refused {
-                return Err(crate::storage_error::StorageError::Io { file: format!("runtimes/{node_id}--{}.json", incarnation.as_str()), reason: "Input/output error (os error 5)".into() });
-            }
-            self.inner.runtime(node_id, incarnation).await
-        }
-        async fn node(&self, node_id: &crate::model::NodeId) -> Result<Option<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.node(node_id).await
-        }
-        async fn nodes(&self, mesh: &str) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.nodes(mesh).await
-        }
-        async fn put_properties(&self, record: &rdm_node::node_records::NodeProperties) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_properties(record).await
-        }
-        async fn properties(&self, node_id: &crate::model::NodeId) -> Result<Option<rdm_node::node_records::NodeProperties>, crate::storage_error::StorageError> {
-            self.inner.properties(node_id).await
-        }
-        async fn put_node(&self, row: &crate::storage::NodeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_node(row).await
-        }
-        async fn records_at(&self, name: &crate::model::PathName) -> Result<Vec<crate::storage::NodeRow>, crate::storage_error::StorageError> {
-            self.inner.records_at(name).await
-        }
-    }
-
-    /// CONTRACT (CLAUDE.md read rule: "Every lookup is a point read through a declared index"; error
-    /// rule: "never written" and "could not be read" are different errors, distinct arms and spans):
-    /// the fabric-primary proves a lost executor `mesh2.node-admin.1` deleted whose digest carries no
-    /// runtime, so the proof reads that exact birth's durable runtime row by its key. Held and
-    /// exited: the departure is proven. Never written: refused on
-    /// `rdm.node_admin.node.reject.via-no-runtime-row`. Unreadable: refused on
-    /// `rdm.node_admin.node.reject.via-runtime-row-unreadable` naming the store's cause. Must NOT
-    /// happen: a list of every runtime row searched for the one birth, or the two refusals as one.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn the_executor_inspection_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable() {
-        use crate::build_drive::ExecutorInspection as _;
-        use crate::storage::NodesStorage as _;
-        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-executor")).unwrap();
-        let executor = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
-        let digest_view = DigestView::default();
-        for d in [executor.clone(), digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready)] {
-            digest_view.record(d);
-        }
-        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
-        let row = crate::storage::RuntimeRow { r#type: executor.node.r#type.clone(), mesh: executor.node.mesh.clone(), node_id: executor.node.node_id.clone(), path: executor.node.path.clone(), name: executor.node.name.clone(), incarnation_id: executor.node.incarnation.clone(), runtime: fact.clone(), data_dir: None };
-        let departure = |nodes: Arc<CountsRuntimeLists>| ProviderDeparture {
-            me_path: "mesh1.node-admin".into(), me_name: "1".into(),
-            refresh: Arc::new(|| Box::pin(async {})),
-            digest_view: digest_view.clone(),
-            provider: Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() }),
-            nodes,
-        };
-        let executor_name = rdm_core::framing::Birth { node_id: executor.node.node_id.clone(), incarnation: executor.node.incarnation.clone() };
-        let birth = (executor.node.node_id.to_string(), executor.node.incarnation.to_string());
-        let capture = crate::span_capture::Capture::new("i143-3051-executor-exited-verdict-point-read");
-        let _g = tracing::dispatcher::set_default(&capture.dispatch);
-
-        let held = Arc::new(CountsRuntimeLists::default());
-        held.put_runtime(&row).await.unwrap();
-        departure(held.clone()).exited_or_os_stopped(&executor_name).await.expect("the held row's runtime is proven exited");
-        let unwritten = Arc::new(CountsRuntimeLists::default());
-        let never = departure(unwritten.clone()).exited_or_os_stopped(&executor_name).await.unwrap_err();
-        let refused = Arc::new(CountsRuntimeLists { point_refused: true, ..Default::default() });
-        let unread = departure(refused.clone()).exited_or_os_stopped(&executor_name).await.unwrap_err();
-
-        let lists = |s: &CountsRuntimeLists| s.lists.load(std::sync::atomic::Ordering::SeqCst);
-        assert_eq!((lists(&held), lists(&unwritten), lists(&refused)), (0, 0, 0), "the proof reads one row by its key, never the list of every row");
-        assert!(never.contains("no durable runtime row") && !never.contains("could not be read"), "never written is its own refusal: {never}");
-        assert!(unread.contains("could not be read") && unread.contains("Input/output error (os error 5)"), "unreadable names the store's cause: {unread}");
-        let attrs = |name: &str| {
-            let spans = capture.named(name);
-            assert_eq!(spans.len(), 1, "{name} once: {spans:?}");
-            eprintln!("span {name} trace_id={} {:?}", spans[0].trace_id, spans[0].attributes);
-            spans[0].attributes.clone()
-        };
-        let attr = |a: &std::collections::BTreeMap<String, String>, k: &str| a.get(k).cloned().unwrap_or_default();
-        let no_row = attrs("rdm.node_admin.node.reject.via-no-runtime-row");
-        assert_eq!((attr(&no_row, "reader_path"), attr(&no_row, "reader_name"), attr(&no_row, "node_id"), attr(&no_row, "incarnation_id"), attr(&no_row, "store")), ("mesh1.node-admin".to_string(), "1".to_string(), birth.0.clone(), birth.1.clone(), "nodes.storage".to_string()), "{no_row:?}");
-        let unreadable = attrs("rdm.node_admin.node.reject.via-runtime-row-unreadable");
-        assert_eq!((attr(&unreadable, "reader_path"), attr(&unreadable, "reader_name"), attr(&unreadable, "node_id"), attr(&unreadable, "incarnation_id"), attr(&unreadable, "store")), ("mesh1.node-admin".to_string(), "1".to_string(), birth.0, birth.1, "nodes.storage".to_string()), "{unreadable:?}");
-        assert!(attr(&unreadable, "error").contains("Input/output error (os error 5)"), "{unreadable:?}");
-    }
-
-    /// CONTRACT (build.md: "when the executor is lost with the attempt unfinished, after the provider's
-    /// inspection of the executor's exact runtime answers `exited` or `os-stopped`: `running`,
-    /// `unproven` and silence never let another claimant take it"; Q239 A narrowed): the fabric-primary
-    /// proves a lost executor `mesh2.node-admin.1` exited or os-stopped by its exact runtime as the provider reads it.
-    /// Exited and os-stopped: proven, and the view is projected again for the next attempt. Running
-    /// and unproven (the provider's `Unknown`): refused naming the verdict, nothing projected. Must NOT
-    /// happen: an os-stopped executor's attempt held, or a running or unproven one's taken.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn the_executor_inspection_answers_exited_or_os_stopped_and_never_running_or_unproven() {
-        use crate::build_drive::ExecutorInspection as _;
-        use crate::deployment::provider::DeploymentStatus;
-        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-verdicts")).unwrap();
-        let mut executor = digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready);
-        executor.node.runtime = Some(fact.clone());
-        let digest_view = DigestView::default();
-        for d in [executor.clone(), digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready)] {
-            digest_view.record(d);
-        }
-        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
-        let executor_name = rdm_core::framing::Birth { node_id: executor.node.node_id.clone(), incarnation: executor.node.incarnation.clone() };
-        for (status, verdict, exited) in [
-            (DeploymentStatus::Exited { code: Some(137) }, "exited", true),
-            (DeploymentStatus::OsStopped, "os-stopped", true),
-            (DeploymentStatus::Running, "running", false),
-            (DeploymentStatus::Unknown, "unavailable", false),
-        ] {
-            let refreshed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status, inspected: Default::default() });
-            let departure = ProviderDeparture {
-                me_path: "mesh1.node-admin".into(), me_name: "1".into(),
-                refresh: {
-                    let refreshed = refreshed.clone();
-                    Arc::new(move || {
-                        refreshed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        Box::pin(async {})
-                    })
-                },
-                digest_view: digest_view.clone(),
-                provider: provider.clone(),
-                nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
-            };
-            let answer = departure.exited_or_os_stopped(&executor_name).await;
-            assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 1, "{verdict}: the exact runtime is inspected once");
-            match (exited, &answer) {
-                (true, Ok(())) => assert_eq!(refreshed.load(std::sync::atomic::Ordering::SeqCst), 1, "{verdict}: the view is projected again for the next attempt"),
-                (false, Err(why)) => {
-                    assert!(why.contains(verdict), "{verdict}: the refusal names the verdict: {why}");
-                    assert_eq!(refreshed.load(std::sync::atomic::Ordering::SeqCst), 0, "{verdict}: nothing is projected for an attempt that is held");
-                }
-                _ => panic!("{verdict}: the departure is {} but the proof answered {answer:?}", if exited { "proven" } else { "not proven" }),
-            }
         }
     }
 
@@ -1893,7 +1673,6 @@ mod tests {
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
             let op = rdm_core::LifecycleOp { r#type: member.node.r#type.clone(), mesh: member.node.mesh.clone(),
                 build_id: "dbs8z9896j0f".into(),
-                attempt: 2,
                 operation: rdm_core::OperationId::node(workflow, &member.node.node_id),
                 node_id: member.node.node_id.clone(),
                 incarnation: member.node.incarnation.clone(),
@@ -1925,7 +1704,7 @@ mod tests {
             let a = &rejects[0].attributes;
             let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
             assert_eq!((attr("node_path"), attr("node_name"), attr("node_id"), attr("incarnation_id")), ("mesh2.node".to_string(), "1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string()), "{case}: the exact birth: {a:?}");
-            assert_eq!((attr("announced"), attr("operation"), attr("build_id"), attr("attempt")), (announced.to_string(), workflow.to_string(), "dbs8z9896j0f".to_string(), "2".to_string()), "{case}: the workflow the exit belongs to: {a:?}");
+            assert_eq!((attr("announced"), attr("operation"), attr("build_id")), (announced.to_string(), workflow.to_string(), "dbs8z9896j0f".to_string()), "{case}: the workflow the exit belongs to: {a:?}");
             assert_eq!((attr("submitter"), attr("verdict")), (recovery.me_id.to_string(), "exited".to_string()), "{case}: {a:?}");
             eprintln!("span rdm.node_admin.build.reject.via-removal-announced trace_id={} {a:?}", rejects[0].trace_id);
         }
@@ -2054,85 +1833,6 @@ mod tests {
             assert_eq!(recovery.investigated.events.events.event(&e.id).await.unwrap().as_ref(), Some(e), "the event read by its id");
             eprintln!("span rdm.node_admin.node.update.via-on-node-investigated trace_id={} {a:?}", notices[0].trace_id);
         }
-    }
-
-    /// CONTRACT (gossip.md `NodeDeleting`: keyed `(kind, build_id, attempt, operation)`, "the fact
-    /// rides `MeshTopology.in_flight` until the operation completes", and `MeshTopology.in_flight` is "while
-    /// the operation is claimed and has no completed receipt (derived from Build facts at each publication)";
-    /// node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that workflow:
-    /// its Build ends Failed, and the mesh-primary's next tick finds the member still proven exited
-    /// and submits the recovery"): a removal's `NodeDeleting` overlay, opened from its attempt's
-    /// receipt, closes when that attempt's verdict is `Failed` (one
-    /// `rdm.mesh.topology.update.via-deleting-closed-by-facts` span naming the attempt), and the
-    /// mesh primary's next tick then submits the recovery of the member the failed workflow left:
-    /// one `via-node-recovery` submit is made. Must NOT happen: the overlay held after its attempt
-    /// failed, so the tick refuses the member `via-removal-announced` for a workflow that is over and
-    /// the member is never put back.
-    // @feature: node-lifecycle
-    #[tokio::test]
-    async fn a_failed_removal_attempts_target_is_recovered_by_the_next_tick() {
-        use crate::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
-        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-failed-removal")).unwrap();
-        let mut member = digest(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", MemberStatus::Ready);
-        member.node.runtime = Some(fact.clone());
-        let digest_view = DigestView::default();
-        for d in [digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Ready), member.clone()] {
-            digest_view.record(d);
-        }
-        let view = project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &Records::default());
-        let op = rdm_core::LifecycleOp { r#type: member.node.r#type.clone(), mesh: member.node.mesh.clone(),
-            build_id: "9r7cpewghdkk".into(),
-            attempt: 2,
-            operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh2.node", "1").unwrap())),
-            node_id: member.node.node_id.clone(),
-            incarnation: member.node.incarnation.clone(),
-            path: member.node.path.clone(), name: member.node.name.clone(),
-            event_at_rafka_ms: 1,
-            traceparent: None,
-            tracestate: None,
-        };
-        let build = crate::build::BuildId::parse(&op.build_id).unwrap();
-        let mut facts = vec![
-            BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), change: None, source: None, time: 1 }),
-            BuildFact::Step(BuildStepReceipt { mesh: None, build_id: build.clone(), attempt: 2, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&op).unwrap()), executor: None }),
-        ];
-        let capture = crate::span_capture::Capture::new("i143-3068-failed-removal-recovered");
-        let mut named = NamedSteps::new();
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            overlays_from_facts(&facts, &digest_view, &mut named);
-        }
-        assert_eq!(digest_view.in_flight(), vec![op.clone()], "the removal's NodeDeleting receipt opens its overlay");
-        // The attempt's verdict: the workflow failed (the member's runtime exited under it).
-        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "TerminateRuntime: the member exited under the delete".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
-        {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            overlays_from_facts(&facts, &digest_view, &mut named);
-        }
-        assert_eq!(digest_view.in_flight(), Vec::<rdm_core::LifecycleOp>::new(), "the failed attempt's overlay leaves MeshTopology.in_flight: its operation is no longer claimed by that attempt");
-        let closed = capture.named("rdm.mesh.topology.update.via-deleting-closed-by-facts");
-        assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
-        let a = &closed[0].attributes;
-        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("operation"), attr("build_id"), attr("attempt"), attr("by")), ("node.delete".to_string(), "9r7cpewghdkk".to_string(), "2".to_string(), "attempt-failed".to_string()), "the attempt the facts ended: {a:?}");
-        eprintln!("span rdm.mesh.topology.update.via-deleting-closed-by-facts trace_id={} {a:?}", closed[0].trace_id);
-        // A late copy of the closed attempt's overlay (a frame, a mesh topology) is applied once, not again.
-        assert!(!digest_view.deleting(op.clone()), "the closed overlay is not opened again by a copy of it");
-        // The mesh primary's next tick: the member's exact runtime is proven exited.
-        let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
-        crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { r#type: member.node.r#type.clone(), mesh: member.node.mesh.clone(), node_id: member.node.node_id.clone(), path: member.node.path.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
-        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
-        let (recovery, _, node) = recovery_of(&view, digest_view, provider, nodes);
-        let outcome = {
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            recovery.recover(&node).await
-        };
-        assert_eq!(outcome, Inspected::Exited(Some(137)), "the provider read the exact runtime exited");
-        let rejects = capture.named("rdm.node_admin.build.reject.via-removal-announced");
-        assert!(rejects.is_empty(), "no workflow holds the member: its failed attempt is over: {rejects:?}");
-        let submits = capture.named("rdm.node_admin.node.update.via-node-recovery");
-        assert_eq!(submits.len(), 1, "the recovery is submitted: {submits:?}");
-        eprintln!("span rdm.node_admin.node.update.via-node-recovery trace_id={} {:?}", submits[0].trace_id, submits[0].attributes);
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
@@ -2804,7 +2504,7 @@ mod tests {
     /// view.
     async fn depart(digest_view: &DigestView, records: &Records, d: &MeshDigest) -> Topology {
         records.set_digest_view(digest_view.clone());
-        digest_view.depart(rdm_core::LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "dbs8z9896j0f".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
+        digest_view.depart(rdm_core::LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "dbs8z9896j0f".into(), operation: rdm_core::OperationId::node("node.delete", &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None });
         let view = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, digest_view, records));
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, digest_view, records)).await
     }
@@ -2834,7 +2534,7 @@ mod tests {
     async fn mesh_lefts_dead_write_is_already_applied_over_the_mesh_primarys_dead_and_the_acting_primarys_when_none_survived() {
         use crate::storage::MeshStorage;
         let dead_on = async |meshes: &crate::storage::MemoryMeshStorage, m: &str| meshes.mesh(&mesh_id(m)).await.unwrap().is_some_and(|r| r.is_deleted());
-        let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), attempt: 1, operation: crate::mesh_delete::operation(&mesh_id("mesh2")) };
+        let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), operation: crate::mesh_delete::operation(&mesh_id("mesh2")) };
         for case in ["surviving-primary-wrote-deleted", "no-survivor"] {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
             let last = with_id(digest(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", MemberStatus::Leaving), "200000000000");
@@ -2902,7 +2602,7 @@ mod tests {
         }
         depart(&digest_view, &records, &last).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &records)).await;
-        let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), attempt: 1, operation: crate::mesh_delete::operation(&mesh_id("mesh2")) };
+        let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), operation: crate::mesh_delete::operation(&mesh_id("mesh2")) };
         let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-contacts");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -2957,9 +2657,9 @@ mod tests {
     /// CONTRACT (mesh-delete.md, "Resume after the primary's loss": the workflow goes to the admin
     /// in its role; gossip.md §3.1 `NodeDeleted`): mesh2's primary `mesh2.node-admin.1` is lost and
     /// `mesh2.node-admin.2` is live. Once the lost primary's node.delete is heard, the role is
-    /// `mesh2.node-admin.2`'s in the fabric-primary's view (the leave a later attempt resumes hands it the
+    /// `mesh2.node-admin.2`'s in the fabric-primary's view (the leave a later run resumes hands it the
     /// workflow) and in its own, which hears the same departure and announces the role at the next
-    /// revision. Must NOT happen: the no_survivor attempts refused "mesh2.node-admin.2 is live and holds no
+    /// revision. Must NOT happen: the no_survivor runs refused "mesh2.node-admin.2 is live and holds no
     /// role yet" after mesh2.node-admin.1 was deleted (trace 5bc960a3e759a77cfb42ae6e9bc687d0).
     // @feature: mesh-lifecycle
     #[tokio::test]
@@ -3197,34 +2897,25 @@ mod tests {
     }
 
     /// CONTRACT (R-BI3: the current Build is read from the Build entities; node-start.md step 4, the
-    /// Build floor): an admin that holds no current Build, or not the facts of the Build its entry
-    /// named at the attempt the answering admin held, is blocked from Ready, each reason named with
-    /// the request that recovers it. Day 0 (no entry) owes no floor.
+    /// Build floor): an admin that holds no current Build, or not the Build its entry named, is blocked
+    /// from Ready, each reason named with the request that recovers it. Day 0 (no entry) owes no floor.
     #[tokio::test]
     async fn an_admin_without_a_current_build_can_never_take_over() {
-        use crate::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildStateAdapter as _, MemoryBuildStateAdapter};
+        use crate::build_state::{BuildAccepted, BuildStateAdapter as _, MemoryBuildStateAdapter};
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
         let builds = MemoryBuildStateAdapter::new();
         let blocked = node_admin_not_ready(&me, &builds, None).await.expect("blocked while it holds no Build");
         assert_eq!(blocked.kind(), "no-current-build");
         assert!(blocked.to_string().starts_with(&format!("path {:?}, name {:?}: holds no current Build", me.path, me.name)), "{blocked}");
         let id = crate::build::BuildId::parse("7wy02yhavgde").unwrap();
-        let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked while the entry's Build is not held");
+        let blocked = node_admin_not_ready(&me, &builds, Some(id.clone())).await.expect("blocked while the entry's Build is not held");
         assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(id.clone()), "{blocked}");
         assert!(blocked.to_string().contains(&format!("holds no facts of Build {id}")), "{blocked}");
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 }).await.unwrap();
-        assert_eq!(node_admin_not_ready(&me, &builds, None).await, None, "an admin served no entry owes no attempt floor");
-        let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked below the entry's attempt").to_string();
-        assert!(blocked.contains(&format!("holds attempt 0 of Build {id}")) && blocked.contains("held attempt 2"), "{blocked}");
-        for attempt in 1..=2 {
-            if attempt > 1 {
-                builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("400000000000").unwrap(), opened_at_ms: 0, context: None }).await.unwrap();
-            }
-            builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: fixture_actor(false) }).await.unwrap();
-        }
-        assert_eq!(node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await, None, "its attempt facts reached the entry's");
+        assert_eq!(node_admin_not_ready(&me, &builds, None).await, None, "an admin served no entry owes no floor");
+        assert_eq!(node_admin_not_ready(&me, &builds, Some(id.clone())).await, None, "it holds the entry's Build");
         let other = crate::build::BuildId::parse("qsmy968wj1zt").unwrap();
-        let blocked = node_admin_not_ready(&me, &builds, Some((other.clone(), 9))).await.expect("a floor naming a Build not held blocks until its facts are held");
+        let blocked = node_admin_not_ready(&me, &builds, Some(other.clone())).await.expect("a floor naming a Build not held blocks until it is held");
         assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(other), "{blocked}");
     }
 
@@ -3400,7 +3091,6 @@ mod tests {
         digest_view.record(held.clone());
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
             node_id: held.node.node_id.clone(),
             incarnation: held.node.incarnation.clone(),
@@ -3456,7 +3146,6 @@ mod tests {
         digest_view.record(held.clone());
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
             node_id: held.node.node_id.clone(),
             incarnation: held.node.incarnation.clone(),
@@ -3630,7 +3319,7 @@ mod tests {
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
 
         wake.seen();
-        let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let stop = rdm_core::LifecycleOp { r#type: rpc.node.r#type.clone(), mesh: rpc.node.mesh.clone(), build_id: "b1".into(), operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), path: rpc.node.path.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         assert!(digest_view.stopped(stop));
         assert!(view_rebuild_due(&mut wake, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
@@ -3811,7 +3500,6 @@ mod tests {
         digest_view.record(held.clone());
         assert!(digest_view.stopped(rdm_core::LifecycleOp { r#type: held.node.r#type.clone(), mesh: held.node.mesh.clone(),
             build_id: "b1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "7").unwrap())),
             node_id: held.node.node_id.clone(),
             incarnation: held.node.incarnation.clone(),
@@ -3888,7 +3576,6 @@ mod tests {
         let stopped = digest(PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", MemberStatus::Ready);
         let stop = rdm_core::LifecycleOp { r#type: stopped.node.r#type.clone(), mesh: stopped.node.mesh.clone(),
             build_id: "b1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
             node_id: stopped.node.node_id.clone(),
             incarnation: stopped.node.incarnation.clone(),
@@ -3943,7 +3630,6 @@ mod tests {
         assert!(project("fabric1", &fabric1(), ProviderKind::Process, &digest_view, &launched).node(&gone.node.location()).is_some());
         digest_view.depart(rdm_core::LifecycleOp { r#type: gone.node.r#type.clone(), mesh: gone.node.mesh.clone(),
             build_id: "b1".into(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())),
             node_id: gone.node.node_id.clone(),
             incarnation: gone.node.incarnation.clone(),
@@ -4015,7 +3701,7 @@ mod tests {
         async fn view_over(me: &PathName, topology: &RwLock<Topology>, digest_view: &DigestView, records: &Records) -> Topology {
             records.install_read(me, topology, digest_view, &fabric1(), |reads| project_with("fabric1", &fabric1(), ProviderKind::Process, digest_view, records, reads)).await
         }
-        let deleted = |d: &MeshDigest| rdm_core::LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "b1".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let deleted = |d: &MeshDigest| rdm_core::LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(), build_id: "b1".into(), operation: rdm_core::OperationId::node("node.delete", &d.node.node_id), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), path: d.node.path.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
         let digest_view = DigestView::default();
         let records = Records::default();
@@ -4310,8 +3996,8 @@ mod tests {
 
     /// CONTRACT (node-recovery.md "Detection and the verdict" step 2: "Only the mesh-primary acts";
     /// fabric-node-lifecycle-elections.md §4.1: the mesh-primary runs node investigation; build.md §5.3:
-    /// the launching admin writes a birth's runtime row, and every attempt in a mesh with a running
-    /// mesh-primary is that mesh-primary's to run): the births only a durable runtime row names are
+    /// the launching admin records the birth's runtime, and each mesh-primary writes the step events of
+    /// its mesh): the births only a durable runtime row names are
     /// watched by the mesh-primary alone, from the rows of its own mesh read once as it takes the role
     /// and held while it keeps it. An admin that is not its mesh's primary reads no runtime row on any
     /// tick; one that loses the role holds none, and takes them again with the role; a refused read

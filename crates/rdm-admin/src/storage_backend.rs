@@ -148,9 +148,9 @@ impl StorageBackend for FileBackend {
 
     async fn delete_fabric(&self, data_dir: &Path, fabric_id: &FabricId) -> Result<(), String> {
         // The fabric's root on the store dir (R14), then the admin's own stores in its data dir: its own
-        // row (`nodes/`) and its Build attempt contexts. Custody (`node-key`, `ca-secret`, `fabric-ca`,
+        // row (`nodes/`). Custody (`node-key`, `ca-secret`, `fabric-ca`,
         // `declared-secrets`) is no topology storage and stays.
-        let dirs = [self.store_dir.join(fabric_id.to_string()), data_dir.join("nodes"), data_dir.join(crate::build_state::CONTEXT_DIR)];
+        let dirs = [self.store_dir.join(fabric_id.to_string()), data_dir.join("nodes")];
         crate::blocking::blocking_io(move || {
             for dir in &dirs {
                 match std::fs::remove_dir_all(dir) {
@@ -180,8 +180,8 @@ impl StorageBackend for FileBackend {
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.log_writer()).await.map_err(storage_err)?);
         // Every runtime row is a line of the root's nodes.jsonl: the root's rows are the nodes store's.
         let root_runtimes: Option<Arc<dyn NodesStorage>> = Some(nodes.clone() as Arc<dyn NodesStorage>);
-        let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.log_writer()).await.map_err(|e| e.to_string())?);
         let events = Arc::new(crate::events_storage::FileEventsStorage::open(&root, &scope.log_writer()).await.map_err(storage_err)?);
+        let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.log_writer(), events.clone()).await.map_err(|e| e.to_string())?);
         let finish_writes: FinishWrites = {
             let (meshes, nodes, fabric, events) = (meshes.clone(), nodes.clone(), fabric.clone(), events.clone());
             Arc::new(move || {
@@ -434,7 +434,6 @@ impl TopologyStorageHandle {
         for store in rdm_node::storage_copy::Store::ALL {
             lines.lines(store).await.map_err(|e| format!("its {store} store's lines are not read for the copy: {e}"))?;
         }
-        lines.claims().await.map_err(|e| format!("its claims are not read for the copy: {e}"))?;
         Ok(())
     }
 
@@ -551,17 +550,6 @@ impl MeshStorage for Through {
     async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, StorageError> {
         self.read().stores().boundaries.meshes.meshes().await
     }
-    async fn take_in_flight(&self, mesh: &str, claim: &crate::mesh_claims::InFlight) -> Result<crate::mesh_claims::Taken, StorageError> {
-        let w = self.write();
-        w.boundaries.meshes.take_in_flight(mesh, claim).await
-    }
-    async fn release_in_flight(&self, mesh: &str, attempt: &crate::mesh_claims::InFlight) -> Result<(), StorageError> {
-        let w = self.write();
-        w.boundaries.meshes.release_in_flight(mesh, attempt).await
-    }
-    async fn in_flight(&self, mesh: &str) -> Result<Option<crate::mesh_claims::InFlight>, StorageError> {
-        self.read().stores().boundaries.meshes.in_flight(mesh).await
-    }
 }
 
 /// `nodes.storage`'s calls, delegated to `$nodes` of the provider the admin writes at each call.
@@ -632,10 +620,6 @@ impl crate::build_state::BuildStateAdapter for Through {
         let w = self.write();
         w.boundaries.builds.publish_accepted(accepted).await
     }
-    async fn open_attempt(&self, opened: &crate::build_state::AttemptOpened) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write();
-        w.boundaries.builds.open_attempt(opened).await
-    }
     async fn read_build(&self, build_id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.read_build(build_id).await
     }
@@ -648,50 +632,18 @@ impl crate::build_state::BuildStateAdapter for Through {
     async fn accepted_newest_first(&self) -> Result<Vec<crate::build::BuildId>, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.accepted_newest_first().await
     }
-    async fn current(&self) -> Result<Option<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.current().await
-    }
-    async fn list_active(&self) -> Result<Vec<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.list_active().await
-    }
-    async fn claim_attempt(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, crate::build_state::BuildStateError> {
-        let w = self.write();
-        w.boundaries.builds.claim_attempt(claim).await
-    }
-    async fn in_flight_live(&self, held: &crate::mesh_claims::InFlight) -> Result<bool, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.in_flight_live(held).await
-    }
-    async fn claim_in_flight(&self, claim: &crate::build_state::BuildAttemptClaim, claims: &dyn MeshStorage, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, crate::build_state::BuildStateError> {
-        let w = self.write();
-        w.boundaries.builds.claim_in_flight(claim, claims, mesh, row).await
-    }
-    async fn adopt_claim(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write();
-        w.boundaries.builds.adopt_claim(claim).await
-    }
-    async fn append_step_receipt(&self, receipt: &crate::build_state::BuildStepReceipt) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write();
-        w.boundaries.builds.append_step_receipt(receipt).await
-    }
-    async fn append_attempt_receipt(&self, receipt: &crate::build_state::BuildAttemptReceipt) -> Result<(), crate::build_state::BuildStateError> {
-        let w = self.write();
-        w.boundaries.builds.append_attempt_receipt(receipt).await
-    }
-    async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.committed_facts(build).await
-    }
     async fn forget(&self, build_id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
         let w = self.write();
         w.boundaries.builds.forget(build_id).await
     }
-    async fn note_blocked(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        self.read().stores().boundaries.builds.note_blocked(build_id, lane, attempt, operation, step, reason).await
+    async fn note_blocked(&self, build_id: &crate::build::BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        self.read().stores().boundaries.builds.note_blocked(build_id, operation, step, reason).await
     }
-    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, crate::build_state::BuildStateError> {
-        self.read().stores().boundaries.builds.mesh_deleted_of(node_id, incarnation).await
+    async fn write_step(&self, step: &crate::build_state::StepWrite) -> Result<(), crate::build_state::BuildStateError> {
+        self.read().stores().boundaries.builds.write_step(step).await
+    }
+    fn events(&self) -> Arc<dyn crate::events_storage::EventsStorage> {
+        self.read().stores().boundaries.builds.events()
     }
     fn held_name(&self) -> Option<PathName> {
         self.read().stores().boundaries.builds.held_name()
@@ -709,16 +661,15 @@ impl LocalBuildLog for Through {
         *self.0.derivation.lock().unwrap_or_else(|e| e.into_inner()) = Some(derive.clone());
         self.read().stores().boundaries.builds.derive_on_every_fact(derive).await
     }
-    async fn put_attempt_context(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), StorageError> {
-        let w = self.write();
-        w.boundaries.builds.put_attempt_context(build_id, lane, attempt, context).await
-    }
-    async fn attempt_context(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, StorageError> {
-        self.read().stores().boundaries.builds.attempt_context(build_id, lane, attempt).await
-    }
     async fn absorb_build(&self, facts: &[crate::build_state::BuildFact]) {
         let w = self.write();
         w.boundaries.builds.absorb_build(facts).await
+    }
+    async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
+        self.read().stores().boundaries.builds.facts().await
+    }
+    async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
+        self.read().stores().boundaries.builds.committed_facts(build).await
     }
     async fn held_build(&self, build_id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
         self.read().stores().boundaries.builds.held_build(build_id).await
@@ -818,14 +769,18 @@ impl StorageBackend for MemoryBackend {
         let connections: OpenConnections = Arc::new(|_node_id: NodeId| Box::pin(async { Ok(Arc::new(crate::storage::MemoryConnectionsStorage::default()) as Arc<dyn ConnectionsStorage>) }));
         // A memory write is one step under its store's lock: every write issued has finished.
         let finish_writes: FinishWrites = Arc::new(|| Box::pin(async {}));
+        // One events store: the Build store folds a Build's state from the events the fabric-primary
+        // writes through the boundary, as the file backend opens its journal over its events store.
+        let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let events = crate::build_state::BuildStateAdapter::events(&*builds);
         Ok(StorageBoundaries {
             fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::new()),
             meshes: Arc::new(crate::storage::MemoryMeshStorage::default()),
             nodes: Arc::new(crate::storage::MemoryNodesStorage::default()),
             root_runtimes: None,
             connections,
-            builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
-            events: Arc::new(crate::events_storage::MemoryEventsStorage::new()),
+            builds,
+            events,
             finish_writes,
             writes_to: "memory".into(),
         })
@@ -1087,10 +1042,9 @@ mod tests {
 
     /// The same script against any backend that keeps its rows across opens: the admin re-born at the
     /// same path and name over the inherited data dir (a new node.id and incarnation, `inherited = true`)
-    /// reads its predecessor's runtime rows and attempt contexts. The attempt contexts are the data
-    /// dir's, so an admin over another data dir reads none of them; the runtime rows are the fabric's
-    /// lines in its store root's `nodes.jsonl` (R-SR1), so it reads them too.
-    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(backend: &dyn StorageBackend, first: &StorageScope, re_born: &StorageScope, other: &StorageScope) {
+    /// reads its predecessor's runtime rows: they are the fabric's lines in its store root's
+    /// `nodes.jsonl` (R-SR1), so another admin over another data dir reads them too.
+    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes(backend: &dyn StorageBackend, first: &StorageScope, re_born: &StorageScope, other: &StorageScope) {
         let runtime = crate::storage::RuntimeRow { r#type: "node".into(), mesh: "mesh1".into(),
             node_id: NodeId::mint(),
             path: "mesh1.node".into(), name: "2".into(),
@@ -1098,20 +1052,15 @@ mod tests {
             runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
             data_dir: Some("/tmp/mesh1.node.2".into()),
         };
-        let build = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
-        let context = rdm_core::context::CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), ..Default::default() };
         {
             let b = backend.open(first).await.unwrap_or_else(|e| panic!("the first birth opens: {e}"));
             b.nodes.put_runtime(&runtime).await.unwrap();
-            b.builds.put_attempt_context(&build, Some("mesh1"), 2, &context).await.unwrap();
         }
         let b = backend.open(re_born).await.unwrap_or_else(|e| panic!("the re-born birth opens over the inherited data dir: {e}"));
         assert_eq!(b.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the re-born admin holds its predecessor's runtime rows");
         assert_eq!(b.nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "a point read by the birth finds it");
-        assert_eq!(b.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), Some(context.clone()), "and its predecessor's attempt context");
         let o = backend.open(other).await.unwrap_or_else(|e| panic!("another admin opens over its own data dir: {e}"));
         assert_eq!(o.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the runtime rows are the fabric's, on its store root");
-        assert_eq!(o.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), None, "nor the attempt context");
     }
 
     /// CONTRACT (R-FI1: a restarting node-admin's own row names the Fabric whose root it opens, read
@@ -1159,11 +1108,11 @@ mod tests {
     /// they were keyed by the birth that wrote them. Rafka's backend runs the same script.
     #[cfg(feature = "file-backend")]
     #[tokio::test]
-    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts_on_the_file_backend() {
+    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_on_the_file_backend() {
         let store = crate::test_support::tempdir("file-backend-re-born-store");
         let data_dir = crate::test_support::tempdir("file-backend-re-born-data");
         let fabric_id = FabricId::mint();
         let at = |data_dir: PathBuf| StorageScope { data_dir, fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint(), node_id: NodeId::mint() };
-        a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-re-born-other"))).await;
+        a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-re-born-other"))).await;
     }
 }

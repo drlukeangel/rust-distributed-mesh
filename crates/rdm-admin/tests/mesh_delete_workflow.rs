@@ -1,7 +1,7 @@
 //! The workflow of a mesh.delete, as the two Status bodies of the mesh delete command pair name it
-//! (node-rpc-envelope.md, "Mesh delete command pair": "The workflow identity is (mesh_id, build_id,
-//! attempt, operation) ... A stale/conflicting workflow identity or incomplete manifest is refused by name with
-//! a typed Status refusal naming the mismatch"). The leaving mesh-primary decides a `DeleteMesh` on
+//! (node-rpc-envelope.md, "Mesh delete command pair": the workflow identity is `(mesh_id, build_id,
+//! operation)`, and a conflicting workflow identity or an incomplete manifest is refused by name with a
+//! typed Status refusal naming the mismatch). The leaving mesh-primary decides a `DeleteMesh` on
 //! the workflow of the leave it holds (`mesh_delete::MeshDeleteRuns::admit`, which its door
 //! `admin::mesh_delete::admit_delete_mesh` answers from); the fabric-primary decides a `MeshDeleted` on the
 //! workflows it holds open (`mesh_delete::MeshDeleteView::admitted_for`, which its door `validate_handoff`
@@ -17,7 +17,6 @@ use rdm_admin::storage::{MemoryMeshStorage, MeshStorage};
 use rdm_core::status::{MeshDeleteIdentity, MeshState, StatusReply};
 use serde_json::Value;
 
-const STALE: &str = "rdm.node_admin.mesh.reject.via-stale-workflow";
 const CONFLICTING: &str = "rdm.node_admin.mesh.reject.via-conflicting-workflow";
 
 /// An owner of a leave, named by a fresh node id.
@@ -26,12 +25,12 @@ fn owner_named() -> rdm_admin::mesh_delete::MeshDeleteOwner {
     rdm_admin::mesh_delete::MeshDeleteOwner { name: id.to_string(), target: rdm_transport::NodeTarget::ExactNode(id) }
 }
 
-fn key(mesh_id: &MeshId, build_id: &str, attempt: u32) -> MeshDeleteKey {
-    MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse(build_id).unwrap(), attempt, operation: operation(mesh_id) }
+fn key(mesh_id: &MeshId, build_id: &str) -> MeshDeleteKey {
+    MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse(build_id).unwrap(), operation: operation(mesh_id) }
 }
 
 fn identity(k: &MeshDeleteKey) -> MeshDeleteIdentity {
-    MeshDeleteIdentity { build_id: k.build_id.to_string(), attempt: k.attempt, operation: k.operation.clone() }
+    MeshDeleteIdentity { build_id: k.build_id.to_string(), operation: k.operation.clone() }
 }
 
 fn final_primary() -> RosterBirth {
@@ -58,31 +57,29 @@ fn refusals(spans: &[Value], trace_id: &str, name: &str) -> Vec<Value> {
 
 /// The attributes a workflow reject span carries: the call, the workflow held and the workflow offered.
 type OperationFields = (String, String, String, String);
-type WorkflowFields = (String, String, OperationFields);
+type WorkflowFields = (String, OperationFields);
 fn named_identities(span: &Value) -> (String, WorkflowFields, WorkflowFields) {
     let a = |k: &str| span["attributes"][k].as_str().unwrap().to_string();
     let operation = |prefix: &str| (a(&format!("{prefix}operation")), a(&format!("{prefix}operation_subject")), a(&format!("{prefix}operation_step")), a(&format!("{prefix}operation_occurrence")));
-    (a("call"), (a("held_build_id"), a("held_attempt"), operation("held_")), (a("build_id"), a("attempt"), operation("")))
+    (a("call"), (a("held_build_id"), operation("held_")), (a("build_id"), operation("")))
 }
 
 fn workflow_fields(k: &MeshDeleteKey) -> WorkflowFields {
-    (k.build_id.to_string(), k.attempt.to_string(), (k.operation.action.clone(), format!("{:?}", k.operation.subject), format!("{:?}", k.operation.step), format!("{:?}", k.operation.occurrence)))
+    (k.build_id.to_string(), (k.operation.action.clone(), format!("{:?}", k.operation.subject), format!("{:?}", k.operation.step), format!("{:?}", k.operation.occurrence)))
 }
 
 /// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair"): the leaving mesh-primary holds the
-/// workflow of the `delete-mesh` it admitted last. A `delete-mesh` of an earlier attempt of that Build is
-/// `RejectedStaleWorkflow { held, offered }`; one of another Build is `RejectedConflictingWorkflow { held,
-/// offered }`. Neither is admitted: the run keeps its workflow and its handoff goes to the sender of the
-/// workflow held. After the manifest is recorded the same holds: the workflow held resends its handoff and
-/// an earlier attempt is still stale. Each refusal is its reject span (`via-stale-workflow`,
-/// `via-conflicting-workflow`) naming the call, the workflow held and the workflow offered. What must NOT
-/// happen: a stale or conflicting `delete-mesh` admitted (`Running`, `Start`), or the handoff moved to
-/// its sender.
+/// workflow of the `delete-mesh` it admitted. A `delete-mesh` of another Build is
+/// `RejectedConflictingWorkflow { held, offered }` and is not admitted: the run keeps its workflow and its
+/// handoff goes to the sender of the workflow held. After the manifest is recorded the same holds: the
+/// workflow held resends its handoff and another Build still conflicts. Each refusal is its reject span
+/// (`via-conflicting-workflow`) naming the call, the workflow held and the workflow offered. What must NOT
+/// happen: a conflicting `delete-mesh` admitted (`Running`, `Start`), or the handoff moved to its sender.
 #[test]
-fn a_delete_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_the_run_keeps_its_workflow() {
+fn a_delete_mesh_of_another_build_is_refused_by_name_and_the_run_keeps_its_workflow() {
     let cap = capture();
     let mesh_id = MeshId::mint();
-    let (held, stale, other) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "k4eyvfmr6wmf", 1));
+    let (held, other) = (key(&mesh_id, "ay59nvr5jw53"), key(&mesh_id, "k4eyvfmr6wmf"));
     let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
@@ -92,14 +89,14 @@ fn a_delete_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_t
         let trace_id = trace_id(&root);
         let out = tracing::Instrument::instrument(
             async {
-                let running = vec![runs.admit(&held, &owner), runs.admit(&stale, &late), runs.admit(&other, &late), runs.admit(&held, &owner)];
+                let running = vec![runs.admit(&held, &owner), runs.admit(&other, &late), runs.admit(&held, &owner)];
                 let m = manifest.clone();
                 let end = run_admitted(&runs, &mesh_id, move |_, _| {
                     let m = m.clone();
                     async move { Ok::<ExitManifest, String>(m) }
                 })
                 .await;
-                let exited = vec![runs.admit(&stale, &late), runs.admit(&held, &owner)];
+                let exited = vec![runs.admit(&other, &late), runs.admit(&held, &owner)];
                 (running, end, exited)
             },
             root,
@@ -111,32 +108,28 @@ fn a_delete_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_t
         running,
         vec![
             MeshDeleteAdmission::Start,
-            MeshDeleteAdmission::Refused(StatusReply::RejectedStaleWorkflow { held: identity(&held), offered: identity(&stale) }),
             MeshDeleteAdmission::Refused(StatusReply::RejectedConflictingWorkflow { held: identity(&held), offered: identity(&other) }),
             MeshDeleteAdmission::Running,
         ],
-        "while the members run, an earlier attempt is stale and another Build conflicts; the workflow held is the same leave"
+        "while the members run, another Build conflicts; the workflow held is the same leave"
     );
     assert_eq!(end, MeshDeleteRunEnd::Exited { key: held.clone(), owner: owner.clone(), manifest: manifest.clone() }, "the run ends under the workflow held, its handoff to that workflow's sender");
-    assert_eq!(exited, vec![MeshDeleteAdmission::Refused(StatusReply::RejectedStaleWorkflow { held: identity(&held), offered: identity(&stale) }), MeshDeleteAdmission::Repeat { manifest, recorded: held.attempt }], "after the manifest, an earlier attempt is still stale and the workflow held resends");
+    assert_eq!(exited, vec![MeshDeleteAdmission::Refused(StatusReply::RejectedConflictingWorkflow { held: identity(&held), offered: identity(&other) }), MeshDeleteAdmission::Repeat { manifest }], "after the manifest, another Build still conflicts and the workflow held resends");
     let spans = cap.spans();
     keep("delete_mesh_workflow", &trace_id, &spans);
-    let stale_spans = refusals(&spans, &trace_id, STALE);
     let conflicting_spans = refusals(&spans, &trace_id, CONFLICTING);
     let named = workflow_fields;
     let expect = |offered: &MeshDeleteKey| {
         let (h, o) = (named(&held), named(offered));
         ("delete-mesh".to_string(), h, o)
     };
-    assert_eq!(stale_spans.iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&stale), expect(&stale)], "{stale_spans:?}");
-    assert_eq!(conflicting_spans.iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&other)], "{conflicting_spans:?}");
+    assert_eq!(conflicting_spans.iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&other), expect(&other)], "{conflicting_spans:?}");
 }
 
 /// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair": the fabric-primary "answers MeshDeleted
-/// Applied or AlreadyApplied after handoff validation"; "A stale/conflicting workflow identity ... is refused by
-/// name"): the fabric-primary holds attempt 2 of the leave open. A `mesh-deleted` naming attempt 1 is
-/// `RejectedStaleWorkflow { held, offered }`; one naming attempt 3, which the owner never opened, or
-/// another Build, is `RejectedConflictingWorkflow { held, offered }`; the workflow held is admitted. A
+/// Applied or AlreadyApplied after handoff validation"; a conflicting workflow identity is refused by
+/// name): the fabric-primary holds the leave of one Build open. A `mesh-deleted` naming another Build is
+/// `RejectedConflictingWorkflow { held, offered }`; the workflow held is admitted. A
 /// refused workflow ends nothing: the open leave still waits for its handoff. A `mesh-deleted` for a mesh
 /// with no open leave names no open command (`RejectedUnmatchedCompletion { field: "command" }`).
 /// Each workflow refusal is its reject span naming the call, the workflow held and the workflow offered. What
@@ -145,10 +138,10 @@ fn a_delete_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_t
 fn a_mesh_deleted_report_naming_a_workflow_the_fabric_primary_does_not_hold_is_refused_by_name() {
     let cap = capture();
     let mesh_id = MeshId::mint();
-    let (held, stale, unopened, other) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "ay59nvr5jw53", 3), key(&mesh_id, "k4eyvfmr6wmf", 2));
-    let elsewhere = key(&MeshId::mint(), "xe5k179s7rw5", 1);
+    let (held, other) = (key(&mesh_id, "ay59nvr5jw53"), key(&mesh_id, "k4eyvfmr6wmf"));
+    let elsewhere = key(&MeshId::mint(), "xe5k179s7rw5");
     let last = final_primary();
-    let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime(), amendments: Vec::new() };
+    let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime() };
     let mesh_delete_view = MeshDeleteView::default();
     let handoff = mesh_delete_view.open(held.clone(), admitted);
     let ((refused, accepted, unknown), trace_id) = cap.run(async {
@@ -156,7 +149,7 @@ fn a_mesh_deleted_report_naming_a_workflow_the_fabric_primary_does_not_hold_is_r
         let trace_id = trace_id(&root);
         let out = tracing::Instrument::instrument(
             async {
-                let refused: Vec<Result<(), StatusReply>> = [&stale, &unopened, &other].into_iter().map(|k| mesh_delete_view.admitted_for(k).map(|_| ())).collect();
+                let refused: Vec<Result<(), StatusReply>> = [&other].into_iter().map(|k| mesh_delete_view.admitted_for(k).map(|_| ())).collect();
                 let accepted = mesh_delete_view.admitted_for(&held).map(|a| a.final_primary);
                 let unknown = mesh_delete_view.admitted_for(&elsewhere).map(|_| ());
                 (refused, accepted, unknown)
@@ -169,11 +162,9 @@ fn a_mesh_deleted_report_naming_a_workflow_the_fabric_primary_does_not_hold_is_r
     assert_eq!(
         refused,
         vec![
-            Err(StatusReply::RejectedStaleWorkflow { held: identity(&held), offered: identity(&stale) }),
-            Err(StatusReply::RejectedConflictingWorkflow { held: identity(&held), offered: identity(&unopened) }),
             Err(StatusReply::RejectedConflictingWorkflow { held: identity(&held), offered: identity(&other) }),
         ],
-        "each workflow the owner does not hold open is refused by name, the workflow held and the one offered"
+        "a workflow the owner does not hold open is refused by name, the workflow held and the one offered"
     );
     assert_eq!(accepted, Ok(last), "the workflow held is admitted");
     assert!(matches!(&unknown, Err(StatusReply::RejectedUnmatchedCompletion { field, reported, .. }) if field == "command" && reported.contains(elsewhere.build_id.as_str())), "a mesh with no open leave names no open command: {unknown:?}");
@@ -185,21 +176,19 @@ fn a_mesh_deleted_report_naming_a_workflow_the_fabric_primary_does_not_hold_is_r
         let (h, o) = (named(&held), named(offered));
         ("mesh-deleted".to_string(), h, o)
     };
-    assert_eq!(refusals(&spans, &trace_id, STALE).iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&stale)]);
-    assert_eq!(refusals(&spans, &trace_id, CONFLICTING).iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&unopened), expect(&other)]);
+    assert_eq!(refusals(&spans, &trace_id, CONFLICTING).iter().map(named_identities).collect::<Vec<_>>(), vec![expect(&other)]);
 }
 
 /// CONTRACT (states.md: the mesh's `leaving` is entered by the `delete-mesh` down op, "one commit
 /// stores the row, applies it, gossips it and answers the op"; mesh-delete.md step 5: at mesh.deleted
 /// the mesh-primary writes the mesh row deleted; node-rpc-envelope.md, "Mesh delete command pair":
-/// `DeleteMesh` answers Applied or AlreadyApplied on admission, and a stale workflow is refused by name):
-/// the first `delete-mesh` of the mesh commits its row Leaving and is admitted. Once the members exited
-/// and the row is deleted (mesh.deleted, the handoff's own write), a `delete-mesh` of the workflow held
-/// replays the recorded MeshDeleted report, an earlier attempt is `RejectedStaleWorkflow`, and the Build's
-/// next attempt is replayed the same recorded report, naming the attempt its manifest was recorded under,
-/// with no member workflow run again (Luke 2026-10-13: "Re-admitting DeleteMesh must replay the recorded
-/// MeshDeleted report without repeating completed deletions"); none of them commits the row again,
-/// which stays Dead. What must
+/// `DeleteMesh` answers Applied or AlreadyApplied on admission, and a conflicting workflow is refused by
+/// name): the first `delete-mesh` of the mesh commits its row Leaving and is admitted. Once the members
+/// exited and the row is deleted (mesh.deleted, the handoff's own write), each `delete-mesh` of the
+/// workflow held replays the recorded MeshDeleted report with no member workflow run again (Luke
+/// 2026-10-13: "Re-admitting DeleteMesh must replay the recorded MeshDeleted report without repeating
+/// completed deletions"), and one of another Build is `RejectedConflictingWorkflow`; none of them
+/// commits the row again, which stays Dead. What must
 /// NOT happen: a workflow after mesh.deleted answered `RejectedInvalidMeshTransition { current: Dead }`
 /// (a lost handoff could then never be sent again, and the leave never ends), or a second Leaving
 /// commit.
@@ -207,7 +196,7 @@ fn a_mesh_deleted_report_naming_a_workflow_the_fabric_primary_does_not_hold_is_r
 fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_workflow_identity_and_commits_the_leaving_row_once() {
     let cap = capture();
     let mesh_id = MeshId::mint();
-    let (held, stale, next) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "ay59nvr5jw53", 3));
+    let (held, other) = (key(&mesh_id, "ay59nvr5jw53"), key(&mesh_id, "k4eyvfmr6wmf"));
     let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
@@ -229,7 +218,7 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_workflow_identity_and_comm
                 { let mut r = storage.mesh(&mesh_id.clone()).await.unwrap().unwrap_or_else(|| rdm_admin::storage::MeshRecord::new(mesh_id.clone(), "mesh2")); r.state = MeshState::Deleted; storage.put_mesh(&r).await.unwrap(); }
                 declared.lock().unwrap().meshes.insert(mesh_id.clone(), MeshState::Deleted);
                 let mut after = Vec::new();
-                for (k, sender) in [(&held, &owner), (&stale, &late), (&next, &owner)] {
+                for (k, sender) in [(&held, &owner), (&other, &late), (&held, &owner)] {
                     after.push(admit_delete_mesh(&runs, &storage, &Default::default(), &declared, "mesh2", k, sender).await);
                 }
                 let row = storage.meshes().await.unwrap().into_iter().map(|r| (r.mesh_id.clone(), r.state)).collect::<std::collections::HashMap<_, _>>().get(&mesh_id).copied();
@@ -247,12 +236,12 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_workflow_identity_and_comm
     assert_eq!(
         after,
         vec![
-            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Repeat { manifest: manifest.clone(), recorded: held.attempt } },
-            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Refused(StatusReply::RejectedStaleWorkflow { held: identity(&held), offered: identity(&stale) }) },
-            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Repeat { manifest, recorded: held.attempt } },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Repeat { manifest: manifest.clone() } },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Refused(StatusReply::RejectedConflictingWorkflow { held: identity(&held), offered: identity(&other) }) },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Repeat { manifest } },
         ],
         "after mesh.deleted each delete-mesh is decided on its workflow, and none commits the row again"
     );
     assert_eq!(row, Some(MeshState::Deleted), "the mesh row stays Dead");
-    assert_eq!(refusals(&spans, &trace_id, STALE).len(), 1, "the stale workflow is refused by its own span");
+    assert_eq!(refusals(&spans, &trace_id, CONFLICTING).len(), 1, "the conflicting workflow is refused by its own span");
 }

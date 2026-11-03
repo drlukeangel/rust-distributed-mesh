@@ -47,7 +47,7 @@ pub async fn run(scenario: &Scenario, provider: Option<&str>, test: &str) -> Run
     estate.artifact("build-request.json", &json!({"call": "build.create", "desired": desired}));
     let done = estate.resize(&desired).await;
     let build_id = done.build_id.to_string();
-    estate.artifact("build-status.json", &json!({"build_id": build_id, "attempt": done.attempt, "frames": format!("{:?}", done.frames)}));
+    estate.artifact("build-status.json", &json!({"build_id": build_id, "frames": format!("{:?}", done.frames)}));
 
     let shape: Vec<(&str, u32, u32)> = scenario.meshes.iter().map(|m| (m.name.as_str(), m.count(rdm_core::NODE_ADMIN), m.count(rdm_core::NODE))).collect();
     estate.settles_to(&shape, SETTLE).await;

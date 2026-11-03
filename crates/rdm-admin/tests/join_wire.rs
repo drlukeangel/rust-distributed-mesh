@@ -13,7 +13,7 @@ fn answer() -> JoinAnswer {
         control: JoinControl { cert_policy: None,
             provider: ProviderKind::Process,
             fabric: Some(FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }),
-            build: Some(BuildFloor { build_id: rdm_admin::build::BuildId::mint(), attempt: 2 }),
+            build: Some(BuildFloor { build_id: rdm_admin::build::BuildId::mint()}),
             rafka_time_ms: 1_700_000_000_123,
             member_cert: vec![0xca, 0xfe],
             name: Some(rdm_core::PathName::new("mesh1.node", "1-old").unwrap()),
@@ -35,7 +35,7 @@ fn a_join_request_and_its_answer_round_trip_through_postcard() {
     assert_eq!(back.control.rafka_time_ms, 1_700_000_000_123);
     assert_eq!(back.control.member_cert, vec![0xca, 0xfe], "the member cert travels as opaque bytes");
     assert_eq!(back.control.name, a.control.name, "the row's name the joiner installs");
-    assert_eq!(back.control.build.map(|b| (b.build_id, b.attempt)), a.control.build.map(|b| (b.build_id, b.attempt)));
+    assert_eq!(back.control.build.map(|b| b.build_id), a.control.build.map(|b| b.build_id));
 }
 
 // @feature: node-lifecycle

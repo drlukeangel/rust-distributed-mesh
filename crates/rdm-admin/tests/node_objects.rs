@@ -11,10 +11,10 @@ use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
 use rdm_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
 use rdm_admin::build::{BuildId, BuildOperation};
-use rdm_admin::build_claim::{AttemptContexts, ClaimDoor};
-use rdm_admin::build_drive::{ExecutorInspection, Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
+
+use rdm_admin::build_drive::{Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
 use rdm_admin::build_op::{local_dispatched, BuildDoor, BuildSlot};
-use rdm_admin::build_run::{AttemptRuns, FramedBuilds, RunDoor};
+use rdm_admin::build_run::{FramedBuilds, RunDoor, SectionRuns};
 use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::executor::{BuildExecutor, OperationRunner};
 use rdm_transport::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -204,23 +204,23 @@ fn mn() -> Topology {
 }
 
 /// The fabric-primary's Build door over `rig`'s Build state: the control plane that accepts a change,
-/// the drive that claims on its own log, and the executor door that runs the create pipeline.
+/// the drive over the Build's events, and the door that runs the create pipeline.
 async fn door(rig: &Arc<Rig>, join: Duration) -> Arc<BuildDoor> {
-    door_via(rig, join, |run| Arc::new(Local(run)), Arc::new(crate::loopback::Exits::default())).await
+    door_via(rig, join, |run| Arc::new(Local(run))).await
 }
 
-/// [`door`], whose drive calls `dispatcher` (made over the in-process executor door) and reads an
-/// executor's departure from `departure`.
-async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<RunDoor>) -> Arc<dyn Dispatcher>, departure: Arc<dyn ExecutorInspection>) -> Arc<BuildDoor> {
+/// [`door`], whose drive calls `dispatcher` (made over the in-process door).
+async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<RunDoor>) -> Arc<dyn Dispatcher>) -> Arc<BuildDoor> {
     let t = mn();
-    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let fabric_id = t.fabric.id.clone();
+    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap()).await.unwrap();
     let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
     // The fabric-primary's node records, one store for its door and its writer (boot.rs): its door
     // accepts an action on a birth from its record, never from the gossip view (Q197).
     let records = crate::records_of(&t).await;
     let executor_birth = t.node(&me).unwrap().birth().unwrap();
     let control = Arc::new(crate::control_plane(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
-    crate::bind_store(&control, records.clone(), &*control.topology.read().await).await;
+    crate::bind_store(&control, records.clone());
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
@@ -228,30 +228,12 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
         me_path: me.path.clone(), me_name: me.name.clone(),
+        birth: executor_birth.clone(),
         topology: control.topology.clone(),
         builds: rig.builds.clone(),
-        door: Arc::new(ClaimDoor {
-            incarnation: executor_birth.incarnation.clone(),
-            me_path: me.path.clone(), me_name: me.name.clone(),
-            node_id: control
-                .topology
-                .read()
-                .await
-                .node(&me)
-                .expect("the fabric-primary is in the view")
-                .node_id
-                .clone(),
-            topology: control.topology.clone(),
-            builds: rig.builds.clone(),
-            contexts: Arc::new(AttemptContexts::in_memory()),
-            claims: control.claims.clone(),
-            claimed: Default::default(),
-        }),
         dispatcher: dispatcher(run.clone()),
         gate: Arc::new(OpenGate),
-        departure,
-        verdicts: Arc::new(crate::loopback::NoVerdicts),
-        notices: rig.told.notices(),
+        notices: crate::written_by(rig.told.notices(), &*rig.builds, &fabric_id, &executor_birth),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
@@ -261,8 +243,9 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
 /// role (`mesh1.node-admin.1` holds it): its claim door carries its own birth's node id.
 async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let mut t = mn();
+    let fabric_id = t.fabric.id.clone();
     t.nodes.push(node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false));
-    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap()).await.unwrap();
     let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
     let executor_birth = t.node(&me).unwrap().birth().unwrap();
     let control = Arc::new(crate::control_plane(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
@@ -274,82 +257,27 @@ async fn door_not_fabric_primary(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let _ = rig.sink.1.set(rows);
     let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
         me_path: me.path.clone(), me_name: me.name.clone(),
+        birth: executor_birth.clone(),
         topology: control.topology.clone(),
         builds: rig.builds.clone(),
-        door: Arc::new(ClaimDoor {
-            incarnation: executor_birth.incarnation.clone(),
-            me_path: me.path.clone(), me_name: me.name.clone(),
-            node_id,
-            topology: control.topology.clone(),
-            builds: rig.builds.clone(),
-            contexts: Arc::new(AttemptContexts::in_memory()),
-            claims: control.claims.clone(),
-            claimed: Default::default(),
-        }),
         dispatcher: Arc::new(Local(run.clone())),
         gate: Arc::new(OpenGate),
-        departure: Arc::new(crate::loopback::Exits::default()),
-        verdicts: Arc::new(crate::loopback::NoVerdicts),
-        notices: rig.told.notices(),
+        notices: crate::written_by(rig.told.notices(), &*rig.builds, &fabric_id, &executor_birth),
         turns: rdm_admin::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
 }
 
-/// The fabric-primary's Build door over a Build log of its own: the executor writes its step
-/// receipts on `rig`'s log, the fabric-primary's log holds the claim it decided and the verdict the
-/// executor reported, and no step receipt reaches it (the Build topic delivers those apart, later).
-async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, join: Duration) -> Arc<BuildDoor> {
-    // The executor's own log beside the fabric's shared Build storage, the fabric-primary's log (Q292).
-    rig.local.persist_in(fp.clone());
-    let t = mn();
-    let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*fp, t.fabric.id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-    let executor_birth = t.node(&me).unwrap().birth().unwrap();
-    let control = Arc::new(crate::control_plane(fp.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
-    let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
-    let exec = Arc::new(BuildExecutor { executor: executor_birth.clone(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me_path: me.path.clone(), me_name: me.name.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rdm_admin::stop_gate::StopGate::new() });
-    let rows = Arc::new(rdm_admin::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rdm_admin::storage::MemoryNodesStorage::default())));
-    let _ = rig.sink.1.set(rows);
-    let env = Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-        me_path: me.path.clone(), me_name: me.name.clone(),
-        topology: control.topology.clone(),
-        builds: fp.clone(),
-        door: Arc::new(ClaimDoor {
-            incarnation: executor_birth.incarnation.clone(),
-            me_path: me.path.clone(), me_name: me.name.clone(),
-            node_id: control
-                .topology
-                .read()
-                .await
-                .node(&me)
-                .expect("the fabric-primary is in the view")
-                .node_id
-                .clone(),
-            topology: control.topology.clone(),
-            builds: fp.clone(),
-            contexts: Arc::new(AttemptContexts::in_memory()),
-            claims: control.claims.clone(),
-            claimed: Default::default(),
-        }),
-        dispatcher: Arc::new(Local(run.clone())),
-        gate: Arc::new(OpenGate),
-        departure: Arc::new(crate::loopback::Exits::default()),
-        verdicts: Arc::new(rdm_admin::build_op::LocalVerdicts { local: fp }),
-        notices: rig.told.notices(),
-        turns: rdm_admin::stop_gate::StopGate::new(),
-    });
-    Arc::new(BuildDoor { me_path: me.path.clone(), me_name: me.name.clone(), control, drives: Arc::new(Drives::default()), env, run, primaries: rdm_transport::topology::PrimaryView::default(), incarnation: executor_birth.incarnation.clone() })
-}
-
-/// The one executor of the fixture is the fabric-primary itself.
+/// The one admin of the fixture that runs a section is the fabric-primary itself.
 struct Local(Arc<RunDoor>);
 
 #[async_trait::async_trait]
 impl Dispatcher for Local {
-    async fn dispatch(&self, _turn: &rdm_admin::stop_gate::Turn, executor: &rdm_core::framing::Birth, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, plan: rdm_admin::executor::RunPlan) -> Dispatched {
-        local_dispatched(self.0.attempt_run(build_id, attempt, executor, &context, &plan).await)
+    async fn dispatch(&self, build_id: &BuildId, mesh: &str, context: rdm_core::context::CallContext) -> Dispatched {
+        local_dispatched(self.0.attempt_run(build_id, mesh, &context).await)
+    }
+    async fn run_own(&self, turn: &rdm_admin::stop_gate::Turn, build_id: &BuildId, mesh: &str, context: rdm_core::context::CallContext, operations: Vec<BuildOperation>) -> Dispatched {
+        local_dispatched(self.0.run_under(turn, build_id, mesh, &context, operations).await)
     }
 }
 
@@ -361,9 +289,9 @@ struct RigRunner {
 
 #[async_trait::async_trait]
 impl OperationRunner for RigRunner {
-    async fn run(&self, build_id: &BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
+    async fn run(&self, build_id: &BuildId, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
         match op {
-            BuildOperation::CreateNode { path: node_path, name: node_name, over: None, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; self.rig.pipeline_create(build_id, attempt, node, self.join).await.map_err(Into::into) },
+            BuildOperation::CreateNode { path: node_path, name: node_name, node_id, over: None, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; self.rig.pipeline_create(build_id, node, node_id, self.join).await.map_err(Into::into) },
             other => Err(format!("the fixture creates nodes only, not {other:?}").into()),
         }
     }
@@ -416,7 +344,7 @@ fn nodes_over(carrier: &BuildCarrier) -> Nodes {
 struct Rig {
     builds: Arc<dyn BuildStateAdapter>,
     local: Arc<MemoryBuildStateAdapter>,
-    runs: Arc<AttemptRuns>,
+    runs: Arc<SectionRuns>,
     joins: Arc<Joins>,
     topology_view: Arc<TopologyView>,
     sink: Arc<Published>,
@@ -443,15 +371,18 @@ impl Rig {
             declared: Default::default(),
             binding: None,
         };
-        let runs = Arc::new(AttemptRuns::default());
+        let runs = Arc::new(SectionRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone())), local, runs, joins: Arc::new(Joins::default()), topology_view: Arc::new(TopologyView { not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root, told: crate::Told::default() }
+        // The executing admin's step log, as boot wires it: each step its pipelines run written as its
+        // own `rdm.build.step` event (build.md §5).
+        let steps = rdm_admin::events_storage::EventsWriter::on(local.events(), &template.fabric_id, &template.launcher.node_id);
+        Rig { builds: Arc::new(FramedBuilds::new(local.clone(), runs.clone()).writing_steps(steps, "mesh1")), local, runs, joins: Arc::new(Joins::default()), topology_view: Arc::new(TopologyView { not_ready: Mutex::new(None), pending: Mutex::new(None) }), sink: Arc::default(), template, data_root, told: crate::Told::default() }
     }
 
-    /// Run the create pipeline for `name` in `attempt` of `build`, as the executing admin does once
-    /// the fabric-primary has claimed the attempt for it; `join` bounds the waits for the birth's
+    /// Run the create pipeline for `name` of `build`, under the node.id the Build record names for it
+    /// (D58), as the mesh-primary that runs its section does; `join` bounds the waits for the birth's
     /// report (`WaitForBind`, `WaitForMeshJoin`).
-    async fn pipeline_create(&self, build: &BuildId, attempt: u32, name: &PathName, join: Duration) -> Result<(), String> {
+    async fn pipeline_create(&self, build: &BuildId, name: &PathName, node_id: &NodeId, join: Duration) -> Result<(), String> {
         let pipeline = DeploymentPipeline {
             provider: &Up,
             joins: &self.joins,
@@ -462,28 +393,41 @@ impl Rig {
             template: &self.template,
             timeouts: Timeouts { bind: join, join, ..Timeouts::default() },
         };
-        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(name)), node_id: (rdm_core::fixture_node_id(name)).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), attempt, path: name.path.clone(), name: name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let req = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", node_id), node_id: node_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build.clone()), path: name.path.clone(), name: name.name.clone(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// The key of `build`'s create of `name`, `node.create:<node_id>` under the node.id its record names
+    /// (D58), once the Build is in this admin's log.
+    async fn create_key(&self, build: &BuildId, name: &PathName) -> rdm_core::OperationId {
+        loop {
+            if let Some(key) = self.builds.read_build(build).await.ok().and_then(|view| view.topology.create_key(name)) {
+                return key;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     /// The birth reports where it bound once the create has made its runtime fact available: the
     /// node's own `JoinNode`, the validated report the pipeline's `WaitForBind` and `WaitForMeshJoin`
     /// complete from (node-create.md step 5).
     async fn report_bind(&self, build: &BuildId, name: &PathName) {
-        let op = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(name));
+        let op = self.create_key(build, name).await;
         loop {
             // The executor's own log holds the Build once the call that carries it has arrived.
             let Ok(view) = self.builds.read_build(build).await else {
                 tokio::time::sleep(Duration::from_millis(5)).await;
                 continue;
             };
-            let done = |step: &str| view.steps.iter().find(|s| s.operation == op && s.step == step && s.outcome == rdm_admin::build_state::StepOutcome::Complete);
-            if let (Some(identity), Some(storage), Some(_)) = (done("AllocateIdentity"), done("PrepareStorage"), done("MakeRuntimeFactAvailableToBirth")) {
-                let id = identity.output.clone().unwrap();
-                let node_id = NodeId::parse(id["node_id"].as_str().unwrap()).unwrap();
-                let incarnation = IncarnationId::parse(id["incarnation"].as_str().unwrap()).unwrap();
-                let endpoint_id = EndpointId(storage.output.clone().unwrap().as_str().unwrap().to_string());
+            let done = |step: &str| view.completed(&op.to_string(), step);
+            if done("AllocateIdentity") && done("PrepareStorage") && done("MakeRuntimeFactAvailableToBirth") {
+                // The birth as the create made it durable (D58, D67): the node.id the create names, the
+                // incarnation the node record's newest birth, the endpoint the transport key in its data dir.
+                let node_id = view.topology.created_id(name).expect("the Build creates the node").clone();
+                let rows = self.sink.1.get().expect("the rig's node rows");
+                let incarnation = rows.written().row_of(&node_id).and_then(|r| r.newest_birth().map(|b| b.incarnation_id.clone()).or_else(|| r.allocated.as_ref().map(|a| a.incarnation.clone()))).expect("the create wrote the node record");
                 let data_dir = rdm_admin::deployment::node_data_dir(&self.data_root, &node_id);
+                let endpoint_id = rdm_admin::deployment::pipeline::inspect_transport_key(&data_dir).expect("the create wrote the transport key");
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
                 let digest = MeshDigest { held_hash: Default::default(),
                     fabric_id: FabricId::mint(),
@@ -527,7 +471,7 @@ async fn collect_frames(stream: &mut WorkflowStream, within: Duration) -> (Vec<F
     }
 }
 
-const ATTEMPT_ONE_STEPS: [&str; 7] = [
+const STEPS_BEFORE_THE_BIND: [&str; 7] = [
     "AllocateIdentity",
     "PrepareStorage",
     "PrepareNetwork",
@@ -538,15 +482,14 @@ const ATTEMPT_ONE_STEPS: [&str; 7] = [
 ];
 
 /// CONTRACT (ops-naming acceptance 1, "A failure names its step"; node-create.md "Join completion
-/// and failure evidence": only an accepted full report completes the bind/join waits; Q245, Q252: a
-/// failed create is created again by the next attempt, once): a create whose process starts and whose
-/// birth never reports where it bound (no `JoinNode` arrives) fails its bind wait, and the next
-/// attempt's create fails it again; the stream ends `Started`, then `Failed { step: node.create,
+/// and failure evidence": only an accepted full report completes the bind/join waits; Q346: a failed
+/// step ends its mesh's section, never the Build): a create whose process starts and whose birth never
+/// reports where it bound (no `JoinNode` arrives) fails its bind wait once: mesh1's section ends there
+/// and the Build ends `incomplete`. The stream ends `Started`, then `Failed { step: node.create,
 /// reason }` from `WaitForBind`, within the deadline and with no Blocked frame before it.
 /// `node.created`, `node.joined` and `node.started` are never emitted, the node never reaches
 /// ready, and the call's span names the failed step.
 #[test]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_after_it() {
     let cap = capture();
     let (frames, end, published) = cap.run(async {
@@ -558,7 +501,6 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
         let published = rig.sink.0.lock().unwrap().clone();
         (frames, end, published)
     });
-    let attempt = 1;
     let reason = match frames.last() {
         Some(Frame::Failed { step: NodeStep::Create, reason }) => reason.clone(),
         other => panic!("the stream ends Failed at node.create, not {other:?}; frames {frames:?}"),
@@ -566,7 +508,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
     assert!(reason.contains("did not report where it bound"), "the failure carries the step's own reason: {reason}");
     assert_eq!(
         frames[..frames.len() - 1],
-        [Frame::Started { build_id: match &frames[0] { Frame::Started { build_id, .. } => build_id.clone(), f => panic!("{f:?}") }, attempt }]
+        [Frame::Started { build_id: match &frames[0] { Frame::Started { build_id, .. } => build_id.clone(), f => panic!("{f:?}") } }]
     );
     assert!(end.is_none(), "a failed step ends the stream with its terminal frame, not a broken stream");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Created | NodeEvent::Joined | NodeEvent::Started) | Frame::Complete)), "nothing downstream of the failed step is emitted: {frames:?}");
@@ -581,17 +523,15 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
         assert!(spans_named(&spans, span).is_empty(), "node.{never} is never emitted");
     }
     let bind_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForBind").collect();
-    let mut bind_attempts: Vec<&str> = bind_step.iter().map(|s| s["attributes"]["attempt"].as_str().unwrap_or("")).collect();
-    bind_attempts.sort();
-    assert_eq!(bind_attempts, ["1", "2"], "the pipeline ran the bind wait once in the first attempt and once in the next attempt's create");
-    assert!(bind_step.iter().all(|s| s["attributes"]["outcome"] == "failed"), "and it failed there both times: {bind_step:?}");
+    assert_eq!(bind_step.len(), 1, "the pipeline ran the bind wait once: the failed step ended the section: {bind_step:?}");
+    assert!(bind_step.iter().all(|s| s["attributes"]["outcome"] == "failed"), "and it failed: {bind_step:?}");
     assert!(spans_named(&spans, "rdm.node_admin.deployment.update.via-step").iter().all(|s| s["attributes"]["step"] != "WaitForMeshJoin"), "nothing after the bind wait ran: {spans:?}");
-    let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage" && s["attributes"]["attempt"] == "1").collect();
-    assert_eq!(prepare.len(), 1, "PrepareStorage ran once in the first attempt: {spans:?}");
+    let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage").collect();
+    assert_eq!(prepare.len(), 1, "PrepareStorage ran once: {spans:?}");
     assert_eq!(prepare[0]["attributes"]["awaited"], "entry-spec,create-row,transport-key", "PrepareStorage names every await it ran (a plain create reads its create spec first): {}", prepare[0]);
     assert_eq!(prepare[0]["attributes"]["awaiting"], "done", "PrepareStorage completed every await: {}", prepare[0]);
     let create_row: Vec<&Value> = spans_named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["moment"] == "create").collect();
-    assert_eq!(create_row.len(), 2, "each attempt's PrepareStorage opened the create via-node-row span: {create_row:?}");
+    assert_eq!(create_row.len(), 1, "PrepareStorage opened the create via-node-row span: {create_row:?}");
     for row in &create_row {
         assert_eq!(row["attributes"]["outcome"], "row-written", "the row was written: {row}");
         assert_eq!(row["attributes"]["awaited"], "writer-check,read-previous-row,put-node-row", "the row span names every await of the write: {row}");
@@ -617,7 +557,7 @@ fn a_create_whose_birth_never_reports_names_the_bind_wait_and_emits_nothing_afte
 #[test]
 fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() {
     let cap = capture();
-    let (blocked, after) = cap.run(async {
+    let (blocked, after, key) = cap.run(async {
         let rig = Arc::new(Rig::new());
         let why = "mesh1.node.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready";
         *rig.topology_view.not_ready.lock().unwrap() = Some(why.to_string());
@@ -642,12 +582,13 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         *rig.topology_view.not_ready.lock().unwrap() = None;
         let (after, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
-        (blocked.unwrap(), after)
+        let key = rig.create_key(&build, &PathName::new("mesh1.node", "3").unwrap()).await;
+        (blocked.unwrap(), after, key)
     });
     assert_eq!(
         blocked,
         Frame::Blocked {
-            operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())),
+            operation: key.to_string(),
             step: "WaitForNodeReady".into(),
             reason: "mesh1.node.3: pre_node_ready is blocked (attempt 1): pulling the accepting authority; it runs again on primary-ready".into()
         }
@@ -685,14 +626,14 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
 /// the caller and the fabric-primary is cut while the create waits for its birth's report (the
 /// `JoinNode` that completes `WaitForBind` and `WaitForMeshJoin`, node-create.md step 5). The
 /// caller's stream ends `Indeterminate`, never `Failed`. The cut cancels nothing: `build.get [id]` over a
-/// new transport returns the receipts of exactly the steps that completed, `Resume` names the bind
-/// wait as the first step without a `Complete` receipt, and the re-submit by the Build id streams
+/// new transport returns the step events of exactly the steps that completed, `Resume` names the bind
+/// wait as the first step without a `complete` event, and the re-submit by the Build id streams
 /// the same Build (never a second one) to its end once the birth is heard: no completed step runs
-/// again, each still has one receipt, and the steps' spans say the attempt ran them once.
+/// again, each still has one step event, and the steps' spans say the run ran them once.
 #[test]
 fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     let cap = capture();
-    let (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition) = cap.run(async {
+    let (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition, key) = cap.run(async {
         let rig = Arc::new(Rig::new());
         let door = door(&rig, Duration::from_secs(60)).await;
         let served = serve(door.clone()).await;
@@ -722,7 +663,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let again = serve(door).await;
         let builds = Builds::new(again.carrier.clone());
         let receipts_after_cut = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
-        let resume = Resume::from_receipts(&WorkflowKind::Create, &receipts_after_cut, accepted.attempt).unwrap();
+        let resume = Resume::from_receipts(&WorkflowKind::Create, &receipts_after_cut).unwrap();
         // The birth is heard this time: the Build the cut did not cancel goes on to its end, and the
         // re-submit streams it.
         let mut resumed = nodes_over(&again.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
@@ -734,26 +675,25 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let (final_frames, resumed_end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(resumed_end.is_none(), "the resumed stream ends with its terminal frame: {resumed_end:?}");
         let receipts_after = builds.get(&rdm_client::Filter::new().eq("id", [accepted.build_id.to_string()])).await.unwrap().remove(0);
-        (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition)
+        let key = rig.create_key(&build, &PathName::new("mesh1.node", "3").unwrap()).await;
+        (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition, key)
     });
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a cut stream is Indeterminate, not {end:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Complete)), "no step is inferred failed or complete from a broken stream: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Joined | NodeEvent::Started | NodeEvent::Created))), "no event past the join was delivered: {frames:?}");
 
-    let completed_steps = |r: &rdm_client::Build, attempt: u32| -> Vec<String> {
-        r.steps.iter().filter(|s| s.attempt == attempt && s.result == rdm_core::build::StepResult::Complete).map(|s| s.step.clone()).collect()
-    };
-    assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
-    assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
-    assert_eq!(resume.from, Some((rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
-    assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
+    let completed_steps = |r: &rdm_client::Build| -> Vec<String> { r.completed_steps().into_iter().map(|(_, _, step)| step).collect() };
+    let step_events = |r: &rdm_client::Build| -> Vec<String> { r.events.iter().filter(|e| e["type"] == "rdm.build.step").filter_map(|e| e["data"]["step"].as_str().map(str::to_string)).collect() };
+    assert_eq!(step_events(&receipts_after_cut).len(), STEPS_BEFORE_THE_BIND.len(), "build.get returns exactly the step events of the steps that completed: {:?}", receipts_after_cut.events);
+    assert_eq!(completed_steps(&receipts_after_cut), STEPS_BEFORE_THE_BIND);
+    assert_eq!(resume.from, Some((key.to_string(), "WaitForBind".to_string())), "the resume starts at the first step without a Complete receipt");
+    assert_eq!(resume.completed.len(), STEPS_BEFORE_THE_BIND.len());
     assert_eq!(disposition, Some(rdm_core::build::Disposition::Attached), "the re-submit attached to the Build the cut left running");
 
-    for step in ATTEMPT_ONE_STEPS {
-        assert_eq!(receipts_after.steps.iter().filter(|s| s.step == step).count(), 1, "{step} was not run again: one receipt, from attempt 1");
+    for step in STEPS_BEFORE_THE_BIND {
+        assert_eq!(step_events(&receipts_after).iter().filter(|s| *s == step).count(), 1, "{step} was not run again: one step event");
     }
-    assert_eq!(receipts_after.attempt, 1, "the cut opened no second attempt");
-    assert_eq!(completed_steps(&receipts_after, 1).len(), ATTEMPT_ONE_STEPS.len() + 6, "the same attempt went on through the bind wait and the join to its end");
+    assert_eq!(completed_steps(&receipts_after).len(), STEPS_BEFORE_THE_BIND.len() + 6, "the same run went on through the bind wait and the join to its end");
     assert!(matches!(&final_frames[0], Frame::Started { .. }));
     assert_eq!(final_frames[1..], [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
 
@@ -763,25 +703,23 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     assert_eq!(calls.iter().filter(|c| c["attributes"]["outcome"] == "indeterminate").count(), 1, "the cut call ended indeterminate");
     assert_eq!(calls.iter().filter(|c| c["attributes"]["outcome"] == "complete").count(), 1, "the re-submit ended complete");
     let steps = spans_named(&spans, "rdm.node_admin.deployment.update.via-step");
-    for step in ATTEMPT_ONE_STEPS {
+    for step in STEPS_BEFORE_THE_BIND {
         let ran: Vec<_> = steps.iter().filter(|s| s["attributes"]["step"] == step).collect();
         assert_eq!(ran.len(), 1, "{step} ran once: {ran:?}");
         assert_eq!(ran[0]["attributes"]["outcome"], "complete");
     }
 }
 
-/// CONTRACT (R-ON8): a re-submit of a Build that completed is answered from what the
-/// fabric-primary's own drive recorded off the calls it made, never from the Build facts its log
-/// holds. The fabric-primary's log holds the verdict the executor reported and not one step receipt
-/// (the Build topic delivers those separately, and may deliver the verdict first), yet the
-/// re-submit is `AlreadyApplied` with every event the create named and the terminal frame.
+/// CONTRACT (R-ON8; node-rpc-envelope.md "Caller execution and certainty": "a completed Build answers
+/// AlreadyApplied with its terminal frame"): a re-submit of a Build that completed is answered from what
+/// the fabric-primary's own drive recorded off the calls it made: the re-submit is `AlreadyApplied` with
+/// every event the create named and the terminal frame.
 #[test]
 fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_the_log_holds() {
     let cap = capture();
     let (first, again, disposition) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let fp = Arc::new(MemoryBuildStateAdapter::new());
-        let served = serve(door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await).await;
+        let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -792,7 +730,7 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         });
         let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
-        assert!(fp.facts().await.unwrap().iter().all(|f| !matches!(f, rdm_admin::build_state::BuildFact::Step(_))), "the fabric-primary's log holds no step receipt");
+
         let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
         let (again, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
@@ -809,16 +747,14 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
 /// just before its verdict landed, and so asks for its drive after the drive ended `Complete`, is
 /// handed the completed drive itself. The record a re-submit is answered from stays the drive
 /// that made the calls: the re-submit is `AlreadyApplied` with every frame and the terminal frame.
-/// Must NOT happen: the completed drive replaced by a new one, which reattaches to the executor
-/// (a second `build.attempt.run` of the ended attempt) and makes a re-submit read a running drive
-/// and answer `Attached` (fabric_build__build_op gate fa338efb, build_op.rs:233).
+/// Must NOT happen: the completed drive replaced by a new one, which runs the section again and makes
+/// a re-submit read a running drive and answer `Attached` (fabric_build__build_op gate fa338efb).
 #[test]
 fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_already_applied() {
     let cap = capture();
     let (build, kept, first, again, disposition) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let fp = Arc::new(MemoryBuildStateAdapter::new());
-        let door = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
+        let door = door(&rig, Duration::from_secs(30)).await;
         let served = serve(door.clone()).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = create_rpc(&nodes, &served).await.unwrap();
@@ -834,7 +770,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         assert!(completed.completed(), "the drive ended Complete");
         // The reconcile loop's `ensure_active`, acting on a `list_active` read taken before the
         // verdict entered the log.
-        let ensured = door.drives.ensure(&door.env, &build, accepted.attempt);
+        let ensured = door.drives.ensure(&door.env, &build);
         let kept = Arc::ptr_eq(&ensured, &completed) && door.drives.get(&build).is_some_and(|d| Arc::ptr_eq(&d, &completed));
         let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
@@ -846,26 +782,23 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
     assert_eq!(disposition, Some(rdm_core::build::Disposition::AlreadyApplied));
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
     let spans = cap.spans();
-    let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.log().to_string().as_str()).collect();
-    assert_eq!(dispatches.len(), 1, "one build.attempt.run, from the drive that made the calls: {dispatches:?}");
-    eprintln!("span rdm.node_admin.build.update.via-dispatch {}", dispatches[0]);
+    let sections: Vec<_> = spans_named(&spans, "rdm.node_admin.build.serve.via-own-section").into_iter().filter(|s| s["attributes"]["build_id"] == build.log().to_string().as_str()).collect();
+    assert_eq!(sections.len(), 1, "one run of mesh1's section, from the drive that made the calls: {sections:?}");
+    eprintln!("span rdm.node_admin.build.serve.via-own-section {}", sections[0]);
 }
 
-/// A Build log read by a reconcile tick that took its current-Build read before the Build's latest
-/// verdict landed: `current_build` answers the pointer as read then, and every other read is the log
+/// A Build store read by a reconcile tick that took its current-Build read before the Build's
+/// `rdm.build.ended` landed: `current_build` answers as read then, and every other read is the store
 /// as it is now.
-struct ReadBeforeTheVerdict {
+struct ReadBeforeTheEnd {
     inner: Arc<dyn BuildStateAdapter>,
     current: rdm_admin::build_state::CurrentBuild,
 }
 
 #[async_trait::async_trait]
-impl BuildStateAdapter for ReadBeforeTheVerdict {
+impl BuildStateAdapter for ReadBeforeTheEnd {
     async fn publish_accepted(&self, a: &rdm_admin::build_state::BuildAccepted) -> Result<(), rdm_admin::build_state::BuildStateError> {
         self.inner.publish_accepted(a).await
-    }
-    async fn open_attempt(&self, o: &rdm_admin::build_state::AttemptOpened) -> Result<(), rdm_admin::build_state::BuildStateError> {
-        self.inner.open_attempt(o).await
     }
     async fn read_build(&self, id: &BuildId) -> Result<rdm_admin::build_state::BuildProjection, rdm_admin::build_state::BuildStateError> {
         self.inner.read_build(id).await
@@ -876,100 +809,69 @@ impl BuildStateAdapter for ReadBeforeTheVerdict {
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
-    async fn list_active(&self) -> Result<Vec<rdm_admin::build_state::BuildProjection>, rdm_admin::build_state::BuildStateError> {
-        self.inner.list_active().await
-    }
-    async fn claim_attempt(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<rdm_admin::build_state::ClaimOutcome, rdm_admin::build_state::BuildStateError> {
-        self.inner.claim_attempt(c).await
-    }
-    async fn adopt_claim(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<(), rdm_admin::build_state::BuildStateError> {
-        self.inner.adopt_claim(c).await
-    }
-    async fn append_step_receipt(&self, r: &rdm_admin::build_state::BuildStepReceipt) -> Result<(), rdm_admin::build_state::BuildStateError> {
-        self.inner.append_step_receipt(r).await
-    }
-    async fn append_attempt_receipt(&self, r: &rdm_admin::build_state::BuildAttemptReceipt) -> Result<(), rdm_admin::build_state::BuildStateError> {
-        self.inner.append_attempt_receipt(r).await
-    }
-    async fn facts(&self) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, rdm_core::OperationId)>, rdm_admin::build_state::BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
-    }
     async fn forget(&self, id: &BuildId) -> Result<(), rdm_admin::build_state::BuildStateError> {
         self.inner.forget(id).await
     }
+    async fn accepted_newest_first(&self) -> Result<Vec<rdm_admin::build::BuildId>, rdm_admin::build_state::BuildStateError> {
+        self.inner.accepted_newest_first().await
+    }
+    fn events(&self) -> std::sync::Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
+    }
 }
 
-/// CONTRACT (R-BI3, i143-rulings-2026-10-12-rx-authz.md: "A failed Build is never current, and nothing
-/// resumes it on its own; a caller resubmits it"): the reconcile loop's tick (`ensure_active`) reads the
-/// current Build's id, then the Build. When the Build's attempt failed between the two reads (a
-/// stop that was never admitted), the Build it read is Failed and the tick drives nothing:
-/// it makes no drive and returns none, so no next attempt is claimed, and it says so on
-/// `rdm.node_admin.build.reject.via-not-in-progress-when-read` naming the Build, its attempt and its
-/// state. Must NOT happen: a drive of the failed Build's next attempt from the tick (the land gate on
-/// 7b2310bb, node_restart.rs:212: attempt 3 claimed 2 ms after attempt 2 failed, by a drive with no
-/// parent span, the reconcile loop's).
+
+/// CONTRACT (R-BI3: "A failed Build is never current, and nothing resumes it on its own; a caller
+/// resubmits it"; Q346: an incomplete Build is skipped the same way): the reconcile loop's tick
+/// (`ensure_active`) reads the current Build's id, then the Build. When the Build ended `incomplete`
+/// between the two reads, the Build it read is no longer in progress and the tick drives nothing: it
+/// makes no drive and returns none, and says so on
+/// `rdm.node_admin.build.reject.via-not-in-progress-when-read` naming the Build and its state.
+/// Must NOT happen: a drive of the incomplete Build from the tick (the land gate on 7b2310bb: a Build
+/// run again 2 ms after it ended, by a drive with no parent span, the reconcile loop's).
 #[test]
-fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothing() {
-    use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildState, CurrentBuild};
+fn a_reconcile_tick_whose_build_ended_incomplete_between_its_reads_drives_nothing() {
+    use rdm_admin::build_state::{BuildState, CurrentBuild};
+    use rdm_admin::events_storage::{EndedSection, EndedState};
     let cap = capture();
-    let (b0, read, ensured, held, claims) = cap.run(async {
+    let (b0, read, ensured, held) = cap.run(async {
         let rig = Arc::new(Rig::new());
         let door = door(&rig, Duration::from_secs(30)).await;
         let b0 = rig.builds.current_build().await.unwrap().into_build_id().unwrap();
-        let executor_birth = door.control.topology.read().await.node(&door.me()).unwrap().birth().unwrap();
-        let claim = |attempt: u32| BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: executor_birth.clone() };
-        rig.builds.claim_attempt(&claim(1)).await.unwrap();
-        rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
-        // A delete reopens the completed Build; its attempt is claimed and running.
-        rig.builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Delete, action: None, opened_by: rdm_core::NodeId::parse("100000000000").unwrap(), opened_at_ms: 1, mesh: None, context: None }).await.unwrap();
-        rig.builds.claim_attempt(&claim(2)).await.unwrap();
-        // The tick's current-Build read, taken now; the attempt's verdict lands before its Build read.
+        let by = door.control.topology.read().await.node(&door.me()).unwrap().birth().unwrap();
+        // A resubmitted run of the Build is in progress when the tick reads the current Build.
+        crate::start_build(&*rig.builds, &b0, &by).await;
         let before = rig.builds.current_build().await.unwrap();
-        assert_eq!(before, CurrentBuild::InProgress(b0.clone()), "the stop's attempt is in progress when the tick reads the current Build");
-        rig.builds
-            .append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "mesh1.node.2: stop-node was not admitted".into(), code: rdm_core::outcome::Code::DeadlineExceeded } })
-            .await
-            .unwrap();
+        assert_eq!(before, CurrentBuild::InProgress(b0.clone()), "the run is in progress when the tick reads the current Build");
+        // The run's end lands before the tick's Build read.
+        let short = EndedState::Incomplete { sections: vec![EndedSection { mesh: "mesh1".into(), op: "node.stop:000000000002".into(), step: "StopNode".into(), reason: "mesh1.node.2: stop-node was not admitted".into(), code: "DEADLINE_EXCEEDED".into() }] };
+        crate::end_build(&*rig.builds, &b0, &by, short).await;
         let read = rig.builds.read_build(&b0).await.unwrap();
         let e = &door.env;
-        let env = Arc::new(DriveEnv { me_mesh: e.me_mesh.clone(), me_path: e.me_path.clone(), me_name: e.me_name.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheVerdict { inner: rig.builds.clone(), current: before }), door: e.door.clone(), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), departure: e.departure.clone(), verdicts: e.verdicts.clone(), notices: e.notices.clone(), turns: e.turns.clone() });
+        let env = Arc::new(DriveEnv { me_mesh: e.me_mesh.clone(), me_path: e.me_path.clone(), me_name: e.me_name.clone(), birth: e.birth.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheEnd { inner: rig.builds.clone(), current: before }), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), notices: e.notices.clone(), turns: e.turns.clone() });
         let drives = Arc::new(Drives::default());
         let ensured = rdm_admin::build_op::ensure_active(&drives, &env).await.len();
         let held = drives.get(&b0).is_some();
-        let claims: Vec<u32> = rig.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
-            BuildFact::Claim(c) if c.build_id == b0 => Some(c.attempt),
-            _ => None,
-        }).collect();
-        assert_eq!((read.state, read.attempt), (BuildState::Failed, 2), "the tick's Build read is the failed attempt: {read:?}");
-        (b0, read, ensured, held, claims)
+        (b0, read, ensured, held)
     });
-    assert_eq!(ensured, 0, "the tick drives nothing of the Build it read failed ({:?} at attempt {})", read.state, read.attempt);
+    assert_eq!(read.state, BuildState::Incomplete, "the tick's Build read is the incomplete run: {read:?}");
+    assert_eq!(ensured, 0, "the tick drives nothing of the Build it read incomplete");
     assert!(!held, "no drive of {b0} is made");
-    assert_eq!(claims, vec![1, 2], "no attempt after the failed one is claimed");
     let spans = cap.spans();
     let told = spans_named(&spans, "rdm.node_admin.build.reject.via-not-in-progress-when-read");
-    assert!(told.iter().any(|s| s["attributes"]["build_id"] == b0.log().to_string().as_str() && s["attributes"]["attempt"] == "2" && s["attributes"]["state"] == "Failed"), "the tick names the Build it read failed: {told:?}");
+    assert!(told.iter().any(|s| s["attributes"]["build_id"] == b0.log().to_string().as_str() && s["attributes"]["state"] == "Incomplete"), "the tick names the Build it read incomplete: {told:?}");
     eprintln!("span rdm.node_admin.build.reject.via-not-in-progress-when-read {}", told[0]);
 }
 
-
-/// CONTRACT (R-ON8): a fabric-primary that took the role after a Build ended holds no frame of it.
-/// Its re-submit is `AlreadyApplied` and the frames are read from the executor of the last attempt
-/// (`build.attempt.run` attaches to what that admin wrote itself), not from step facts the new
-/// fabric-primary's log may not hold yet.
+/// CONTRACT (R-ON8; build.md §5: a step is its `rdm.build.step` event): a fabric-primary that took the
+/// role after a Build ended holds no frame of it. Its re-submit is `AlreadyApplied` and the frames are
+/// read from the Build's step events.
 #[test]
-fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor() {
+fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_its_step_events() {
     let cap = capture();
     let (first, again, disposition) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let fp = Arc::new(MemoryBuildStateAdapter::new());
-        let before = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
+        let before = door(&rig, Duration::from_secs(30)).await;
         let served = serve(before.clone()).await;
         let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -990,27 +892,26 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         (first, again, disposition)
     });
     assert_eq!(disposition, Some(rdm_core::build::Disposition::AlreadyApplied));
-    assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
+    assert_eq!(again[1..], first[1..], "every event again, replayed from the step events: {again:?}");
 }
 
-/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`, Q256: "Each time a Build's first
-/// attempt is claimed ... the fabric-primary sends the application one `on_build_started` notice";
-/// "Each `on_build_started` is followed by one `on_build_ended` for the same opening"; "a successor that
+/// CONTRACT (fabric-node-hooks.md `on_build_started`: "Each time the fabric-primary writes a Build's
+/// `rdm.build.started` event ... it sends the application one `on_build_started` notice from that
+/// write"; `on_build_ended`: "Each time a Build's terminal state is recorded"; Q256: "a successor that
 /// adopts the state calls nothing"; "a fabric-primary lost before it sends it leaves none, and `build.get`
-/// is the durable read"): a create Build sends the application `on_build_started` at the claim of its
-/// first attempt (reason `requested`), then one `on_build_ended` once its `Complete` is recorded, naming
-/// the attempt that completed it, each under its own span (outcome `sent`). An admin that became
-/// fabric-primary after the Build ended adopts it `Complete`, sends nothing, and the Build reads `Complete`; a
-/// re-submit that replays the ended Build, or a reconcile tick that asks for its drive again, sends no
-/// second notice. Must NOT happen: an ending the application is never told of, an ending told before its
-/// opening, or a notice for a replayed or re-read terminal, or from the fabric-primary that adopted it.
+/// is the durable read"): a create Build sends the application `on_build_started` from its
+/// `rdm.build.started`, then one `on_build_ended` once its `Complete` is recorded, each under its own
+/// span (outcome `sent`). An admin that became fabric-primary after the Build ended adopts it
+/// `Complete`, sends nothing, and the Build reads `Complete`; a re-submit that replays the ended Build,
+/// or a reconcile tick that asks for its drive again, sends no second notice. Must NOT happen: an ending
+/// the application is never told of, an ending told before its opening, or a notice for a replayed or
+/// re-read terminal, or from the fabric-primary that adopted it.
 #[test]
-fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adopts_it_sends_none() {
+fn a_build_sends_started_then_ended_and_a_successor_that_adopts_it_sends_none() {
     let cap = capture();
-    let (build, attempt, after_complete, after_adoption, disposition, state) = cap.run(async {
+    let (build, after_complete, after_adoption, disposition, state) = cap.run(async {
         let rig = Arc::new(Rig::new());
-        let fp = Arc::new(MemoryBuildStateAdapter::new());
-        let before = door_with_own_log(&rig, fp.clone(), Duration::from_secs(30)).await;
+        let before = door(&rig, Duration::from_secs(30)).await;
         let served = serve(before.clone()).await;
         let mut stream = create_rpc(&nodes_over(&served.carrier), &served).await.unwrap();
         let build = stream.accepted().expect("the call opened a Build").build_id.clone();
@@ -1022,14 +923,13 @@ fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adop
         let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         assert_eq!(frames.last(), Some(&Frame::Complete), "the create's Build completed: {frames:?}");
-        let attempt = fp.read_build(&build).await.unwrap().attempt;
         let after_complete = rig.told.settled(2).await;
         // A re-submit after the end replays the drive's own record, and the reconcile loop's tick asks
         // for the drive again: neither is a second transition.
         let mut replayed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let (_, end) = collect_frames(&mut replayed, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
-        let _ = before.drives.ensure(&before.env, &build, accepted.attempt);
+        let _ = before.drives.ensure(&before.env, &build);
         let after_replay = rig.told.settled(2).await;
         assert_eq!(after_replay.len(), 2, "a replayed or re-read terminal sends no second notice: {after_replay:?}");
         // The same Build log under a fabric-primary that never drove this Build: it adopts it Complete.
@@ -1040,43 +940,39 @@ fn a_build_sends_started_at_its_first_claim_then_ended_and_a_successor_that_adop
         let (_, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         let after_adoption = rig.told.settled(2).await;
-        let state = fp.read_build(&build).await.unwrap().state;
-        (build, attempt, after_complete, after_adoption, disposition, state)
+        let state = rig.builds.read_build(&build).await.unwrap().state;
+        (build, after_complete, after_adoption, disposition, state)
     });
     let id = build.to_string();
-    let keys: Vec<(String, u32, &str)> = after_complete.iter().map(crate::Notice::key).collect();
-    assert_eq!(keys, vec![(id.clone(), 1, "started"), (id.clone(), attempt, "complete")], "started at the first claim, then ended Complete: {after_complete:?}");
-    let crate::Notice::Started(started) = &after_complete[0] else { unreachable!() };
-    assert_eq!(started.reason, rdm_admin::build_state::AttemptReason::Requested, "the first attempt's reason: {started:?}");
+    let keys: Vec<(String, &str)> = after_complete.iter().map(crate::Notice::key).collect();
+    assert_eq!(keys, vec![(id.clone(), "started"), (id.clone(), "complete")], "started at its rdm.build.started, then ended Complete: {after_complete:?}");
     let crate::Notice::Ended(ended) = &after_complete[1] else { unreachable!() };
-    assert_eq!((ended.reason, &ended.state), (rdm_admin::build_state::AttemptReason::Requested, &rdm_admin::wiring::BuildEndedState::Complete), "{ended:?}");
+    assert_eq!(ended.state, rdm_admin::wiring::BuildEndedState::Complete, "{ended:?}");
     assert_eq!(disposition, Some(rdm_core::build::Disposition::AlreadyApplied), "the successor adopted the ended Build");
     assert_eq!(after_adoption.len(), 2, "the successor that adopted the ended Build sends nothing: {after_adoption:?}");
     assert_eq!(state, rdm_admin::build_state::BuildState::Complete, "build.get reads the terminal");
     let spans = cap.spans();
     let logged = build.log().to_string();
-    for (name, want) in [("rdm.node_admin.build.update.via-on-build-started", ("1", "requested", None)), ("rdm.node_admin.build.update.via-on-build-ended", (&*attempt.to_string(), "requested", Some("complete")))] {
+    for (name, want) in [("rdm.node_admin.build.update.via-on-build-started", None), ("rdm.node_admin.build.update.via-on-build-ended", Some("complete"))] {
         let sent: Vec<&Value> = spans_named(&spans, name).into_iter().filter(|s| s["attributes"]["build_id"] == logged.as_str()).collect();
         assert_eq!(sent.len(), 1, "one {name} span for the Build: {sent:?}");
         let a = &sent[0]["attributes"];
-        assert_eq!((a["outcome"].as_str(), a["attempt"].as_str(), a["reason"].as_str()), (Some("sent"), Some(want.0), Some(want.1)), "{}", sent[0]);
-        if let Some(state) = want.2 {
+        assert_eq!(a["outcome"].as_str(), Some("sent"), "{}", sent[0]);
+        if let Some(state) = want {
             assert_eq!(a["state"].as_str(), Some(state), "{}", sent[0]);
         }
         eprintln!("span {name} {}", sent[0]);
     }
 }
 
-/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`, Q256: "An attempt that continues a
-/// Build in progress (a takeover, or the next attempt after a hand-back) sends none"; "A Build that ends
-/// `Failed` ... `Failed { step, reason, code }` as its caller reads it on the Build stream"): a create
-/// whose birth never reports where it bound hands its first attempt back and its next attempt fails the
-/// Build. The application is told `on_build_started` once, at attempt 1, and one `on_build_ended`
-/// `Failed` at attempt 2, naming the step and the reason the stream ends with. Must NOT happen: a second
-/// `on_build_started` for the attempt after the hand-back, or a Failed ending the application is not told of.
+/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`; Q346: a failed step ends its mesh's
+/// section and the Build ends `incomplete`): a create whose birth never reports where it bound fails its
+/// bind wait, which ends mesh1's section, and the Build ends `incomplete`. The application is told
+/// `on_build_started` once and one `on_build_ended` `Incomplete { sections }`, its section naming the
+/// step that failed and the reason the stream ends with. Must NOT happen: a second `on_build_started`,
+/// or an ending the application is not told of.
 #[test]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
-fn a_build_that_hands_back_and_fails_sends_one_started_and_one_failed_ended_naming_the_step() {
+fn a_build_whose_create_fails_sends_one_started_and_one_incomplete_ended_naming_the_step() {
     let cap = capture();
     let (frames, told) = cap.run(async {
         let rig = Arc::new(Rig::new());
@@ -1086,25 +982,22 @@ fn a_build_that_hands_back_and_fails_sends_one_started_and_one_failed_ended_nami
         assert!(end.is_none(), "{end:?}");
         (frames, rig.told.settled(2).await)
     });
-    let Some(Frame::Failed { reason, .. }) = frames.last() else { panic!("the create's Build ended Failed: {frames:?}") };
+    let Some(Frame::Failed { reason, .. }) = frames.last() else { panic!("the create's stream ended Failed: {frames:?}") };
     let id = match &frames[0] {
         Frame::Started { build_id, .. } => build_id.to_string(),
         f => panic!("{f:?}"),
     };
-    let keys: Vec<(String, u32, &str)> = told.iter().map(crate::Notice::key).collect();
-    assert_eq!(keys, vec![(id.clone(), 1, "started"), (id.clone(), 2, "failed")], "one started at attempt 1, none at the attempt after the hand-back, one Failed ending: {told:?}");
+    let keys: Vec<(String, &str)> = told.iter().map(crate::Notice::key).collect();
+    assert_eq!(keys, vec![(id.clone(), "started"), (id, "incomplete")], "one started, one incomplete ending: {told:?}");
     let crate::Notice::Ended(ended) = &told[1] else { unreachable!() };
     match &ended.state {
-        rdm_admin::wiring::BuildEndedState::Failed { step, reason: why, .. } => {
-            assert!(!step.is_empty(), "the Failed ending names its step: {ended:?}");
-            assert_eq!(why, reason, "the Failed ending's reason is the one the stream ends with: {ended:?}");
-        }
-        other => panic!("the ending is Failed: {other:?}"),
+        rdm_admin::wiring::BuildEndedState::Incomplete { sections } => assert!(matches!(sections.as_slice(), [u] if u.mesh == "mesh1" && u.step == "WaitForBind" && reason.contains(&u.reason)), "the ending names the failed step and the stream's reason {reason:?}: {ended:?}"),
+        other => panic!("the ending is Incomplete: {other:?}"),
     }
     let spans = cap.spans();
     let ended_spans = spans_named(&spans, "rdm.node_admin.build.update.via-on-build-ended");
     assert_eq!(ended_spans.len(), 1, "{ended_spans:?}");
-    assert_eq!((ended_spans[0]["attributes"]["state"].as_str(), ended_spans[0]["attributes"]["attempt"].as_str()), (Some("failed"), Some("2")), "{}", ended_spans[0]);
+    assert_eq!(ended_spans[0]["attributes"]["state"].as_str(), Some("incomplete"), "{}", ended_spans[0]);
     assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-on-build-started").len(), 1, "one started span");
     eprintln!("span rdm.node_admin.build.update.via-on-build-ended {}", ended_spans[0]);
 }
@@ -1154,28 +1047,28 @@ fn calls_no_op_carries_today_say_so_by_name() {
 }
 
 /// CONTRACT: every step the create and delete pipelines record is one the client names. The
-/// receipts of a whole create fold to `node.joined`, `node.started`, `node.created`
-/// and `Complete`; the receipts of a whole delete fold to the connections-deleted, stopped and
+/// step events of a whole create fold to `node.joined`, `node.started`, `node.created`
+/// and `Complete`; the step events of a whole delete fold to the connections-deleted, stopped and
 /// deleted events and `Complete`. A step the client does not name is refused by name, never skipped.
 #[test]
 fn every_pipeline_step_is_named_by_the_client() {
     use rdm_admin::deployment::pipeline::{CreateStep, DeleteStep};
     let view = |op: &rdm_core::OperationId, steps: Vec<&str>| -> rdm_client::BuildView {
         serde_json::from_value(json!({
-            "build_id": "3qcfk1kq47m9", "topology": {}, "time": 0, "state": "running", "attempt": 1, "executor": null,
-            "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": op, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
-            "last_failure": null, "reason": "requested"
+            "build_id": "3qcfk1kq47m9", "topology": {}, "time": 0, "state": "running",
+            "steps": steps.iter().map(|s| json!({"mesh": "mesh1", "operation": op.to_string(), "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
+            "last_failure": null
         }))
         .unwrap()
     };
     let rpc_id = NodeId::mint();
     let admin_id = NodeId::mint();
     let create: Vec<&str> = CreateStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rdm_client::fold(&WorkflowKind::Create, &view(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), create), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Create, &view(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), create)).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
     let name: rdm_core::PathName = rdm_core::PathName::new("mesh1.node", "3").unwrap();
     let delete: Vec<&str> = DeleteStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rdm_client::fold(&WorkflowKind::Delete(vec![rpc_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &rpc_id), delete.clone()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Delete(vec![rpc_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &rpc_id), delete.clone())).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
@@ -1184,59 +1077,59 @@ fn every_pipeline_step_is_named_by_the_client() {
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
     let admin: rdm_core::PathName = rdm_core::PathName::new("mesh1.node-admin", "2").unwrap();
-    let f = rdm_client::fold(&WorkflowKind::Delete(vec![admin_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &admin_id), delete.clone()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Delete(vec![admin_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &admin_id), delete.clone())).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    let f = rdm_client::fold(&WorkflowKind::Stop(admin.clone()), &view(&rdm_core::OperationId::node("node.stop", &admin_id), vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Stop(admin.clone()), &view(&rdm_core::OperationId::node("node.stop", &admin_id), vec!["StopNode", "AwaitNodeLeft", "Complete"])).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
-    let f = rdm_client::fold(&WorkflowKind::Stop(name.clone()), &view(&rdm_core::OperationId::node("node.stop", &rpc_id), vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Stop(name.clone()), &view(&rdm_core::OperationId::node("node.stop", &rpc_id), vec!["StopNode", "AwaitNodeLeft", "Complete"])).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
     // A standalone node.connection.delete { All } ends on the birth's node.connections.deleted: the
     // process is not stopped and nothing is deleted.
-    let f = rdm_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view(&rdm_core::OperationId::node("node.connection.delete", &rpc_id), vec!["DeleteConnections", "Complete"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view(&rdm_core::OperationId::node("node.connection.delete", &rpc_id), vec!["DeleteConnections", "Complete"])).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
     // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
-    let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(vec![admin_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &admin_id), vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some((rdm_core::OperationId::node("node.delete", &admin_id), "StopNode".to_string())));
+    let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(vec![admin_id.clone()]), &view(&rdm_core::OperationId::node("node.delete", &admin_id), vec!["NodeDeleting"])).unwrap();
+    assert_eq!(r.from, Some((rdm_core::OperationId::node("node.delete", &admin_id).to_string(), "StopNode".to_string())));
     // A SeatTransfer receipt is a deleted step: refused by name under any target, never folded.
     for (kind, op, steps) in [
         (WorkflowKind::Delete(vec![rpc_id.clone()]), rdm_core::OperationId::node("node.delete", &rpc_id), vec!["NodeDeleting", "SeatTransfer"]),
         (WorkflowKind::Stop(name.clone()), rdm_core::OperationId::node("node.stop", &rpc_id), vec!["SeatTransfer"]),
         (WorkflowKind::Stop(admin.clone()), rdm_core::OperationId::node("node.stop", &admin_id), vec!["SeatTransfer"]),
     ] {
-        assert_eq!(rdm_client::fold(&kind, &view(&op, steps), 1).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.clone(), step: "SeatTransfer".into() }, "{kind:?}");
+        assert_eq!(rdm_client::fold(&kind, &view(&op, steps)).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.to_string(), step: "SeatTransfer".into() }, "{kind:?}");
     }
     let unknown = view(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap())), vec!["AllocateIdentity", "InventedStep"]);
     assert_eq!(
-        rdm_client::fold(&WorkflowKind::Create, &unknown, 1).unwrap_err(),
-        CallEnd::UnrecognisedReceipt { operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())), step: "InventedStep".into() }
+        rdm_client::fold(&WorkflowKind::Create, &unknown).unwrap_err(),
+        CallEnd::UnrecognisedReceipt { operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap())).to_string(), step: "InventedStep".into() }
     );
 }
 
-/// Deletion progress follows receipts, independently of path or name spelling.
+/// Deletion progress follows step events, independently of path or name spelling.
 #[test]
 fn deletion_progress_does_not_infer_lifecycle_state_from_path_or_name() {
     let deleted = NodeId::mint();
     let operation = rdm_core::OperationId::node("node.delete", &deleted);
     let view = |steps: Vec<&str>| -> rdm_client::BuildView {
         serde_json::from_value(json!({
-            "build_id": "3qcfk1kq47m9", "topology": {}, "time": 0, "state": "running", "attempt": 1, "executor": null,
-            "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": operation, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
-            "last_failure": null, "reason": "delete"
+            "build_id": "3qcfk1kq47m9", "topology": {}, "time": 0, "state": "running",
+            "steps": steps.iter().map(|s| json!({"mesh": "mesh1", "operation": operation.to_string(), "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
+            "last_failure": null
         })).unwrap()
     };
     {
         let kind = WorkflowKind::Delete(vec![deleted.clone()]);
-        let pending = rdm_client::Resume::from_view(&kind, &view(vec!["NodeDeleting"]), 1).unwrap();
-        assert_eq!(pending.from, Some((operation.clone(), "StopNode".into())), "a spelling is not proof of a stopped birth");
-        let folded = rdm_client::fold(&kind, &view(vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
+        let pending = rdm_client::Resume::from_view(&kind, &view(vec!["NodeDeleting"])).unwrap();
+        assert_eq!(pending.from, Some((operation.to_string(), "StopNode".into())), "a spelling is not proof of a stopped birth");
+        let folded = rdm_client::fold(&kind, &view(vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"])).unwrap();
         assert_eq!(folded.frames, [Frame::Event(NodeEvent::Deleted), Frame::Complete]);
     }
 }
 
-/// One attempt's run as an executor streams it to the fabric-primary: its frames, then its end.
+/// One section's run as its mesh-primary streams it to the fabric-primary: its frames, then its end.
 struct Script(std::collections::VecDeque<InnerItem>);
 
 #[async_trait::async_trait]

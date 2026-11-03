@@ -33,7 +33,6 @@ enum CutWire {
     Receipt { step: String, operation: Option<String>, node: Option<rdm_core::OperationSubject>, at: Option<rdm_core::PathName>, failed: bool },
     Event { event: String, node: Option<rdm_core::NodeId> },
     AcceptedBuild,
-    ClaimedAttempt { attempt: Option<u32> },
     ProviderDomain,
     LeaveAnnouncement { announcements: Vec<u32>, channel: String },
     TopologyRead,
@@ -102,8 +101,6 @@ pub enum Hit {
         operation: rdm_core::OperationId,
         /// The Build.
         build_id: String,
-        /// The attempt.
-        attempt: u32,
     },
     /// A lifecycle event about to be published.
     ///
@@ -115,8 +112,6 @@ pub enum Hit {
         operation: rdm_core::OperationId,
         /// The Build.
         build_id: String,
-        /// The attempt.
-        attempt: u32,
         /// The ID of the node the event concerns.
         node: rdm_core::NodeId,
         /// Its incarnation.
@@ -129,17 +124,10 @@ pub enum Hit {
         /// The Build.
         build_id: String,
     },
-    /// An attempt's claim, durable and broadcast, about to be returned to the drive.
+    /// Reserved: an attempt's claim. A Build has no attempts (Q344); never sent.
     ///
     /// Position 3 on the wire.
-    Claimed {
-        /// The Build.
-        build_id: String,
-        /// The attempt.
-        attempt: u32,
-        /// The executor the claim names.
-        executor: rdm_core::framing::Birth,
-    },
+    Reserved3,
     /// The provider reported a control domain no held birth is in.
     ///
     /// Position 4 on the wire.
@@ -256,10 +244,10 @@ impl Hit {
     pub fn detail(&self) -> serde_json::Value {
         use serde_json::json;
         match self {
-            Hit::Receipt { step, operation, build_id, attempt } => json!({"step": step, "operation": operation, "build_id": build_id, "attempt": attempt}),
-            Hit::Event { event, operation, build_id, attempt, node, incarnation_id } => json!({"event": event, "operation": operation, "build_id": build_id, "attempt": attempt, "node": node, "incarnation_id": incarnation_id}),
+            Hit::Receipt { step, operation, build_id } => json!({"step": step, "operation": operation, "build_id": build_id}),
+            Hit::Event { event, operation, build_id, node, incarnation_id } => json!({"event": event, "operation": operation, "build_id": build_id, "node": node, "incarnation_id": incarnation_id}),
             Hit::Accepted { build_id } => json!({"build_id": build_id}),
-            Hit::Claimed { build_id, attempt, executor } => json!({"build_id": build_id, "attempt": attempt, "executor": executor}),
+            Hit::Reserved3 => json!({}),
             Hit::ProviderDomain => json!({"control_domain": "reported foreign"}),
             Hit::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::TopologyRead { node, reads_from } => json!({"node": node, "reads_from": reads_from}),
@@ -494,7 +482,6 @@ mod tests {
             CutSpec::Receipt { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some(rdm_core::OperationSubject::Node(rdm_core::NodeId::parse("200000000000").unwrap())), at: None, failed: true },
             CutSpec::Event { event: "deleting".into(), node: Some(rdm_core::NodeId::parse("100000000000").unwrap()) },
             CutSpec::AcceptedBuild,
-            CutSpec::ClaimedAttempt { attempt: Some(2) },
             CutSpec::ProviderDomain,
             CutSpec::LeaveAnnouncement { announcements: vec![1, 3], channel: "mesh".into() },
             CutSpec::TopologyRead,
@@ -526,7 +513,6 @@ mod tests {
         let row = |spec: CutSpec, hit: Option<Hit>| CutRow { spec, armed: false, held: true, released: true, hit, held_for_ms: Some(7), seen_while_held: 1 };
         let cuts: BTreeMap<String, CutRow> = [
             ("a".to_string(), row(CutSpec::TopologyRead, Some(Hit::TopologyRead { node: "mesh1.node-admin.4".into(), reads_from: "mesh1.node-admin.1".into() }))),
-            ("b".to_string(), row(CutSpec::ClaimedAttempt { attempt: None }, Some(Hit::Claimed { build_id: "b".into(), attempt: 1, executor: rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() } }))),
             ("c".to_string(), row(CutSpec::ProviderDomain, None)),
         ]
         .into();

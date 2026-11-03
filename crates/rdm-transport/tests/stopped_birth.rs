@@ -65,7 +65,6 @@ fn digest(name: rdm_core::PathName, mesh: &str, r#type: &str, node_id: &NodeId, 
 fn stop_op(d: &MeshDigest) -> LifecycleOp {
     LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(),
         build_id: "build-s52".into(),
-        attempt: 1,
         operation: rdm_core::OperationId::new("node.stop", rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         node_id: d.node.node_id.clone(),
         incarnation: d.node.incarnation.clone(),

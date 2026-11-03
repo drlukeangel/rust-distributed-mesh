@@ -52,7 +52,7 @@ fn reserved(kind: Kind) {
         let births = receiver.digest_view.birth_changes();
         let overlays = receiver.digest_view.overlay_changes();
         let before = (*roles.borrow(), *births.borrow(), *overlays.borrow());
-        let op = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh1".into(), build_id: "reserved-receive".into(), attempt: 1, operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), node_id: node_id.clone(), incarnation: incarnation.clone(), path: "mesh1.node-admin".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
+        let op = LifecycleOp { r#type: "node-admin".into(), mesh: "mesh1".into(), build_id: "reserved-receive".into(), operation: rdm_core::OperationId::node("node.delete", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "2").unwrap())), node_id: node_id.clone(), incarnation: incarnation.clone(), path: "mesh1.node-admin".into(), name: "2".into(), event_at_rafka_ms: 1, traceparent: None, tracestate: None };
         let unknown = iroh::SecretKey::generate().public();
         let frame = match kind {
             Kind::ConnectionsDeleting => Frame::NodeConnectionsDeleting { op, forwarded_by: None },

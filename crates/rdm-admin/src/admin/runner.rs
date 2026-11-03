@@ -172,7 +172,7 @@ impl GossipLifecycle {
 /// NodeStopped for `op`'s exact birth, published by its mesh-primary (node-stop.md step 5): the
 /// departure in this mesh's in-flight overlay, and this admin's view projected at once.
 pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>, op: &rdm_core::LifecycleOp) {
-    let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject);
+    let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
     async {
         backbone.publish_status_event(rdm_transport::topology::StatusEvent::Stopped, op).await;
         if let Some(project) = project {
@@ -193,8 +193,7 @@ pub(crate) fn stopped_publisher(topology_view: TopologyView, backbone: Backbone,
         Box::pin(async move {
             let op = rdm_core::LifecycleOp { r#type: row.r#type.clone(), mesh: topology_view.mesh_name().to_string(),
                 build_id: rdm_core::LifecycleOp::NO_BUILD.into(),
-                attempt: rdm_core::LifecycleOp::NO_ATTEMPT,
-                operation: operation.operation,
+                                operation: operation.operation,
                 node_id: row.node_id,
                 incarnation: row.incarnation_id,
                 path: row.name.path.clone(), name: row.name.name.clone(),
@@ -220,7 +219,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         self.topology_view.clock().now_rafka_ms()
     }
     async fn deleting(&self, op: &rdm_core::LifecycleOp) {
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject);
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         async {
             self.backbone.publish_status_event(rdm_transport::topology::StatusEvent::Deleting, op).await;
             tracing::info!("the node is being removed: every mesh hears it is not routable");
@@ -240,7 +239,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let _ = crate::status_rpc::set_member_status(&self.topology_view.digest_view, crate::status_rpc::MemberStatusReceipt::NodeJoined { op, already: None });
     }
     async fn leaving(&self, op: &rdm_core::LifecycleOp) {
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject);
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         span.in_scope(|| {
             let _ = crate::status_rpc::set_member_status(&self.topology_view.digest_view, crate::status_rpc::MemberStatusReceipt::StopAdmitted(op));
             tracing::info!("the birth admitted stop-node: this mesh-primary sets it stopping and its projection carries that; no frame is published");
@@ -248,7 +247,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     }
     async fn deleted(&self, op: &rdm_core::LifecycleOp) {
         let f = rdm_transport::topology::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
-        let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject);
+        let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node_path = %op.path, node_name = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation.action, operation_subject = ?op.operation.subject);
         async {
             if let Err(e) = self.topology_view.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
@@ -603,21 +602,26 @@ impl AdminRunner {
     /// admin reads no Build record, Q227), else the row's ([`Self::create_template`]). A plain create's
     /// row takes the entry's tags and config at its name claim.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, mesh: &str, r#type: &str, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, row_for: crate::node_rows::RowFor, node_id: &crate::model::NodeId, operation: &rdm_core::OperationId, predecessor: Option<crate::storage::BirthRef>) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) async fn create(&self, build_id: &crate::build::BuildId, node: &PathName, mesh: &str, r#type: &str, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, pre_node_ready: Option<crate::deployment::pipeline::PreNodeReady>, row_for: crate::node_rows::RowFor, node_id: &crate::model::NodeId, operation: &rdm_core::OperationId, predecessor: Option<crate::storage::BirthRef>) -> Result<(), crate::executor::RunEnd> {
         let executable = executable.or(entry.and_then(|e| e.executable.as_ref()));
         let held_runtimes = if rdm_core::is_node_admin(&r#type) { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { predecessor, operation: operation.clone(), node_id: node_id.clone(), mesh: mesh.to_string(), r#type: r#type.to_string(), build_id: Some(build_id.clone()), attempt, path: node.path.clone(), name: node.name.clone(), spec: self.listeners.spec_for(r#type), data_dir: None, held_runtimes, entry: entry.cloned() };
+        let req = CreateRequest { predecessor, operation: operation.clone(), node_id: node_id.clone(), mesh: mesh.to_string(), r#type: r#type.to_string(), build_id: Some(build_id.clone()), path: node.path.clone(), name: node.name.clone(), spec: self.listeners.spec_for(r#type), data_dir: None, held_runtimes, entry: entry.cloned() };
         match self.revise_predecessor(node).await {
             // The member answers: it is commanded back, never created over (node-recovery.md step 3).
             // A stopped birth the check reached is still present (states.md "Stopped nodes"): this
             // Build's create of its path is complete, and its `Complete` receipt is what the plan reads
             // so the create is never planned again in this Build (`accepted::plan_with`).
+            // The birth that answers is this create's own (its node.id), launched before the create's
+            // `Complete`: the create is resumed from what is durable (build.md §1, §4: a resubmit runs
+            // every step whose event did not end `complete`), its running runtime adopted, never
+            // taken as the create done.
+            TargetOutcome::Alive if self.topology.read().await.node(node).is_some_and(|n| n.node_id == *node_id && !n.stopped) => {}
             TargetOutcome::Alive => {
                 let stopped = self.topology.read().await.node(node).is_some_and(|n| n.stopped);
                 if stopped && matches!(row_for, crate::node_rows::RowFor::Create) {
-                    let r = crate::build_state::BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete, output: None, executor: None };
-                    self.builds.append_step_receipt(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation:?}: the stopped birth at path {node_path:?}, name {node_name:?} is held, and its Complete could not be recorded: {e}", node_path = &node.path, node_name = &node.name)))?;
-                    tracing::info_span!("rdm.node_admin.node.create.via-stopped-held", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt).in_scope(|| tracing::info!("the path's stopped birth answers: this Build's create of the path is complete and is not planned again"));
+                    let r = crate::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: operation.clone(), step: "Complete".into(), outcome: crate::build_state::StepOutcome::Complete };
+                    self.builds.write_step(&r).await.map_err(|e| crate::executor::RunEnd::Incomplete(format!("{operation}: the stopped birth at path {node_path:?}, name {node_name:?} is held, and its Complete could not be recorded: {e}", node_path = &node.path, node_name = &node.name)))?;
+                    tracing::info_span!("rdm.node_admin.node.create.via-stopped-held", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name).in_scope(|| tracing::info!("the path's stopped birth answers: this Build's create of the path is complete and is not planned again"));
                 }
                 return Ok(());
             }
@@ -635,8 +639,8 @@ impl AdminRunner {
                 }
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
-                    let terminal = self.delete_unreached(&*self.builds, Some(build_id), attempt, node, &from).await?;
-                    return self.create_over(&*self.builds, Some(build_id), attempt, node, &from, node_id, read_exited(&terminal), executable, Some((&req, row_for))).await;
+                    let terminal = self.delete_unreached(&*self.builds, Some(build_id), node, &from).await?;
+                    return self.create_over(&*self.builds, Some(build_id), node, &from, node_id, read_exited(&terminal), executable, Some((&req, row_for))).await;
                 }
             }
             TargetOutcome::Clear { gone: None } => {}
@@ -747,8 +751,8 @@ impl AdminRunner {
     /// target of the old birth is the create's ([`Self::create_over`]), done right before the new birth
     /// with its key is launched. Answers the delete's `TerminateRuntime` receipt: a mesh.delete takes
     /// it as the birth's roster receipt.
-    pub(crate) async fn delete_unreached(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
-        self.delete_unreached_as(builds, build_id, attempt, node, from, false, false, &rdm_core::OperationId::node("node.delete", &from.node_id)).await
+    pub(crate) async fn delete_unreached(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, node: &PathName, from: &crate::build::ExitedBirth) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
+        self.delete_unreached_as(builds, build_id, node, from, false, false, &rdm_core::OperationId::node("node.delete", &from.node_id)).await
     }
 
     /// [`Self::delete_unreached`], `explicit` for an explicit node.delete of a birth no call reaches (a
@@ -758,10 +762,10 @@ impl AdminRunner {
     /// delete leaves it as it is. `backbone`: fabric recovery's backbone arm, which terminates nothing in
     /// the mesh (fabric-recovery.md step 3, Q148).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn delete_unreached_as(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, explicit: bool, backbone: bool, operation: &rdm_core::OperationId) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
+    pub(crate) async fn delete_unreached_as(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, node: &PathName, from: &crate::build::ExitedBirth, explicit: bool, backbone: bool, operation: &rdm_core::OperationId) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
         let (unreached, handle) = match self.exited_birth("node.delete", node, from).await {
             Ok(resolved) => resolved,
-            Err(e) => match receipted_exit(builds, build_id, &self.recorded_birth(node, &from.node_id, &from.incarnation).await?, from, operation).await {
+            Err(e) => match receipted_exit(builds, Some(&*self.nodes_storage), build_id, &self.recorded_birth(node, &from.node_id, &from.incarnation).await?, from, operation).await {
                 Some(resolved) => resolved,
                 // An explicit delete of a birth whose runtime is not resolved here has nothing to inspect or
                 // terminate: its TerminateRuntime fails by name and no receipt is manufactured
@@ -769,7 +773,7 @@ impl AdminRunner {
                 None if explicit => {
                     let step = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
                     let reason = format!("node.delete:path {node_path:?}, name {node_name:?} {step}: the runtime of {} at {} is not resolved here, so none can be inspected or terminated: the step fails by name and no receipt is manufactured (Q160): {e}", from.node_id, from.incarnation.as_str(), node_path = &node.path, node_name = &node.name);
-                    tracing::info_span!("rdm.node_admin.node.delete.via-unproven-runtime", build_id = %crate::deployment::pipeline::build_span(build_id), attempt, node_path = %node.path, node_name = %node.name, incarnation_id = %from.incarnation.as_str(), step, reason = %reason)
+                    tracing::info_span!("rdm.node_admin.node.delete.via-unproven-runtime", build_id = %crate::deployment::pipeline::build_span(build_id), node_path = %node.path, node_name = %node.name, incarnation_id = %from.incarnation.as_str(), step, reason = %reason)
                         .in_scope(|| tracing::info!("the birth's runtime is not known here: its delete's step fails by name"));
                     return Err(crate::executor::RunEnd::failed(reason));
                 }
@@ -777,7 +781,7 @@ impl AdminRunner {
             },
         };
         let template = self.template_for(&unreached.r#type, &unreached.mesh).await?;
-        let req = DeleteRequest { operation: operation.clone(), build_id: build_id.cloned(), attempt, node: unreached, handle, unreached: true };
+        let req = DeleteRequest { operation: operation.clone(), build_id: build_id.cloned(), node: unreached, handle, unreached: true };
         let pipeline = self.pipeline_with(&template, builds);
         // Fabric recovery's backbone arm terminates nothing in the mesh (fabric-recovery.md step 3, Q148;
         // node-delete.md): its delete reads the exact runtime, writes the row deleted and releases the name.
@@ -805,12 +809,12 @@ impl AdminRunner {
         use tracing::Instrument;
         let delete = tracing::info_span!("rdm.node_admin.node.delete.via-node-recovery", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
         let operation = rdm_core::OperationId::node("node.delete", &from.node_id);
-        let terminal = self.delete_unreached_as(&*self.builds, None, rdm_core::LifecycleOp::NO_ATTEMPT, node, from, false, backbone, &operation).instrument(delete).await?;
+        let terminal = self.delete_unreached_as(&*self.builds, None, node, from, false, backbone, &operation).instrument(delete).await?;
         // The re-created node is a new node.id at the same path and name (node-recovery.md), minted
         // when the primary decides the re-create.
         let born = crate::model::NodeId::mint();
         let create = tracing::info_span!("rdm.node_admin.node.create.via-node-recovery", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), created_node_id = %born);
-        self.create_over(&*self.builds, None, rdm_core::LifecycleOp::NO_ATTEMPT, node, from, &born, read_exited(&terminal), None, None).instrument(create).await
+        self.create_over(&*self.builds, None, node, from, &born, read_exited(&terminal), None, None).instrument(create).await
     }
 
     /// The termination of the deleted birth `(node_id, incarnation)` at `node`, heard again
@@ -821,7 +825,7 @@ impl AdminRunner {
         use tracing::Instrument;
         let operation = rdm_core::OperationId::new("node.terminate", rdm_core::OperationSubject::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() });
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-terminate-returned", node_path = %node.path, node_name = %node.name, node_id = %node_id, incarnation_id = %incarnation.as_str());
-        self.terminate_returned(&*self.builds, None, rdm_core::LifecycleOp::NO_ATTEMPT, node, node_id, incarnation, &operation).instrument(span).await
+        self.terminate_returned(&*self.builds, None, node, node_id, incarnation, &operation).instrument(span).await
     }
 
     /// The work turn of the node `node_id` at this primary (node-recovery.md "Execution": work on one
@@ -835,35 +839,13 @@ impl AdminRunner {
     /// The termination of the deleted birth `(node_id, from_incarnation)` at `node`, heard again (Q128): its
     /// runtime adopted from its durable runtime row (its digest is refused), then the pipeline's
     /// `TerminateRuntime` on it.
-    async fn terminate_returned(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, attempt: u32, node: &PathName, node_id: &crate::model::NodeId, from_incarnation: &IncarnationId, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    async fn terminate_returned(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, node: &PathName, node_id: &crate::model::NodeId, from_incarnation: &IncarnationId, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         let birth = self.recorded_birth(node, node_id, from_incarnation).await?;
         let (birth, handle) = self.handle_for(&birth).await.map_err(|e| crate::executor::RunEnd::from(format!("node.terminate:path {node_path:?}, name {node_name:?}: {e}", node_path = &node.path, node_name = &node.name)))?;
         let template = self.template_for(&birth.r#type, &birth.mesh).await?;
-        let req = DeleteRequest { operation: operation.clone(), build_id: build_id.cloned(), attempt, node: birth, handle, unreached: true };
+        let req = DeleteRequest { operation: operation.clone(), build_id: build_id.cloned(), node: birth, handle, unreached: true };
         self.pipeline_with(&template, builds).terminate_returned(&req).await.map_err(crate::executor::RunEnd::from)?;
         Ok(())
-    }
-
-    /// Whether node recovery's node.delete of `from` at `node` in `build_id` read the old runtime exited at
-    /// its `TerminateRuntime` (node-recovery.md step 4: the create's spec names the old data dir "when the
-    /// verdict was `exited`"; `R-FM2`), from that step's receipt for the birth: this attempt's, or the
-    /// attempt's it resumes, whose delete completed before it ended.
-    async fn delete_read_exited(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<bool, String> {
-        let operation = rdm_core::OperationId::node("node.delete", &from.node_id);
-        let terminate = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
-        let p = builds.read_build(build_id).await.map_err(|e| format!("node.create:path {node_path:?}, name {node_name:?}: Build {build_id} could not be read for its delete's TerminateRuntime receipt: {e}", node_path = &node.path, node_name = &node.name))?;
-        let receipt = p
-            .steps
-            .iter()
-            .filter(|s| s.attempt <= attempt && s.operation == operation && s.step == terminate && s.outcome == crate::build_state::StepOutcome::Complete)
-            .filter_map(|s| s.output.clone().and_then(|o| serde_json::from_value::<crate::deployment::pipeline::TerminalReceipt>(o).ok()).map(|t| (s.attempt, t)))
-            .filter(|(_, t)| t.node_id == from.node_id.to_string() && t.incarnation_id == from.incarnation.to_string())
-            .max_by_key(|(a, _)| *a)
-            .map(|(_, t)| t);
-        match receipt {
-            Some(t) => Ok(t.verdict.as_deref() == Some("exited")),
-            None => Err(format!("node.create:path {node_path:?}, name {node_name:?}: Build {build_id} holds no completed TerminateRuntime of {operation:?} for birth {} at {} up to attempt {attempt}", from.node_id, from.incarnation.as_str(), node_path = &node.path, node_name = &node.name)),
-        }
     }
 
     /// Node recovery's node.create (node-recovery.md sequence steps 4-5): a new node at `node` over the
@@ -882,7 +864,7 @@ impl AdminRunner {
     /// `read_exited`: whether the delete of `from` read the old runtime exited at its `TerminateRuntime`
     /// (node-recovery.md step 4, `R-FM2`), from that delete's own receipt.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, node_id: &crate::model::NodeId, read_exited: bool, executable: Option<&rdm_core::binding::Binding>, requested: Option<(&CreateRequest, crate::node_rows::RowFor)>) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) async fn create_over(&self, builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, node: &PathName, from: &crate::build::ExitedBirth, node_id: &crate::model::NodeId, read_exited: bool, executable: Option<&rdm_core::binding::Binding>, requested: Option<(&CreateRequest, crate::node_rows::RowFor)>) -> Result<(), crate::executor::RunEnd> {
         let (exited, _) = self.exited_birth("node.create", node, from).await?;
         let (mesh, r#type) = requested.map(|(req, _)| (req.mesh.clone(), req.r#type.clone())).unwrap_or_else(|| (exited.mesh.clone(), exited.r#type.clone()));
         // A node-admin a recovery re-creates into its live mesh is handed no state: it installs the
@@ -941,7 +923,7 @@ impl AdminRunner {
         };
         let (mut req, row_for) = match requested {
             Some((req, row_for)) => (req.clone(), row_for),
-            None => (CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", node_id), node_id: node_id.clone(), mesh, r#type: r#type.clone(), build_id: build_id.cloned(), attempt, path: node.path.clone(), name: node.name.clone(), spec: self.listeners.spec_for(&r#type), data_dir: None, held_runtimes, entry: None }, crate::node_rows::RowFor::Recovery),
+            None => (CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", node_id), node_id: node_id.clone(), mesh, r#type: r#type.clone(), build_id: build_id.cloned(), path: node.path.clone(), name: node.name.clone(), spec: self.listeners.spec_for(&r#type), data_dir: None, held_runtimes, entry: None }, crate::node_rows::RowFor::Recovery),
         };
         req.data_dir = data_dir;
         req.predecessor = Some(crate::storage::BirthRef { node_id: from.node_id.clone(), incarnation_id: from.incarnation.clone() });
@@ -1006,9 +988,9 @@ impl AdminRunner {
     /// §4.4): another birth there is refused `birth-replaced`. A node.connection.delete leaves the
     /// process running; a stop leaves it stopped, its process alive (node-stop.md: no runtime Exited
     /// receipt), and publishes no departure.
-    /// `build_id` is `None` for the node command the primary above the node runs (node-stop.md: never a
-    /// Build or part of one, Q342), a Build's for a Build's step.
-    pub(crate) async fn standalone(&self, build_id: Option<&crate::build::BuildId>, attempt: u32, node: &PathName, pin: &crate::build::PinnedBirth, stop: bool, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    /// It is the node command the primary above the node runs (node-stop.md: never a Build or part of
+    /// one, Q342).
+    pub(crate) async fn standalone(&self, node: &PathName, pin: &crate::build::PinnedBirth, stop: bool, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         let op = if stop { "node.stop" } else { "node.connection.delete" };
         // The pinned birth is found by its node id: a birth that left its mesh and took a name live
         // publishes nothing more, so the view lists it at the name it last published until it is
@@ -1020,7 +1002,7 @@ impl AdminRunner {
         };
         let record = at_operation_pair(record, node);
         let template = self.template_for(&record.r#type, &record.mesh).await?;
-        let req = DeleteRequest { operation: operation.clone(), build_id: build_id.cloned(), attempt, node: record.clone(), handle, unreached: false };
+        let req = DeleteRequest { operation: operation.clone(), build_id: None, node: record.clone(), handle, unreached: false };
         if stop {
             // The process is stopped, not exited: nothing is deleted about its paths or its birth.
             self.pipeline(&template).stop(&req).await.map_err(crate::executor::RunEnd::from)?;
@@ -1038,7 +1020,7 @@ impl AdminRunner {
     /// mesh-primary born after its stop) is rebuilt from the Build action and the data-root runtime
     /// record ([`Self::rebuild_absent_birth`]; node-admin-lifecycle.md §6.1). A birth found or rebuilt
     /// under another node id than the pin's is refused `birth-replaced`.
-    pub(crate) async fn delete_stopped(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, pin: &crate::build::PinnedBirth, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    pub(crate) async fn delete_stopped(&self, build_id: &crate::build::BuildId, node: &PathName, pin: &crate::build::PinnedBirth, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         let seen = pin.held_in(&*self.topology.read().await, operation, node).map_err(|r| crate::executor::RunEnd::failed(r.to_string()))?;
         let launched = self.handles.lock().unwrap().get(&pin.node_id).cloned().filter(|(rec, _)| pin.is(rec));
         let (record, handle) = match launched {
@@ -1055,7 +1037,7 @@ impl AdminRunner {
         // node.name.update is deleted at its row's name, never at the name it was launched at.
         let record = at_operation_pair(record, node);
         let template = self.template_for(&record.r#type, &record.mesh).await?;
-        let req = DeleteRequest { operation: operation.clone(), build_id: Some(build_id.clone()), attempt, node: record.clone(), handle, unreached: false };
+        let req = DeleteRequest { operation: operation.clone(), build_id: Some(build_id.clone()), node: record.clone(), handle, unreached: false };
         self.pipeline(&template).delete_stopped(&req).await.map_err(crate::executor::RunEnd::from)?;
         self.after_exit(&record);
         self.forget_runtime(&record.node_id, record.incarnation_id.as_ref());
@@ -1087,7 +1069,7 @@ impl AdminRunner {
     }
 
     /// The birth `from` at `node`, absent from this admin's topology view, rebuilt for its delete
-    /// (node-admin-lifecycle.md §6.1): the Build action names the exact birth, the node record at
+    /// (node-admin-lifecycle.md §6.1): the operation pins the exact birth, the node record at
     /// `node` names it, and the runtime record in its data dir under the data root names its exact
     /// runtime ([`rebuild_absent_birth`]). Refused by name when no record names the birth. One
     /// `rdm.node_admin.node.update.via-rebuilt-birth` span, `outcome` `rebuilt` or `refused`.
@@ -1202,18 +1184,18 @@ impl AdminRunner {
     }
 
     /// `node.start:<path>` (node-start.md): the stopped birth `from` rejoins as itself.
-    /// `build_id` is `None` for the node command the primary above the node runs (node-start.md: never a
-    /// Build or part of one, Q342), a Build's for a Build's step.
-    pub(crate) async fn start_stopped(&self, build_id: Option<&crate::build::BuildId>, attempt: u32, node: &PathName, pin: &crate::build::PinnedBirth, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    /// It is the node command the primary above the node runs (node-start.md: never a Build or part of
+    /// one, Q342).
+    pub(crate) async fn start_stopped(&self, node: &PathName, pin: &crate::build::PinnedBirth, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         let (record, handle, deployed) = self.stopped_birth("node.start", node, Some(pin)).await?;
         let template = self.template_for(&record.r#type, &record.mesh).await?;
-        let req = crate::deployment::pipeline::StartRequest { operation: operation.clone(), build_id: build_id.cloned(), attempt, node: record, handle, deployed };
+        let req = crate::deployment::pipeline::StartRequest { operation: operation.clone(), node: record, handle, deployed };
         self.pipeline(&template).start(&req).await.map_err(crate::executor::RunEnd::from)
     }
 
     /// node.delete of the live or stopped birth `pin` at `node` (node-delete.md): verified against this
     /// admin's view before any effect (build.md §4.4), never the birth the view holds at the path.
-    pub(crate) async fn delete_node(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, pin: &crate::build::PinnedBirth, operation: &rdm_core::OperationId) -> Result<Option<Node>, crate::executor::RunEnd> {
+    pub(crate) async fn delete_node(&self, build_id: &crate::build::BuildId, node: &PathName, pin: &crate::build::PinnedBirth, operation: &rdm_core::OperationId) -> Result<Option<Node>, crate::executor::RunEnd> {
         let seen = pin.held_in(&*self.topology.read().await, operation, node).map_err(|r| crate::executor::RunEnd::failed(r.to_string()))?;
         let (record, handle) = match &seen {
             Some(n) => self.handle_for(n).await?,
@@ -1225,7 +1207,7 @@ impl AdminRunner {
                     // terminated): the exact birth its own NodeDeleting receipt names, its runtime read
                     // from the birth's durable row, so the delete ends with its receipt (fabric-delete.md
                     // "Failure": a runtime whose delete has no receipt is never reported deleted).
-                    None => match self.begun_delete_birth(build_id, node, operation).await?.filter(|b| pin.is(b)) {
+                    None => match self.begun_delete_birth(build_id, node, pin, operation).await?.filter(|b| pin.is(b)) {
                         Some(birth) => self.handle_for(&birth).await?,
                         None => return Err(crate::executor::RunEnd::Incomplete(format!("node.delete:path {node_path:?}, name {node_name:?}: {} holds neither birth {} at incarnation {} in its view nor a runtime handle of it", self.node_id, pin.node_id, pin.incarnation.as_str(), node_path = &node.path, node_name = &node.name))),
                     },
@@ -1244,7 +1226,7 @@ impl AdminRunner {
         // Its row's name is the operation's path, never the pair a launched runtime's record kept.
         let record = Node { path: node.path.clone(), name: node.name.clone(), ..record };
         if record.node_id == self.node_id {
-            self.delete_own(build_id, attempt, record.clone(), handle, operation).await?;
+            self.delete_own(build_id, record.clone(), handle, operation).await?;
             return Ok(Some(record));
         }
         // A Dead mark alone never skips the stop or the terminate (Q219): node investigation of the
@@ -1256,11 +1238,11 @@ impl AdminRunner {
             tracing::info!(verdict = finding.name(), detail = %finding.detail(), crashed_target = admitted.is_some(), "node.delete of a birth the view marks Dead: node investigation of its exact birth decides whether its stop is composed");
             if admitted == Some(crate::build::DeleteAdmitted::Exited) {
                 let exited = crate::build::ExitedBirth { node_id: pin.node_id.clone(), incarnation: pin.incarnation.clone() };
-                self.delete_unreached_as(&*self.builds, Some(build_id), attempt, node, &exited, true, false, operation).await?;
+                self.delete_unreached_as(&*self.builds, Some(build_id), node, &exited, true, false, operation).await?;
                 return Ok(Some(record));
             }
         }
-        self.delete_birth(build_id, attempt, record.clone(), handle, operation).await?;
+        self.delete_birth(build_id, record.clone(), handle, operation).await?;
         Ok(Some(record))
     }
 
@@ -1271,10 +1253,10 @@ impl AdminRunner {
     /// ([`crate::deployment::pipeline::DeploymentPipeline::delete_own`]); then, once every caller of
     /// the Build reads its terminal, this admin ends its own runtime through the provider. No `Exited`
     /// of the runtime is receipted: nobody is left to record it ("Receipts": the one exception).
-    async fn delete_own(&self, build_id: &crate::build::BuildId, attempt: u32, record: Node, handle: DeploymentHandle, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    async fn delete_own(&self, build_id: &crate::build::BuildId, record: Node, handle: DeploymentHandle, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let template = self.template_for(&record.r#type, &record.mesh).await?;
-        let req = DeleteRequest { operation: operation.clone(), build_id: Some(build_id.clone()), attempt, node: record.clone(), handle: handle.clone(), unreached: false };
+        let req = DeleteRequest { operation: operation.clone(), build_id: Some(build_id.clone()), node: record.clone(), handle: handle.clone(), unreached: false };
         self.pipeline(&template).delete_own(&req).await.map_err(crate::executor::RunEnd::from)?;
         self.forget_runtime(&record.node_id, record.incarnation_id.as_ref());
         let (drives, provider, id) = (self.drives.clone(), self.provider.clone(), build_id.clone());
@@ -1282,7 +1264,7 @@ impl AdminRunner {
         // handler finishes within it before the node leaves (RDM_CONNECTIONS_DELETE_DEADLINE_MS).
         let deadline = self.template.connections_delete_deadline;
         let grace = crate::deployment::pipeline::Timeouts::default().stop_grace;
-        let span = tracing::info_span!("rdm.node_admin.node.delete.via-own-runtime", node_path = %record.path, node_name = %record.name, node_id = %record.node_id, build_id = %build_id.log(), attempt, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.node.delete.via-own-runtime", node_path = %record.path, node_name = %record.name, node_id = %record.node_id, build_id = %build_id.log(), outcome = tracing::field::Empty);
         // Its own task: the run, and the drive pass it runs under, end with the Build's terminal, and
         // only after the callers read it does the runtime end.
         tokio::spawn(
@@ -1302,16 +1284,15 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// The exact birth whose `node.delete:<node>` this Build began: the one its `NodeDeleting` receipt
-    /// names. `None` when no attempt of the Build receipted that step.
-    async fn begun_delete_birth(&self, build_id: &crate::build::BuildId, node: &PathName, operation: &rdm_core::OperationId) -> Result<Option<Node>, String> {
-        let key = operation;
-        let build = self.builds.read_build(build_id).await.map_err(|e| format!("{key:?}: the Build {build_id} could not be read for its receipts: {e}"))?;
-        let Some(op) = build.steps.iter().filter(|r| &r.operation == key && r.step == "NodeDeleting").find_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<rdm_core::lifecycle::LifecycleOp>(v).ok())) else {
+    /// The exact birth `pin` whose `node.delete:<node_id>` this Build began: its `NodeDeleting` step's
+    /// event ended `complete`, and the birth is the one the Build pinned (D67). `None` when the step's
+    /// event did not end `complete`.
+    async fn begun_delete_birth(&self, build_id: &crate::build::BuildId, node: &PathName, pin: &crate::build::PinnedBirth, operation: &rdm_core::OperationId) -> Result<Option<Node>, String> {
+        let build = self.builds.read_build(build_id).await.map_err(|e| format!("{operation}: the Build {build_id} could not be read for its events: {e}"))?;
+        if !build.completed(&operation.to_string(), crate::deployment::pipeline::DeleteStep::NodeDeleting.name()) {
             return Ok(None);
-        };
-        let birth = self.recorded_birth(node, &op.node_id, &op.incarnation).await?;
-        Ok(Some(birth))
+        }
+        Ok(Some(self.recorded_birth(node, &pin.node_id, &pin.incarnation).await?))
     }
 
     /// node.delete of the live or stopped exact birth `record` (node-delete.md): the ordinary
@@ -1319,9 +1300,9 @@ impl AdminRunner {
     /// exited verdict, its row Deleted, NodeDeleted) over its exact runtime `handle`; then its paths are
     /// deleted and this admin's handle of it dropped. The one composition a removal, a mesh
     /// delete's member and a deleted mesh's last admin all call. Answers the terminal receipt.
-    pub(crate) async fn delete_birth(&self, build_id: &crate::build::BuildId, attempt: u32, record: Node, handle: DeploymentHandle, operation: &rdm_core::OperationId) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
+    pub(crate) async fn delete_birth(&self, build_id: &crate::build::BuildId, record: Node, handle: DeploymentHandle, operation: &rdm_core::OperationId) -> Result<crate::deployment::pipeline::TerminalReceipt, crate::executor::RunEnd> {
         let template = self.template_for(&record.r#type, &record.mesh).await?;
-        let req = DeleteRequest { operation: operation.clone(), build_id: Some(build_id.clone()), attempt, node: record.clone(), handle, unreached: false };
+        let req = DeleteRequest { operation: operation.clone(), build_id: Some(build_id.clone()), node: record.clone(), handle, unreached: false };
         let terminal = self.pipeline(&template).delete_node(&req).await.map_err(crate::executor::RunEnd::from)?;
         self.after_exit(&record);
         self.forget_runtime(&record.node_id, record.incarnation_id.as_ref());
@@ -1349,14 +1330,15 @@ impl crate::path_investigation::PathProbe for AdminRunner {
 
 #[async_trait::async_trait]
 impl OperationRunner for AdminRunner {
-    async fn run(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
+    async fn run(&self, build_id: &crate::build::BuildId, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         // Work on one node is serialized at its primary (node-recovery.md "Execution"): a Build's step on a
         // node runs before or after a node command or a repair of it, never beside it.
         let _turn = match op.subject() {
             Some(rdm_core::OperationSubject::Birth { node_id, .. } | rdm_core::OperationSubject::Node(node_id)) => Some(self.node_work(&node_id).await),
             _ => None,
         };
-        let r = self.run_op(build_id, lane, attempt, op).await;
+        // A Build's operation carries the constant attempt (D44).
+        let r = self.run_op(build_id, op).await;
         self.refresh_view().await;
         r
     }
@@ -1364,49 +1346,24 @@ impl OperationRunner for AdminRunner {
 }
 
 impl AdminRunner {
-    pub(crate) fn run_op<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, op: &'a BuildOperation) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+    pub(crate) fn run_op<'a>(&'a self, build_id: &'a crate::build::BuildId, op: &'a BuildOperation) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made: the operation's workflows are one large state machine, and every
         // caller (the executor, a Build's steps) holds only the box on its worker's stack.
-        Box::pin(async move { let operation = op.key(); self.run_op_with_identity(build_id, lane, attempt, op, &operation).await })
-    }
-
-    fn run_op_with_identity<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, op: &'a BuildOperation, operation: &'a rdm_core::OperationId) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
-        Box::pin(self.run_op_body(build_id, lane, attempt, op, operation))
+        Box::pin(async move { let operation = op.key(); self.run_op_body(build_id, op, &operation).await })
     }
 
     /// Node recovery's node.delete of the exited birth `from` at `node` (`DeleteLiveNode { exited }`), and the
     /// delete of a storage change's re-create (i149 R19).
-    async fn delete_exited(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    async fn delete_exited(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, node: &PathName, from: &crate::build::ExitedBirth, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
-        let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
-        self.delete_unreached_as(builds, Some(build_id), attempt, node, from, false, false, operation).instrument(span).await.map(|_| ())
+        let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
+        self.delete_unreached_as(builds, Some(build_id), node, from, false, false, operation).instrument(span).await.map(|_| ())
     }
 
-    /// Node recovery's node.create over the exited birth `from` at `node`, launching the executable its
-    /// row records (`CreateNode { over, executable: None }`), and the create of a storage change's
-    /// re-create (i149 R19).
-    async fn create_over_exited(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, node_id: &crate::model::NodeId) -> Result<(), crate::executor::RunEnd> {
-        use tracing::Instrument;
-        // node-recovery.md names the create's span `node.create.via-build`.
-        let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
-        let read_exited = self.delete_read_exited(builds, build_id, attempt, node, from).await?;
-        self.create_over(builds, Some(build_id), attempt, node, from, node_id, read_exited, None, None).instrument(span).await
-    }
-
-    async fn run_op_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    async fn run_op_body(&self, build_id: &crate::build::BuildId, op: &BuildOperation, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
         let me = self.held_name();
-        // The workflows write the attempt's receipts and read its Build through the lane's Build
-        // state (R-BI7): a drift attempt's in its mesh's lane, a fabric attempt's in the fabric lane.
-        let builds = crate::build_run::LaneBuilds::of(&self.builds, lane);
-        if let Some(mesh) = lane {
-            // A mesh's lane carries a node recovery's attempts (its open is `ControlPlane::open_recovery`'s)
-            // and the fabric-primary's section of a Build for the mesh, its plain creates (Q250): any
-            // other operation is not one this lane runs.
-            if !matches!(op, BuildOperation::DeleteLiveNode { exited: Some(_), .. } | BuildOperation::CreateNode { .. }) {
-                return Err(crate::executor::RunEnd::failed(format!("path {me_path:?}, name {me_name:?}: {:?} is neither an operation of a node recovery nor a create of a section, the work mesh {mesh}'s lane runs (attempt {attempt} of {build_id})", op.key(), me_path = &me.path, me_name = &me.name)));
-            }
-        }
+        let builds = self.builds.clone();
         // A mesh-primary that replied `blocked` to a storage change runs no operation until it is
         // unblocked: an operation issues commands and writes rows (storage.md §2 step 1). A node
         // recovery's operation (a mesh's lane runs no other while a change is in progress: no Build runs
@@ -1414,69 +1371,50 @@ impl AdminRunner {
         // recovery re-creates a node that will not move, or a lost one, before the mesh-primary replies
         // `unblocked`, which waits on it (step 4).
         if let Some(status_door) = self.observer.status_door.get() {
-            if lane.is_some() {
-                status_door.commands.rows_released().await;
-            } else {
-                status_door.commands.admitted().await;
-            }
+            status_door.commands.admitted().await;
         }
         let ended: Result<(), crate::executor::RunEnd> = match op {
-            BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor_birth(), self.node_id.as_str(), build_id, attempt, op).await.map_err(Into::into),
-            BuildOperation::CreateNode { path: node_path, name: node_name, node_id, over: Some(from), .. } => self.create_over_exited(&*builds, build_id, attempt, &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }, from, node_id).await,
-            BuildOperation::CreateNode { path: node_path, name: node_name, node_id, over: None, executable, entry, .. } => self.create_node(build_id, lane, attempt, &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }, node_id, executable.as_ref(), entry.as_ref(), crate::node_rows::RowFor::Create, operation).await,
-            BuildOperation::StartNode { r#type, mesh, path: node_path, name: node_name, node_id, from_incarnation } => {
-                let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
-                self.start_stopped(Some(build_id), attempt, node, &crate::build::PinnedBirth { r#type: r#type.clone(), mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() }, operation).instrument(span).await
-            }
-            BuildOperation::DeleteConnections { r#type, mesh, path: node_path, name: node_name, node_id, from_incarnation } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
-                self.standalone(Some(build_id), attempt, node, &crate::build::PinnedBirth { r#type: r#type.clone(), mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() }, false, operation).instrument(span).await
-            }
-            BuildOperation::StopNode { r#type, mesh, path: node_path, name: node_name, node_id, from_incarnation } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
-                self.standalone(Some(build_id), attempt, node, &crate::build::PinnedBirth { r#type: r#type.clone(), mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() }, true, operation).instrument(span).await
-            }
-            BuildOperation::DeleteLiveNode { path: node_path, name: node_name, exited: Some(from), .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; self.delete_exited(&*builds, build_id, attempt, node, from, operation).await }
-            BuildOperation::DeleteNode { r#type, mesh, path: node_path, name: node_name, node_id, from_incarnation } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
-                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %node_id, incarnation_id = %from_incarnation.as_str());
-                self.delete_stopped(build_id, attempt, node, &crate::build::PinnedBirth { r#type: r#type.clone(), mesh: mesh.clone(), node_id: node_id.clone(), incarnation: from_incarnation.clone() }, operation).instrument(span).await
-            }
+            BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, self.node_id.as_str(), build_id, op).await.map_err(Into::into),
+            // A create over an exited birth (a recovery's) is planned by no Build: node recovery is the
+            // mesh-primary's own workflow (Q342).
+            BuildOperation::CreateNode { over: Some(from), .. } => Err(crate::executor::RunEnd::failed(format!("path {me_path:?}, name {me_name:?}: {} creates over the exited birth {} at {}, which no Build plans (Q342)", op.key(), from.node_id, from.incarnation.as_str(), me_path = &me.path, me_name = &me.name))),
+            BuildOperation::CreateNode { path: node_path, name: node_name, node_id, over: None, executable, entry, .. } => self.create_node(build_id, &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }, node_id, executable.as_ref(), entry.as_ref(), crate::node_rows::RowFor::Create, operation).await,
+            BuildOperation::DeleteLiveNode { path: node_path, name: node_name, exited: Some(from), .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() }; self.delete_exited(&*builds, build_id, node, from, operation).await }
             BuildOperation::DeleteLiveNode { path: node_path, name: node_name, exited: None, birth, .. } => { let node = &rdm_core::PathName { path: node_path.clone(), name: node_name.clone() };
                 // The delete acts on the birth the gates pinned and on no other (build.md §4.4).
                 let Some(birth) = birth else {
-                    return Err(crate::executor::RunEnd::failed(format!("path {me_path:?}, name {me_name:?}: node.delete:path {node_path:?}, name {node_name:?} carries no pinned birth to act on (attempt {attempt} of {build_id}); nothing is done to the birth at path {node_path:?}, name {node_name:?}", node_path = &node.path, node_name = &node.name, me_path = &me.path, me_name = &me.name)));
+                    return Err(crate::executor::RunEnd::failed(format!("path {me_path:?}, name {me_name:?}: node.delete:path {node_path:?}, name {node_name:?} carries no pinned birth to act on (Build {build_id}); nothing is done to the birth at path {node_path:?}, name {node_name:?}", node_path = &node.path, node_name = &node.name, me_path = &me.path, me_name = &me.name)));
                 };
-                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str());
-                self.delete_node(build_id, attempt, node, birth, operation).instrument(span).await.map(|_| ())
+                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str());
+                self.delete_node(build_id, node, birth, operation).instrument(span).await.map(|_| ())
             }
-            BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.delete_mesh(build_id, attempt, mesh, mesh_id).await,
-            BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, build_id, attempt, fabric_id, &self.template.executor()).await.map_err(Into::into),
+            BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.delete_mesh(build_id, mesh, mesh_id).await,
+            BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, build_id, fabric_id, &self.template.executor()).await.map_err(Into::into),
         };
         ended
     }
 
     /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a Build's
     /// create step), its name claimed for `row_for`.
-    fn create_node<'a>(&'a self, build_id: &'a crate::build::BuildId, lane: Option<&'a str>, attempt: u32, node: &'a PathName, node_id: &'a crate::model::NodeId, executable: Option<&'a rdm_core::binding::Binding>, entry: Option<&'a crate::build::EntrySpec>, row_for: crate::node_rows::RowFor, operation: &'a rdm_core::OperationId) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
+    fn create_node<'a>(&'a self, build_id: &'a crate::build::BuildId, node: &'a PathName, node_id: &'a crate::model::NodeId, executable: Option<&'a rdm_core::binding::Binding>, entry: Option<&'a crate::build::EntrySpec>, row_for: crate::node_rows::RowFor, operation: &'a rdm_core::OperationId) -> futures_util::future::BoxFuture<'a, Result<(), crate::executor::RunEnd>> {
         // Boxed where it is made, as `run_op`.
-        Box::pin(self.create_node_body(build_id, lane, attempt, node, node_id, executable, entry, row_for, operation))
+        Box::pin(self.create_node_body(build_id, node, node_id, executable, entry, row_for, operation))
     }
 
-    async fn create_node_body(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, node: &PathName, node_id: &crate::model::NodeId, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, row_for: crate::node_rows::RowFor, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
+    async fn create_node_body(&self, build_id: &crate::build::BuildId, node: &PathName, node_id: &crate::model::NodeId, executable: Option<&rdm_core::binding::Binding>, entry: Option<&crate::build::EntrySpec>, row_for: crate::node_rows::RowFor, operation: &rdm_core::OperationId) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
-        let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, attempt, node_id = %node_id);
+        let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node_path = %node.path, node_name = %node.name, node_id = %node_id);
         async {
             // A mesh's first admin (a new mesh, or a mesh whose admins were all lost): once it has
             // joined its mesh, the fabric primary applies MeshStatus::Pending at that exact birth,
             // before it is asked to be Ready; only with that certainty does the shape proceed (e4.s11).
-            let held = self.builds.read_build(build_id).await.map_err(|error| format!("node.create:path {node_path:?}, name {node_name:?}: Build {build_id} could not be read: {error}", node_path = &node.path, node_name = &node.name))?.in_lane(lane);
+            let held = self.builds.read_build(build_id).await.map_err(|error| format!("node.create:path {node_path:?}, name {node_name:?}: Build {build_id} could not be read: {error}", node_path = &node.path, node_name = &node.name))?;
             let owner = held.topology.node_spec(node).map(|spec| (spec.mesh.as_str(), spec.r#type.clone()));
             let (mesh, kind) = owner.ok_or_else(|| format!("node.create:path {node_path:?}, name {node_name:?}: Build {build_id} names no entry or create step with explicit ownership", node_path = &node.path, node_name = &node.name))?;
             let first_admin = self.topology.read().await.first_admin_of(node, mesh, &kind);
             let pre_node_ready = if first_admin { Some(self.mesh_state_hook(mesh, self.held_mesh_state(mesh))?) } else { None };
             let predecessor = None;
-            self.create(build_id, attempt, node, mesh, &kind, executable, entry, pre_node_ready, row_for, node_id, operation, predecessor).await
+            self.create(build_id, node, mesh, &kind, executable, entry, pre_node_ready, row_for, node_id, operation, predecessor).await
         }
         .instrument(span)
         .await
@@ -1642,7 +1580,6 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
             key = %key,
             state = ?state,
             changed_at_rafka_ms,
-            attempt = 1u32,
             outcome = %outcome,
         )
     } else {
@@ -1659,7 +1596,6 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
             key = %key,
             state = ?state,
             changed_at_rafka_ms,
-            attempt = 1u32,
             outcome = %outcome,
         )
     };
@@ -1795,33 +1731,31 @@ async fn hashed_binding(r#type: &str, executable: &std::path::Path, provider: Pr
 /// The exact birth `from` at `node` whose node.delete in `build_id` already holds its `TerminateRuntime`
 /// receipt naming that birth (the provider's exited verdict, recorded by an earlier attempt's executor), when
 /// this admin cannot resolve its runtime: its record, and a handle of the receipted runtime that locates
-/// nothing. The delete resumes from its receipts (mesh-delete.md "Resume after the primary's loss" step 3:
-/// "Completed member receipts stand"; `DeploymentPipeline::begin` reuses every step an earlier attempt
-/// receipted), so the reused `TerminateRuntime` touches no runtime and the steps after it run. `None` when
-/// no such receipt is held.
-pub(super) async fn receipted_exit(builds: &dyn BuildStateAdapter, build_id: Option<&crate::build::BuildId>, exact: &Node, from: &crate::build::ExitedBirth, operation: &rdm_core::OperationId) -> Option<(Node, DeploymentHandle)> {
+/// nothing. The delete resumes from its events (mesh-delete.md "Resume after the primary's loss" step 3:
+/// "Completed member receipts stand"; `DeploymentPipeline::begin` reuses every step whose event ended
+/// `complete`), so the reused `TerminateRuntime` touches no runtime and the steps after it run. The
+/// runtime it names is the one the birth's durable runtime row records (D67). `None` when the step's
+/// event did not end `complete`, or no runtime row names the birth.
+pub(super) async fn receipted_exit(builds: &dyn BuildStateAdapter, nodes: Option<&dyn crate::storage::NodesStorage>, build_id: Option<&crate::build::BuildId>, exact: &Node, from: &crate::build::ExitedBirth, operation: &rdm_core::OperationId) -> Option<(Node, DeploymentHandle)> {
     let node = &exact.location();
     let terminate = crate::deployment::pipeline::DeleteStep::TerminateRuntime.name();
-    // A delete of no Build has no receipts to resume from.
+    // A delete of no Build has no events to resume from.
     let build_id = build_id?;
     let p = builds.read_build(build_id).await.ok()?;
-    let t = p
-        .steps
-        .iter()
-        .filter(|r| &r.operation == operation && r.step == terminate && r.outcome == crate::build_state::StepOutcome::Complete)
-        .filter_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<crate::deployment::pipeline::TerminalReceipt>(v).ok()))
-        .find(|t| t.node_id == from.node_id.as_str() && t.incarnation_id == from.incarnation.as_str())?;
-    let proof = t.runtime.as_ref()?;
-    let deployment_id = rdm_core::DeploymentId::parse(&proof.deployment_id).ok()?;
-    let provider = match proof.provider.as_str() {
-        "container" => ProviderKind::Container,
+    if !p.completed(&operation.to_string(), terminate) {
+        return None;
+    }
+    let row = nodes?.runtime(&from.node_id, &from.incarnation).await.ok()??;
+    let deployment_id = rdm_core::DeploymentId::parse(&row.runtime.deployment_id).ok()?;
+    let provider = match row.runtime.provider {
+        rdm_core::runtime::RuntimeProvider::Container => ProviderKind::Container,
         _ => ProviderKind::Process,
     };
     let mut record = exact.clone();
     record.node_id = from.node_id.clone();
     record.incarnation_id = Some(from.incarnation.clone());
     record.deployment_id = Some(deployment_id.clone());
-    record.data_dir = t.data_dir.clone();
+    record.data_dir = row.data_dir.clone();
     tracing::info_span!("rdm.node_admin.node.resolve.via-receipted-exit", node_path = %node.path, node_name = %node.name, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str(), build_id = %build_id.log(), operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step)
         .in_scope(|| tracing::info!("the birth's runtime is not resolved here and its delete holds the TerminateRuntime receipt: the delete resumes from its receipts"));
     Some((record, DeploymentHandle { deployment_id, provider, pid: None, start: None, container: None, domain: None }))
@@ -2272,15 +2206,12 @@ mod tests {
         let pinned = PinnedBirth { mesh: "mesh1".into(), r#type: "node".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let ops = [
             BuildOperation::DeleteLiveNode { r#type: "node".into(), mesh: "mesh1".into(), path: rpc.path.clone(), name: rpc.name.clone(), exited: None, birth: Some(pinned.clone()) },
-            BuildOperation::StopNode { r#type: "node".into(), mesh: "mesh1".into(), path: rpc.path.clone(), name: rpc.name.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
-            BuildOperation::DeleteConnections { r#type: "node".into(), mesh: "mesh1".into(), path: rpc.path.clone(), name: rpc.name.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
-            BuildOperation::StartNode { r#type: "node".into(), mesh: "mesh1".into(), path: rpc.path.clone(), name: rpc.name.clone(), node_id: pinned.node_id.clone(), from_incarnation: pinned.incarnation.clone() },
         ];
 
         // 1. Not-yet-held birth in the executor's view: every operation ends Incomplete, and no
         //    Failed step receipt is recorded.
         for op in &ops {
-            let err = runner.run_op(&build_id, None, 1, op).await.expect_err("not-yet-held birth ends incomplete");
+            let err = runner.run_op(&build_id, op).await.expect_err("not-yet-held birth ends incomplete");
             assert!(matches!(err, RunEnd::Incomplete(_)), "{:?} must end Incomplete when the view holds no birth yet: {err:?}", op.key());
         }
         assert!(builds.read_build(&build_id).await.unwrap().steps.is_empty(), "incomplete evidence writes no Failed step receipt");
@@ -2293,8 +2224,8 @@ mod tests {
         replacement.status = NodeStatus::Ready;
         let replacement_pin = PinnedBirth::of(&replacement).unwrap();
         runner.topology.write().await.nodes.push(replacement);
-        for op in &ops[..4] {
-            let err = runner.run_op(&build_id, None, 1, op).await.expect_err("another birth at the name is refused");
+        for op in &ops {
+            let err = runner.run_op(&build_id, op).await.expect_err("another birth at the name is refused");
             match err {
                 RunEnd::Failed { reason, .. } => assert!(reason.starts_with("birth-replaced: "), "{:?}: {reason}", op.key()),
                 other => panic!("{:?} on a replaced birth must end Failed with birth-replaced, got {other:?}", op.key()),
@@ -2311,90 +2242,8 @@ mod tests {
             n.incarnation_id = Some(pinned.incarnation.clone());
         }
         for op in &ops {
-            let err = runner.run_op(&build_id, None, 1, op).await.expect_err("permanent error on a held birth fails");
+            let err = runner.run_op(&build_id, op).await.expect_err("permanent error on a held birth fails");
             assert!(matches!(err, RunEnd::Failed { .. }), "{:?} with a permanent error on a held birth must end Failed, got {err:?}", op.key());
-        }
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:20
-    /// "The verdict is the one decision (Q111). Reached: the node is commanded back through
-    ///  [node.mesh.join](node-mesh-join.md). Any other verdict: it is re-created at the same path and name with a
-    ///  new node.id (Q110)."
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:25
-    /// "Nothing waits on a proof of termination: not node recovery, a primary change, a name's release,
-    ///  node.delete or mesh.delete."
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:28
-    /// "Data dir: if the provider step finds the runtime exited, the re-created node takes the inherited data
-    ///  dir; on any other verdict, a newly allocated one (R-FM2)."
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:54
-    /// "Caller: The primary above the node: its mesh-primary for a member of any type, the fabric-primary for a mesh-primary or another mesh's node-admin"
-    /// CONTRACT: docs/architecture/lifecycles/node-investigation.md:58
-    /// "What follows: Reached: node.mesh.join. Any other verdict: re-created at the same path and name with a new node.id, over the inherited data dir when the verdict is `exited`, over a newly allocated one otherwise"
-    #[tokio::test]
-    async fn delete_read_exited_selects_inherited_data_dir_only_when_terminate_runtime_verdict_is_exited() {
-        use crate::build::ExitedBirth;
-        use crate::build_state::{BuildStepReceipt, StepOutcome};
-        use crate::deployment::pipeline::{DeleteStep, TerminalReceipt};
-
-        let (dir, runner, builds, build_id) = runner_rig("delete-read-exited-r-fm2").await;
-        let rpc: PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let exited_birth = ExitedBirth {
-            node_id: NodeId::mint(),
-            incarnation: IncarnationId::mint(),
-        };
-        let operation = rdm_core::OperationId::node("node.delete", &exited_birth.node_id);
-
-        // 1. No TerminateRuntime receipt yet -> Err naming the birth and operation.
-        let missing = runner
-            .delete_read_exited(&*builds, &build_id, 1, &rpc, &exited_birth)
-            .await
-            .expect_err("missing TerminateRuntime receipt must fail by name");
-        assert!(
-            missing.contains("holds no completed TerminateRuntime") && missing.contains(exited_birth.node_id.as_str()),
-            "{missing}"
-        );
-
-        // 2. For every TerminateRuntime verdict (`exited`, `running`, `os-stopped`, `unavailable`),
-        //    only `"exited"` selects the inherited data dir (`true`); every other verdict selects a
-        //    newly allocated one (`false`), without waiting on a proof of termination on non-exited verdicts.
-        for (attempt, verdict, expected_inherited) in [
-            (1u32, "exited", true),
-            (2u32, "running", false),
-            (3u32, "os-stopped", false),
-            (4u32, "unavailable", false),
-        ] {
-            let terminal = TerminalReceipt {
-                path: rpc.path.clone(), name: rpc.name.clone(),
-                node_id: exited_birth.node_id.to_string(),
-                incarnation_id: exited_birth.incarnation.as_str().to_string(),
-                runtime: None,
-                exit_code: (verdict == "exited").then_some(0),
-                verdict: Some(verdict.into()),
-                data_dir: Some("/data/mesh1.node.1".into()),
-            };
-            builds
-                .append_step_receipt(&BuildStepReceipt {
-                    mesh: None,
-                    build_id: build_id.clone(),
-                    attempt,
-                    operation: operation.clone(),
-                    step: DeleteStep::TerminateRuntime.name().into(),
-                    outcome: StepOutcome::Complete,
-                    output: Some(serde_json::to_value(&terminal).unwrap()),
-                    executor: None,
-                })
-                .await
-                .unwrap();
-            let got = runner
-                .delete_read_exited(&*builds, &build_id, attempt, &rpc, &exited_birth)
-                .await
-                .expect("TerminateRuntime receipt present");
-            assert_eq!(
-                got, expected_inherited,
-                "verdict `{verdict}` on attempt {attempt} must yield inherited={expected_inherited}"
-            );
         }
 
         let _ = std::fs::remove_dir_all(&dir);

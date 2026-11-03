@@ -247,8 +247,6 @@ pub enum NodeStep {
     Stop,
     /// `node.delete`.
     Delete,
-    /// `node.update`.
-    Update,
 }
 
 impl NodeStep {
@@ -261,7 +259,6 @@ impl NodeStep {
             Self::ConnectionsDelete => "node.connection.delete",
             Self::Stop => "node.stop",
             Self::Delete => "node.delete",
-            Self::Update => "node.update",
         }
     }
 }

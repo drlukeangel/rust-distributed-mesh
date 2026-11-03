@@ -5,8 +5,9 @@
 //! writes and every admin that needs a Build reads (Q292; build.md §5.3). So the read is the store's:
 //! [`log_read`] reads the named Build's committed records from the estate's fabric store root
 //! (`build_state::read_committed`, the read the admins make), [`log_fact`] awaits a typed fact of it
-//! through the client's `await_fact`, and [`build_fact`] awaits a fact of the Build the records fold to
-//! (`build_state::fold` over the same records).
+//! through the client's `await_fact`, and [`build_fact`] awaits a fact of the Build the records and its
+//! events fold to (`BuildProjection::of` over the record and the Build's events on the same store root,
+//! `events.jsonl`, build.md §5).
 //!
 //! It lives in the test binary every cell links, not in `src/typed.rs`: the facts' types and the read
 //! are the node-admin core's, and the scenario crate's shipped code reaches RDM only through the public
@@ -16,6 +17,7 @@
 use rdm_client::{await_fact, CallEnd};
 use rdm_admin::build::BuildId;
 use rdm_admin::build_state::{fold, read_committed, BuildFact, BuildProjection, BuildState, BuildStateError, StepOutcome};
+use rdm_admin::events_storage::Event;
 use rdm_test::estate::Estate;
 use std::time::Duration;
 
@@ -59,32 +61,53 @@ pub async fn log_read(estate: &Estate, id: &str) -> Result<Vec<BuildFact>, CallE
 /// the fact, the store and the last thing its records held or how the last read ended.
 pub async fn log_fact(estate: &Estate, id: &str, fact: &str, within: Duration, holds: impl Fn(&[BuildFact]) -> bool) -> Result<Vec<BuildFact>, CallEnd> {
     let at = builds_file(estate).display().to_string();
-    let report = |facts: &Vec<BuildFact>| {
-        let last = facts.iter().rev().find_map(|f| if let BuildFact::Step(r) = f { Some(format!("operation {:?}, step {}, attempt {}", r.operation, r.step, r.attempt)) } else { None }).unwrap_or_else(|| "none".into());
-        format!("{} facts, the last step receipt {last}", facts.len())
-    };
+    let report = |facts: &Vec<BuildFact>| format!("{} facts", facts.len());
     await_fact("build log", &at, &format!("{fact} of Build {id}"), within, || log_read(estate, id), |facts: &Vec<BuildFact>| holds(facts), report).await
 }
 
-/// Build `id` as `facts` fold it, `None` while they hold no acceptance of it.
-pub fn projection(facts: &[BuildFact], id: &str) -> Option<BuildProjection> {
-    fold(facts).remove(&BuildId::parse(id).unwrap())
+/// The events of Build `id` on the estate's fabric store root, `events.jsonl`, in event.id order
+/// (build.md §5): its `rdm.build.started`, `rdm.build.dispatched`, `rdm.build.step` and
+/// `rdm.build.ended`.
+pub fn build_events(estate: &Estate, id: &str) -> Vec<Event> {
+    let build = BuildId::parse(id).unwrap();
+    let file = estate.fabric_store_root().join(rdm_admin::store_root::EVENTS_FILE);
+    let mut events: Vec<Event> = rdm_admin::store_log::read_file(&file)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|l| serde_json::from_value::<Event>(l.record).ok())
+        .filter(|e| e.build_id().as_ref() == Some(&build))
+        .collect();
+    events.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+    events
+}
+
+/// How many runs Build `id` has had: its `rdm.build.started` events on the estate's fabric store root
+/// (a submission and each resubmission writes one, build.md §5).
+pub fn runs(estate: &Estate, id: &str) -> u64 {
+    build_events(estate, id).iter().filter(|e| e.r#type == rdm_admin::events_storage::BUILD_STARTED).count() as u64
+}
+
+/// Build `id` as `facts` and its events on the estate's fabric store root fold it, `None` while the
+/// facts hold no acceptance of it.
+pub fn projection(estate: &Estate, facts: &[BuildFact], id: &str) -> Option<BuildProjection> {
+    let accepted = fold(facts).remove(&BuildId::parse(id).unwrap())?;
+    Some(BuildProjection::of(&accepted, &build_events(estate, id)))
 }
 
 /// Await the fact `holds` of the Build `id` as the fabric's Build records fold it. `fact` names it;
 /// records that do not fold to it within `within` end the call `Indeterminate`, naming the fact, the
-/// store and the Build they last held (attempt, state, receipts, every failed step with its reason) or
+/// store and the Build they last held (state, steps, every failed step with its reason) or
 /// how the last read ended.
 pub async fn build_fact(estate: &Estate, id: &str, fact: &str, within: Duration, holds: impl Fn(&BuildProjection) -> bool) -> Result<BuildProjection, CallEnd> {
     let at = builds_file(estate).display().to_string();
     let read = || async {
         let facts = log_read(estate, id).await?;
-        projection(&facts, id).ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("{} facts of the Build and no acceptance of it", facts.len()) })
+        projection(estate, &facts, id).ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("{} facts of the Build and no acceptance of it", facts.len()) })
     };
     let report = |p: &BuildProjection| {
-        let last = p.steps.last().map(|r| format!("operation {:?}, step {}, attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());
-        let failed: Vec<String> = p.steps.iter().filter_map(|r| if let StepOutcome::Failed { reason, .. } = &r.outcome { Some(format!("operation {:?}, step {}, attempt {}: {reason}", r.operation, r.step, r.attempt)) } else { None }).collect();
-        format!("attempt {} state {:?}, {} step receipts, the last {last}; failed {failed:?}", p.attempt, p.state, p.steps.len())
+        let last = p.steps.last().map(|r| format!("mesh {}, operation {:?}, step {}", r.mesh, r.operation, r.step)).unwrap_or_else(|| "none".into());
+        let failed: Vec<String> = p.steps.iter().filter_map(|r| if let StepOutcome::Failed { reason, .. } = &r.outcome { Some(format!("mesh {}, operation {:?}, step {}: {reason}", r.mesh, r.operation, r.step)) } else { None }).collect();
+        format!("state {:?}, {} step events, the last {last}; failed {failed:?}; unfinished {:?}", p.state, p.steps.len(), p.unfinished)
     };
     await_fact("build log", &at, &format!("{fact} of Build {id}"), within, read, |p: &BuildProjection| holds(p), report).await
 }
@@ -94,44 +117,19 @@ pub async fn build_fact(estate: &Estate, id: &str, fact: &str, within: Duration,
 pub async fn build_value(estate: &Estate, id: &str) -> serde_json::Value {
     let at = builds_file(estate).display().to_string();
     let facts = log_read(estate, id).await.unwrap_or_else(|end| panic!("the Build log of {at} does not hold Build {id}: {end}"));
-    let build = projection(&facts, id).unwrap_or_else(|| panic!("the Build log of {at} holds {} facts of Build {id} and no acceptance of it", facts.len()));
+    let build = projection(estate, &facts, id).unwrap_or_else(|| panic!("the Build log of {at} holds {} facts of Build {id} and no acceptance of it", facts.len()));
     serde_json::to_value(build).expect("a Build view serializes")
 }
 
-/// Await attempt `attempt`, or a later one, of Build `id` complete in the fabric's Build records: the Build reports the highest attempt claimed, so a reading below `attempt` is an
-/// earlier attempt's state (its `complete` included), never this attempt's. A Build that log folds to
-/// `failed` at `attempt` or later fails the cell with the Build; records that do not fold to it within
-/// `within` end the call naming the fact, the store and the Build they last held.
-pub async fn attempt_complete(estate: &Estate, id: &str, attempt: u64, within: Duration) -> BuildProjection {
-    build_fact(estate, id, &format!("attempt {attempt} complete"), within, |b| {
-        if u64::from(b.attempt) < attempt {
-            return false;
-        }
-        match b.state {
-            BuildState::Complete => true,
-            BuildState::Failed => panic!("Build {id} failed: {b:#?}"),
-            _ => false,
-        }
-    })
-    .await
-    .unwrap_or_else(|end| panic!("{end}"))
-}
-
-/// Await attempt `attempt`, or a later one, of `mesh`'s drift lane of Build `id` complete in the
-/// fabric's Build records (R-BI7: a mesh-primary's recovery is an attempt of its
-/// mesh's lane, numbered per mesh; the Build's own state and attempt are the fabric lane's). A lane that
-/// folds to `failed` at `attempt` or later fails the cell with the Build.
-pub async fn lane_attempt_complete(estate: &Estate, id: &str, mesh: &str, attempt: u64, within: Duration) -> BuildProjection {
-    build_fact(estate, id, &format!("attempt {attempt} of {mesh}'s lane complete"), within, |b| {
-        let Some(lane) = b.lanes.get(mesh) else { return false };
-        if u64::from(lane.attempt) < attempt {
-            return false;
-        }
-        match lane.state {
-            BuildState::Complete => true,
-            BuildState::Failed => panic!("attempt {} of {mesh}'s lane of Build {id} failed: {b:#?}", lane.attempt),
-            _ => false,
-        }
+/// Await Build `id` complete in the fabric's Build records and its events (its `rdm.build.ended`
+/// `complete`). A Build that folds to `failed` or `incomplete` fails the cell with the Build; records
+/// that do not fold to it within `within` end the call naming the fact, the store and the Build they
+/// last held.
+pub async fn complete(estate: &Estate, id: &str, within: Duration) -> BuildProjection {
+    build_fact(estate, id, "complete", within, |b| match b.state {
+        BuildState::Complete => true,
+        BuildState::Failed | BuildState::Incomplete => panic!("Build {id} ended {:?}: {b:#?}", b.state),
+        _ => false,
     })
     .await
     .unwrap_or_else(|end| panic!("{end}"))
@@ -146,7 +144,7 @@ pub fn build_read<'a>(estate: &'a Estate, id: &'a str) -> std::pin::Pin<Box<dyn 
         loop {
             let read = log_read(estate, id).await.and_then(|facts| {
                 let n = facts.len();
-                projection(&facts, id).ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("{n} facts of Build {id} and no acceptance of it") })
+                projection(estate, &facts, id).ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("{n} facts of Build {id} and no acceptance of it") })
             });
             match read {
                 Ok(build) => return serde_json::to_value(build).expect("a Build view serializes"),

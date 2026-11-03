@@ -10,7 +10,7 @@ use crate::common;
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::accepted::FabricTopology;
-use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
+use rdm_admin::build_state::BuildStateAdapter;
 use rdm_admin::deployment::endpoint::NODE_SPEC;
 use rdm_admin::deployment::pipeline::{CommandAdmission, Completion,
     CreateRequest, DeploymentPipeline, NodeObserver, DeleteRequest, Timeouts,
@@ -104,7 +104,7 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
         let template = template(&admin);
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::common::stepping(&fabric, "mesh1");
         let sink = Published::default();
         let process = ProcessDeploymentProvider::new();
         let provider = Stubborn {
@@ -127,7 +127,6 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
         let created = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
                 build_id: Some(publish_build(&builds, add_node()).await),
-                attempt: 1,
                 path: "mesh1.node".into(), name: "1".into(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -144,7 +143,6 @@ fn a_node_delete_completes_on_the_exact_runtimes_exit_when_every_departure_is_lo
         let deleted = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(created.node).node_id),
                 build_id: Some(build),
-                attempt: 1,
                 node: created.node.clone(),
                 handle: created.handle.clone(),
                 unreached: false,
@@ -164,7 +162,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
         let template = template(&admin);
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::common::stepping(&fabric, "mesh1");
         let sink = Published::default();
         let process = ProcessDeploymentProvider::new();
         let provider = Stubborn {
@@ -186,7 +184,6 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         };
         let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
             build_id: Some(build_id),
-            attempt: 1,
             path: "mesh1.node".into(), name: "1".into(),
             spec: &NODE_SPEC,
             data_dir: None,
@@ -221,7 +218,6 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         let deleted = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(b.node).node_id),
                 build_id: Some(build.clone()),
-                attempt: 1,
                 node: b.node.clone(),
                 handle: b.handle.clone(),
                 unreached: false,
@@ -232,13 +228,9 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         // every command and every proof is on B's own birth and handle.
         deleted.unwrap_or_else(|e| panic!("delete B: {e}"));
         assert!(matches!(process.inspect(&b.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "B's own runtime is terminal");
-        let steps = builds.read_build(&build).await.unwrap().steps;
-        let output = |name: &str| steps.iter().find(|r| r.step == name).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{name} receipted with an output"));
-        let admission: CommandAdmission = serde_json::from_value(output("StopNode")).unwrap();
-        assert!(matches!(admission, CommandAdmission::Stopped { .. }), "B answered StopNode left: {admission:?}");
-        for step in ["AwaitNodeLeft"] {
-            let completion: Completion = serde_json::from_value(output(step)).unwrap();
-            assert!(matches!(completion, Completion::Received {}), "B's {step} completion call reached the commanding side: {completion:?}");
-        }
+        // B's AwaitNodeLeft completed: its completion call reached the commanding side.
+        let view = builds.read_build(&build).await.unwrap();
+        let op = rdm_core::OperationId::node("node.delete", &b.node.node_id).to_string();
+        assert!(view.completed(&op, "AwaitNodeLeft"), "B's AwaitNodeLeft step event ended complete: {:?}", view.steps);
     })
 }

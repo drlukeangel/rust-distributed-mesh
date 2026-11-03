@@ -7,7 +7,6 @@
 //! one ordinary node.delete Build per sweep. The sweep deletes nothing itself; the delete's admission rechecks the stopped
 //! and open-Build facts, serialized with it.
 
-use crate::accepted::AttemptAction;
 use crate::build::{BuildId, BuildReject};
 use crate::build_state::BuildState;
 use crate::control_plane::Refusal;
@@ -193,19 +192,6 @@ pub enum Swept {
 
 /// Whether an attempt's targeted action acts on the birth `incarnation`: the one birth a delete is
 /// targeted to.
-fn acts_on(action: &AttemptAction, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-    match action {
-        AttemptAction::Delete { node_id: id, from_incarnation, .. } => id == node_id && from_incarnation == incarnation,
-    }
-}
-
-fn references_birth(p: &crate::build_state::BuildProjection, current: bool, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-    let root_open = matches!(p.state, BuildState::Pending | BuildState::Running) || (current && p.state != BuildState::Complete);
-    (root_open && p.action.as_ref().is_some_and(|a| acts_on(a, node_id, incarnation)))
-        || p.lanes.values().any(|lane| matches!(lane.state, BuildState::Pending | BuildState::Running)
-            && lane.action.as_ref().is_some_and(|a| acts_on(a, node_id, incarnation)))
-}
-
 impl crate::control_plane::ControlPlane {
     /// This admin's view as it is now.
     async fn view(&self) -> crate::topology::Topology {
@@ -229,13 +215,13 @@ impl crate::control_plane::ControlPlane {
         }
     }
 
-    /// The open Build that references the birth: a Build still Pending or Running, or the accepted
-    /// Build while it is not complete (a replacement left mid-transfer keeps its rollback point),
-    /// whose current attempt's targeted action acts on the birth.
+    /// The open Build that references the birth: the current Build while it is Pending or Running, its
+    /// acceptance pinning the birth's delete (build.md §4.4).
     async fn open_reference(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<BuildId>, String> {
-        let current = self.builds.current().await.map_err(|e| format!("the current Build cannot be read: {e}"))?.map(|p| p.build_id);
-        let facts = self.builds.facts().await.map_err(|e| format!("the Build facts cannot be read: {e}"))?;
-        Ok(crate::build_state::fold(&facts).into_values().find(|p| references_birth(p, current.as_ref() == Some(&p.build_id), node_id, incarnation)).map(|p| p.build_id))
+        let current = self.builds.current().await.map_err(|e| format!("the current Build cannot be read: {e}"))?;
+        Ok(current
+            .filter(|p| matches!(p.state, BuildState::Pending | BuildState::Running) && p.topology.pinned.iter().any(|(_, b)| b.node_id == *node_id && b.incarnation == *incarnation))
+            .map(|p| p.build_id))
     }
 
     /// The scan: every stopped birth this admin's view holds, with its verdict at `now_ms`.

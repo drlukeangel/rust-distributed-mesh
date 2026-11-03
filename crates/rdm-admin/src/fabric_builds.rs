@@ -17,10 +17,7 @@
 //! idempotent operation keys, not from the claim alone (mesh-control-plane.md §4.1).
 
 use crate::build::BuildId;
-use crate::build_state::{
-    AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter,
-    BuildStateError, BuildStepReceipt, ClaimOutcome, LocalBuildLog,
-};
+use crate::build_state::{BuildAccepted, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, LocalBuildLog};
 use std::sync::Arc;
 
 /// One Build message, one postcard frame (`rdm_transport::wire`): Build facts in their typed shapes
@@ -225,12 +222,6 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.publish_accepted(accepted).await
     }
 
-    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let _gate = self.gate.enter().await?;
-        wire_shaped(&BuildFact::Opened(opened.clone()))?;
-        self.local.open_attempt(opened).await
-    }
-
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.local.read_build(build_id).await
     }
@@ -247,58 +238,21 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.accepted_newest_first().await
     }
 
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.local.list_active().await
-    }
-
-
-    /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the role's own log.
-    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let _gate = self.gate.enter().await?;
-        wire_shaped(&BuildFact::Claim(claim.clone()))?;
-        self.local.claim_attempt(claim).await
-    }
-
-    /// [`Self::claim_attempt`] with the mesh's in-flight row taken in the local log's own turn.
-    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &dyn crate::storage::MeshStorage, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
-        let _gate = self.gate.enter().await?;
-        wire_shaped(&BuildFact::Claim(claim.clone()))?;
-        self.local.claim_in_flight(claim, claims, mesh, row).await
-    }
-
-    async fn in_flight_live(&self, held: &crate::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
-        self.local.in_flight_live(held).await
-    }
-
-    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.local.adopt_claim(claim).await
-    }
-
-    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        // Encoded before it commits: a receipt with no wire shape is refused by name and lands in no
-        // log. Once the write commits, the receipt is the step's durable commit.
-        wire_shaped(&BuildFact::Step(receipt.clone()))?;
-        self.local.append_step_receipt(receipt).await
-    }
-
-    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        wire_shaped(&BuildFact::Attempt(receipt.clone()))?;
-        self.local.append_attempt_receipt(receipt).await
-    }
-
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.local.facts().await
-    }
-
-    async fn committed_facts(&self, build: Option<&crate::build::BuildId>) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.local.committed_facts(build).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.local.mesh_deleted_of(node_id, incarnation).await
-    }
 
     fn held_name(&self) -> Option<crate::model::PathName> {
         self.location_view.held_path_name()
+    }
+
+    fn events(&self) -> Arc<dyn crate::events_storage::EventsStorage> {
+        self.local.events()
+    }
+
+    async fn write_step(&self, step: &crate::build_state::StepWrite) -> Result<(), BuildStateError> {
+        self.local.write_step(step).await
+    }
+
+    async fn note_blocked(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        self.local.note_blocked(build_id, operation, step, reason).await
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -311,7 +265,6 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build_state::BuildAttemptClaim;
 
     /// L4's shape (load-testing.md "Profiles"): ten meshes of three node-admins and seventeen rpc
     /// nodes, a pin on `mesh2.node.1`.
@@ -393,70 +346,6 @@ mod tests {
         }
     }
 
-    /// CONTRACT (INDEX Q284: "Only the fabric-primary, or a successor reading the journal, holds the
-    /// whole Build"; the lead's mechanics, Q284 line 4): an admin's sections of one Build fold into one
-    /// topology holding the meshes it was sent and naming every mesh of the Build; a section heard
-    /// again is held once; the whole acceptance replaces the sections, and no section is new beside it.
-    #[tokio::test]
-    async fn sections_fold_into_one_topology_and_the_whole_replaces_them() {
-        use crate::build_state::{BuildStateAdapter as _, MemoryBuildStateAdapter};
-        let whole = l4_acceptance();
-        let section = |mesh: &str| {
-            let wanted = std::collections::BTreeSet::from([mesh.to_string()]);
-            sectioned(vec![BuildFact::Accepted(whole.clone())], Some(&wanted)).remove(0)
-        };
-        let log = MemoryBuildStateAdapter::new();
-        log.absorb(&[section("mesh1"), section("mesh2")]).await;
-        log.absorb(&[section("mesh1")]).await;
-        assert_eq!(log.facts().await.unwrap().len(), 2, "a section heard again is held once");
-        let p = log.read_build(&whole.build_id).await.unwrap();
-        assert_eq!(p.topology.meshes.keys().cloned().collect::<Vec<_>>(), vec!["mesh1".to_string(), "mesh2".to_string()]);
-        assert_eq!(p.topology.mesh_names(), whole.topology.meshes.keys().cloned().collect(), "the Build's every mesh is named");
-        assert_eq!(p.topology.pinned.len(), 1, "mesh2's pin, from its section");
-        log.absorb(&[BuildFact::Accepted(whole.clone())]).await;
-        let p = log.read_build(&whole.build_id).await.unwrap();
-        assert_eq!(p.topology, whole.topology, "the whole replaces the sections");
-        let held = log.facts().await.unwrap().len();
-        log.absorb(&[section("mesh5")]).await;
-        assert_eq!(log.facts().await.unwrap().len(), held, "the whole holds every section");
-    }
-
-    /// CONTRACT (node-identity-and-state.md §6.9 Age and Wire: "the age lives in the receipt", "No frame
-    /// gains a field"): a standalone stop's `Complete` receipt commits the stop's lifecycle op (the
-    /// exact birth and its rafka-time), and its Build message shape is the one that already
-    /// carries a lifecycle op: it is encoded, decoded to the same receipt, and refused for no other
-    /// operation's `Complete`, which still commits no output.
-    #[test]
-    fn a_stop_receipt_carries_its_birth_and_time_on_the_build_topic() {
-        let op = rdm_core::LifecycleOp { r#type: "node".into(), mesh: "mesh1".into(),
-            build_id: "b1".into(),
-            attempt: 2,
-            operation: rdm_core::OperationId::node("node.stop", &rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "1").unwrap())),
-            node_id: crate::model::NodeId::mint(),
-            incarnation: crate::model::IncarnationId::mint(),
-            path: "mesh1.node".into(), name: "1".into(),
-            event_at_rafka_ms: 4_242,
-            traceparent: None,
-            tracestate: None,
-        };
-        let receipt = |operation: &rdm_core::OperationId| BuildStepReceipt {
-            mesh: None,
-            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
-            attempt: 2,
-            operation: operation.clone(),
-            step: "Complete".into(),
-            outcome: crate::build_state::StepOutcome::Complete,
-            output: Some(serde_json::to_value(&op).unwrap()),
-            executor: None,
-        };
-        let stop = BuildFact::Step(receipt(&rdm_core::OperationId::node("node.stop", &op.node_id)));
-        let (messages, refused) = encode_chunks(vec![stop.clone()]);
-        assert!(refused.is_empty(), "{refused:?}");
-        assert_eq!(BuildMessage::from_bytes(&messages[0]).unwrap().facts, vec![stop]);
-        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt(&rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&op.location()))))]);
-        assert_eq!(refused.len(), 1, "another operation's Complete commits no output");
-    }
-
     /// Packing measures each batch once and sends those bytes: a fresh
     /// nonce of another length can never push a sent message over the limit.
     #[test]
@@ -464,13 +353,8 @@ mod tests {
         for n in 0..200u32 {
             let facts: Vec<BuildFact> = (0..60u32)
                 .map(|i| {
-                    BuildFact::Claim(BuildAttemptClaim { executor_mesh: format!("mesh{n}"), claimed_mesh: None,
-                        claimant: None,
-                        mesh: None,
-                        build_id: BuildId::mint(),
-                        attempt: i,
-                        executor: rdm_core::framing::Birth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() },
-                    })
+                    let _ = (n, i);
+                    BuildFact::Forget { build_id: BuildId::mint() }
                 })
                 .collect();
             let (messages, refused) = encode_chunks(facts);

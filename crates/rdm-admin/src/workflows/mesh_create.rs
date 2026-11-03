@@ -4,7 +4,6 @@
 //! topology names the new mesh. A mesh comes into being with its first node-admin.
 
 pub use crate::deployment::pipeline::CreateMeshStep;
-pub use crate::mesh_claims::{InFlight, Taken};
 
 #[cfg(test)]
 mod tests {
@@ -147,7 +146,7 @@ mod tests {
         // mesh2's MeshId once (`{mesh1} -> {mesh1, mesh2}`).
         let settled_builds = Arc::new(MemoryBuildStateAdapter::new());
         let settled_view = base_view(&fabric_id, &mesh1_id);
-        let seeded = AcceptedStore::seeded(&*settled_builds, fabric_id.clone(), root_top, &settled_view.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap(), "mesh1")
+        let seeded = AcceptedStore::seeded(&*settled_builds, fabric_id.clone(), root_top, &settled_view.node_type_primary("mesh1", "node-admin").unwrap().birth().unwrap())
         .await
         .unwrap();
         let mut cp = ControlPlane::new(
@@ -228,7 +227,7 @@ mod tests {
         // (`first_admin_of` is true only for `mesh2.node-admin.1`); once `mesh2.node-admin.1` is Ready,
         // `mesh2.node.1` is never created by the fabric-primary (`executor_for` is `None` until the
         // election names `mesh2.node-admin.1`, and `Some("mesh2.node-admin.1")` once it is mesh-primary).
-        let initial_plan = plan(&build_proj.topology, &settled_view, None);
+        let initial_plan = plan(&build_proj.topology, &settled_view);
         assert!(initial_plan.operations.contains(&BuildOperation::CreateMesh {
             mesh: "mesh2".into(),
             mesh_id: mesh2_id.clone(),
@@ -297,7 +296,7 @@ mod tests {
         // keeps the same MeshId and plans NO CreateMesh.
         let mut view_lost_m2_admin = view_with_m2_primary.clone();
         view_lost_m2_admin.nodes.retain(|n| n.mesh != "mesh2");
-        let lost_plan = plan(&build_proj.topology, &view_lost_m2_admin, None);
+        let lost_plan = plan(&build_proj.topology, &view_lost_m2_admin);
         assert!(
             !lost_plan
                 .operations
@@ -339,11 +338,9 @@ mod tests {
         let err = crate::admin::create_mesh_step(
             &Records::default(),
             &meshes_held,
-            &*settled_builds,
-            &settled_view.fabric_primary().unwrap().birth().unwrap(),
+            &crate::build_run::FramedBuilds::stepping(settled_builds.clone(), &fabric_id, &settled_view.fabric_primary().unwrap().node_id, "mesh1"),
             settled_view.fabric_primary().unwrap().node_id.as_str(),
             &opened.build_id,
-            1,
             &create_mesh_op,
         )
         .await
@@ -356,7 +353,7 @@ mod tests {
             .steps;
         assert!(
             failed_steps.iter().any(|r| {
-                r.operation == create_mesh_op.key()
+                r.operation == create_mesh_op.key().to_string()
                     && r.step == CreateMeshStep::ClaimMeshName.name()
                     && matches!(&r.outcome, StepOutcome::Failed { reason, .. } if reason.contains(&other_id.to_string()))
             }),

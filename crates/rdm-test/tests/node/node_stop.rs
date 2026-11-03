@@ -29,10 +29,10 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &PathName, step: &str) -> Option<&'a Value> {
+fn step_span<'a>(spans: &'a [Value], build: &str, node: &PathName, step: &str) -> Option<&'a Value> {
     named(spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt && at_location(sp, node) && s(&sp["attributes"]["step"]) == step)
+        .find(|sp| s(&sp["attributes"]["build_id"]) == build && at_location(sp, node) && s(&sp["attributes"]["step"]) == step)
 }
 
 /// Every frame of `stream`, in order, up to and including the terminal one.
@@ -632,17 +632,16 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     estate.stop().await;
     let spans = estate.spans();
     let none = rdm_core::LifecycleOp::NO_BUILD;
-    let attempt = rdm_core::LifecycleOp::NO_ATTEMPT.to_string();
     let mut last = 0u64;
     for step in ["StopNode", "AwaitNodeLeft", "Complete"] {
-        let sp = step_span(&spans, none, &attempt, &node_at(), step).unwrap_or_else(|| panic!("step {step} ran"));
+        let sp = step_span(&spans, none, &node_at(), step).unwrap_or_else(|| panic!("step {step} ran"));
         assert_eq!(s(&sp["attributes"]["outcome"]), "complete", "{sp}");
         let at = sp["start_unix_nano"].as_u64().unwrap();
         assert!(at >= last, "{step} starts before the step it follows");
         last = at;
     }
     for step in ["DeleteConnections", "TerminateRuntime", "NodeDeleting", "NodeDeleted", "RemoveTopologyMembership"] {
-        assert!(step_span(&spans, none, &attempt, &node_at(), step).is_none(), "a standalone stop runs no {step}");
+        assert!(step_span(&spans, none, &node_at(), step).is_none(), "a standalone stop runs no {step}");
     }
     assert!(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().all(|sp| sp["attributes"]["node_id"] != before["node_id"]), "a stop publishes no NodeDeleted");
     let command = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| sp["attributes"]["subject_id"] == before["node_id"] && s(&sp["attributes"]["command"]).contains("stop")).expect("the node command's span at the primary above the node");
@@ -1058,7 +1057,7 @@ async fn a_stop_of_a_mesh_primary_hands_over_by_node_primary_update_before_it_st
     let stop_run = named(&spans, "rdm.node_admin.node.update.via-node-command").into_iter().find(|sp| at_location(sp, &na2.location()) && attr(sp, "subject_id") == p_id).unwrap_or_else(|| panic!("NA2 ran the stop"));
     assert!(end_ns(&cmd) <= start_ns(stop_run), "the fabric-primary installed NA2's answer before it handed the stop on");
     // The stop belongs to no Build: its steps run under no build_id and attempt.
-    let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &p.location()) && attr(sp, "build_id") == rdm_core::LifecycleOp::NO_BUILD && attr(sp, "attempt") == rdm_core::LifecycleOp::NO_ATTEMPT.to_string()).collect();
+    let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| at_location(sp, &p.location()) && attr(sp, "build_id") == rdm_core::LifecycleOp::NO_BUILD.to_string()).collect();
     assert!(steps.iter().any(|sp| attr(sp, "step") == "StopNode"), "the stop's steps are read: {steps:#?}");
     assert!(steps.iter().all(|sp| start_ns(sp) >= end_ns(&installed_at_na2)), "no stop step ran before NA2 answered: {steps:#?}");
     // Commands only go down: every 0x21 call to P is the fabric-primary's command, every one to NA2 P's.
@@ -1516,8 +1515,8 @@ fn a_commanded_start_that_fails_stops_the_birth_again_through_node_stops_steps()
         const NODE_START: &str = "node.start";
         let pre_node_ready = TestPreNodeReady::new(Mode::Local);
         let Rig { primary: _primary, commander, _carried, running: _running, launch, key, dir, target, node_id, incarnation, .. } = rig_pre_node_ready("start-failed-stop", false, Some(pre_node_ready.clone())).await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k2v7m1q9t4xe".into(), attempt: 1, operation: rdm_core::OperationId::node("node.stop", &node_id) };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k2v7m1q9t4xe".into(), attempt: 2, operation: rdm_core::OperationId::node(NODE_START, &node_id) };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k2v7m1q9t4xe".into(), operation: rdm_core::OperationId::node("node.stop", &node_id) };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k2v7m1q9t4xe".into(), operation: rdm_core::OperationId::node(NODE_START, &node_id) };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
         commander.deployed_as(&launch, &key, launch.location(), Some(launch.location()));

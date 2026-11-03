@@ -213,23 +213,22 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     }
     assert!(alive(final_pid), "mesh1's final primary {final_name:?} still runs while every peer holds it");
 
-    // The completion receipt of mesh.deleted, read from the live Build projection: every birth of mesh1
-    // but its final primary, which is not deleted inside its own mesh.delete; no MeshLeft yet.
+    // The MeshDeleted step event, read from the live Build projection, keyed by the mesh's minted id; no
+    // MeshLeft yet.
     let steps_of = |build: &Value, step: &str| -> Vec<Value> { build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == step).collect() };
     let build_b = build_log::build_value(&estate, &b).await;
     let deleted_receipts = steps_of(&build_b, "MeshDeleted");
     assert_eq!(deleted_receipts.len(), 1, "one MeshDeleted completion receipt under {b}: {build_b}");
     assert!(deleted_receipts[0]["operation"]["action"] == "mesh.delete" && deleted_receipts[0]["operation"]["subject"]["Mesh"] == mesh1_id.as_str(), "keyed by the mesh's minted id: {}", deleted_receipts[0]);
-    assert_eq!(deleted_receipts[0]["output"]["receipts"].as_array().map(Vec::len), Some(3), "a terminal receipt for every birth of mesh1 but its final primary: {}", deleted_receipts[0]);
-    assert_eq!(deleted_receipts[0]["output"]["final_primary"]["node"], json!(final_name), "{}", deleted_receipts[0]);
     assert!(steps_of(&build_b, "MeshLeft").is_empty(), "no MeshLeft while the final primary lives: {build_b}");
 
     // The final primary's end: an ordinary node.delete, a separate call, the fabric-primary its
-    // executor. The topology names no mesh1, so the call opens its own targeted attempt of the accepted
+    // executor. The topology names no mesh1, so the call opens its own targeted run of the accepted
     // Build (as a delete of a stopped node does), with its own trace.
+    let c_from = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let mut removal = estate.delete_node(&final_name).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {final_name:?}: {e}"));
     let accepted = Estate::complete(&mut removal).await.expect("the call opened a Build");
-    let (c, c_attempt) = (accepted.build_id.to_string(), u64::from(accepted.attempt));
+    let c = accepted.build_id.to_string();
     let after = Estate::values(&estate.settles_to_named(&names(&["mesh2", "mesh3"]), Duration::from_secs(60)).await);
     ids.extend(after.iter().map(|n| (location(n), s(&n["node_id"]))));
 
@@ -313,9 +312,9 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     // mesh1's members left through the member workflows under B: every member stopped and
     // proven exited in the documented order, and none of the node-removal steps ran.
     let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
-    // The node.delete's run: Build `c` from attempt `c_attempt`; the mesh.delete's: every other
-    // attempt of Build `b`.
-    let node_delete_run = |sp: &Value| sp["attributes"]["build_id"] == c.as_str() && attr_u(sp, "attempt") >= c_attempt;
+    // The node.delete's run: Build `c`'s steps from the call on; the mesh.delete's: every other step of
+    // Build `b`.
+    let node_delete_run = |sp: &Value| sp["attributes"]["build_id"] == c.as_str() && sp["start_unix_nano"].as_u64().is_some_and(|t| t >= c_from);
     let in_run = |sp: &Value, node_delete: bool| if node_delete { node_delete_run(sp) } else { sp["attributes"]["build_id"] == b.as_str() && !node_delete_run(sp) };
     let order_in = |name: &PathName, node_delete: bool| -> Vec<(String, u64, u64)> {
         let mut v: Vec<&Value> = steps.iter().copied().filter(|sp| on(sp, &ids, name) && in_run(sp, node_delete)).collect();
@@ -341,7 +340,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| s(&sp["attributes"]["submitter"]) == final_id).collect();
     assert!(recoveries.is_empty(), "the deleted mesh's last admin {final_name:?} submits no recovery of its deleted members: {} submissions, first {:?}", recoveries.len(), recoveries.first());
     // 1. mesh.deleted ends the mesh.delete: nothing of the final primary is stopped under B.
-    assert!(order_in(&final_name, false).is_empty(), "the mesh.delete runs no step on its final primary {final_name:?} (its node.delete is attempt {c_attempt}): {:?}", order_in(&final_name, false));
+    assert!(order_in(&final_name, false).is_empty(), "the mesh.delete runs no step on its final primary {final_name:?} (its node.delete is Build {c}'s run from the call): {:?}", order_in(&final_name, false));
     let inside: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().filter(|sp| on(sp, &ids, &final_name)).collect();
     assert!(inside.is_empty(), "no shutdown-member workflow of the final primary {final_name:?}: {inside:?}");
     // Tiers: the ordinary nodes' workflows overlap in time; the other node-admin starts only after the
@@ -432,7 +431,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_fabric_primary_over_first_t
     let moved: Vec<&Value> = ["rdm.node_admin.primary.update.via-command", "rdm.node_admin.primary.update.via-update-primary"]
         .iter()
         .flat_map(|n| named(&spans, n))
-        .filter(|sp| (s(&sp["attributes"]["primary_node_id"]) == final_id || on(sp, &ids, &final_name)) && s(&sp["attributes"]["build_id"]) == c && attr_u(sp, "attempt") == c_attempt)
+        .filter(|sp| (s(&sp["attributes"]["primary_node_id"]) == final_id || on(sp, &ids, &final_name)) && s(&sp["attributes"]["build_id"]) == c && sp["start_unix_nano"].as_u64().is_some_and(|t| t >= c_from))
         .collect();
     assert!(moved.is_empty(), "{final_name:?} is its mesh's only node: its delete runs no node.primary.update: {moved:#?}");
     assert_eq!(got, ["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name:?}: the ordinary node.delete, node.stop first, then the exited verdict");

@@ -116,9 +116,9 @@ fn fabric_primary(nodes: &[Value]) -> String {
     advertised_fabric_primaries(nodes).join(",")
 }
 
-/// The highest attempt of Build `id` as the admin at the estate's control API holds it.
-async fn attempt_of(estate: &Estate, id: &str) -> u64 {
-    estate.attempt_of_build(id).await
+/// How many runs of Build `id` started, as the admin at the estate's control API holds it.
+async fn runs_of(estate: &Estate, id: &str) -> u64 {
+    estate.starts_of_build(id).await as u64
 }
 
 /// CONTRACT (#2783): the process fault backend acts on the exact runtime a birth published
@@ -127,12 +127,11 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 /// untouched. A held node (every task but the leader held by a tracer, so the provider reads it
 /// running: a SIGSTOP of the whole process reads `os-stopped`, which node investigation decides at its
 /// inspect and re-creates, Q273) is alive and silent: the OS acknowledges the hold, the
-/// view stops calling it ready, calls to it never complete, and no replacement, re-attempt or new
+/// view stops calling it ready, calls to it never complete, and no replacement, run again or new
 /// birth follows; the thaw returns the SAME birth, which serves the value stored before the hold
 /// (the semantic wedge detector judges it). A killed node is recovered by its mesh-primary
-/// (node-recovery.md): on the provider's exact exited verdict it submits one recovery as the next
-/// attempt of the SAME Build (reason recovery, operations `node.delete:<path>` then `node.create:<path>`,
-/// no Build minted); the exited instance is deleted before the new join, and a new
+/// (node-recovery.md): on the provider's exact exited verdict it runs one recovery itself, never a
+/// Build (no Build minted or run again); the exited instance is deleted before the new join, and a new
 /// NodeId/incarnation is created at the same path.name over the inherited data dir (same endpoint
 /// key, the stored value still served), every step of the create a child of the create pipeline. The exited birth's old NodeId resolves to nothing:
 /// a call aimed at it is not sent (`Resolve(Unknown)`), never dialled to the successor that holds
@@ -161,7 +160,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     assert_eq!(rpcs.len(), 3);
     let (hold_n, kill_n) = (&rpcs[0], &rpcs[1]);
     let (hold, kill) = (location(&hold_n), location(&kill_n));
-    let attempt_before = attempt_of(&estate, &build_id).await;
+    let runs_before = runs_of(&estate, &build_id).await;
 
     // Survivor evidence, complete before any authority disappears: the view, the Build and a value
     // stored on each victim.
@@ -204,7 +203,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let nodes_during = estate.node_values().await;
     let (roles_during, detail_during) = primaries(&nodes_during);
     let during = nodes_during.iter().find(|n| location(n) == hold).cloned();
-    let attempt_during = attempt_of(&estate, &build_id).await;
+    let runs_during = runs_of(&estate, &build_id).await;
     let outcomes: Vec<Value> = std::thread::scope(|scope| {
         let calls: Vec<_> = (0..2).map(|_| scope.spawn(|| estate.probe(&["get", "--target", &hold_exact, "--budget-ms", "1500", "--key", "83"]))).collect();
         calls.into_iter().map(|c| c.join().expect("a probe call's thread")).collect()
@@ -237,7 +236,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         fabric_home: fp_before,
         primary_may_move: false,
         incarnation: [s(&hold_n["incarnation_id"]), during.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default(), s(&back["incarnation_id"])],
-        attempts: [attempt_before, attempt_during],
+        runs: [runs_before, runs_during],
         exact_runtime_alive: alive,
         replaced_during: replaced,
         held_past_floor: false,
@@ -246,7 +245,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-fault"}), kept.to_string());
     rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == hold_n["incarnation_id"] && kept["reply"]["executing_node"] == hold_n["node_id"], kept.to_string());
     rec.check("the exact runtime is the one that was held (same domain, pid, start)", published(&estate, &hold).await == hold_rt, format!("{hold_rt:?}"));
-    rec.check("the Build gained no attempt", attempt_of(&estate, &build_id).await == attempt_before, format!("attempt {attempt_before}"));
+    rec.check("the Build was not run again", runs_of(&estate, &build_id).await == runs_before, format!("runs {runs_before}"));
     rec.check("the primaries equal the public candidates' after the thaw", roles_after, detail_after);
     ev.reconciliation = Some(rec);
 
@@ -293,11 +292,12 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     assert_eq!(admin_new["endpoint_id"], admin_n["endpoint_id"], "the recovered node-admin holds the endpoint key of the data dir it inherited: {admin_new}");
     assert_eq!(estate.data_dir(&admin).await, admin_dir, "the recovered node-admin runs over the inherited data dir");
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
-    // submit followed the recovery's operations to the attempt's terminal frame.
-    wait_for("the node-admin's recovery is followed to its terminal", Duration::from_secs(60), || async {
-        named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().any(|sp| rdm_test::estate::at_location(sp, &admin) && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
+    // run of it ended `complete`.
+    wait_for("the node-admin's recovery is run to its end", Duration::from_secs(60), || async {
+        named(&estate.spans(), "rdm.node_admin.node.update.via-node-recovery").into_iter().any(|sp| rdm_test::estate::at_location(sp, &admin) && attr(sp, "outcome") == "complete").then_some(())
     })
     .await;
+    assert_eq!(runs_of(&estate, &build_id).await, runs_before, "a node recovery is never a Build: the Build is not run again");
     estate.settled_views(&[("mesh1", 3, 3)]).await;
     let nodes_end = estate.node_values().await;
     let survivors_after: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["node_id"])).collect();
@@ -311,61 +311,46 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
 
     // ---- Evidence: the estate's exported spans and this process's own.
     let spans = estate.spans();
-    // The recoveries are attempts of mesh1's drift lane (R-BI7: its mesh-primary runs them in its own
-    // mesh's lane, numbered from 1 there; the fabric lane's attempt number is not theirs).
-    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == build_id && attr(r, "lane") == "mesh1").collect();
-    // A recovery plans the delete of the exact lost birth, keyed by its node id, and the create at its location.
-    let recovery_for = |path: &PathName, reason: &str, operation: &str| -> Value {
-        reconciles
-            .iter()
-            .find(|r| attr(r, "reason") == reason && (if operation == "node.create" { rdm_test::estate::plans_a_create(r) && attr(r, "operations").contains("action: \"node.delete\"") } else { rdm_test::estate::planned_operations(r).iter().any(|op| op.contains(&format!("action: {operation:?}"))) }))
+    // Each recovery is its mesh-primary's own run (node-recovery.md, mesh-recovery.md:8-9; never a
+    // Build): the lost birth re-created at its path (`node.create.via-node-recovery`, naming the lost
+    // node id it re-creates from), the create pipeline in that create's trace.
+    let recovery_for = |path: &PathName| -> Value {
+        named(&spans, "rdm.node_admin.node.create.via-node-recovery")
+            .into_iter()
+            .find(|r| rdm_test::estate::at_location(r, path))
             .cloned()
-            .cloned()
-            .unwrap_or_else(|| panic!("a {reason} attempt of {build_id} running {operation} at {path:?}: {reconciles:?}"))
+            .unwrap_or_else(|| panic!("the recovery re-creating {path:?}"))
     };
-    // The node and the secondary node-admin: each its mesh-primary's recovery (node-recovery.md,
-    // mesh-recovery.md:8-9).
-    let (rpc_rec, admin_rec) = (recovery_for(&kill, "recovery", "node.create"), recovery_for(&admin, "recovery", "node.create"));
-    for (rec, path, lost) in [(&rpc_rec, &kill, kill_n), (&admin_rec, &admin, &admin_n)] {
-        let lost_id = rdm_core::NodeId::parse(&s(&lost["node_id"])).expect("a settled node id");
-        let planned = rdm_test::estate::planned_operations(rec);
-        let is = |op: &String, action: &str, subject: rdm_core::OperationSubject| op.contains(&format!("action: {action:?}")) && op.contains(&format!("subject: {:?}", Some(subject)));
-        assert!(planned.len() == 2 && is(&planned[0], "node.delete", rdm_core::OperationSubject::Node(lost_id.clone())) && planned[1].contains("action: \"node.create\""), "the recovery's two operations, in order: {rec}");
+    let (rpc_rec, admin_rec) = (recovery_for(&kill), recovery_for(&admin));
+    for (rec, lost) in [(&rpc_rec, kill_n), (&admin_rec, &admin_n)] {
+        assert_eq!(attr(rec, "node_id"), s(&lost["node_id"]), "the recovery re-creates from the exact lost node: {rec}");
     }
     for path in [&kill, &admin] {
-        assert!(
-            named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && (rdm_test::estate::plans_a_create(r) || attr(r, "operations").contains(&format!("{:?}", path))))),
-            "the Fabric's drift never repairs {path:?}: its mesh-primary recovers it"
-        );
         let mesh_primary = s(&nodes0.iter().find(|n| n["type"] == "node-admin" && n["is_primary"] == true).expect("mesh1's primary")["node_id"]);
         let submits: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-recovery").into_iter().filter(|sp| rdm_test::estate::at_location(sp, path)).collect();
-        assert!(submits.iter().any(|sp| attr(sp, "submitter") == mesh_primary && attr(sp, "outcome").starts_with("complete: attempt")), "{path:?}: its mesh-primary {mesh_primary} submitted the recovery and followed it to its end: {submits:?}");
+        assert!(submits.iter().any(|sp| attr(sp, "submitter") == mesh_primary && attr(sp, "outcome") == "complete"), "{path:?}: its mesh-primary {mesh_primary} ran the recovery to its end: {submits:?}");
     }
-    assert_eq!(attr(&rpc_rec, "build_id"), build_id);
     assert!(named(&spans, "rdm.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
-    // The pipeline in the recovery reconcile's own trace: a lane's attempt number also names an
-    // attempt of the fabric lane, whose create pipeline of the same path is the node's first birth.
-    let pipeline_of = |kind: &str, path: &PathName, attempt: u64, rec: &Value| -> Value {
+    let pipeline_of = |kind: &str, path: &PathName, rec: &Value| -> Value {
         named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
             .into_iter()
-            .find(|p| p["trace_id"] == rec["trace_id"] && attr(p, "pipeline") == kind && rdm_test::estate::at_location(p, path) && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
+            .find(|p| p["trace_id"] == rec["trace_id"] && attr(p, "pipeline") == kind && rdm_test::estate::at_location(p, path))
             .cloned()
-            .unwrap_or_else(|| panic!("a {kind} pipeline span of {path:?} at attempt {attempt} in the recovery's trace"))
+            .unwrap_or_else(|| panic!("a {kind} pipeline span of {path:?} in the recovery's trace"))
     };
     let mut recoveries = Vec::new();
     for (path, rec, kind) in [(&kill, &rpc_rec, "create"), (&admin, &admin_rec, "create")] {
-        let attempt = num(&rec["attributes"]["attempt"]);
-        let pipe = pipeline_of(kind, path, attempt, rec);
+        let pipe = pipeline_of(kind, path, rec);
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipe["span_id"]).collect();
         assert!(!steps.is_empty(), "{path:?}: step spans are children of the {kind} pipeline");
         assert!(steps.iter().all(|st| st["trace_id"] == pipe["trace_id"] && rdm_test::estate::at_location(st, path)), "{path:?}: every step shares the pipeline's trace");
         assert!(steps.iter().any(|st| attr(st, "step") == "WaitForBind" || attr(st, "step").to_lowercase().contains("bind")), "{path:?}: the birth waited for its bind: {:?}", steps.iter().map(|st| attr(st, "step")).collect::<Vec<_>>());
         recoveries.push(json!({
-            "path": path, "attempt": rec["attributes"]["attempt"], "reason": rec["attributes"]["reason"], "action": rec["attributes"]["action"], "operations": rec["attributes"]["operations"],
-            "reconcile": {"trace_id": rec["trace_id"], "span_id": rec["span_id"], "parent_span_id": rec["parent_span_id"], "service": rec["service"]},
+            "path": path, "from_node_id": rec["attributes"]["node_id"], "created_node_id": rec["attributes"]["created_node_id"],
+            "recovery": {"trace_id": rec["trace_id"], "span_id": rec["span_id"], "parent_span_id": rec["parent_span_id"], "service": rec["service"]},
             "pipeline": {"trace_id": pipe["trace_id"], "span_id": pipe["span_id"], "parent_span_id": pipe["parent_span_id"], "provider": pipe["attributes"]["provider"]},
             "steps": steps.iter().map(|st| json!({"step": st["attributes"]["step"], "outcome": st["attributes"]["outcome"], "span_id": st["span_id"], "parent_span_id": st["parent_span_id"], "trace_id": st["trace_id"]})).collect::<Vec<_>>(),
-            "reconcile_is_in_a_trace_with_the_pipeline": descends_from(&spans, &pipe, rec) || pipe["trace_id"] == rec["trace_id"],
+            "recovery_is_in_a_trace_with_the_pipeline": descends_from(&spans, &pipe, rec) || pipe["trace_id"] == rec["trace_id"],
         }));
     }
     // The dispatches to the held node's births.
@@ -389,7 +374,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let result = json!({
         "cell": KILL_CELL,
         "build_id": build_id,
-        "attempt_before": attempt_before,
+        "runs_before": runs_before,
         "forged_start": format!("{forged:?}"),
         "foreign_domain": format!("{foreign:?}"),
         "hold": {"node": hold, "runtime": hold_rt, "stopped": stopped, "thawed": thawed, "view_while_held": silent_view, "calls_while_held": outcomes, "after_thaw": kept, "verdict": serde_json::to_value(&verdict).unwrap(), "evidence": serde_json::to_value(&ev).unwrap()},

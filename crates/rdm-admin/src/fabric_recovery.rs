@@ -62,151 +62,13 @@ pub fn of(view: &Topology, inc: &Incumbency, digest_view: &DigestView) -> Option
     Some(FabricRecovery { own_mesh: own.is_some(), executor, target, at })
 }
 
-/// What the claim of an in-force fabric.delete's next attempt came to (Q160).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeleteClaim {
-    /// This admin holds the attempt: the one it claimed now, or held already.
-    Won(u32),
-    /// Another executor holds the delete's attempt, live or by a winning claim, and continues it: named.
-    Lost(String),
-    /// Nothing decided on this pass (a store not read, a claim not open yet): named.
-    NotYet(String),
-    /// The delete has no attempt claimed yet, so no executor of it was lost and there is nothing to
-    /// supersede: its first attempt is the drive's claim, once the Builds it interrupts have ended
-    /// (build.md §1).
-    First,
-}
-
-/// The claim, by `me`, of the in-force fabric.delete `delete`'s next attempt (fabric-recovery.md step 4,
-/// Q160: "one winning claim"). An attempt `me` holds already is its own. An attempt held by an executor
-/// other than the exact lost fabric-primary birth `lost` is that executor's, which continues it. Otherwise the
-/// lost executor's in-flight row of its attempt, which the claim supersedes, is released (a removal that
-/// takes it only while it names that attempt), and the next attempt is decided as every claim is
-/// ([`crate::build_claim::decide_claim`]): the in-flight row of the lost fabric-primary's mesh taken first,
-/// one row whichever mesh each contender is of, then the claim recorded, so of two executors one wins and
-/// the other is told the winner. `own` is the established local birth, inspected on `rows`: a
-/// deleted birth claims nothing (Q181).
-pub async fn claim_delete_attempt(me: &PathName, own: &rdm_core::framing::Birth, me_mesh: &str, lost_mesh: &str, builds: &dyn crate::build_state::BuildStateAdapter, claims: &dyn crate::storage::MeshStorage, contexts: &crate::build_claim::AttemptContexts, delete: &crate::build_state::BuildProjection, lost: &rdm_core::framing::Birth, rows: Option<&dyn crate::storage::NodesStorage>) -> DeleteClaim {
-    use crate::build_state::BuildState;
-    if delete.attempt == 0 {
-        return DeleteClaim::First;
-    }
-    if delete.state == BuildState::Running {
-        let claim = match crate::build_state::committed_claim(builds, &delete.build_id, None, delete.attempt).await {
-            Ok(Some(claim)) => claim,
-            Ok(None) => return DeleteClaim::NotYet("the running delete has no committed executor claim".into()),
-            Err(err) => return DeleteClaim::NotYet(format!("the delete's committed executor claim could not be read: {err}")),
-        };
-        if &claim.executor == own {
-            return DeleteClaim::Won(delete.attempt);
-        }
-        if &claim.executor != lost {
-            return DeleteClaim::Lost(format!("attempt {} of fabric.delete {} is held by {}", delete.attempt, delete.build_id, claim.executor));
-        }
-        let (Some(claimant), Some(claimed_mesh)) = (claim.claimant, claim.claimed_mesh) else {
-            return DeleteClaim::NotYet("the lost executor's committed claim has no claimant or claimed mesh".into());
-        };
-        let row = crate::mesh_claims::InFlight { build_id: delete.build_id.clone(), lane: None, attempt: delete.attempt, claimant };
-        match claims.in_flight(&claimed_mesh).await {
-            Ok(Some(held)) if held.same_claim(&row) => {
-                if let Err(err) = claims.release_in_flight(&claimed_mesh, &held).await {
-                    return DeleteClaim::NotYet(format!("mesh {claimed_mesh}'s in-flight row could not be released: {err}"));
-                }
-            }
-            Ok(_) => {}
-            Err(err) => return DeleteClaim::NotYet(format!("mesh {claimed_mesh}'s in-flight row could not be read: {err}")),
-        }
-    }
-    let attempt = delete.attempt + 1;
-    let claim = crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: me_mesh.to_owned(), build_id: delete.build_id.clone(), attempt, executor: own.clone(), claimant: Some(own.node_id.clone()), mesh: None };
-    match crate::build_claim::decide_claim(me, builds, claims, contexts, &claim, lost_mesh, rows.map(|rows| (rows, &own.node_id))).await {
-        rdm_core::build_claim::BuildClaimReply::Won { .. } => DeleteClaim::Won(attempt),
-        rdm_core::build_claim::BuildClaimReply::Lost { holder } => DeleteClaim::Lost(format!("attempt {attempt} of fabric.delete {} was claimed by {holder}", delete.build_id)),
-        other => DeleteClaim::NotYet(format!("the claim of attempt {attempt} of fabric.delete {} answered {other:?}", delete.build_id)),
-    }
-}
-
-/// The recorded transition (fabric-recovery.md step 4, Q160: "one recorded transition at the next
-/// revision"): in the attempt `attempt` of the delete `build_id` that `me` won, its `PrimariesTaken`
-/// receipt, naming the lost fabric-primary `target`, the fabric-primary record's next revision, the lost
-/// mesh's mesh-primary record's `mesh_revision`, and the receipts of the superseded attempt `me` holds
-/// now. Recorded once: a receipt already in the attempt is the transition.
-pub async fn record_primaries_taken(builds: &dyn crate::build_state::BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, me: &Node, target: &Primary, mesh_revision: u64) -> Result<crate::build_state::PrimariesTaken, String> {
-    use crate::build_state::{receipt_key, BuildStepReceipt, PrimariesTaken, StepOutcome, STEP_PRIMARIES_TAKEN};
-    let p = builds.read_build(build_id).await.map_err(|e| format!("Build {build_id} could not be read: {e}"))?;
-    if let Some(t) = p.steps.iter().filter(|r| r.mesh.is_none() && r.attempt == attempt && r.step == STEP_PRIMARIES_TAKEN).find_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<PrimariesTaken>(v).ok())) {
-        return Ok(t);
-    }
-    let incarnation = me.incarnation_id.clone().ok_or_else(|| format!("node_id={} holds no incarnation", me.node_id))?;
-    let superseded_attempt = attempt.saturating_sub(1);
-    let prior_fabric = crate::build_state::primaries_taken(&p.steps).iter().map(|t| t.fabric_revision).max().unwrap_or(0);
-    let taken = PrimariesTaken {
-        lost_node_id: target.node_id.clone(),
-        lost_incarnation: target.incarnation.clone(),
-        executor_node_id: me.node_id.clone(),
-        executor_incarnation: incarnation,
-        fabric_revision: target.revision.max(prior_fabric) + 1,
-        mesh: target.mesh.clone(),
-        mesh_revision,
-        superseded_attempt,
-        held: p.steps.iter().filter(|r| r.mesh.is_none() && r.attempt == superseded_attempt).map(receipt_key).collect(),
-    };
-    let receipt = BuildStepReceipt {
-        mesh: None,
-        build_id: build_id.clone(),
-        attempt,
-        operation: crate::build_state::primaries_taken_operation(&target.node_id),
-        step: STEP_PRIMARIES_TAKEN.into(),
-        outcome: StepOutcome::Complete,
-        output: serde_json::to_value(&taken).ok(),
-        executor: None,
-    };
-    builds.append_step_receipt(&receipt).await.map_err(|e| format!("the {STEP_PRIMARIES_TAKEN} receipt could not be recorded: {e}"))?;
-    tracing::info_span!(
-        "rdm.node_admin.primary.update.via-fabric-delete-transition",
-        node_path = %me.path, node_name = %me.name,
-        build_id = %build_id.log(),
-        attempt,
-        lost_node_id = %target.node_id,
-        fabric_revision = taken.fabric_revision,
-        mesh = %taken.mesh,
-        mesh_revision,
-        superseded_attempt,
-        held = taken.held.len() as u64,
-    )
-    .in_scope(|| tracing::info!("the executor records the transition: the fabric-primary role and the lost mesh's mesh-primary role at the next revision"));
-    Ok(taken)
-}
-
-/// Fold every recorded [`crate::build_state::PrimariesTaken`] transition of an in-force fabric.delete into
-/// `digest_view` and `records` for the executor `me` taking over from `target` (fabric-recovery.md step 4,
-/// Q155, Q160): each lost fabric-primary birth is marked gone and offline so a birth known only from
-/// forwarded topology (`Heard::Topology`) is not read as a live primary of its mesh, and each mesh whose
-/// mesh-primary role an earlier transition moved to the fabric-primary is held by `me` at the next
-/// revision.
-pub fn fold_primaries_taken(digest_view: &DigestView, records: &crate::admin::Records, me: &Node, target: Option<&Primary>, transitions: &[crate::build_state::PrimariesTaken]) {
-    let mut offline = records.offline.lock().unwrap();
-    for t in transitions {
-        digest_view.primaries.mark_gone(t.lost_incarnation.clone());
-        offline.insert((t.lost_node_id.clone(), t.lost_incarnation.clone()));
-    }
-    if let Some(target) = target {
-        digest_view.primaries.mark_gone(target.incarnation.clone());
-        offline.insert((target.node_id.clone(), target.incarnation.clone()));
-    }
-    drop(offline);
-    let Some(me_inc) = me.incarnation_id.clone() else { return };
-    let target_mesh = target.map(|t| t.mesh.as_str());
-    let mut mesh_revs: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
-    for t in transitions {
-        if t.mesh != me.mesh && Some(t.mesh.as_str()) != target_mesh {
-            mesh_revs.entry(t.mesh.clone()).and_modify(|r| *r = (*r).max(t.mesh_revision)).or_insert(t.mesh_revision);
-        }
-    }
-    for (mesh, recorded_rev) in mesh_revs {
-        let rev = digest_view.primaries.mesh(&mesh).map(|m| m.revision).unwrap_or(0).max(recorded_rev) + 1;
-        digest_view.primaries.take(rdm_core::PrimaryRole::of_type("node-admin"), &Primary { mesh, node_id: me.node_id.clone(), incarnation: me_inc.clone(), revision: rev });
-    }
+/// Fold the lost fabric-primary `target` into `digest_view` and `records` for the executor `me` taking
+/// over from it under an in-force fabric.delete (fabric-recovery.md step 4, Q155): the lost birth is
+/// marked gone and offline, so a birth known only from forwarded topology (`Heard::Topology`) is not read
+/// as a live primary of its mesh.
+pub fn fold_lost_fabric_primary(digest_view: &DigestView, records: &crate::admin::Records, target: &Primary) {
+    digest_view.primaries.mark_gone(target.incarnation.clone());
+    records.offline.lock().unwrap().insert((target.node_id.clone(), target.incarnation.clone()));
 }
 
 /// A hook that reads fabric recovery in a view (the records and the digest view are the admin's own).
@@ -448,7 +310,7 @@ impl FabricRecoveryDoor {
             match crate::build_state::fabric_delete_in_force(&*self.recovery.builds).await {
                 Ok(Some((delete, _))) => {
                     span.record("arm", if fr.own_mesh { "own-mesh-under-delete" } else if fr.executor.is_none() { "launched-under-delete" } else { "backbone-under-delete" });
-                    if let Some(end) = self.hold_under_delete(span, target, &fr, &delete).await {
+                    if let Some(end) = self.hold_under_delete(span, target, &delete).await {
                         return end;
                     }
                     tokio::time::sleep(rdm_transport::topology::gossip_interval()).await;
@@ -549,51 +411,19 @@ impl FabricRecoveryDoor {
         }
     }
 
-    /// Under the in-force fabric.delete `delete` (fabric-recovery.md step 4, Q155, Q160): the executor,
-    /// of the lost birth's own mesh, from the backbone, or the admin a person launched ("Nothing alive"),
-    /// claims the delete's next attempt ([`claim_delete_attempt`]: one claim wins), records the transition
-    /// ([`record_primaries_taken`]) and holds, at the next revision, the fabric-primary role and the lost
-    /// mesh's mesh-primary role, keeping its own mesh's, installed on its own node with no call; its drive
-    /// then continues the delete as fabric-primary. Nothing is re-created and no hand-back follows. `Some`
-    /// ends the workflow (the roles held, or another executor's claim won); `None` holds nothing on this
-    /// pass (the next pass reads again).
-    async fn hold_under_delete(&self, span: &tracing::Span, target: &Primary, fr: &FabricRecovery, delete: &crate::build_state::BuildProjection) -> Option<String> {
+    /// Under the in-force fabric.delete `delete` (fabric-recovery.md step 4, Q155): the executor, of the
+    /// lost birth's own mesh, from the backbone, or the admin a person launched ("Nothing alive"), takes
+    /// by one recorded transition, at the next revision, the fabric-primary role and the lost mesh's
+    /// mesh-primary role, keeping its own mesh's, installed on its own node with no call; its drive then
+    /// continues the delete as fabric-primary from the delete's events. Nothing is re-created and no
+    /// hand-back follows. `Some` ends the workflow (the roles held); `None` holds nothing on this pass (the
+    /// next pass reads again).
+    async fn hold_under_delete(&self, span: &tracing::Span, target: &Primary, delete: &crate::build_state::BuildProjection) -> Option<String> {
         let me = self.topology.read().await.own(&self.me_id).filter(|node| node.incarnation_id.as_ref() == Some(&self.me_incarnation)).cloned()?;
-        let Some(door) = self.recovery.door.get().cloned() else {
-            tracing::info!(build_id = %delete.build_id.log(), "this admin's Build door is not built yet: the delete's next attempt is claimed on a later pass");
-            return None;
-        };
-        let control = &door.control;
-        let own = rdm_core::framing::Birth { node_id: self.me_id.clone(), incarnation: self.me_incarnation.clone() };
-        let lost = rdm_core::framing::Birth { node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
-        let attempt = match claim_delete_attempt(&me.location(), &own, &me.mesh, &fr.target.mesh, &*control.builds, &*control.claims, &control.contexts, delete, &lost, control.node_rows.get().map(|rows| &**rows)).await {
-            DeleteClaim::Won(attempt) => Some(attempt),
-            DeleteClaim::First => None,
-            DeleteClaim::Lost(why) => {
-                tracing::info!(build_id = %delete.build_id.log(), lost = %why, "another executor's claim of the delete's attempt won: it continues the delete");
-                return Some(format!("under fabric.delete {}: {why}; another executor continues it", delete.build_id));
-            }
-            DeleteClaim::NotYet(why) => {
-                tracing::info!(build_id = %delete.build_id.log(), reason = %why, "the delete's next attempt is not claimed on this pass");
-                return None;
-            }
-        };
-        let prior = crate::build_state::primaries_taken(&delete.steps);
-        let prior_mesh = prior.iter().filter(|t| t.mesh == target.mesh).map(|t| t.mesh_revision).max().unwrap_or(0);
-        let mesh_revision = self.digest_view.primaries.mesh(&target.mesh).map(|m| m.revision).unwrap_or(0).max(prior_mesh) + 1;
-        // With an attempt won, the transition is recorded in it; with none claimed yet there is no attempt
-        // to supersede, and the drive's claim of the first is the one claim (build.md §1).
-        if let Some(attempt) = attempt {
-            if let Err(e) = record_primaries_taken(&*control.builds, &delete.build_id, attempt, &me, target, mesh_revision).await {
-                tracing::info!(build_id = %delete.build_id.log(), error = %e, "the transition could not be recorded on this pass");
-                return None;
-            }
-        }
-        let transitions = match control.builds.read_build(&delete.build_id).await {
-            Ok(p) => crate::build_state::primaries_taken(&p.steps),
-            Err(_) => prior,
-        };
-        fold_primaries_taken(&self.digest_view, &self.records, &me, Some(target), &transitions);
+        let mesh_revision = self.digest_view.primaries.mesh(&target.mesh).map(|m| m.revision).unwrap_or(0) + 1;
+        fold_lost_fabric_primary(&self.digest_view, &self.records, target);
+        // One recorded transition at the next revision (fabric-recovery.md step 4): the fabric-primary role
+        // and the lost mesh's mesh-primary role, on the primary records.
         let installed = if me.mesh == target.mesh {
             self.restore(target, &me).await
         } else {
@@ -605,8 +435,8 @@ impl FabricRecoveryDoor {
         match installed {
             Ok(entries) => {
                 span.record("restored", me.node_id.as_str());
-                tracing::info!(build_id = %delete.build_id.log(), attempt = ?attempt, "under an in-force fabric.delete the executor holds the fabric-primary's roles by its claim and the recorded transition, and continues the delete; nothing is re-created");
-                Some(format!("holds the fabric-primary's roles under fabric.delete {} at attempt {}: {}", delete.build_id, attempt.map(|a| a.to_string()).unwrap_or_else(|| "none yet".into()), rdm_node::member_handover::entries_named(&entries)))
+                tracing::info!(build_id = %delete.build_id.log(), "under an in-force fabric.delete the executor holds the fabric-primary's roles by the recorded transition, and continues the delete; nothing is re-created");
+                Some(format!("holds the fabric-primary's roles under fabric.delete {}: {}", delete.build_id, rdm_node::member_handover::entries_named(&entries)))
             }
             Err(reply) => {
                 tracing::info!(build_id = %delete.build_id.log(), refused = ?reply, "the executor could not hold the fabric-primary's roles on this pass");
@@ -646,44 +476,8 @@ impl FabricRecoveryDoor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
+    use crate::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
     use crate::storage::MeshStorage;
-
-    /// CONTRACT (fabric-recovery.md step 4, Q160: "The executor takes the fabric-primary role and the lost
-    /// mesh's mesh-primary role by one winning claim"): under a fabric.delete whose attempt 1 the lost
-    /// fabric-primary mesh1.node-admin.1 claimed, holding mesh1's in-flight row, two backbone executors of two
-    /// other meshes each read the delete at attempt 1 and claim its next attempt. One wins attempt 2; the
-    /// other is told the winner, and so is a third admin that reads the delete held by the winner; the
-    /// winner's claim again is its own. Must NOT happen: two executors holding attempt 2, the lost
-    /// executor's row left holding mesh1, or an executor claiming past a live executor's attempt.
-    #[tokio::test]
-    async fn competing_backbone_executors_one_claim_of_the_deletes_next_attempt_wins() {
-        let builds = MemoryBuildStateAdapter::new();
-        let claims = crate::storage::MemoryMeshStorage::default();
-        let contexts = crate::build_claim::AttemptContexts::in_memory();
-        let id = crate::build::BuildId::mint();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, change: Some(rdm_core::build::BuildChange::DeleteFabric), source: None, time: 1 }).await.unwrap();
-        let birth = |id: &str| rdm_core::framing::Birth { node_id: NodeId::parse(id).unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60(id)).unwrap() };
-        let lost = birth("100000000000");
-        let a_birth = birth("200000000000");
-        let b_birth = birth("300000000000");
-        let c_birth = birth("400000000000");
-        let claimant = NodeId::parse("500000000000").unwrap();
-        builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: Some("mesh1".into()), executor_mesh: "mesh1".into(), build_id: id.clone(), attempt: 1, executor: lost.clone(), claimant: Some(claimant.clone()), mesh: None }).await.unwrap();
-        let lost_row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt: 1, claimant, };
-        assert_eq!(claims.take_in_flight("mesh1", &lost_row).await.unwrap(), crate::mesh_claims::Taken::Won);
-        let (a, b, c): (PathName, PathName, PathName) = (rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh3.node-admin", "1").unwrap(), rdm_core::PathName::new("mesh4.node-admin", "1").unwrap());
-        let read = builds.read_build(&id).await.unwrap();
-        let first = claim_delete_attempt(&a, &a_birth, "mesh2", "mesh1", &builds, &claims, &contexts, &read, &lost, None).await;
-        let second = claim_delete_attempt(&b, &b_birth, "mesh3", "mesh1", &builds, &claims, &contexts, &read, &lost, None).await;
-        assert_eq!(first, DeleteClaim::Won(2), "the first claim of attempt 2 wins");
-        assert!(matches!(&second, DeleteClaim::Lost(why) if why.contains(a_birth.node_id.as_str())), "the second claimant is told the winner: {second:?}");
-        let now = builds.read_build(&id).await.unwrap();
-        assert_eq!((now.attempt, now.executor.as_ref()), (2, Some(&a_birth)), "one executor holds attempt 2");
-        assert_eq!(claim_delete_attempt(&a, &a_birth, "mesh2", "mesh1", &builds, &claims, &contexts, &now, &lost, None).await, DeleteClaim::Won(2), "the winner's claim again is its own");
-        assert!(matches!(claim_delete_attempt(&c, &c_birth, "mesh4", "mesh1", &builds, &claims, &contexts, &now, &lost, None).await, DeleteClaim::Lost(why) if why.contains(a_birth.node_id.as_str())), "an executor never claims past a live executor's attempt");
-        assert_eq!(claims.in_flight("mesh1").await.unwrap().map(|r| (r.attempt, r.claimant)), Some((2, a_birth.node_id.clone())), "the lost executor's row is superseded by the winner's");
-    }
 
     /// CONTRACT (docs/architecture/lifecycles/fabric-recovery.md:45-47: "1. **Unheard past the staleness
     /// floor.** Every admin marks the fabric-primary `PendingReconnect` at the floor (node recovery step 1).
@@ -794,68 +588,5 @@ mod tests {
         assert_eq!(fr_bb.at, Some(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()));
         assert_eq!(fr_bb.executor, bb_low.birth());
 
-    }
-
-    /// CONTRACT (fabric-recovery.md step 4, Q155, Q160; mesh-delete.md "Resume after the primary's loss"
-    /// step 2): when a backbone executor (mesh2.node-admin.1) takes the fabric-primary role and mesh1's
-    /// mesh-primary role in attempt 2 of fabric.delete and is then lost midway, the next executor
-    /// (mesh2.node-admin.2) in attempt 3 folds the recorded transitions so mesh1.node-admin.1—even when held in
-    /// mesh2.node-admin.2's digest view only from entry topology (`Heard::Topology`)—is neither live nor
-    /// mesh1's primary, and mesh2.node-admin.2 holds mesh1's mesh-primary record at the next revision.
-    #[tokio::test]
-    async fn the_next_executor_under_fabric_delete_folds_earlier_transitions_so_the_lost_mesh_primary_holds_no_role_or_liveness() {
-        let builds = MemoryBuildStateAdapter::new();
-        let id = crate::build::BuildId::mint();
-        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology { created: Vec::new(), section_of: None, pinned: Vec::new(), topology_storage_provider: None, fabric: "fabric1".into(), meshes: Default::default() }, change: Some(rdm_core::build::BuildChange::DeleteFabric), source: None, time: 1 }).await.unwrap();
-        let make_admin = |name: rdm_core::PathName, mesh: &str, r#type: &str| {
-            let mut n = Node::allocated(name, mesh, r#type);
-            n.incarnation_id = Some(crate::model::IncarnationId::mint());
-            n.status = NodeStatus::Ready;
-            n
-        };
-        let fp1 = make_admin(rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin");
-        let ex1 = make_admin(rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin");
-        let ex2 = make_admin(rdm_core::PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin");
-        let target1 = Primary { mesh: "mesh1".into(), node_id: fp1.node_id.clone(), incarnation: fp1.incarnation_id.clone().unwrap(), revision: 1 };
-        let t1 = record_primaries_taken(&builds, &id, 2, &ex1, &target1, 2).await.expect("attempt 2 transition");
-        let target2 = Primary { mesh: "mesh2".into(), node_id: ex1.node_id.clone(), incarnation: ex1.incarnation_id.clone().unwrap(), revision: t1.fabric_revision };
-        let t2 = record_primaries_taken(&builds, &id, 3, &ex2, &target2, 2).await.expect("attempt 3 transition");
-        assert_eq!(t2.fabric_revision, 3);
-
-        let fabric_id = crate::model::FabricId::mint();
-        let digest_view = DigestView::default();
-        let records = crate::admin::Records::default();
-        let digest_of = |n: &Node, is_primary: Option<u64>, is_fabric_primary: Option<u64>| rdm_core::MeshDigest {
-            held_hash: Default::default(),
-            fabric_id: fabric_id.clone(),
-            node: rdm_core::MeshNode { mesh: n.mesh.clone(), r#type: n.r#type.clone(), node_id: n.node_id.clone(), path: n.path.clone(), name: n.name.clone(), endpoint_id: crate::model::EndpointId(String::new()), transport_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 1)), incarnation: n.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
-            status: rdm_core::MemberStatus::Ready,
-            node_state: Default::default(),
-            admin_api_base: None,
-            digest_seq: 1,
-            emitted_at_rafka_ms: 0,
-            data_dir: None,
-            mesh_id: None,
-            in_flight: None,
-            load: None,
-            gossip: None,
-            is_primary,
-            is_fabric_primary,
-        };
-        // mesh2.node-admin.2 learned mesh1.node-admin.1 only via entry topology (`record_topology`, `Heard::Topology`),
-        // which never ages on its own, and holds mesh1's initial primary record at revision 1.
-        digest_view.record(digest_of(&fp1, Some(1), Some(1)));
-        digest_view.record(digest_of(&ex2, None, None));
-
-        let steps = builds.read_build(&id).await.unwrap().steps;
-        let transitions = crate::build_state::primaries_taken(&steps);
-        fold_primaries_taken(&digest_view, &records, &ex2, Some(&target2), &transitions);
-        digest_view.primaries.take(rdm_core::PrimaryRole::of_type("node-admin"), &Primary { mesh: "mesh2".into(), node_id: ex2.node_id.clone(), incarnation: ex2.incarnation_id.clone().unwrap(), revision: 2 });
-        digest_view.primaries.take(rdm_core::PrimaryRole::FabricPrimary, &Primary { mesh: "mesh2".into(), node_id: ex2.node_id.clone(), incarnation: ex2.incarnation_id.clone().unwrap(), revision: 3 });
-
-        let view = crate::admin::project("fabric1", &fabric_id, crate::model::ProviderKind::Process, &digest_view, &records);
-        assert_eq!(view.node_type_primary("mesh1", "node-admin"), None, "mesh1 has no live node-admin primary in mesh2.node-admin.2's view");
-        assert_eq!(view.nodes_of_type("mesh1", "node-admin").find(|n| n.status.is_live()), None, "the lost mesh1.node-admin.1 is not live in mesh2.node-admin.2's view");
-        assert_eq!(digest_view.primaries.mesh("mesh1").map(|p| (p.node_id, p.revision)), Some((ex2.node_id.clone(), 3)), "mesh2.node-admin.2 holds mesh1's mesh-primary record at the next revision");
     }
 }

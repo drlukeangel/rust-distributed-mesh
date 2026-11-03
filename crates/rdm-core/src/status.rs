@@ -4,7 +4,7 @@
 //! A node or a primary declares a committed state upward to its authority and gets the typed
 //! result of applying it. Gossip stays the dissemination plane; this is certainty that one
 //! declared state was applied by the authority that holds it. There is no transition id:
-//! an operation-named node effect is idempotent by `(birth, build_id, attempt, operation)` (Q49),
+//! an operation-named node effect is idempotent by `(birth, build_id, operation)` (Q49),
 //! held across cycle begins and forgotten only with the birth. Without an operation,
 //! idempotency is the natural key of the thing declared — `(NodeId, IncarnationId, status)`,
 //! `(MeshId, status)`, `(FabricId, event)` — and the entity's current state is the result.
@@ -212,8 +212,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build the operation belongs to.
         build_id: String,
-        /// The Build attempt that holds the operation.
-        attempt: u32,
         /// The operation.
         operation: crate::OperationId,
     },
@@ -227,8 +225,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build the operation belongs to.
         build_id: String,
-        /// The Build attempt that holds the operation.
-        attempt: u32,
         /// The operation.
         operation: crate::OperationId,
     },
@@ -242,8 +238,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build the operation belongs to.
         build_id: String,
-        /// The Build attempt that holds the operation.
-        attempt: u32,
         /// The operation: `node.stop:<path>`.
         operation: crate::OperationId,
     },
@@ -258,8 +252,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build the operation belongs to.
         build_id: String,
-        /// The Build attempt that holds the operation.
-        attempt: u32,
         /// The operation: `node.stop:<path>`.
         operation: crate::OperationId,
     },
@@ -273,8 +265,6 @@ pub enum StatusRequest {
         mesh_id: MeshId,
         /// The Build the operation belongs to.
         build_id: String,
-        /// The Build attempt that holds the operation.
-        attempt: u32,
         /// The operation: `mesh.delete:<mesh_id>`.
         operation: crate::OperationId,
     },
@@ -289,8 +279,6 @@ pub enum StatusRequest {
         mesh_id: MeshId,
         /// The Build the operation belongs to.
         build_id: String,
-        /// The Build attempt that holds the operation.
-        attempt: u32,
         /// The operation: `mesh.delete:<mesh_id>`.
         operation: crate::OperationId,
         /// The final mesh-primary's node.
@@ -316,8 +304,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build.
         build_id: String,
-        /// The Build attempt.
-        attempt: u32,
         /// The operation.
         operation: crate::OperationId,
     },
@@ -333,8 +319,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build.
         build_id: String,
-        /// The Build attempt.
-        attempt: u32,
         /// The operation.
         operation: crate::OperationId,
     },
@@ -350,8 +334,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build.
         build_id: String,
-        /// The Build attempt.
-        attempt: u32,
         /// The operation.
         operation: crate::OperationId,
     },
@@ -367,8 +349,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build.
         build_id: String,
-        /// The Build attempt.
-        attempt: u32,
         /// The operation.
         operation: crate::OperationId,
     },
@@ -382,8 +362,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The Build the operation belongs to.
         build_id: String,
-        /// The Build attempt that holds the operation.
-        attempt: u32,
         /// The operation: `node.start:<path>`.
         operation: crate::OperationId,
     },
@@ -571,8 +549,6 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// Never read.
         build_id: String,
-        /// Never read.
-        attempt: u32,
         /// Never read.
         operation: crate::OperationId,
     },
@@ -1147,8 +1123,6 @@ pub enum ManifestScope {
 pub struct ManifestReference {
     /// The Build whose facts contain the receipt.
     pub build_id: String,
-    /// The attempt that recorded the receipt.
-    pub attempt: u32,
     /// The complete admitted operation, including its structured subject and step position.
     pub operation: crate::OperationId,
     /// The terminal coverage represented by the receipt.
@@ -1291,22 +1265,20 @@ impl ConnectionsReceipt {
 }
 
 /// The workflow identity of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it:
-/// `(mesh_id, build_id, attempt, operation)` (node-rpc-envelope.md, "Mesh delete command pair") less
+/// `(mesh_id, build_id, operation)` (node-rpc-envelope.md, "Mesh delete command pair") less
 /// the mesh id, which the call itself names. A workflow refusal carries the workflow the receiver holds and
 /// the one offered, so the mismatch is named whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshDeleteIdentity {
     /// The Build the workflow belongs to.
     pub build_id: String,
-    /// The Build attempt.
-    pub attempt: u32,
     /// The operation key, `<op>:<mesh_id>`.
     pub operation: crate::OperationId,
 }
 
 impl std::fmt::Display for MeshDeleteIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?} (build {}, attempt {})", self.operation, self.build_id, self.attempt)
+        write!(f, "{:?} (build {})", self.operation, self.build_id)
     }
 }
 
@@ -1430,7 +1402,7 @@ pub enum StatusReply {
     ///
     /// Position 16 on the wire.
     RejectedUnmatchedCompletion {
-        /// The field that differs: `build_id`, `attempt`, `operation`, or `command` when the
+        /// The field that differs: `build_id`, `operation`, or `command` when the
         /// receiver holds no open command the call completes (none for the birth at all, or the call
         /// is a `node-left`).
         field: String,
@@ -1663,20 +1635,18 @@ pub enum StatusReply {
         /// The Status reply bound, in bytes.
         max: u64,
     },
-    /// A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the workflow the receiver holds for the
-    /// mesh: same Build and operation, a lower attempt (node-rpc-envelope.md, "Mesh delete command
-    /// pair": "A stale/conflicting workflow identity ... is refused by name"). Nothing is admitted or accepted.
+    /// Reserved: an earlier attempt of the workflow held. A Build has no attempts (Q344), so a workflow is
+    /// the one held or another; a receiver never sends it.
     ///
     /// Position 39 on the wire.
-    RejectedStaleWorkflow {
+    Reserved39 {
         /// The workflow the receiver holds for the mesh.
         held: MeshDeleteIdentity,
         /// The workflow the call names.
         offered: MeshDeleteIdentity,
     },
-    /// A `DeleteMesh` or `MeshDeleted` names a workflow of the mesh the receiver does not hold and that is
-    /// no earlier attempt of the one it holds: another Build or operation, or (for `MeshDeleted`) an
-    /// attempt the receiver never opened. Nothing is admitted or accepted.
+    /// A `DeleteMesh` or `MeshDeleted` names a workflow of the mesh the receiver does not hold: another
+    /// Build or operation. Nothing is admitted or accepted.
     ///
     /// Position 40 on the wire.
     RejectedConflictingWorkflow {
@@ -2168,7 +2138,7 @@ impl StatusReply {
             Self::Connections { .. } => "connections",
             Self::UnknownMesh { .. } => "unknown-mesh",
             Self::ReadOverBound { .. } => "read-over-bound",
-            Self::RejectedStaleWorkflow { .. } => "rejected-stale-workflow",
+            Self::Reserved39 { .. } => "reserved-39",
             Self::RejectedConflictingWorkflow { .. } => "rejected-conflicting-workflow",
             Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             Self::RejectedSourceFailed { .. } => "rejected-source-failed",
@@ -2274,7 +2244,7 @@ impl NodeProtocol for Status {
             StatusReply::Connections { .. } => "connections",
             StatusReply::UnknownMesh { .. } => "unknown-mesh",
             StatusReply::ReadOverBound { .. } => "read-over-bound",
-            StatusReply::RejectedStaleWorkflow { .. } => "rejected-stale-workflow",
+            StatusReply::Reserved39 { .. } => "reserved39",
             StatusReply::RejectedConflictingWorkflow { .. } => "rejected-conflicting-workflow",
             StatusReply::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             StatusReply::RejectedSourceFailed { .. } => "rejected-source-failed",
@@ -2347,7 +2317,7 @@ impl NodeProtocol for Status {
             StatusReply::Connections { .. } => ReplyKind::Success,
             StatusReply::UnknownMesh { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
             StatusReply::ReadOverBound { .. } => ReplyKind::new(crate::outcome::Code::ResourceExhausted),
-            StatusReply::RejectedStaleWorkflow { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            StatusReply::Reserved39 { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             StatusReply::RejectedConflictingWorkflow { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedIncompleteManifest { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::RejectedSourceFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
@@ -2467,7 +2437,7 @@ mod tests {
             (Status::connections_deleting("d".into()), ReplyKind::ConnectionsDeleting),
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
-            (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedUnmatchedCompletion { field: "operation".into(), expected: "node.stop".into(), reported: "node.start".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { last_in_flight: 2, closed: vec![ConnectionId::mint()], held: vec![ConnectionId::mint()] } }, ReplyKind::new(crate::outcome::Code::DeadlineExceeded)),
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
@@ -2490,8 +2460,8 @@ mod tests {
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.node.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
             (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
-            (StatusReply::RejectedStaleWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::Aborted)),
-            (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::Reserved39 { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (StatusReply::RejectedConflictingWorkflow { held: MeshDeleteIdentity { build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("mesh.delete:m") }, offered: MeshDeleteIdentity { build_id: "h5g70m03ktnb".into(), operation: crate::OperationId::unscoped("mesh.delete:m") } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::incomplete_manifest(&["mesh2.node.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::source_failed("the Build storage", "read-committed 66h8qrqvaajk", "builds.jsonl: interrupted"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
@@ -2531,26 +2501,25 @@ mod tests {
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::Ready, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending, changed_at_rafka_ms: 0 },
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::Ready },
-            StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-6:mesh1.node.1") },
-            StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("reserved-7:mesh1.node.1") },
-            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::node("node.stop", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
-            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::node("node.stop", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
-            StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("mesh.delete:m") },
+            StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("reserved-6:mesh1.node.1") },
+            StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("reserved-7:mesh1.node.1") },
+            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::node("node.stop", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
+            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::node("node.stop", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
+            StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("mesh.delete:m") },
             StatusRequest::MeshDeleted {
                 mesh_id: MeshId::mint(),
                 build_id: "66h8qrqvaajk".into(),
-                attempt: 1,
                 operation: crate::OperationId::unscoped("mesh.delete:m"),
                 final_node_id: NodeId::mint(),
                 final_incarnation: IncarnationId::mint(),
                 final_runtime: RuntimeFact { deployment_id: crate::fixture_crockford60("dep"), provider: crate::RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: crate::RuntimeLocator::Process { pid: 4321, start: 123456 } },
-                receipt_manifest: ManifestReference { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::new("mesh.delete", crate::OperationSubject::Mesh(MeshId::parse("1123456789ab").unwrap())), scope: ManifestScope::OtherMembersExited },
+                receipt_manifest: ManifestReference { build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::new("mesh.delete", crate::OperationSubject::Mesh(MeshId::parse("1123456789ab").unwrap())), scope: ManifestScope::OtherMembersExited },
             },
-            StatusRequest::Reserved12 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("commit-state:fabric1") },
-            StatusRequest::Reserved13 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("commit-state:fabric1") },
-            StatusRequest::Reserved14 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
-            StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("open-traffic:fabric1") },
-            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::node("node.start", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
+            StatusRequest::Reserved12 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("commit-state:fabric1") },
+            StatusRequest::Reserved13 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("commit-state:fabric1") },
+            StatusRequest::Reserved14 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("open-traffic:fabric1") },
+            StatusRequest::Reserved15 { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("open-traffic:fabric1") },
+            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::node("node.start", &crate::fixture_node_id(&crate::PathName::new("mesh1.node", "1").unwrap())) },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::Reserved34 { node_id: NodeId::mint(), config: Default::default(), revision: 1 },
@@ -2565,7 +2534,7 @@ mod tests {
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
             StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), operation: crate::OperationId::unscoped("join-mesh:mesh1.node.1"), primary: None },
-            StatusRequest::Reserved29 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: crate::OperationId::unscoped("leave-mesh:mesh1.node.1") },
+            StatusRequest::Reserved29 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), operation: crate::OperationId::unscoped("leave-mesh:mesh1.node.1") },
             StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
             StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into(), ca_key: CaKeyHex("ef".into()) },
             StatusRequest::Get { entity: crate::filter::Entity::Nodes, node: None, filter: crate::filter::Filter::new().eq("config.zone", ["eu-1"]).eq("tags", ["gold", "silver"]) },

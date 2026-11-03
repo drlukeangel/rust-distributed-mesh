@@ -427,7 +427,7 @@ mod tests {
         let incarnation = IncarnationId::mint();
         view.nodes[0].incarnation_id = Some(incarnation.clone());
         let id = view.nodes[0].node_id.clone();
-        let op = crate::build::BuildOperation::StopNode { path: location.path.clone(), name: location.name.clone(), mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: id.clone(), from_incarnation: incarnation.clone() };
+        let op = crate::build::BuildOperation::DeleteLiveNode { path: location.path.clone(), name: location.name.clone(), mesh: "mesh1".into(), r#type: "node-admin".into(), exited: None, birth: Some(crate::build::PinnedBirth { mesh: "mesh1".into(), r#type: "node-admin".into(), node_id: id.clone(), incarnation: incarnation.clone() }) };
         let subject = op.subject().unwrap();
         { let at = PathName::new(&location.path, format!("{}-old", location.name)).unwrap(); view.nodes[0].path = at.path; view.nodes[0].name = at.name; }
         let mut successor = Node::allocated(location.clone(), "mesh1", "node-admin");
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(view.node_subject(&subject).map(|n| &n.node_id), Some(&id));
         assert_eq!(view.node_subject(&rdm_core::OperationSubject::Node(successor_id.clone())).map(|n| &n.node_id), Some(&successor_id));
         assert_eq!(crate::executor::role_move(&op, &view).map(|m| m.primary.node_id), Some(id.clone()));
-        let updates = crate::build_drive::preceding_updates(&op, &rdm_core::BuildId::mint(), 2);
+        let updates = crate::build_drive::preceding_updates(&op);
         assert_eq!(updates.len(), 2);
         assert!(updates.iter().all(|update| update.primary.as_ref() == Some(&subject)));
         view.nodes[0].incarnation_id = Some(IncarnationId::mint());

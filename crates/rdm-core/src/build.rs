@@ -1,42 +1,40 @@
 //! The Build family on op `0x20`, RDM's additive carrier for Builds (node-rpc-envelope.md "Build, op
 //! `0x20`, rdm"; R-ON8 = A′).
 //!
-//! The fabric-primary is the one driver of every Build. Four calls, one stream shape:
+//! The fabric-primary accepts every Build and dispatches each mesh's section to that mesh's primary.
+//! Five calls, one stream shape:
 //!
 //! ```text
-//! Create     caller -> fabric-primary   a submitted change, or a re-submit by build_id
-//! AttemptRun fabric-primary -> executor one claimed attempt, start-or-reattach on (build_id, attempt)
-//! Get        caller -> fabric-primary   the Build and its receipts, for reattachment after a cut
-//! Delete     caller -> fabric-primary   a finished Build leaves history
-//! GetBuilds  caller -> fabric-primary   build.get: every Build the filter matches, each whole
+//! Create     caller -> fabric-primary         a submitted change, or a re-submit by build_id
+//! AttemptRun fabric-primary -> mesh-primary   the steps (build_id, mesh) owes, start-or-reattach
+//! Get        caller -> fabric-primary         the Build and its events, for reattachment after a cut
+//! Delete     caller -> fabric-primary         a finished Build leaves history
+//! GetBuilds  caller -> fabric-primary         build.get: every Build the filter matches, each whole
 //! ```
 //!
-//! A stream is one refusal, or `Started`, then `Step`/`Blocked`/`Steps` frames, then one terminal:
+//! A stream is one refusal, or `Started`, then `Step`/`Blocked`/`Events` frames, then one terminal:
 //!
 //! ```text
-//! Started { build_id, attempt, disposition }
-//! Step { build_id, attempt, operation, step }      only after the step's Complete receipt is durable
-//!                                                   on the executor that wrote it
-//! Blocked { build_id, attempt, operation, step, reason }   non-terminal, never durable, never a step outcome
-//! Complete | Failed { step, reason } | HandedOff { to } | FabricPrimaryMoved { fabric_primary }
-//!                                                  the terminal of Create / AttemptRun (FabricPrimaryMoved on
-//!                                                  AttemptRun: the executor took the fabric-primary
-//!                                                  role during the run and names itself)
+//! Started { build_id, disposition }
+//! Step { build_id, mesh, operation, step, result }    after the step's `rdm.build.step` is written
+//! Blocked { build_id, mesh, operation, step, reason } non-terminal, never durable, never a step outcome
+//! Complete | Failed { step, reason } | FabricPrimaryMoved { fabric_primary }
+//!                                                  the terminal of Create (Complete or Failed of AttemptRun)
 //! Got | Deleted                                    the terminal of Get / Delete
 //! End                                              the terminal of GetBuilds, after per Build its
-//!                                                  Topology and Steps chunks and its Build header
+//!                                                  Topology and Events chunks and its Build header
 //! ```
 //!
-//! Every progress frame carries `(build_id, attempt, operation, step)`; a receiver drops a frame
-//! whose key it already holds. A cut stream is `NotSent` before the commit cut and `Indeterminate`
-//! after it, never a failed step. The family is not forwardable: it is a stream, and only the
+//! Every progress frame carries `(build_id, mesh, operation, step)`; a receiver drops a frame whose
+//! key it already holds. A cut stream is `NotSent` before the commit cut and `Indeterminate` after
+//! it, never a failed step. The family is not forwardable: it is a stream, and only the
 //! fabric-primary accepts.
 
 use crate::context::CallContext;
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::{DecodeFailure, NodeProtocol};
 use crate::streaming::{FrameKind, StreamingProtocol};
-use crate::{NodeId, PathName};
+use crate::NodeId;
 use serde::{Deserialize, Serialize};
 
 /// The Build protocol: Builds are created, driven, read and deleted through the fabric-primary.
@@ -135,9 +133,6 @@ pub enum BuildSubmit {
     Resubmit {
         /// The Build.
         build_id: String,
-        /// The attempt the caller's first call opened: the stream carries the frames of this
-        /// attempt and later ones.
-        from_attempt: u32,
     },
 }
 
@@ -151,33 +146,21 @@ pub enum BuildRequest {
         /// What is submitted.
         submit: BuildSubmit,
     },
-    /// `build.attempt.run`: run attempt `attempt` of `build_id`, claimed for `executor`, on the
-    /// recipient. Start-or-reattach: a repeat of the same `(build_id, attempt)` attaches to the run.
+    /// `build.attempt.run`: run the steps `mesh` owes of `build_id` on the recipient, the mesh's
+    /// primary. Start-or-reattach: a repeat of the same `(build_id, mesh)` attaches to the run. It
+    /// names the Build and the mesh and never carries a copy of either: the mesh-primary reads the
+    /// Build and its events from storage before it plans (Q292).
     ///
     /// Position 1 on the wire.
     AttemptRun {
         /// The Build.
         build_id: String,
-        /// The attempt, already won by `executor` on the fabric-primary's log.
-        attempt: u32,
-        /// The exact executor birth committed by the claim.
-        executor: crate::framing::Birth,
-        /// The attempt's observability context, as the claim returned it.
+        /// The mesh whose section the recipient runs.
+        mesh: String,
+        /// The dispatch's observability context.
         context: CallContext,
-        /// The operations the fabric-primary planned for this run, in plan order: the contiguous
-        /// leading run of what is left that the executor executes in the fabric-primary's view, one
-        /// JSON-encoded operation each. The executor runs exactly these and never plans the Build
-        /// from its own view. Each is idempotent by its natural key.
-        operations: Vec<Vec<u8>>,
-        /// The executor of the operation that follows this run, when the run is not the whole of
-        /// what is left: the run then ends `HandedOff` to it. `None` when the run is the rest of the
-        /// plan, and the attempt ends `Complete`.
-        hand_off_to: Option<crate::NodeId>,
-        /// The attempt's mesh for a drift attempt, numbered `(build_id, mesh, attempt)` (build.md section
-        /// 5.3); `None` for a topology attempt (Q118).
-        mesh: Option<String>,
     },
-    /// `build.get`: the Build and its receipts, for reattachment after a cut.
+    /// `build.get`: the Build and its events, for reattachment after a cut.
     ///
     /// Position 2 on the wire.
     Get {
@@ -192,10 +175,9 @@ pub enum BuildRequest {
         build_id: String,
     },
     /// `build.get` (Q167 R-RD5): every Build the fabric-primary holds whose header matches every pair
-    /// of `filter` (`id`, `current`, `phase`, `attempt`, `executor`), newest first, each whole: its
-    /// topology in `Topology` chunks, its receipts in `Steps` chunks, then its `Build` header; then
-    /// `End`. The current Build is selected once per read and its header marked. Appended last: the
-    /// Build wire is positional.
+    /// of `filter` (`id`, `current`, `phase`), newest first, each whole: its topology in `Topology`
+    /// chunks, its events in `Events` chunks, then its `Build` header; then `End`. The current Build
+    /// is selected once per read and its header marked.
     ///
     /// Position 4 on the wire.
     GetBuilds {
@@ -220,33 +202,29 @@ impl BuildRequest {
 /// How a stream's call came to its Build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Disposition {
-    /// A new Build was accepted, or the next attempt of the accepted Build was opened.
+    /// A new Build was accepted, or a failed Build's remaining steps were dispatched again.
     ///
     /// Position 0 on the wire.
     Created,
-    /// The Build is running with a live primary: this stream is that holder's.
+    /// The Build is running: this stream follows it.
     ///
     /// Position 1 on the wire.
     Attached,
-    /// The Build had failed or its holder was proven lost: the next attempt runs.
-    ///
-    /// Position 2 on the wire.
-    NextAttempt,
     /// The Build is complete: nothing runs, the terminal frame follows.
     ///
-    /// Position 3 on the wire.
+    /// Position 2 on the wire.
     AlreadyApplied,
-    /// `AttemptRun`: the recipient started the claimed attempt.
+    /// `AttemptRun`: the recipient started the mesh's run.
+    ///
+    /// Position 3 on the wire.
+    Started,
+    /// `AttemptRun`: the recipient holds the mesh's run; this stream attached to it.
     ///
     /// Position 4 on the wire.
-    Started,
-    /// `AttemptRun`: the recipient holds the attempt's run; this stream attached to it.
-    ///
-    /// Position 5 on the wire.
     Reattached,
 }
 
-/// How a step ended, as a receipt says it.
+/// How a step ended, as its `rdm.build.step` event says it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepResult {
     /// The step completed.
@@ -264,60 +242,62 @@ pub enum StepResult {
     },
 }
 
-/// One step receipt of a Build, as `Get` reads it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StepReceipt {
-    /// The attempt that wrote it.
-    pub attempt: u32,
-    /// The operation's idempotency key.
-    pub operation: crate::OperationId,
-    /// The step.
-    pub step: String,
-    /// How the step ended.
-    pub result: StepResult,
-}
-
-impl StepReceipt {
-    /// Encoded size used to bound reply chunks containing structured operation identities.
-    pub fn encoded_len(&self) -> Result<usize, postcard::Error> {
-        postcard::to_allocvec(self).map(|bytes| bytes.len())
-    }
-}
-
-/// Where a Build is in its life.
+/// Where a Build is in its life, as its events say it (build.md §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildPhase {
-    /// No executor runs an attempt.
+    /// Accepted, and no `rdm.build.started` written yet.
     ///
     /// Position 0 on the wire.
     Pending,
-    /// An executor holds and runs an attempt.
+    /// `rdm.build.started` written, no `rdm.build.ended`.
     ///
     /// Position 1 on the wire.
     Running,
-    /// Every step is complete.
+    /// `rdm.build.ended` `complete`.
     ///
     /// Position 2 on the wire.
     Complete,
-    /// The last attempt failed.
+    /// `rdm.build.ended` `failed`: the Build could not start (Q346).
     ///
     /// Position 3 on the wire.
     Failed,
+    /// `rdm.build.ended` `incomplete`: the Build ran and not every section finished; what ran stands
+    /// (Q346).
+    ///
+    /// Position 4 on the wire.
+    Incomplete,
 }
 
 impl BuildPhase {
     /// The phase's page name, what a `build.get` pair names it by (`running`).
-    pub fn page_name(self) -> &'static str {
+    pub const fn page_name(self) -> &'static str {
         match self {
             Self::Pending => "pending",
             Self::Running => "running",
             Self::Complete => "complete",
             Self::Failed => "failed",
+            Self::Incomplete => "incomplete",
         }
     }
 }
 
-/// A Build's header as `build.get` matches and streams it (Q167 R-RD5): `Got`'s fields with the
+/// A mesh's section that ended short of its end (Q346): the step it stopped at and why. A failed
+/// step names itself; a section call that ended short names the call, `build.attempt.run`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnfinishedSection {
+    /// The mesh whose section it is.
+    pub mesh: String,
+    /// The operation the section stopped at.
+    pub operation: String,
+    /// The step it stopped at.
+    pub step: String,
+    /// Why, by name.
+    pub reason: String,
+    /// The standard code captured where it stopped.
+    pub code: crate::outcome::Code,
+}
+
+/// A Build's header as `build.get` matches and streams it (Q167 R-RD5): its phase with the
 /// `current` mark.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildHeader {
@@ -325,13 +305,9 @@ pub struct BuildHeader {
     pub build_id: String,
     /// Where the Build is in its life.
     pub phase: BuildPhase,
-    /// The current attempt.
-    pub attempt: u32,
-    /// The executor of the current attempt, when one is.
-    pub executor: Option<crate::framing::Birth>,
-    /// Why the current attempt exists.
+    /// Why the Build is where it is.
     pub reason: String,
-    /// Why the last attempt failed, when one did.
+    /// Why the Build failed, when it did.
     pub last_failure: Option<String>,
     /// Whether this is the current Build, selected once for the read.
     pub current: bool,
@@ -340,34 +316,30 @@ pub struct BuildHeader {
 /// One frame of a Build stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildReply {
-    /// The stream begins: the Build and the attempt it follows.
+    /// The stream begins: the Build it follows.
     ///
     /// Position 0 on the wire.
     Started {
         /// The Build.
         build_id: String,
-        /// The attempt this stream follows (the one the call opened, claimed or attached to).
-        attempt: u32,
         /// How the call came to the Build.
         disposition: Disposition,
     },
-    /// A step completed. On the inner attempt stream it reports the step's result upstream to the
-    /// fabric-primary, which writes its receipt; on the outer stream the fabric-primary sends it only
-    /// after it recorded the receipt (node-rpc-envelope.md, Frames, durable receipts and reattachment).
+    /// A step ended. On the inner stream the mesh-primary reports the step it has written as
+    /// `rdm.build.step`; on the outer stream the fabric-primary passes it on.
     ///
     /// Position 1 on the wire.
     Step {
         /// The Build.
         build_id: String,
-        /// The attempt.
-        attempt: u32,
-        /// The operation's idempotency key.
-        operation: crate::OperationId,
+        /// The mesh whose section the step belongs to.
+        mesh: String,
+        /// The step's operation, `noun.verb:<node_id>` (the event's `op`).
+        operation: String,
         /// The step.
         step: String,
-        /// On the inner attempt stream the step's receipt (its output and executor), JSON-encoded, which
-        /// the fabric-primary writes; `None` on the outer stream and for a receipt already written.
-        receipt: Option<Vec<u8>>,
+        /// How the step ended.
+        result: StepResult,
     },
     /// The step in flight is blocked. Non-terminal, in memory only, sent on a new blocker or a
     /// changed reason and never on a timer; never a step outcome.
@@ -376,161 +348,101 @@ pub enum BuildReply {
     Blocked {
         /// The Build.
         build_id: String,
-        /// The attempt.
-        attempt: u32,
+        /// The mesh whose section the step belongs to.
+        mesh: String,
         /// The operation the blocked step belongs to.
-        operation: crate::OperationId,
+        operation: String,
         /// The blocked step.
         step: String,
         /// What it waits for.
         reason: String,
     },
-    /// A chunk of the receipts `Get` reads.
+    /// Terminal: the Build converged. Steps whose event ended `complete` were read and replayed,
+    /// never run again.
     ///
     /// Position 3 on the wire.
-    Steps {
-        /// The Build.
-        build_id: String,
-        /// This chunk's index.
-        chunk_index: u32,
-        /// The number of chunks.
-        chunk_count: u32,
-        /// The receipts in this chunk.
-        steps: Vec<StepReceipt>,
-    },
-    /// Terminal: the Build converged. Completed steps were read and replayed, never run again.
-    ///
-    /// Position 4 on the wire.
     Complete {
         /// The Build.
         build_id: String,
-        /// The attempt that converged it.
-        attempt: u32,
     },
-    /// Terminal: a step failed. Nothing follows it on the stream.
+    /// Terminal: the Build could not start (Q346). Nothing follows it on the stream.
     ///
-    /// Position 5 on the wire.
+    /// Position 4 on the wire.
     Failed {
         /// The Build.
         build_id: String,
-        /// The attempt that failed.
-        attempt: u32,
-        /// The operation the failed step belongs to.
-        operation: crate::OperationId,
-        /// The step that failed.
-        step: String,
-        /// The step's own reason.
+        /// Why it could not start.
         reason: String,
-        /// The standard code captured where the failure occurred.
+        /// The standard code captured where it could not start.
         code: crate::outcome::Code,
     },
-    /// Terminal of `AttemptRun`: the run ended at an operation another executor runs. The
-    /// fabric-primary claims the next attempt for `to`.
+    /// Terminal of `Get`: the Build's header; its events came in `Events` chunks.
     ///
-    /// Position 6 on the wire.
-    HandedOff {
-        /// The Build.
-        build_id: String,
-        /// The attempt that ran.
-        attempt: u32,
-        /// The admin that executes the operation the attempt stopped at.
-        to: crate::NodeId,
-    },
-    /// Terminal of `Get`: the Build's header; the receipts came in `Steps` chunks.
-    ///
-    /// Position 7 on the wire.
+    /// Position 5 on the wire.
     Got {
         /// The Build.
         build_id: String,
         /// Where the Build is in its life.
         phase: BuildPhase,
-        /// The current attempt.
-        attempt: u32,
-        /// The executor of the current attempt, when one is.
-        executor: Option<crate::framing::Birth>,
-        /// Why the current attempt exists.
+        /// Why the Build is where it is.
         reason: String,
-        /// Why the last attempt failed, when one did.
+        /// Why the Build failed, when it did.
         last_failure: Option<String>,
-        /// The number of receipts sent.
-        steps: u32,
+        /// The number of events sent.
+        events: u32,
         /// The number of chunks sent.
         chunks: u32,
     },
     /// Terminal of `Delete`.
     ///
-    /// Position 8 on the wire.
+    /// Position 6 on the wire.
     Deleted {
         /// The Build removed from history.
         build_id: String,
     },
     /// Refusal: the receiver is not the fabric-primary; it names the one it sees.
     ///
-    /// Position 9 on the wire.
+    /// Position 7 on the wire.
     NotFabricPrimary {
         /// The fabric-primary the receiver sees, when it sees one.
         fabric_primary: Option<crate::NodeId>,
     },
-    /// Refusal: the recipient is not the executor the claim names.
+    /// Refusal: the recipient of `AttemptRun` is not the mesh's primary.
     ///
-    /// Position 10 on the wire.
+    /// Position 8 on the wire.
     NotExecutor {
-        /// The executor the claim names.
+        /// The mesh's primary the recipient sees.
         named: crate::framing::Birth,
         /// The recipient.
         recipient: crate::framing::Birth,
     },
-    /// Refusal: the claim is not the current folded attempt of the Build.
-    ///
-    /// Position 11 on the wire.
-    StaleClaim {
-        /// The attempt the recipient's fold holds as current.
-        held_attempt: u32,
-        /// The executor of that attempt, when one is.
-        held_executor: Option<crate::framing::Birth>,
-        /// The attempt the call carried.
-        carried_attempt: u32,
-    },
     /// Refusal: the receiver holds no fact of the Build.
     ///
-    /// Position 12 on the wire.
+    /// Position 9 on the wire.
     UnknownBuild {
         /// The Build.
         build_id: String,
     },
     /// Refusal: the change is refused by the topology rules, naming the rule and why.
     ///
-    /// Position 13 on the wire.
+    /// Position 10 on the wire.
     Rejected {
         /// The rule's name (`unknown-node`, `unheard-mesh`, ...).
         reason: String,
         /// The rule's detail.
         detail: String,
     },
-    /// Refusal: another attempt holds what the request needs (R-BI7: one attempt in flight per
-    /// mesh; a second topology change while a topology Build is in progress is refused fabric-wide).
+    /// Refusal: a second topology change while a Build is in progress is refused fabric-wide.
     ///
-    /// Position 14 on the wire.
+    /// Position 11 on the wire.
     BuildInProgress {
         /// The Build in flight.
         current_build_id: String,
-        /// The mesh the holding attempt acts in, when one is known (a claimed attempt's).
-        mesh: Option<String>,
-        /// The admin that claimed the holding attempt (the fabric-primary for a topology attempt,
-        /// the mesh's mesh-primary for its drift attempt), when one claimed it.
-        held_by: Option<crate::NodeId>,
-    },
-    /// Refusal: the attempt number was opened first by another action.
-    ///
-    /// Position 15 on the wire.
-    AttemptTaken {
-        /// What holds the number.
-        detail: String,
     },
     /// Refusal: the fabric-primary record the receiver holds names another live birth, so the
     /// receiver dispatches nothing (node-rpc-envelope.md's second `NotFabricPrimary { node, by }`).
     ///
-    /// Position 16 on the wire.
+    /// Position 12 on the wire.
     RoleYielded {
         /// The admin whose Build log yielded the role.
         node: NodeId,
@@ -539,7 +451,7 @@ pub enum BuildReply {
     },
     /// Refusal: the Build cannot leave history.
     ///
-    /// Position 17 on the wire.
+    /// Position 13 on the wire.
     CannotDelete {
         /// The Build.
         build_id: String,
@@ -548,74 +460,61 @@ pub enum BuildReply {
     },
     /// Refusal: the peer the call needed could not be resolved.
     ///
-    /// Position 18 on the wire.
+    /// Position 14 on the wire.
     PeerUnresolved {
         /// Why the peer could not be resolved.
         reason: String,
     },
     /// Refusal: the receiver cannot answer yet; `reason` names what it waits for.
     ///
-    /// Position 19 on the wire.
+    /// Position 15 on the wire.
     NotReady {
         /// What the receiver waits for.
         reason: String,
     },
     /// Refusal: the receiver is at its admission bound.
     ///
-    /// Position 20 on the wire.
+    /// Position 16 on the wire.
     Busy {
         /// Which bound it is at.
         reason: String,
     },
     /// Refusal: the receiver is connections-deleting and takes no new work.
     ///
-    /// Position 21 on the wire.
+    /// Position 17 on the wire.
     ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
     /// Refusal: the request frame was malformed.
     ///
-    /// Position 22 on the wire.
+    /// Position 18 on the wire.
     Malformed {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
     /// Refusal: the caller is not allowed this call.
     ///
-    /// Position 23 on the wire.
+    /// Position 19 on the wire.
     Unauthorized {
         /// Why the call is refused.
         reason: String,
     },
     /// Terminal of `Create`: the fabric-primary role moved off the receiver while the Build ran (a
-    /// node.fabric-primary.update, op `0x21`). The Build goes on at the new fabric-primary; the caller re-submits the
-    /// same `build_id` there. Never `Indeterminate` on a planned move.
+    /// node.fabric-primary.update, op `0x21`). The Build goes on at the new fabric-primary; the caller
+    /// re-submits the same `build_id` there. Never `Indeterminate` on a planned move.
     ///
-    /// Position 24 on the wire.
+    /// Position 20 on the wire.
     FabricPrimaryMoved {
         /// The Build.
         build_id: String,
-        /// The admin (path and name) that holds the role now, when the receiver's view names one.
+        /// The admin that holds the role now, when the receiver's view names one.
         fabric_primary: Option<crate::NodeId>,
-    },
-    /// Refusal: the receiver may not claim on the mesh the request acts in (R-BI7): a topology
-    /// Build's attempt is the fabric-primary's, a drift attempt its mesh's mesh-primary's. Both are
-    /// named as the receiver sees them.
-    ///
-    /// Position 25 on the wire.
-    NotClaimant {
-        /// The mesh the request acts in.
-        mesh: Option<String>,
-        /// The fabric-primary the receiver sees, when it sees one.
-        fabric_primary: Option<crate::NodeId>,
-        /// The mesh's mesh-primary the receiver sees, when it sees one.
-        mesh_primary: Option<crate::NodeId>,
     },
     /// A chunk of one Build's topology `GetBuilds` reads: its nodes' create specs, in `(path, name)`
     /// order. A topology no reply frame holds takes several chunks.
     ///
-    /// Position 26 on the wire.
+    /// Position 21 on the wire.
     Topology {
         /// The Build.
         build_id: String,
@@ -626,101 +525,73 @@ pub enum BuildReply {
         /// The create specs in this chunk.
         nodes: Vec<crate::meta::NodeSpec>,
     },
-    /// The header that closes one Build of a `GetBuilds` stream, after its `Topology` and `Steps`
-    /// chunks: `Got`'s fields with the `current` mark. A data frame: `End` ends the read.
+    /// A chunk of one Build's events, in event.id order: each the events store's CloudEvents
+    /// envelope (build.md §5) in its JSON form, since its `data` is a JSON object.
     ///
-    /// Position 27 on the wire.
+    /// Position 22 on the wire.
+    Events {
+        /// The Build.
+        build_id: String,
+        /// This chunk's index.
+        chunk_index: u32,
+        /// The number of chunks.
+        chunk_count: u32,
+        /// The events in this chunk, each one envelope's JSON.
+        events: Vec<String>,
+    },
+    /// The header that closes one Build of a `GetBuilds` stream, after its `Topology` and `Events`
+    /// chunks. A data frame: `End` ends the read.
+    ///
+    /// Position 23 on the wire.
     Build {
         /// The Build.
         build_id: String,
         /// Where the Build is in its life.
         phase: BuildPhase,
-        /// The current attempt.
-        attempt: u32,
-        /// The executor of the current attempt, when one is.
-        executor: Option<crate::framing::Birth>,
-        /// Why the current attempt exists.
-        reason: String,
-        /// Why the last attempt failed, when one did.
-        last_failure: Option<String>,
         /// Whether this is the current Build, selected once for the read.
         current: bool,
-        /// The number of receipts sent for it.
-        steps: u32,
-        /// The number of `Steps` chunks sent for it.
+        /// The number of events sent for it.
+        events: u32,
+        /// The number of `Events` chunks sent for it.
         chunks: u32,
     },
     /// Terminal of `GetBuilds`: the read is complete. A stream that ends before it is an incomplete
     /// read, never a list.
     ///
-    /// Position 28 on the wire.
+    /// Position 24 on the wire.
     End {
         /// The number of Builds streamed.
         builds: u32,
     },
     /// Refusal: a `GetBuilds` pair the Build header's schema refuses (Q167 R-RD2), naming the pair.
     ///
-    /// Position 29 on the wire.
+    /// Position 25 on the wire.
     RejectedFilter {
         /// Why, naming the pair.
         reason: String,
+    },
+    /// Terminal: the Build ran and not every section finished; what ran stands (Q346). On a section's
+    /// stream, its mesh's section ended at the one section it names. Nothing follows it.
+    ///
+    /// Position 26 on the wire.
+    Incomplete {
+        /// The Build.
+        build_id: String,
+        /// Each section that ended short of its end.
+        sections: Vec<UnfinishedSection>,
     },
 }
 
 impl BuildReply {
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
-        match self {
-            Self::Started { .. } => "started",
-            Self::Step { .. } => "step",
-            Self::Blocked { .. } => "blocked",
-            Self::Steps { .. } => "steps",
-            Self::Complete { .. } => "complete",
-            Self::Failed { .. } => "failed",
-            Self::HandedOff { .. } => "handed-off",
-            Self::Got { .. } => "got",
-            Self::Deleted { .. } => "deleted",
-            Self::NotFabricPrimary { .. } => "not-fabric-primary",
-            Self::NotExecutor { .. } => "not-executor",
-            Self::StaleClaim { .. } => "stale-claim",
-            Self::UnknownBuild { .. } => "unknown-build",
-            Self::Rejected { .. } => "rejected",
-            Self::BuildInProgress { .. } => "build-in-progress",
-            Self::AttemptTaken { .. } => "attempt-taken",
-            Self::RoleYielded { .. } => "role-yielded",
-            Self::CannotDelete { .. } => "cannot-delete",
-            Self::PeerUnresolved { .. } => "peer-unresolved",
-            Self::NotReady { .. } => "not-ready",
-            Self::Busy { .. } => "busy",
-            Self::ConnectionsDeleting { .. } => "connections-deleting",
-            Self::Malformed { .. } => "malformed",
-            Self::Unauthorized { .. } => "unauthorized",
-            Self::FabricPrimaryMoved { .. } => "fabric-primary-moved",
-            Self::NotClaimant { .. } => "not-claimant",
-            Self::Topology { .. } => "topology",
-            Self::Build { .. } => "build",
-            Self::End { .. } => "end",
-            Self::RejectedFilter { .. } => "rejected-filter",
-        }
+        <Build as NodeProtocol>::reply_detail(self)
     }
 
-    /// The receipt key `(attempt, operation, step)` of a progress frame, when it is one.
-    pub fn progress_key(&self) -> Option<(&str, u32, &crate::OperationId, &str)> {
+    /// The key `(build_id, mesh, operation, step)` of a progress frame, when it is one.
+    pub fn progress_key(&self) -> Option<(&str, &str, &str, &str)> {
         match self {
-            Self::Step {
-                build_id,
-                attempt,
-                operation,
-                step,
-                ..
-            }
-            | Self::Blocked {
-                build_id,
-                attempt,
-                operation,
-                step,
-                ..
-            } => Some((build_id, *attempt, operation, step)),
+            Self::Step { build_id, mesh, operation, step, .. } | Self::Blocked { build_id, mesh, operation, step, .. } => Some((build_id, mesh, operation, step)),
             _ => None,
         }
     }
@@ -729,16 +600,16 @@ impl BuildReply {
 impl NodeProtocol for Build {
     const OP: u8 = 0x20;
     const NAME: &'static str = "build";
-    /// A change with a fabric's meshes, or a claim with its attempt context (a traceparent, a
-    /// tracestate of 512 bytes and baggage of 8192 bytes) and the operations it plans, with room for
-    /// the tags and lengths. A claim names its Build and never carries a copy of it (Q292).
+    /// A change with a fabric's meshes, or a dispatch with its context (a traceparent, a tracestate
+    /// of 512 bytes and baggage of 8192 bytes), with room for the tags and lengths. A dispatch names
+    /// its Build and mesh and never carries a copy of either (Q292).
     const MAX_REQUEST_FRAME_BYTES: usize = 256 * 1024;
     /// A failed step's reason is the largest field; the sender bounds it below this.
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     /// A stream, decided by the fabric-primary itself or not at all.
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 5;
-    const REPLY_VARIANTS: u32 = 30;
+    const REPLY_VARIANTS: u32 = 27;
 
     type Request = BuildRequest;
     type Reply = BuildReply;
@@ -752,19 +623,15 @@ impl NodeProtocol for Build {
             BuildReply::Started { .. } => "started",
             BuildReply::Step { .. } => "step",
             BuildReply::Blocked { .. } => "blocked",
-            BuildReply::Steps { .. } => "steps",
             BuildReply::Complete { .. } => "complete",
             BuildReply::Failed { .. } => "failed",
-            BuildReply::HandedOff { .. } => "handed-off",
             BuildReply::Got { .. } => "got",
             BuildReply::Deleted { .. } => "deleted",
             BuildReply::NotFabricPrimary { .. } => "not-fabric-primary",
             BuildReply::NotExecutor { .. } => "not-executor",
-            BuildReply::StaleClaim { .. } => "stale-claim",
             BuildReply::UnknownBuild { .. } => "unknown-build",
             BuildReply::Rejected { .. } => "rejected",
             BuildReply::BuildInProgress { .. } => "build-in-progress",
-            BuildReply::AttemptTaken { .. } => "attempt-taken",
             BuildReply::RoleYielded { .. } => "role-yielded",
             BuildReply::CannotDelete { .. } => "cannot-delete",
             BuildReply::PeerUnresolved { .. } => "peer-unresolved",
@@ -774,11 +641,12 @@ impl NodeProtocol for Build {
             BuildReply::Malformed { .. } => "malformed",
             BuildReply::Unauthorized { .. } => "unauthorized",
             BuildReply::FabricPrimaryMoved { .. } => "fabric-primary-moved",
-            BuildReply::NotClaimant { .. } => "not-claimant",
             BuildReply::Topology { .. } => "topology",
+            BuildReply::Events { .. } => "events",
             BuildReply::Build { .. } => "build",
             BuildReply::End { .. } => "end",
             BuildReply::RejectedFilter { .. } => "rejected-filter",
+            BuildReply::Incomplete { .. } => "incomplete",
         }
     }
 
@@ -788,19 +656,15 @@ impl NodeProtocol for Build {
             BuildReply::Started { .. } => ReplyKind::Success,
             BuildReply::Step { .. } => ReplyKind::Success,
             BuildReply::Blocked { .. } => ReplyKind::Success,
-            BuildReply::Steps { .. } => ReplyKind::Success,
             BuildReply::Complete { .. } => ReplyKind::Success,
             BuildReply::Failed { code, .. } => ReplyKind::new(*code),
-            BuildReply::HandedOff { .. } => ReplyKind::Success,
             BuildReply::Got { .. } => ReplyKind::Success,
             BuildReply::Deleted { .. } => ReplyKind::Success,
             BuildReply::NotFabricPrimary { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::NotExecutor { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
-            BuildReply::StaleClaim { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             BuildReply::UnknownBuild { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
             BuildReply::Rejected { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::BuildInProgress { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
-            BuildReply::AttemptTaken { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             BuildReply::RoleYielded { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::CannotDelete { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
@@ -810,29 +674,35 @@ impl NodeProtocol for Build {
             BuildReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildReply::Unauthorized { .. } => ReplyKind::Unauthorized,
             BuildReply::FabricPrimaryMoved { .. } => ReplyKind::Success,
-            BuildReply::NotClaimant { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::Topology { .. } => ReplyKind::Success,
+            BuildReply::Events { .. } => ReplyKind::Success,
             BuildReply::Build { .. } => ReplyKind::Success,
             BuildReply::End { .. } => ReplyKind::Success,
             BuildReply::RejectedFilter { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            BuildReply::Incomplete { sections, .. } => ReplyKind::new(sections.first().map(|s| s.code).unwrap_or(crate::outcome::Code::Aborted)),
         }
     }
 
     fn peer_unresolved(reason: String) -> BuildReply {
         BuildReply::PeerUnresolved { reason }
     }
+
     fn not_ready(reason: String) -> BuildReply {
         BuildReply::NotReady { reason }
     }
+
     fn busy(reason: String) -> BuildReply {
         BuildReply::Busy { reason }
     }
+
     fn connections_deleting(reason: String) -> BuildReply {
         BuildReply::ConnectionsDeleting { reason }
     }
+
     fn malformed(kind: MalformedKind) -> BuildReply {
         BuildReply::Malformed { kind }
     }
+
     fn unauthorized(reason: String) -> BuildReply {
         BuildReply::Unauthorized { reason }
     }
@@ -844,8 +714,8 @@ impl StreamingProtocol for Build {
     fn frame_kind(frame: &BuildReply) -> FrameKind {
         match frame {
             BuildReply::Started { .. } => FrameKind::Started,
-            BuildReply::Step { .. } | BuildReply::Blocked { .. } | BuildReply::Steps { .. } | BuildReply::Topology { .. } | BuildReply::Build { .. } => FrameKind::Data,
-            BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. } | BuildReply::FabricPrimaryMoved { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } | BuildReply::End { .. } => FrameKind::Terminal,
+            BuildReply::Step { .. } | BuildReply::Blocked { .. } | BuildReply::Events { .. } | BuildReply::Topology { .. } | BuildReply::Build { .. } => FrameKind::Data,
+            BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::Incomplete { .. } | BuildReply::FabricPrimaryMoved { .. } | BuildReply::Got { .. } | BuildReply::Deleted { .. } | BuildReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Build::classify_reply(other)),
         }
     }

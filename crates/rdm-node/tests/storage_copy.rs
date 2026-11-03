@@ -31,11 +31,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rdm_core::{BuildId, ChangeId, FabricId, IncarnationId, NodeId};
 use rdm_node::storage_error::StorageError;
-use rdm_node::store_log::{self, Formats, Line, LockKind, LockTaken, LogWriter, Op, StoreLocks, StoreLog};
+use rdm_node::store_log::{self, Formats, Line, LogWriter, Op, StoreLog};
 use rdm_node::store_root::{StoreRoot, BUILDS_FILE, CONNECTIONS_FILE, EVENTS_FILE, FABRIC_FILE, MESHES_FILE, NODES_FILE};
 use serde_json::json;
 
-use rdm_node::storage_copy::{copy, Claim, ClaimTaken, CopyError, CopyRun, FileProviderLines, ProviderLines, Store};
+use rdm_node::storage_copy::{copy, CopyError, CopyRun, FileProviderLines, ProviderLines, Store};
 
 const COPY_SPAN: &str = "rdm.node_admin.storage.update.via-copy";
 const OPEN_SPAN: &str = "rdm.node.store.resolve.via-fold";
@@ -124,7 +124,6 @@ struct History {
     store_dir: PathBuf,
     root: PathBuf,
     fabric: FabricId,
-    fp1: LogWriter,
     fp2: LogWriter,
     gone: LogWriter,
     live: LogWriter,
@@ -181,7 +180,7 @@ impl History {
         records.append(&mp1, "node-properties/1", first.as_str(), &json!({"node_id": first, "config": {"setting": APP_SETTING}, "applied": [{"build_id": build, "operation": "node.config.update"}]})).await.unwrap();
         records.append(&mp2, "node-properties/1", second.as_str(), &json!({"node_id": second, "config": {"setting": APP_SETTING}})).await.unwrap();
 
-        Self { store_dir, root, fabric, fp1, fp2, gone, live, first, second }
+        Self { store_dir, root, fabric, fp2, gone, live, first, second }
     }
 
     fn total(&self) -> u64 {
@@ -325,15 +324,13 @@ fn a_copy_refuses_a_destination_hole_without_replaying_stale_state() {
     assert_eq!(attr(of(&extra_change), "outcome").as_deref(), Some("refused"));
     assert!(copies.iter().all(|s| !s.to_string().contains(APP_SETTING)), "no copy span carries a record's application setting");
 }
-
-/// A new provider whose answers are lost: the `lose_append`th line appended and the `lose_claim`th
+/// A new provider whose answers are lost: the `lose_append`th line appended lands, and the copy is
+/// answered an error.
 /// claim inserted land, and the copy is answered an error.
 struct LosesAnswers {
     inner: FileProviderLines,
     appended: AtomicUsize,
-    inserted: AtomicUsize,
     lose_append: usize,
-    lose_claim: usize,
 }
 
 #[async_trait::async_trait]
@@ -348,41 +345,24 @@ impl ProviderLines for LosesAnswers {
         }
         Ok(())
     }
-    async fn claims(&self) -> Result<Vec<Claim>, StorageError> {
-        self.inner.claims().await
-    }
-    async fn remove_claim(&self, claim: &Claim) -> Result<bool, StorageError> {
-        self.inner.remove_claim(claim).await
-    }
-    async fn insert_claim(&self, claim: &Claim) -> Result<ClaimTaken, StorageError> {
-        let taken = self.inner.insert_claim(claim).await?;
-        if self.inserted.fetch_add(1, Ordering::SeqCst) + 1 == self.lose_claim {
-            return Err(StorageError::Io { file: claim.name.clone(), reason: "the claim landed and its answer was lost".into() });
-        }
-        Ok(taken)
-    }
 }
 
 /// CONTRACT (storage.md §2 Copy: "A copy resumed after a lost answer recognises the lines already
 /// there and appends none twice"; i149 e3 "persist verified progress, and reconcile uncertain copy
 /// answers without duplicate appends"): a copy whose third append lands with its answer lost stops,
 /// answered the provider's error, not a refusal; the copy resumed from the new provider's verified
-/// lines appends only the rest, and one whose claim insert lands with its answer lost is resumed the
-/// same way. After the last copy the new provider holds the old one's lines and claims once each.
-/// Must NOT happen: a line or claim appended twice, a resumed copy starting over, or a lost answer
-/// read as a refusal.
+/// lines appends only the rest. After the last copy the new provider holds the old one's lines once
+/// each. Must NOT happen: a line appended twice, a resumed copy starting over, or a lost answer read as
+/// a refusal.
 #[test]
 fn a_copy_resumes_after_a_lost_answer_without_duplicate_records() {
     let capture = capture("resume");
     let (changes, total) = capture.run(2, async {
         let h = History::write().await;
-        let locks = StoreLocks::at(&h.root, &h.fp2);
-        assert_eq!(locks.take(LockKind::InFlight, "mesh1", br#"{"format":"mesh-in-flight/2","record":"a1","by":["a","b"]}"#).await.unwrap(), LockTaken::Won);
-        assert_eq!(locks.take(LockKind::InFlight, "mesh2", br#"{"format":"mesh-in-flight/2","record":"a2","by":["a","b"]}"#).await.unwrap(), LockTaken::Won);
         let dest_dir = dir("resume-destination");
         let source = FileProviderLines::open(SOURCE, &h.store_dir, &h.fabric).await.unwrap();
-        let destination = LosesAnswers { inner: FileProviderLines::open(DESTINATION, &dest_dir, &h.fabric).await.unwrap(), appended: AtomicUsize::new(0), inserted: AtomicUsize::new(0), lose_append: 3, lose_claim: 1 };
-        let changes = [run(), run(), run()];
+        let destination = LosesAnswers { inner: FileProviderLines::open(DESTINATION, &dest_dir, &h.fabric).await.unwrap(), appended: AtomicUsize::new(0), lose_append: 3 };
+        let changes = [run(), run()];
         let dest_root = dest_dir.join(h.fabric.as_str());
 
         match copy(&changes[0], &source, &destination).await {
@@ -391,11 +371,7 @@ fn a_copy_resumes_after_a_lost_answer_without_duplicate_records() {
         }
         let landed: usize = FILES.iter().map(|(_, f)| file_lines(&dest_root, f).len()).sum();
         assert_eq!(landed, 3, "the lines up to the one whose answer was lost landed");
-        match copy(&changes[1], &source, &destination).await {
-            Err(CopyError::Storage(_)) => {}
-            other => panic!("a lost claim answer stops the copy with the provider's error: {:?}", other.map(|c| c.copied).map_err(|e| e.to_string())),
-        }
-        copy(&changes[2], &source, &destination).await.unwrap_or_else(|e| panic!("the resumed copy finishes: {e}"));
+        copy(&changes[1], &source, &destination).await.unwrap_or_else(|e| panic!("the resumed copy finishes: {e}"));
 
         let mut ops = BTreeSet::new();
         for (_, file) in FILES {
@@ -405,58 +381,12 @@ fn a_copy_resumes_after_a_lost_answer_without_duplicate_records() {
                 assert!(ops.insert((file, l.0.clone())), "{file}: op {:?} appended twice", l.0);
             }
         }
-        let dest_locks = StoreLocks::at(&dest_root, &writer());
-        for name in ["mesh1", "mesh2"] {
-            assert_eq!(dest_locks.read(LockKind::InFlight, name).await.unwrap(), locks.read(LockKind::InFlight, name).await.unwrap(), "the in-flight row of {name} is the old provider's");
-        }
         (changes, h.total())
     });
     let spans = capture.spans().expect("the cell's spans");
     let copies = spans_named(&spans, COPY_SPAN);
     let of = |c: &CopyRun| copies.iter().find(|s| attr(s, "change_id").as_deref() == Some(c.change_id.as_str())).copied().unwrap_or_else(|| panic!("a copy span for change {}: {copies:?}", c.change_id));
-    assert_eq!(changes.iter().map(|c| attr(of(c), "outcome")).collect::<Vec<_>>(), [Some("indeterminate".into()), Some("indeterminate".into()), Some("copied".into())], "two copies stopped on a lost answer, the third finished");
+    assert_eq!(changes.iter().map(|c| attr(of(c), "outcome")).collect::<Vec<_>>(), [Some("indeterminate".into()), Some("copied".into())], "the first copy stopped on a lost answer, the second finished");
     assert_eq!(attr(of(&changes[1]), "copied"), Some((total - 3).to_string()), "the resumed copy appended only the lines the new provider did not hold");
-    assert_eq!(["source_position", "copied"].map(|k| attr(of(&changes[2]), k)), [Some(total.to_string()), Some("0".into())], "the last copy verified every source line and appended none");
-}
-
-/// CONTRACT (storage.md §2 Copy: every in-flight row "with its exact claimant"; build.md §5.3: a name is
-/// the records', never a lock): after the copy the new provider holds the old one's in-flight row of a
-/// mesh byte for byte, so a take there by another attempt is held, naming the original attempt; the
-/// attempt's Build facts are copied with its row; a row the old provider released is not on the new
-/// one; and the new provider holds no name lock and no fabric name index. Must NOT happen: a row re-taken
-/// by the copier, a released row revived, an attempt whose row moved without its facts, or a name kept
-/// as a lock on the new provider.
-#[test]
-fn a_provider_change_preserves_attempts_and_copies_no_name() {
-    let capture = capture("claims");
-    let change = capture.run(2, async {
-        let h = History::write().await;
-        let locks = StoreLocks::at(&h.root, &h.fp2);
-        let by = format!(r#""by":["{}","{}"]"#, h.fp2.node_id, h.fp2.incarnation_id);
-        let build = BuildId::mint();
-        let in_flight = format!(r#"{{"format":"mesh-in-flight/2","record":{{"build_id":"{build}","attempt":2,"claimant":"mesh1.node-admin.1","claimant_node":"{}"}},{by}}}"#, h.fp2.node_id).into_bytes();
-        assert_eq!(locks.take(LockKind::InFlight, "mesh1", &in_flight).await.unwrap(), LockTaken::Won);
-        assert_eq!(locks.take(LockKind::InFlight, "mesh2", b"released").await.unwrap(), LockTaken::Won);
-        assert!(locks.release(LockKind::InFlight, "mesh2", |_| true).await.unwrap(), "the old provider releases mesh2's row");
-        let b = log(&h.root, BUILDS_FILE).await;
-        b.append(&h.fp2, "build-record/1", &format!("{build}/claim/2"), &json!({"seq": 9, "fact": "claim", "attempt": 2, "claimant": "mesh1.node-admin.1"})).await.unwrap();
-
-        let dest_dir = dir("claims-destination");
-        let source = FileProviderLines::open(SOURCE, &h.store_dir, &h.fabric).await.unwrap();
-        let destination = FileProviderLines::open(DESTINATION, &dest_dir, &h.fabric).await.unwrap();
-        let change = run();
-        copy(&change, &source, &destination).await.unwrap_or_else(|e| panic!("the copy finishes: {e}"));
-        let dest_root = dest_dir.join(h.fabric.as_str());
-
-        let dest_locks = StoreLocks::at(&dest_root, &writer());
-        assert_eq!(dest_locks.read(LockKind::InFlight, "mesh1").await.unwrap(), Some(in_flight.clone()), "the mesh's in-flight row is copied with its exact claimant");
-        assert_eq!(dest_locks.read(LockKind::InFlight, "mesh2").await.unwrap(), None, "a row the old provider released is not on the new one");
-        assert!(!dest_root.join("locks").join("name").exists() && !dest_dir.join("fabrics").exists(), "the new provider holds no name lock and no fabric name index");
-        assert_eq!(dest_locks.take(LockKind::InFlight, "mesh1", b"another attempt").await.unwrap(), LockTaken::Held(in_flight), "a take of the in-flight row on the new provider is held by the original attempt");
-        assert_eq!(file_lines(&dest_root, BUILDS_FILE), file_lines(&h.root, BUILDS_FILE), "the attempt's Build facts are copied with its row");
-        change
-    });
-    let spans = capture.spans().expect("the cell's spans");
-    let copies = spans_named(&spans, COPY_SPAN);
-    assert_eq!(copies.iter().map(|s| (attr(s, "change_id"), attr(s, "outcome"))).collect::<Vec<_>>(), [(Some(change.change_id.to_string()), Some("copied".into()))], "one copy span, copied: {copies:?}");
+    assert_eq!(attr(of(&changes[1]), "source_position"), Some(total.to_string()), "the last copy verified every source line");
 }

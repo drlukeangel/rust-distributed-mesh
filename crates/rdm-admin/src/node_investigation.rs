@@ -226,7 +226,7 @@ impl NodeInvestigatedWriter {
 /// and orders nothing; an event not written sends none, named on the span.
 pub(crate) async fn write_node_investigated(writer: &NodeInvestigatedWriter, ids: (rdm_core::FabricId, Option<rdm_core::MeshId>), node: &Node, incarnation: &crate::model::IncarnationId, verdict: crate::wiring::NodeInvestigatedVerdict, next: crate::wiring::NodeInvestigatedNext) {
     use tracing::Instrument as _;
-    let context = crate::build_claim::current_context();
+    let context = crate::build::current_context();
     let (fabric_id, mesh_id) = ids;
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-on-node-investigated",

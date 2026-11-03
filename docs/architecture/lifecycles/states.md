@@ -32,15 +32,15 @@ Neither a Build nor the rectifier ever declares the fabric ready.
 | node left | the node's mesh-primary | node.mesh.leave's completion, `StopMeshLeft` on node.stop's stream |
 | node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |
 | node stopped | the node's mesh-primary | the matching stopped frame on the stop call's stream |
-| node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's adopted claim, published as NodeDeleting |
+| node deleting | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's admission at its mesh-primary, published as NodeDeleting |
 | node deleted (the durable row) | the node's mesh-primary (the fabric-primary for a mesh with no primary) | node.delete's step receipt |
 | mesh Pending | the node-admin that launched the mesh's first admin | one ApplyMeshState(Pending) sent after the launched birth answers Ping, waiting at most 20 s for that reachability (RDM's `apply_mesh_state` in `rdm-admin`) |
 | mesh ready | the fabric-primary decides and answers `Applied`; the mesh-primary records it on its mesh's record, and the state is durable at that write; the declaration stays owed until then and is answered `Applied` again if repeated (Q144). The write that first puts it on the record calls [`on_mesh_ready`](../fabric-node-hooks.md#on_mesh_ready) | its mesh-primary's report that every planned birth is ready |
 | mesh deleting | the mesh-primary | the fabric-primary's DeleteMesh admission (mesh.deleting) |
 | mesh deleted | the mesh-primary, still alive, on the mesh row (the fabric-primary as acting primary only when no primary survived) | mesh.deleted, from its members' node.delete receipts; never an op |
-| fabric ready | the fabric-primary | every mesh the accepted Build names ready, its attempt claimed; the fabric-primary then calls [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) |
+| fabric ready | the fabric-primary | every mesh the accepted Build names ready; the fabric-primary then calls [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) |
 
-start and stop are workflows the node runs, and each primitive is one command: the node's acknowledgement of a command sets its "ing" state (starting, stopping, connections-deleting, leaving), its completion sets the "ed" state (ready, stopped, connections-deleted, left), and each is the row's one status, never a second field. delete is the mesh-primary's workflow: no delete command reaches the node; the mesh-primary writes deleting from its adopted claim, composes the node's stop, whose frames move the row as above, terminates the exact runtime and writes deleted from the receipt. A query answers the state the row last took from the node's frame or the mesh-primary's receipt; a command the node has not acknowledged moves the row nowhere. Where no node can report, the mesh-primary writes the state itself: a create's starting from the launch, and an exited node's deleting and deleted from the claim and the receipt.
+start and stop are workflows the node runs, and each primitive is one command: the node's acknowledgement of a command sets its "ing" state (starting, stopping, connections-deleting, leaving), its completion sets the "ed" state (ready, stopped, connections-deleted, left), and each is the row's one status, never a second field. delete is the mesh-primary's workflow: no delete command reaches the node; the mesh-primary writes deleting from the delete's admission, composes the node's stop, whose frames move the row as above, terminates the exact runtime and writes deleted from the receipt. A query answers the state the row last took from the node's frame or the mesh-primary's receipt; a command the node has not acknowledged moves the row nowhere. Where no node can report, the mesh-primary writes the state itself: a create's starting from the launch, and an exited node's deleting and deleted from the admission and the step's outcome.
 
 The internal report and apply that move a node's status are [node status](node-status.md).
 Which frame carries each state to peers, and who publishes it, is the
@@ -49,7 +49,7 @@ Which frame carries each state to peers, and who publishes it, is the
 <a id="the-fabrics-ready"></a>
 ## The fabric's ready
 
-When every mesh the accepted Build names is ready and the Build's attempt is claimed, the
+When every mesh the accepted Build names is ready, the
 fabric-primary sets the fabric ready, publishes FabricStatus ready under the
 [frame catalog](../gossip.md#31-frame-catalog), and the application receives one
 [`on_fabric_ready`](../fabric-node-hooks.md#on_fabric_ready) notice, on which Rafka opens client
@@ -109,7 +109,7 @@ changes first, the observed topology only as the executor acts.
 | moment | accepted topology | observed: mesh2.node.2 | resolver `ExactNode` | application routing |
 |---|---|---|---|---|
 | Build accepted | does not name it | current | Found | selects it |
-| executor claimed, `NodeDeleting` | does not name it | current, overlay `NodeDeleting` | Found | never selects it |
+| executor admitted, `NodeDeleting` | does not name it | current, overlay `NodeDeleting` | Found | never selects it |
 | node.stopped; the mesh-primary's NodeStopped | does not name it | current, status `stopped`, overlay | Found | never selects it |
 | the provider's inspect answer, `NodeDeleted` | does not name it | removed; deleted identity retained | Gone | not a candidate |
 | after the deleted retention | does not name it | forgotten | Unknown | not a candidate |

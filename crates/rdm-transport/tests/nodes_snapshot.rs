@@ -83,7 +83,6 @@ impl Mesh {
 fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
     LifecycleOp { r#type: d.node.r#type.clone(), mesh: d.node.mesh.clone(),
         build_id: "b1".into(),
-        attempt: 1,
         operation: rdm_core::OperationId::new(operation, rdm_core::OperationSubject::Birth { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
         node_id: d.node.node_id.clone(),
         incarnation: d.node.incarnation.clone(),

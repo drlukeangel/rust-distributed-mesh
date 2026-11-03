@@ -80,7 +80,7 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
         rafka(0x19, "peer-tickle"),
         LedgerEntry { op: 0x1A, family: "forward".into(), owner: OpOwner::Core, state: OpState::Live },
         LedgerEntry { op: 0x1B, family: "status".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
-        LedgerEntry { op: 0x1C, family: "build-claim".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
+        LedgerEntry { op: 0x1C, family: "build-claim".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Reserved },
         LedgerEntry { op: 0x1D, family: "join".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
         LedgerEntry { op: 0x1E, family: "topology".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
         LedgerEntry { op: 0x1F, family: "build-facts".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Reserved },

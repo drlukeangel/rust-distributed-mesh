@@ -1,39 +1,39 @@
 //! The fabric-primary's drive of a Build (op `0x20`; node-rpc-envelope.md "Build, op `0x20`").
 //!
-//! The fabric-primary is the one driver of every Build, whether a caller is attached or not (a
-//! drift Build has none). For each active Build it:
+//! The fabric-primary is the one driver of every Build, whether a caller is attached or not. For each
+//! active Build, each pass:
 //!
-//! 1. claims the next attempt on its own log through the claim door, for the admin
-//!    [`crate::executor::lead_for`] names, or finds the attempt already claimed;
-//! 2. calls that admin with `build.attempt.run` (in process when the executor is itself) and passes on
-//!    the run's frames into the Build's [`Drive`];
-//! 3. on `HandedOff { to }` claims the next attempt for `to`; on `Complete` or `Failed` ends.
+//! 1. reads the Build and its events; a Build not yet started gets its `rdm.build.started` event and
+//!    the application its `on_build_started` notice;
+//! 2. plans what is left from the Build's topology, the records and the steps whose
+//!    `rdm.build.step` event ended `complete`;
+//! 3. runs its own section in process (mesh creation and deletion, and the members of any mesh with
+//!    no mesh-primary) and dispatches every other mesh's section to that mesh's primary with
+//!    `build.attempt.run`, each after its `rdm.build.dispatched` event, all at once (Q250), passing
+//!    each section's frames into the Build's [`Drive`];
+//! 4. a step that ends `failed { reason }` ends the Build: `rdm.build.ended` `failed`, and the
+//!    application's `on_build_ended`; nothing left ends it `complete` the same way. A section lost
+//!    with its mesh-primary leaves the Build in progress: the next pass sends it to the mesh's new
+//!    primary, which runs the steps its mesh owes (elections §4.1).
 //!
 //! Callers (`build.create`) read the [`Drive`]'s frames; a cut caller cancels nothing, because the
-//! drive is its own task and the caller is a view of its frames. The drive's state is the Build
-//! projection: a successor fabric-primary resumes from it, and the attempt it finds claimed it
-//! dispatches again (start-or-reattach), so no completed step runs twice.
+//! drive is its own task and the caller is a view of its frames. A successor fabric-primary resumes
+//! from the Build and its events: no step whose event ended `complete` runs twice.
 //!
-//! Before every claim and every dispatch the drive passes two gates: the Build log's target is not set
-//! (a fabric-primary whose view, by the election's result it installed, names another live birth
-//! fabric-primary dispatches nothing), and this admin is the fabric-primary in its view. A loss names
-//! the fabric-primary the installed result names.
-//! An executor that cannot be reached is replaced only on proof of its departure, never on
-//! silence.
+//! Before every dispatch the drive passes two gates: the Build log's target is not set (a
+//! fabric-primary whose view names another live birth fabric-primary dispatches nothing), and this
+//! admin is the fabric-primary in its view. A loss names the fabric-primary the installed result
+//! names.
 //!
-//! Each pass of a drive (its gates, its claim, its dispatch and the run's terminal) is one turn of
-//! its admin's stop gate ([`crate::stop_gate`]): a stopped admin begins none, and a stop waits for
-//! the pass in progress before it cuts.
+//! Each pass of a drive is one turn of its admin's stop gate ([`crate::stop_gate`]): a stopped admin
+//! begins none, and a stop waits for the pass in progress before it cuts.
 
 use crate::build::BuildId;
-use crate::build_claim::ClaimDoor;
-use crate::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter, BuildStateError};
-use crate::executor::{lead_for, run_of, RunPlan};
 use crate::build::BuildOperation;
-use crate::model::{PathName};
+use crate::build_state::{BuildProjection, BuildState, BuildStateAdapter, BuildStateError};
+use crate::model::PathName;
 use crate::topology::Topology;
-use rdm_core::build::BuildReply;
-use rdm_core::build_claim::BuildClaimReply;
+use rdm_core::build::{BuildReply, StepResult, UnfinishedSection};
 use rdm_core::context::CallContext;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,144 +42,94 @@ use tokio::sync::{Notify, RwLock};
 use tracing::instrument::WithSubscriber as _;
 use tracing::Instrument as _;
 
-/// The gates every claim and dispatch passes.
+/// The gates every dispatch passes, and what the drive reads beside the Build.
 #[async_trait::async_trait]
 pub trait Gate: Send + Sync {
-    /// The paths the fabric-primary's atlas holds a create of Build `_build` at (Luke 2026-10-30: drift
-    /// is decided from the atlas, not the topology): not surplus to its accepted topology (none, for a
-    /// gate with no atlas).
+    /// The paths this Build's own creates hold in the atlas: never surplus (Luke 2026-10-30).
     async fn atlas_created(&self, _build: &BuildProjection) -> std::collections::BTreeSet<PathName> {
         std::collections::BTreeSet::new()
     }
-
-    /// The target of the Build log, read from the fabric-primary this admin's view holds (the election's
-    /// result it installed): refused by name once it names another live birth; otherwise the path and name
-    /// of the birth it names when that is this birth, `None` when it names none or a birth proven gone.
+    /// The fabric-primary the Build log's target names, when it names another; an error ends the
+    /// drive `RoleLost`.
     async fn target(&self) -> Result<Option<rdm_core::NodeId>, BuildStateError> {
         Ok(None)
     }
-    /// Resolves once the view names another live birth fabric-primary (never, for a gate with none):
-    /// a drive waiting on an executor's run ends there, not when that run's stream does.
+    /// Resolves once the target is set.
     async fn target_set(&self) {
         std::future::pending::<()>().await
     }
-    /// How long the peer mesh `mesh` has gone unheard on the backbone, in milliseconds, once at or past
-    /// the staleness floor, read when asked: a node of a peer mesh held unheard is not claimed or
-    /// dispatched for (R-D1), except an unheard mesh-primary's own recovery
-    /// (`mesh_primary_recovery_admits`). `None` for a mesh heard within the floor.
+    /// How long `mesh` has been unheard on the backbone, when it is held unheard (R-D1).
     fn mesh_unheard_ms(&self, _mesh: &str) -> Option<u64> {
         None
     }
-    /// node.primary.update before an operation on a primary runs (R-MT1, Luke 2026-10-12: "only a
-    /// FP should issue commands to a MP"; "this same primitive should be called on MP stop or
-    /// delete"): this fabric-primary commands the primary's mesh-primary role to move, or moves its own roles
-    /// (its mesh-primary role, then the fabric-primary role), so the operation's executor is the primary's successor.
-    /// `operation` names the Build operation the update precedes; `run` is the first attempt of the
-    /// run `attempt` belongs to, the update's transfer key with the Build id (ruling R-PU2,
-    /// [`crate::fabric_handover::update_operation`]). `Err` names why the role did not move, and
-    /// whether the update was refused before the call or left incomplete after it ([`RoleMoveEnd`]). A
-    /// gate with no primaries moves nothing.
-    async fn update_primaries(&self, _m: &crate::executor::RoleMove, _build_id: &BuildId, _attempt: u32, _run: u32, _operation: &rdm_core::OperationId) -> Result<(), RoleMoveEnd> {
+    /// Move the roles `m` names before `operation`, a step of `build_id` (node.primary.update).
+    async fn update_primaries(&self, _m: &crate::executor::RoleMove, _build_id: &BuildId, _operation: &rdm_core::OperationId) -> Result<(), RoleMoveEnd> {
         Ok(())
     }
-    /// node.primary.updated for every update that precedes an operation the drive is about to dispatch
-    /// on that update's primary (lifecycles/node-primary-update.md failure contract: "The workflow
-    /// continues only after the result is installed and acknowledged: `node.primary.updated` answered
-    /// to the resuming executor's call, never a read alone"). An update this admin holds acknowledged
-    /// is acknowledged again; otherwise what it came to is discovered from this admin's view and the
-    /// successor's node.primary.updated obtained on a call and installed
-    /// ([`crate::fabric_handover::HandoverDoor::row_acknowledged`]). `Err` names why an update was not
-    /// acknowledged. A gate with no primaries has none to acknowledge.
-    async fn primaries_updated(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
+    /// Whether every update in `updates` was acknowledged (node.primary.updated), before the
+    /// operations they precede are dispatched.
+    async fn primaries_updated(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId) -> Result<(), String> {
         Ok(())
     }
-    /// Take the completed lifecycle receipts of `build_id` into the fabric-primary's atlas
-    /// before `BuildReply::Complete` goes out on the caller's stream (fabric-atlas.md R-FA2).
-    async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
-    /// Take the `Complete` receipt of `operation` of attempt `attempt` of `build_id` into the
-    /// fabric-primary's atlas as its frame streams up `build.attempt.run`, before the frame is
-    /// passed on (fabric-atlas.md R-FA2), whichever admin executed it.
-    async fn receipt_streamed(&self, _build_id: &BuildId, _attempt: u32, _operation: &rdm_core::OperationId) {}
-    /// [`Self::receipt_streamed`] of an attempt numbered in mesh `lane`'s lane (a section, Q250).
-    async fn receipt_streamed_in(&self, _lane: &str, _build_id: &BuildId, _attempt: u32, _operation: &rdm_core::OperationId) {}
-    /// Now on the admin's clock, in milliseconds, for an attempt this drive opens (a section, Q250).
+    /// The Build completed.
+    async fn build_completed(&self, _build_id: &BuildId) {}
+    /// The Build failed.
+    async fn build_failed(&self, _build_id: &BuildId) {}
+    /// A step of `operation` was passed on to the Build's callers from `mesh`'s section.
+    async fn step_streamed(&self, _mesh: &str, _build_id: &BuildId, _operation: &str) {}
+    /// Rafka-time now, in milliseconds.
     fn now_ms(&self) -> u64 {
         0
     }
-    /// Attempt `attempt` of `build_id` ended `Failed`: what it accepted is no longer executing.
-    async fn attempt_failed(&self, _build_id: &BuildId, _attempt: u32) {}
-    /// The meshes of `observed` whose Mesh record holds them Dead (mesh-delete.md: the mesh row goes Dead
-    /// at mesh.deleted; a `dead` record is final), read from the Mesh records, never from the view: a view
-    /// that has not heard a mesh's Dead yet still shows it live. A gate with no Mesh records holds none.
+    /// The meshes the Mesh records hold Dead.
     async fn deleted_meshes(&self, _observed: &Topology) -> Result<std::collections::HashSet<crate::model::MeshId>, String> {
         Ok(Default::default())
     }
-    /// Every mesh record the store holds, for a fabric.delete's plan: the delete plans from the Mesh rows
-    /// on the store, never only from the view, which drops a mesh once its members are gone (fabric-delete.md
-    /// "Failure": a runtime inside the workflow whose delete has no receipt is never reported deleted;
-    /// mesh-delete.md "Resume after the primary's loss"). A gate with no mesh store holds none: the view's
-    /// meshes are planned.
+    /// The Mesh rows on the store (a fabric.delete's remaining meshes).
     async fn mesh_rows(&self) -> Result<Vec<crate::storage::MeshRecord>, String> {
         Ok(Vec::new())
     }
-    /// The birth the fabric-primary's atlas row holds at `path` now, the record Build acceptance read
-    /// (fabric-atlas.md R-FA1, R-FA3), for the plan of a Build whose attempt carries a standalone stop,
-    /// start, connections delete or delete of it: planned from the atlas, never from the gossip view.
-    /// `Ok(None)` for a gate with no atlas: the view's birth is planned.
-    async fn atlas_birth(&self, _node_id: &rdm_core::NodeId, _observed: &Topology) -> Result<Option<crate::accepted::AtlasBirth>, String> {
-        Ok(None)
+    /// The node records of `ids` on the store (the births a fabric.delete's begun node.deletes act on).
+    async fn node_rows(&self, _ids: &[rdm_core::NodeId]) -> Result<Vec<crate::storage::NodeRow>, String> {
+        Ok(Vec::new())
     }
-    /// Whether the fabric holds ready now: a Build that put the fabric back to pending is
-    /// `Complete` only once the fabric's ready state is set from its change (Q154; states.md
-    /// "Resize and executable replacement"). A gate with no fabric change holds it.
+    /// Whether the fabric holds ready.
     fn fabric_ready(&self) -> bool {
         true
     }
 }
 
-/// The node.primary.update that precedes an operation on a primary (R-MT1), named by its operation
-/// (`crate::fabric_handover::update_operation`).
+/// One node.primary.update that precedes an operation of a Build (node-primary-update.md): the mesh
+/// whose primary acknowledges it, its operation, and the primary it moves.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PrecedingUpdate {
-    /// First attempt of the submission whose update must be acknowledged.
-    pub run: u32,
-    /// The primary's mesh.
+    /// The mesh whose primary answers node.primary.updated.
     pub mesh: String,
-    /// The update's own operation.
+    /// The update's operation, `node.primary.update:<build_id>:<op>` by its step.
     pub operation: rdm_core::OperationId,
-    /// The node the operation acts on, when it names one: the update's primary.
+    /// The primary it moves, when it names one.
     pub primary: Option<rdm_core::OperationSubject>,
 }
 
-/// The node.primary.updates that may precede `op` of Build `build_id` in the run whose first attempt
-/// is `run` (R-MT1, ruling R-PU2, [`crate::executor::role_move`]): for a stop, delete, replace
-/// or node.connection.delete of a node-admin, the mesh-primary's update and the fabric-primary's
-/// alone; of a node of any other type, its type's primary's update; for a mesh delete, the
-/// fabric-primary's under that mesh. None for any other operation.
-pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> Vec<PrecedingUpdate> {
+/// The node.primary.update operations that precede `op` (node-primary-update.md, "Commander").
+pub fn preceding_updates(op: &BuildOperation) -> Vec<PrecedingUpdate> {
     use crate::fabric_handover::update_operation;
     use rdm_core::PrimaryRole;
     let key = op.key();
     match op {
-        BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { run, mesh: mesh.clone(), operation: update_operation(PrimaryRole::FabricPrimary, &key), primary: None }],
-        BuildOperation::DeleteLiveNode { exited: None, .. }
-        | BuildOperation::DeleteConnections { .. }
-        | BuildOperation::StopNode { .. }
-            if op.r#type().as_deref().is_some_and(rdm_core::is_node_admin) =>
-        {
-            [PrimaryRole::MeshPrimary, PrimaryRole::FabricPrimary].into_iter().map(|role| PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(role, &key), primary: op.subject() }).collect()
+        BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { mesh: mesh.clone(), operation: update_operation(PrimaryRole::FabricPrimary, &key), primary: None }],
+        BuildOperation::DeleteLiveNode { exited: None, .. } if op.r#type().as_deref().is_some_and(rdm_core::is_node_admin) => {
+            [PrimaryRole::MeshPrimary, PrimaryRole::FabricPrimary].into_iter().map(|role| PrecedingUpdate { mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(role, &key), primary: op.subject() }).collect()
         }
         // Any other node type's primary, commanded by its mesh-primary (node-primary-update.md, "Commander").
-        BuildOperation::DeleteLiveNode { exited: None, .. }
-        | BuildOperation::DeleteConnections { .. }
-        | BuildOperation::StopNode { .. } => {
-            vec![PrecedingUpdate { run, mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(PrimaryRole::of_type(&op.r#type().expect("a node operation has a type")), &key), primary: op.subject() }]
+        BuildOperation::DeleteLiveNode { exited: None, .. } => {
+            vec![PrecedingUpdate { mesh: op.mesh().expect("node operation has mesh").to_owned(), operation: update_operation(PrimaryRole::of_type(&op.r#type().expect("a node operation has a type")), &key), primary: op.subject() }]
         }
         _ => Vec::new(),
     }
 }
 
-/// A gate that is always open: a fixture with no topology view and no role target.
+/// A gate that holds nothing: every dispatch passes.
 pub struct OpenGate;
 
 #[async_trait::async_trait]
@@ -189,142 +139,52 @@ impl Gate for OpenGate {
     }
 }
 
-/// The provider's inspection of an executor's exact runtime (build.md, Q239): it answers whether the
-/// birth is exited or os-stopped. Running, unproven and silence never are.
-#[async_trait::async_trait]
-pub trait ExecutorInspection: Send + Sync {
-    /// `Ok` when the provider reads the exact admitted birth `executor` exited or
-    /// os-stopped; `Err` names why it is not.
-    async fn exited_or_os_stopped(&self, executor: &rdm_core::framing::Birth) -> Result<(), String>;
-}
-
-/// Where the verdict an executor reported is recorded on the fabric-primary's own log, so the
-/// Build's state there is current when the terminal frame goes out.
-#[async_trait::async_trait]
-pub trait VerdictSink: Send + Sync {
-    /// Record `receipt`, which the executor wrote on its own log, here without gossiping it again.
-    async fn record(&self, receipt: BuildAttemptReceipt);
-}
-
-/// What a dispatch of `build.attempt.run` came to before any frame.
+/// What a dispatch of a section came to.
 pub enum Dispatched {
-    /// The executor accepted: its frames follow.
+    /// The section is running: its stream.
     Stream(Box<dyn InnerStream>),
-    /// The executor refused, by name.
+    /// The call was refused, by name.
     Refused(BuildReply),
-    /// The request provably never reached the executor (`NotSent`): the reason.
+    /// The mesh-primary could not be reached.
     Unreached(String),
 }
 
-/// One item of an inner stream.
+/// One item of a section's stream.
 pub enum InnerItem {
-    /// A frame (never `Started`).
+    /// A frame.
     Frame(BuildReply),
-    /// The stream ended without a terminal.
+    /// The stream ended.
     Ended,
-    /// The stream broke after the request committed (`Indeterminate`): the reason.
+    /// The stream broke (the mesh-primary lost): Indeterminate.
     Broke(String),
 }
 
-/// The frames of one `build.attempt.run`.
+/// A section's stream.
 #[async_trait::async_trait]
 pub trait InnerStream: Send {
     /// The next item.
     async fn next(&mut self) -> InnerItem;
-    /// The frames handed over so far are recorded: their acks are owed now. A stream read as its
-    /// own recovery acks each frame as it reads it, and this does nothing.
+    /// The stream was accepted (Started read).
     async fn accepted(&mut self) {}
 }
 
-/// Calls the executor `executor` names for one claimed attempt.
+/// How the drive reaches the admin that runs a section.
 #[async_trait::async_trait]
 pub trait Dispatcher: Send + Sync {
-    /// `build.attempt.run` for `attempt` of `build_id` at `executor`, carrying the won claim and the
-    /// run the fabric-primary planned (`plan`): the operations the executor runs and nothing else. It
-    /// names the Build, never carries a copy of it: the executor reads its committed records (Q292). `turn` is
-    /// the drive pass's turn of the admin's gate: a run this admin makes itself begins its own turn
-    /// under it, never waiting at the gate for the pass that waits on it.
-    async fn dispatch(
-        &self,
-        turn: &crate::stop_gate::Turn,
-        executor: &rdm_core::framing::Birth,
-        build_id: &BuildId,
-        attempt: u32,
-        context: CallContext,
-        plan: RunPlan,
-    ) -> Dispatched;
-    /// [`Self::dispatch`] of a mesh's drift attempt, numbered in `lane` (Q118): `build.attempt.run`
-    /// naming the mesh. A dispatcher that runs no drift attempt refuses it by name.
-    #[allow(clippy::too_many_arguments)]
-    async fn dispatch_in(
-        &self,
-        turn: &crate::stop_gate::Turn,
-        executor: &rdm_core::framing::Birth,
-        lane: &str,
-        build_id: &BuildId,
-        attempt: u32,
-        context: CallContext,
-        plan: RunPlan,
-    ) -> Dispatched {
-        let _ = (turn, build_id, attempt, context, plan);
-        Dispatched::Unreached(format!(
-            "this dispatcher runs no drift attempt: {executor} in mesh {lane}"
-        ))
-    }
-    /// Hold the run of `attempt` of `build_id` on the admin `me` (the drive's own) while a step of the
-    /// Build runs in the drive itself (the primary's own node.primary.update): a dispatch of the attempt
-    /// to `me` reattaches to it ([`crate::build_run::HeldRun`]). `None` when it holds no run here.
-    fn hold(&self, _me: &PathName, _build_id: &BuildId, _attempt: u32) -> Option<crate::build_run::HeldRun> {
-        None
-    }
+    /// Send `mesh`'s section of `build_id` to the mesh's primary (`build.attempt.run`): one call,
+    /// addressed to the role under the call's one retry mechanism (Q344).
+    async fn dispatch(&self, build_id: &BuildId, mesh: &str, context: CallContext) -> Dispatched;
+    /// Run `operations`, `mesh`'s section of `build_id` that this admin executes, in process under the
+    /// drive pass's `turn`.
+    async fn run_own(&self, turn: &crate::stop_gate::Turn, build_id: &BuildId, mesh: &str, context: CallContext, operations: Vec<BuildOperation>) -> Dispatched;
 }
 
-/// What a pass's sections did (Q250).
-enum Sections {
-    /// No section was owed: the fabric lane goes on as it is.
-    None,
-    /// Every owed section ran (or failed for the first time): the pass plans again.
-    Ran,
-    /// The drive ends here.
-    End(DriveEnd),
-}
-
-/// How a section ended short of complete.
-enum SectionEnd {
-    /// Its verdict is `Failed`.
-    Failed(SectionFailure),
-    /// It holds its mesh, or could not be opened, claimed or ended: why.
-    Held(String),
-}
-
-/// How a section failed (Q250, Q252): the operation and step its `Failed` terminal named, with the
-/// step's own reason and code; `operation` absent and `step` `section` when it ended without a step
-/// failing (refused, its executor exited).
-struct SectionFailure {
-    operation: Option<rdm_core::OperationId>,
-    step: String,
-    reason: String,
-    code: rdm_core::outcome::Code,
-}
-
-impl SectionFailure {
-    /// What the same failure twice running is keyed on: the operation alone, whatever the reason
-    /// (Q252); a section that failed no operation, its reason.
-    fn key(&self) -> (Option<rdm_core::OperationId>, Option<String>) {
-        match &self.operation {
-            Some(operation) => (Some(operation.clone()), None),
-            None => (None, Some(self.reason.clone())),
-        }
-    }
-}
-
-/// Why a drive ended without the role: what the old role says, and the admin the committed fabric
-/// primary record names as the role's primary now.
+/// The fabric-primary role moved off this admin while it drove a Build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleLoss {
-    /// Why this admin may not act as the fabric-primary.
+    /// Why, in words.
     pub why: String,
-    /// The globally unique node ID named by the fabric-primary record.
+    /// The fabric-primary the installed result names, when it names one.
     pub to: Option<rdm_core::NodeId>,
 }
 
@@ -332,7 +192,6 @@ pub struct RoleLoss {
 enum StallKey {
     Reason(String),
     UnheardMesh { mesh: String, operation: rdm_core::OperationId },
-    NoOwner { operation: rdm_core::OperationId },
 }
 
 #[derive(Default)]
@@ -342,118 +201,84 @@ struct DriveState {
     terminal: Option<BuildReply>,
     lost: Option<RoleLoss>,
     stall: Option<StallKey>,
-    /// The attempt that ended handed back to this fabric-primary with nothing moved, and what its
-    /// resume decides on then ([`DriveEnv::world`]): no next attempt is claimed until that moves.
-    idle: Option<Idle>,
+    idle: Option<String>,
 }
 
-/// What a drive waits on after an attempt it handed back to itself ended with nothing moved.
-#[derive(Clone)]
-struct Idle {
-    attempt: u32,
-    world: String,
-    why: String,
-}
-
-/// One Build's drive: the frames its callers read. The task that makes them is [`DriveEnv::run`].
+/// One Build's drive on the fabric-primary: the frames its sections produced, its terminal, and the
+/// state a pass reads beside the Build.
 pub struct Drive {
     /// The Build.
     pub build_id: BuildId,
-    /// The first attempt this drive dispatched (0 until it has): the receipts of the attempts from
-    /// there to the one running are replayed as frames when a later attempt takes over.
-    first_attempt: std::sync::atomic::AtomicU32,
     state: Mutex<DriveState>,
     wake: Notify,
     running: AtomicBool,
-    /// An ensure found this drive's run in progress: the run is made once more when it ends waiting
-    /// ([`Drives::ensure`]).
     again: AtomicBool,
-    /// The meshes the Mesh records held Dead when this drive's pass last read them ([`Gate::deleted_meshes`]):
-    /// planned as Dead whatever the view shows.
     dead: Mutex<std::collections::HashSet<crate::model::MeshId>>,
-    /// The endpoint keys of the callers reading this drive's frames now, one per reader
-    /// ([`DriveReader::of_caller`]).
     callers: Mutex<Vec<iroh::PublicKey>>,
-    /// The Mesh rows the store held when this drive's pass last read them, for a fabric.delete's plan
-    /// ([`Gate::mesh_rows`]); `None` for any other Build.
     mesh_rows: Mutex<Option<Vec<crate::storage::MeshRecord>>>,
-    /// The paths the fabric-primary's atlas held a create of this Build at when this drive's pass last
-    /// read it ([`Gate::atlas_created`]): never surplus to its accepted topology.
+    /// A fabric.delete's begun node.deletes' node records, for each birth the view no longer holds.
+    node_rows: Mutex<Vec<crate::storage::NodeRow>>,
     created: Mutex<std::collections::BTreeSet<PathName>>,
-    /// The birth the fabric-primary's atlas row held at the path of the Build's standalone action when
-    /// this drive's pass last read it ([`Gate::atlas_birth`]); `None` for any other attempt, or a gate
-    /// with no atlas.
-    atlas: Mutex<Option<crate::accepted::AtlasBirth>>,
-    /// Each mesh's last section failure (Q250), keyed on its operation ([`SectionFailure::key`]): the
-    /// same operation failing again ends the Build `Failed` rather than sending the section once more (Q252).
-    section_failed: Mutex<HashMap<String, (Option<rdm_core::OperationId>, Option<String>)>>,
-    /// The operations a section this drive sent completed, its run reported by its verdict (Q250), with the
-    /// fabric run they were sent in (`BuildProjection::opened`): done in that run only, as a reported
-    /// fabric-lane run's are ([`left`]); a later run (a recovery of the same Build) plans from the world.
-    section_done: Mutex<HashSet<(u32, rdm_core::OperationId)>>,
+    /// Whether this drive has passed on any frame of the Build: a drive that has not (a fabric-primary
+    /// that took the role mid-Build, or after it ended) replays the steps whose event ended `complete`.
+    replayed: AtomicBool,
+    /// The sections of this run that ended short of their end, by mesh (Q346): nothing of a mesh here
+    /// is dispatched again in this run, and the Build ends `incomplete` naming each.
+    unfinished: Mutex<std::collections::BTreeMap<String, UnfinishedSection>>,
 }
 
-/// Replay identity retains each operation field without string encoding or parsing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum FrameKey {
-    Step { attempt: u32, operation: rdm_core::OperationId, step: String },
-    Blocked { attempt: u32, operation: rdm_core::OperationId, step: String, reason: String },
+    Step { mesh: String, operation: String, step: String },
+    Blocked { mesh: String, operation: String, step: String, reason: String },
 }
 
 fn frame_key(f: &BuildReply) -> Option<FrameKey> {
     match f {
-        BuildReply::Step { attempt, operation, step, .. } => Some(FrameKey::Step { attempt: *attempt, operation: operation.clone(), step: step.clone() }),
-        BuildReply::Blocked { attempt, operation, step, reason, .. } => Some(FrameKey::Blocked { attempt: *attempt, operation: operation.clone(), step: step.clone(), reason: reason.clone() }),
+        BuildReply::Step { mesh, operation, step, .. } => Some(FrameKey::Step { mesh: mesh.clone(), operation: operation.clone(), step: step.clone() }),
+        BuildReply::Blocked { mesh, operation, step, reason, .. } => Some(FrameKey::Blocked { mesh: mesh.clone(), operation: operation.clone(), step: step.clone(), reason: reason.clone() }),
         _ => None,
-    }
-}
-
-fn frame_attempt(f: &BuildReply) -> u32 {
-    match f {
-        BuildReply::Step { attempt, .. } | BuildReply::Blocked { attempt, .. } => *attempt,
-        _ => u32::MAX,
     }
 }
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), again: AtomicBool::new(false), dead: Mutex::new(Default::default()), callers: Mutex::new(Vec::new()), mesh_rows: Mutex::new(None), created: Mutex::new(Default::default()), atlas: Mutex::new(None), section_failed: Mutex::new(HashMap::new()), section_done: Mutex::new(HashSet::new()) })
+        Arc::new(Self {
+            build_id,
+            state: Mutex::new(DriveState::default()),
+            wake: Notify::new(),
+            running: AtomicBool::new(false),
+            again: AtomicBool::new(false),
+            dead: Mutex::new(Default::default()),
+            callers: Mutex::new(Vec::new()),
+            mesh_rows: Mutex::new(None),
+            node_rows: Mutex::new(Vec::new()),
+            created: Mutex::new(Default::default()),
+            replayed: AtomicBool::new(false),
+            unfinished: Mutex::new(Default::default()),
+        })
     }
 
-    /// A drive that no task makes frames for: the frames are pushed by the caller.
+    /// A drive no task runs: a fixture's.
     pub fn detached(build_id: BuildId) -> Arc<Self> {
         Self::new(build_id)
     }
 
-    /// Make a progress frame readable. A frame whose receipt key is already held is dropped, so a
-    /// reattached run's replay adds nothing twice. Returns whether it was new.
+    /// Pass `frame` on to the Build's callers, unless its key was passed on already. Answers whether
+    /// it was.
     pub fn push(&self, frame: BuildReply) -> bool {
-        if !self.take_key(&frame) {
+        let mut s = self.state.lock().unwrap();
+        if s.terminal.is_some() || frame_key(&frame).is_some_and(|key| !s.seen.insert(key)) {
             return false;
-        }
-        self.publish(frame);
-        true
-    }
-
-    /// Whether `frame` is new to this drive: its receipt key is taken now, so the frame is handled
-    /// once whichever way it reached the drive (the live run, the executor's replay of a reattached
-    /// run, a receipt read). Nothing is new after the terminal.
-    fn take_key(&self, frame: &BuildReply) -> bool {
-        let mut s = self.state.lock().unwrap();
-        s.terminal.is_none() && frame_key(frame).is_none_or(|key| s.seen.insert(key))
-    }
-
-    fn publish(&self, frame: BuildReply) {
-        let mut s = self.state.lock().unwrap();
-        if s.terminal.is_some() {
-            return;
         }
         s.events.push(frame);
         drop(s);
+        self.replayed.store(true, Ordering::SeqCst);
         self.wake.notify_waiters();
+        true
     }
 
-    /// The drive ended with `terminal`.
+    /// The Build ended: `terminal` follows the last frame.
     pub fn finish(&self, terminal: BuildReply) {
         let mut s = self.state.lock().unwrap();
         if s.terminal.is_none() {
@@ -463,8 +288,7 @@ impl Drive {
         self.wake.notify_waiters();
     }
 
-    /// The fabric-primary moved: the callers' streams end, and a caller re-submits by build id at the
-    /// new fabric-primary.
+    /// The fabric-primary role moved off this admin: every reader ends naming it.
     pub fn lose_fabric_primary(&self, loss: RoleLoss) {
         let mut s = self.state.lock().unwrap();
         if s.lost.is_none() && s.terminal.is_none() {
@@ -474,71 +298,28 @@ impl Drive {
         self.wake.notify_waiters();
     }
 
-    /// The first attempt this drive dispatched.
-    fn note_first_attempt(&self, attempt: u32) -> u32 {
-        let _ = self.first_attempt.compare_exchange(0, attempt, Ordering::SeqCst, Ordering::SeqCst);
-        self.first_attempt.load(Ordering::SeqCst)
-    }
-
-    /// The `Step` frame of every `Complete` receipt of `steps` from attempt `from` to before attempt
-    /// `to`: a read of receipts, never a run.
-    fn receipt_frames(&self, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) -> Vec<BuildReply> {
-        steps
-            .iter()
-            .filter(|s| {
-                s.outcome == crate::build_state::StepOutcome::Complete
-                    && s.attempt >= from
-                    && s.attempt < to
-            })
-            .map(|s| BuildReply::Step {
-                build_id: self.build_id.to_string(),
-                attempt: s.attempt,
-                operation: s.operation.clone(),
-                step: s.step.clone(),
-                receipt: None,
-            })
-            .collect()
-    }
-
-    /// Whether the drive ended with the Build complete: its frames are the record a re-submit is
-    /// answered from.
+    /// Whether the Build completed under this drive.
     pub fn completed(&self) -> bool {
-        self.completed_attempt().is_some()
+        matches!(self.state.lock().unwrap().terminal, Some(BuildReply::Complete { .. }))
     }
 
-    /// The attempt the drive completed the Build at, when it ended with the Build complete.
-    pub fn completed_attempt(&self) -> Option<u32> {
-        match self.state.lock().unwrap().terminal {
-            Some(BuildReply::Complete { attempt, .. }) => Some(attempt),
-            _ => None,
-        }
-    }
-
-    /// Whether this drive dispatched an attempt: it holds the frames of the calls it made.
-    fn has_run_log(&self) -> bool {
-        self.first_attempt.load(Ordering::SeqCst) != 0
-    }
-
-    /// Whether the drive has ended.
+    /// Whether the drive ended: a terminal, or the role lost.
     pub fn ended(&self) -> bool {
         let s = self.state.lock().unwrap();
         s.terminal.is_some() || s.lost.is_some()
     }
 
-    /// The frames from attempt `from_attempt` on, from the first.
-    pub fn reader(self: &Arc<Self>, from_attempt: u32) -> DriveReader {
-        DriveReader { drive: self.clone(), cursor: 0, from_attempt, done: false, caller: None }
+    /// A reader of every frame the drive passed on, then its end.
+    pub fn reader(self: &Arc<Self>) -> DriveReader {
+        DriveReader { drive: self.clone(), cursor: 0, done: false, caller: None }
     }
 
-    /// The endpoint keys of the callers reading this drive's frames now: the calls this Build's run
-    /// answers. A stop of this admin that the run commands spares their connections, as every stop
-    /// spares the call it answers on (node-stop.md "Transport cut").
+    /// The callers reading the drive now.
     pub fn callers(&self) -> Vec<iroh::PublicKey> {
         self.callers.lock().unwrap().clone()
     }
 
-    /// Resolves once this drive has ended and no caller reads its frames: every caller took its
-    /// terminal.
+    /// Resolves once the drive ended and no caller reads it.
     pub async fn until_read(&self) {
         loop {
             let notified = self.wake.notified();
@@ -551,8 +332,6 @@ impl Drive {
         }
     }
 
-
-    /// Whether a stall reason is new (the drive names a stall once, not on every pass).
     fn stall_is_new(&self, reason: StallKey) -> bool {
         let mut s = self.state.lock().unwrap();
         if s.stall.as_ref() == Some(&reason) {
@@ -565,35 +344,16 @@ impl Drive {
     fn clear_stall(&self) {
         self.state.lock().unwrap().stall = None;
     }
-
-    fn idle(&self) -> Option<Idle> {
-        self.state.lock().unwrap().idle.clone()
-    }
-
-    fn set_idle(&self, idle: Option<Idle>) {
-        self.state.lock().unwrap().idle = idle;
-    }
-
-    /// Whether this drive holds the `Complete` frame of the operation `key` in an attempt `counts`
-    /// admits: an executor's stream reply (a `Step` frame goes out only once its receipt is durable on
-    /// the executor that wrote it) or a receipt read said the operation completed.
-    fn completed_in(&self, key: &rdm_core::OperationId, counts: impl Fn(u32) -> bool) -> bool {
-        self.state.lock().unwrap().seen.iter().any(|frame| {
-            matches!(frame, FrameKey::Step { attempt, operation, step }
-                if counts(*attempt) && operation == key && step == "Complete")
-        })
-    }
-
 }
 
-/// What a caller reads from a drive.
+/// What a reader of a drive reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Read {
-    /// A progress frame.
+    /// A frame.
     Frame(BuildReply),
-    /// The terminal frame.
+    /// The Build's terminal.
     Terminal(BuildReply),
-    /// The fabric-primary moved; the stream ends `FabricPrimaryMoved`, and the caller re-submits.
+    /// The fabric-primary role moved off this admin.
     RoleLost(RoleLoss),
 }
 
@@ -601,9 +361,7 @@ pub enum Read {
 pub struct DriveReader {
     drive: Arc<Drive>,
     cursor: usize,
-    from_attempt: u32,
     done: bool,
-    /// The caller this reader streams to, named on its drive while it reads ([`Drive::callers`]).
     caller: Option<iroh::PublicKey>,
 }
 
@@ -621,8 +379,7 @@ impl Drop for DriveReader {
 }
 
 impl DriveReader {
-    /// This reader as the one of the caller at `caller` (its endpoint key), named on its drive until
-    /// the reader is dropped.
+    /// This reader is `caller`'s: the drive keeps its callers while they read.
     pub fn of_caller(mut self, caller: Option<iroh::PublicKey>) -> Self {
         if let Some(key) = caller {
             self.drive.callers.lock().unwrap().push(key);
@@ -631,12 +388,12 @@ impl DriveReader {
         self
     }
 
-    /// The Build this reader follows.
+    /// The Build read.
     pub fn build_id(&self) -> &BuildId {
         &self.drive.build_id
     }
 
-    /// The next frame, the terminal, or the role loss; `None` after the end.
+    /// The next frame, then the end, then `None`.
     pub async fn next(&mut self) -> Option<Read> {
         if self.done {
             return None;
@@ -647,11 +404,9 @@ impl DriveReader {
             notified.as_mut().enable();
             {
                 let s = self.drive.state.lock().unwrap();
-                while let Some(frame) = s.events.get(self.cursor) {
+                if let Some(frame) = s.events.get(self.cursor) {
                     self.cursor += 1;
-                    if frame_attempt(frame) >= self.from_attempt {
-                        return Some(Read::Frame(frame.clone()));
-                    }
+                    return Some(Read::Frame(frame.clone()));
                 }
                 if let Some(t) = &s.terminal {
                     self.done = true;
@@ -667,24 +422,20 @@ impl DriveReader {
     }
 }
 
-/// How a node.primary.update that did not complete ended ([`Gate::update_primaries`]), as
-/// lifecycles/node-primary-update.md's failure contract tells its branches apart.
+/// How a role move before an operation ended short of complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoleMoveEnd {
-    /// Refused before the call: "refused by name, nothing changed, the Build's step fails by name".
+    /// node.primary.update was refused before its row.
     Refused(String),
-    /// Not answered by node.primary.updated: the end is uncertain, and the next attempt discovers what
-    /// the update came to from its view.
+    /// It did not complete.
     Incomplete(String),
-    /// The successor is unheard after the update, node investigation's verdict (ruling R-PU2, Q10): the
-    /// step ends `Failed { step, reason }`, the Build is Failed (R-BI4), the election names whom it
-    /// names, and the workflow never goes on to the primary's operation.
+    /// A step of it failed.
     Failed {
-        /// The step that failed (`primary-update`).
+        /// The step.
         step: String,
-        /// The failure reason recording the five facts.
+        /// Why.
         reason: String,
-        /// The original failed terminal code.
+        /// The captured standard code.
         code: rdm_core::outcome::Code,
     },
 }
@@ -698,32 +449,20 @@ impl std::fmt::Display for RoleMoveEnd {
     }
 }
 
-/// Where a Build a fabric.delete interrupts stands ([`DriveEnv::end_interrupted`]).
-enum Interrupted {
-    /// Its attempts ended and its terminal is `Failed` at `attempt`, for `reason`.
-    Ended { attempt: u32, reason: String },
-    /// Its last admitted operation completed it at `attempt`.
-    Converged { attempt: u32 },
-    /// An attempt of it still runs, named.
-    Open(String),
-}
-
-/// How one pass of a drive ended.
+/// How one drive of a Build ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriveEnd {
-    /// The Build reached a terminal: nothing more to drive.
+    /// The Build has its terminal.
     Terminal,
-    /// The drive cannot go on now; the next pass of the reconcile loop tries again.
+    /// The drive cannot go on until the world changes; the Build stays in progress.
     Stalled(String),
-    /// This admin does not hold the role: the callers' streams end.
+    /// The fabric-primary role moved off this admin.
     RoleLost(String),
 }
 
-/// The Build-level events the fabric-primary writes (build.md §5: `rdm.build.started`,
-/// `rdm.build.dispatched`, `rdm.build.ended`) and the application's notices sent from them
-/// (fabric-node-hooks.md `on_build_started`, `on_build_ended`; build.md §4.1, Q256): each notice fire
-/// and forget, sent once its event is durable, gating nothing; an event not written sends none.
-/// [`Default`]: no events store and no hooks.
+/// The fabric-primary's Build-level events (build.md §5) and the application's notices from their
+/// writes (fabric-node-hooks.md): `rdm.build.started` and `on_build_started`, `rdm.build.dispatched`,
+/// `rdm.build.ended` and `on_build_ended`.
 #[derive(Clone, Default)]
 pub struct BuildNotices {
     fabric_id: Option<rdm_core::FabricId>,
@@ -733,18 +472,16 @@ pub struct BuildNotices {
 }
 
 impl BuildNotices {
-    /// The notices of fabric `fabric_id` the application registered in `hooks`.
+    /// The notices `hooks` registers, for `fabric_id`.
     pub fn of(fabric_id: rdm_core::FabricId, hooks: &crate::wiring::FabricHooks) -> Self {
         Self { fabric_id: Some(fabric_id), on_build_started: hooks.on_build_started.clone(), on_build_ended: hooks.on_build_ended.clone(), events: None }
     }
 
-    /// These notices, each sent from the write of its event through `events`.
+    /// These notices, their events written through `events`.
     pub fn writing_to(self, events: crate::events_storage::EventsWriter) -> Self {
         Self { events: Some(events), ..self }
     }
 
-    /// Append the event `make` builds, on `span`: `Ok` once it is durable, or when no events store is
-    /// wired (a rig with none); `Err` naming why it was not written.
     async fn write(&self, span: &tracing::Span, make: impl FnOnce(&crate::events_storage::EventSource, u64) -> crate::events_storage::Event) -> Result<(), String> {
         let Some(events) = &self.events else { return Ok(()) };
         let event_id = events.append(make).instrument(span.clone()).await?;
@@ -752,39 +489,36 @@ impl BuildNotices {
         Ok(())
     }
 
-    /// `rdm.build.started` of `build_id`, whose attempt `attempt` opened it, then `on_build_started` from
-    /// that write, under its own span (`rdm.node_admin.build.update.via-on-build-started`) parented to the
-    /// attempt's context.
-    async fn started(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, context: &CallContext) {
+    /// The Build's `rdm.build.started`, then `on_build_started` from that write. `Err` when the event
+    /// was not written.
+    pub async fn started(&self, me: &PathName, build_id: &BuildId, context: &CallContext) -> Result<(), String> {
         let hook = self.fabric_id.clone().zip(self.on_build_started.clone());
-        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-started", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), attempt, reason = reason.as_str(), event_id = tracing::field::Empty, outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
+        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-started", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), event_id = tracing::field::Empty, outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
         if let Some(tp) = &context.traceparent {
             rdm_transport::set_remote_parent(&span, tp, context.tracestate.as_deref());
         }
         if let Err(cause) = self.write(&span, |source, time_ms| crate::events_storage::Event::build_started(source, time_ms, build_id)).await {
             span.record("outcome", "event-not-written");
             span.in_scope(|| tracing::info!(cause = %cause, "the Build's rdm.build.started event was not written: the notice is not sent"));
-            return;
+            return Err(cause);
         }
-        let (contexts, build_id) = (contexts.clone(), build_id.clone());
+        let (build_id, context) = (build_id.clone(), context.clone());
         tokio::spawn(
             async move {
                 let Some((fabric_id, hook)) = hook else {
                     tracing::info!("no on_build_started hook is registered");
                     return;
                 };
-                let context = contexts.get(&build_id, attempt).await.ok().flatten().unwrap_or_default();
-                hook(crate::wiring::BuildStartedCtx { fabric_id, build_id: build_id.to_string(), attempt, reason, context }).await;
+                hook(crate::wiring::BuildStartedCtx { fabric_id, build_id: build_id.to_string(), context }).await;
                 tracing::info!("the application was told the Build started");
             }
             .instrument(span),
         );
+        Ok(())
     }
 
-    /// `rdm.build.dispatched` of `build_id`'s section of `mesh`, written as the fabric-primary
-    /// dispatches it, under its own span (`rdm.node_admin.build.update.via-dispatched`), a child of the
-    /// span current here. It gates nothing: a dispatch whose event is not written runs, named on the span.
-    async fn dispatched(&self, me: &PathName, build_id: &BuildId, mesh: &str) {
+    /// `mesh`'s section of the Build was dispatched: `rdm.build.dispatched`.
+    pub async fn dispatched(&self, me: &PathName, build_id: &BuildId, mesh: &str) {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatched", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), mesh, event_id = tracing::field::Empty, outcome = "written");
         if let Err(cause) = self.write(&span, |source, time_ms| crate::events_storage::Event::build_dispatched(source, time_ms, build_id, mesh)).await {
             span.record("outcome", "event-not-written");
@@ -792,118 +526,104 @@ impl BuildNotices {
         }
     }
 
-    /// `rdm.build.ended` of `build_id`, whose terminal `state` is recorded, then `on_build_ended` from
-    /// that write, under its own span (`rdm.node_admin.build.update.via-on-build-ended`) in the trace of
-    /// `parent`, the attempt's span: parented through its trace context, never as a local child, so a
-    /// notice not yet sent holds the attempt's span open for nothing.
-    #[allow(clippy::too_many_arguments)]
-    async fn ended(&self, me: &PathName, contexts: &Arc<crate::build_claim::AttemptContexts>, build_id: &BuildId, attempt: u32, reason: crate::build_state::AttemptReason, state: crate::wiring::BuildEndedState, parent: &tracing::Span) {
+    /// The Build's `rdm.build.ended` `state`, then `on_build_ended` from that write. `Err` when the
+    /// event was not written.
+    pub async fn ended(&self, me: &PathName, build_id: &BuildId, state: crate::wiring::BuildEndedState, parent: &tracing::Span) -> Result<(), String> {
         let hook = self.fabric_id.clone().zip(self.on_build_ended.clone());
-        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-ended", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), attempt, reason = reason.as_str(), state = state.as_str(), event_id = tracing::field::Empty, outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
-        let under = parent.in_scope(crate::build_claim::current_context);
+        let span = tracing::info_span!(parent: None, "rdm.node_admin.build.update.via-on-build-ended", node_path = %me.path, node_name = %me.name, build_id = %build_id.log(), state = state.as_str(), event_id = tracing::field::Empty, outcome = if hook.is_some() { "sent" } else { "no-hook" }, "otel.kind" = "internal");
+        let under = parent.in_scope(crate::build::current_context);
         if let Some(tp) = &under.traceparent {
             rdm_transport::set_remote_parent(&span, tp, under.tracestate.as_deref());
         }
         let ended = match &state {
             crate::wiring::BuildEndedState::Complete => crate::events_storage::EndedState::Complete,
-            crate::wiring::BuildEndedState::Failed { step, reason, code } => crate::events_storage::EndedState::Failed { step: step.clone(), reason: reason.clone(), code: code.name().to_string() },
+            crate::wiring::BuildEndedState::Incomplete { sections } => crate::events_storage::EndedState::Incomplete {
+                sections: sections.iter().map(|u| crate::events_storage::EndedSection { mesh: u.mesh.clone(), op: u.operation.clone(), step: u.step.clone(), reason: u.reason.clone(), code: u.code.name().to_string() }).collect(),
+            },
+            crate::wiring::BuildEndedState::Failed { reason, code } => crate::events_storage::EndedState::Failed { reason: reason.clone(), code: code.name().to_string() },
         };
         if let Err(cause) = self.write(&span, |source, time_ms| crate::events_storage::Event::build_ended(source, time_ms, build_id, &ended)).await {
             span.record("outcome", "event-not-written");
             span.in_scope(|| tracing::info!(cause = %cause, "the Build's rdm.build.ended event was not written: the notice is not sent"));
-            return;
+            return Err(cause);
         }
-        let (contexts, build_id) = (contexts.clone(), build_id.clone());
+        let build_id = build_id.clone();
         tokio::spawn(
             async move {
                 let Some((fabric_id, hook)) = hook else {
                     tracing::info!("no on_build_ended hook is registered");
                     return;
                 };
-                let context = contexts.get(&build_id, attempt).await.ok().flatten().unwrap_or_default();
-                hook(crate::wiring::BuildEndedCtx { fabric_id, build_id: build_id.to_string(), attempt, reason, state, context }).await;
+                hook(crate::wiring::BuildEndedCtx { fabric_id, build_id: build_id.to_string(), state, context: under }).await;
                 tracing::info!("the application was told the Build ended");
             }
             .instrument(span),
         );
+        Ok(())
     }
 }
 
-/// The ended state of the terminal `t`: `Failed` naming its step, reason and code; `Complete` otherwise.
+/// What a terminal frame is as `on_build_ended`'s state.
 fn ended_state(t: &BuildReply) -> crate::wiring::BuildEndedState {
     match t {
-        BuildReply::Failed { step, reason, code, .. } => crate::wiring::BuildEndedState::Failed { step: step.clone(), reason: reason.clone(), code: *code },
+        BuildReply::Failed { reason, code, .. } => crate::wiring::BuildEndedState::Failed { reason: reason.clone(), code: *code },
+        BuildReply::Incomplete { sections, .. } => crate::wiring::BuildEndedState::Incomplete { sections: sections.clone() },
         _ => crate::wiring::BuildEndedState::Complete,
     }
 }
 
-/// What the fabric-primary drives a Build with.
+/// What every drive of this admin reads and writes through.
 pub struct DriveEnv {
-    /// This process's explicit owning mesh.
+    /// This admin's mesh.
     pub me_mesh: String,
     /// This admin's path.
     pub me_path: String,
-    /// This node's name, beside its path.
+    /// This admin's name.
     pub me_name: String,
+    /// This admin's exact birth.
+    pub birth: rdm_core::framing::Birth,
     /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
-    /// The Build state.
+    /// The Build store.
     pub builds: Arc<dyn BuildStateAdapter>,
-    /// The claim door: the one place an attempt's claim is decided.
-    pub door: Arc<ClaimDoor>,
-    /// Calls executors.
+    /// How sections reach the admins that run them.
     pub dispatcher: Arc<dyn Dispatcher>,
-    /// The cut-off rule and the role target.
+    /// The gates.
     pub gate: Arc<dyn Gate>,
-    /// Proof of an executor's departure.
-    pub departure: Arc<dyn ExecutorInspection>,
-    /// Records an executor's verdict on this admin's log.
-    pub verdicts: Arc<dyn VerdictSink>,
-    /// The application's Build notices this fabric-primary sends (fabric-node-hooks.md, Q256).
+    /// The Build-level events and the application's notices.
     pub notices: BuildNotices,
-    /// The admin's stop gate (`crate::stop_gate`): a drive takes the view lock and calls executors,
-    /// so each of its passes is a turn begun at the gate's wait point, and a stop's quiesce waits for
-    /// the pass in progress.
+    /// This admin's stop gate.
     pub turns: crate::stop_gate::StopGate,
 }
 
 impl DriveEnv {
     /// The `(path, name)` lookup index key of me_path and me_name.
-    pub fn me(&self) -> rdm_core::PathName { rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() } }
+    pub fn me(&self) -> rdm_core::PathName {
+        rdm_core::PathName { path: self.me_path.clone(), name: self.me_name.clone() }
+    }
 }
 
-/// The drives this admin holds, by Build.
+/// The drives of this admin, one per Build.
 #[derive(Default)]
 pub struct Drives {
     drives: Mutex<HashMap<BuildId, Arc<Drive>>>,
-    /// The task making each drive's frames, by Build, and whether this admin drives Builds no longer
-    /// ([`Self::stop`]): one lock, so no drive's task starts after the stop.
     tasks: Mutex<(HashMap<BuildId, tokio::task::JoinHandle<()>>, bool)>,
-    /// Moves each time a drive's task ends its Build ([`DriveEnd::Terminal`]): what the reconcile loop
-    /// waits on, whose drift check opens nothing while a Build is in progress.
     ended: tokio::sync::watch::Sender<u64>,
 }
 
 impl Drives {
-    /// The drives' ends as they happen: a waiter arms on it to see a Build ended by its drive.
+    /// A receiver that changes each time a Build's drive ends at its terminal.
     pub fn subscribe_ended(&self) -> tokio::sync::watch::Receiver<u64> {
         self.ended.subscribe()
     }
 
-    /// The drive of `build_id` for `attempt` (the attempt opened, or
-    /// [`BuildProjection::attempt_to_drive`] of the caller's read), with a task making its frames
-    /// running: the one held, or a new one. A drive that stalled or paused is picked up again here.
-    /// A drive that completed the Build at `attempt` or later is the record of that run and is handed
-    /// back as it is, with nothing run: a caller whose read predates the verdict (the reconcile
-    /// loop's `list_active`, a re-submit's `read_build`, showing that attempt running) gets the
-    /// drive that ended it, never a second one in its place. A drive that ended otherwise (it
-    /// completed an earlier attempt and the Build was reopened, it failed, its role was lost) is
-    /// replaced by a new one.
-    pub fn ensure(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId, attempt: u32) -> Arc<Drive> {
+    /// The drive of `build_id`, its task started when it runs none. A drive whose Build completed is
+    /// kept: its frames answer a re-submit.
+    pub fn ensure(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId) -> Arc<Drive> {
         let drive = {
             let mut drives = self.drives.lock().unwrap();
             match drives.get(build_id) {
-                Some(d) if d.completed_attempt().is_some_and(|done| done >= attempt) => return d.clone(),
+                Some(d) if d.completed() => return d.clone(),
                 Some(d) if d.ended() => {
                     drives.remove(build_id);
                 }
@@ -924,8 +644,7 @@ impl Drives {
                         d.again.store(false, Ordering::SeqCst);
                         let end = env.run(&d).await;
                         // An ensure that found this run in progress (an event's pass, a submit) is run
-                        // now: the run may have read the world before that event and ended waiting on
-                        // it. Decided under the tasks' lock, which every ensure decides under.
+                        // now: the run may have read the world before that event and ended waiting on it.
                         let again = {
                             let tasks = drives.tasks.lock().unwrap();
                             let again = matches!(end, DriveEnd::Stalled(_)) && !tasks.1 && d.again.swap(false, Ordering::SeqCst);
@@ -938,13 +657,9 @@ impl Drives {
                             break end;
                         }
                     };
-                    // The Build's end is what the drift check waits on: the reconcile loop runs its next
-                    // pass on it.
                     if end == DriveEnd::Terminal {
                         drives.ended.send_modify(|v| *v += 1);
                     }
-                    // A Build that completed keeps its drive: the frames it recorded are what a
-                    // re-submit is answered from.
                     if matches!(end, DriveEnd::Terminal | DriveEnd::RoleLost(_)) && !d.completed() {
                         let mut held = drives.drives.lock().unwrap();
                         if held.get(&d.build_id).is_some_and(|h| Arc::ptr_eq(h, &d)) {
@@ -964,10 +679,7 @@ impl Drives {
         drive
     }
 
-    /// This admin drives Builds no longer (`Running::stop_reconciling`): every drive's task ends where
-    /// it is, and none starts after this, so no attempt of any Build begins here. It returns once each
-    /// task it ended has ended (an abort lands at the task's next await, so a task in the middle of a
-    /// poll runs that poll to its end first). Returns how many drives' tasks were ended.
+    /// This admin drives no Build from now on: every drive's task is ended and none starts.
     pub async fn stop(&self) -> usize {
         let ending: Vec<tokio::task::JoinHandle<()>> = {
             let mut tasks = self.tasks.lock().unwrap();
@@ -986,34 +698,32 @@ impl Drives {
         ended
     }
 
-    /// The drive a re-submit of a Build that ended at `attempt` is answered from: the drive this
-    /// admin kept that completed it, else the one running, else a new one (a fabric-primary that
-    /// took the role after the Build ended, whose drive attaches to the last attempt's executor).
-    pub fn replay_of(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId, attempt: u32) -> Arc<Drive> {
-        self.ensure(env, build_id, attempt)
+    /// The drive a re-submit of an ended Build is answered from.
+    pub fn replay_of(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId) -> Arc<Drive> {
+        self.ensure(env, build_id)
     }
 
-    /// The Build left history: its drive's record goes with it.
+    /// Forget `build_id`'s drive.
     pub fn forget(&self, build_id: &BuildId) {
         self.drives.lock().unwrap().remove(build_id);
     }
 
-    /// The Builds whose drive this admin holds and has not ended.
+    /// The Builds whose drive has not ended.
     pub fn unended(&self) -> Vec<BuildId> {
         self.drives.lock().unwrap().iter().filter(|(_, d)| !d.ended()).map(|(id, _)| id.clone()).collect()
     }
 
-    /// The drive of `build_id` when one is held (running, stalled, paused or completed).
+    /// `build_id`'s drive, when one is held.
     pub fn get(&self, build_id: &BuildId) -> Option<Arc<Drive>> {
         self.drives.lock().unwrap().get(build_id).cloned()
     }
 
-    /// The endpoint keys of the callers reading `build_id`'s frames now ([`Drive::callers`]).
+    /// The callers reading `build_id`'s drive.
     pub fn callers_of(&self, build_id: &BuildId) -> Vec<iroh::PublicKey> {
         self.get(build_id).map(|d| d.callers()).unwrap_or_default()
     }
 
-    /// [`Drive::until_read`] of `build_id`'s drive; at once when this admin holds none.
+    /// Resolves once `build_id`'s drive ended and no caller reads it.
     pub async fn until_read(&self, build_id: &BuildId) {
         if let Some(d) = self.get(build_id) {
             d.until_read().await;
@@ -1021,47 +731,9 @@ impl Drives {
     }
 }
 
-/// What is left of `p` in view `t`: the plan, less every operation a run of the Build's current run
-/// completed whose executor reported the run's end ([`BuildProjection::reported_in_run`]), by its
-/// `Complete` receipt on this admin's log ([`BuildProjection::completed_in_run`]) or by the
-/// `Complete` frame the executor's stream reply carried to `drive` ([`Drive::completed_in`]). What a
-/// run completed is read from those, never from the view: a view that has not absorbed a completed
-/// operation yet still lists it, and it is not planned, claimed or dispatched again. The stream reply
-/// is the authority: a remote executor's receipt reaches this admin's log from the store root, and
-/// nothing waits for that copy. A lost executor's run reported nothing: what it left is planned from
-/// the view again, and the create pipeline's target decides against the world.
-/// Whether an attempt ended incomplete: `me` ran it as its executor and it was handed back to `me`
-/// having moved nothing. A hand-off to `me` that another executor reported is that executor's end,
-/// and the drive attaching to the finished run of it replays the same terminal.
-fn ended_incomplete(me: &rdm_core::framing::Birth, executor: &rdm_core::framing::Birth, to: &rdm_core::NodeId, before: &str, after: &str) -> bool {
-    executor == me && to == &me.node_id && before == after
-}
-
-/// Whether a `Step` frame's reported receipt is a failed step's.
-fn failed_receipt(receipt: Option<&[u8]>) -> bool {
-    receipt.and_then(|b| serde_json::from_slice::<crate::build_state::BuildStepReceipt>(b).ok()).is_some_and(|r| matches!(r.outcome, crate::build_state::StepOutcome::Failed { .. }))
-}
-
-/// What the next claim of a Build decides on: the first operation left, the receipts the Build
-/// holds, the members of the mesh that operation acts on, by birth, status and primary, and whether the
-/// fabric holds ready (`fabric_ready`, [`Gate::fabric_ready`]: a Build that put the fabric
-/// back to pending is claimed again once it does). An attempt that ended with this unchanged would end
-/// the same way again.
-fn world(drive: &Drive, p: &BuildProjection, t: &Topology, fabric_ready: bool) -> String {
-    let first = left(drive, p, t).into_iter().next();
-    let mesh = first.as_ref().and_then(|op| match op {
-        BuildOperation::CreateMesh { mesh, .. } | BuildOperation::ShutdownMesh { mesh, .. } => Some(mesh.clone()),
-        other => other.mesh().map(str::to_owned),
-    });
-    let mut members: Vec<String> = t
-        .births()
-        .filter(|n| Some(&n.mesh) == mesh.as_ref())
-        .map(|n| format!("{}:{}:{:?}:{}", n.node_id, n.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("-"), n.status, n.is_primary))
-        .collect();
-    members.sort();
-    format!("{:?} receipts={} members=[{}] fabric_ready={fabric_ready}", first.map(|op| op.key()), p.steps.len(), members.join(","))
-}
-
+/// What is left of `p` in view `t`: the plan from the Build's topology, the meshes the records hold
+/// Dead, a fabric.delete's Mesh rows and this Build's own creates, less each operation whose `Complete`
+/// step's event ended `complete`.
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
     // A mesh the Mesh records hold Dead is planned as Dead, whatever the view shows ([`Gate::deleted_meshes`]).
     let dead = drive.dead.lock().unwrap().clone();
@@ -1079,61 +751,62 @@ fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation>
     // A fabric.delete plans every mesh the store holds a row of beside the view's ([`Gate::mesh_rows`]).
     let stored = drive.mesh_rows.lock().unwrap().as_ref().map(|rows| crate::accepted::with_mesh_rows(t, rows));
     let t = stored.as_ref().unwrap_or(t);
-    // A standalone action plans from the birth the atlas row held at this pass ([`Gate::atlas_birth`]).
-    let atlas = drive.atlas.lock().unwrap().clone();
+    // And the births of the node.deletes it began that the view no longer holds ([`Gate::node_rows`]).
+    let owed = drive.node_rows.lock().unwrap().clone();
+    let with_owed = (!owed.is_empty()).then(|| crate::accepted::with_node_rows(t, &owed));
+    let t = with_owed.as_ref().unwrap_or(t);
     let created = drive.created.lock().unwrap().clone();
-    let plan = crate::accepted::plan_for_build_created(p, t, atlas.as_ref(), &created);
-    let sections: HashSet<rdm_core::OperationId> = drive.section_done.lock().unwrap().iter().filter(|(run, _)| *run == p.opened).map(|(_, key)| key.clone()).collect();
-    plan.operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a)) && !sections.contains(&op.key())).collect()
+    let plan = crate::accepted::plan_for_build_created(p, t, &created);
+    plan.operations.into_iter().filter(|op| !p.operation_completed(&op.key())).collect()
+}
+
+/// The nodes whose node.delete `p` began (a step event of `node.delete:<node_id>`) and has not completed.
+fn begun_deletes(p: &BuildProjection) -> Vec<rdm_core::NodeId> {
+    let mut ids: Vec<rdm_core::NodeId> = Vec::new();
+    for id in p.steps.iter().filter_map(|s| s.subject.as_ref()) {
+        let op = rdm_core::OperationId::node("node.delete", id);
+        if !ids.contains(id) && p.steps.iter().any(|s| s.operation == op.to_string()) && !p.operation_completed(&op) {
+            ids.push(id.clone());
+        }
+    }
+    ids
 }
 
 /// Whether `p`'s Build changes the fabric to ready (states.md "Resize and executable
 /// replacement": "Its Build is Complete only when the fabric is ready again from this Build's
-/// own change, as fabric.create's is"; Q154): the Day-0 Build, fabric.create's, which carries no submitted
-/// change and whose fabric is pending from its mint (fabric-create.md, Completion: "`fabric.created` when
-/// the fabric is ready"), and every Build a change was submitted for, a resize and an
-/// executable replacement alike, except a Build that leaves no fabric (fabric.delete, and the
-/// fabric-primary's own delete after it), after which the fabric is never ready
-/// again. A Build whose topology the change left as it was puts nothing back, and the fabric it finds
-/// ready holds it.
+/// own change"; Q154): every Build but one that leaves no fabric (fabric.delete, and the
+/// fabric-primary's own delete after it), after which the fabric is never ready again.
 fn changes_the_fabric(p: &BuildProjection) -> bool {
     !p.leaves_no_fabric()
 }
 
-/// Whether `p`'s attempt waits for the fabric's ready before its Build is Complete: the
-/// Build's own change of the fabric, Day 0's or a submitted topology change's (Q154; states.md "Resize and
-/// executable replacement"), up to the Build's
-/// first Complete, which comes only from its own ready. Every later attempt of the Build
-/// (node.stop, node.start, a primary change, node recovery, drift: attempts of an
-/// unchanged topology, build.md §1) ends at its own completion and never waits on the fabric's change
-/// (states.md "The check-in checklist": "Individual lifecycle status changes do not wait for the entire
-/// check-in checklist").
-fn waits_for_the_fabric_change(p: &BuildProjection) -> bool {
-    changes_the_fabric(p) && p.completed_at.is_none()
-}
-
-enum Inner {
-    Terminal(BuildReply),
-    Refused(BuildReply),
-    Unreached(String),
-    Broke(String),
-    /// The Build log's target was set while the executor's run was open: this admin is no longer the
-    /// fabric-primary. The drive ends there without waiting for the run's stream, except for the
-    /// executor the target names, whose stream ends `FabricPrimaryMoved` once it is fabric-primary.
+/// How one section of a pass ended, as the drive reads it.
+enum Section {
+    /// It ran what it was sent: the drive plans again.
+    Ran,
+    /// It ended short of its end (Q346): a step failed, or its call ended without the section's
+    /// terminal. Its mesh is dispatched nothing more in this run.
+    Unfinished(UnfinishedSection),
+    /// The fabric-primary role moved off this admin.
     RoleYielded,
 }
 
+/// The section of `mesh` that ended short at `operation` because its call to the mesh's primary
+/// (`build.attempt.run`) ended without the section's terminal.
+fn call_ended_short(mesh: &str, operation: &str, reason: String, code: rdm_core::outcome::Code) -> UnfinishedSection {
+    UnfinishedSection { mesh: mesh.to_string(), operation: operation.to_string(), step: "build.attempt.run".into(), reason: crate::build_run::bounded_reason(reason), code }
+}
+
 impl DriveEnv {
-    /// This admin's currently held `(path, name)`: what its Build state or its view names its birth,
-    /// falling back to `self.me` before its birth is in the view.
+    /// The path name this admin holds now.
     pub async fn held_name(&self) -> PathName {
         if let Some(held) = self.builds.held_name() {
             return held;
         }
-        self.topology.read().await.held_name_of(&self.me(), Some(&self.door.node_id))
+        self.topology.read().await.held_name_of(&self.me(), Some(&self.birth.node_id))
     }
 
-    /// Drive `drive`'s Build until it ends, stalls or loses the role.
+    /// Drive `drive`'s Build until it ends, stalls or the role moves.
     pub async fn run(self: &Arc<Self>, drive: &Arc<Drive>) -> DriveEnd {
         let id = drive.build_id.clone();
         let me = self.held_name().await;
@@ -1152,17 +825,12 @@ impl DriveEnv {
         end
     }
 
-    /// The fabric-primary and the target: `Some` when this admin may not claim or dispatch now. The
-    /// target is read first: the election's result this admin installed names the fabric-primary every
-    /// decision is judged against (lifecycles/node-primary-update.md step 4: the successor "becomes
-    /// primary" when it installs it).
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
         let me = self.held_name().await;
         let recorded_primary = match self.gate.target().await {
             Ok(primary) => primary,
             Err(e) => {
                 let why = e.to_string();
-                // The primary record carries exact birth identity; future handoff uses its node ID.
                 let to = match e {
                     BuildStateError::RoleYielded { to, .. } => to.map(|birth| birth.node_id),
                     _ => None,
@@ -1172,41 +840,20 @@ impl DriveEnv {
                 return Some(DriveEnd::RoleLost(why));
             }
         };
-        // The role is this admin's when the view's holder is the birth it was born as (its node id):
-        // another birth at the same path and name (a successor, a deleted birth) is not this admin.
+        // The role is this admin's when the view's holder is the birth it was born as (its node id).
         let (held, role) = {
             let t = self.topology.read().await;
-            (t.is_fabric_primary(&self.door.node_id), t.fabric_primary().map(|n| (n.location(), n.node_id.clone())))
+            (t.is_fabric_primary(&self.birth.node_id), t.fabric_primary().map(|n| (n.location(), n.node_id.clone())))
         };
         if !held {
-            // Past the target the installed result names this birth, none, or a birth proven gone
-            // (no fabric-primary).
             let shows = role.as_ref().map(|(name, id)| format!("path={} name={} node_id={id}", name.path, name.name)).unwrap_or_else(|| "none".into());
             let names = recorded_primary.as_ref().map(|id| id.as_str()).unwrap_or("none");
-            let why = format!("node_id={} does not hold the fabric-primary role in its view (it shows {shows}); the fabric-primary record it holds names {names}", self.door.node_id);
+            let why = format!("node_id={} does not hold the fabric-primary role in its view (it shows {shows}); the fabric-primary record it holds names {names}", self.birth.node_id);
             tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id.log(), node_path = %me.path, node_name = %me.name, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the role is not held"));
             drive.lose_fabric_primary(RoleLoss { why: why.clone(), to: recorded_primary });
             return Some(DriveEnd::RoleLost(why));
         }
         None
-    }
-
-    /// `Some` when the Build's current attempt is past `attempt` and was claimed by another admin: the end
-    /// of `attempt` decides nothing, and the drive ends `RoleLost` naming that claimant, the fabric-primary
-    /// that decided the claim of the current fabric-lane attempt ([`BuildProjection::claimant`]). A Build
-    /// that cannot be read decides nothing here: the end is handled as before.
-    async fn superseded(&self, me: &PathName, drive: &Arc<Drive>, id: &BuildId, attempt: u32) -> Option<DriveEnd> {
-        let p = self.builds.read_build(id).await.ok()?;
-        let claimant = p.claimant.clone().or_else(|| p.executor.as_ref().map(|birth| birth.node_id.clone()));
-        if p.attempt <= attempt || claimant.as_ref() == Some(&self.door.node_id) {
-            return None;
-        }
-        let to = claimant.as_ref().map(|id| id.as_str()).unwrap_or("none");
-        let why = format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {id} ended after {to} claimed attempt {}: the Build's current attempt is not this admin's, and the end of attempt {attempt} decides nothing", p.attempt, me_path = &me.path, me_name = &me.name);
-        tracing::info_span!("rdm.node_admin.build.reject.via-superseded-attempt", build_id = %id.log(), attempt, current_attempt = p.attempt, node_path = %me.path, node_name = %me.name, to = %to, detail = %why)
-            .in_scope(|| tracing::info!("the end of a superseded attempt is not recorded: the drive stops on its read of the Build"));
-        drive.lose_fabric_primary(RoleLoss { why: why.clone(), to: claimant });
-        Some(DriveEnd::RoleLost(why))
     }
 
     fn stalled(&self, me: &PathName, drive: &Arc<Drive>, why: String) -> DriveEnd {
@@ -1216,52 +863,11 @@ impl DriveEnv {
         DriveEnd::Stalled(why)
     }
 
-    /// The end of the fabric lane's `attempt` (its terminal, or its take-over from a proven-exited
-    /// executor) releases the in-flight row it took (R-BI7 caveat 3), while the row still names that
-    /// attempt: its executor's mesh's, and, for a node recovery, the recovered node's mesh's, which the
-    /// recovery takes whoever executes it (`ControlPlane`'s recovery claim). A release that cannot be
-    /// written is named: the mesh stays held, and the next claim on it is refused naming this attempt.
-    async fn release_mesh(&self, id: &BuildId, attempt: u32, executor: &rdm_core::framing::Birth) {
-        let me = self.held_name().await;
-        let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: self.door.node_id.clone() };
-        let projection = match self.builds.read_build(id).await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(build_id = %id, attempt, error = %e, "claim ownership unreadable; in-flight row remains held");
-                return;
-            }
-        };
-        let Some(owner) = projection.attempt_claimed_meshes.get(&attempt) else {
-            // Claims made only to record a terminal took no in-flight row.
-            return;
-        };
-        let others: Vec<String> = self.topology.read().await.meshes.iter().map(|m| m.name.clone()).filter(|m| m != owner).collect();
-        let mut taken = vec![owner.clone()];
-        for mesh in others {
-            if self.door.claims.in_flight(&mesh).await.ok().flatten().is_some_and(|held| held.same_attempt(&row)) {
-                taken.push(mesh);
-            }
-        }
-        for mesh in taken {
-            if let Err(e) = self.door.claims.release_in_flight(&mesh, &row).await {
-                tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), attempt, mesh = %mesh, node_path = %me.path, node_name = %me.name, error = %e)
-                    .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
-            }
-        }
+    fn blocked(&self, drive: &Arc<Drive>, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        drive.push(BuildReply::Blocked { build_id: drive.build_id.to_string(), mesh: self.me_mesh.clone(), operation: operation.to_string(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
     }
 
-    /// The fabric's change the Build waits on (states.md "Resize and executable replacement": "while the
-    /// fabric changes, the Build reports Blocked naming the change"): framed once for a new reason. Every
-    /// other wait of the drive is named on its span, never framed to the caller (node-rpc-envelope.md:
-    /// Blocked's only source is the subject's Status `Blocked` reply to the executor's ProbeNodeState).
-    fn blocked(&self, drive: &Arc<Drive>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        drive.push(BuildReply::Blocked { build_id: drive.build_id.to_string(), attempt, operation: operation.clone(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
-    }
-
-    /// The node of `op` and how long its mesh has gone unheard, when that mesh is a peer mesh held
-    /// unheard past the staleness floor (R-D1: loss of peer-mesh control-plane visibility targets
-    /// lifecycle mutation for every node in that mesh). `None` for a mesh operation, a node of this
-    /// admin's own mesh, or a mesh heard within the floor.
+    /// The peer mesh `op` acts on, held unheard on the backbone (R-D1), with how long.
     fn unheard_peer(&self, op: &BuildOperation) -> Option<(PathName, u64)> {
         let node = op.node()?;
         if op.mesh()? == self.me_mesh {
@@ -1270,1483 +876,374 @@ impl DriveEnv {
         Some((node.clone(), self.gate.mesh_unheard_ms(op.mesh()?)?))
     }
 
-    /// The target on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for.
-    /// `Some` names the target.
-    fn peer_mesh_held(&self, p: &BuildProjection, op: &BuildOperation) -> Option<(PathName, u64)> {
-        if p.topology.meshes.is_empty() {
-            return None;
+    /// The Build ends `terminal`: its `rdm.build.ended` and `on_build_ended`, then every reader.
+    async fn end(&self, me: &PathName, drive: &Arc<Drive>, terminal: BuildReply, span: &tracing::Span) -> DriveEnd {
+        if let Err(cause) = self.notices.ended(me, &drive.build_id, ended_state(&terminal), span).await {
+            return self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: the rdm.build.ended event of Build {} could not be written: {cause}", drive.build_id, me_path = &me.path, me_name = &me.name));
         }
-        self.unheard_peer(op)
+        match &terminal {
+            BuildReply::Complete { .. } => self.gate.build_completed(&drive.build_id).await,
+            _ => self.gate.build_failed(&drive.build_id).await,
+        }
+        drive.finish(terminal);
+        DriveEnd::Terminal
     }
 
-    /// The drive stops at the target on `op` by name: once per mesh and operation on its own span, never
-    /// framed to the caller, and stalled until the mesh is heard again.
-    fn stop_at_peer_mesh_held(&self, me: &PathName, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms): (PathName, u64)) -> DriveEnd {
-        let mesh = op.mesh().expect("node operation has mesh");
-        let why = format!(
-            "path {me_path:?}, name {me_name:?}: operation {:?} acts on path {target_path:?}, name {target_name:?} of peer mesh {mesh}, unheard on the backbone for {unheard_ms} ms: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
-            op.key(),
-            mesh = mesh, target_path = &node.path, target_name = &node.name, me_path = &me.path, me_name = &me.name);
-        if drive.stall_is_new(StallKey::UnheardMesh { mesh: mesh.to_owned(), operation: op.key() }) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id.log(), attempt, node_path = %me.path, node_name = %me.name, operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().step, target_path = %node.path, target_name = %node.name, mesh = %mesh, unheard_ms)
-                .in_scope(|| tracing::info!("the drive claims and dispatches nothing for a node of a peer mesh held unheard"));
+    /// Pass on, once, a `Step` frame for each step whose event ended `complete`: a drive that holds no
+    /// frame of the Build (a fabric-primary that took the role mid-Build, or after it ended).
+    fn replay(&self, drive: &Drive, p: &BuildProjection) {
+        if drive.replayed.swap(true, Ordering::SeqCst) {
+            return;
         }
-        DriveEnd::Stalled(why)
-    }
-
-    /// What this admin dispatches to `executor` for what is left of `p` in view `t` ([`left`]). The
-    /// mesh's first recovering node-admin under a recovery verdict runs alone, on this admin (the
-    /// fabric-primary); its receipts are what target every other admin of that mesh. Otherwise the executor's run
-    /// ([`run_of`]) is cut before the first operation on a peer mesh held unheard (R-D1) and before
-    /// an operation no admin executes in this view (it waits for its mesh's own role, never for the
-    /// run's executor); a cut run hands back to this admin, whose next claim re-reads the view and
-    /// the investigation. `Err` names the target on the first operation. With the plan, whether the run
-    /// hands back at the hold for the fabric's change (Q154): the state it was planned on, which decides
-    /// how its hand-back is read, whatever the fabric's state when the run ends.
-    fn plan_dispatch(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &rdm_core::framing::Birth) -> Result<(RunPlan, bool), (BuildOperation, (PathName, u64))> {
-        let ops = left(drive, p, t);
-        let mut plan = run_of(&ops, t, &executor.node_id);
-        let mut cut = None;
-        for (i, op) in plan.operations.iter().enumerate() {
-            if let Some(f) = self.peer_mesh_held(p, op) {
-                if i == 0 {
-                    return Err((op.clone(), f));
-                }
-                cut = Some(i);
-                break;
-            }
-            if i > 0 && ((self.unheard_peer(op).is_some() && !p.topology.meshes.is_empty()) || crate::executor::executor_for(op, t).is_none()) {
-                cut = Some(i);
-                break;
-            }
-            if p.topology.meshes.is_empty() && matches!(op, BuildOperation::ShutdownMesh { .. }) && plan.operations.len() > i + 1 {
-                cut = Some(i + 1);
-                break;
-            }
+        for s in p.steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete) {
+            drive.push(BuildReply::Step { build_id: p.build_id.to_string(), mesh: s.mesh.clone(), operation: s.operation.clone(), step: s.step.clone(), result: StepResult::Complete });
         }
-        if let Some(i) = cut {
-            plan.operations.truncate(i);
-            plan.hand_off_to = Some(self.door.node_id.clone());
-        }
-        // The last run of a Build that changes the fabric (Day 0's, or one that put it back to pending) hands back here rather than
-        // ending `Complete` while the fabric's ready state is not set (Q154; states.md "Resize
-        // and executable replacement"): the next pass waits for it. A later attempt of a Build that completed
-        // once ends at its own completion ([`waits_for_the_fabric_change`]).
-        let held = waits_for_the_fabric_change(p) && plan.hand_off_to.is_none() && !self.gate.fabric_ready();
-        if held {
-            plan.hand_off_to = Some(self.door.node_id.clone());
-        }
-        Ok((plan, held))
     }
 
     async fn pass(self: &Arc<Self>, drive: &Arc<Drive>, dispatches: &mut u32, last_turn: &mut Option<crate::stop_gate::Turn>) -> DriveEnd {
         let id = drive.build_id.clone();
-        let mut handed_to: Option<rdm_core::NodeId> = None;
-        let mut deleted: Option<rdm_core::framing::Birth> = None;
+        // Whether the turn held now is the one whose sections just ran: it reads how they left the Build
+        // and records the Build's end, and dispatches nothing more (stop_gate.rs: a pass in progress
+        // when a stop holds the gate runs to its end, its sections' terminals handled).
+        let mut after_sections = false;
         loop {
-            // Each pass is one turn of the admin's gate (stop_gate.rs): it begins here, holding
-            // nothing, and while the admin is stopped it begins only once the admin starts. A pass in
-            // progress when a stop holds the gate runs to its end (the attempt it dispatched, its
-            // terminal handled) and the stop's quiesce waits for it, so nothing of it follows the cut.
-            let _ = last_turn.take();
-            // Of its Build: a stop of this admin that the Build's own run commands does not wait for
-            // the pass that waits on that run (stop_gate.rs).
-            let turn = last_turn.insert(self.turns.turn("build-drive").await.of_build(&id.to_string()));
+            // Each pass is one turn of the admin's gate (stop_gate.rs), and a dispatch begins a new one.
+            let carried = std::mem::take(&mut after_sections) && last_turn.is_some();
+            if !carried {
+                let _ = last_turn.take();
+                last_turn.insert(self.turns.turn("build-drive").await.of_build(&id.to_string()));
+            }
+            let turn = last_turn.as_ref().expect("the pass holds a turn");
             if let Some(end) = self.may_act(drive).await {
                 return end;
             }
             let me = self.held_name().await;
+            let span = tracing::Span::current();
             let p = match self.builds.read_build(&id).await {
                 Ok(p) => p,
                 Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} could not be read: {e}", me_path = &me.path, me_name = &me.name)),
             };
-            if p.state == BuildState::Complete {
-                if !drive.has_run_log() {
-                    // This drive made no call of the Build: a fabric-primary that took over after
-                    // the Build ended holds no frame of it. The executor of the last attempt replays
-                    // it from the receipts it wrote itself, and the facts of earlier attempts are
-                    // read; the step facts on the store root are never the answer for the last attempt.
-                    if let Some(end) = self.reattach_to_ended(&me, &turn, drive, &p).await {
-                        return end;
-                    }
+            self.replay(drive, &p);
+            match p.state {
+                BuildState::Complete => {
+                    drive.finish(BuildReply::Complete { build_id: id.to_string() });
+                    return DriveEnd::Terminal;
                 }
-                // The attempt that completed the Build holds its executor's mesh no longer (a
-                // fabric-primary that took the role after the verdict releases what its predecessor
-                // could not).
-                if let Some(executor) = p.executor.as_ref() {
-                    self.release_mesh(&id, p.attempt, &executor).await;
+                BuildState::Failed if !matches!(crate::build_state::drivable(&*self.builds, &p).await, Ok(true)) => {
+                    let f = p.failure.clone().unwrap_or(crate::build_state::BuildFailure { reason: String::new(), code: "UNKNOWN".into() });
+                    drive.finish(rdm_core::reply::build::failed(id.to_string(), crate::build_run::bounded_reason(f.reason), crate::build_state::code_of_name(&f.code)));
+                    return DriveEnd::Terminal;
                 }
-                drive.finish(BuildReply::Complete { build_id: id.to_string(), attempt: p.attempt });
-                return DriveEnd::Terminal;
+                BuildState::Incomplete if !matches!(crate::build_state::drivable(&*self.builds, &p).await, Ok(true)) => {
+                    drive.finish(rdm_core::reply::build::incomplete(id.to_string(), p.unfinished.clone()));
+                    return DriveEnd::Terminal;
+                }
+                _ => {}
             }
             match crate::build_state::drivable(&*self.builds, &p).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    // A fabric.delete accepted after this Build interrupts it (build.md §1): its run receives
-                    // `Failed` naming the delete once its attempts ended, and nothing of it runs again.
+                    // A fabric.delete accepted after this Build interrupts it (build.md §1): it ends
+                    // `incomplete`, each section it did not finish naming the delete, and nothing of it
+                    // runs again.
                     if let Ok(Some(delete)) = crate::build_state::interrupted_by(&*self.builds, &p).await {
-                        return self.end_of_interrupted(&me, drive, &p, &delete).await;
+                        let reason = crate::build_state::interrupted_reason(&id, &delete.build_id);
+                        let t = self.topology.read().await.clone();
+                        let mut sections: std::collections::BTreeMap<String, UnfinishedSection> = Default::default();
+                        for op in left(drive, &p, &t) {
+                            let mesh = op.mesh().unwrap_or(&self.me_mesh).to_string();
+                            sections.entry(mesh.clone()).or_insert_with(|| UnfinishedSection { mesh, operation: op.key().to_string(), step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted });
+                        }
+                        let terminal = if p.state == BuildState::Pending { rdm_core::reply::build::failed(id.to_string(), crate::build_run::bounded_reason(reason), rdm_core::outcome::Code::Aborted) } else { rdm_core::reply::build::incomplete(id.to_string(), sections.into_values().collect()) };
+                        return self.end(&me, drive, terminal, &span).await;
                     }
                     let current = self.builds.current_build().await.ok().and_then(|c| c.into_build_id()).map(|c| c.to_string()).unwrap_or_else(|| "none".into());
-                    return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} ({:?} at attempt {}, completed {:?}) is neither the current Build ({current}) nor a failed Build accepted after it: nothing drives it", p.state, p.attempt, p.completed_at.is_some(), me_path = &me.path, me_name = &me.name));
+                    return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} ({:?}) is neither the current Build ({current}) nor a failed Build accepted after it: nothing drives it", p.state, me_path = &me.path, me_name = &me.name));
                 }
                 Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: the current Build could not be read to admit Build {id}: {e}", me_path = &me.path, me_name = &me.name)),
             }
-            // A mesh the Mesh records hold Dead is done whatever the view shows (a view that has not heard
-            // its Dead yet): the plan reads mesh death from the records at every pass, before it plans.
+            // A Build not yet started, or a failed one a caller resubmitted, starts: `rdm.build.started`
+            // and the application's on_build_started from that write (build.md §4.1).
+            if matches!(p.state, BuildState::Pending | BuildState::Failed | BuildState::Incomplete) {
+                if let Err(cause) = self.notices.started(&me, &id, &crate::build::current_context()).await {
+                    return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: the rdm.build.started event of Build {id} could not be written: {cause}", me_path = &me.path, me_name = &me.name));
+                }
+                // A new run: no section of it has ended yet.
+                drive.unfinished.lock().unwrap().clear();
+                continue;
+            }
+            // A mesh the Mesh records hold Dead is done whatever the view shows: read at every pass.
             let observed = self.topology.read().await.clone();
             match self.gate.deleted_meshes(&observed).await {
                 Ok(dead) => *drive.dead.lock().unwrap() = dead,
                 Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id}: the Mesh records could not be read for which meshes are Dead: {e}", me_path = &me.path, me_name = &me.name)),
             }
-            // A fabric.delete's remaining meshes are the Mesh rows on the store (fabric-delete.md "Failure";
-            // mesh-delete.md "Resume after the primary's loss"): read at every pass, before it plans.
+            // A fabric.delete's remaining meshes are the Mesh rows on the store: read at every pass.
             if p.deletes_fabric() {
                 match self.gate.mesh_rows().await {
                     Ok(rows) => *drive.mesh_rows.lock().unwrap() = Some(rows),
                     Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} is a fabric.delete and the Mesh rows could not be read for the meshes it deletes: {e}", me_path = &me.path, me_name = &me.name)),
                 }
+                // A node.delete it began and has not completed acts on a birth the view may have let go:
+                // the birth is its node record's (fabric-delete.md "Failure"; D67).
+                let owed: Vec<rdm_core::NodeId> = begun_deletes(&p).into_iter().filter(|id| !observed.nodes.iter().any(|n| &n.node_id == id)).collect();
+                let rows = if owed.is_empty() { Ok(Vec::new()) } else { self.gate.node_rows(&owed).await };
+                match rows {
+                    Ok(rows) => *drive.node_rows.lock().unwrap() = rows,
+                    Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} is a fabric.delete and the node records of the node.deletes it began could not be read: {e}", me_path = &me.path, me_name = &me.name)),
+                }
             }
-            // A standalone stop, start, connections delete or delete plans from the birth the atlas row
-            // holds at its path (fabric-atlas.md R-FA1, R-FA3): read at every pass, before it plans.
-            let atlas = match crate::accepted::action_node_id(&p) {
-                Some(node_id) => match self.gate.atlas_birth(&node_id, &observed).await {
-                    Ok(birth) => birth,
-                    Err(e) => return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id}: the atlas row for node {node_id} could not be read for its action's birth: {e}", me_path = &me.path, me_name = &me.name)),
-                },
-                None => None,
-            };
-            *drive.atlas.lock().unwrap() = atlas;
-            // The creates this Build's own ops made, as the atlas holds them, read at every pass before it
-            // plans: drift is decided from the atlas, not the topology (Luke 2026-10-30).
+            // The creates this Build's own ops made, as the atlas holds them: never surplus.
             let created = self.gate.atlas_created(&p).await;
-            tracing::info_span!("rdm.node_admin.build.update.via-atlas-created", build_id = %id.log(), node_path = %me.path, node_name = %me.name, locations = ?created)
-                .in_scope(|| tracing::info!("the paths this Build's own creates hold in the atlas: never surplus"));
             *drive.created.lock().unwrap() = created;
-            // The claim's holder was proven exited by this pass: the next attempt is claimed without
-            // calling the lost primary again.
-            let take_over = deleted.as_ref().is_some_and(|d| p.executor.as_ref() == Some(d));
-            let (attempt, executor, context) = if p.state == BuildState::Running && !take_over {
-                let Some(holder) = p.executor.clone() else {
-                    return self.stalled(&me, drive, format!("attempt {} of Build {id} is running but has no committed executor birth", p.attempt));
-                };
-                (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
-            } else {
-                // A taken-over attempt ends with its proven-exited executor: its hold on that executor's
-                // mesh goes first, before anything this pass claims (a role move's own attempt
-                // included), so no later attempt in that mesh is refused naming an attempt that ended
-                // (R-BI7 caveat 3).
-                if take_over {
-                    if let Some(lost) = p.executor.as_ref() {
-                        self.release_mesh(&id, p.attempt, &lost).await;
-                    }
-                }
-                // The teardown opens once every open attempt of the Builds it interrupts has ended and
-                // each of them has its terminal (build.md §1).
-                if p.deletes_fabric() {
-                    if let Some(end) = self.interrupted_ended(&me, drive, &p).await {
-                        return end;
-                    }
-                }
-                if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
-                    return end;
-                }
-                // A Build that changes the fabric (Day 0's, or one that put it back to pending) and never completed, its
-                // work all done, is Complete only once the fabric's ready state is set from its change (Q154; states.md "Resize and
-                // executable replacement": "while the fabric changes, the Build reports Blocked naming the
-                // change, never Complete"): no further attempt is claimed until the fabric holds
-                // ready, and the reconcile loop drives the Build again. Its first attempt is
-                // always claimed, even with nothing left to execute (build.md §1: every attempt "computes
-                // remaining work"): the fabric's change names the accepted Build's attempt
-                // (states.md, "The fabric's ready"), and that attempt's run hands back at the hold of `plan_dispatch`.
-                // Waiting is not failure.
-                if p.attempt > 0 && waits_for_the_fabric_change(&p) && !self.gate.fabric_ready() && left(drive, &p, &self.topology.read().await.clone()).is_empty() {
+            let t = self.topology.read().await.clone();
+            // A mesh whose section ended short in this run is dispatched nothing more (Q344, Q346).
+            let unfinished = drive.unfinished.lock().unwrap().clone();
+            let ops: Vec<BuildOperation> = left(drive, &p, &t).into_iter().filter(|op| !unfinished.contains_key(op.mesh().unwrap_or(&self.me_mesh))).collect();
+            if ops.is_empty() && !unfinished.is_empty() {
+                // It ran and not every section finished: what ran stands (Q346).
+                return self.end(&me, drive, rdm_core::reply::build::incomplete(id.to_string(), unfinished.into_values().collect()), &span).await;
+            }
+            if ops.is_empty() {
+                // A Build that changes the fabric is Complete only once the fabric's ready state is set
+                // from its change (Q154; states.md "Resize and executable replacement").
+                if changes_the_fabric(&p) && !self.gate.fabric_ready() {
                     let why = format!("path {me_path:?}, name {me_name:?}: every operation of Build {id} is done, and the Build is Complete only once the fabric's ready state is set", me_path = &me.path, me_name = &me.name);
-                    self.blocked(drive, p.attempt, &rdm_core::OperationId::unscoped("fabric.change"), "fabric-change", &why);
+                    self.blocked(drive, &rdm_core::OperationId::unscoped("fabric.change"), "fabric-change", &why);
                     return self.stalled(&me, drive, why);
                 }
-                match self.update_primaries_first(&me, drive, &p).await {
-                    Ok(true) => continue,
-                    Ok(false) => {}
-                    Err(end) => return end,
-                }
-                // The meshes whose own mesh-primary executes what is left of them are sent their sections,
-                // all at once (Q250); the fabric lane then plans what is left again.
-                match self.run_sections(&me, &turn, drive, &p).await {
-                    Sections::None => {}
-                    Sections::Ran => continue,
-                    Sections::End(end) => return end,
-                }
-                match self.claim_next(&me, drive, &p, handed_to.take()).await {
-                    Ok(c) => c,
-                    Err(end) => return end,
-                }
-            };
-            // The claim may have taken time: the gates again, immediately before the dispatch.
-            if let Some(end) = self.may_act(drive).await {
+                return self.end(&me, drive, BuildReply::Complete { build_id: id.to_string() }, &span).await;
+            }
+            // More to run after the sections this turn ran: it runs in a turn of its own.
+            if carried {
+                continue;
+            }
+            // A role the first operation moves moves first, a step of the Build (node.primary.update).
+            match self.update_primaries_first(&me, drive, &ops, &t, &span).await {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(end) => return end,
+            }
+            if let Some(end) = self.updates_acknowledged(&me, drive, &ops).await {
                 return end;
             }
-            // An attempt that takes over from an earlier one of this drive: the frames of the steps
-            // the earlier attempts completed are read from the receipts held (a frame the lost
-            // executor never sent is not lost), and never run again.
-            // A drive that dispatches for the first time (a fabric-primary that took the role
-            // mid-Build) holds no frame of any earlier attempt: every receipt before this attempt
-            // is read, as for a Build that ended (`reattach_to_ended`).
-            let fresh = !drive.has_run_log();
-            let first = drive.note_first_attempt(attempt);
-            self.replay(drive, &p.steps, if fresh { 0 } else { first }, attempt).await;
-            let (plan, held) = {
-                let t = self.topology.read().await.clone();
-                match self.plan_dispatch(&me, drive, &p, &t, &executor) {
-                    Ok(plan) => plan,
-                    Err((op, f)) => return self.stop_at_peer_mesh_held(&me, drive, attempt, &op, f),
+            // The sections: this admin's own (the leading operations it executes or no admin does yet),
+            // and every other mesh's, by the mesh's primary.
+            let mut own: Vec<BuildOperation> = Vec::new();
+            let mut remote: std::collections::BTreeMap<String, String> = Default::default();
+            let mut held: Vec<String> = Vec::new();
+            let mut own_open = true;
+            for op in &ops {
+                if let Some((node, unheard_ms)) = self.unheard_peer(op).filter(|_| !p.topology.meshes.is_empty()) {
+                    let mesh = op.mesh().unwrap_or_default().to_string();
+                    if drive.stall_is_new(StallKey::UnheardMesh { mesh: mesh.clone(), operation: op.key() }) {
+                        tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %id.log(), node_path = %me.path, node_name = %me.name, operation = %op.key(), target_path = %node.path, target_name = %node.name, mesh = %mesh, unheard_ms)
+                            .in_scope(|| tracing::info!("the drive dispatches nothing for a node of a peer mesh held unheard"));
+                    }
+                    held.push(format!("operation {} acts on path {:?}, name {:?} of peer mesh {mesh}, unheard on the backbone for {unheard_ms} ms: nothing is dispatched for that mesh until it is heard again (R-D1)", op.key(), node.path, node.name));
+                    own_open = false;
+                    continue;
                 }
-            };
-            // A node.primary.update that precedes an operation of this run is acknowledged first,
-            // whether this admin ran it, resumes after another admin's, or is its successor:
-            // node.primary.updated answered to this executor, never the view alone
-            // (node-primary-update.md failure contract), in the claim's attempt and in a re-dispatch.
-            if let Some(end) = self.updates_acknowledged(&me, drive, &plan, attempt, p.run_of(attempt)).await {
-                return end;
+                match crate::executor::executor_for(op, &t) {
+                    Some(to) if to == self.birth.node_id => {
+                        if own_open {
+                            own.push(op.clone());
+                        }
+                    }
+                    Some(_) => {
+                        let mesh = op.mesh().unwrap_or_default().to_string();
+                        remote.entry(mesh).or_insert_with(|| op.key().to_string());
+                        own_open = false;
+                    }
+                    None if op.mesh().is_some_and(|m| m != self.me_mesh) => {
+                        let mesh = op.mesh().unwrap_or_default().to_string();
+                        remote.entry(mesh).or_insert_with(|| op.key().to_string());
+                        own_open = false;
+                    }
+                    None => {
+                        if own.is_empty() && remote.is_empty() {
+                            held.push(crate::executor::why_no_executor(op, &t));
+                        }
+                        own_open = false;
+                    }
+                }
             }
-            *dispatches += 1;
-            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt, executor = %executor, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-            if let Some(tp) = &context.traceparent {
-                rdm_transport::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
+            if own.is_empty() && remote.is_empty() {
+                return self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: Build {id} dispatches nothing now: {}", held.join("; "), me_path = &me.path, me_name = &me.name));
             }
-            // What the attempt decides on, as claimed: an attempt handed back to this admin with this
-            // unchanged would end the same way again.
-            let before = match self.builds.read_build(&id).await {
-                Ok(claimed) => Some(world(drive, &claimed, &self.topology.read().await.clone(), self.gate.fabric_ready())),
-                Err(_) => None,
-            };
-            let inner = self.run_inner(&turn, drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
             drive.clear_stall();
-            // The end of a run is decided only for the Build's current attempt, the folded maximum/winning
-            // claim (build.md §5.2): the Build is read before anything of the end is written (Q109). A later
-            // attempt another admin claimed while this one ran supersedes it: its end decides nothing, and
-            // this admin stops on that read (fabric-recovery.md step 4, Q160).
-            if matches!(inner, Inner::Terminal(_)) {
-                if let Some(end) = self.superseded(&me, drive, &id, attempt).await {
-                    dspan.record("outcome", "superseded");
-                    return end;
+            let context = crate::build::current_context();
+            let mut runs: Vec<futures_util::future::BoxFuture<'_, Section>> = Vec::new();
+            if !own.is_empty() {
+                *dispatches += 1;
+                let mesh = own.iter().find_map(|op| op.mesh().map(str::to_string)).unwrap_or_else(|| self.me_mesh.clone());
+                let first = own[0].key().to_string();
+                let (env, context) = (self.clone(), context.clone());
+                runs.push(Box::pin(async move {
+                    let d = env.dispatcher.run_own(turn, &drive.build_id, &mesh, context, own).await;
+                    let runs_at = Some(env.birth.node_id.clone());
+                    env.follow(drive, &mesh, &first, runs_at, d).await
+                }));
+            }
+            for (mesh, first) in remote {
+                *dispatches += 1;
+                let (env, context) = (self.clone(), context.clone());
+                let me = me.clone();
+                let runs_at = crate::executor::mesh_primary(&mesh, &t).map(|b| b.node_id);
+                runs.push(Box::pin(async move {
+                    env.notices.dispatched(&me, &drive.build_id, &mesh).await;
+                    let d = env.dispatcher.dispatch(&drive.build_id, &mesh, context).await;
+                    env.follow(drive, &mesh, &first, runs_at, d).await
+                }));
+            }
+            let ended = futures_util::future::join_all(runs).await;
+            if ended.iter().any(|s| matches!(s, Section::RoleYielded)) {
+                return match self.may_act(drive).await {
+                    Some(end) => end,
+                    None => self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: a section of Build {id} stopped at a role target that the gate no longer reports", me_path = &me.path, me_name = &me.name)),
+                };
+            }
+            // A section that ended short ends its mesh's part of this run, never the Build (Q346): the
+            // drive plans again, and the Build ends once no section is left to run.
+            for s in ended {
+                if let Section::Unfinished(u) = s {
+                    tracing::info_span!("rdm.node_admin.build.update.via-section-unfinished", build_id = %id.log(), node_path = %me.path, node_name = %me.name, mesh = %u.mesh, operation = %u.operation, step = %u.step, reason = %u.reason, code = u.code.name())
+                        .in_scope(|| tracing::info!("the mesh's section ended short of its end: nothing more of that mesh runs in this run, and the other sections run on"));
+                    drive.unfinished.lock().unwrap().insert(u.mesh.clone(), u);
                 }
             }
-            match inner {
-                Inner::Terminal(t @ BuildReply::Complete { .. }) => {
-                    dspan.record("outcome", "complete");
-                    self.verdict(&me, &executor, BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }, None).await;
-                    self.release_mesh(&id, attempt, &executor).await;
-                    self.gate.attempt_completed(&id, attempt).await;
-                    // The Build's Complete is recorded: the ending's last step (Q256).
-                    self.notices.ended(&me, &self.door.contexts, &id, attempt, p.reason, crate::wiring::BuildEndedState::Complete, &dspan).await;
-                    drive.finish(t);
-                    return DriveEnd::Terminal;
-                }
-                Inner::Terminal(t @ BuildReply::Failed { .. }) => {
-                    dspan.record("outcome", "failed");
-                    if let BuildReply::Failed { operation, step, reason, code, .. } = &t {
-                        let receipt = BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone(), code: *code } };
-                        if executor != self.door.birth() {
-                            self.verdict(&me, &executor, receipt, Some((operation, step, reason, *code))).await;
-                        } else if !crate::build_run::is_attempt_publication_failure(operation, step) && !reason.contains("(reason cut:") {
-                            self.verdicts.record(receipt).await;
-                        }
-                    }
-                    self.release_mesh(&id, attempt, &executor).await;
-                    self.gate.attempt_failed(&id, attempt).await;
-                    // The Build's Failed is recorded: the ending's last step (Q256).
-                    self.notices.ended(&me, &self.door.contexts, &id, attempt, p.reason, ended_state(&t), &dspan).await;
-                    drive.finish(t);
-                    return DriveEnd::Terminal;
-                }
-                Inner::Terminal(BuildReply::HandedOff { to, .. }) => {
-                    dspan.record("outcome", "handed-off");
-                    self.verdict(&me, &executor, BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } }, None).await;
-                    self.release_mesh(&id, attempt, &executor).await;
-                    let next = to;
-                    // An attempt handed back to this admin that moved nothing (it ended incomplete: a
-                    // participant lost, a proof not in) would be claimed again and end the same way: the
-                    // Build stays in progress, and the next attempt waits for what it decides on to move.
-                    // The wait is named on its span, never framed to the caller (node-rpc-envelope.md:
-                    // Blocked's only source is the subject's Status `Blocked`).
-                    if next == self.door.node_id {
-                        if let (Some(before), Ok(ended)) = (before, self.builds.read_build(&id).await) {
-                            let t = self.topology.read().await.clone();
-                            let after = world(drive, &ended, &t, self.gate.fabric_ready());
-                            // A run with nothing left, handed back by the hold of a Build that put the
-                            // fabric back to pending ([`Self::plan_dispatch`]), did not end incomplete: it
-                            // waits on the fabric's change, and the next pass reports it Blocked naming it,
-                            // or claims the next attempt once the fabric is ready. The hold is
-                            // the one the run was planned with, never the fabric's state read after it.
-                            let held_for_the_fabric_change = held && left(drive, &ended, &t).is_empty();
-                            if !held_for_the_fabric_change && ended_incomplete(&self.door.birth(), &executor, &next, &before, &after) {
-                                let why = format!(
-                                    "path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves", me_path = &me.path, me_name = &me.name);
-                                drive.set_idle(Some(Idle { attempt, world: after, why: why.clone() }));
-                                return self.stalled(&me, drive, why);
-                            }
-                        }
-                    }
-                    handed_to = Some(next);
-                    deleted = None;
-                }
-                Inner::Terminal(other) => {
-                    dspan.record("outcome", "protocol-violation");
-                    return self.stalled(&me, drive, format!("{executor} ended attempt {attempt} with {}, which is not a terminal of the attempt", other.name()));
-                }
-                Inner::Refused(r) => {
-                    dspan.record("outcome", r.name());
-                    let why = format!("{executor} refused attempt {attempt} of Build {id}: {}", describe(&r));
-                    return self.stalled(&me, drive, why);
-                }
-                Inner::RoleYielded => {
-                    dspan.record("outcome", "role-yielded");
-                    // The target is kept: `may_act` ends the drive RoleLost naming the new primary.
-                    return match self.may_act(drive).await {
-                        Some(end) => end,
-                        None => self.stalled(&me, drive, format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {id} stopped at a role target that the gate no longer reports", me_path = &me.path, me_name = &me.name)),
-                    };
-                }
-                Inner::Unreached(why) | Inner::Broke(why) => {
-                    let (class, detail) = ("lost", why);
-                    dspan.record("outcome", "executor-lost");
-                    // Why the inner call to the executor ended: what the next step (the departure proof) answers.
-                    dspan.record("reason", detail.as_str());
-                    // Only a proven departure lets another admin take the attempt; silence never does.
-                    if deleted.is_some() {
-                        return self.stalled(&me, drive, format!("{executor} was proven exited and the attempt claimed after it could not be dispatched either: {detail}"));
-                    }
-                    match self.departure.exited_or_os_stopped(&executor).await {
-                        Ok(()) => {
-                            tracing::info_span!("rdm.node_admin.build.update.via-executor-exited-or-os-stopped", build_id = %id.log(), attempt, executor = %executor, node_path = %me.path, node_name = %me.name)
-                                .in_scope(|| tracing::info!("the executor's exact runtime is proven exited or os-stopped: the next attempt may be claimed"));
-                            deleted = Some(executor.clone());
-                        }
-                        Err(not_exited) => {
-                            let why = format!("executor {executor} is {class} ({detail}); its departure is not proven ({not_exited}); the attempt is not claimed for another admin");
-                            return self.stalled(&me, drive, why);
-                        }
-                    }
-                }
-            }
+            drive.state.lock().unwrap().idle = None;
+            after_sections = true;
         }
     }
 
-    /// The run of `p`, which the fabric.delete `delete` interrupts, ends at the Build's terminal: `Failed`
-    /// naming the delete once its attempts ended ([`Self::end_interrupted`]), or the `Complete` its last
-    /// admitted operation reached. While an attempt of it still runs, the drive stalls naming it.
-    async fn end_of_interrupted(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, delete: &BuildProjection) -> DriveEnd {
-        match self.end_interrupted(me, p, delete).await {
-            Interrupted::Ended { attempt, reason } => {
-                drive.finish(rdm_core::reply::build::failed(p.build_id.to_string(), attempt, rdm_core::OperationId::unscoped("fabric.delete"), "fabric.delete".into(), crate::build_run::bounded_reason(reason), rdm_core::outcome::Code::Aborted));
-                DriveEnd::Terminal
-            }
-            Interrupted::Converged { attempt } => {
-                drive.finish(BuildReply::Complete { build_id: p.build_id.to_string(), attempt });
-                DriveEnd::Terminal
-            }
-            Interrupted::Open(why) => self.stalled(me, drive, why),
-        }
-    }
-
-    /// The fabric.delete `delete` opens its teardown only once every Build it interrupts has its
-    /// terminal (build.md §1): `Some` stalls the delete's drive, naming the attempt it waits for on its span.
-    async fn interrupted_ended(&self, me: &PathName, drive: &Arc<Drive>, delete: &BuildProjection) -> Option<DriveEnd> {
-        let active = match self.builds.list_active().await {
-            Ok(active) => active,
-            Err(e) => return Some(self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: the Builds fabric.delete {} interrupts could not be read: {e}", delete.build_id, me_path = &me.path, me_name = &me.name))),
+    /// Pass on the frames of one dispatched section and read how it ended. `first` is the first
+    /// operation the section was sent, which a call that ends short names; `runs_at` the admin that runs
+    /// it. A target set while the section runs ends it here `RoleYielded`, unless the target names
+    /// `runs_at`: that admin took the role during its run (a step's own node.primary.update), and it
+    /// ends the section's stream with FabricPrimaryMoved naming itself; the callers are sent to it only
+    /// then (node-rpc-envelope.md: a fabric-primary change ends the outer stream with
+    /// FabricPrimaryMoved).
+    async fn follow(&self, drive: &Arc<Drive>, mesh: &str, first: &str, runs_at: Option<rdm_core::NodeId>, d: Dispatched) -> Section {
+        use rdm_core::outcome::Code;
+        let mut inner = match d {
+            Dispatched::Stream(s) => s,
+            Dispatched::Refused(BuildReply::RoleYielded { .. }) => return Section::RoleYielded,
+            Dispatched::Refused(r) => return Section::Unfinished(call_ended_short(mesh, first, format!("mesh {mesh}'s section was refused: {}", describe(&r)), <rdm_core::build::Build as rdm_core::protocol::NodeProtocol>::classify_reply(&r).code())),
+            Dispatched::Unreached(why) => return Section::Unfinished(call_ended_short(mesh, first, format!("mesh {mesh}'s primary was not reached: {why}"), Code::Unavailable)),
         };
-        for p in active.iter().filter(|b| (b.time, &b.build_id) < (delete.time, &delete.build_id)) {
-            if let Interrupted::Open(why) = self.end_interrupted(me, p, delete).await {
-                return Some(self.stalled(me, drive, why));
-            }
-        }
-        None
-    }
-
-    /// Where `p`, which the fabric.delete `delete` interrupts, stands, and its terminal written once its
-    /// attempts ended (build.md §1). An attempt running at its executor ends within its bound: the run
-    /// stops at its next operation and hands back, and one whose executor deleted ends on that
-    /// departure's exact proof, the attempt failing then. With no attempt running, this fabric-primary
-    /// claims the next attempt for itself and ends it `Failed` naming the delete, running nothing: the
-    /// Build's terminal, after which nothing reconciles it again.
-    async fn end_interrupted(&self, me: &PathName, p: &BuildProjection, delete: &BuildProjection) -> Interrupted {
-        let id = &p.build_id;
-        let p = match self.builds.read_build(id).await {
-            Ok(p) => p,
-            Err(e) => return Interrupted::Open(format!("path {me_path:?}, name {me_name:?}: Build {id}, which fabric.delete {} interrupts, could not be read: {e}", delete.build_id, me_path = &me.path, me_name = &me.name)),
-        };
-        match p.state {
-            BuildState::Complete => return Interrupted::Converged { attempt: p.attempt },
-            BuildState::Failed => return Interrupted::Ended { attempt: p.failed_at.unwrap_or(p.attempt), reason: p.last_failure.clone().unwrap_or_default() },
-            BuildState::Pending | BuildState::Running => {}
-        }
-        if let Some((mesh, lane)) = p.lanes.iter().find(|(_, l)| l.state == BuildState::Running) {
-            return Interrupted::Open(format!(
-                "path {me_path:?}, name {me_name:?}: attempt {} of mesh {mesh}'s drift lane of Build {id}, which fabric.delete {} interrupts, runs at {}: the teardown waits for it to end",
-                lane.attempt,
-                delete.build_id,
-                format!("{:?}", lane.executor), me_path = &me.path, me_name = &me.name));
-        }
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-interrupted-terminal", build_id = %id.log(), delete_build_id = %delete.build_id.log(), node_path = %me.path, node_name = %me.name, attempt = tracing::field::Empty, executor = tracing::field::Empty);
-        let attempt = if p.state == BuildState::Running {
-            let Some(executor) = p.executor.as_ref() else {
-                return Interrupted::Open(format!("path={} name={}: attempt {} of Build {id} has no recorded executor birth", me.path, me.name, p.attempt));
+        inner.accepted().await;
+        let mut last = first.to_string();
+        let mut runs_at_holds = false;
+        loop {
+            let item = tokio::select! {
+                biased;
+                _ = self.gate.target_set(), if !runs_at_holds => {
+                    match self.gate.target().await {
+                        Err(BuildStateError::RoleYielded { to: Some(to), .. }) if Some(&to.node_id) == runs_at.as_ref() => {
+                            runs_at_holds = true;
+                            continue;
+                        }
+                        _ => return Section::RoleYielded,
+                    }
+                }
+                item = inner.next() => item,
             };
-            // An attempt this fabric-primary executes is in this process: its runtime is the one running the
-            // delete, whose exit is never proven while it runs it. With no run of the attempt live here, it
-            // ends the attempt itself now, its verdict written through the held run (no later verdict of
-            // a run of it follows); a live run stops at its next operation and hands back (build.md §1).
-            if executor == &self.door.birth() {
-                let Some(held) = self.dispatcher.hold(me, id, p.attempt) else {
-                    return Interrupted::Open(format!(
-                        "path {me_path:?}, name {me_name:?}: attempt {} of Build {id}, which fabric.delete {} interrupts, runs in this process: the teardown waits for its run to stop at its next operation",
-                        p.attempt, delete.build_id, me_path = &me.path, me_name = &me.name));
-                };
-                span.record("executor", executor.to_string().as_str());
-                span.record("attempt", p.attempt);
-                let reason = crate::build_state::interrupted_reason(id, &delete.build_id);
-                let terminal = rdm_core::reply::build::failed(id.to_string(), p.attempt, rdm_core::OperationId::unscoped("fabric.delete"), "fabric.delete".into(), crate::build_run::bounded_reason(reason.clone()), rdm_core::outcome::Code::Aborted);
-                let state = ended_state(&terminal);
-                held.finish(terminal, self.release_mesh(id, p.attempt, &executor)).instrument(span.clone()).await;
-                return match self.builds.read_build(id).await {
-                    Ok(ended) if ended.state == BuildState::Failed && ended.failed_at == Some(p.attempt) => {
-                        span.in_scope(|| tracing::info!(%reason, "the interrupted Build's attempt ran at this fabric-primary with no run live here: it ends Failed naming the fabric.delete"));
-                        // The Build's Failed is recorded: the ending's last step (Q256).
-                        self.notices.ended(me, &self.door.contexts, id, p.attempt, p.reason, state, &span).await;
-                        Interrupted::Ended { attempt: p.attempt, reason }
+            match item {
+                InnerItem::Frame(f @ BuildReply::Step { .. }) => {
+                    if let BuildReply::Step { operation, .. } = &f {
+                        self.gate.step_streamed(mesh, &drive.build_id, operation).await;
+                        last = operation.clone();
                     }
-                    Ok(other) => Interrupted::Open(format!("path {me_path:?}, name {me_name:?}: the terminal of attempt {} of Build {id}, which fabric.delete {} interrupts, was not recorded: the Build reads {:?} at attempt {}", p.attempt, delete.build_id, other.state, other.attempt, me_path = &me.path, me_name = &me.name)),
-                    Err(e) => Interrupted::Open(format!("path {me_path:?}, name {me_name:?}: Build {id}, which fabric.delete {} interrupts, could not be read after its terminal: {e}", delete.build_id, me_path = &me.path, me_name = &me.name)),
-                };
-            }
-            if let Err(not_exited) = self.departure.exited_or_os_stopped(&executor).await {
-                return Interrupted::Open(format!(
-                    "path {me_path:?}, name {me_name:?}: attempt {} of Build {id}, which fabric.delete {} interrupts, runs at {executor} ({not_exited}): the teardown waits for it to end within its bound",
-                    p.attempt, delete.build_id, me_path = &me.path, me_name = &me.name));
-            }
-            span.record("executor", executor.to_string().as_str());
-            p.attempt
-        } else {
-            let claim = crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: self.me_mesh.clone(), build_id: id.clone(), attempt: p.attempt + 1, executor: self.door.birth(), claimant: Some(self.door.node_id.clone()), mesh: None };
-            match self.builds.claim_attempt(&claim).await {
-                Ok(crate::build_state::ClaimOutcome::Won) => p.attempt + 1,
-                Ok(other) => return Interrupted::Open(format!("path {me_path:?}, name {me_name:?}: attempt {} of Build {id}, which fabric.delete {} interrupts, could not be taken to end it: {other:?}", p.attempt + 1, delete.build_id, me_path = &me.path, me_name = &me.name)),
-                Err(e) => return Interrupted::Open(format!("path {me_path:?}, name {me_name:?}: attempt {} of Build {id}, which fabric.delete {} interrupts, could not be taken to end it: {e}", p.attempt + 1, delete.build_id, me_path = &me.path, me_name = &me.name)),
-            }
-        };
-        span.record("attempt", attempt);
-        let reason = crate::build_state::interrupted_reason(id, &delete.build_id);
-        let verdict = BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone(), code: rdm_core::outcome::Code::Aborted } };
-        if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
-            return Interrupted::Open(format!("path {me_path:?}, name {me_name:?}: the terminal of Build {id}, which fabric.delete {} interrupts, could not be written: {e}", delete.build_id, me_path = &me.path, me_name = &me.name));
-        }
-        // The ended attempt holds its executor's mesh no longer (R-BI7 caveat 3).
-        if let Some(executor_mesh) = p.attempt_claimed_meshes.get(&p.attempt) {
-            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt: p.attempt, claimant: self.door.node_id.clone(), };
-            if let Err(e) = self.door.claims.release_in_flight(executor_mesh, &row).await {
-                span.in_scope(|| tracing::info!(error = %e, mesh = %executor_mesh, "the ended attempt's in-flight row could not be released: the mesh stays held by it"));
+                    drive.push(f);
+                }
+                InnerItem::Frame(f @ BuildReply::Blocked { .. }) => {
+                    drive.push(f);
+                }
+                InnerItem::Frame(BuildReply::Started { .. }) => {}
+                InnerItem::Frame(BuildReply::Complete { .. }) => return Section::Ran,
+                InnerItem::Frame(BuildReply::Incomplete { sections, .. }) => {
+                    let u = sections.into_iter().find(|s| s.mesh == mesh).unwrap_or_else(|| call_ended_short(mesh, &last, format!("mesh {mesh}'s section ended incomplete naming no section of {mesh}"), Code::Internal));
+                    return Section::Unfinished(u);
+                }
+                InnerItem::Frame(BuildReply::RoleYielded { .. } | BuildReply::FabricPrimaryMoved { .. }) => return Section::RoleYielded,
+                InnerItem::Frame(other) => return Section::Unfinished(call_ended_short(mesh, &last, format!("mesh {mesh}'s section ended with {}", describe(&other)), <rdm_core::build::Build as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code())),
+                InnerItem::Ended => return Section::Unfinished(call_ended_short(mesh, &last, format!("mesh {mesh}'s section stream ended without its terminal"), Code::Unavailable)),
+                InnerItem::Broke(why) => return Section::Unfinished(call_ended_short(mesh, &last, format!("mesh {mesh}'s primary was lost mid-section (Indeterminate): {why}"), Code::Unavailable)),
             }
         }
-        span.in_scope(|| tracing::info!(%reason, "the interrupted Build's attempts ended: its run ends Failed naming the fabric.delete"));
-        // The Build's Failed is recorded: the ending's last step (Q256). An attempt claimed here only to
-        // end it opened nothing, and sends no on_build_started.
-        let state = crate::wiring::BuildEndedState::Failed { step: "fabric.delete".into(), reason: crate::build_run::bounded_reason(reason.clone()), code: rdm_core::outcome::Code::Aborted };
-        self.notices.ended(me, &self.door.contexts, id, attempt, p.reason, state, &span).await;
-        Interrupted::Ended { attempt, reason }
     }
 
-    /// Every node.primary.update that precedes an operation of `plan`, acknowledged through the gate
-    /// ([`Gate::primaries_updated`]); `Some` ends the drive stalled, naming the updates and why on its
-    /// span, when one was not.
-    async fn updates_acknowledged(&self, me: &PathName, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32, run: u32) -> Option<DriveEnd> {
-        let mut updates: Vec<(rdm_core::OperationId, PrecedingUpdate)> = plan.operations.iter().flat_map(|op| preceding_updates(op, &drive.build_id, run).into_iter().map(move |u| (op.key(), u))).collect();
-        updates.dedup();
-        if updates.is_empty() {
+    /// node.primary.updated is acknowledged for every update that precedes an operation left, before
+    /// any is dispatched (node-primary-update.md failure contract).
+    async fn updates_acknowledged(&self, me: &PathName, drive: &Arc<Drive>, ops: &[BuildOperation]) -> Option<DriveEnd> {
+        let mut asked: Vec<PrecedingUpdate> = ops.iter().flat_map(preceding_updates).collect();
+        asked.dedup();
+        if asked.is_empty() {
             return None;
         }
-        let asked: Vec<PrecedingUpdate> = updates.into_iter().map(|(_, u)| u).collect();
-        let why = self.gate.primaries_updated(&asked, &drive.build_id, attempt).await.err()?;
-        let names = asked.iter().map(|u| format!("action {}, subject {:?}, step {:?} under mesh {}", u.operation.action, u.operation.subject, u.operation.step, u.mesh)).collect::<Vec<_>>().join(", ");
-        let why = format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the update that precedes it (one of {names}): {why}", drive.build_id, me_path = &me.path, me_name = &me.name);
+        let why = self.gate.primaries_updated(&asked, &drive.build_id).await.err()?;
+        let names = asked.iter().map(|u| format!("{} under mesh {}", u.operation, u.mesh)).collect::<Vec<_>>().join(", ");
+        let why = format!("path {me_path:?}, name {me_name:?}: Build {} dispatches nothing until node.primary.updated is acknowledged for the update that precedes it (one of {names}): {why}", drive.build_id, me_path = &me.path, me_name = &me.name);
         Some(self.stalled(me, drive, why))
     }
 
-    /// The names the first operation left moves before it runs (R-MT1, [`crate::executor::role_move`],
-    /// proposal Part C1 step 1: "The primary is commanded from above, as a step of the Build", Q10:
-    /// "The FP claims the attempt at the claim door BEFORE it commands"): attempt `attempt` is claimed
-    /// for this fabric-primary first and its run is held here while node.primary.update runs (whether
-    /// this admin moves its own primaries or commands another mesh-primary's), so a successor that is
-    /// fabric-primary from its answer reattaches to this attempt and goes on only once it ends (step 6:
-    /// "The commanding Build continues on the successor's direct acknowledgement"; build.md: "A live run
-    /// is reattached, never re-claimed"). Refused before the call or ended `Failed { step, reason }`
-    /// after it (ruling R-PU2, Q10): the attempt ends `Failed` and the Build is Failed (R-BI4).
-    /// Every other end hands the attempt to the view's fabric-primary, and when the role moved
-    /// (`Ok(true)`) the loop passes the gates again.
-    async fn update_primaries_first(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
-        let t = self.topology.read().await.clone();
-        let Some(op) = left(drive, p, &t).into_iter().next() else { return Ok(false) };
-        let Some(m) = crate::executor::role_move(&op, &t) else { return Ok(false) };
-        let attempt = p.attempt + 1;
-        // The update's transfer key: the first attempt of the run this attempt belongs to, so the
-        // next run a resubmit opens makes a new transfer (ruling R-PU2, Q9).
-        let run = p.run_of(attempt);
+    /// The roles the first operation left moves, moved first as a step of the Build
+    /// (node.primary.update): `Ok(true)` when they moved and the drive plans again, `Ok(false)` when
+    /// none moves.
+    async fn update_primaries_first(&self, me: &PathName, drive: &Arc<Drive>, ops: &[BuildOperation], t: &Topology, span: &tracing::Span) -> Result<bool, DriveEnd> {
+        let Some(op) = ops.first() else { return Ok(false) };
+        let Some(m) = crate::executor::role_move(op, t) else { return Ok(false) };
         let id = &drive.build_id;
-        let context = match self.door.claim(&self.door.node_id, id, attempt).await {
-            BuildClaimReply::Won { context } => {
-                self.started_if_opening(me, p, attempt, &context).await;
-                context
-            }
-            other => {
-                let why = format!("path {me_path:?}, name {me_name:?}: the roles of node {} move before operation {:?} as a step of attempt {attempt} of Build {id}, and that attempt was not claimed for path {me_path:?}, name {me_name:?}: {}", m.primary.node_id, op.key(), claim_refusal(&other), me_path = &me.path, me_name = &me.name);
-                return Err(self.stalled(me, drive, why));
-            }
-        };
-        let held = self.dispatcher.hold(me, id, attempt);
-        let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt, executor = %self.door.birth(), node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-        if let Some(tp) = &context.traceparent {
-            rdm_transport::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
-        }
-        let moved = self.gate.update_primaries(&m, id, attempt, run, &op.key()).instrument(dspan.clone()).await;
+        let moved = self.gate.update_primaries(&m, id, &op.key()).instrument(span.clone()).await;
         let after = self.topology.read().await.clone();
-        let still = still_holds(&op, &m, &after);
-        let to = match after.fabric_primary() {
-            Some(fp) if !still => fp.node_id.clone(),
-            _ => self.door.node_id.clone(),
-        };
-        let failed = match &moved {
-            Err(RoleMoveEnd::Refused(why)) => Some(("primary-update".to_string(), format!("path {me_path:?}, name {me_name:?}: the roles of node {} did not move before operation {:?}: node.primary.update was refused before its row: {why}", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name), rdm_core::outcome::Code::FailedPrecondition)),
-            Err(RoleMoveEnd::Failed { step, reason, code }) => Some((step.clone(), reason.clone(), *code)),
-            _ => None,
-        };
-        let terminal = match &failed {
-            Some((step, why, code)) => rdm_core::reply::build::failed(id.to_string(), attempt, op.key(), step.clone(), crate::build_run::bounded_reason(why.clone()), *code),
-            None => BuildReply::HandedOff { build_id: id.to_string(), attempt, to: to.clone() },
-        };
-        // The verdict's writer releases the mesh's in-flight row the claim took (R-BI7 caveat 3), at
-        // the verdict and before a reader of the held run learns the attempt ended: a successor that
-        // reads the verdict claims its next attempt on the same mesh rows.
-        let outcome = match &terminal {
-            BuildReply::Failed { reason, code, .. } => AttemptOutcome::Failed { reason: reason.clone(), code: *code },
-            _ => AttemptOutcome::HandedOff { to: to.clone() },
-        };
-        let recorded = match held {
-            Some(held) => {
-                held.finish(terminal.clone(), self.release_mesh(id, attempt, &self.door.birth())).await;
-                true
-            }
-            None => match self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: None }).await {
-                Ok(()) => {
-                    self.release_mesh(id, attempt, &self.door.birth()).await;
-                    true
-                }
-                Err(e) => {
-                    dspan.record("reason", format!("the verdict of attempt {attempt} could not be recorded: {e}").as_str());
-                    false
-                }
-            },
-        };
-        if let Some((_, why, _)) = failed {
-            dspan.record("outcome", "failed").record("reason", why.as_str());
-            // The Build's Failed is recorded: the ending's last step (Q256).
-            if recorded {
-                self.notices.ended(me, &self.door.contexts, id, attempt, p.reason, ended_state(&terminal), &dspan).await;
-            }
-            drive.finish(terminal);
-            return Err(DriveEnd::Terminal);
-        }
-        dspan.record("outcome", "handed-off");
-        match (moved, still) {
-            (Ok(()), false) => Ok(true),
-            (Err(why), false) => {
-                // The update ended after its call: the drive goes on to the gates, which end it where
-                // the election's installed result names another fabric-primary.
-                let why = format!("path {me_path:?}, name {me_name:?}: node.primary.update to {to} before operation {:?} did not complete: {why}", op.key(), me_path = &me.path, me_name = &me.name);
-                dspan.record("reason", why.as_str());
+        let still = still_holds(op, &m, &after);
+        match moved {
+            Err(RoleMoveEnd::Refused(why)) => {
+                let reason = format!("path {me_path:?}, name {me_name:?}: the roles of node {} did not move before operation {}: node.primary.update was refused before its row: {why}", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name);
+                // The role move is a step of the operation's mesh section: its end ends that section (Q346).
+                role_move_unfinished(drive, &self.me_mesh, op, "primary-update".into(), reason, rdm_core::outcome::Code::FailedPrecondition);
                 Ok(true)
             }
-            (moved, true) => {
-                let why = match moved {
-                    Err(why) => format!("path {me_path:?}, name {me_name:?}: the role of node {} did not move before operation {:?}: {why}", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name),
-                    Ok(()) => format!("path {me_path:?}, name {me_name:?}: node.primary.update of node {} answered, and this view still names it the primary operation {:?} moves", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name),
+            Err(RoleMoveEnd::Failed { step, reason, code }) => {
+                role_move_unfinished(drive, &self.me_mesh, op, step, reason, code);
+                Ok(true)
+            }
+            Ok(()) if !still => Ok(true),
+            Err(RoleMoveEnd::Incomplete(_)) if !still => Ok(true),
+            other => {
+                let why = match other {
+                    Err(why) => format!("path {me_path:?}, name {me_name:?}: the role of node {} did not move before operation {}: {why}", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name),
+                    Ok(()) => format!("path {me_path:?}, name {me_name:?}: node.primary.update of node {} answered, and this view still names it the primary operation {} moves", m.primary.node_id, op.key(), me_path = &me.path, me_name = &me.name),
                 };
-                dspan.record("reason", why.as_str());
-                if let Ok(ended) = self.builds.read_build(id).await {
-                    drive.set_idle(Some(Idle { attempt, world: world(drive, &ended, &after, self.gate.fabric_ready()), why: why.clone() }));
-                }
                 Err(self.stalled(me, drive, why))
-            }
-        }
-    }
-
-    /// The drive waits, named, while the attempt it handed back to itself with nothing moved has not
-    /// seen what its resume decides on move ([`world`]); the stall is the same reason, named once.
-    async fn idle_until_moved(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
-        let idle = drive.idle()?;
-        if idle.attempt != p.attempt {
-            drive.set_idle(None);
-            return None;
-        }
-        let now = world(drive, p, &self.topology.read().await.clone(), self.gate.fabric_ready());
-        if now == idle.world {
-            return Some(self.stalled(me, drive, idle.why));
-        }
-        drive.set_idle(None);
-        None
-    }
-
-    /// `on_build_started` of `attempt` of `p`, just claimed here, when that claim opened the Build
-    /// (fabric-node-hooks.md `on_build_started`, Q256): its first attempt, or an attempt after one that
-    /// ended the Build (`Complete` or `Failed`: a drift repair, a stop, a start, a caller's resubmit). An
-    /// attempt that continues a Build in progress (a takeover, the next attempt after a hand-back) sends none.
-    async fn started_if_opening(&self, me: &PathName, p: &BuildProjection, attempt: u32, context: &CallContext) {
-        let opening = attempt == 1
-            || matches!(p.state, BuildState::Failed)
-            || (p.opened == attempt && self.builds.facts().await.is_ok_and(|facts| {
-                facts
-                    .iter()
-                    .find_map(|f| match f {
-                        crate::build_state::BuildFact::Attempt(a) if a.build_id == p.build_id && a.mesh.is_none() && a.attempt == p.attempt => Some(matches!(a.outcome, AttemptOutcome::Converged | AttemptOutcome::Failed { .. })),
-                        _ => None,
-                    })
-                    .unwrap_or(false)
-            }));
-        if opening {
-            self.notices.started(me, &self.door.contexts, &p.build_id, attempt, p.reason, context).await;
-        }
-    }
-
-    /// Claim the next attempt of `p` for the admin that runs what is left (or `forced`, the admin a
-    /// run just handed off to), on this admin's own log.
-    async fn claim_next(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<rdm_core::NodeId>) -> Result<(u32, rdm_core::framing::Birth, CallContext), DriveEnd> {
-        let id = &drive.build_id;
-        let attempt = p.attempt + 1;
-        let view = self.topology.read().await.clone();
-        let first = left(drive, p, &view).into_iter().next();
-        if let Some((op, f)) = first.as_ref().and_then(|op| self.peer_mesh_held(p, op).map(|f| (op, f))) {
-            return Err(self.stop_at_peer_mesh_held(me, drive, attempt, op, f));
-        }
-        // A run handed back to this admin (its own cut, or an executor whose view names this admin) is
-        // claimed for the admin this view names for what is left: an operation no admin executes waits
-        // for its mesh's own role, and one another admin executes is claimed for that admin, never for
-        // this one to hand on unrun.
-        let forced = forced.filter(|to| to != &self.door.node_id);
-        let lead = match forced {
-            Some(to) => Some(to),
-            None => {
-                let t = self.topology.read().await.clone();
-                let ops = left(drive, p, &t);
-                let lead = lead_for(&ops, &t);
-                // A mesh shutdown with no admin outside the mesh has no owner: no one executes it. The
-                // fabric-primary says so, once per Build, rather than leaving the Build to stall unnamed.
-                if lead.is_none() {
-                    if let Some(op @ crate::build::BuildOperation::ShutdownMesh { mesh, .. }) = ops.first() {
-                        if drive.stall_is_new(StallKey::NoOwner { operation: op.key() }) {
-                            tracing::info_span!("rdm.node_admin.build.reject.via-no-owner-outside-mesh", build_id = %id.log(), operation = %op.key().action, operation_subject = ?op.key().subject, operation_step = ?op.key().step, mesh = %mesh)
-                                .in_scope(|| tracing::info!("no ready admin primary exists outside the leaving mesh: nothing owns its shutdown, and the mesh is not dismantled"));
-                        }
-                    }
-                }
-                lead
-            }
-        };
-        let Some(lead) = lead else {
-            // Named: the operation, its mesh, and the same-mesh admins the attempt waits for.
-            let t = self.topology.read().await.clone();
-            let why = match left(drive, p, &t).first() {
-                Some(op) => format!("path {me_path:?}, name {me_name:?}: no admin can execute what is left of Build {id} in this view: {}", crate::executor::why_no_executor(op, &t), me_path = &me.path, me_name = &me.name),
-                None => format!("path {me_path:?}, name {me_name:?}: no admin can execute what is left of Build {id} in this view", me_path = &me.path, me_name = &me.name),
-            };
-            return Err(self.stalled(me, drive, why));
-        };
-        match self.door.claim(&lead, id, attempt).await {
-            BuildClaimReply::Won { context } => {
-                self.started_if_opening(me, p, attempt, &context).await;
-                match crate::build_state::committed_claim(&*self.builds, id, None, attempt).await {
-                    Ok(Some(claim)) => Ok((attempt, claim.executor, context)),
-                    other => Err(self.stalled(me, drive, format!("attempt {attempt} of Build {id} was won but its committed claim cannot be read: {other:?}"))),
-                }
-            }
-            BuildClaimReply::Lost { holder } => match crate::build_state::committed_claim(&*self.builds, id, None, attempt).await {
-                Ok(Some(claim)) => {
-                    let context = self.door.contexts.get(id, attempt).await.ok().flatten().unwrap_or_default();
-                    Ok((attempt, claim.executor, context))
-                }
-                other => Err(self.stalled(me, drive, format!("attempt {attempt} of Build {id} is held by node {holder}, but no committed executor is available: {other:?}"))),
-            },
-            BuildClaimReply::NotOpen { next } => Err(self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {id} is not open (the open attempt is {next:?})", me_path = &me.path, me_name = &me.name))),
-            // Another attempt holds the mesh this one acts in (R-BI7 caveat 3): nothing is claimed or
-            // dispatched; the next pass claims once its verdict releases the mesh.
-            BuildClaimReply::BuildInProgress { current_build_id, mesh, held_by } => {
-                let why = format!("path {me_path:?}, name {me_name:?}: attempt {attempt} of Build {id} acts in mesh {mesh}, which an attempt of Build {current_build_id} holds (claimed by {}): one attempt in flight per mesh", held_by.as_ref().map(|id| id.as_str()).unwrap_or("no recorded claimant"), me_path = &me.path, me_name = &me.name);
-                Err(self.stalled(me, drive, why))
-            }
-            other => Err(self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: the claim of attempt {attempt} of Build {id} was not decided: {}", other.name(), me_path = &me.path, me_name = &me.name))),
-        }
-    }
-
-    /// The Build as the claim was decided on it: its acceptance and every attempt opened, claimed and
-    /// ended, packed into Build messages, but not its step receipts (those are
-    /// the recovery contract of the projection). What an executor needs to fold the same current
-    /// attempt and to plan, carried by the call, so a run never waits for the store root.
-    /// The sections of what is left of `p` (Q250): by mesh, in plan order, the plain creates whose
-    /// executor is that mesh's own mesh-primary, never this fabric-primary. A mesh with any other
-    /// operation left, its first node-admin owed, or held unheard (R-D1, whatever its recovery's
-    /// verdict) sends no section: the fabric lane keeps its order, its waits and its recovery.
-    fn sections(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<(String, rdm_core::NodeId, Vec<BuildOperation>)> {
-        if p.deletes_fabric() || p.action.is_some() {
-            return Vec::new();
-        }
-        let mut by: std::collections::BTreeMap<String, (rdm_core::NodeId, Vec<BuildOperation>)> = Default::default();
-        let mut kept: HashSet<String> = HashSet::new();
-        for op in left(drive, p, t) {
-            let Some(node) = op.node() else { continue };
-            let Some(mesh) = op.mesh().map(str::to_owned) else { continue };
-            let to = crate::executor::executor_for(&op, t);
-            match to {
-                Some(to) if to != self.door.node_id && !kept.contains(&mesh) && crate::executor::section_create(&op, t, &to) && p.topology.meshes.get(&mesh).and_then(|m| m.spec(&node)).is_some_and(|spec| !t.first_admin_of(&node, &mesh, &spec.r#type)) && self.unheard_peer(&op).is_none() => {
-                    by.entry(mesh.clone()).or_insert_with(|| (to, Vec::new())).1.push(op);
-                }
-                _ => {
-                    by.remove(&mesh);
-                    kept.insert(mesh.clone());
-                }
-            }
-        }
-        by.into_iter().map(|(mesh, (executor, ops))| (mesh, executor, ops)).collect()
-    }
-
-    /// Send every section of what is left of `p` to its mesh-primary at once, when two meshes or more
-    /// are owed one or a mesh's section failed before, and wait for each to end (Q250). A section that fails stops none of the others; its mesh's operations are planned again
-    /// on the next pass, and the same operation failing twice running ends the Build Failed (Q252).
-    async fn run_sections(self: &Arc<Self>, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Sections {
-        let sections = {
-            let t = self.topology.read().await.clone();
-            self.sections(me, drive, p, &t)
-        };
-        // One mesh's section gains nothing over the fabric lane's own attempt at its mesh-primary: sections
-        // are sent when two meshes or more are owed one, or to a mesh whose section failed, which is claimed
-        // again for that mesh alone (Q250).
-        let retried = sections.iter().any(|(mesh, _, _)| drive.section_failed.lock().unwrap().contains_key(mesh));
-        if sections.len() < 2 && !retried {
-            return Sections::None;
-        }
-        let ended = futures_util::future::join_all(sections.into_iter().map(|(mesh, executor, ops)| {
-            async move { (mesh.clone(), self.run_section(me, turn, drive, p, &mesh, &executor, ops).await) }
-        }))
-        .await;
-        let mut held = Vec::new();
-        let mut twice = None;
-        for (mesh, end) in ended {
-            match end {
-                Ok(()) => {
-                    drive.section_failed.lock().unwrap().remove(&mesh);
-                }
-                Err(SectionEnd::Failed(failure)) => {
-                    let key = failure.key();
-                    let again = drive.section_failed.lock().unwrap().insert(mesh.clone(), key.clone()).as_ref() == Some(&key);
-                    if again && twice.is_none() {
-                        twice = Some((mesh, failure));
-                    }
-                }
-                Err(SectionEnd::Held(why)) => held.push(why),
-            }
-        }
-        // The same operation failing twice running ends the Build Failed with the step and reason
-        // of its second failure (Q250, Q252), once no section holds its mesh.
-        if let (true, Some((mesh, failure))) = (held.is_empty(), twice) {
-            return Sections::End(self.section_failed_twice(me, drive, p, &mesh, failure).await);
-        }
-        if held.is_empty() {
-            return Sections::Ran;
-        }
-        let why = format!("path {me_path:?}, name {me_name:?}: Build {}: {}", p.build_id, held.join("; "), me_path = &me.path, me_name = &me.name);
-        Sections::End(self.stalled(me, drive, why))
-    }
-
-    /// Mesh `mesh`'s section failed the same operation twice running (Q250, Q252): the Build ends
-    /// `Failed` with the step and reason of the second failure, never a stall (node-rpc-envelope.md:
-    /// "Only a fabric-primary change or a failed step ends an attempt"). No fabric-lane attempt runs
-    /// while sections are sent: this fabric-primary claims the next one for itself and ends it `Failed`,
-    /// running nothing, the failed step's receipt and the verdict written (as an interrupted Build's
-    /// terminal is, build.md §1).
-    async fn section_failed_twice(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, mesh: &str, f: SectionFailure) -> DriveEnd {
-        let id = &p.build_id;
-        let attempt = p.attempt + 1;
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-section-failed", build_id = %id.log(), lane = %mesh, attempt, node_path = %me.path, node_name = %me.name, operation = ?f.operation, step = %f.step, reason = %f.reason);
-        let claim = crate::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: self.me_mesh.clone(), build_id: id.clone(), attempt, executor: self.door.birth(), claimant: Some(self.door.node_id.clone()), mesh: None };
-        match self.builds.claim_attempt(&claim).await {
-            Ok(crate::build_state::ClaimOutcome::Won) => {}
-            other => return self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: mesh {mesh}'s section of Build {id} failed {:?} twice running and attempt {attempt}, which ends the Build Failed, could not be taken: {other:?}", f.key(), me_path = &me.path, me_name = &me.name)),
-        }
-        if let Some(operation) = &f.operation {
-            let receipt = crate::build_state::BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step: f.step.clone(), outcome: crate::build_state::StepOutcome::Failed { reason: f.reason.clone(), code: f.code }, output: None, executor: None, mesh: None };
-            if let Err(e) = self.builds.append_step_receipt(&receipt).await {
-                span.in_scope(|| tracing::info!(error = %e, "the failed step's receipt could not be written"));
-            }
-        }
-        let reason = match &f.operation { None => f.reason.clone(), Some(operation) => format!("action {}, subject {:?}, step {:?}: {}", operation.action, operation.subject, operation.step, f.reason) };
-        let verdict = BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason, code: f.code } };
-        if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
-            return self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: the Failed verdict of attempt {attempt} of Build {id} (mesh {mesh}'s section failed {:?} twice running) could not be written: {e}", f.key(), me_path = &me.path, me_name = &me.name));
-        }
-        self.gate.attempt_failed(id, attempt).await;
-        span.in_scope(|| tracing::info!("a section failed the same operation twice running: the Build ends Failed with the second failure's step and reason"));
-        drive.finish(rdm_core::reply::build::failed(id.to_string(), attempt, f.operation.unwrap_or_else(|| rdm_core::OperationId::unscoped("section")), f.step, crate::build_run::bounded_reason(f.reason), f.code));
-        DriveEnd::Terminal
-    }
-
-    /// One section (Q250): its attempt opened in `executor`'s mesh's lane and claimed by this
-    /// fabric-primary, dispatched to the mesh-primary, every receipt it reports written in the lane, its
-    /// verdict written, and the mesh's in-flight row released.
-    #[allow(clippy::too_many_arguments)]
-    async fn run_section(&self, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection, mesh: &str, executor: &rdm_core::NodeId, operations: Vec<BuildOperation>) -> Result<(), SectionEnd> {
-        let id = &p.build_id;
-        use crate::build_state::{AttemptOpened, AttemptReason, BuildStepReceipt, StepOutcome};
-        let mesh = mesh.to_owned();
-        let lane = crate::build_run::LaneBuilds::of(&self.builds, Some(&mesh));
-        let keys = operations.iter().map(BuildOperation::key).collect::<Vec<_>>();
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-section", build_id = %id.log(), lane = %mesh, attempt = tracing::field::Empty, executor = %executor, node_path = %me.path, node_name = %me.name, operations = ?keys, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-        let ended = async {
-            let attempt = match lane.read_build(id).await {
-                Ok(l) => l.attempt + 1,
-                Err(e) => return Err(SectionEnd::Held(format!("mesh {mesh}'s lane of {id} could not be read: {e}"))),
-            };
-            tracing::Span::current().record("attempt", attempt);
-            let opened = AttemptOpened { build_id: id.clone(), attempt, reason: AttemptReason::Requested, action: None, opened_by: self.door.node_id.clone(), opened_at_ms: self.gate.now_ms(), mesh: Some(mesh.clone()), context: None };
-            if let Err(e) = lane.open_attempt(&opened).await {
-                return Err(SectionEnd::Held(format!("attempt {attempt} of mesh {mesh}'s lane of {id} could not be opened: {e}")));
-            }
-            match self.door.claim_in(executor, id, Some(&mesh), attempt).await {
-                BuildClaimReply::Won { .. } => {}
-                other => return Err(SectionEnd::Held(format!("attempt {attempt} of mesh {mesh}'s lane of {id} was not claimed for {executor}: {}", claim_refusal(&other)))),
-            }
-            let claim = match crate::build_state::committed_claim(&*self.builds, id, Some(&mesh), attempt).await {
-                Ok(Some(claim)) => claim,
-                other => return Err(SectionEnd::Held(format!("attempt {attempt} of Build {id}, mesh {mesh} has no readable committed executor: {other:?}"))),
-            };
-            let executor = &claim.executor;
-            let context = self.door.contexts.get_lane(id, Some(&mesh), attempt).await.ok().flatten().unwrap_or_default();
-            let keys: Vec<rdm_core::OperationId> = operations.iter().map(BuildOperation::key).collect();
-            let plan = RunPlan { operations, hand_off_to: None };
-            let mut completed: Vec<rdm_core::OperationId> = Vec::new();
-            let mut failed_step: Option<(rdm_core::OperationId, String, String)> = None;
-            self.notices.dispatched(me, id, &mesh).await;
-            let outcome = match self.dispatcher.dispatch_in(turn, executor, &mesh, id, attempt, context, plan).await {
-                Dispatched::Refused(r) => AttemptOutcome::Failed { reason: format!("{executor} refused the section: {}", describe(&r)), code: rdm_core::outcome::Code::Unavailable },
-                Dispatched::Unreached(why) => match self.departure.exited_or_os_stopped(executor).await {
-                    Ok(()) => AttemptOutcome::Failed { reason: format!("{executor} exited with the section unfinished: {why}"), code: rdm_core::outcome::Code::Unavailable },
-                    Err(not) => return Err(SectionEnd::Held(format!("the section of mesh {mesh} at {executor} was not reached ({why}) and its departure is not proven ({not}): attempt {attempt} holds the mesh"))),
-                },
-                Dispatched::Stream(mut stream) => loop {
-                    match stream.next().await {
-                        InnerItem::Frame(BuildReply::Step { operation, step, attempt: a, receipt, .. }) => {
-                            // A failed step's receipt is written from the section's Failed terminal.
-                            if failed_receipt(receipt.as_deref()) {
-                                stream.accepted().await;
-                                continue;
-                            }
-                            if let Some(r) = receipt.as_deref().and_then(|b| serde_json::from_slice::<BuildStepReceipt>(b).ok()) {
-                                if let Err(e) = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, mesh: Some(mesh.clone()), ..r }).await {
-                                    tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step = %step, "a reported step receipt could not be written: a later attempt runs the step again");
-                                }
-                            }
-                            stream.accepted().await;
-                            if step == "Complete" {
-                                self.gate.receipt_streamed_in(&mesh, id, attempt, &operation).await;
-                                completed.push(operation.clone());
-                            }
-                            self.step(drive, BuildReply::Step { build_id: id.to_string(), attempt: a, operation, step, receipt: None }).await;
-                        }
-                        InnerItem::Frame(f @ BuildReply::Blocked { .. }) => {
-                            stream.accepted().await;
-                            drive.push(f);
-                        }
-                        InnerItem::Frame(BuildReply::Complete { .. }) => break AttemptOutcome::Converged,
-                        InnerItem::Frame(BuildReply::HandedOff { to, .. }) => break AttemptOutcome::HandedOff { to },
-                        InnerItem::Frame(BuildReply::Failed { operation, step, reason, code, .. }) => {
-                            if !crate::build_run::is_attempt_publication_failure(&operation, &step) {
-                                let _ = lane.append_step_receipt(&BuildStepReceipt { build_id: id.clone(), attempt, operation: operation.clone(), step: step.clone(), outcome: StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: None, mesh: Some(mesh.clone()) }).await;
-                                failed_step = Some((operation.clone(), step, reason.clone()));
-                            }
-                            break AttemptOutcome::Failed { reason: format!("action {}, subject {:?}, step {:?}: {reason}", operation.action, operation.subject, operation.step), code };
-                        }
-                        InnerItem::Frame(other) => break AttemptOutcome::Failed { reason: format!("{executor}'s section ended {}", other.name()), code: rdm_core::outcome::Code::Unavailable },
-                        InnerItem::Ended | InnerItem::Broke(_) => match self.departure.exited_or_os_stopped(executor).await {
-                            Ok(()) => break AttemptOutcome::Failed { reason: format!("{executor} exited with the section unfinished"), code: rdm_core::outcome::Code::Unavailable },
-                            Err(not) => return Err(SectionEnd::Held(format!("the section of mesh {mesh} at {executor} was lost and its departure is not proven ({not}): attempt {attempt} holds the mesh"))),
-                        },
-                    }
-                },
-            };
-            let failed = match &outcome {
-                AttemptOutcome::Failed { reason, code } => Some(match failed_step {
-                    Some((operation, step, reason)) => SectionFailure { operation: Some(operation), step, reason, code: *code },
-                    None => SectionFailure { operation: None, step: "section".into(), reason: reason.clone(), code: *code },
-                }),
-                _ => None,
-            };
-            // A section that converged ran every one of its operations (`Reconciled::Converged`); one that
-            // ended otherwise completed what its Complete frames named.
-            if matches!(outcome, AttemptOutcome::Converged) {
-                completed = keys;
-            }
-            if let Err(e) = lane.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: Some(mesh.clone()) }).await {
-                return Err(SectionEnd::Held(format!("the verdict of attempt {attempt} of mesh {mesh}'s lane of {id} could not be written: {e}")));
-            }
-            // Reported by its verdict: what the section completed is done.
-            drive.section_done.lock().unwrap().extend(completed.into_iter().map(|key| (p.opened, key)));
-            let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: Some(mesh.clone()), attempt, claimant: self.door.node_id.clone(), };
-            if let Err(e) = self.door.claims.release_in_flight(&mesh, &row).await {
-                tracing::info!(error = %e, "the section ended and its mesh's in-flight row could not be released: the mesh stays held by it");
-            }
-            match failed {
-                Some(failure) => Err(SectionEnd::Failed(failure)),
-                None => Ok(()),
-            }
-        }
-        .instrument(span.clone())
-        .await;
-        span.record("outcome", match &ended { Ok(()) => "complete", Err(SectionEnd::Failed(_)) => "failed", Err(SectionEnd::Held(_)) => "held" });
-        match &ended {
-            Err(SectionEnd::Failed(f)) => {
-                span.record("reason", format!("operation {:?}: {}", f.operation, f.reason).as_str());
-            }
-            Err(SectionEnd::Held(why)) => {
-                span.record("reason", why.as_str());
-            }
-            Ok(()) => {}
-        }
-        span.in_scope(|| tracing::info!("a section of the Build ran at its mesh's mesh-primary"));
-        ended
-    }
-
-    /// A complete Build this drive made no call of: attach to the last attempt's executor and read
-    /// its frames. `None` when the attached run ended `Complete`; otherwise the end of the drive.
-    async fn reattach_to_ended(&self, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
-        let id = &drive.build_id;
-        self.replay(drive, &p.steps, 0, p.attempt).await;
-        let Some(holder) = p.executor.as_ref() else {
-            drive.finish(rdm_core::reply::build::not_ready(format!("attempt {} of Build {id} completed without a recorded executor birth", p.attempt)));
-            return Some(DriveEnd::Terminal);
-        };
-        drive.note_first_attempt(p.attempt);
-        let context = self.door.contexts.get(id, p.attempt).await.ok().flatten().unwrap_or_default();
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt = p.attempt, executor = %holder, node_path = %me.path, node_name = %me.name, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-        let why = match self.run_inner(turn, drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
-            Inner::Terminal(BuildReply::Complete { .. }) => {
-                span.record("outcome", "complete");
-                return None;
-            }
-            Inner::RoleYielded => {
-                span.record("outcome", "role-yielded");
-                return Some(match self.may_act(drive).await {
-                    Some(end) => end,
-                    None => self.stalled(me, drive, format!("path {me_path:?}, name {me_name:?}: the replay of Build {id} stopped at a role target that the gate no longer reports", me_path = &me.path, me_name = &me.name)),
-                });
-            }
-            Inner::Terminal(t) => format!("it answered {}", t.name()),
-            Inner::Refused(r) => format!("it refused: {}", describe(&r)),
-            Inner::Unreached(w) | Inner::Broke(w) => w,
-        };
-        span.record("outcome", "executor-lost");
-        span.record("reason", why.as_str());
-        drive.finish(rdm_core::reply::build::not_ready(format!("path {me_path:?}, name {me_name:?}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", p.attempt, me_path = &me.path, me_name = &me.name)));
-        Some(DriveEnd::Terminal)
-    }
-
-    /// A `Step` frame new to `drive`, live from the executor or read from a receipt (a completed
-    /// step's receipt is the same event as its frame), published once.
-    async fn step(&self, drive: &Drive, frame: BuildReply) {
-        if !drive.take_key(&frame) {
-            return;
-        }
-        drive.publish(frame);
-    }
-
-    /// The frame of every `Complete` receipt of `steps` from attempt `from` to before attempt `to`,
-    /// each through [`Self::step`]: a read of receipts, never a run.
-    async fn replay(&self, drive: &Drive, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) {
-        for frame in drive.receipt_frames(steps, from, to) {
-            self.step(drive, frame).await;
-        }
-    }
-
-    /// The verdict of a run that ended: an executor on another admin reported it, and this
-    /// fabric-primary writes it, with the step receipt of the step it failed at (Q118; build.md: the
-    /// fabric-primary writes every Build record); this admin's own run wrote it and it is taken here.
-    async fn verdict(&self, me: &PathName, executor: &rdm_core::framing::Birth, receipt: BuildAttemptReceipt, failed: Option<(&rdm_core::OperationId, &String, &String, rdm_core::outcome::Code)>) {
-        if executor == &self.door.birth() {
-            self.verdicts.record(receipt).await;
-            return;
-        }
-        // An attempt has one verdict: one its executor wrote itself (a run served when it was the
-        // fabric-primary) is the attempt's, and nothing is written again.
-        let decided = self.builds.facts().await.map(|facts| facts.iter().any(|f| matches!(f, crate::build_state::BuildFact::Attempt(a) if a.build_id == receipt.build_id && a.attempt == receipt.attempt && a.mesh.is_none())));
-        if matches!(decided, Ok(true)) {
-            return;
-        }
-        if let Some((operation, step, reason, code)) = failed.filter(|(operation, step, ..)| !crate::build_run::is_attempt_publication_failure(operation, step)) {
-            // A failed step whose receipt the executor reported up the stream is on the record already.
-            let held = self.builds.read_build(&receipt.build_id).await.is_ok_and(|p| p.steps.iter().any(|s| s.mesh.is_none() && s.attempt == receipt.attempt && s.operation == *operation && s.step == *step && matches!(s.outcome, crate::build_state::StepOutcome::Failed { .. })));
-            if held {
-                if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
-                    tracing::info!(error = %e, attempt = receipt.attempt, "the reported verdict could not be written: the attempt holds no verdict until the next pass decides it");
-                }
-                return;
-            }
-            let failed = crate::build_state::BuildStepReceipt { build_id: receipt.build_id.clone(), attempt: receipt.attempt, operation: operation.clone(), step: step.clone(), outcome: crate::build_state::StepOutcome::Failed { reason: reason.clone(), code }, output: None, executor: None, mesh: None };
-            if let Err(e) = self.builds.append_step_receipt(&failed).await {
-                tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step = %step, "the failed step's reported receipt could not be written");
-            }
-        }
-        if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
-            tracing::info!(error = %e, attempt = receipt.attempt, "the reported verdict could not be written: the attempt holds no verdict until the next pass decides it");
-        }
-    }
-
-    /// Write the step receipt `bytes` an executor reported for attempt `attempt` of `id` (Q118): only
-    /// while the claim record this admin holds names that attempt and `executor` (build.md: "a call
-    /// carrying a claim that is not the current folded attempt of the receiver's projection is refused
-    /// `StaleClaim`"); a receipt of any other attempt is refused by name and written nowhere.
-    async fn write_reported(&self, id: &BuildId, attempt: u32, executor: &rdm_core::framing::Birth, operation: &rdm_core::OperationId, step: &str, bytes: &[u8]) -> bool {
-        let me = self.held_name().await;
-        let r = match serde_json::from_slice::<crate::build_state::BuildStepReceipt>(bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step, "a reported step receipt does not decode: a later attempt runs the step again");
-                return false;
-            }
-        };
-        if !crate::build_run::reported_receipt_matches(&r, id, attempt, None, operation, step) {
-            return false;
-        }
-        let p = match self.builds.read_build(id).await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::info!(error = %e, operation = ?operation, step, "the Build could not be read to decide a reported step receipt: a later attempt runs the step again");
-                return false;
-            }
-        };
-        if p.attempt != attempt || p.executor.as_ref() != Some(executor) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-stale-claim", node_path = %me.path, node_name = %me.name, build_id = %id.log(), attempt, held_attempt = p.attempt, held_executor = ?p.executor, executor = %executor, operation = ?operation, step)
-                .in_scope(|| tracing::info!("a reported receipt of an attempt the claim record does not hold is written nowhere"));
-            return false;
-        }
-        if let Err(e) = self.builds.append_step_receipt(&r).await {
-            tracing::info!(error = %e, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, step, "a reported step receipt could not be written: a later attempt runs the step again");
-            return false;
-        }
-        true
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn run_inner(&self, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &rdm_core::framing::Birth, context: CallContext, plan: RunPlan) -> Inner {
-        // The section's mesh: its first operation's, else this admin's own.
-        let section = plan.operations.first().and_then(|op| op.mesh()).map(str::to_string).unwrap_or_else(|| self.me_mesh.clone());
-        self.notices.dispatched(&self.held_name().await, id, &section).await;
-        let mut stream = match self.dispatcher.dispatch(turn, executor, id, attempt, context, plan).await {
-            Dispatched::Stream(s) => s,
-            Dispatched::Refused(r) => return Inner::Refused(r),
-            Dispatched::Unreached(why) => return Inner::Unreached(why),
-        };
-        // Set once the target names this run's executor: the run's own node.primary.update made it
-        // fabric-primary.
-        let mut executor_is_fabric_primary = false;
-        loop {
-            // Only the wait for the next item races the target: a frame in hand is handled whole.
-            let item = tokio::select! {
-                biased;
-                _ = self.gate.target_set(), if !executor_is_fabric_primary => {
-                    // This run's executor is fabric-primary once it has installed the election's result,
-                    // and it says so on this stream by ending it with FabricPrimaryMoved naming itself. The callers are sent to it only
-                    // then: before, its door would answer them as an admin that is not the
-                    // fabric-primary. Any other holder ends the drive at the target at once.
-                    match self.gate.target().await {
-                        Err(BuildStateError::RoleYielded { to: Some(to), .. }) if &to == executor => {
-                            executor_is_fabric_primary = true;
-                            continue;
-                        }
-                        _ => return Inner::RoleYielded,
-                    }
-                }
-                item = stream.next() => item,
-            };
-            // A reported Step of another attempt of this Build is the claim record's to refuse
-            // (`via-stale-claim`, written nowhere: build.md, Q118, Q239); any other frame of another
-            // Build or attempt breaks the run.
-            if let InnerItem::Frame(frame) = &item {
-                let stale_step = matches!(frame, BuildReply::Step { build_id, .. } if build_id == id.as_str());
-                if !stale_step && !crate::build_run::reported_frame_matches(frame, id, attempt) {
-                    return Inner::Broke("the executor reported another Build or attempt".into());
-                }
-            }
-            match item {
-                InnerItem::Frame(f) => match f {
-                    BuildReply::Step { ref operation, ref step, attempt: a, ref receipt, .. } => {
-                        // A reported receipt (Q118): this fabric-primary writes it, decided by the claim
-                        // record it holds, never by the view (build.md, Q239). Another attempt's is
-                        // refused there (`via-stale-claim`) and is no progress of this run.
-                        if a != attempt {
-                            if let Some(bytes) = receipt {
-                                self.write_reported(id, a, executor, operation, step, bytes).await;
-                            }
-                            stream.accepted().await;
-                            continue;
-                        }
-                        if let Some(bytes) = receipt {
-                            if !self.write_reported(id, a, executor, operation, step, bytes).await {
-                                return Inner::Broke("the reported receipt was refused or could not be recorded".into());
-                            }
-                        }
-                        stream.accepted().await;
-                        // A failed step's receipt is the record's, never progress: the attempt's terminal
-                        // names a failure, and a create's heal hands back without one (Q245, Q252).
-                        if failed_receipt(receipt.as_deref()) {
-                            continue;
-                        }
-                        if step == "Complete" {
-                            self.gate.receipt_streamed(id, a, operation).await;
-                        }
-                        self.step(drive, BuildReply::Step { build_id: id.to_string(), attempt: a, operation: operation.clone(), step: step.clone(), receipt: None }).await
-                    }
-                    BuildReply::Blocked { .. } => {
-                        stream.accepted().await;
-                        drive.push(f);
-                    }
-                    // Past the target this admin decides nothing of the attempt: the executor, now the
-                    // fabric-primary, reports its end to its own callers.
-                    _ if executor_is_fabric_primary => return Inner::RoleYielded,
-                    t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),
-                    // The executor became fabric-primary during the run: the target names it, and the
-                    // drive ends there.
-                    BuildReply::FabricPrimaryMoved { .. } => return Inner::RoleYielded,
-                    other => return Inner::Refused(other),
-                },
-                // The target is the answer whatever became of the stream.
-                InnerItem::Ended | InnerItem::Broke(_) if executor_is_fabric_primary => return Inner::RoleYielded,
-                InnerItem::Ended => return Inner::Broke("the inner stream ended without its terminal".into()),
-                InnerItem::Broke(why) => return Inner::Broke(why),
             }
         }
     }
 }
 
-/// Whether view `t` still names `m`'s holder the primary of the roles `m` moves before `op`.
+/// The section of `op`'s mesh ended short at its role move (Q346): nothing more of that mesh runs in
+/// this run.
+fn role_move_unfinished(drive: &Drive, me_mesh: &str, op: &BuildOperation, step: String, reason: String, code: rdm_core::outcome::Code) {
+    let mesh = op.mesh().unwrap_or(me_mesh).to_string();
+    let u = UnfinishedSection { mesh: mesh.clone(), operation: op.key().to_string(), step, reason: crate::build_run::bounded_reason(reason), code };
+    drive.unfinished.lock().unwrap().insert(mesh, u);
+}
+
+/// Whether view `t` still names the primary `m` moves before `op`.
 fn still_holds(op: &BuildOperation, m: &crate::executor::RoleMove, t: &Topology) -> bool {
-    crate::executor::role_move(op, t).is_some_and(|still| still.primary.node_id == m.primary.node_id && still.mesh_role == m.mesh_role && still.fabric_role == m.fabric_role && still.node_type_role == m.node_type_role)
+    crate::executor::role_move(op, t).is_some_and(|now| now.primary.node_id == m.primary.node_id)
 }
 
-/// A claim not won, in words that name what the claim door said.
-fn claim_refusal(r: &BuildClaimReply) -> String {
-    match r {
-        BuildClaimReply::Lost { holder } => format!("lost (the attempt is held by {holder})"),
-        BuildClaimReply::NotOpen { next } => format!("not-open (the open attempt is {next:?})"),
-        BuildClaimReply::NotClaimant { mesh, fabric_primary, mesh_primary } => format!("not-claimant (mesh {mesh:?}; its view shows fabric-primary {fabric_primary:?}, mesh-primary {mesh_primary:?})"),
-        BuildClaimReply::BuildInProgress { current_build_id, mesh, held_by } => format!("build-in-progress (mesh {mesh} is held by Build {current_build_id}, claimed by {held_by:?})"),
-        BuildClaimReply::NotReady { reason } => format!("not-ready ({reason})"),
-        other => other.name().to_string(),
-    }
-}
-
-/// A refusal in words that name what it is and what it carries.
+/// A refusal or terminal in words, for a span or a stall.
 pub fn describe(r: &BuildReply) -> String {
     match r {
-        BuildReply::NotExecutor { named, recipient } => format!("not-executor (the claim names {named}, the recipient is {recipient})"),
-        BuildReply::StaleClaim { held_attempt, held_executor, carried_attempt } => {
-            format!("stale-claim (the recipient holds attempt {held_attempt} for {}, the call carried attempt {carried_attempt})", format!("{held_executor:?}"))
-        }
-        BuildReply::UnknownBuild { build_id } => format!("unknown-build ({build_id})"),
-        BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::ConnectionsDeleting { reason } | BuildReply::PeerUnresolved { reason } | BuildReply::Unauthorized { reason } => format!("{} ({reason})", r.name()),
+        BuildReply::NotExecutor { named, recipient } => format!("not-executor: the mesh's primary is {named}, the recipient is {recipient}"),
+        BuildReply::UnknownBuild { build_id } => format!("unknown-build: {build_id}"),
+        BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::PeerUnresolved { reason } | BuildReply::ConnectionsDeleting { reason } | BuildReply::Unauthorized { reason } => format!("{}: {reason}", r.name()),
+        BuildReply::RoleYielded { node, by } => format!("role-yielded: {node} is no longer the fabric-primary: {by}"),
+        BuildReply::Failed { reason, .. } => format!("failed: {reason}"),
+        BuildReply::Incomplete { sections, .. } => format!("incomplete: {}", sections.iter().map(|u| format!("mesh {} at {} step {}: {}", u.mesh, u.operation, u.step, u.reason)).collect::<Vec<_>>().join("; ")),
         other => other.name().to_string(),
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// CONTRACT: completion replay compares the admitted structured operation and attempt;
-    /// path/name boundaries, recipe position and blocked frames cannot alias a completion.
-    // @feature: node-records
-    #[test]
-    fn completion_replay_keeps_operation_fields_and_attempt_separate() {
-        let drive = Drive::detached(BuildId::mint());
-        let location = PathName::new("arbitrary.location", "worker").unwrap();
-        let operation = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&location)).at_step(Some(2));
-        let frame = BuildReply::Step { build_id: drive.build_id.to_string(), attempt: 3, operation: operation.clone(), step: "Complete".into(), receipt: None };
-        assert!(drive.push(frame.clone()));
-        assert!(!drive.push(frame));
-        assert!(drive.push(BuildReply::Step { build_id: drive.build_id.to_string(), attempt: 3, operation: operation.clone().at_step(Some(4)), step: "Started".into(), receipt: None }));
-        assert!(drive.completed_in(&operation, |attempt| attempt == 3));
-        assert!(!drive.completed_in(&operation, |attempt| attempt == 4));
-        assert!(!drive.completed_in(&operation.clone().at_step(Some(4)), |_| true));
-        let other = rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("arbitrary", "location-worker").unwrap())).at_step(Some(2));
-        assert!(!drive.completed_in(&other, |_| true));
-        drive.state.lock().unwrap().seen.insert(FrameKey::Blocked { attempt: 4, operation: other.clone(), step: "Complete".into(), reason: "waiting".into() });
-        assert!(!drive.completed_in(&other, |_| true));
-    }
-
-
-    /// CONTRACT: a section without a failed operation retries by reason; an actual operation
-    /// with no subject remains an operation, and opaque non-node names are not parsed.
-    // @feature: node-records
-    #[test]
-    fn section_failure_distinguishes_absence_from_unscoped_operation() {
-        let failure = |operation| SectionFailure { operation, step: "section".into(), reason: "unavailable".into(), code: rdm_core::outcome::Code::Unavailable };
-        let marker = rdm_core::OperationId::unscoped("attempt");
-        assert!(crate::build_run::is_attempt_publication_failure(&marker, "attempt"));
-        assert!(!crate::build_run::is_attempt_publication_failure(&marker, "Complete"));
-        assert!(!crate::build_run::is_attempt_publication_failure(&marker.clone().at_step(Some(2)), "attempt"));
-        assert!(!crate::build_run::is_attempt_publication_failure(&rdm_core::OperationId::node("attempt", &rdm_core::NodeId::mint()), "attempt"));
-        let operation = rdm_core::OperationId::unscoped("fabric.delete");
-        assert_eq!(failure(Some(operation.clone())).key(), (Some(operation), None));
-        assert_eq!(failure(None).key(), (None, Some("unavailable".into())));
-        let drive = Drive::detached(BuildId::mint());
-        let operation = rdm_core::OperationId::new("storage.update", rdm_core::OperationSubject::Named("backend|Complete".into()));
-        let frame = BuildReply::Step { build_id: drive.build_id.to_string(), attempt: 2, operation: operation.clone(), step: "Complete".into(), receipt: None };
-        assert!(drive.push(frame.clone()));
-        assert!(!drive.push(frame));
-        assert!(drive.completed_in(&operation, |_| true));
-        assert!(drive.stall_is_new(StallKey::NoOwner { operation: operation.clone() }));
-        assert!(!drive.stall_is_new(StallKey::NoOwner { operation: operation.clone() }));
-        assert!(drive.stall_is_new(StallKey::NoOwner { operation: operation.at_step(Some(2)) }));
-    }
-
-    /// CONTRACT (R-BI4; proposal node-primary-update Part C1 step 8: the commanding Build continues
-    /// at the new fabric-primary, which resumes the same attempt): an attempt ended incomplete only when this admin ran it itself and it came
-    /// back to this admin having moved nothing. A hand-off to this admin that another executor
-    /// reported (the old fabric-primary's attempt, handed to the new role before its operation ran, and
-    /// replayed from its run when the new role's drive attaches to it) is that executor's end: the
-    /// drive claims the next attempt for the admin the view names, it does not idle.
-    /// Must NOT happen: the new role's drive idling on the replay of an attempt it never ran, and
-    /// never claiming the attempt the old role handed it.
-    #[test]
-    fn an_attempt_another_executor_handed_to_this_admin_is_not_an_attempt_that_ended_incomplete() {
-        let me = rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
-        let old_role = rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
-        assert!(!ended_incomplete(&me, &old_role, &me.node_id, "w", "w"), "the old role's attempt, replayed to the new role's drive, moved nothing in this dispatch and is still not incomplete");
-        assert!(ended_incomplete(&me, &me, &me.node_id, "w", "w"), "an attempt this admin ran, handed back to it with nothing moved, ended incomplete");
-        assert!(!ended_incomplete(&me, &me, &me.node_id, "w", "w + a receipt"), "an attempt that moved something is progress, the next is claimed at once");
-        assert!(!ended_incomplete(&me, &me, &old_role.node_id, "w", "w"), "an attempt handed to another admin is that admin's");
-    }
-
-    // @feature: on-build-started-ended
-    #[test]
-    fn build_notices_deliver_started_and_ended_contexts_with_attempt_trace_and_emit_no_hook_when_unregistered() {
-        // docs/architecture/fabric-node-hooks.md:139 — "Each time a Build's first attempt is
-        // claimed, or an attempt that reopens a Build that has ended is claimed, the
-        // fabric-primary sends the application one `on_build_started` notice ... with
-        // `BuildStartedCtx { fabric_id, build_id, attempt, reason, context }`"
-        // docs/architecture/fabric-node-hooks.md:143 — "Each time a Build's terminal state is
-        // recorded, the fabric-primary sends the application one `on_build_ended` notice ... with
-        // `BuildEndedCtx { fabric_id, build_id, attempt, reason, state, context }`"
-        let capture = crate::span_capture::Capture::new("build-notices-unit");
-        let dispatch = capture.dispatch.clone();
-        let d = dispatch.clone();
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
-            .build()
-            .unwrap();
-        let _guard = tracing::dispatcher::set_default(&dispatch);
-
-        let fabric_id = rdm_core::FabricId::mint();
-        let build_id = BuildId::parse("amrrv6tggykq").unwrap();
-        let build_id_for_assert = build_id.clone();
-        let fabric_id_for_assert = fabric_id.clone();
-
-        let (started_ctx, ended_complete, ended_failed) = rt.block_on(async move {
-            let me: PathName = rdm_core::PathName::new("mesh1.node-admin", "1").unwrap();
-            let contexts = Arc::new(crate::build_claim::AttemptContexts::in_memory());
-            let call_ctx = CallContext {
-                caller_system: Some("test-caller".into()),
-                traceparent: Some(
-                    "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into(),
-                ),
-                tracestate: None,
-                baggage: Some("k=v".into()),
-            };
-            contexts.put(&build_id, 1, &call_ctx).await.unwrap();
-            contexts.put(&build_id, 2, &call_ctx).await.unwrap();
-
-            // 1. Unregistered `BuildNotices::default()` emits `outcome = "no-hook"` spans.
-            let unbound = BuildNotices::default();
-            unbound.started(
-                &me,
-                &contexts,
-                &build_id,
-                1,
-                crate::build_state::AttemptReason::Requested,
-                &call_ctx,
-            ).await;
-            unbound.ended(
-                &me,
-                &contexts,
-                &build_id,
-                1,
-                crate::build_state::AttemptReason::Requested,
-                crate::wiring::BuildEndedState::Complete,
-                &tracing::Span::none(),
-            ).await;
-
-            // 2. Registered `BuildNotices::of(fabric_id, &hooks)` delivers `BuildStartedCtx` and
-            //    `BuildEndedCtx` (`Complete` and `Failed`) with `outcome = "sent"`.
-            let (started_tx, mut started_rx) =
-                tokio::sync::mpsc::unbounded_channel::<crate::wiring::BuildStartedCtx>();
-            let (ended_tx, mut ended_rx) =
-                tokio::sync::mpsc::unbounded_channel::<crate::wiring::BuildEndedCtx>();
-            let hooks = crate::wiring::FabricHooks {
-                on_build_started: Some(Arc::new(move |ctx| {
-                    let _ = started_tx.send(ctx);
-                    Box::pin(async {})
-                })),
-                on_build_ended: Some(Arc::new(move |ctx| {
-                    let _ = ended_tx.send(ctx);
-                    Box::pin(async {})
-                })),
-                ..crate::wiring::FabricHooks::no_app_work()
-            };
-            // Each notice is sent from its event's write (build.md §5): the events store holds
-            // `rdm.build.started` and each `rdm.build.ended`, in the order they were written.
-            let events = Arc::new(crate::events_storage::MemoryEventsStorage::new());
-            let time = rdm_transport::clock::RafkaTime::unadopted();
-            time.adopt(1_000);
-            let source = crate::events_storage::EventSource { fabric_id: fabric_id.clone(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
-            let bound = BuildNotices::of(fabric_id.clone(), &hooks).writing_to(crate::events_storage::EventsWriter { events: events.clone(), source: source.clone(), time });
-            bound.started(
-                &me,
-                &contexts,
-                &build_id,
-                1,
-                crate::build_state::AttemptReason::Requested,
-                &call_ctx,
-            ).await;
-            let parent = tracing::info_span!("rdm.node_admin.build.update.via-dispatch");
-            bound.ended(
-                &me,
-                &contexts,
-                &build_id,
-                1,
-                crate::build_state::AttemptReason::Requested,
-                crate::wiring::BuildEndedState::Complete,
-                &parent,
-            ).await;
-            bound.ended(
-                &me,
-                &contexts,
-                &build_id,
-                2,
-                crate::build_state::AttemptReason::Delete,
-                crate::wiring::BuildEndedState::Failed {
-                    step: "node.create".into(),
-                    reason: "spawn refused".into(),
-                    code: rdm_core::outcome::Code::FailedPrecondition,
-                },
-                &parent,
-            ).await;
-
-            bound.dispatched(&me, &build_id, "mesh1").await;
-            let written: Vec<String> = crate::events_storage::EventsStorage::of_build(&*events, &build_id).await.unwrap().into_iter().map(|e| e.r#type).collect();
-            assert_eq!(written, [crate::events_storage::BUILD_STARTED, crate::events_storage::BUILD_ENDED, crate::events_storage::BUILD_ENDED, crate::events_storage::BUILD_DISPATCHED], "each Build-level event is written once, in order");
-
-            // 3. A writer that cannot write the event (no rafka-time) sends no notice.
-            let (silent_tx, mut silent_rx) = tokio::sync::mpsc::unbounded_channel::<crate::wiring::BuildStartedCtx>();
-            let silent_hooks = crate::wiring::FabricHooks {
-                on_build_started: Some(Arc::new(move |ctx| {
-                    let _ = silent_tx.send(ctx);
-                    Box::pin(async {})
-                })),
-                ..crate::wiring::FabricHooks::no_app_work()
-            };
-            let unwritten = BuildNotices::of(fabric_id.clone(), &silent_hooks).writing_to(crate::events_storage::EventsWriter { events: events.clone(), source, time: rdm_transport::clock::RafkaTime::unadopted() });
-            unwritten.started(&me, &contexts, &build_id, 3, crate::build_state::AttemptReason::Requested, &call_ctx).await;
-            assert!(silent_rx.try_recv().is_err(), "an event not written sends no notice");
-
-            let started_ctx = started_rx.recv().await.expect("started notice delivered");
-            let mut ended = vec![
-                ended_rx.recv().await.expect("first ended notice delivered"),
-                ended_rx.recv().await.expect("second ended notice delivered"),
-            ];
-            ended.sort_by_key(|c| c.attempt);
-            let ended_failed = ended.pop().unwrap();
-            let ended_complete = ended.pop().unwrap();
-            (started_ctx, ended_complete, ended_failed)
-        });
-        drop(rt);
-
-        assert_eq!(started_ctx.fabric_id, fabric_id_for_assert);
-        assert_eq!(started_ctx.build_id, build_id_for_assert.to_string());
-        assert_eq!(started_ctx.attempt, 1);
-        assert_eq!(
-            started_ctx.reason,
-            crate::build_state::AttemptReason::Requested
-        );
-        assert_eq!(started_ctx.context.baggage.as_deref(), Some("k=v"));
-
-        assert_eq!(ended_complete.fabric_id, fabric_id_for_assert);
-        assert_eq!(ended_complete.build_id, build_id_for_assert.to_string());
-        assert_eq!(ended_complete.attempt, 1);
-        assert_eq!(
-            ended_complete.state,
-            crate::wiring::BuildEndedState::Complete
-        );
-        assert_eq!(ended_complete.context.baggage.as_deref(), Some("k=v"));
-
-        assert_eq!(ended_failed.attempt, 2);
-        assert_eq!(ended_failed.reason, crate::build_state::AttemptReason::Delete);
-        assert_eq!(
-            ended_failed.state,
-            crate::wiring::BuildEndedState::Failed {
-                step: "node.create".into(),
-                reason: "spawn refused".into(),
-                code: rdm_core::outcome::Code::FailedPrecondition,
-            }
-        );
-
-        let started_spans = capture.named("rdm.node_admin.build.update.via-on-build-started");
-        assert!(
-            started_spans.iter().any(|s| s.attributes.get("outcome").map(String::as_str) == Some("event-not-written") && s.attributes.get("attempt").map(String::as_str) == Some("3")),
-            "expected via-on-build-started with outcome=event-not-written for the writer with no rafka-time"
-        );
-        assert!(
-            started_spans
-                .iter()
-                .any(|s| s.attributes.get("outcome").map(String::as_str) == Some("no-hook")),
-            "expected via-on-build-started with outcome=no-hook"
-        );
-        assert!(
-            started_spans.iter().any(|s| {
-                s.attributes.get("outcome").map(String::as_str) == Some("sent")
-                    && s.attributes.get("reason").map(String::as_str) == Some("requested")
-            }),
-            "expected via-on-build-started with outcome=sent and reason=requested"
-        );
-
-        let ended_spans = capture.named("rdm.node_admin.build.update.via-on-build-ended");
-        assert!(
-            ended_spans
-                .iter()
-                .any(|s| s.attributes.get("outcome").map(String::as_str) == Some("no-hook")),
-            "expected via-on-build-ended with outcome=no-hook"
-        );
-        assert!(
-            ended_spans.iter().any(|s| {
-                s.attributes.get("outcome").map(String::as_str) == Some("sent")
-                    && s.attributes.get("state").map(String::as_str) == Some("complete")
-            }),
-            "expected via-on-build-ended with outcome=sent and state=complete"
-        );
-        assert!(
-            ended_spans.iter().any(|s| {
-                s.attributes.get("outcome").map(String::as_str) == Some("sent")
-                    && s.attributes.get("state").map(String::as_str) == Some("failed")
-                    && s.attributes.get("reason").map(String::as_str) == Some("delete")
-            }),
-            "expected via-on-build-ended with outcome=sent, state=failed, and reason=delete"
-        );
     }
 }

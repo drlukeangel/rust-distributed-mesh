@@ -11,7 +11,7 @@
 use rdm_core::PathName;
 
 use rdm_client::{NodeStatus, NodeView};
-use rdm_test::estate::{claim_decider, descends_from, named, Estate, Owner};
+use rdm_test::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -52,7 +52,7 @@ fn end(sp: &Value) -> u64 {
 /// accepted Build (its entry join), and only then receives MeshStatus::Pending from the fabric
 /// primary, applied once through its status door without making it the elected primary; no create
 /// of mesh2's own membership starts before that Pending is applied; mesh2's primary is supplied by
-/// election afterwards; every attempt of the creation Build descends from its REST request. What
+/// election afterwards; the creation Build's section calls are in its request's trace. What
 /// must NOT happen: a member of mesh2 created before Pending, a second Pending applied, or the
 /// bootstrap admin taking a role by accepting Pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -78,7 +78,7 @@ async fn pending_contract(cell: &str) {
     // {mesh1} -> {mesh1, mesh2}, through the rectifier.
     let created = estate.resize_shape("fabric1", &[mesh("mesh1"), mesh("mesh2")]).await;
     let create = created.build_id.to_string();
-    let build = estate.carrier().await.build(&created.build_id).await.expect("build.get [id] of the creation Build");
+    let runs = estate.starts_of_build(&create).await;
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
     let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && n.is_primary).cloned().expect("mesh2 elects a primary");
     let fabric_primary = nodes.iter().find(|n| n.is_fabric_primary).cloned().expect("one fabric primary");
@@ -149,25 +149,18 @@ async fn pending_contract(cell: &str) {
         .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && of(d, &fabric_primary) && nodes.iter().any(|n| n.mesh == "mesh2" && n.r#type == "node-admin" && d["attributes"]["sender"] == n.node_id.as_str()) && d["attributes"]["outcome"] == "applied")
         .collect();
     assert!(mesh2_applied.len() <= 1, "mesh2's Ready is applied at most once by one fabric primary, whoever declared it: {mesh2_applied:?}");
-    // Every attempt the accepting fabric-primary decides descends from the REST request (the
-    // rectifier); an attempt decided after the role moved starts its own trace.
+    // The creation Build ran once, and its section call to mesh2 is in its request's trace: the
+    // fabric-primary that accepted it drove it and dispatched the section.
+    assert_eq!(runs, 1, "the creation Build ran once");
     let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's build.create span");
-    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()).collect();
-    assert!(!reconciles.is_empty(), "the creation Build was reconciled");
-    let accepting = claim_decider(&spans, create.as_str(), "1").expect("attempt 1 of the creation Build was claimed");
-    for r in &reconciles {
-        if claim_decider(&spans, create.as_str(), r["attributes"]["attempt"].as_str().unwrap_or_default()).is_none_or(|d| d == accepting) {
-            assert!(descends_from(&spans, r, &accepted), "every attempt the accepting fabric-primary decided descends from its request: {r}");
-        } else {
-            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the role moved starts its own trace: {r}");
-        }
-    }
+    let sections: Vec<&Value> = named(&spans, "rdm.node_admin.build.serve.via-attempt-run").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str() && r["attributes"]["mesh"] == "mesh2").collect();
+    assert!(!sections.is_empty(), "the creation Build's section of mesh2 was run");
+    assert!(sections.iter().any(|r| descends_from(&spans, r, &accepted)), "mesh2's section call descends from the creation Build's request: {sections:?}");
 
     let result = json!({
         "cell": cell,
         "build_id": create,
-        "attempt": build.attempt,
-        "executor": build.executor,
+        "runs": runs,
         "mesh2_primary": mesh2_primary.name,
         "provider": provider,
         "mesh2_runtimes": mesh2_runtimes,
@@ -181,7 +174,7 @@ async fn pending_contract(cell: &str) {
         "mesh_applied_span": mesh2_applied.first().map(|d| d["span_id"].clone()),
         "elected_ready_end": end(&elected_ready),
         "ready": {"span_id": ready["span_id"], "start": start(&ready)},
-        "reconciles": reconciles.len(),
+        "sections": sections.len(),
         "trace_id": accepted["trace_id"],
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
@@ -290,7 +283,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     let lost = before.iter().find(|n| n.location() == lost_admin).map(|n| n.mesh.clone()).expect("the lost admin's mesh");
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let admin_before = before.iter().find(|n| n.location() == lost_admin).cloned().unwrap();
-    let attempt_before = u64::from(estate.carrier().await.build(&built.build_id).await.expect("build.get [id] of the accepted Build").attempt);
+    let runs_before = estate.starts_of_build(&built.build_id.to_string()).await;
     estate.enter(&fabric_primary).await;
 
     // The fault: the lost mesh's only admin runtime, exactly.
@@ -409,7 +402,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
         "fabric_primary": fabric_primary,
         "mesh_id": mesh_id,
         "accepted_build": accepted,
-        "attempt_before": attempt_before,
+        "runs_before": runs_before,
         "admin_before": admin_inc,
         "admin_after": recovered["incarnation_id"],
         "handoffs": handoffs.len(),

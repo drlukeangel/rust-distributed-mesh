@@ -54,22 +54,20 @@ async fn rig(status: ScopeStatus) -> Rig {
     let t = view(status);
     let admin = t.nodes.iter().find(|n| n.is_fabric_primary).unwrap();
     let executor = rdm_core::framing::Birth { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().unwrap() };
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor, "mesh1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &executor).await.unwrap();
     let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t, crate::adopted_time()));
     Rig { executor, cp, builds }
 }
 
 impl Rig {
     async fn facts(&self) -> usize {
-        self.builds.facts().await.unwrap().len()
+        self.builds.accepted_newest_first().await.unwrap().len()
     }
 }
 
-/// The claim of `attempt` of `build` by this admin for itself, decided on its own log: the attempt runs.
-async fn running(r: &Rig, build: &rdm_admin::build::BuildId, attempt: u32) {
-    use rdm_admin::build_state::{BuildAttemptClaim, ClaimOutcome};
-    let claim = BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), build_id: build.clone(), attempt, executor: r.executor.clone(), claimant: Some(r.executor.node_id.clone()), mesh: None };
-    assert_eq!(r.builds.claim_attempt(&claim).await.unwrap(), ClaimOutcome::Won, "attempt {attempt} of {build} is claimed");
+/// A run of `build` by this admin began: its `rdm.build.started`.
+async fn running(r: &Rig, build: &rdm_admin::build::BuildId) {
+    crate::start_build(&*r.builds, build, &r.executor).await;
 }
 
 /// CONTRACT (build.md §1: "The one exception is fabric.delete, which may interrupt the Build in progress
@@ -82,7 +80,7 @@ async fn running(r: &Rig, build: &rdm_admin::build::BuildId, attempt: u32) {
 async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress_and_standalone_deletes_stay_refused() {
     let r = rig(ScopeStatus::Pending).await;
     let grow = r.cp.submit("test", crate::named_request(&r.cp, move |t: &rdm_admin::topology::Topology| crate::grown_by_one(t, "mesh1", "node")).await).await.expect("growth is admitted before the first ready");
-    running(&r, &grow.build_id, 1).await;
+    running(&r, &grow.build_id).await;
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(grow.build_id.clone()), "the growth Build is in progress");
     let view = r.cp.topology.read().await.clone();
     for change in [BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() }, crate::removed(&view, &[rdm_core::PathName::new("mesh1.node", "1").unwrap()])] {
@@ -94,8 +92,7 @@ async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress
     let before = r.facts().await;
     let delete = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("fabric.delete is admitted before the first ready while a Build is in progress: {e:?}"));
     assert_ne!(delete.build_id, grow.build_id, "the delete is a Build of its own");
-    assert_eq!((delete.attempt, delete.mesh.as_deref()), (1, None));
-    assert_eq!(r.facts().await, before + 1, "the delete's acceptance is the one fact written");
+    assert_eq!(r.facts().await, before + 1, "the delete's acceptance is the one record written");
     assert_eq!(r.builds.current_build().await.unwrap(), rdm_admin::build_state::CurrentBuild::InProgress(delete.build_id.clone()), "the delete is the current Build from its acceptance");
     match r.cp.submit("test", crate::named_request(&r.cp, move |_: &rdm_admin::topology::Topology| rdm_core::build::BuildChange::Delete { meshes: vec!["mesh2".into()], node_ids: Vec::new() }).await).await {
         Err(Refusal::BuildInProgress(_)) => {}
@@ -104,25 +101,26 @@ async fn a_fabric_delete_before_the_first_ready_interrupts_the_build_in_progress
 }
 
 /// CONTRACT (build.md §1: "a successor fabric-primary reads the delete as the current Build and continues
-/// the teardown"; "An operation that fails to end within its bound fails the delete's attempt by name, the
-/// intent retained"; "No other Build ends another"): a second fabric.delete while the first is in
-/// progress answers the first, at the attempt it stands at, and accepts nothing; once the first's attempt
-/// failed, a fabric.delete answers its next attempt and still accepts nothing. What must NOT happen: a
-/// second delete Build accepted, interrupting the first.
+/// the teardown"; "An operation that fails to end within its bound fails the delete by name, the intent
+/// retained"; "No other Build ends another"): a second fabric.delete while the first is in progress
+/// answers the first and accepts nothing; once the first ended incomplete, a fabric.delete resumes it and
+/// still accepts nothing. What must NOT happen: a second delete Build accepted, interrupting the first.
 #[tokio::test]
 async fn a_second_fabric_delete_resumes_the_first_in_progress_or_failed_and_accepts_no_build() {
-    use rdm_admin::build_state::{AttemptOutcome, BuildAttemptReceipt};
+
     let r = rig(ScopeStatus::Pending).await;
     let first = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("fabric.delete is admitted: {e:?}"));
     let before = r.facts().await;
     let again = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("a second fabric.delete resumes the first: {e:?}"));
-    assert_eq!((&again.build_id, again.attempt), (&first.build_id, 1), "the second delete answers the first at its attempt");
+    assert_eq!(again.build_id, first.build_id, "the second delete answers the first");
     assert_eq!(r.facts().await, before, "nothing is accepted");
-    running(&r, &first.build_id, 1).await;
-    let failed = BuildAttemptReceipt { build_id: first.build_id.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh.delete:x: a member did not end within its bound".into(), code: rdm_core::outcome::Code::DeadlineExceeded }, mesh: None };
-    r.builds.append_attempt_receipt(&failed).await.unwrap();
+    running(&r, &first.build_id).await;
+    // A failed step ends its section and the Build ends incomplete (Q346).
+    let source = rdm_admin::events_storage::EventSource { fabric_id: crate::cell_fabric(), node_id: r.executor.node_id.clone(), incarnation: r.executor.incarnation.clone() };
+    let incomplete = rdm_admin::events_storage::EndedState::Incomplete { sections: vec![rdm_admin::events_storage::EndedSection { mesh: "mesh1".into(), op: "mesh.delete:x".into(), step: "MeshDeleted".into(), reason: "a member did not end within its bound".into(), code: "DEADLINE_EXCEEDED".into() }] };
+    r.builds.events().append(&rdm_admin::events_storage::Event::build_ended(&source, 2, &first.build_id, &incomplete)).await.unwrap();
     let before = r.facts().await;
-    let resumed = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("a fabric.delete after the first's attempt failed resumes it: {e:?}"));
-    assert_eq!((&resumed.build_id, resumed.attempt), (&first.build_id, 2), "the failed delete is resumed at its next attempt");
+    let resumed = r.cp.submit("test", BuildChange::DeleteFabric).await.unwrap_or_else(|e| panic!("a fabric.delete after the first ended incomplete resumes it: {e:?}"));
+    assert_eq!(resumed.build_id, first.build_id, "the incomplete delete is resumed");
     assert_eq!(r.facts().await, before, "nothing is accepted");
 }

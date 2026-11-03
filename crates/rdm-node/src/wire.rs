@@ -32,8 +32,7 @@ pub struct JoinControl {
     pub provider: crate::model::ProviderKind,
     /// The Fabric identity the admin holds.
     pub fabric: Option<FabricIdentity>,
-    /// The answering admin's current Build and its attempt: the joiner's copy of that Build's facts
-    /// must reach the attempt before Ready.
+    /// The answering admin's current Build: the joiner holds that Build's record before Ready.
     pub build: Option<BuildFloor>,
     /// The answering admin's rafka-time now, in milliseconds: the joiner adopts it as it stands.
     /// An admin that holds no rafka-time answers `NotReady` naming why and builds no answer.
@@ -52,13 +51,11 @@ pub struct JoinControl {
     pub cert_policy: Option<rdm_core::certs::CertPolicy>,
 }
 
-/// The answering admin's current Build, and the attempt a joiner's copy of it must reach before Ready.
+/// The answering admin's current Build, which a joiner holds the record of before Ready.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildFloor {
     /// The Build.
     pub build_id: BuildId,
-    /// The attempt.
-    pub attempt: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -83,7 +80,6 @@ struct WireControl {
 #[derive(Serialize, Deserialize)]
 struct WireBuildFloor {
     build_id: BuildId,
-    attempt: u32,
 }
 
 /// `answer` as one postcard frame.
@@ -94,7 +90,7 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
         control: WireControl {
             provider: c.provider,
             fabric: c.fabric.as_ref().map(|r| WireFabricIdentity { fabric_id: r.fabric_id.clone(), name: r.name.clone() }),
-            build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone(), attempt: b.attempt }),
+            build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone() }),
             rafka_time_ms: c.rafka_time_ms,
             member_cert: c.member_cert.clone(),
             name: c.name.clone(),
@@ -113,7 +109,7 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
         control: JoinControl { cert_policy: w.control.cert_policy,
             provider: w.control.provider,
             fabric: w.control.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
-            build: w.control.build.map(|b| BuildFloor { build_id: b.build_id, attempt: b.attempt }),
+            build: w.control.build.map(|b| BuildFloor { build_id: b.build_id }),
             rafka_time_ms: w.control.rafka_time_ms,
             member_cert: w.control.member_cert,
             name: w.control.name,

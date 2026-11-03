@@ -62,7 +62,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
         let template = template(&admin);
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::common::stepping(&fabric, "mesh1");
         let sink = Published::default();
         let provider = ProcessDeploymentProvider::new();
         let recorder = Recorder::default();
@@ -77,13 +77,13 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
             timeouts: Timeouts::default(),
         };
         let first = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(publish_build(&builds, add_node()).await), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(publish_build(&builds, add_node()).await), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_or_else(|e| panic!("create: {e}"));
 
         let leave_build = publish_build(&builds, add_node()).await;
         let terminal = pipeline
-            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(leave_build.clone()), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), unreached: false })
+            .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(leave_build.clone()), node: first.node.clone(), handle: first.handle.clone(), unreached: false })
             .await
             .unwrap_or_else(|e| panic!("the member's node.delete: {e}"));
         assert!(matches!(provider.inspect(&first.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the member's runtime is proven exited");
@@ -105,7 +105,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
         assert_eq!(stopped.len(), 1, "NodeStopped once: {stopped:?}");
         let op = &stopped[0];
         assert!(op.is_stop(), "a stop overlay, told from a restart or a removal by its operation: {op:?}");
-        assert_eq!((op.build_id.as_str(), op.attempt), (leave_build.as_str(), 1), "the leave's Build and attempt");
+        assert_eq!(op.build_id.as_str(), leave_build.as_str(), "the leave's Build");
         assert_eq!(op.node_id, first.node.node_id, "the exact member");
         assert_eq!(Some(&op.incarnation), first.node.incarnation_id.as_ref(), "the exact birth");
         assert_eq!(op.name, first.node.name);

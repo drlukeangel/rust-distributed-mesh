@@ -285,7 +285,7 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
         let fabric = estate.fabric_view().await;
         assert_eq!((fabric.status, fabric.build_id.as_deref()), (ScopeStatus::Pending, Some(build.as_str())), "the fabric is held pending under {build}");
         let got = carrier.build(&id).await.unwrap_or_else(|e| panic!("build.get [id: {build}]: {e}"));
-        assert_ne!(got.phase, rdm_core::build::BuildPhase::Complete, "build.get says {build} Complete at attempt {} while fabric.get says pending under it", got.attempt);
+        assert_ne!(got.phase, rdm_core::build::BuildPhase::Complete, "build.get says {build} Complete while fabric.get says pending under it");
         if let Ok(Some(frame)) = tokio::time::timeout(Duration::from_millis(250), stream.next()).await {
             let frame = frame.unwrap_or_else(|e| panic!("the stream of Build {build} broke while the fabric was held pending: {e}"));
             assert!(!matches!(frame, BuildFrame::Complete { .. } | BuildFrame::Failed { .. }), "Build {build} ended {frame:?} while fabric.get says pending under it");
@@ -298,26 +298,25 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
     estate.stop().await;
 
     // The order, from the spans: the fabric entered ready under this Build's change before the
-    // attempt that completed it was dispatched.
+    // dispatch that completed it.
     let spans = estate.spans();
     let (_, change) = change_of(&spans, &build);
     let ready = change.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "ready").unwrap_or_else(|| panic!("the fabric entered ready under the change of {build}"));
     let completed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| sp["attributes"]["build_id"] == build.as_str() && sp["attributes"]["outcome"] == "complete").unwrap_or_else(|| panic!("the attempt that completed {build} is spanned"));
-    let Some(BuildFrame::Complete { attempt }) = done.frames.last() else { panic!("Build {build} ended {:?}", done.frames.last()) };
-    assert_eq!(num(&completed["attributes"]["attempt"]), Some(u64::from(*attempt)), "the dispatch span is of the attempt the stream reported Complete: {completed}");
-    assert!(start(ready) <= start(completed), "the fabric entered ready under {build} ({}) before the attempt that completed it was dispatched ({}): {completed}", start(ready), start(completed));
+    let Some(BuildFrame::Complete { }) = done.frames.last() else { panic!("Build {build} ended {:?}", done.frames.last()) };
+    assert!(start(ready) <= start(completed), "the fabric entered ready under {build} ({}) before the dispatch that completed it ({}): {completed}", start(ready), start(completed));
     estate.record_trace_url(&s(&ready["trace_id"]));
 }
 
-/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`, Q256: "Each time a Build's first
-/// attempt is claimed ... the fabric-primary sends the application one `on_build_started` notice"; "Each
+/// CONTRACT (fabric-node-hooks.md `on_build_started`, `on_build_ended`, Q256: "Each time the fabric-primary
+/// writes a Build's `rdm.build.started` event ... it sends the application one `on_build_started` notice"; "Each
 /// time a Build's terminal state is recorded, the fabric-primary sends the application one
 /// `on_build_ended` notice"; "A Build that put the fabric back to pending completes when its ready state is
 /// set, so its `Complete` notice follows its `on_fabric_ready`"; "Each `on_build_started` is followed by
 /// one `on_build_ended` for the same opening"): a resize (mesh1.node.1 added, the fabric back to pending)
 /// and a Create of one more node (Q342: a Build adds or removes nodes) each send one
-/// `on_build_started` (attempt 1, reason `requested`) and after it one `on_build_ended` `Complete`
-/// naming the attempt that completed it, and the testkit application is told each once; the resize's
+/// `on_build_started` and after it one `on_build_ended` `Complete`, and the testkit application is told
+/// each once; the resize's
 /// ending follows its `on_fabric_ready`. Must NOT happen: an opening or ending the application is never
 /// told of or told twice, or an ending before its opening.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -335,18 +334,15 @@ async fn every_build_sends_one_started_then_one_ended_and_a_resizes_ending_follo
     estate.stop().await;
 
     let spans = estate.spans();
-    let completed_at = |r: &rdm_test::typed::Completed| match r.frames.last() {
-        Some(BuildFrame::Complete { attempt }) => u64::from(*attempt),
-        other => panic!("Build {} ended {other:?}", r.build_id),
-    };
     let of = |name: &str, build: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["build_id"] == build).cloned().collect() };
     for (what, build, done) in [("the resize", &resize_id, &resize), ("the Create of one node", &created_id, &created)] {
         let started = of("rdm.node_admin.build.update.via-on-build-started", build);
         let ended = of("rdm.node_admin.build.update.via-on-build-ended", build);
         assert_eq!((started.len(), ended.len()), (1, 1), "{what} {build} sends one on_build_started and one on_build_ended: {started:?} {ended:?}");
         let (st, en) = (&started[0], &ended[0]);
-        assert_eq!((s(&st["attributes"]["outcome"]), num(&st["attributes"]["attempt"]), s(&st["attributes"]["reason"])), ("sent".to_string(), Some(1), "requested".to_string()), "{what}'s opening is its first attempt's claim: {st}");
-        assert_eq!((s(&en["attributes"]["outcome"]), num(&en["attributes"]["attempt"]), s(&en["attributes"]["state"])), ("sent".to_string(), Some(completed_at(done)), "complete".to_string()), "{what}'s ending names the attempt that completed it: {en}");
+        assert_eq!(s(&st["attributes"]["outcome"]), "sent", "{what}'s opening is sent: {st}");
+        assert!(matches!(done.frames.last(), Some(BuildFrame::Complete)), "{what} {build} ended {:?}", done.frames.last());
+        assert_eq!((s(&en["attributes"]["outcome"]), s(&en["attributes"]["state"])), ("sent".to_string(), "complete".to_string()), "{what}'s ending is sent, complete: {en}");
         assert!(start(st) <= start(en), "{what}'s opening ({}) comes before its ending ({})", start(st), start(en));
         for app in ["rdm.testkit.app.update.via-on-build-started", "rdm.testkit.app.update.via-on-build-ended"] {
             assert_eq!(of(app, build).len(), 1, "the application is told {app} once for {what} {build}");
@@ -530,12 +526,12 @@ async fn the_store_root_holds_every_day_0_row_and_a_growth_writes_straight_to_it
 
 /// CONTRACT (states.md "The fabric's ready": the fabric is ready once every planned mesh is
 /// ready (Q174); gossip.md §3.2: timers only for heartbeat and anti-entropy): the Day-0 Build's
-/// change finds every mesh ready when its attempt is claimed; a Build adding a member to a ready mesh puts
+/// change finds every mesh ready when its run starts; a Build adding a member to a ready mesh puts
 /// the fabric back to pending, and the fabric-primary finds every mesh ready when the last planned member's
 /// ready is applied, and announces that member's node-type primary then, never on its next gossip interval. The estate runs at
 /// the default gossip interval (2 s), so a wait on that interval is a gap of up to 2 s; the bound is a
 /// quarter of it. Must NOT happen: the fabric, or the node-type primary's announcement, waiting for the
-/// gossip interval after the claim or the member's ready.
+/// gossip interval after the start or the member's ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_planned_members_ready() {
     let test = "the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_planned_members_ready";
@@ -543,7 +539,7 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
     let sha = candidate_sha();
     let env = [("RDM_GOSSIP_INTERVAL_MS", "2000"), ("RDM_BACKBONE_INTERVAL_MS", "2000"), ("RDM_STALENESS_MS", "30000")];
     let mut estate = Estate::bootstrap_on_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["node"], &env).await.expect("the faulted-admin binding set is accepted");
-    // The Day-0 Build's change ends first: the admin alone, whose attempt's claim is the last thing the fabric waits on.
+    // The Day-0 Build's change ends first: the admin alone, whose Build's start is the last thing the fabric waits on.
     until_fabric(&estate, ScopeStatus::Ready, None, Duration::from_secs(60)).await;
     let build = estate.resize(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [("node-admin", 1), ("node", 1)])] }).await.build_id.to_string();
     until_fabric(&estate, ScopeStatus::Ready, Some(build.as_str()), Duration::from_secs(60)).await;
@@ -564,21 +560,20 @@ async fn the_fabric_is_ready_and_announces_the_node_type_primary_at_the_last_pla
         .filter(|a| a["attributes"]["role"] == "node-primary" && a["attributes"]["via"] == "own" && a["attributes"]["node"] == primary.node_id.as_str())
         .min_by_key(|a| start(a))
         .expect("the mesh-primary announced mesh1's `node` primary");
-    // The Day-0 Build: the first Build whose change found every mesh ready, and its attempt's claim. The
-    // attempt is claimed when the claim decision ends (its in-flight row and its claim written): the
-    // fabric-primary's reaction is measured from there, the claim's own reads and writes are not the wait.
+    // The Day-0 Build: the first Build whose change found every mesh ready, and its start. The Build is
+    // started when its `rdm.build.started` is written (the on_build_started span, from that write): the
+    // fabric-primary's reaction is measured from its end, the write itself is not the wait.
     let day0 = named(&spans, "rdm.node_admin.fabric.update.via-change").into_iter().filter(|r| r["attributes"]["build_id"] != build.as_str()).min_by_key(|r| start(r)).map(|r| s(&r["attributes"]["build_id"])).expect("the Day-0 Build's change");
     let (_, day0_change) = change_of(&spans, &day0);
     let day0_entered = day0_change.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-every-mesh-ready").expect("every mesh was ready under the Day-0 change");
-    let day0_claimed = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|c| c["attributes"]["build_id"] == day0.as_str() && c["attributes"]["outcome"] == "won").min_by_key(|c| start(c)).expect("the Day-0 Build's attempt was claimed");
+    let day0_started = named(&spans, "rdm.node_admin.build.update.via-on-build-started").into_iter().filter(|c| c["attributes"]["build_id"] == day0.as_str()).min_by_key(|c| start(c)).expect("the Day-0 Build started");
     let ms = |from: &Value, to: &Value| (start(to) as i128 - start(from) as i128) / 1_000_000;
-    let claim_decided = day0_claimed["end_unix_nano"].as_u64().expect("the Day-0 claim decision span carries its end");
-    let claim_decision_ms = (claim_decided as i128 - start(day0_claimed) as i128) / 1_000_000;
-    let (to_checklist, to_announced, claim_to_checklist) = (ms(ready, entered), ms(ready, announced), (start(day0_entered) as i128 - claim_decided as i128) / 1_000_000);
-    estate.artifact("gaps.json", &json!({ "ready_to_every_mesh_ready_ms": to_checklist, "ready_to_announced_ms": to_announced, "day0_claim_to_every_mesh_ready_ms": claim_to_checklist, "day0_claim_decision_ms": claim_decision_ms, "gossip_interval_ms": gossip.as_millis() as u64 }));
-    eprintln!("ready -> every mesh ready {to_checklist} ms, ready -> node-primary announced {to_announced} ms, Day-0 claim decided -> every mesh ready {claim_to_checklist} ms (the claim decision itself {claim_decision_ms} ms; gossip interval {} ms)", gossip.as_millis());
+    let started = day0_started["end_unix_nano"].as_u64().expect("the Day-0 started span carries its end");
+    let (to_checklist, to_announced, start_to_checklist) = (ms(ready, entered), ms(ready, announced), (start(day0_entered) as i128 - started as i128) / 1_000_000);
+    estate.artifact("gaps.json", &json!({ "ready_to_every_mesh_ready_ms": to_checklist, "ready_to_announced_ms": to_announced, "day0_started_to_every_mesh_ready_ms": start_to_checklist, "gossip_interval_ms": gossip.as_millis() as u64 }));
+    eprintln!("ready -> every mesh ready {to_checklist} ms, ready -> node-primary announced {to_announced} ms, Day-0 started -> every mesh ready {start_to_checklist} ms (gossip interval {} ms)", gossip.as_millis());
     let bound = (gossip / 4).as_millis() as i128;
-    assert!(claim_to_checklist < bound, "the Day-0 fabric found every mesh ready {claim_to_checklist} ms after its Build's attempt was claimed (the claim decision ended), not within {bound} ms: it waited for the gossip interval");
+    assert!(start_to_checklist < bound, "the Day-0 fabric found every mesh ready {start_to_checklist} ms after its Build started, not within {bound} ms: it waited for the gossip interval");
     assert!(to_checklist < bound, "the fabric found every mesh ready {to_checklist} ms after mesh1.node.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
     assert!(to_announced < bound, "the `node` primary was announced {to_announced} ms after mesh1.node.1's ready was applied, not within {bound} ms: it waited for the gossip interval");
     estate.record_trace_url(&s(&entered["trace_id"]));

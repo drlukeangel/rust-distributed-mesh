@@ -587,11 +587,10 @@ async fn a_start_preserves_a_newer_owed_update() {
 /// is re-created through node recovery, never waited for"; Q335 item 4): mesh2's `mesh2.node` / `2` is
 /// deleted and a new node created at the pair (Q345). Every node-admin is then lost and one is started on the
 /// fabric-primary's retained data dir and store. Its first node.get answer by the pair names the
-/// successor, read from the retained records; the current Build is unchanged, and an attempt it opens
-/// after the start is a node recovery of a lost node-admin (mesh2's, which no successor holds), never a
-/// completed attempt run again; the shape settles. The resolver records the read of the successor.
-/// Must NOT happen: the fresh fabric-primary naming the deleted birth, or nothing, at the pair; an
-/// attempt run again; a new attempt that is not a lost node-admin's node recovery.
+/// successor, read from the retained records; the current Build is unchanged and not started again (a
+/// lost node-admin's node recovery is never a Build, Q342); the shape settles. The resolver records the
+/// read of the successor. Must NOT happen: the fresh fabric-primary naming the deleted birth, or nothing,
+/// at the pair; the Build started again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn current_node_reads_survive_fabric_primary_restart() {
     let test = "current_node_reads_survive_fabric_primary_restart";
@@ -603,7 +602,7 @@ async fn current_node_reads_survive_fabric_primary_restart() {
     Estate::workflow(&format!("the Create of a node at {subject:?}"), estate.create_node(&before.mesh, &before.r#type).await).await;
     let successor = estate.until_node(&subject, "the new node is ready at the pair", Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::Ready && n.node_id != before.node_id).cloned()).await;
     let build = estate.accepted_build_id().await;
-    let attempt = estate.attempt_of_build(&build).await;
+    let starts = estate.starts_of_build(&build).await;
     let admins: Vec<String> = estate.node_views().await.into_iter().filter(|n| n.r#type == "node-admin").map(|n| n.node_id.to_string()).collect();
     for (dir, pid) in estate.live_runtimes() {
         if admins.contains(&dir.file_name().unwrap().to_string_lossy().to_string()) {
@@ -611,7 +610,6 @@ async fn current_node_reads_survive_fabric_primary_restart() {
         }
     }
     estate.kill_bootstrap();
-    let restart_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let fp_dir = estate.bootstrap_data_dir("mesh1");
     let restarted = estate.restart_admin_with(&fp_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
     estate.enter(&restarted).await;
@@ -621,26 +619,18 @@ async fn current_node_reads_survive_fabric_primary_restart() {
     .await;
     assert_eq!(first.iter().map(|n| n.node_id.clone()).collect::<Vec<_>>(), vec![successor.node_id.clone()], "the fresh fabric-primary's first answer names the successor at the pair: {first:#?}");
     assert_eq!(estate.accepted_build_id().await, build, "no new Build");
-    let attempt_at_read = estate.attempt_of_build(&build).await;
+    let starts_at_read = estate.starts_of_build(&build).await;
     estate.settles_to(&shape, Duration::from_secs(240)).await;
     let fp = fabric_primary(&estate).await;
-    estate.artifact("fabric-primary-restart.json", &json!({"before": before, "successor": successor, "first": first, "build": build, "attempt": attempt}));
+    estate.artifact("fabric-primary-restart.json", &json!({"before": before, "successor": successor, "first": first, "build": build, "starts": starts}));
     estate.stop().await;
     let spans = estate.spans();
     let read = named(&spans, "rdm.node_admin.node.resolve.via-lifecycle-record")
         .into_iter()
         .find(|sp| attr(sp, "subject_id") == successor.node_id.as_str() && attr(sp, "node_id") == fp.as_str() && attr(sp, "outcome") == "read")
         .unwrap_or_else(|| panic!("the restarted fabric-primary {fp}'s resolver records its read of the successor {}'s latest line (i150 OTLP table, rdm.node_admin.node.resolve.via-lifecycle-record, outcome read)", successor.node_id));
-    // No completed attempt runs again after the start.
-    let again: Vec<&Value> = named(&spans, "rdm.node_admin.build.serve.via-attempt-run").into_iter().filter(|sp| start_ns(sp) >= restart_ns && attr(sp, "attempt").parse::<u64>().is_ok_and(|a| a <= attempt)).collect();
-    assert!(again.is_empty(), "no completed attempt runs again: {again:#?}");
-    // Each attempt opened after the start, to the first read, is a lost node-admin's node recovery.
-    let recoveries = named(&spans, "rdm.node_admin.build.update.via-recovery");
-    for n in attempt + 1..=attempt_at_read {
-        assert!(
-            recoveries.iter().any(|sp| start_ns(sp) >= restart_ns && attr(sp, "attempt") == n.to_string() && attr(sp, "route") == "node-recovery" && admins.contains(&attr(sp, "node_id"))),
-            "attempt {n}, opened after the start, is a lost node-admin's node recovery: {recoveries:#?}"
-        );
-    }
+    // The Build is not started again after the start: a lost node-admin's node recovery is the
+    // primary's own workflow, never a Build (Q342).
+    assert_eq!(starts_at_read, starts, "the current Build is not started again after the start");
     estate.record_trace_url(read["trace_id"].as_str().unwrap());
 }

@@ -9,8 +9,8 @@
 
 use rdm_admin::accepted::{plan_for_build, AcceptedStore, FabricTopology};
 use rdm_admin::build::{BuildOperation, PinnedBirth};
-use rdm_admin::build_claim::AttemptContexts;
-use rdm_admin::build_state::{BuildStateAdapter, LocalBuildLog, MemoryBuildStateAdapter};
+
+use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::ControlPlane;
 use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
@@ -52,10 +52,8 @@ fn birth(t: &Topology, path: &PathName) -> PinnedBirth {
 
 async fn control_plane(t: &Topology) -> (Arc<MemoryBuildStateAdapter>, ControlPlane) {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
-    let contexts = Arc::new(MemoryBuildStateAdapter::new());
-    let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time())
-        .with_contexts(Arc::new(AttemptContexts::on(contexts as Arc<dyn LocalBuildLog>)));
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(t), &t.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap()).await.unwrap();
+    let mut cp = crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t.clone(), crate::adopted_time());
     // The node records a create writes: the gates read a birth from its record, never from the gossip view (Q207).
     crate::bind_records(&cp, &[t]).await;
     cp.topology = Arc::new(tokio::sync::RwLock::new(t.clone()));
@@ -132,60 +130,6 @@ async fn the_check_hands_the_operation_only_the_pinned_birth() {
     let mut gone = t.clone();
     gone.nodes.retain(|n| n.location() != path);
     assert_eq!(pinned.held_in(&gone, &rdm_core::OperationId::node("node.delete", &pinned.node_id), &path), Ok(None));
-}
-
-struct AtlasGate(Option<PinnedBirth>);
-
-#[async_trait::async_trait]
-impl rdm_admin::build_drive::Gate for AtlasGate {
-    async fn atlas_birth(&self, _node_id: &NodeId, _observed: &Topology) -> Result<Option<rdm_admin::accepted::AtlasBirth>, String> {
-        Ok(Some(rdm_admin::accepted::AtlasBirth(self.0.clone())))
-    }
-}
-
-struct PinnedRunner {
-    topology: Arc<tokio::sync::RwLock<Topology>>,
-    builds: Arc<MemoryBuildStateAdapter>,
-    permanent_error: std::sync::atomic::AtomicBool,
-    acted_on: std::sync::Mutex<Vec<PinnedBirth>>,
-}
-
-#[async_trait::async_trait]
-impl rdm_admin::executor::OperationRunner for PinnedRunner {
-    async fn run(&self, build: &rdm_admin::build::BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
-        let BuildOperation::StopNode { path, name, node_id, from_incarnation, .. } = op else {
-            return Err(rdm_admin::executor::RunEnd::failed(format!("unexpected operation: {op:?}")));
-        };
-        let node = &rdm_core::PathName { path: path.clone(), name: name.clone() };
-        let pin = PinnedBirth { mesh: op.mesh().unwrap().to_owned(), r#type: op.r#type().unwrap(), node_id: node_id.clone(), incarnation: from_incarnation.clone() };
-        let held = pin
-            .held_in(&*self.topology.read().await, &op.key(), node)
-            .map_err(|r| rdm_admin::executor::RunEnd::failed(r.to_string()))?;
-        let Some(held) = held else {
-            return Err(rdm_admin::executor::RunEnd::Incomplete(format!("{:?}: birth {} at incarnation {} is not in this admin's view", op.key(), pin.node_id, pin.incarnation.as_str())));
-        };
-        if self.permanent_error.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(rdm_admin::executor::RunEnd::failed(format!("{:?}: permanent runtime failure on {}", op.key(), held.node_id)));
-        }
-        let actual = PinnedBirth::of(&held).expect("held birth has an incarnation");
-        self.acted_on.lock().unwrap().push(actual);
-        for step in ["StopNode", "Complete"] {
-            self.builds
-                .append_step_receipt(&rdm_admin::build_state::BuildStepReceipt {
-                    mesh: None,
-                    build_id: build.clone(),
-                    attempt,
-                    operation: op.key(),
-                    step: step.into(),
-                    outcome: rdm_admin::build_state::StepOutcome::Complete,
-                    output: None,
-                    executor: None,
-                })
-                .await
-                .map_err(|e| rdm_admin::executor::RunEnd::failed(e.to_string()))?;
-        }
-        Ok(())
-    }
 }
 
 

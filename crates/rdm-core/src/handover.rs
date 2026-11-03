@@ -41,9 +41,7 @@ pub enum NodePrimaryUpdateRequest {
         primaries: Vec<(String, Birth, Birth, u64)>,
         /// The Build whose stop, delete, replace or node.connection.delete the update precedes.
         build_id: String,
-        /// The run of that Build: the first attempt of the series a submission opened.
-        run: u32,
-        /// The update's operation identity, `node.primary.update:<build_id>:<run>:<op>`.
+        /// The update's operation identity, `node.primary.update:<op>`.
         operation: crate::OperationId,
     },
     /// node.primary.update commanded from above, on the primary of `type` in the receiver's mesh,
@@ -55,8 +53,6 @@ pub enum NodePrimaryUpdateRequest {
         r#type: String,
         /// The Build whose stop, delete, replace or node.connection.delete the update precedes.
         build_id: String,
-        /// The run of that Build.
-        run: u32,
         /// The update's operation identity.
         operation: crate::OperationId,
         /// The successor's exact birth, named by the mesh-primary's pre-check (node-primary-update.md step
@@ -228,7 +224,7 @@ impl NodePrimaryUpdateReply {
 impl NodeProtocol for NodePrimaryUpdate {
     const OP: u8 = 0x21;
     const NAME: &'static str = "node-primary-update";
-    /// Two entries, each a node type, two exact births and a revision, a Build id, its run and an
+    /// Two entries, each a node type, two exact births and a revision, a Build id and an
     /// operation identity.
     const MAX_REQUEST_FRAME_BYTES: usize = 2048;
     /// One reply: an enum tag and at most one reason string, or two entries, within their budgets.

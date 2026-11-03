@@ -10,7 +10,7 @@
 
 use rdm_admin::accepted::{AcceptedStore, FabricTopology};
 use rdm_admin::build::{BuildId, MeshDesired};
-use rdm_admin::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::control_plane::{ControlPlane, Refusal};
 use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
@@ -43,23 +43,19 @@ fn mesh(name: &str) -> MeshDesired {
 async fn fabric_primary() -> (Arc<ControlPlane>, Arc<MemoryBuildStateAdapter>, BuildId) {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = observed();
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap(), "mesh1").await.unwrap();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), &t.node(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap()).await.unwrap();
     let cp = Arc::new(crate::control_plane(builds.clone(), accepted, rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), t, crate::adopted_time()));
-    let b0 = builds.list_active().await.unwrap();
-    assert!(b0.is_empty(), "the seeded Build is settled: {b0:?}");
-    let facts = builds.facts().await.unwrap();
-    let b0 = facts.first().expect("the seeded Build's acceptance").build_id().clone();
+    let b0 = builds.accepted_newest_first().await.unwrap().last().cloned().expect("the seeded Build's acceptance");
+    assert_eq!(builds.read_build(&b0).await.unwrap().state, rdm_admin::build_state::BuildState::Complete, "the seeded Build is complete");
     (cp, builds, b0)
 }
 
 async fn fail(builds: &MemoryBuildStateAdapter, id: &BuildId, executor: &rdm_core::framing::Birth) {
-    let attempt = builds.read_build(id).await.unwrap().attempt + 1;
-    builds.claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: id.clone(), attempt, executor: executor.clone() }).await.unwrap();
-    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the cell fails it".into() , code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
+    crate::end_build(builds, id, executor, rdm_admin::events_storage::EndedState::Failed { reason: "the cell fails it".into(), code: "FAILED_PRECONDITION".into() }).await;
 }
 
 /// CONTRACT (R-BI3: "failed Builds are skipped. A failed Build is never current"; "completed: it is
-/// the known state"): a Build whose attempt failed is not the topology the next change compiles
+/// the known state"): a Build that ended failed is not the topology the next change compiles
 /// against. B0 is complete, B1 (add mesh2) is accepted and fails; the next change (add mesh3)
 /// compiles against B0, so the Build it makes holds mesh1 and mesh3 and never mesh2.
 #[tokio::test]

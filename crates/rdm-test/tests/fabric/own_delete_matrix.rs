@@ -127,12 +127,12 @@ async fn deleted_inside_the_bound(estate: &mut Estate, node: &PathName, target: 
         let left = DELETE_BOUND.saturating_sub(begun.elapsed());
         let followed = tokio::time::timeout(left, async {
             estate.enter_by_id(&fp).await;
-            estate.resume(&accepted.build_id, accepted.attempt).await
+            estate.resume(&accepted.build_id).await
         }).await.unwrap_or_else(|_| panic!("node.delete of {node:?} followed at {fp} reached no Complete within {DELETE_BOUND:?} of its acceptance: {replies:?}"));
         assert!(matches!(followed.frames.last(), Some(rdm_client::BuildFrame::Complete { .. })), "node.delete must complete after handover: {:?}", followed.frames);
-        let deleted = followed.frames.iter().any(|f| matches!(f, rdm_client::BuildFrame::Step { operation, step, .. } if operation == &rdm_core::OperationId::node("node.delete", target) && step == "NodeDeleted"));
+        let deleted = followed.frames.iter().any(|f| matches!(f, rdm_client::BuildFrame::Step { operation, step, .. } if *operation == rdm_core::OperationId::node("node.delete", target).to_string() && step == "NodeDeleted"));
         replies.extend(followed.frames.iter().map(|f| format!("{f:?}")));
-        assert!(deleted, "node.delete of {node:?}, followed at {fp}, receipts its NodeDeleted: {replies:?}");
+        assert!(deleted, "node.delete of {node:?}, followed at {fp}, frames its NodeDeleted step: {replies:?}");
     } else {
         assert!(replies.iter().any(|r| r == &format!("{:?}", Frame::Event(NodeEvent::Deleted))), "node.delete of {node:?} answers node.deleted: {replies:?}");
     }
@@ -326,7 +326,7 @@ async fn followed(estate: &mut Estate, what: &str, call: Result<rdm_client::Work
             if let Some(fp) = fabric_primary.as_ref() {
                 estate.enter_by_id(fp).await;
             }
-            let resumed = estate.resume(&accepted.build_id, accepted.attempt).await;
+            let resumed = estate.resume(&accepted.build_id).await;
             assert!(matches!(resumed.frames.last(), Some(rdm_client::BuildFrame::Complete { .. })), "{what} must complete after handover: {:?}", resumed.frames);
             frames
         }

@@ -180,25 +180,46 @@ pub enum StepState {
     },
 }
 
-/// How a Build ended: `complete`, or `failed` at its step with its reason and code.
+/// How a Build ended (Q346): `complete`; `incomplete`, naming each section it did not finish; or
+/// `failed`, why it could not start.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EndedState {
-    /// The Build completed.
+    /// Every section finished.
     ///
     /// Serialized as `complete`.
     Complete,
-    /// The Build failed.
+    /// The Build ran and not every section finished; what ran stands.
+    ///
+    /// Serialized as `incomplete`.
+    Incomplete {
+        /// Each section that ended short of its end.
+        sections: Vec<EndedSection>,
+    },
+    /// The Build could not start.
     ///
     /// Serialized as `failed`.
     Failed {
-        /// The step that failed.
-        step: String,
         /// Why.
         reason: String,
-        /// The gRPC code name of the failure.
+        /// The gRPC code name.
         code: String,
     },
+}
+
+/// One unfinished section of an `incomplete` Build, as `rdm.build.ended` names it (build.md §5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndedSection {
+    /// The mesh.
+    pub mesh: String,
+    /// The operation the section stopped at.
+    pub op: String,
+    /// The step it stopped at.
+    pub step: String,
+    /// Why.
+    pub reason: String,
+    /// The gRPC code name.
+    pub code: String,
 }
 
 /// One event: a CloudEvents 1.0 envelope (gossip.md §3.4's attributes) in its JSON form.
@@ -645,7 +666,7 @@ mod tests {
             Event::build_step(&mp, 1_007, Some(&n1), &b2, "mesh1", "delete", "node.delete", &StepState::Complete),
             Event::build_ended(&fp, 1_008, &b1, &EndedState::Complete),
             Event::node_investigated(&mp, 1_009, &n1, &inc, "mesh1.node", "1", "reached", "rejoin"),
-            Event::build_ended(&fp, 1_010, &b2, &EndedState::Failed { step: "create".into(), reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),
+            Event::build_ended(&fp, 1_010, &b2, &EndedState::Failed { reason: "the provider refused".into(), code: "FAILED_PRECONDITION".into() }),
         ];
         (events, b1, b2, n1, n2)
     }

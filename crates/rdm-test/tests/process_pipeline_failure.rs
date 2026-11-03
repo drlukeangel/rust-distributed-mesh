@@ -57,7 +57,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
                 Err("never".into())
             }
         }
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::common::stepping(&template.fabric_id, "mesh1");
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&rdm_admin::build_state::BuildAccepted {
@@ -81,7 +81,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             timeouts: Timeouts { bind: Duration::from_secs(10), ..Timeouts::default() },
         };
         let err = pipeline
-            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+            .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id.clone()), path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
             .await
             .unwrap_err();
         assert_eq!(err.step, "WaitForBind");

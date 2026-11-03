@@ -1,59 +1,23 @@
-//! i143.e1.s5 functional: Build identity is fabric control state.
+//! A mesh's new mesh-primary picks up the mesh's section of a resubmitted Build from the Build's events
+//! (build.md §5: "A mesh's new mesh-primary runs the steps its mesh owes from those events").
 //!
-//! Two node-admins of one fabric hold the fabric's Build records on its shared store root (build.md
-//! §5.3; Q185: no Build channel). Admin A is the fabric-primary: it accepts a Build, claims attempt 1,
-//! runs it, completes one operation and dies in the middle of the next. Admin B, never connected to
-//! A, reads the Build from the store root, takes the role and drives the SAME build id (A's process
-//! is gone with it): the attempt A held is dispatched to A, which answers nothing, and only after B
-//! holds proof of A's departure does it claim attempt 2. B re-plans against the observed topology,
-//! runs only what is left and completes the Build, under `rdm.node_admin.build.update.via-reconcile`.
+//! The fabric-primary `mesh1.node-admin.1` drives a Build that grows mesh2 by two nodes. It sends
+//! mesh2's section to mesh2's primary `mesh2.node-admin.1` (A), which completes one create, writes its
+//! `rdm.build.step` events, and is lost in the middle of the other: the section's stream breaks, the
+//! section ends `UNAVAILABLE`, and the Build ends `incomplete` (Q344, Q346). mesh2's other admin
+//! `mesh2.node-admin.2` (B) becomes its primary. The caller resubmits the Build by its id: the
+//! fabric-primary sends mesh2's section to B, which plans it from the Build's record and its step
+//! events (Q292), runs only what is not complete, and the Build ends `complete`.
 
-use iroh::endpoint::presets;
-use iroh::{Endpoint, SecretKey};
-use rdm_admin::accepted::{AcceptedStore, FabricTopology};
 use rdm_admin::build::{BuildId, BuildOperation, MeshDesired};
-use rdm_admin::build_state::{BuildState, BuildStateAdapter};
-use rdm_admin::build_drive::{Drive, DriveEnv, DriveEnd};
+use rdm_admin::build_drive::{Dispatched, Dispatcher, Drive, DriveEnd, DriveEnv, InnerItem, InnerStream};
+use rdm_admin::build_state::{BuildState, BuildStateAdapter, MemoryBuildStateAdapter};
 use rdm_admin::executor::OperationRunner;
-use rdm_admin::fabric_builds::FabricBuildStateAdapter;
-use rdm_admin::control_plane::ControlPlane;
 use rdm_admin::model::*;
 use rdm_admin::topology::Topology;
-use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
-use tracing_subscriber::layer::SubscriberExt;
-
-/// Every span by id: name and recorded fields.
-#[derive(Clone, Default)]
-struct Spans(Arc<Mutex<HashMap<u64, (String, BTreeMap<String, String>)>>>);
-
-struct Fields<'a>(&'a mut BTreeMap<String, String>);
-impl tracing::field::Visit for Fields<'_> {
-    fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
-        self.0.insert(f.name().into(), v.into());
-    }
-    fn record_u64(&mut self, f: &tracing::field::Field, v: u64) {
-        self.0.insert(f.name().into(), v.to_string());
-    }
-    fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
-        self.0.insert(f.name().into(), format!("{v:?}"));
-    }
-}
-
-impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> tracing_subscriber::Layer<S> for Spans {
-    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-        let mut fields = BTreeMap::new();
-        attrs.record(&mut Fields(&mut fields));
-        self.0.lock().unwrap().insert(id.into_u64(), (attrs.metadata().name().into(), fields));
-    }
-    fn on_record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if let Some((_, fields)) = self.0.lock().unwrap().get_mut(&id.into_u64()) {
-            values.record(&mut Fields(fields));
-        }
-    }
-}
 
 fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> Node {
     let mut n = Node::allocated(name, mesh, r#type);
@@ -63,304 +27,196 @@ fn node(name: rdm_core::PathName, mesh: &str, r#type: &str, primary: bool) -> No
     n
 }
 
-/// The observed fabric: mesh1 with two admins and one node.
+/// The observed fabric: mesh1 with the fabric-primary, mesh2 with its primary A, its other admin B and
+/// one node.
 fn observed() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Ready, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }, Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::Ready }],
         nodes: vec![
             Node { is_fabric_primary: true, ..node(PathName::new("mesh1.node-admin", "1").unwrap(), "mesh1", "node-admin", true) },
-            node(rdm_core::PathName::new("mesh1.node-admin", "2").unwrap(), "mesh1", "node-admin", false),
-            node(rdm_core::PathName::new("mesh1.node", "1").unwrap(), "mesh1", "node", true),
+            node(PathName::new("mesh2.node-admin", "1").unwrap(), "mesh2", "node-admin", true),
+            node(PathName::new("mesh2.node-admin", "2").unwrap(), "mesh2", "node-admin", false),
+            node(PathName::new("mesh2.node", "1").unwrap(), "mesh2", "node", false),
         ],
     }
 }
 
-/// The view once A hands off its roles (`node.primary.update`) to B and exits: B holds mesh1 and
-/// the fabric while A's runtime is unreachable until its exited verdict is read.
-async fn lose_a(topology: &RwLock<Topology>) {
-    let mut t = topology.write().await;
-    for n in t.nodes.iter_mut() {
-        match (n.path.as_str(), n.name.as_str()) {
-            ("mesh1.node-admin", "1") => {
-                n.status = NodeStatus::PendingReconnect;
-                n.is_primary = false;
-                n.is_fabric_primary = false;
-            }
-            ("mesh1.node-admin", "2") => {
-                n.is_primary = true;
-                n.is_fabric_primary = true;
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Realises `CreateNode` by adding the node to the observed topology. When
-/// armed with `die_at`, the admin dies at that operation: it never returns.
+/// Realises a create by adding the node to the observed topology. Armed with `die_at`, the admin that
+/// runs that create is lost there: it never returns.
 struct Runner {
     topology: Arc<RwLock<Topology>>,
-    ran: Mutex<Vec<(u32, BuildOperation)>>,
-    die_at: Option<PathName>,
-    died: Arc<Notify>,
+    ran: Mutex<Vec<rdm_core::OperationId>>,
+    die_at: Mutex<Option<PathName>>,
 }
 
 #[async_trait::async_trait]
 impl OperationRunner for Runner {
-    async fn run(&self, _: &BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
-        self.ran.lock().unwrap().push((attempt, op.clone()));
-        let BuildOperation::CreateNode { path: name_path, name: name_name, .. } = op else { return Err(format!("unexpected {op:?}").into()) }; let name = &rdm_core::PathName { path: name_path.clone(), name: name_name.clone() };
-        if self.die_at.as_ref() == Some(name) {
-            self.died.notify_one();
+    async fn run(&self, _: &BuildId, op: &BuildOperation) -> Result<(), rdm_admin::executor::RunEnd> {
+        self.ran.lock().unwrap().push(op.key());
+        let BuildOperation::CreateNode { path, name, .. } = op else { return Err(format!("unexpected {op:?}").into()) };
+        let at = PathName::new(path, name).unwrap();
+        if self.die_at.lock().unwrap().as_ref() == Some(&at) {
             std::future::pending::<()>().await;
         }
-        self.topology.write().await.nodes.push(node(name.clone(), op.mesh().unwrap(), &(op.r#type().unwrap()), false));
+        self.topology.write().await.nodes.push(node(at, op.mesh().unwrap(), &op.r#type().unwrap(), false));
         Ok(())
     }
 }
 
-/// The drive's gate: every check at its default.
-struct RowsGate;
+/// The fixture's dispatcher, the section stream of `lost` broken once the cell loses that admin: what
+/// the fabric-primary reads of a mesh-primary lost mid-section.
+struct Losing {
+    inner: Arc<crate::loopback::Loopback>,
+    lost: rdm_core::NodeId,
+    gone: Arc<Notify>,
+}
+
+/// A section's stream that breaks when its admin is lost.
+struct Breaks {
+    inner: Box<dyn InnerStream>,
+    gone: Arc<Notify>,
+}
 
 #[async_trait::async_trait]
-impl rdm_admin::build_drive::Gate for RowsGate {
-}
-
-/// A fabric-primary's drive of the Build over `builds`: its claim door is its own log, and
-/// `dispatch` reaches the executors that are still alive.
-fn drive_env(me: &PathName, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Arc<crate::loopback::Loopback>, exits: Arc<crate::loopback::Exits>, told: &crate::Told) -> Arc<DriveEnv> {
-    Arc::new(DriveEnv { me_mesh: "mesh1".into(),
-        me_path: me.path.clone(), me_name: me.name.clone(),
-        topology: topology.clone(),
-        builds: a.builds.clone(),
-        door: Arc::new(rdm_admin::build_claim::ClaimDoor {
-            incarnation: topology.try_read().unwrap().node(me).unwrap().incarnation_id.clone().unwrap(),
-            me_path: me.path.clone(), me_name: me.name.clone(),
-            node_id: topology
-                .try_read()
-                .expect("the view is free")
-                .node(me)
-                .expect("the fabric-primary is in the view")
-                .node_id
-                .clone(),
-            topology: topology.clone(),
-            builds: a.builds.clone(),
-            contexts: Arc::new(rdm_admin::build_claim::AttemptContexts::in_memory()),
-            claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()),
-            claimed: Default::default(),
-        }),
-        dispatcher: dispatch,
-        gate: Arc::new(RowsGate),
-        departure: exits,
-        verdicts: Arc::new(crate::loopback::NoVerdicts),
-        notices: told.notices(),
-        turns: rdm_admin::stop_gate::StopGate::new(),
-    })
-}
-
-struct Admin {
-    /// The admin's endpoint: what its view names it by.
-    endpoint: Endpoint,
-    builds: Arc<FabricBuildStateAdapter>,
-    /// The admin's Build journal on the fabric's shared store root, which the Build's committed records
-    /// it reads are absorbed into (Q292).
-    local: Arc<dyn rdm_admin::build_state::LocalBuildLog>,
-    /// The Fabric identity as the admin holds it.
-    accepted: Arc<AcceptedStore>,
-}
-
-/// An admin of the fabric whose store root is `root`, connected to no other admin.
-async fn admin(root: &std::path::Path, birth: &rdm_core::framing::Birth) -> Admin {
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::generate())
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
-        .unwrap()
-        .bind()
-        .await
-        .unwrap();
-    // As a started admin: its fabric.storage holds the Fabric record, and it holds no Build yet.
-    let storage = Arc::new(rdm_admin::fabric_storage::MemoryFabricStorage::new());
-    rdm_admin::fabric_storage::write_identity(&*storage, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
-    let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
-    // Its Build journal as its file backend opens it, on the fabric's store root.
-    let scope = rdm_admin::storage_backend::StorageScope { data_dir: rdm_admin::deployment::node_data_dir(root, &birth.node_id), fabric_id: fabric1(), own_mesh: "mesh1".into(), writer: birth.incarnation.clone(), node_id: birth.node_id.clone() };
-    let local = {
-        use rdm_admin::storage_backend::StorageBackend as _;
-        rdm_admin::storage_backend::FileBackend::at(root).open(&scope).await.unwrap().builds
-    };
-    let builds = Arc::new(FabricBuildStateAdapter::new(local.clone(), &rdm_transport::topology::LocationView::new(&endpoint, birth.node_id.as_str()).unwrap(), birth.node_id.clone(), rdm_admin::fabric_builds::PrimarySource::unrecorded()));
-    Admin { endpoint, builds, local, accepted }
-}
-
-async fn eventually<F, Fut>(what: &str, mut f: F)
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    for _ in 0..200 {
-        if f().await {
-            return;
+impl InnerStream for Breaks {
+    async fn next(&mut self) -> InnerItem {
+        tokio::select! {
+            _ = self.gone.notified() => InnerItem::Broke("mesh2.node-admin.1 was lost mid-section: its connection closed".into()),
+            item = self.inner.next() => item,
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("never observed: {what}");
+    async fn accepted(&mut self) {
+        self.inner.accepted().await
+    }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
-async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_build() {
-    let spans = Spans::default();
-    rdm_transport::enable_callsites();
-    let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
-    let topology = Arc::new(RwLock::new(observed()));
+#[async_trait::async_trait]
+impl Dispatcher for Losing {
+    async fn dispatch(&self, build_id: &BuildId, mesh: &str, context: rdm_core::context::CallContext) -> Dispatched {
+        match self.inner.dispatch(build_id, mesh, context).await {
+            Dispatched::Stream(s) if self.inner.sections().last().is_some_and(|(to, _)| to.node_id == self.lost) => Dispatched::Stream(Box::new(Breaks { inner: s, gone: self.gone.clone() })),
+            other => other,
+        }
+    }
+    async fn run_own(&self, turn: &rdm_admin::stop_gate::Turn, build_id: &BuildId, mesh: &str, context: rdm_core::context::CallContext, operations: Vec<BuildOperation>) -> Dispatched {
+        self.inner.run_own(turn, build_id, mesh, context, operations).await
+    }
+}
 
-    // One store root, the fabric's; A and B are never connected to each other.
-    let root = std::env::temp_dir().join(format!("build-takeover-{}", NodeId::mint()));
-    std::fs::create_dir_all(&root).unwrap();
-    let a_birth = topology.read().await.node(&PathName::new("mesh1.node-admin", "1").unwrap()).unwrap().birth().unwrap();
-    let b_birth = topology.read().await.node(&PathName::new("mesh1.node-admin", "2").unwrap()).unwrap().birth().unwrap();
-    let a = admin(&root, &a_birth).await;
-    let b = admin(&root, &b_birth).await;
+/// The drive's gate: every check at its default.
+struct Open;
 
-    // A accepts the Build through its control plane: grow mesh1 to 3 nodes.
-    // A holds a settled accepted Build of what is observed: the one the change compiles against.
-    // The settled Build A is seeded into the fabric's builds store, which its control plane moves.
-    let seed = rdm_admin::build::BuildId::mint();
-    a.builds
-        .publish_accepted(&rdm_admin::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&*topology.read().await), change: None, source: None, time: 0 })
-        .await
-        .unwrap();
-    a.builds.claim_attempt(&rdm_admin::build_state::BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(), claimant: None, mesh: None, build_id: seed.clone(), attempt: 1, executor: a_birth.clone() }).await.unwrap();
-    a.builds
-        .append_attempt_receipt(&rdm_admin::build_state::BuildAttemptReceipt { mesh: None, build_id: seed.clone(), attempt: 1, outcome: rdm_admin::build_state::AttemptOutcome::Converged })
-        .await
-        .unwrap();
-    let mut cp = crate::control_plane(a.builds.clone(), a.accepted.clone(), rdm_core::PathName::new("mesh1.node-admin", "1").unwrap(), topology.read().await.clone(), crate::adopted_time());
-    cp.topology = topology.clone();
-    let build_id = cp
-        .submit("POST /api/build", crate::named_request(&cp, move |t: &rdm_admin::topology::Topology| crate::grown(t, &[MeshDesired::of("mesh1".to_string(), [("node-admin", 2), ("node", 3)])])).await)
-        .await
-        .unwrap()
-        .build_id;
+#[async_trait::async_trait]
+impl rdm_admin::build_drive::Gate for Open {}
 
-    // A drives: mesh1.node.2 completes, A dies in mesh1.node.3.
-    let died = Arc::new(Notify::new());
-    let a_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: Some(rdm_core::PathName::new("mesh1.node", "3").unwrap()), died: died.clone() });
-    let a_dispatch = crate::loopback::Loopback::new(a.builds.clone(), a.local.clone(), topology.clone(), a_runner.clone());
-    let a_told = crate::Told::default();
-    let a_env = drive_env(&PathName::new("mesh1.node-admin", "1").unwrap(), &a, &topology, a_dispatch.clone(), Arc::default(), &a_told);
-    let a_drive = Drive::detached(build_id.clone());
-    let mut a_driving = Box::pin({
-        let (env, drive) = (a_env.clone(), a_drive.clone());
-        async move { env.run(&drive).await }
+/// CONTRACT (build.md §5: the mesh-primary writes its mesh's `rdm.build.step` events, and "A mesh's new
+/// mesh-primary runs the steps its mesh owes from those events"; Q344: a call that ends short ends its
+/// section; Q346: the Build ends `incomplete`, what ran stands, and a resubmit runs it again; build.md
+/// §1: "a step whose event ended `complete` is never run again"): mesh2's primary A completes one create
+/// and is lost in the other; the Build ends `incomplete` naming mesh2's section. B becomes mesh2's
+/// primary, and the caller's resubmit sends mesh2's section to B, which runs what its mesh owes and never
+/// the create A completed. The Build ends `complete`, one `rdm.build.ended` per run.
+/// Must NOT happen: the completed create run again, the resubmit's section sent to the lost A, or the
+/// Build left in progress.
+#[test]
+fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the_step_events() {
+    use rdm_admin::events_storage::EndedState;
+    let cap = crate::mesh_delete_resume::capture();
+    let (trace_id, first, again, ran, sections, created, a, b) = cap.run(async {
+        let root = tracing::info_span!("cell.resubmit-at-the-new-mesh-primary");
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
+        let _in_root = root.enter();
+        let t = observed();
+        let fabric_id = t.fabric.id.clone();
+        let birth = |p: &str, n: &str| t.node(&PathName::new(p, n).unwrap()).unwrap().birth().unwrap();
+        let (fp, a, b) = (birth("mesh1.node-admin", "1"), birth("mesh2.node-admin", "1"), birth("mesh2.node-admin", "2"));
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let accepted = rdm_admin::accepted::AcceptedStore::seeded(&*builds, fabric_id.clone(), rdm_admin::accepted::FabricTopology::of_observed(&t), &fp).await.unwrap();
+        let topology = Arc::new(RwLock::new(t.clone()));
+        let mut cp = crate::control_plane(builds.clone(), accepted, PathName::new("mesh1.node-admin", "1").unwrap(), t, crate::adopted_time());
+        cp.topology = topology.clone();
+        let change = crate::named_request(&cp, |t: &Topology| crate::grown(t, &[MeshDesired::of("mesh2", [("node-admin", 2), ("node", 3)])])).await;
+        let build = cp.submit("test", change).await.unwrap().build_id;
+
+        let runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(Vec::new()), die_at: Mutex::new(Some(PathName::new("mesh2.node", "3").unwrap())) });
+        let loopback = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner.clone());
+        let gone = Arc::new(Notify::new());
+        let env = Arc::new(DriveEnv {
+            me_mesh: "mesh1".into(),
+            me_path: "mesh1.node-admin".into(),
+            me_name: "1".into(),
+            birth: fp.clone(),
+            topology: topology.clone(),
+            builds: builds.clone(),
+            dispatcher: Arc::new(Losing { inner: loopback.clone(), lost: a.node_id.clone(), gone: gone.clone() }),
+            gate: Arc::new(Open),
+            notices: crate::written_by(Default::default(), &*builds, &fabric_id, &fp),
+            turns: rdm_admin::stop_gate::StopGate::new(),
+        });
+        let (node2, node3) = (created_id(&builds, &build, "2").await, created_id(&builds, &build, "3").await);
+        // The first run: A completes mesh2.node.2 and is lost in mesh2.node.3.
+        let drive = Drive::detached(build.clone());
+        let running = tokio::spawn({
+            let (env, drive) = (env.clone(), drive.clone());
+            async move { env.run(&drive).await }
+        });
+        let op2 = rdm_core::OperationId::node("node.create", &node2);
+        for _ in 0..400 {
+            if builds.read_build(&build).await.unwrap().operation_completed(&op2) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(builds.read_build(&build).await.unwrap().operation_completed(&op2), "A wrote mesh2.node.2's complete step");
+        // A is lost: its process and its run go, and its section's stream breaks.
+        loopback.door(&a).runs.stop().await;
+        gone.notify_one();
+        let end = tokio::time::timeout(Duration::from_secs(10), running).await.expect("the first run ends once A is lost").unwrap();
+        let first = (end, builds.read_build(&build).await.unwrap());
+        // B is mesh2's primary now; A is silent.
+        for n in topology.write().await.nodes.iter_mut() {
+            if n.node_id == a.node_id {
+                n.status = NodeStatus::PendingReconnect;
+                n.is_primary = false;
+            }
+            if n.node_id == b.node_id {
+                n.is_primary = true;
+            }
+        }
+        *runner.die_at.lock().unwrap() = None;
+        // The caller's resubmit, by the Build's id.
+        let resubmit = Drive::detached(build.clone());
+        let end = tokio::time::timeout(Duration::from_secs(10), env.run(&resubmit)).await.expect("the resubmitted run ends");
+        let again = (end, builds.read_build(&build).await.unwrap(), crate::build_drive::ended_states(&*builds, &build).await);
+        let ran = runner.ran.lock().unwrap().clone();
+        (trace_id, first, again, ran, loopback.sections(), (node2, node3), a, b)
     });
-    tokio::select! {
-        r = &mut a_driving => panic!("A was to stop inside mesh1.node.3, but its drive ended: {r:?}"),
-        _ = died.notified() => {}
-    }
-    // While A is stuck in mesh1.node.3, B, not the fabric-primary, reads the Build from the store
-    // root: the intent and A's claim of attempt 1.
-    eventually("B's projection shows A's attempt", || {
-        let (b, id, expected) = (b.builds.clone(), build_id.clone(), a_birth.clone());
-        async move { b.read_build(&id).await.is_ok_and(|v| v.attempt == 1 && v.executor.as_ref() == Some(&expected)) }
-    })
-    .await;
-    // A dies: its execution and Build state go with it.
-    drop(a_driving);
-    let Admin { endpoint: a_endpoint, builds: a_builds, .. } = a;
-    drop(a_env);
-    drop(a_dispatch);
-    drop(a_builds);
-    a_endpoint.close().await;
-    lose_a(&topology).await;
-
-    // B drives the same Build: the same build id, the next attempt, only what is left.
-    let b_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: None, died: Arc::new(Notify::new()) });
-    // B holds the Build from the store root, never set by hand: the successor may drive only
-    // its current Build (R-BI3), read from the fabric's builds store.
-    eventually("B's current Build is the Build", || {
-        let (builds, id) = (b.builds.clone(), build_id.clone());
-        async move { builds.current_build().await.ok().and_then(|c| c.into_build_id()) == Some(id) }
-    })
-    .await;
-    let b_dispatch = crate::loopback::Loopback::new(b.builds.clone(), b.local.clone(), topology.clone(), b_runner.clone());
-    // A is gone: nothing answers at its address.
-    b_dispatch.lose(&a_birth.node_id);
-    let exits = Arc::new(crate::loopback::Exits::default());
-    let b_told = crate::Told::default();
-    let b_env = drive_env(&PathName::new("mesh1.node-admin", "2").unwrap(), &b, &topology, b_dispatch.clone(), exits.clone(), &b_told);
-    let b_drive = Drive::detached(build_id.clone());
-    // Silence is not proof: A is unreachable, its departure is not proven, and the attempt it holds
-    // is not claimed for another admin.
-    match b_env.run(&b_drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("departure is not proven") && why.contains(&format!("{a_birth} is gone: nothing answers at its address")), "the stall names the unproven departure and why the call to A ended: {why}"),
-        other => panic!("an unreachable executor without proof stalls the drive: {other:?}"),
-    }
-    assert_eq!(b.builds.read_build(&build_id).await.unwrap().attempt, 1, "no attempt was claimed on silence");
-    assert!(b_runner.ran.lock().unwrap().is_empty(), "nothing ran on silence");
-    // The proof arrives: the exact runtime of A is inspected and exited.
-    exits.exited.lock().unwrap().insert(a_birth.clone());
-    assert_eq!(b_env.run(&b_drive).await, DriveEnd::Terminal);
-    assert_eq!(
-        *a_runner.ran.lock().unwrap(),
-        vec![
-            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "2".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "2").unwrap()), over: None, executable: Some(crate::test_executable("node")), entry: None }),
-            (1, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "3".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap()), over: None, executable: Some(crate::test_executable("node")), entry: None }),
-        ]
-    );
-    assert_eq!(
-        *b_runner.ran.lock().unwrap(),
-        vec![
-            // A's admin is lost too: its path is part of what is left.
-            (2, BuildOperation::CreateNode { r#type: "node-admin".into(), mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node-admin", "1").unwrap()), over: None, executable: None, entry: None }),
-            // The successor reads the Build from the store, where each entry keeps its executable (Q186).
-            (2, BuildOperation::CreateNode { r#type: "node".into(), mesh: "mesh1".into(), path: "mesh1.node".into(), name: "3".into(), node_id: rdm_core::fixture_node_id(&rdm_core::PathName::new("mesh1.node", "3").unwrap()), over: None, executable: Some(crate::test_executable("node")), entry: None }),
-        ],
-        "mesh1.node.2 is never created twice"
-    );
-    assert_eq!(*b_dispatch.dispatched.lock().unwrap(), vec![(b_birth.clone(), 2)], "attempt 2 was dispatched to B alone");
-    let rpcs = topology.read().await.nodes.iter().filter(|n| n.r#type == "node").count();
-    assert_eq!(rpcs, 3);
-
-    let view = b.builds.read_build(&build_id).await.unwrap();
-    assert_eq!((view.state, view.attempt, view.executor.as_ref()), (BuildState::Complete, 2, Some(&b_birth)));
-
-    // The takeover is one reconcile span on B, and one departure proof span naming A.
-    let all = spans.0.lock().unwrap().clone();
-    let logged = build_id.log().to_string();
-    let reconciles: Vec<&BTreeMap<String, String>> = all
-        .values()
-        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-reconcile" && f.get("build_id").map(String::as_str) == Some(logged.as_str()))
-        .map(|(_, f)| f)
-        .collect();
-    let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some(b_birth.to_string().as_str())).unwrap_or_else(|| panic!("B's reconcile span among {reconciles:?}"));
-    assert_eq!(takeover.get("attempt").map(String::as_str), Some("2"));
-    // The span names the executor the takeover follows: the admin that held attempt 1, not the
-    // claim of attempt 2 the executor absorbed before it runs.
-    assert_eq!(takeover.get("previous_executor"), Some(&format!("{:?}", Some(&a_birth))), "the takeover names the executor it follows: {takeover:?}");
-    assert_eq!(takeover.get("operations"), Some(&format!("{:?}", [rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node-admin", "1").unwrap())), rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&PathName::new("mesh1.node", "3").unwrap()))])));
-    assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
-    let inspected = all
-        .values()
-        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-executor-exited-or-os-stopped" && f.get("build_id").map(String::as_str) == Some(logged.as_str()))
-        .map(|(_, f)| f)
-        .collect::<Vec<_>>();
-    assert_eq!(inspected.len(), 1, "the departure was proven once: {inspected:?}");
-    assert_eq!(inspected[0].get("executor").map(String::as_str), Some(a_birth.to_string().as_str()));
-    // The application's Build notices (fabric-node-hooks.md, Q256): A told it the Build started at the
-    // claim of attempt 1; B's takeover (attempt 2) continues the Build in progress and sends no
-    // on_build_started, and B, which recorded its Complete, sends the one on_build_ended.
-    let id = build_id.to_string();
-    let a_keys: Vec<(String, u32, &str)> = a_told.settled(1).await.iter().map(crate::Notice::key).collect();
-    assert_eq!(a_keys, vec![(id.clone(), 1, "started")], "A told the opening at attempt 1's claim and no ending");
-    let b_keys: Vec<(String, u32, &str)> = b_told.settled(1).await.iter().map(crate::Notice::key).collect();
-    assert_eq!(b_keys, vec![(id.clone(), 2, "complete")], "the takeover sends no on_build_started; B sends the ending");
-    b.endpoint.close().await;
-    let _ = std::fs::remove_dir_all(&root);
+    println!("trace_id={trace_id}");
+    let (end, p) = first;
+    assert_eq!(end, DriveEnd::Terminal, "the lost section ends the first run");
+    assert_eq!(p.state, BuildState::Incomplete, "the Build ends incomplete: {p:?}");
+    assert!(matches!(p.unfinished.as_slice(), [u] if u.mesh == "mesh2" && u.code == rdm_core::outcome::Code::Unavailable), "the Build names mesh2's section: {:?}", p.unfinished);
+    let (end, p, ended) = again;
+    assert_eq!((end, p.state), (DriveEnd::Terminal, BuildState::Complete), "the resubmit completes the Build");
+    assert!(matches!(ended.as_slice(), [EndedState::Incomplete { .. }, EndedState::Complete]), "one rdm.build.ended per run: {ended:?}");
+    let (node2, node3) = created;
+    let op2 = rdm_core::OperationId::node("node.create", &node2);
+    let op3 = rdm_core::OperationId::node("node.create", &node3);
+    assert_eq!(ran.iter().filter(|o| **o == op2).count(), 1, "mesh2.node.2 completed in the first run and never runs again: {ran:?}");
+    assert_eq!(ran.iter().filter(|o| **o == op3).count(), 2, "mesh2.node.3 ran at A, then at B: {ran:?}");
+    assert_eq!(sections, vec![(a.clone(), "mesh2".to_string()), (b.clone(), "mesh2".to_string())], "the resubmit's section went to mesh2's new primary");
+    let at_b: Vec<_> = p.steps_in("mesh2").filter(|s| s.operation == op3.to_string() && s.step == "Complete").map(|s| s.source.clone()).collect();
+    assert!(at_b.iter().all(|s| s.contains(b.node_id.as_str())) && !at_b.is_empty(), "mesh2.node.3's complete step is B's: {at_b:?}");
+    let spans = cap.spans();
+    let at_b: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile" && s["attributes"]["executor_node_id"] == b.node_id.as_str()).collect();
+    assert_eq!(at_b.len(), 1, "B ran mesh2's section once: {at_b:?}");
+    let ops = at_b[0]["attributes"]["operations"].as_str().unwrap_or_default();
+    assert!(ops.contains(&op3.to_string()) && !ops.contains(&op2.to_string()), "B's section is what mesh2 owed, read from the step events: {ops}");
 }
 
-/// The test fabric's canonical id.
-fn fabric1() -> FabricId {
-    FabricId::parse("fab000000001").unwrap()
+/// The node.id the Build `build` minted for `mesh2.node.<name>` (D58).
+async fn created_id(builds: &MemoryBuildStateAdapter, build: &BuildId, name: &str) -> rdm_core::NodeId {
+    let p = builds.read_build(build).await.unwrap();
+    p.topology.created_id(&PathName::new("mesh2.node", name).unwrap()).cloned().unwrap_or_else(|| panic!("the Build creates mesh2.node.{name}"))
 }

@@ -26,7 +26,6 @@ use std::collections::{BTreeMap, HashMap};
 use rdm_core::framing::Birth;
 use std::sync::{Arc, Mutex};
 
-use crate::accepted::AttemptAction;
 use crate::build_state::{BuildProjection, BuildStateAdapter, StepOutcome};
 use crate::model::{IncarnationId, NodeId, NodeStatus, PathName};
 use crate::topology::Topology;
@@ -37,8 +36,8 @@ use crate::storage::NodeRow;
 struct Stamp {
     time: u64,
     build_id: String,
-    step: Option<u32>,
-    attempt: u32,
+    /// The step's place in its Build's events (event.id order); 0 for a node command's.
+    index: usize,
 }
 
 /// A birth's lifecycle as a completed operation left it.
@@ -58,14 +57,6 @@ struct Effect {
     stamp: Stamp,
 }
 
-/// An operation accepted on a node whose attempt has not ended.
-#[derive(Debug, Clone)]
-struct Accepted {
-    operation: rdm_core::OperationId,
-    build_id: String,
-    attempt: u32,
-}
-
 #[derive(Debug, Default)]
 struct Held {
     /// The births a create this admin took the receipt of made (an op's result, Q197): in the view
@@ -74,8 +65,6 @@ struct Held {
     created: std::collections::HashSet<Birth>,
     /// The completed lifecycle effect of each exact node birth.
     effects: HashMap<Birth, Effect>,
-    /// The operation accepted on each explicit subject, using node IDs when admitted.
-    accepted: BTreeMap<rdm_core::OperationSubject, Accepted>,
     /// The meshes this admin is primary for (Q207): its own mesh as a mesh-primary, every mesh as the
     /// fabric-primary; empty for an admin that holds no primary.
     meshes: std::collections::BTreeSet<String>,
@@ -233,63 +222,23 @@ pub struct Atlas {
     callers: std::sync::OnceLock<Arc<crate::refused_caller::RefusedCallers>>,
 }
 
-/// The births and operation keys an action is accepted on.
-fn accepted_on(action: &AttemptAction) -> Vec<rdm_core::OperationId> {
-    use rdm_core::OperationId;
-    match action {
-        AttemptAction::Delete { node_id, .. } => vec![OperationId::node("node.delete", node_id)],
+/// The exact birth step `s` of `p` acted on: the birth the Build's acceptance pinned for its subject,
+/// else the birth its subject's current record names newest (`rows`).
+fn birth_of_step(rows: &[NodeRow], p: &BuildProjection, s: &crate::build_state::BuildStep) -> Option<Birth> {
+    let node_id = s.subject.as_ref()?;
+    if let Some((_, b)) = p.topology.pinned.iter().find(|(_, b)| b.node_id == *node_id) {
+        return Some(Birth { node_id: b.node_id.clone(), incarnation: b.incarnation.clone() });
     }
+    let row = rows.iter().find(|r| r.node_id == *node_id)?;
+    Some(Birth { node_id: node_id.clone(), incarnation: row.newest_birth()?.incarnation_id.clone() })
 }
 
-/// Recover the exact admitted birth from explicit metadata and the original step position.
-/// A receipt payload must belong to this Build, attempt and operation before it can supply a birth.
-fn birth_of_step(rows: &[NodeRow], p: &BuildProjection, receipt: &crate::build_state::BuildStepReceipt) -> Option<Birth> {
-    use rdm_core::OperationSubject;
-    let (attempt, operation) = (receipt.attempt, &receipt.operation);
-    let expected = match p.attempt_actions.get(&attempt) {
-        Some(AttemptAction::Delete { node_id, from_incarnation, .. }) => {
-            match &operation.subject {
-                Some(OperationSubject::Node(id)) if id == node_id => Some((node_id.clone(), from_incarnation.clone())),
-                Some(OperationSubject::Birth { node_id: id, incarnation }) if id == node_id && incarnation == from_incarnation => Some((id.clone(), incarnation.clone())),
-                _ => return None,
-            }
-        }
-        None => match &operation.subject {
-            Some(OperationSubject::Birth { node_id, incarnation }) => Some((node_id.clone(), incarnation.clone())),
-            Some(OperationSubject::Node(id)) => p.topology.pinned.iter().find(|(_, birth)| birth.node_id == *id).map(|(_, birth)| (birth.node_id.clone(), birth.incarnation.clone())),
-            _ => None,
-        },
-    };
-    // With no admission pin, require the node's exact recorded acknowledgement.
-    // Cross-attempt acknowledgements pass the same reuse boundary as the pipeline.
-    let expected = expected.or_else(|| {
-        let subject_matches = |id: &NodeId| match &operation.subject {
-            Some(OperationSubject::Node(expected) | OperationSubject::Birth { node_id: expected, .. }) => id == expected,
-            _ => false,
-        };
-        let mut targets = rows.iter().filter(|row| subject_matches(&row.node_id)).flat_map(|row| row.births.iter().map(move |birth| (row, birth))).filter(|(_, birth)| {
-            birth.operations.iter().any(|op| crate::build_state::declaration_names_receipt(p, receipt, &op.operation))
-        }).map(|(row, birth)| (row.node_id.clone(), birth.incarnation_id.clone()));
-        let target = targets.next()?;
-        targets.all(|other| other == target).then_some(target)
-    })?;
-    if let Some(value) = receipt.output.as_ref().filter(|value| !value.is_null()) {
-        let op = serde_json::from_value::<rdm_core::LifecycleOp>(value.clone()).ok()?;
-        crate::build_state::validate_carried_lifecycle(p, receipt, &op, (&expected.0, &expected.1))?;
-    }
-    Some(Birth { node_id: expected.0, incarnation: expected.1 })
-}
-
-/// The current records of the subjects of `operations` (query.md §1, read through `records`): a node or
-/// birth subject by its node ID. What names a receipt's birth when
-/// its attempt pinned none ([`birth_of_step`]). `Err` names a read that failed.
-pub(crate) async fn subject_rows<'a>(records: &crate::current_record::CurrentRecords<'_>, operations: impl IntoIterator<Item = &'a rdm_core::OperationId>) -> Result<Vec<NodeRow>, String> {
+/// The current records of `subjects` (query.md §1, read through `records`), by node ID: what names a
+/// step's birth when its Build pinned none ([`birth_of_step`]). `Err` names a read that failed.
+pub(crate) async fn subject_rows<'a>(records: &crate::current_record::CurrentRecords<'_>, subjects: impl IntoIterator<Item = &'a NodeId>) -> Result<Vec<NodeRow>, String> {
     let mut out: Vec<NodeRow> = Vec::new();
-    for operation in operations {
-        let row = match &operation.subject {
-            Some(rdm_core::OperationSubject::Node(id) | rdm_core::OperationSubject::Birth { node_id: id, .. }) => records.row(id).await?,
-            _ => None,
-        };
+    for id in subjects {
+        let row = records.row(id).await?;
         if let Some(r) = row.filter(|r| !out.iter().any(|o| o.node_id == r.node_id)) {
             out.push(r);
         }
@@ -300,7 +249,7 @@ pub(crate) async fn subject_rows<'a>(records: &crate::current_record::CurrentRec
 /// What a streamed receipt wrote in the atlas ([`Atlas::take_receipt`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Taken {
-    /// The Build's journal holds no completed receipt of the operation in the attempt.
+    /// The Build's events hold no completed step of the operation.
     NoReceipt,
     /// The operation changes nothing the atlas holds (a connections delete, a mesh leave).
     Nothing,
@@ -335,12 +284,12 @@ impl Taken {
     }
 }
 
-/// The completed lifecycle receipt `s` of `p` taken over an older effect of its birth; the lifecycle's
-/// name when it is one.
-fn take_effect(held: &mut Held, rows: &[NodeRow], p: &BuildProjection, s: &crate::build_state::BuildStepReceipt) -> Option<&'static str> {
+/// The completed lifecycle step `s` of `p`, its `index`th event, taken over an older effect of its
+/// birth; the lifecycle's name when it is one.
+fn take_effect(held: &mut Held, rows: &[NodeRow], p: &BuildProjection, index: usize, s: &crate::build_state::BuildStep) -> Option<&'static str> {
     let lifecycle = lifecycle_of(&s.operation)?;
     let birth = birth_of_step(rows, p, s)?;
-    let stamp = Stamp { time: p.time, build_id: p.build_id.to_string(), step: s.operation.step, attempt: s.attempt };
+    let stamp = Stamp { time: p.time, build_id: p.build_id.to_string(), index };
     if held.effects.get(&birth).is_none_or(|e| e.stamp < stamp) {
         held.effects.insert(birth, Effect { lifecycle, stamp });
     }
@@ -351,14 +300,19 @@ fn take_effect(held: &mut Held, rows: &[NodeRow], p: &BuildProjection, s: &crate
     })
 }
 
-/// The lifecycle indicated by an explicit action token; no subject string is parsed.
-fn lifecycle_of(operation: &rdm_core::OperationId) -> Option<Lifecycle> {
-    match operation.action.as_str() {
+/// The lifecycle an operation `noun.verb:<node_id>` indicates, by its action.
+fn lifecycle_of(operation: &str) -> Option<Lifecycle> {
+    match action_of(operation) {
         "node.stop" => Some(Lifecycle::Stopped),
         "node.start" => Some(Lifecycle::Started),
         "node.delete" => Some(Lifecycle::Deleted),
         _ => None,
     }
+}
+
+/// The action of an operation `noun.verb:<subject>`.
+fn action_of(operation: &str) -> &str {
+    operation.split_once(':').map_or(operation, |(action, _)| action)
 }
 
 impl Atlas {
@@ -435,78 +389,47 @@ impl Atlas {
         }
     }
 
-    /// The operations `action` acts with, accepted as attempt `attempt` of `build_id`: written at
-    /// acceptance, before the attempt can be claimed (R-FA2).
-    pub(crate) fn note_accepted(&self, build_id: &crate::build::BuildId, attempt: u32, action: &AttemptAction) {
-        let mut held = self.held.lock().unwrap();
-        for operation in accepted_on(action) {
-            if let Some(subject) = operation.subject.clone() {
-                let replace = held.accepted.get(&subject).is_none_or(|previous| previous.build_id != build_id.as_str() || previous.attempt < attempt);
-                if replace {
-                    held.accepted.insert(subject, Accepted { operation, build_id: build_id.to_string(), attempt });
-                }
-            }
-        }
-    }
-
     /// The paths this atlas holds a create of Build `build` at (fabric-atlas.md R-FA1, R-FA2): accepted and
     /// executing, or completed, its Complete receipt in the Build's own log. A birth the
     /// Build's own op created is not surplus to its accepted topology, which a recipe's `Create` step does
     /// not change (Luke 2026-10-30: drift is decided from the atlas, not the topology), whichever mesh's
     /// section ran it: the fabric-primary's atlas takes every section's receipts.
-    /// The completed creates are read from the Build's own receipts (`p`, its log), the source R-FA2
-    /// writes this atlas from, so a fabric-primary restarted inside the Build holds them too: its
-    /// accepted map is memory only.
+    /// The completed creates are read from the Build's own events (`p`), the source R-FA2 writes this
+    /// atlas from, so a fabric-primary restarted inside the Build holds them too.
     pub(crate) fn created_by(&self, p: &BuildProjection) -> std::collections::BTreeSet<PathName> {
-        let build = &p.build_id;
-        let held = self.held.lock().unwrap();
         // A create's path is the one the Build record names its node.id at (D58).
-        let location = |operation: &rdm_core::OperationId| match &operation.subject {
-            Some(rdm_core::OperationSubject::Node(id)) if operation.action == "node.create" => p.topology.created.iter().find(|(_, created)| created == id).map(|(at, _)| at.clone()),
-            _ => None,
-        };
-        let mut out: std::collections::BTreeSet<PathName> = held.accepted.values().filter(|a| a.build_id == build.as_str()).filter_map(|a| location(&a.operation)).collect();
-        out.extend(p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete).filter_map(|s| location(&s.operation)));
-        out
+        p.steps
+            .iter()
+            .filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete && action_of(&s.operation) == "node.create")
+            .filter_map(|s| s.subject.as_ref())
+            .filter_map(|id| p.topology.created.iter().find(|(_, created)| created == id).map(|(at, _)| at.clone()))
+            .collect()
     }
 
-    /// Attempt `attempt` of `p` ended without completing: what it accepted is no longer executing.
-    pub(crate) fn ended(&self, build_id: &crate::build::BuildId, attempt: u32) {
-        self.held.lock().unwrap().accepted.retain(|_, a| !(a.build_id == build_id.as_str() && a.attempt <= attempt));
-    }
-
-    /// Attempt `attempt` of `p` completed: every completed lifecycle receipt of the Build is taken over
-    /// an older effect of its birth, and what the attempt accepted is no longer executing. Called before
-    /// the caller is answered `Complete` (R-FA2). `rows` are the current records of the receipts'
-    /// subjects ([`receipt_subject_rows`]), what names an unpinned receipt's birth.
-    pub(crate) fn receipts(&self, p: &BuildProjection, attempt: u32, rows: &[NodeRow]) {
+    /// `p` completed: every completed lifecycle step of the Build is taken over an older effect of its
+    /// birth. Called before the caller is answered `Complete` (R-FA2). `rows` are the current records of
+    /// the steps' subjects ([`subject_rows`]), what names an unpinned step's birth.
+    pub(crate) fn receipts(&self, p: &BuildProjection, rows: &[NodeRow]) {
         let mut held = self.held.lock().unwrap();
-        for s in p.steps.iter().filter(|s| s.step == "Complete" && s.outcome == StepOutcome::Complete) {
-            take_effect(&mut held, rows, p, s);
+        for (i, s) in p.steps.iter().enumerate().filter(|(_, s)| s.step == "Complete" && s.outcome == StepOutcome::Complete) {
+            take_effect(&mut held, rows, p, i, s);
         }
-        held.accepted.retain(|_, a| !(a.build_id == p.build_id.as_str() && a.attempt <= attempt));
     }
 
-    /// The `Complete` receipt of `operation` in attempt `attempt` of `p`, taken the moment it streams up
-    /// `build.attempt.run` to this fabric-primary, whichever admin executed it (R-FA2: "execution
-    /// progress writes it from each attempt's receipts as they stream up `build.attempt.run`, before
-    /// the caller is answered `Complete`"): the lifecycle it leaves its birth in (stop, start, delete)
-    /// and what it changed on the node's record (a rename's name, a stop's or a delete's status, the
-    /// config and tags the Build applied in place, read from its record through the reader). What it
-    /// took, for its span; a create's is [`Taken::Created`], its birth held for [`Self::apply`]. `rows`
-    /// are the current records of the receipt's subject, what names an unpinned receipt's birth.
-    pub(crate) fn take_receipt(&self, p: &BuildProjection, attempt: u32, operation: &rdm_core::OperationId, lane: &Option<String>, rows: &[NodeRow]) -> Taken {
-        let Some(s) = p.steps.iter().rev().find(|s| s.mesh == *lane && s.build_id == p.build_id && s.attempt == attempt && &s.operation == operation && s.step == "Complete" && s.outcome == StepOutcome::Complete) else {
+    /// The `Complete` step of `operation` in `mesh`'s section of `p`, taken the moment it streams up
+    /// `build.attempt.run` to this fabric-primary, whichever admin executed it (R-FA2: execution progress
+    /// writes it as the steps stream up, before the caller is answered `Complete`): the lifecycle it
+    /// leaves its birth in (stop, start, delete) and what it changed on the node's record. What it took,
+    /// for its span; a create's is [`Taken::Created`], its birth, the one its node's record names, held
+    /// for [`Self::apply`]. `rows` are the current records of the step's subject.
+    pub(crate) fn take_receipt(&self, p: &BuildProjection, operation: &str, mesh: &str, rows: &[NodeRow]) -> Taken {
+        let Some((index, s)) = p.steps.iter().enumerate().rev().find(|(_, s)| s.mesh == mesh && s.operation == operation && s.step == "Complete" && s.outcome == StepOutcome::Complete) else {
             return Taken::NoReceipt;
         };
         let mut held = self.held.lock().unwrap();
-        let op = operation.action.as_str();
-        let node_id = match &operation.subject {
-            Some(rdm_core::OperationSubject::Node(id) | rdm_core::OperationSubject::Birth { node_id: id, .. }) => id.clone(),
-            _ => return Taken::Nothing,
-        };
-        let lifecycle = take_effect(&mut held, rows, p, s);
-        let node_of = || -> Option<NodeId> { Some(node_id.clone()) };
+        let op = action_of(operation);
+        let Some(node_id) = s.subject.clone() else { return Taken::Nothing };
+        let lifecycle = take_effect(&mut held, rows, p, index, s);
         match op {
             "node.stop" | "node.delete" => {
                 let to = if op == "node.stop" { NodeStatus::Stopped } else { NodeStatus::Deleted };
@@ -516,29 +439,14 @@ impl Atlas {
                 }
             }
             "node.start" => Taken::Effect(lifecycle),
-            "node.update" | "node.config.update" | "node.tag.create" | "node.tag.delete" => {
-                node_of().map(Taken::Refresh).unwrap_or(Taken::Nothing)
-            }
-            "node.create" => {
-                let candidates: Vec<_> = p.steps.iter().filter(|r| r.mesh == *lane && r.build_id == p.build_id && r.attempt <= attempt && r.operation == *operation).collect();
-                let floor = crate::build_state::operation_reuse_boundary(&candidates, &p.build_id, lane, operation, attempt);
-                let allocations: Vec<_> = candidates.into_iter().filter(|r| r.attempt > floor && r.step == "AllocateIdentity" && r.outcome == StepOutcome::Complete).collect();
-                let Some(latest) = allocations.iter().map(|r| r.attempt).max() else { return Taken::Nothing };
-                let mut identity = None;
-                for receipt in allocations.into_iter().filter(|r| r.attempt == latest) {
-                    let Some(value) = receipt.output.as_ref() else { return Taken::Nothing };
-                    let Ok(found) = serde_json::from_value::<crate::deployment::pipeline::Identity>(value.clone()) else { return Taken::Nothing };
-                    if identity.as_ref().is_some_and(|prior| prior != &found) { return Taken::Nothing; }
-                    identity = Some(found);
+            "node.update" | "node.config.update" | "node.tag.create" | "node.tag.delete" => Taken::Refresh(node_id),
+            "node.create" => match rows.iter().find(|r| r.node_id == node_id).and_then(|r| r.newest_birth()) {
+                Some(b) => {
+                    let birth = Birth { node_id, incarnation: b.incarnation_id.clone() };
+                    held.created.insert(birth.clone());
+                    Taken::Created(birth)
                 }
-                match identity {
-                    Some(identity) => {
-                        let birth = identity.birth();
-                        held.created.insert(birth.clone());
-                        Taken::Created(birth)
-                    }
-                    None => Taken::Nothing,
-                }
+                None => Taken::Nothing,
             },
             _ => Taken::Nothing,
         }
@@ -678,7 +586,7 @@ impl Atlas {
         })?;
         let lifecycle = if op.state == rdm_core::status::NodeState::Stopped { Lifecycle::Stopped } else { Lifecycle::Started };
         // A node command belongs to no Build (Q342): its effect is the record's, read from no Build.
-        Some(Effect { lifecycle, stamp: Stamp { time: 0, build_id: rdm_core::LifecycleOp::NO_BUILD.into(), step: op.operation.operation.step, attempt: rdm_core::LifecycleOp::NO_ATTEMPT } })
+        Some(Effect { lifecycle, stamp: Stamp { time: 0, build_id: rdm_core::LifecycleOp::NO_BUILD.into(), index: 0 } })
     }
 
     /// The atlas row of `path`: the birth the current-pair lookup names (query.md §1: the pair's name
@@ -701,12 +609,8 @@ impl Atlas {
     async fn project_row(&self, row: Option<NodeRow>, observed: &Topology) -> Result<Option<AtlasRow>, String> {
         let Some(row) = row else { return Ok(None) };
         let birth = row.newest_birth().map(|b| b.incarnation_id.clone());
-        let accepted = {
-            let held = self.held.lock().unwrap();
-            birth.as_ref().and_then(|incarnation| held.accepted.get(&rdm_core::OperationSubject::Birth { node_id: row.node_id.clone(), incarnation: incarnation.clone() }))
-                .or_else(|| held.accepted.get(&rdm_core::OperationSubject::Node(row.node_id.clone())))
-                .map(|a| a.operation.clone())
-        };
+        // No operation is accepted on a node outside a Build's steps (Q342).
+        let accepted = None;
         let observed_status = observed.births().find(|n| n.node_id == row.node_id && n.incarnation_id == birth).map(|n| n.status);
         let held = birth.as_ref().and_then(|i| self.held.lock().unwrap().effects.get(&Birth { node_id: row.node_id.clone(), incarnation: i.clone() }).cloned());
         let from_row = match &birth {
@@ -770,38 +674,35 @@ impl Atlas {
 }
 
 impl crate::control_plane::ControlPlane {
-    /// The `Complete` receipt of `operation` of attempt `attempt` of `build_id`, as it streams up
-    /// `build.attempt.run` to this fabric-primary (read from `builds`, the attempt's own Build journal), taken
-    /// into its atlas before the frame is passed on (fabric-atlas.md R-FA2), whichever admin
-    /// executed it; a create's record read once at its path. One
+    /// The `Complete` step of `operation` in `mesh`'s section of `build_id`, as it streams up
+    /// `build.attempt.run` to this fabric-primary (read from the Build's events), taken into its atlas
+    /// before the frame is passed on (fabric-atlas.md R-FA2), whichever admin executed it. One
     /// `rdm.node_admin.fabric.update.via-atlas-receipt` span.
-    pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, operation: &rdm_core::OperationId) {
-        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), attempt, operation = %operation.action, operation_subject = ?operation.subject, operation_step = ?operation.step, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+    pub(crate) async fn take_streamed_receipt(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, mesh: &str, operation: &str) {
+        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-atlas-receipt", build_id = %build_id.log(), mesh, operation, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
         let p = match builds.read_build(build_id).await {
             Ok(p) => p,
             Err(e) => {
-                span.record("outcome", "build-unread").record("detail", format!("Build {build_id} could not be read for the receipt: {e}").as_str());
-                span.in_scope(|| tracing::info!("a streamed receipt was not taken into the atlas"));
+                span.record("outcome", "build-unread").record("detail", format!("Build {build_id} could not be read for the step: {e}").as_str());
+                span.in_scope(|| tracing::info!("a streamed step was not taken into the atlas"));
                 return;
             }
         };
-        // The receipt's subject as its current record holds it (query.md §1): what names its birth when
-        // the attempt pinned none.
+        // The step's subject as its current record holds it (query.md §1).
+        let subjects: Vec<NodeId> = p.steps.iter().filter(|s| s.operation == operation).filter_map(|s| s.subject.clone()).take(1).collect();
         let rows = match self.current_records() {
-            Some(records) => {
-                subject_rows(&records, [operation]).await.unwrap_or_else(|e| {
-                    span.record("detail", e.as_str());
-                    Vec::new()
-                })
-            }
+            Some(records) => subject_rows(&records, subjects.iter()).await.unwrap_or_else(|e| {
+                span.record("detail", e.as_str());
+                Vec::new()
+            }),
             None => {
                 span.record("detail", "no node records are open yet");
                 Vec::new()
             }
         };
-        let taken = self.atlas.take_receipt(&p, attempt, operation, &builds.receipt_mesh(), &rows);
+        let taken = self.atlas.take_receipt(&p, operation, mesh, &rows);
         span.record("outcome", taken.name().as_str());
-        span.in_scope(|| tracing::info!("a streamed receipt is the atlas's"));
+        span.in_scope(|| tracing::info!("a streamed step is the atlas's"));
     }
 
     /// The current stored record for the exact node admitted by a standalone action.
@@ -875,39 +776,12 @@ mod tests {
         let second = NodeId::mint();
         atlas.held.lock().unwrap().effects.insert(Birth { node_id: first.clone(), incarnation: incarnation.clone() }, Effect {
             lifecycle: Lifecycle::Deleted,
-            stamp: Stamp { time: 1, build_id: "fixture".into(), step: None, attempt: 1 },
+            stamp: Stamp { time: 1, build_id: "fixture".into(), index: 0 },
         });
         assert!(atlas.holds_deleted_by_delete(&first, &incarnation, None));
         assert!(!atlas.holds_deleted_by_delete(&second, &incarnation, None));
     }
 
-
-    #[test]
-    fn accepted_attempt_refresh_preserves_new_admission_after_old_cleanup() {
-        let atlas = TestAtlas::new();
-        let build = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("accepted-refresh")).unwrap();
-        let node_id = NodeId::mint();
-        let action = AttemptAction::Delete {
-            path: PathName::new("unrelated.location", "north").unwrap(),
-            mesh: "mesh1".into(), r#type: "node".into(),
-            node_id: node_id.clone(), from_incarnation: IncarnationId::mint(),
-        };
-        atlas.note_accepted(&build, 1, &action);
-        atlas.note_accepted(&build, 2, &action);
-        atlas.note_accepted(&build, 1, &action);
-        atlas.ended(&build, 1);
-        let held = atlas.held.lock().unwrap();
-        let accepted = held.accepted.get(&rdm_core::OperationSubject::Node(node_id.clone())).unwrap();
-        assert_eq!(accepted.attempt, 2);
-        assert_eq!(accepted.operation, rdm_core::OperationId::node("node.delete", &node_id));
-    }
-
-    #[test]
-    fn lifecycle_order_keeps_original_step_ahead_of_attempt_retry() {
-        let stamp = |step, attempt| Stamp { time: 1, build_id: "same-build".into(), step: Some(step), attempt };
-        assert!(stamp(2, 1) > stamp(1, 9));
-        assert!(stamp(2, 2) > stamp(2, 1));
-    }
 
     fn path(path: &str, name: &str) -> PathName {
         PathName::new(path, name).unwrap()

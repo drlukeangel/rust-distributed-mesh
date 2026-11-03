@@ -21,10 +21,7 @@ use async_trait::async_trait;
 use rdm_core::LifecycleOp;
 use rdm_admin::build::BuildId;
 use rdm_admin::certs::CertChoice;
-use rdm_admin::build_state::{
-    AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome,
-    StepOutcome,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildProjection, BuildStateAdapter, BuildStateError, StepOutcome, StepWrite};
 use rdm_admin::deployment::pipeline::LifecycleEvents;
 use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rdm_admin::model::ProviderKind;
@@ -69,13 +66,6 @@ pub enum CutSpec {
     /// and has not been made. The Build is its own entity, current from the moment it is durable
     /// (R-BI3), so until the release nothing holds it and nothing executes it.
     AcceptedBuild,
-    /// An attempt's claim is durable on this admin's log and broadcast (`claim_attempt` decided
-    /// `Won`) and the fabric-primary has not yet dispatched the attempt to its executor. `attempt`
-    /// narrows the cut to one attempt number.
-    ClaimedAttempt {
-        /// The attempt, when the cut is for one.
-        #[serde(default)] attempt: Option<u32>,
-    },
     /// The deployment provider reports a control domain no held birth's runtime fact is in: the
     /// admin cannot adopt what it hears, so its Ready gate stays blocked until the release.
     ProviderDomain,
@@ -183,8 +173,6 @@ pub enum Probe {
         operation: rdm_core::OperationId,
         /// The Build.
         build_id: String,
-        /// The attempt.
-        attempt: u32,
         /// Whether the receipt is a Failed one.
         failed: bool,
         /// The path and name the Build record names the receipt's node.id created at, for a create.
@@ -196,15 +184,6 @@ pub enum Probe {
         event: &'static str,
         /// The lifecycle operation the event names.
         op: LifecycleOp,
-    },
-    /// An attempt's claim that is durable and broadcast, about to be returned to the drive.
-    Claimed {
-        /// The Build.
-        build_id: String,
-        /// The attempt.
-        attempt: u32,
-        /// The executor the claim names.
-        executor: rdm_core::framing::Birth,
     },
     /// An accepted Build, durable, about to be returned to the acceptance.
     Accepted {
@@ -298,7 +277,6 @@ impl CutSpec {
             }
             (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node.as_ref().is_none_or(|wanted| wanted == &op.node_id),
             (CutSpec::AcceptedBuild, Probe::Accepted { .. }) => true,
-            (CutSpec::ClaimedAttempt { attempt }, Probe::Claimed { attempt: a, .. }) => attempt.is_none_or(|w| w == *a),
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
             (CutSpec::TopologyRead, Probe::TopologyRead { .. }) => true,
@@ -322,10 +300,9 @@ impl Probe {
     /// What a cut that holds this call records of it.
     fn hit(&self) -> Hit {
         match self {
-            Probe::Receipt { step, operation, build_id, attempt, .. } => Hit::Receipt { step: step.clone(), operation: operation.clone(), build_id: build_id.clone(), attempt: *attempt },
-            Probe::Event { event, op } => Hit::Event { event: event.to_string(), operation: op.operation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, node: op.node_id.clone(), incarnation_id: op.incarnation.as_str().to_string() },
+            Probe::Receipt { step, operation, build_id, .. } => Hit::Receipt { step: step.clone(), operation: operation.clone(), build_id: build_id.clone() },
+            Probe::Event { event, op } => Hit::Event { event: event.to_string(), operation: op.operation.clone(), build_id: op.build_id.clone(), node: op.node_id.clone(), incarnation_id: op.incarnation.as_str().to_string() },
             Probe::Accepted { build_id } => Hit::Accepted { build_id: build_id.clone() },
-            Probe::Claimed { build_id, attempt, executor } => Hit::Claimed { build_id: build_id.clone(), attempt: *attempt, executor: executor.clone() },
             Probe::ProviderDomain => Hit::ProviderDomain,
             Probe::LeaveAnnouncement { node, announcement, channel } => Hit::LeaveAnnouncement { node: node.clone(), announcement: *announcement, channel: channel.to_string() },
             Probe::TopologyRead { node, primary } => Hit::TopologyRead { node: node.clone(), reads_from: primary.clone() },
@@ -534,9 +511,6 @@ impl BuildStateAdapter for FaultedBuilds {
         self.faults.hold(Probe::Accepted { build_id: accepted.build_id.to_string() }).await;
         self.inner.publish_accepted(accepted).await
     }
-    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        self.inner.open_attempt(opened).await
-    }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
     }
@@ -549,58 +523,24 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn accepted_newest_first(&self) -> Result<Vec<BuildId>, BuildStateError> {
         self.inner.accepted_newest_first().await
     }
-    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.inner.list_active().await
+    fn events(&self) -> Arc<dyn rdm_admin::events_storage::EventsStorage> {
+        self.inner.events()
     }
-    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let outcome = self.inner.claim_attempt(claim).await?;
-        if outcome == ClaimOutcome::Won {
-            self.faults.hold(Probe::Claimed { build_id: claim.build_id.to_string(), attempt: claim.attempt, executor: claim.executor.clone() }).await;
-        }
-        Ok(outcome)
-    }
-    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &dyn rdm_admin::storage::MeshStorage, mesh: &str, row: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::build_state::InFlightClaim, BuildStateError> {
-        let decided = self.inner.claim_in_flight(claim, claims, mesh, row).await?;
-        if decided == rdm_admin::build_state::InFlightClaim::Decided(ClaimOutcome::Won) {
-            self.faults.hold(Probe::Claimed { build_id: claim.build_id.to_string(), attempt: claim.attempt, executor: claim.executor.clone() }).await;
-        }
-        Ok(decided)
-    }
-    async fn in_flight_live(&self, held: &rdm_admin::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
-        self.inner.in_flight_live(held).await
-    }
-    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        self.inner.adopt_claim(claim).await
-    }
-    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
+    async fn write_step(&self, w: &StepWrite) -> Result<(), BuildStateError> {
         self.faults.receipts_seen.fetch_add(1, Ordering::SeqCst);
-        let failed = receipt.outcome != StepOutcome::Complete;
-        // A create's receipt names the node by the node.id the Build record minted for it (D58).
-        let at = match &receipt.operation.subject {
-            Some(rdm_core::OperationSubject::Node(id)) if receipt.operation.action == "node.create" => {
-                self.inner.read_build(&receipt.build_id).await.ok().and_then(|b| b.topology.created.iter().find(|(_, created)| created == id).map(|(at, _)| at.clone()))
+        let failed = w.outcome != StepOutcome::Complete;
+        // A create's step names the node by the node.id the Build record minted for it (D58).
+        let at = match &w.operation.subject {
+            Some(rdm_core::OperationSubject::Node(id)) if w.operation.action == "node.create" => {
+                self.inner.read_build(&w.build_id).await.ok().and_then(|b| b.topology.created.iter().find(|(_, created)| created == id).map(|(at, _)| at.clone()))
             }
             _ => None,
         };
-        self.faults
-            .hold(Probe::Receipt { step: receipt.step.clone(), operation: receipt.operation.clone(), build_id: receipt.build_id.to_string(), attempt: receipt.attempt, failed, at })
-            .await;
-        self.inner.append_step_receipt(receipt).await
+        self.faults.hold(Probe::Receipt { step: w.step.clone(), operation: w.operation.clone(), build_id: w.build_id.to_string(), failed, at }).await;
+        self.inner.write_step(w).await
     }
-    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        self.inner.append_attempt_receipt(receipt).await
-    }
-    async fn note_blocked(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32, operation: &rdm_core::OperationId, step: &str, reason: &str) {
-        self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
-    }
-    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.inner.facts().await
-    }
-    async fn committed_facts(&self, build: Option<&rdm_admin::build::BuildId>) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
-        self.inner.committed_facts(build).await
-    }
-    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, u32, rdm_core::OperationId)>, BuildStateError> {
-        self.inner.mesh_deleted_of(node_id, incarnation).await
+    async fn note_blocked(&self, build_id: &BuildId, operation: &rdm_core::OperationId, step: &str, reason: &str) {
+        self.inner.note_blocked(build_id, operation, step, reason).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await

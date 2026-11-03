@@ -191,7 +191,7 @@ async fn restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt() {
     let CallEnd::Rejected { reason, detail } = &refused else { panic!("the stop of an unknown node ends Rejected: {refused:?}") };
     assert_eq!(reason, "unknown-node", "{detail}");
     let after = estate.carrier().await.build(&build).await.expect("build.get [id] of the accepted Build");
-    assert_eq!(before.attempt, after.attempt, "the refusal opened no attempt: {before:?} / {after:?}");
-    write_result(cell, &json!({"cell": cell, "provider": "process", "build_id": build, "refused": {"error": reason, "detail": detail}, "attempt_before": before.attempt, "attempt_after": after.attempt}));
+    assert_eq!((before.phase, &before.events), (after.phase, &after.events), "the refusal wrote no event of the Build: {before:?} / {after:?}");
+    write_result(cell, &json!({"cell": cell, "provider": "process", "build_id": build, "refused": {"error": reason, "detail": detail}, "events_before": before.events.len(), "events_after": after.events.len()}));
     estate.shutdown().await;
 }

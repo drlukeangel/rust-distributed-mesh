@@ -11,8 +11,8 @@
 //!             marker, and the work they measure is not complete
 //! routing     the typed routing effect the cut's position implies (routable or not)
 //! control     the public control effect: roles equal what the public candidates compute,
-//!             authority did not move, and a running silent runtime was neither replaced,
-//!             re-attempted nor re-born
+//!             the fabric-primary did not move, and a running silent runtime was neither replaced,
+//!             run again nor re-born
 //! release     the injection was released and the hold ended
 //! recovery    the work the cut held completed, and its progress marker moved past the stall
 //! reconciled  every final-state check holds (receipts once, one runtime, the current Build, the ledger)
@@ -41,7 +41,7 @@ pub const NO_PROGRESS_CONSEQUENCE: &str = "wedge_detector_requires_stalled_progr
 pub const NO_ROUTING_CONSEQUENCE: &str = "wedge_detector_requires_routing_consequence";
 /// The public control effect is missing, or the roles diverge from what the public candidates compute.
 pub const NO_CONTROL_CONSEQUENCE: &str = "wedge_detector_requires_control_consequence";
-/// A runtime that was alive and silent was replaced, re-attempted or re-born before it was unheard past
+/// A runtime that was alive and silent was replaced, run again or re-born before it was unheard past
 /// the staleness floor (past it, node investigation re-creates it: node-recovery.md step 3, Q111).
 pub const SILENT_RUNTIME_JUDGED_DEAD: &str = "wedge_detector_never_judges_a_running_silent_runtime_dead";
 /// The injection was never released, or the hold did not end.
@@ -198,12 +198,12 @@ pub struct Control {
     /// may not move at all.
     pub primary_may_move: bool,
     pub incarnation: [String; 3],
-    /// The Build attempt (or the runtime's birth count) of the work held, before and during: for a held
-    /// birth among the Build's other work, the attempts whose receipts acted on that birth.
-    pub attempts: [u64; 2],
+    /// The Build's runs (its `rdm.build.started` events, build.md §5) of the work held, before and
+    /// during: a Build has no attempts (Q344), and a run is one submission or resubmission.
+    pub runs: [u64; 2],
     /// The exact runtime was alive, as the provider holds it, during the hold.
     pub exact_runtime_alive: bool,
-    /// The hold ended with the work replaced: a new attempt, a new incarnation or a delete.
+    /// The hold ended with the work replaced: a new run, a new incarnation or a delete.
     pub replaced_during: bool,
     /// The held birth was unheard past the staleness floor: node investigation reads it held and
     /// re-creates it at its path (node-recovery.md step 3, Q111), so its replacement is the recovery, not
@@ -435,12 +435,12 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
                 proved.push("control");
             }
             let re_born = c.incarnation[0] != c.incarnation[1] || c.incarnation[1] != c.incarnation[2];
-            if c.exact_runtime_alive && !c.held_past_floor && (c.replaced_during || re_born || c.attempts[0] != c.attempts[1]) {
+            if c.exact_runtime_alive && !c.held_past_floor && (c.replaced_during || re_born || c.runs[0] != c.runs[1]) {
                 out.push(rej(
                     SILENT_RUNTIME_JUDGED_DEAD,
                     format!(
-                        "the exact runtime was alive and silent, not yet unheard past the staleness floor, and the control plane replaced it: replaced={}, incarnations {:?}, attempts {:?}",
-                        c.replaced_during, c.incarnation, c.attempts
+                        "the exact runtime was alive and silent, not yet unheard past the staleness floor, and the control plane replaced it: replaced={}, incarnations {:?}, runs {:?}",
+                        c.replaced_during, c.incarnation, c.runs
                     ),
                 ));
             } else {
@@ -500,7 +500,7 @@ fn finish(e: &Evidence, out: Vec<Rejection>, proved: Vec<&'static str>) -> Resul
     Err(Refusal { family, cut: e.cut.clone(), rejections: out })
 }
 
-/// A progress marker for the Build a cut holds: state, attempt and the steps its operation holds.
-pub fn build_marker(state: &str, attempt: u64, done_steps: &[String]) -> String {
-    json!({"state": state, "attempt": attempt, "done": done_steps}).to_string()
+/// A progress marker for the Build a cut holds: state, runs and the steps its operation completed.
+pub fn build_marker(state: &str, runs: u64, done_steps: &[String]) -> String {
+    json!({"state": state, "runs": runs, "done": done_steps}).to_string()
 }

@@ -78,7 +78,7 @@ impl LifecycleEvents for Recorder {
 struct Rig {
     admin: common::AdminSide,
     template: rdm_admin::deployment::pipeline::LaunchTemplate,
-    builds: MemoryBuildStateAdapter,
+    builds: rdm_admin::build_run::FramedBuilds,
     sink: Published,
     provider: ProcessDeploymentProvider,
     log: Log,
@@ -88,7 +88,7 @@ async fn rig() -> Rig {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&admin);
-    Rig { admin, template, builds: MemoryBuildStateAdapter::new(), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default() }
+    Rig { admin, template, builds: common::stepping(&fabric, "mesh1"), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default() }
 }
 
 impl Rig {
@@ -110,8 +110,10 @@ fn path() -> PathName {
     rdm_core::PathName::new("mesh1.node", "1").unwrap()
 }
 
-fn receipts(steps: &[rdm_admin::build_state::BuildStepReceipt], operation: &rdm_core::OperationId) -> Vec<String> {
-    steps.iter().filter(|r| r.operation == *operation && r.outcome == StepOutcome::Complete).map(|r| r.step.clone()).collect()
+/// The steps of `operation` whose `rdm.build.step` event ended `complete`, in event.id order.
+fn completed(steps: &[rdm_admin::build_state::BuildStep], operation: &rdm_core::OperationId) -> Vec<String> {
+    let op = operation.to_string();
+    steps.iter().filter(|r| r.operation == op && r.outcome == StepOutcome::Complete).map(|r| r.step.clone()).collect()
 }
 
 /// The node.delete of an unreached birth, step by step: nothing is sent to it.
@@ -157,7 +159,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(birth_build), attempt: 1, path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(birth_build), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -167,42 +169,39 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }, rdm_admin::deployment::deadline::Deadline::step()).await.unwrap();
     assert!(matches!(rig.provider.inspect(&first.handle, rdm_admin::deployment::deadline::Deadline::step()).await, DeploymentStatus::Exited { .. }), "the runtime exited");
     rig.log.lock().unwrap().clear();
-    let old_inc = first.node.incarnation_id.clone().unwrap();
 
     let recover_build = publish_build(&rig.builds, add_node()).await;
     // node.delete of the unreached birth.
     pipeline
-        .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(recover_build.clone()), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), unreached: true })
+        .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(first.node).node_id), build_id: Some(recover_build.clone()), node: first.node.clone(), handle: first.handle.clone(), unreached: true })
         .await
         .unwrap_or_else(|e| panic!("delete: {e}"));
     // The executor targets the exited birth before the create that takes its key.
     rig.log.lock().unwrap().push(format!("targeted:{}", first.node.node_id));
     // node.create over the exited birth's data dir, under the node.id minted for the re-create (D58).
+    let old_inc = first.node.incarnation_id.clone().unwrap();
     let second_id = NodeId::mint();
     let second = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &second_id), node_id: second_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(recover_build.clone()), attempt: 2, path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &second_id), node_id: second_id.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(recover_build.clone()), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("create over the inherited data dir: {e}"));
 
     // Two operations, each its own workflow's steps once, in order.
     let view = rig.builds.read_build(&recover_build).await.unwrap();
     let (delete, create) = (rdm_core::OperationId::node("node.delete", &first.node.node_id), rdm_core::OperationId::node("node.create", &second_id));
-    assert_eq!(receipts(&view.steps, &delete), DELETE_ORDER.map(String::from).to_vec());
-    assert_eq!(receipts(&view.steps, &create), CREATE_ORDER.map(String::from).to_vec());
-    let operations: Vec<&rdm_core::OperationId> = view.steps.iter().map(|r| &r.operation).collect();
-    assert!(operations.iter().all(|o| [&delete, &create].contains(o)), "no other operation: {operations:?}");
-    let first_of = |o: &rdm_core::OperationId| operations.iter().position(|x| *x == o).unwrap();
-    let last_of = |o: &rdm_core::OperationId| operations.iter().rposition(|x| *x == o).unwrap();
-    assert!(last_of(&delete) < first_of(&create), "the delete, then the create: {operations:?}");
-    // Every receipt the recovery wrote has a wire shape: none is refused before it commits.
-    let facts: Vec<rdm_admin::build_state::BuildFact> = view.steps.iter().cloned().map(rdm_admin::build_state::BuildFact::Step).collect();
-    let (_, refused) = rdm_admin::fabric_builds::encode_chunks(facts);
-    assert!(refused.is_empty(), "a receipt of the recovery has no wire shape: {refused:?}");
-    let output = |operation: &rdm_core::OperationId, step: &str| view.steps.iter().find(|r| r.operation == *operation && r.step == step).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{operation:?} {step} has an output"));
-    assert_eq!(output(&delete, "NodeDeleted")["node_id"], serde_json::to_value(&first.node.node_id).unwrap(), "NodeDeleted names the exited node");
-    assert_eq!(output(&delete, "NodeDeleted")["incarnation"], serde_json::to_value(&old_inc).unwrap(), "NodeDeleted names the exact exited birth");
-    assert_eq!(output(&delete, "TerminateRuntime")["verdict"], "exited", "the TerminateRuntime step read the runtime exited at its instant: the create takes the inherited data dir");
-    assert!(output(&create, "AllocateIdentity")["supersedes"].is_null(), "no lineage across node.ids: {}", output(&create, "AllocateIdentity"));
+    assert_eq!(completed(&view.steps, &delete), DELETE_ORDER.map(String::from).to_vec());
+    assert_eq!(completed(&view.steps, &create), CREATE_ORDER.map(String::from).to_vec());
+    let (delete_op, create_op) = (delete.to_string(), create.to_string());
+    let operations: Vec<&String> = view.steps.iter().map(|r| &r.operation).collect();
+    assert!(operations.iter().all(|o| [&delete_op, &create_op].contains(o)), "no other operation: {operations:?}");
+    let first_of = |o: &String| operations.iter().position(|x| *x == o).unwrap();
+    let last_of = |o: &String| operations.iter().rposition(|x| *x == o).unwrap();
+    assert!(last_of(&delete_op) < first_of(&create_op), "the delete, then the create: {operations:?}");
+    // Each step event names the node it acted on (its `subject`, build.md §5): the delete's the exited
+    // node, the create's the new node.id.
+    let subject = |op: &String, step: &str| view.steps.iter().find(|r| r.operation == *op && r.step == step).and_then(|r| r.subject.clone()).unwrap_or_else(|| panic!("{op} {step} names its node"));
+    assert_eq!(subject(&delete_op, "NodeDeleted"), first.node.node_id, "NodeDeleted names the exited node");
+    assert_eq!(subject(&create_op, "AllocateIdentity"), second_id, "the create's AllocateIdentity names the new node.id");
 
     // Retained: path.name, data dir and its storage, endpoint key. New: node.id, incarnation, runtime.
     assert_eq!(second.node.name, first.node.name);
@@ -253,7 +252,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(birth_build), attempt: 1, path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(birth_build), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -264,7 +263,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
 
     let recover_build = publish_build(&rig.builds, add_node()).await;
     let outcome = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(recover_build.clone()), attempt: 2, path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(recover_build.clone()), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
         .await;
     let err = match outcome {
         Err(e) => e,
@@ -308,7 +307,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
 
     let birth_build = publish_build(&rig.builds, add_node()).await;
     let first = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(birth_build), attempt: 1, path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(path()))), node_id: (rdm_core::fixture_node_id(&(path()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(birth_build), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
@@ -322,7 +321,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
     // Each re-create runs under the node.id minted for it (D58).
     let recreated = NodeId::mint();
     let err = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(broken_build.clone()), attempt: 2, path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(broken_build.clone()), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
         .await
         .expect_err("broken inherited data_dir must fail PrepareStorage");
     assert_eq!(err.step, "PrepareStorage", "{err}");
@@ -334,7 +333,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
     // Each re-create runs under the node.id minted for it (D58).
     let recreated = NodeId::mint();
     let repaired = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(broken_build), attempt: 3, path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(broken_build), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("repaired create: {e}"));
     assert_eq!(repaired.node.endpoint_id, first.node.endpoint_id, "repaired dir retains endpoint key");
@@ -349,7 +348,7 @@ async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_o
     // Each re-create runs under the node.id minted for it (D58).
     let recreated = NodeId::mint();
     let fresh = pipeline
-        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(gone_build), attempt: 4, path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
+        .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &recreated), node_id: recreated.clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(gone_build), path: path().path, name: path().name, spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None })
         .await
         .unwrap_or_else(|e| panic!("gone recovery over fresh dir: {e}"));
     assert_ne!(fresh.node.node_id, repaired.node.node_id, "new node.id minted");

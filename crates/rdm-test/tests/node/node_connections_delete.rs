@@ -22,10 +22,10 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &PathName, step: &str) -> Option<&'a Value> {
+fn step_span<'a>(spans: &'a [Value], build: &str, node: &PathName, step: &str) -> Option<&'a Value> {
     named(spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node_path"] == node.path && sp["attributes"]["node_name"] == node.name && s(&sp["attributes"]["step"]) == step)
+        .find(|sp| s(&sp["attributes"]["build_id"]) == build && sp["attributes"]["node_path"] == node.path && sp["attributes"]["node_name"] == node.name && s(&sp["attributes"]["step"]) == step)
 }
 
 /// CONTRACT: `node.connection.delete { All }` is a node command of the primary above the node, never a
@@ -63,19 +63,19 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists(), "the process {pid} whose connections were deleted is still running");
 
     // Every process flushes its spans on exit.
-    let (birth_build, attempt) = (rdm_core::LifecycleOp::NO_BUILD, rdm_core::LifecycleOp::NO_ATTEMPT.to_string());
+    let birth_build = rdm_core::LifecycleOp::NO_BUILD;
     estate.stop().await;
     let spans = estate.spans();
     let mut last = 0u64;
     for step in ["DeleteConnections", "Complete"] {
-        let sp = step_span(&spans, birth_build, &attempt, &node, step).unwrap_or_else(|| panic!("step {step} ran"));
+        let sp = step_span(&spans, birth_build, &node, step).unwrap_or_else(|| panic!("step {step} ran"));
         assert_eq!(s(&sp["attributes"]["outcome"]), "complete", "{sp}");
         let at = sp["start_unix_nano"].as_u64().unwrap();
         assert!(at >= last, "{step} starts before the step it follows");
         last = at;
     }
     for step in ["StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleting", "NodeDeleted", "RemoveTopologyMembership"] {
-        assert!(step_span(&spans, birth_build, &attempt, &node, step).is_none(), "a standalone node.connection.delete runs no {step}");
+        assert!(step_span(&spans, birth_build, &node, step).is_none(), "a standalone node.connection.delete runs no {step}");
     }
     assert!(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().all(|sp| sp["attributes"]["node_id"] != before["node_id"]), "a node.connection.delete deletes no node");
 
@@ -106,11 +106,11 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
     let frames = Estate::frames_of(&mut deleting).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
     // A node command belongs to no Build: its steps run under no build_id and attempt.
-    let (birth_build, attempt) = (rdm_core::LifecycleOp::NO_BUILD, rdm_core::LifecycleOp::NO_ATTEMPT.to_string());
+    let birth_build = rdm_core::LifecycleOp::NO_BUILD;
     estate.stop().await;
     let spans = estate.spans();
     // The operation's own run: its DeleteConnections step and everything in its trace.
-    let step = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node_path"] == node.path && sp["attributes"]["node_name"] == node.name && s(&sp["attributes"]["step"]) == "DeleteConnections").cloned().expect("the DeleteConnections step");
+    let step = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && sp["attributes"]["node_path"] == node.path && sp["attributes"]["node_name"] == node.name && s(&sp["attributes"]["step"]) == "DeleteConnections").cloned().expect("the DeleteConnections step");
     let trace = s(&step["trace_id"]);
     let run: Vec<&Value> = spans.iter().filter(|sp| s(&sp["trace_id"]) == trace).collect();
     let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);

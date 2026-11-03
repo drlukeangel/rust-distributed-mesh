@@ -3,6 +3,7 @@
 //! characters, and a stored `bld-<hex>` or 32-hex value is an old row that reading refuses by name.
 
 use rdm_admin::build::BuildId;
+use rdm_admin::build_state::LocalBuildLog as _;
 use rdm_admin::model::DeploymentId;
 
 const CROCKFORD: &str = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -77,7 +78,7 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
             meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Ready }],
             nodes: vec![admin],
         };
-        AcceptedStore::seeded(&builds, observed.fabric.id.clone(), FabricTopology::of_observed(&observed), &executor, "mesh1").await.unwrap();
+        AcceptedStore::seeded(&builds, observed.fabric.id.clone(), FabricTopology::of_observed(&observed), &executor).await.unwrap();
         let id = builds.current_build().await.unwrap().into_build_id().unwrap();
         let facts_json = serde_json::to_string(&builds.facts().await.unwrap()).unwrap();
         (id, facts_json)
@@ -114,10 +115,10 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     assert_eq!(row_key, rdm_core::OperationId::primary_update(PrimaryRole::MeshPrimary, &preceding));
     assert!(!serde_json::to_string(&row_key).unwrap().contains("bid_"), "{row_key:?}");
     assert!(facts_json.contains(&format!("\"build_id\":\"{bare}\"")) && !facts_json.contains("bid_"), "{facts_json}");
-    let started = BuildReply::Started { build_id: id.to_string(), attempt: 1, disposition: Disposition::Created };
+    let started = BuildReply::Started { build_id: id.to_string(), disposition: Disposition::Created };
     let wire = Build::encode_reply(&started).unwrap();
     let decoded = Build::decode_reply(&wire).unwrap();
-    assert_eq!(decoded, BuildReply::Started { build_id: bare.clone(), attempt: 1, disposition: Disposition::Created });
+    assert_eq!(decoded, BuildReply::Started { build_id: bare.clone(), disposition: Disposition::Created });
 
     let spans = capture.spans().expect("the cell's spans are readable");
     let accepted = spans

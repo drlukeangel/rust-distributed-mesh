@@ -26,7 +26,7 @@ const SOURCE_FAILED: &str = "rdm.node_admin.mesh.reject.via-source-failed";
 const DOMAIN: &str = "mesh-delete-source";
 
 fn key(mesh_id: &MeshId) -> MeshDeleteKey {
-    MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse("pdz453kf4br6").unwrap(), attempt: 1, operation: operation(mesh_id) }
+    MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse("pdz453kf4br6").unwrap(), operation: operation(mesh_id) }
 }
 
 /// The cell's spans, written to `target/cells/mesh_delete_source/<cell>/spans.json`; its trace id and
@@ -72,8 +72,8 @@ fn a_mesh_deleted_report_whose_manifest_cannot_be_read_is_refused_by_name_and_th
     let k = key(&mesh_id);
     let fp = RosterBirth { mesh: "mesh2".into(), r#type: "node-admin".into(), node: rdm_core::PathName::new("mesh2.node-admin", "1").unwrap(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() };
     let runtime = RuntimeIdentity { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
-    let admitted = Admitted { roster: vec![fp.clone()], final_primary: fp, final_runtime: runtime, amendments: Vec::new() };
-    let reference = manifest_reference(k.build_id.as_str(), 1, &k.operation, false);
+    let admitted = Admitted { roster: vec![fp.clone()], final_primary: fp, final_runtime: runtime };
+    let reference = manifest_reference(k.build_id.as_str(), &k.operation, false);
     let cap = capture();
     let (unreached, not_ready, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.reject.via-manifest-unread", mesh_id = %mesh_id);

@@ -48,6 +48,8 @@ mod estate_handover;
 mod estate_teardown;
 #[path = "build/accepted_topology.rs"]
 mod accepted_topology;
+#[path = "build/build_sections.rs"]
+mod build_sections;
 #[path = "build/build_op.rs"]
 mod build_op;
 #[path = "build/mesh_self_heal.rs"]
@@ -218,12 +220,14 @@ mod connections_acceptance;
 mod connections_restart;
 #[path = "connections/reconnect.rs"]
 mod connections_reconnect_e2e;
-#[path = "node/node_replace.rs"]
-mod node_replace;
+#[path = "node/node_recovery_exits.rs"]
+mod node_recovery_exits;
 #[path = "node/node_restart.rs"]
 mod node_restart;
 #[path = "node/node_row_status.rs"]
 mod node_row_status;
+#[path = "node/status_frames.rs"]
+mod status_frames;
 #[path = "node/node_stop.rs"]
 mod node_stop;
 #[path = "rpc/apply_cuts.rs"]

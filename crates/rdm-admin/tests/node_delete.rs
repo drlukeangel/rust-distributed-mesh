@@ -2,9 +2,7 @@
 
 use rdm_admin::accepted::FabricTopology;
 use rdm_admin::build::BuildId;
-use rdm_admin::build_state::{
-    BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome,
-};
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::deployment::pipeline::{
     CommandAdmission, CommandContext, Completion, DeleteRequest, DeleteStep, DeploymentPipeline,
     LaunchTemplate, LifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink,
@@ -381,7 +379,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         };
 
         // 1. If the provider still reports Running after terminate, TerminateRuntime fails and NodeDeleted does not run.
-        let builds_fail = MemoryBuildStateAdapter::new();
+        let builds_fail = crate::stepping(&executor_birth.node_id, "mesh1");
         let build_fail_id = BuildId::mint();
         builds_fail
             .publish_accepted(&BuildAccepted {
@@ -393,16 +391,6 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
                 ),
                 change: None,
                 source: None, time: 1000,
-            })
-            .await
-            .unwrap();
-        builds_fail
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_fail_id.clone(),
-                attempt: 1,
-                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -435,7 +423,6 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
 
         let req_fail = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
             build_id: Some(build_fail_id.clone()),
-            attempt: 1,
             node: target_node.clone(),
             handle: handle.clone(),
             unreached: false,
@@ -471,7 +458,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
         // 2. When the provider reports Exited after terminate, node.delete composes node.stop,
         // verifies Exited, writes the row Deleted (keeping record & config, releasing name claim),
         // emits deleted, removes topology membership, and retains data_dir and node-key on disk.
-        let builds_ok = MemoryBuildStateAdapter::new();
+        let builds_ok = crate::stepping(&executor_birth.node_id, "mesh1");
         let build_ok_id = BuildId::mint();
         builds_ok
             .publish_accepted(&BuildAccepted {
@@ -483,16 +470,6 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
                 ),
                 change: None,
                 source: None, time: 2000,
-            })
-            .await
-            .unwrap();
-        builds_ok
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_ok_id.clone(),
-                attempt: 1,
-                executor: executor_birth.clone(),
             })
             .await
             .unwrap();
@@ -524,7 +501,6 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
 
         let req_ok = DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
             build_id: Some(build_ok_id.clone()),
-            attempt: 1,
             node: target_node.clone(),
             handle: handle.clone(),
             unreached: false,
@@ -646,7 +622,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
 /// - OS-suspended target (`OsStopped`) that remains `OsStopped` after `terminate(Immediate)` -> skips
 ///   `StopNode` and `AwaitNodeLeft` by name (`rdm.node_admin.node.delete.via-os-stopped`) and fails
 ///   `TerminateRuntime` with no `NodeDeleted`;
-/// - Cut after `NodeDeleting` and `TerminateRuntime` before `NodeDeleted` -> next attempt reuses
+/// - Cut after `NodeDeleting` and `TerminateRuntime` before `NodeDeleted` -> the next run reuses
 ///   `NodeDeleting` and `TerminateRuntime` without re-stopping or re-terminating and completes
 ///   `NodeDeleted`, `RemoveTopologyMembership`, and `Complete`;
 /// - Lost reply at `StopNode` (`CommandAdmission::Indeterminate`) on a live delete -> records
@@ -654,7 +630,7 @@ fn node_delete_pipeline_requires_exact_exited_verdict_releases_name_and_retains_
 ///   exact runtime through the provider, and completes `NodeDeleted` from the provider's `Exited`.
 #[test]
 fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
-    use rdm_admin::build_state::BuildStepReceipt;
+
     use rdm_admin::deployment::pipeline::TerminalReceipt;
     use std::collections::VecDeque;
 
@@ -839,7 +815,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             binding: None,
         };
 
-        let builds = MemoryBuildStateAdapter::new();
+        let builds = crate::stepping(&executor_birth.node_id, "mesh1");
         let build_id = BuildId::mint();
         builds
             .publish_accepted(&BuildAccepted {
@@ -857,11 +833,11 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
 
         let provider = ScriptedDeleteProvider {
             inspects: Mutex::new(VecDeque::from([
-                // Attempt 1: inspected as OsStopped at delete start (skips StopNode/AwaitNodeLeft),
+                // The first run: inspected as OsStopped at delete start (skips StopNode/AwaitNodeLeft),
                 // then still OsStopped after terminate(Immediate) -> fails TerminateRuntime.
                 DeploymentStatus::OsStopped,
                 DeploymentStatus::OsStopped,
-                // Build 2 attempt 1: live target (Running at stop_skipped_os_stopped), then Exited after terminate.
+                // Build 2: live target (Running at stop_skipped_os_stopped), then Exited after terminate.
                 DeploymentStatus::Running,
                 DeploymentStatus::Exited { code: Some(0) },
             ])),
@@ -889,22 +865,11 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             timeouts: Timeouts::default(),
         };
 
-        // 1. Attempt 1: OS-suspended target (`OsStopped`) skips `StopNode`/`AwaitNodeLeft`, calls
+        // 1. The first run: an OS-suspended target (`OsStopped`) skips `StopNode`/`AwaitNodeLeft`, calls
         // `terminate(Immediate)`, and fails `TerminateRuntime` when still `OsStopped`.
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 1,
-                executor: executor_birth.clone(),
-            })
-            .await
-            .unwrap();
         let err1 = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
                 build_id: Some(build_id.clone()),
-                attempt: 1,
                 node: target_node.clone(),
                 handle: handle.clone(),
                 unreached: false,
@@ -927,91 +892,32 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             "OS-suspended delete must call terminate(Immediate)"
         );
 
-        // 2. Attempt 2 is cut after recording `NodeDeleting` and `TerminateRuntime` (`Complete`) before
-        // `NodeDeleted`; Attempt 3 reuses both receipts without calling `provider.terminate` or sending
+        // 2. A run is cut after recording `NodeDeleting` and `TerminateRuntime` (`Complete`) before
+        // `NodeDeleted`; the run after it reuses both steps without calling `provider.terminate` or sending
         // `StopNode`, and completes `NodeDeleted`, `RemoveTopologyMembership`, and `Complete`.
         builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 2,
-                executor: executor_birth.clone(),
-            })
+            .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: rdm_core::OperationId::node("node.delete", &target_id), step: DeleteStep::NodeDeleting.name().into(), outcome: StepOutcome::Complete })
             .await
             .unwrap();
-        let deleting_op = LifecycleOp { r#type: "node".into(), mesh: "mesh1".to_owned(),
-            build_id: build_id.to_string(),
-            attempt: 2,
-            operation: rdm_core::OperationId::node("node.delete", &target_id),
-            node_id: target_id.clone(),
-            incarnation: target_incarnation.clone(),
-            path: target_name.path.clone(), name: target_name.name.clone(),
-            event_at_rafka_ms: 1_000_000,
-            traceparent: None,
-            tracestate: None,
-        };
         builds
-            .append_step_receipt(&BuildStepReceipt {
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 2,
-                operation: rdm_core::OperationId::node("node.delete", &target_id),
-                step: DeleteStep::NodeDeleting.name().into(),
-                outcome: StepOutcome::Complete,
-                output: Some(serde_json::to_value(&deleting_op).unwrap()),
-                executor: Some(executor_birth.clone()),
-            })
-            .await
-            .unwrap();
-        let term_receipt = TerminalReceipt {
-            path: target_name.path.clone(), name: target_name.name.clone(),
-            node_id: target_id.to_string(),
-            incarnation_id: target_incarnation.to_string(),
-            runtime: None,
-            exit_code: Some(9),
-            verdict: Some("os-stopped".into()),
-            data_dir: target_node.data_dir.clone(),
-        };
-        builds
-            .append_step_receipt(&BuildStepReceipt {
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 2,
-                operation: rdm_core::OperationId::node("node.delete", &target_id),
-                step: DeleteStep::TerminateRuntime.name().into(),
-                outcome: StepOutcome::Complete,
-                output: Some(serde_json::to_value(&term_receipt).unwrap()),
-                executor: Some(executor_birth.clone()),
-            })
+            .write_step(&rdm_admin::build_state::StepWrite { build_id: build_id.clone(), mesh: None, operation: rdm_core::OperationId::node("node.delete", &target_id), step: DeleteStep::TerminateRuntime.name().into(), outcome: StepOutcome::Complete })
             .await
             .unwrap();
 
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id.clone(),
-                attempt: 3,
-                executor: executor_birth.clone(),
-            })
-            .await
-            .unwrap();
         let out3 = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
                 build_id: Some(build_id.clone()),
-                attempt: 3,
                 node: target_node.clone(),
                 handle: handle.clone(),
                 unreached: false,
             })
             .await
-            .expect("attempt 3 must reuse TerminateRuntime and complete NodeDeleted");
-        assert_eq!(out3.exit_code, Some(9));
+            .expect("the run after the cut must reuse TerminateRuntime and complete NodeDeleted");
+        assert_eq!((out3.exit_code, out3.verdict.as_deref()), (None, None), "the reused TerminateRuntime hands on the runtime the durable row names, and reads no exit again (D67)");
         assert_eq!(
             provider.terminates.lock().unwrap().len(),
             1,
-            "attempt 3 must reuse TerminateRuntime without calling provider.terminate again"
+            "the run after the cut must reuse TerminateRuntime without calling provider.terminate again"
         );
         assert!(observer.commands.lock().unwrap().is_empty());
 
@@ -1037,20 +943,9 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
             })
             .await
             .unwrap();
-        builds
-            .claim_attempt(&BuildAttemptClaim { claimed_mesh: None, executor_mesh: "mesh1".into(),
-                claimant: None,
-                mesh: None,
-                build_id: build_id_live.clone(),
-                attempt: 1,
-                executor: executor_birth.clone(),
-            })
-            .await
-            .unwrap();
         let out_live = pipeline
             .delete_node(&DeleteRequest { operation: rdm_core::OperationId::node("node.delete", &(target_node).node_id),
                 build_id: Some(build_id_live.clone()),
-                attempt: 1,
                 node: target_node.clone(),
                 handle: handle.clone(),
                 unreached: false,
@@ -1105,7 +1000,6 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
         assert!(peer_view.record(old_digest.clone()));
         assert!(peer_view.depart(LifecycleOp { r#type: "node".into(), mesh: "mesh1".to_owned(),
             build_id: build_id_live.to_string(),
-            attempt: 1,
             operation: rdm_core::OperationId::node("node.delete", &target_id),
             node_id: target_id.clone(),
             incarnation: target_incarnation.clone(),
@@ -1151,7 +1045,7 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
     assert_eq!(
         os_stopped_spans.len(),
         1,
-        "expected rdm.node_admin.node.delete.via-os-stopped span on attempt 1"
+        "expected rdm.node_admin.node.delete.via-os-stopped span on the first run"
     );
     assert_eq!(
         os_stopped_spans[0].attributes.get("skipped").map(String::as_str),
@@ -1161,26 +1055,23 @@ fn node_delete_step_faults_recover_or_fail_as_the_page_specifies() {
     assert!(
         step_spans.iter().any(|s| {
             s.attributes.get("step").map(String::as_str) == Some(DeleteStep::TerminateRuntime.name())
-                && s.attributes.get("attempt").map(String::as_str) == Some("1")
                 && s.attributes.get("outcome").map(String::as_str) == Some("failed")
         }),
-        "expected failed TerminateRuntime span on attempt 1"
+        "expected failed TerminateRuntime span on the first run"
     );
     assert!(
         step_spans.iter().any(|s| {
             s.attributes.get("step").map(String::as_str) == Some(DeleteStep::TerminateRuntime.name())
-                && s.attributes.get("attempt").map(String::as_str) == Some("3")
                 && s.attributes.get("outcome").map(String::as_str) == Some("reused")
         }),
-        "expected reused TerminateRuntime span on attempt 3"
+        "expected reused TerminateRuntime span on the run after the cut"
     );
     assert!(
         step_spans.iter().any(|s| {
             s.attributes.get("step").map(String::as_str) == Some(DeleteStep::Complete.name())
-                && s.attributes.get("attempt").map(String::as_str) == Some("3")
                 && s.attributes.get("outcome").map(String::as_str) == Some("complete")
         }),
-        "expected complete Complete span on attempt 3"
+        "expected complete Complete span on the run after the cut"
     );
     crate::assert_own_story(capture.all_names().iter().map(String::as_str));
 }

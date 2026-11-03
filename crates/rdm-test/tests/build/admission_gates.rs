@@ -23,8 +23,8 @@ async fn read_to_complete(stream: &mut BuildStream) {
     while let Some(frame) = stream.next().await {
         match frame.expect("stream frame") {
             BuildFrame::Complete { .. } => return,
-            BuildFrame::Failed { operation, step, reason, .. } => {
-                panic!("Build failed at {operation:?} {step}: {reason}")
+            BuildFrame::Failed { reason, .. } => {
+                panic!("Build failed: {reason}")
             }
             _ => {}
         }

@@ -80,8 +80,6 @@ pub fn name_not_applied(node: String, answered: String, reason: String) -> Statu
 pub fn unknown_mesh(mesh: String) -> StatusReply { StatusReply::UnknownMesh { mesh } }
 /// Construct the typed read-over-bound outcome.
 pub fn read_over_bound(read: String, bytes: u64, max: u64) -> StatusReply { StatusReply::ReadOverBound { read, bytes, max } }
-/// Construct the typed rejected-stale-workflow outcome.
-pub fn rejected_stale_workflow(held: MeshDeleteIdentity, offered: MeshDeleteIdentity) -> StatusReply { StatusReply::RejectedStaleWorkflow { held, offered } }
 /// Construct the typed rejected-conflicting-workflow outcome.
 pub fn rejected_conflicting_workflow(held: MeshDeleteIdentity, offered: MeshDeleteIdentity) -> StatusReply { StatusReply::RejectedConflictingWorkflow { held, offered } }
 /// Construct the typed rejected-incomplete-manifest outcome.
@@ -169,21 +167,19 @@ use crate::streaming::{FrameKind, StreamingProtocol};
 use crate::{IncarnationId, NodeId, PathName};
 use serde::{Deserialize, Serialize};
 /// Construct the typed failed outcome.
-pub fn failed(build_id: String, attempt: u32, operation: crate::OperationId, step: String, reason: String, code: crate::outcome::Code) -> BuildReply { BuildReply::Failed { build_id, attempt, operation, step, reason, code } }
+pub fn failed(build_id: String, reason: String, code: crate::outcome::Code) -> BuildReply { BuildReply::Failed { build_id, reason, code } }
+/// Construct the typed incomplete Build terminal (Q346).
+pub fn incomplete(build_id: String, sections: Vec<crate::build::UnfinishedSection>) -> BuildReply { BuildReply::Incomplete { build_id, sections } }
 /// Construct the typed not-fabric-primary outcome.
 pub fn not_fabric_primary(fabric_primary: Option<NodeId>) -> BuildReply { BuildReply::NotFabricPrimary { fabric_primary } }
 /// Construct the typed not-executor outcome.
 pub fn not_executor(named: crate::framing::Birth, recipient: crate::framing::Birth) -> BuildReply { BuildReply::NotExecutor { named, recipient } }
-/// Construct the typed stale-claim outcome.
-pub fn stale_claim(held_attempt: u32, held_executor: Option<crate::framing::Birth>, carried_attempt: u32) -> BuildReply { BuildReply::StaleClaim { held_attempt, held_executor, carried_attempt } }
 /// Construct the typed unknown-build outcome.
 pub fn unknown_build(build_id: String) -> BuildReply { BuildReply::UnknownBuild { build_id } }
 /// Construct the typed rejected outcome.
 pub fn rejected(reason: String, detail: String) -> BuildReply { BuildReply::Rejected { reason, detail } }
 /// Construct the typed build-in-progress outcome.
-pub fn build_in_progress(current_build_id: String, mesh: Option<String>, held_by: Option<crate::NodeId>) -> BuildReply { BuildReply::BuildInProgress { current_build_id, mesh, held_by } }
-/// Construct the typed attempt-taken outcome.
-pub fn attempt_taken(detail: String) -> BuildReply { BuildReply::AttemptTaken { detail } }
+pub fn build_in_progress(current_build_id: String) -> BuildReply { BuildReply::BuildInProgress { current_build_id } }
 /// Construct the typed role-yielded outcome.
 pub fn role_yielded(node: NodeId, by: String) -> BuildReply { BuildReply::RoleYielded { node, by } }
 /// Construct the typed cannot-delete outcome.
@@ -198,39 +194,8 @@ pub fn busy(reason: String) -> BuildReply { BuildReply::Busy { reason } }
 pub fn connections_deleting(reason: String) -> BuildReply { BuildReply::ConnectionsDeleting { reason } }
 /// Construct the typed malformed outcome.
 pub fn malformed(kind: MalformedKind) -> BuildReply { BuildReply::Malformed { kind } }
-/// Construct the typed not-claimant outcome.
-pub fn not_claimant(mesh: Option<String>, fabric_primary: Option<NodeId>, mesh_primary: Option<crate::NodeId>) -> BuildReply { BuildReply::NotClaimant { mesh, fabric_primary, mesh_primary } }
 /// Construct the typed rejected-filter outcome: a `build.get` pair the Build header's schema refuses.
 pub fn rejected_filter(reason: String) -> BuildReply { BuildReply::RejectedFilter { reason } }
-}
-
-/// Constructors for the BuildClaimReply family.
-#[allow(unused_imports)]
-pub mod build_claim {
-use crate::build_claim::*;
-use crate::context::CallContext;
-use crate::outcome::{MalformedKind, ReplyKind};
-use crate::protocol::NodeProtocol;
-use crate::{IncarnationId, NodeId};
-use serde::{Deserialize, Serialize};
-/// Construct the typed lost outcome.
-pub fn lost(holder: crate::NodeId) -> BuildClaimReply { BuildClaimReply::Lost { holder } }
-/// Construct the typed not-open outcome.
-pub fn not_open(next: Option<u32>) -> BuildClaimReply { BuildClaimReply::NotOpen { next } }
-/// Construct the typed not-claimant outcome.
-pub fn not_claimant(mesh: Option<String>, fabric_primary: Option<NodeId>, mesh_primary: Option<crate::NodeId>) -> BuildClaimReply { BuildClaimReply::NotClaimant { mesh, fabric_primary, mesh_primary } }
-/// Construct the typed peer-unresolved outcome.
-pub fn peer_unresolved(reason: String) -> BuildClaimReply { BuildClaimReply::PeerUnresolved { reason } }
-/// Construct the typed not-ready outcome.
-pub fn not_ready(reason: String) -> BuildClaimReply { BuildClaimReply::NotReady { reason } }
-/// Construct the typed busy outcome.
-pub fn busy(reason: String) -> BuildClaimReply { BuildClaimReply::Busy { reason } }
-/// Construct the typed connections-deleting outcome.
-pub fn connections_deleting(reason: String) -> BuildClaimReply { BuildClaimReply::ConnectionsDeleting { reason } }
-/// Construct the typed malformed outcome.
-pub fn malformed(kind: MalformedKind) -> BuildClaimReply { BuildClaimReply::Malformed { kind } }
-/// Construct the typed build-in-progress outcome.
-pub fn build_in_progress(current_build_id: String, mesh: String, held_by: Option<crate::NodeId>) -> BuildClaimReply { BuildClaimReply::BuildInProgress { current_build_id, mesh, held_by } }
 }
 
 /// Constructors for the JoinReply family.
@@ -257,7 +222,7 @@ pub fn connections_deleting(reason: String) -> JoinReply { JoinReply::Connection
 /// Construct the typed malformed outcome.
 pub fn malformed(kind: MalformedKind) -> JoinReply { JoinReply::Malformed { kind } }
 /// Construct the typed deployment-abandoned outcome.
-pub fn deployment_abandoned(build_id: String, attempt: u32, node_id: NodeId, incarnation: IncarnationId) -> JoinReply { JoinReply::DeploymentAbandoned { build_id, attempt, node_id, incarnation } }
+pub fn deployment_abandoned(build_id: String, node_id: NodeId, incarnation: IncarnationId) -> JoinReply { JoinReply::DeploymentAbandoned { build_id, node_id, incarnation } }
 /// Construct the typed cert-refused outcome.
 pub fn cert_refused(name: String, detail: String) -> JoinReply { JoinReply::CertRefused { name, detail } }
 }

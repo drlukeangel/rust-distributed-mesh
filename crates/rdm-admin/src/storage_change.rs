@@ -76,7 +76,7 @@ pub async fn command(client: &rdm_transport::NodeRpcClient, commands: &crate::no
         _ => return Err("the storage command function accepts only storage commands".into()),
     };
     let _tracked = commands.track(crate::node_commands::CommandKey {
-        build_id: String::new(), attempt: 0, operation: rdm_core::OperationId::new(command.op(), rdm_core::OperationSubject::Named(change_id.to_string())),
+        operation: rdm_core::OperationId::new(command.op(), rdm_core::OperationSubject::Named(change_id.to_string())),
         node_id: node_id.clone(), incarnation: command.subject().1.clone(),
     });
     command_reply(client, node_id, command).await

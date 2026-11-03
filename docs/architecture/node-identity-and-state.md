@@ -330,10 +330,8 @@ records the role and does not grant it.
   rule ([Node RPC §43](node-rpc.md#43-send-delivery-is-the-runtimes)) until the store
   acknowledges it, on its own clock, never waiting for a birth, a digest or a primary change, and marks
   the row written only on that acknowledgement, while it is the writer. The
-  row's write is the claim then the record (`rdm-admin/src/admin/rows_writer.rs`,
-  `rdm.node_admin.mesh.create.via-mesh-row`: `row-written`, `row-held-by-mesh` for the same MeshId,
-  `name-held` naming the holder). A mesh whose name another mesh's row already holds stays held,
-  naming the holder; it is never renamed, and the id never moves.
+  row's write is one record (`rdm-admin/src/admin/rows_writer.rs`,
+  `rdm.node_admin.mesh.create.via-mesh-row`: `row-written`). The id never moves.
 - **Every node holds its mesh's status** from the mesh-primary's `MeshStatus`
   ([gossip.md §3.1](gossip.md#31-frame-catalog)).
 - **A member that exits outside a workflow** is its mesh-primary's
@@ -526,7 +524,7 @@ counted ([gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-
 | **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after the provider's inspect answer | on receipt |
 | **Re-born** | the same `path` and `name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by node recovery, so the projection holds one entry per `path` and `name` | on receipt |
 
-The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license a destructive recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `MeshTopology.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
+The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license a destructive recovery. A retained Gone deletion is produced only by canonical the provider's `Exited` of the exact runtime, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `MeshTopology.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
 
 A removal by [node.delete](lifecycles/node-delete.md), [mesh.delete](lifecycles/mesh-delete.md)
 or [fabric.delete](lifecycles/fabric-delete.md) is its workflow's.

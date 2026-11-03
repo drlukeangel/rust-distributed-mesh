@@ -103,8 +103,7 @@ and recording it are separate for every type.
   answers it with the Build carrier's terminal, `Failed { step, reason }` on op `0x21`; `Incomplete` is
   never used for a step that ended. The fabric-primary fails the step on that variant, never on the
   reason's text. The reason records the step, the successor's node id and incarnation, the revisions the
-  row moved, who the ordinary election named, and the investigation's verdict on the successor. The
-  fabric-primary claims the attempt at the claim door before it commands.
+  row moved, who the ordinary election named, and the investigation's verdict on the successor.
 - **Indeterminate after the update:** the election resolves it. An identical retry of the call replays the
   same result before any revision check; a call with a conflicting payload for the same operation is
   refused by name.

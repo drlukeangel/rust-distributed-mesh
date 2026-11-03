@@ -32,7 +32,7 @@ removal is separate work.
    writes the node's row with status deleted; the record and its config stay. Release node.id
    and the name. Retain the data dir, node-identity.json and endpoint key.
 4. The surviving executor emits node.deleted on the caller stream from the provider's
-   `Exited` and records the complete delete receipt. The exited node cannot publish
+   `Exited` and writes the delete's `rdm.build.step` event (inside a repair, the node record). The exited node cannot publish
    its own end or serve that stream.
 5. Block the old `(node.id, incarnation)` in the peer-location view. Peers refuse a late
    digest of the deleted birth under the [frame catalog's receiver rules](../gossip.md#31-frame-catalog),
@@ -48,7 +48,7 @@ node.delete
 
 The executor, not the exited node, publishes the last event.
 [NodeDeleting / NodeDeleted](../gossip.md#31-frame-catalog) are peer dissemination;
-node.deleted is the caller event. The caller waits on the stream and durable receipts.
+node.deleted is the caller event. The caller waits on the stream and the Build's events.
 
 ## Exact runtime exit evidence
 
@@ -69,8 +69,8 @@ sequenceDiagram
     participant C as Caller
     participant F as Fabric-primary
     participant M as Executor
-    C->>F: build.create(node.delete)
-    F->>M: build.attempt.run
+    C->>F: build.create(Delete { node_ids })
+    F->>M: build.attempt.run (the mesh's section)
     M-->>F: node.stop events for a live process
     Note over M: the provider's Exited of the exact runtime; row deleted
     M-->>F: node.deleted
