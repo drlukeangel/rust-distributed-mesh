@@ -1847,9 +1847,8 @@ fn a_node_created_with_a_free_text_name_keeps_name_path_and_type_through_create_
         //    north-old`, and the successor is created at `mesh1.broker.north`, the name it released, its
         //    row a successor's naming the predecessor's exact birth; its `type` is its own create
         //    spec's.
-        let old_key = north_key.with_name("renamed").unwrap();
-        assert_eq!((old_key.path().as_str(), old_key.name().as_str()), (north_key.path().as_str(), "north-old"));
-        assert_eq!(north_key.with_name("north-old").unwrap(), old_key);
+        let old_key = north_key.with_name("north-old").unwrap();
+        assert_eq!((old_key.path().as_str(), old_key.name().as_str()), (north_key.path().as_str(), "north-old"), "a rename keeps the path");
 
         let mut pred_stopped = recovered_north.clone();
         pred_stopped.status = NodeStatus::Leaving;

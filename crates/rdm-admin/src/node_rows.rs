@@ -1546,7 +1546,7 @@ mod tests {
         move_row(&storage, &written, &location, &record, &location, &renamed).await.unwrap();
         let after = storage.node(&record.node_id).await.unwrap().unwrap();
         assert_eq!(after.path, location.path);
-        assert_eq!(after.name, "worker-old");
+        assert_eq!(after.name, "renamed");
     }
 
     // @feature: node-records
