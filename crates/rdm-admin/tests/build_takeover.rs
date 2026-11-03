@@ -211,8 +211,9 @@ fn a_resubmitted_incomplete_build_is_run_by_the_meshs_new_primary_from_the_step_
     let spans = cap.spans();
     let at_b: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile" && s["attributes"]["executor_node_id"] == b.node_id.as_str()).collect();
     assert_eq!(at_b.len(), 1, "B ran mesh2's section once: {at_b:?}");
+    // The section's operations, each named by its action and its node's id.
     let ops = at_b[0]["attributes"]["operations"].as_str().unwrap_or_default();
-    assert!(ops.contains(&op3.to_string()) && !ops.contains(&op2.to_string()), "B's section is what mesh2 owed, read from the step events: {ops}");
+    assert!(ops.contains(node3.as_str()) && !ops.contains(node2.as_str()), "B's section is what mesh2 owed, read from the step events: {ops}");
 }
 
 /// The node.id the Build `build` minted for `mesh2.node.<name>` (D58).

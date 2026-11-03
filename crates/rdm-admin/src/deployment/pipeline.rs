@@ -1094,6 +1094,26 @@ impl Bound {
     }
 }
 
+/// What `StopNode` hands on to `AwaitNodeLeft`: the birth's answer to this run's stop-node, or, for a
+/// `StopNode` whose event ended complete, the `Stopped` the birth's node record declares (D67).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+enum StopAnswer {
+    /// The birth's answer to this run's stop-node.
+    Answered(CommandAdmission),
+    /// The birth's node record declares it Stopped: it answered an earlier stop-node `Stopped`.
+    DeclaredStopped,
+}
+
+impl StopAnswer {
+    /// Whether the birth admitted the stop.
+    fn admitted(&self) -> bool {
+        match self {
+            Self::Answered(a) => a.admitted(),
+            Self::DeclaredStopped => true,
+        }
+    }
+}
+
 /// The pipeline that creates and deletes runtimes.
 pub struct DeploymentPipeline<'a> {
     /// The provider that realises runtimes.
@@ -1209,12 +1229,11 @@ pub(crate) struct Run<'r> {
     operation: rdm_core::OperationId,
     /// This operation's steps whose `rdm.build.step` event ended `complete` (build.md §1: never run
     /// again), each with the value a later step reads of it, read from what is durable (D67): `Null`
-    /// until its call site gives it ([`Run::given`]); a step whose value is not given runs again.
+    /// until its call site gives it ([`Run::given`]); a step whose value is read later and is not
+    /// given fails by name, never run again.
     done: HashMap<String, Option<serde_json::Value>>,
     /// The writer of each of `done`'s events, its `source` (`None`: a source that names no birth).
     owner: HashMap<String, Option<rdm_core::framing::Birth>>,
-    /// Still reusing: no step of this run has had to execute yet.
-    reusing: bool,
 }
 
 impl Run<'_> {
@@ -1256,7 +1275,7 @@ impl DeploymentPipeline<'_> {
     async fn begin<'r>(&self, build_id: Option<&'r BuildId>, node: &'r PathName, operation: rdm_core::OperationId) -> Result<Run<'r>, PipelineError> {
         // A run that belongs to no Build has no earlier receipts to hand on and reads none.
         let Some(build_id) = build_id else {
-            return Ok(Run { build_id: None, node, operation, done: HashMap::new(), owner: HashMap::new(), reusing: false });
+            return Ok(Run { build_id: None, node, operation, done: HashMap::new(), owner: HashMap::new() });
         };
         let view = match self.builds.read_build(build_id).await {
             Ok(view) => view,
@@ -1277,7 +1296,7 @@ impl DeploymentPipeline<'_> {
         let completed: Vec<&crate::build_state::BuildStep> = view.steps.iter().filter(|s| s.operation == op && s.outcome == StepOutcome::Complete).collect();
         let owner = completed.iter().map(|s| (s.step.clone(), birth_of_source(&s.source))).collect();
         let done = completed.iter().map(|s| (s.step.clone(), Some(serde_json::Value::Null))).collect();
-        Ok(Run { build_id: Some(build_id), node, operation, done, owner, reusing: true })
+        Ok(Run { build_id: Some(build_id), node, operation, done, owner })
     }
 
     fn pipeline_span(&self, kind: &'static str, build_id: Option<&BuildId>, node: &PathName) -> tracing::Span {
@@ -1337,15 +1356,29 @@ impl DeploymentPipeline<'_> {
             awaited = tracing::field::Empty,
         );
         let started = Instant::now();
-        if run.reusing {
-            let prior = run.done.get(step).map(|o| serde_json::from_value::<T>(o.clone().unwrap_or(serde_json::Value::Null)));
-            if let Some(Ok(v)) = prior {
-                span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                span.record("outcome", "reused");
-                span.record("code", "ALREADY_EXISTS").record("detail", "already-applied");
-                return Ok(v);
-            }
-            run.reusing = false;
+        // A step whose event ended `complete` is never run again (build.md §1): it hands on the value
+        // its call site read from what is durable (D67), and a step that hands on nothing reuses as
+        // it is. One whose value has no durable source fails by name; it is never re-run to obtain it.
+        if let Some(prior) = run.done.get(step) {
+            span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+            return match serde_json::from_value::<T>(prior.clone().unwrap_or(serde_json::Value::Null)) {
+                Ok(v) => {
+                    span.record("outcome", "reused");
+                    span.record("code", "ALREADY_EXISTS").record("detail", "already-applied");
+                    Ok(v)
+                }
+                Err(e) => {
+                    let reason = format!(
+                        "{}: the {step} event of operation {} (Build {}) ended complete, and the value a later step reads of it has no durable source here: the step is never run again (build.md §1): {e}",
+                        self.template.executor(),
+                        run.operation,
+                        build_log(run.build_id)
+                    );
+                    span.record("outcome", "unsourced");
+                    span.record("code", "FAILED_PRECONDITION").record("detail", "unsourced").record("reason", reason.as_str());
+                    Err(PipelineError { step, reason, code: rdm_core::outcome::Code::FailedPrecondition })
+                }
+            };
         }
         // Where the time of a step that took long went: its blocking calls' wait for a thread and their
         // run on one, beside the elapsed time. A step cancelled while awaiting a blocking call or a
@@ -1515,6 +1548,13 @@ impl DeploymentPipeline<'_> {
         }
     }
 
+    /// Whether the node record of `node`'s exact birth holds `state` declared (the birth's own word,
+    /// applied by its authority): what a completed step that made the birth declare it hands on (D67).
+    async fn declared(&self, node: &Node, state: rdm_core::status::NodeState) -> bool {
+        let (Some(rows), Some(incarnation)) = (self.sink.node_rows(), node.incarnation_id.as_ref()) else { return false };
+        rows.written().birth_facts(&**rows.storage(), &node.node_id, incarnation).await.ok().flatten().is_some_and(|f| f.declared.contains(&state))
+    }
+
     /// The values the create's completed steps hand on, read from what is durable (D67), whoever wrote
     /// the steps' events (a mesh's new mesh-primary runs on from them):
     /// - AllocateIdentity: the birth the node record's allocation names for this operation, else its
@@ -1528,7 +1568,8 @@ impl DeploymentPipeline<'_> {
     ///   part of its record at its join (`NodeProperties`);
     /// - PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata: the runtime with its data dir.
     ///
-    /// A value with no durable source is not given, and its step runs again, with every step after it.
+    /// A value with no durable source is not given, and its step fails by name ([`Self::step`]); a
+    /// launch no durable row names is decided by the row the create wrote ([`Self::row_allocation`]).
     async fn give_create_values(&self, run: &mut Run<'_>, req: &CreateRequest) {
         if !run.is_done(CreateStep::AllocateIdentity.name()) {
             return;
@@ -1931,7 +1972,7 @@ impl DeploymentPipeline<'_> {
         // A run that holds the birth's bound addresses and its admitted join from what is durable (an
         // earlier run's, another executor's included) waits for no report: it registers nothing, so
         // its end leaves no deployment that never heard its birth.
-        let joined_before = run.reusing && run.holds(CreateStep::WaitForBind.name()) && run.is_done(CreateStep::WaitForMeshJoin.name());
+        let joined_before = run.holds(CreateStep::WaitForBind.name()) && run.is_done(CreateStep::WaitForMeshJoin.name());
         let _forget = (!joined_before).then(|| Forget(self.joins, id.node_id.clone(), build_log(req.build_id.as_ref())));
         let reported = match handle.fact() {
             Some(_) if joined_before => None,
@@ -2141,13 +2182,13 @@ impl DeploymentPipeline<'_> {
             let mut run = self.begin(req.build_id.as_ref(), name, req.operation.clone()).await?;
             let node = req.node.clone();
             let ctx = CommandContext { build_id: build_log(run.build_id), operation: run.operation.clone() };
-            let _: CommandAdmission = self
+            let _: () = self
                 .step_with(&mut run, DeleteStep::DeleteConnections.name(), async {
                     // Nothing is recorded before the command leaves (i144 R22): the node reports
                     // connections-deleting on its command's stream and its mesh-primary records it then.
                     self.command_op(&ctx, &node)?;
                     match self.observer.send_command(&node, crate::node_commands::NodeCommand::DeleteConnections, &ctx).await {
-                        a @ CommandAdmission::ConnectionsDeleted { .. } => Ok(a),
+                        CommandAdmission::ConnectionsDeleted { .. } => Ok(()),
                         other => Err(StepFailure::coded(other.code(), format!("{}: node.connection.delete {{ All }} ended {other:?}; no node.connection.deleted is held", node.node_id))),
                     }
                 })
@@ -2220,22 +2261,21 @@ impl DeploymentPipeline<'_> {
         let _forget = Forget(self.joins, node.node_id.clone(), build_log(run.build_id));
         // Register the exact birth expected at the join door. This writes no lifecycle state.
         let _reported = self.joins.expect(deployed.clone());
-        let admission: CommandAdmission = self
+        let _: () = self
             .step_with(run, steps[0], async {
                 let admission = self.observer.send_command(node, NodeCommand::Start, &ctx).await;
                 match &admission {
-                    CommandAdmission::Started {} => Ok(admission),
+                    CommandAdmission::Started {} => Ok(()),
                     // The reissue of the start that already brought this birth back (a later attempt
                     // of the same Build, after its executor was lost): its node.joined and node.started
                     // were taken when it ran; taking node.joined again would set the birth back to
                     // Pending with no node.started to follow. Readiness is read next, as for any start.
-                    CommandAdmission::AlreadyAdmitted {} => Ok(admission),
+                    CommandAdmission::AlreadyAdmitted {} => Ok(()),
                     CommandAdmission::StartFailed { step, reason, code } => Err(StepFailure::coded(*code, format!("{}: node.start failed at {step}: {reason}", node.node_id))),
                     other => Err(StepFailure::coded(other.code(), format!("{}: start-node was not answered Started ({other:?}); the birth is not known to have rejoined", node.node_id))),
                 }
             })
             .await?;
-        let _ = admission;
         let until = Instant::now() + self.timeouts.ready;
         let _: () = self
             .step_with(run, steps[1], async {
@@ -2413,6 +2453,7 @@ impl DeploymentPipeline<'_> {
         // The departure: the step above. Nothing earlier (the node's Leaving, its connections-deleted reply)
         // is.
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
+        run.given(DeleteStep::NodeDeleted.name(), &op);
         let op = self
             .step(&mut run, DeleteStep::NodeDeleted.name(), async {
                 // The deleted birth's row goes Deleted at its path and name, its config kept, inside the
@@ -2569,29 +2610,37 @@ impl DeploymentPipeline<'_> {
         // cut its mesh connections and entered Leaving. The command is `Stopped` or it is not complete.
         // The mesh-primary sets the birth stopping on the stop call's admission and never before it
         // (states.md "Who sets each state"): a command the birth never held sets nothing.
-        let admission: CommandAdmission = self
+        // A `StopNode` whose event ended complete hands on what is durable (D67): the birth's node record
+        // declaring it Stopped is its `Stopped` answer, whichever executor made the call; stop-node is
+        // never sent again.
+        if run.is_done(steps[0]) && self.declared(node, rdm_core::status::NodeState::Stopped).await {
+            run.given(steps[0], &StopAnswer::DeclaredStopped);
+        }
+        let admission: StopAnswer = self
             .step(run, steps[0], async {
-                Ok(self.observer.send_command(node, NodeCommand::Stop, &ctx).await)
+                Ok(StopAnswer::Answered(self.observer.send_command(node, NodeCommand::Stop, &ctx).await))
             })
             .await?;
         if admission.admitted() {
             node.status = NodeStatus::Leaving;
         }
-        let _: Completion = self
+        let _: () = self
             .step_with(run, steps[1], async {
-                if !admission.admitted() {
-                    // A command the birth never held has no left reply to follow (node-stop.md): a
-                    // standalone stop is not complete.
-                    if required == RequiredCompletion::Stopped {
-                        return Err(StepFailure::coded(admission.code(), format!("{}: stop-node was not admitted ({admission:?}); no left reply can follow, the stop is not complete", node.node_id)));
+                if let StopAnswer::Answered(a) = &admission {
+                    if !a.admitted() {
+                        // A command the birth never held has no left reply to follow (node-stop.md): a
+                        // standalone stop is not complete.
+                        if required == RequiredCompletion::Stopped {
+                            return Err(StepFailure::coded(a.code(), format!("{}: stop-node was not admitted ({a:?}); no left reply can follow, the stop is not complete", node.node_id)));
+                        }
+                        return Ok(());
                     }
-                    return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
                 // The stop's reply is its completion (node-stop.md: stop-node answers `Stopped` on its own
-                // call): a `StopNode` receipt that recorded `Stopped` is the left reply, whichever executor
-                // made the call. Only an admission without it waits for the reply.
+                // call): a `Stopped` answer, or the node record's declared Stopped, is the left reply,
+                // whichever executor made the call. Only an admission without it waits for the reply.
                 let c = match &admission {
-                    CommandAdmission::Stopped { .. } => {
+                    StopAnswer::Answered(CommandAdmission::Stopped { .. }) | StopAnswer::DeclaredStopped => {
                         crate::node_commands::completion_span(node, NodeCommand::Stop, &ctx, true);
                         Completion::Received {}
                     }
@@ -2610,7 +2659,7 @@ impl DeploymentPipeline<'_> {
                 }
                 match (required != RequiredCompletion::Lenient, &c) {
                     (true, c) if *c != Completion::Received {} => Err(StepFailure::coded(if matches!(c, Completion::Deadline {}) { rdm_core::outcome::Code::DeadlineExceeded } else { rdm_core::outcome::Code::Unavailable }, format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.node_id))),
-                    _ => Ok(c),
+                    _ => Ok(()),
                 }
             })
             .await?;

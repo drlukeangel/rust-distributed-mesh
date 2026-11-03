@@ -298,13 +298,13 @@ async fn a_resize_is_complete_only_after_its_own_ready_state_is_set() {
     estate.stop().await;
 
     // The order, from the spans: the fabric entered ready under this Build's change before the
-    // dispatch that completed it.
+    // Build's end was written complete.
     let spans = estate.spans();
     let (_, change) = change_of(&spans, &build);
     let ready = change.iter().find(|sp| sp["name"] == "rdm.node_admin.fabric.update.via-state-entered" && sp["attributes"]["to"] == "ready").unwrap_or_else(|| panic!("the fabric entered ready under the change of {build}"));
-    let completed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| sp["attributes"]["build_id"] == build.as_str() && sp["attributes"]["outcome"] == "complete").unwrap_or_else(|| panic!("the attempt that completed {build} is spanned"));
+    let completed = named(&spans, "rdm.node_admin.build.update.via-on-build-ended").into_iter().find(|sp| sp["attributes"]["build_id"] == build.as_str() && sp["attributes"]["state"] == "complete").unwrap_or_else(|| panic!("the end of {build}, complete, is spanned"));
     let Some(BuildFrame::Complete { }) = done.frames.last() else { panic!("Build {build} ended {:?}", done.frames.last()) };
-    assert!(start(ready) <= start(completed), "the fabric entered ready under {build} ({}) before the dispatch that completed it ({}): {completed}", start(ready), start(completed));
+    assert!(start(ready) <= start(completed), "the fabric entered ready under {build} ({}) before its end was written complete ({}): {completed}", start(ready), start(completed));
     estate.record_trace_url(&s(&ready["trace_id"]));
 }
 

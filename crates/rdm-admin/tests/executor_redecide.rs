@@ -109,6 +109,9 @@ struct Fleet {
     /// Each executor's deployments, by the endpoint key its launches carry as their seed: the
     /// admin a launched birth reports its join to.
     executors: Mutex<BTreeMap<String, Arc<Joins>>>,
+    /// The fabric's nodes store, shared by every executor: the node records each create writes, and
+    /// the part each birth writes itself at its join (its bound addresses): what is durable (D67).
+    store: Arc<rdm_admin::storage::MemoryNodesStorage>,
 }
 
 #[derive(Clone, Debug)]
@@ -122,7 +125,7 @@ struct Spawn {
 
 impl Fleet {
     fn new() -> Arc<Self> {
-        Arc::new(Self { dies: Arc::new(Mutex::new(Dies::Not)), reached: Notify::new(), next_pid: AtomicU32::new(40_000), spawned: Mutex::new(vec![]), terminated: Mutex::new(vec![]), executors: Mutex::new(BTreeMap::new()) })
+        Arc::new(Self { dies: Arc::new(Mutex::new(Dies::Not)), reached: Notify::new(), next_pid: AtomicU32::new(40_000), spawned: Mutex::new(vec![]), terminated: Mutex::new(vec![]), executors: Mutex::new(BTreeMap::new()), store: Arc::default() })
     }
     fn spawns(&self) -> Vec<Spawn> {
         self.spawned.lock().unwrap().clone()
@@ -188,11 +191,23 @@ impl DeploymentProvider for Fleet {
         if let Some(joins) = spec.env.get("RDM_SEEDS").and_then(|s| s.split('@').next()).and_then(|k| self.executors.lock().unwrap().get(k).cloned()) {
             let digest = fake_node_digest(spec, handle.fact());
             let dies = self.dies.clone();
+            let store = self.store.clone();
             tokio::spawn(async move {
                 for _ in 0..500 {
                     let withheld = *dies.lock().unwrap() == Dies::BeforeJoin;
                     if !withheld && matches!(joins.standing(&digest, &[]), rdm_admin::join::Standing::Deployed { .. }) {
                         joins.report(&rdm_admin::join::JoinReport { digest: digest.clone(), listeners: Vec::new() });
+                        let bound = rdm_node::node_records::NodeProperties {
+                            birth: rdm_node::node_records::RecordBirth { node_id: digest.node.node_id.clone(), incarnation_id: digest.node.incarnation.clone() },
+                            config: Default::default(),
+                            tags: Default::default(),
+                            endpoint_id: Some(digest.node.endpoint_id.clone()),
+                            transport_addr: Some(digest.node.transport_addr),
+                            listeners: Vec::new(),
+                            app_types: None,
+                            held: Default::default(),
+                        };
+                        rdm_admin::storage::NodesStorage::put_properties(&*store, &bound).await.unwrap();
                         return;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -252,28 +267,47 @@ impl NodeObserver for Fleet {
     }
 }
 
-struct Discard;
-impl TopologySink for Discard {
+/// An executor's sink: the node rows it writes, as mesh1's primary, to the fleet's store.
+struct Rows(Arc<rdm_admin::node_rows::NodeRows>);
+impl TopologySink for Rows {
     fn publish(&self, _: Node) {}
     fn remove(&self, _: &PathName) {}
     fn remove_birth(&self, _: &PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
+    fn node_rows(&self) -> Option<Arc<rdm_admin::node_rows::NodeRows>> {
+        Some(self.0.clone())
+    }
 }
 
 /// An executor: one admin birth, named by its own endpoint (the seed every launch it makes carries).
 struct Executor {
     template: LaunchTemplate,
     joins: Arc<Joins>,
+    rows: Rows,
 }
 
 fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
     let joins = Arc::new(Joins::default());
     fleet.executors.lock().unwrap().insert(key.to_string(), joins.clone());
+    let launcher = rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let mut admin = Node::allocated(PathName::new(&launcher.path, &launcher.name).unwrap(), "mesh1", "node-admin");
+    admin.node_id = launcher.node_id.clone();
+    admin.incarnation_id = Some(launcher.incarnation.clone());
+    admin.status = rdm_admin::model::NodeStatus::Ready;
+    admin.is_primary = true;
+    admin.is_fabric_primary = true;
+    let view = Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
+        fabric: rdm_admin::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: rdm_admin::model::ScopeStatus::Ready, provider: ProviderKind::Process },
+        meshes: vec![rdm_admin::model::Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: rdm_admin::model::ScopeStatus::Ready }],
+        nodes: vec![admin.clone()],
+    }));
+    let store: Arc<dyn rdm_admin::storage::NodesStorage> = fleet.store.clone();
+    let rows = Rows(Arc::new(rdm_admin::node_rows::NodeRows::new(admin.location(), admin.node_id.clone(), view, store)));
     Executor {
         template: LaunchTemplate { fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/testkit-node".into(),
             seeds: vec![(key.into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rdm_core::launch::Launcher { mesh: "mesh1".into(), path: "mesh1.node-admin".into(), name: "1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher,
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
             store_dir: data_root.to_path_buf(),
@@ -284,6 +318,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
             binding: None,
         },
         joins,
+        rows,
     }
 }
 
@@ -293,7 +328,7 @@ impl Executor {
             provider: fleet,
             joins: &self.joins,
             observer: fleet,
-            sink: &Discard,
+            sink: &self.rows,
             lifecycle: &NoLifecycleEvents,
             builds,
             template: &self.template,

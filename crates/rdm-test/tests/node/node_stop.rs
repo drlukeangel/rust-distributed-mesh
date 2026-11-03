@@ -849,14 +849,14 @@ async fn a_build_deleting_another_path_after_a_stop_plans_the_stopped_paths_crea
     let planned_create: Vec<String> = reconciles
         .iter()
         .filter(|sp| rdm_test::estate::planned_operations(sp).iter().any(|op| op.contains("action: \"node.create\"")))
-        .map(|sp| format!("attempt {} at {}: {} ({})", attr(sp, "attempt"), attr(sp, "executor"), attr(sp, "operations"), attr(sp, "outcome")))
+        .map(|sp| format!("section run at {}: {} ({})", attr(sp, "executor"), attr(sp, "operations"), attr(sp, "outcome")))
         .collect();
-    assert!(planned_create.len() <= 1, "the stopped {stopped_path:?}'s create is planned at most once in the delete Build {build_id}, its check holding the birth; {} of {} attempts planned it: {:#?}", planned_create.len(), reconciles.len(), &planned_create[..planned_create.len().min(5)]);
+    assert!(planned_create.len() <= 1, "the stopped {stopped_path:?}'s create is planned at most once in the delete Build {build_id}, its check holding the birth; {} of {} section runs planned it: {:#?}", planned_create.len(), reconciles.len(), &planned_create[..planned_create.len().min(5)]);
     let held: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-stopped-held").into_iter().filter(|sp| at_location(sp, &stopped_path) && attr(sp, "build_id") == build_id).collect();
     assert_eq!(held.len(), planned_create.len(), "every planned create of the stopped {stopped_path:?} is held by its check and receipted Complete: {held:#?}");
-    assert!(reconciles.len() <= 3, "the delete Build {build_id} runs a bounded number of attempts, never a loop: {}", reconciles.len());
+    assert!(reconciles.len() <= 3, "the delete Build {build_id} runs a bounded number of sections, never a loop: {}", reconciles.len());
     let ops: Vec<String> = reconciles.iter().flat_map(|sp| planned_operations(sp)).collect();
-    assert!(reconciles.iter().any(|sp| plans_operation(sp, "node.delete", &deletes)), "an attempt of the delete Build {build_id} plans the delete of {other:?}: {ops:?}");
+    assert!(reconciles.iter().any(|sp| plans_operation(sp, "node.delete", &deletes)), "a section run of the delete Build {build_id} plans the delete of {other:?}: {ops:?}");
     let delete_op = (r#"action: "node.delete""#, format!("subject: {:?}", Some(&deletes)));
     assert!(ops.iter().all(|op| op.contains(delete_op.0) && op.contains(&delete_op.1)), "the delete Build {build_id} plans the delete of {other:?} and nothing else: {ops:?}");
     let completed: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build_id && at_location(sp, &other) && attr(sp, "step") == "Complete" && attr(sp, "outcome") == "complete").collect();
@@ -1261,14 +1261,14 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_prima
 /// primary never took, the node live and its declaration owed. Then mesh2's primary is stopped,
 /// which moves mesh2's role to mesh2's other admin first. The node hears the move: its call to the
 /// old primary is cancelled (`via-primary-changed`) and it declares to the new primary, which applies it
-/// once; the old primary decides nothing of it (its cut holds the one call it took). The create's next
-/// attempt deletes the unready birth and creates it again (Q245, Q252), which fails too and ends the
-/// create's Build failed. No drift pass repairs or removes anything after it (Q342). Must NOT happen:
+/// once; the old primary decides nothing of it (its cut holds the one call it took). The create's failed
+/// WaitForNodeReady ends mesh2's section and the Build ends incomplete; what ran stands, the birth
+/// among it, never deleted or created again (Q344, Q346). No drift pass repairs or removes anything
+/// after it (Q342). Must NOT happen:
 /// the node.started applied twice, applied by the old primary, or addressed to an admin that does not
 /// hold the role; a second declaration call to the old primary (a declaration loop of the node's own,
 /// which Q52 deleted).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "https://github.com/drlukeangel/rust-distributed-mesh/issues/306: the Build engine to events: s4b"]
 async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary() {
     let test = "a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_to_the_new_mesh_primary";
     let sha = candidate_sha();
@@ -1311,9 +1311,9 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_primary_is_delivered_once_
     }
     estate.stop().await;
     let spans = estate.spans();
-    // Every birth at the node's path.name, by its row: the create's, and its next attempt's (Q245,
-    // Q252: the next attempt deletes the unready birth the failed create left and creates it again).
+    // The one birth at the node's path.name, by its row: the create's, which stands (Q346).
     let births: std::collections::BTreeSet<String> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| names_location(sp, "subject", &node) && attr(sp, "moment") == "create").map(|sp| attr(sp, "node_id")).collect();
+    assert_eq!(births.len(), 1, "the create's one birth at {node:?}, never deleted or created again: {births:?}");
     let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         // A first start names no operation; its measured Ready remains owed without an open command stream.
