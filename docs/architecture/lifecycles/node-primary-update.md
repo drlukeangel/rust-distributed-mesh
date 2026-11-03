@@ -19,7 +19,7 @@ fabric-primary move together and are never separated. A fabric-primary unheard p
 is not succeeded: [fabric recovery](fabric-recovery.md) re-creates it at its path and name (Q122). Under
 mesh.delete the fabric-primary hands over to another mesh first
 ([below](#the-fabric-primary-nodefabric-primaryupdate)). No other stored record of who is primary exists: no
-primary row, no move log, nothing to fold. The fabric-primary's atlas, its in-memory state, records an update's answer (Q355).
+primary row, no move log, nothing to fold. The fabric-primary's atlas, its in-memory state, records an update's answer (Q355), until a later record of that mesh's primary replaces it.
 
 ## Operation contract
 
@@ -173,7 +173,7 @@ becomes fabric-primary and records `is_fabric_primary` on its own row, as its me
 departing fabric-primary records its own row with it cleared, and under mesh.delete stays mesh-primary
 until its own node.delete. The fabric row (`fabric/`) is the fabric's identity and never changes for
 this. No other stored record exists; every reader computes the election from the facts it holds and folds
-nothing, and the fabric-primary's atlas records an update's answer (Q355).
+nothing, and the fabric-primary's atlas records an update's answer (Q355), until a later record of that mesh's primary replaces it.
 
 ## Command, completion and gossip messages
 
