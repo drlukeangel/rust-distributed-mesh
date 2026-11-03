@@ -3641,12 +3641,12 @@ mod tests {
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:71
     /// "`{ \"Current\": { \"node_id\": \"k8pag1qx95gw\", \"incarnation\": \"0000000000000008\", \"state\": \"Ready\" } }`"
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:74
-    /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node held at its hook answers
-    ///  `Blocked { node_id, incarnation, reason, retry_on }`. All three are `reached`."
+    /// "A stopped node answers `CurrentStopped { node_id, incarnation }`; a node whose hook answered `Pending` answers
+    ///  `Pending { node_id, incarnation, reason }`. All three are `reached`."
     /// CONTRACT: docs/architecture/lifecycles/node-tickle.md:100
     /// "The probed node re-publishes its presence on the channel it is on, the check-in it owes its
-    ///  primary, and answers its current state; while its `pre_node_ready` hook is Blocked it answers
-    ///  `Blocked` and re-publishes nothing."
+    ///  primary, and answers its current state; while its `pre_node_ready` hook answered `Pending` it
+    ///  answers `Pending` and re-publishes nothing."
     /// CONTRACT (#2803 detection; node-rpc.md §14): a fabric primary probes ANOTHER mesh's node-admin
     /// through a member of that mesh (Forward carries no origin identity). The subject answers
     /// whoever reaches it: the probe is answered with the node-admin's current state from the
