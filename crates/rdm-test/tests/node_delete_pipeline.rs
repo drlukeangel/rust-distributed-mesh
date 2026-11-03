@@ -50,9 +50,9 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             timeouts: Timeouts::default(),
         };
         let node: rdm_admin::model::PathName = rdm_core::PathName::new("mesh1.node", "1").unwrap();
-        let create = |build_id| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))), node_id: (rdm_core::fixture_node_id(&(rdm_core::PathName::new("mesh1.node", "1").unwrap()))).clone(), mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
+        let create = |build_id, node_id: rdm_core::NodeId| CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &node_id), node_id, mesh: "mesh1".into(), r#type: "node".into(), build_id: Some(build_id), attempt: 1, path: "mesh1.node".into(), name: "1".into(), spec: &NODE_SPEC, data_dir: None, held_runtimes: Vec::new(), entry: None };
 
-        let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
+        let first = pipeline.create(&create(publish_build(&builds, add_node()).await, rdm_core::fixture_node_id(&node))).await.unwrap_or_else(|e| panic!("create: {e}"));
         let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
         let delete_build = publish_build(&builds, add_node()).await; // the Build names the path: a node's meta is Ephemeral
@@ -127,7 +127,7 @@ fn node_delete_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-completion-awaited" && f.get("operation").map(String::as_str) == Some(operation.action.as_str()) && f.get("operation_subject") == Some(&operation_subject) && f.get("received").map(String::as_str) == Some("true") && f.get("completion").map(String::as_str) == Some("node-left")), "the pipeline receives the stop completion");
 
         // Create again on the same node.
-        let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));
+        let again = pipeline.create(&create(publish_build(&builds, add_node()).await, rdm_core::NodeId::mint())).await.unwrap_or_else(|e| panic!("re-create: {e}")); // a re-create runs under the node.id minted for it (D58)
         assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the deleted one");
 
         // The Build names this path's storage Persistent { disposition: Release }: the delete still

@@ -221,20 +221,22 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
     let node = secondary_node(&estate).await;
     let nodes = caller.nodes(&carrier);
 
-    let mut cut = nodes.delete(vec![estate.node_view(&node).await.node_id]).await.expect("the fabric-primary accepts the delete");
+    // The node.id the Delete names, read once: the node is gone from the view once the Build ends.
+    let node_id = estate.node_view(&node).await.node_id;
+    let mut cut = nodes.delete(vec![node_id.clone()]).await.expect("the fabric-primary accepts the delete");
     let accepted = cut.accepted().cloned().expect("the call opened a Build");
     // The first frame is the call's `Started`; the cut follows it, before any step is reported.
     assert!(matches!(cut.next().await, Some(Ok(Frame::Started { .. }))));
     drop(cut);
 
-    let mut attached = nodes.resume(WorkflowKind::Delete(vec![estate.node_view(&node).await.node_id]), &accepted).await.expect("the re-submit is accepted");
+    let mut attached = nodes.resume(WorkflowKind::Delete(vec![node_id.clone()]), &accepted).await.expect("the re-submit is accepted");
     assert_eq!(attached.disposition(), Some(StartDisposition::Attached), "the Build the cut left running is the one the re-submit attaches to");
     assert_eq!(attached.accepted().expect("the call opened a Build").build_id, accepted.build_id, "never a second Build");
     let first = frames_of(&mut attached).await;
     assert_eq!(first.last(), Some(&Frame::Complete));
     assert_eq!(events(&first), DELETE_EVENTS, "{first:?}");
 
-    let mut again = nodes.resume(WorkflowKind::Delete(vec![estate.node_view(&node).await.node_id]), &accepted).await.expect("the second re-submit is accepted");
+    let mut again = nodes.resume(WorkflowKind::Delete(vec![node_id.clone()]), &accepted).await.expect("the second re-submit is accepted");
     assert_eq!(again.disposition(), Some(StartDisposition::AlreadyApplied));
     let second = frames_of(&mut again).await;
     assert_eq!(second.last(), Some(&Frame::Complete), "the terminal frame follows AlreadyApplied");

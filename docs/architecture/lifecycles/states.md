@@ -165,7 +165,7 @@ are separate facts.
 
 ## Resize and executable replacement
 
-A Build that changes only a node's `config`, `tags`, `storage` or `placement` is neither: it applies them as [build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine) states, and the fabric stays ready.
+A node's `config` and `tags` change by its own commands ([node.config.update](node-config-update.md), node.tags.create and node.tags.delete), never by a Build ([build.md §1](../build.md#1-build-is-the-only-topology-mutation-engine), Q342), and the fabric stays ready.
 
 A resize or an executable replacement puts the fabric back to pending; meshes already serving stay ready. Its Build is Complete only when the fabric is ready again from this Build's own change, as fabric.create's is: while the fabric changes, the Build stays in progress, never Complete. During an executable replacement, a member still on its old executable and identity does not satisfy its planned replacement. A new executable requires a replacement node with a new NodeId and incarnation ([build-deployment.md](../build-deployment.md)); a stop and a start retain the same process and executable. The mesh cannot report ready, and the fabric cannot change, until the replacement's last planned birth is ready.
 

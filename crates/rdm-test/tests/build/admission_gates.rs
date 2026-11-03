@@ -107,14 +107,14 @@ async fn operation_admission_gates_refuse_non_fabric_primary_unknown_node_live_s
             .map(|(m, a, r)| MeshDesired::of(*m, [("node-admin", *a), ("node", *r)]))
             .collect(),
     };
-    let mut active_stream = carrier
-        .create(estate.shape_change_at(&carrier, &grown).await)
-        .await
-        .expect("grown shape accepted");
+    // The grown shape's Create, read once: the same request submitted again while it runs (its node is
+    // in the topology by then, so a read now would add nothing).
+    let grow = estate.shape_change_at(&carrier, &grown).await;
+    let mut active_stream = carrier.create(grow.clone()).await.expect("grown shape accepted");
     let active_build_id = active_stream.build_id().clone();
     let (blocked_step, _) = wait_for_blocked_frame(&mut active_stream).await;
     assert_eq!(blocked_step, "WaitForNodeReady");
-    let again = carrier.create(estate.shape_change_at(&carrier, &grown).await).await.err().expect("a second Build during the active one must be refused");
+    let again = carrier.create(grow).await.err().expect("a second Build during the active one must be refused");
     match again {
         CallEnd::BuildInProgress { current } => assert_eq!(current, active_build_id, "build-in-progress refusal must name the active Build id"),
         other => panic!("expected BuildInProgress naming {active_build_id}, got {other:?}"),

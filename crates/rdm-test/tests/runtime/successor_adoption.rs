@@ -94,8 +94,9 @@ async fn a_successor_manages_births_it_never_launched() {
     Estate::workflow("node.delete of mesh1.node.3", estate.delete_node(&deleted.location()).await).await;
     wait_for("mesh1.node.3's runtime is gone", Duration::from_secs(30), || async { (!alive(deleted_pid)).then_some(()) }).await;
 
-    // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the
-    // killed launcher's path, a new NodeId that may take the role back by NodeId order.
+    // The admins that hold mesh1 now: the successor, and a node recovery's re-create of the killed
+    // launcher, a new NodeId that may take the role back by NodeId order. The Delete of mesh1.node.3
+    // states that node alone and re-creates nothing (build.md §1, Q342).
     let admins_now: Vec<String> = estate.node_views().await.iter().filter(|n| n.r#type == "node-admin" && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|n| n.node_id.to_string()).collect();
     let (launcher, restarted, deleted) = (serde_json::to_value(&launcher).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&deleted).unwrap());
     estate.stop().await;
@@ -160,20 +161,6 @@ async fn a_successor_manages_births_it_never_launched() {
         let names: Vec<&str> = before.iter().map(|sp| sp["attributes"]["step"].as_str().unwrap()).filter(|s| PREREQUISITES.contains(s)).collect();
         assert_eq!(names, PREREQUISITES, "{node:?}: every prerequisite committed, in order, before WaitForNodeReady");
         assert!(before.iter().filter(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap())).all(|sp| sp["attributes"]["outcome"] == "complete"));
-    }
-    // The rebirth of the killed launcher's path checks the birth its view holds there first
-    // (`via-path-investigation`): an unreached one ends in the provider's inspection, whose span is the
-    // evidence (node-runtime-inspect.md "Observability contract"), in the same trace, naming the
-    // investigated birth and the same verdict.
-    let checked: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-path-investigation").into_iter().filter(|sp| sp["attributes"]["outcome"] == "unreached" && sp["attributes"]["node_id"] == launcher["node_id"] && sp["attributes"]["incarnation"] == launcher["incarnation_id"]).collect();
-    assert!(!checked.is_empty(), "the rebirth of the killed launcher's path investigates the birth its view holds there");
-    for check in checked {
-        let inspected = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
-            .into_iter()
-            .find(|sp| sp["trace_id"] == check["trace_id"] && sp["attributes"]["node_id"] == check["attributes"]["node_id"] && sp["attributes"]["incarnation_id"] == check["attributes"]["incarnation"] && sp["attributes"]["caller"].as_str().unwrap_or("").is_empty())
-            .unwrap_or_else(|| panic!("the path check's investigation inspects the exact runtime under its own span: {check}"));
-        assert_eq!(inspected["attributes"]["verdict"], check["attributes"]["verdict"], "the inspection's verdict is the investigation's: {inspected} {check}");
-        assert!(!s(&inspected["attributes"]["inspector"]).is_empty(), "the inspection names its inspector: {inspected}");
     }
     for birth in [&restarted, &deleted] {
         let name = s(&birth["node_id"]);

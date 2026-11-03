@@ -101,8 +101,15 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     // The change is history the fabric-primary records with the Build, whole, in the journal on the store
     // root, and the Build read from there carries it (Q292).
     let recorded = rdm_admin::store_log::read_record(&estate.fabric_store_root().join(rdm_admin::store_root::BUILDS_FILE), "build-record", Some(&format!("{a}/accepted"))).unwrap_or_else(|| panic!("the journal holds Build {a}'s acceptance"));
-    assert_eq!(recorded["record"]["fact"]["submitted_change"]["kind"], "reconcile", "the change is kept as history: the complete topology the request named: {recorded}");
-    assert_eq!(built["submitted_change"]["kind"], "reconcile", "the Build read whole from the store carries its change: {built}");
+    // The change is the Create as it came in: the nodes it adds, never the whole topology (build.md §1).
+    let created = |change: &Value| -> Vec<PathName> {
+        let mut nodes: Vec<PathName> = change["Create"]["nodes"].as_array().unwrap_or_else(|| panic!("a Create: {change}")).iter().map(|n| location(n["path"].as_str().unwrap(), n["name"].as_str().unwrap())).collect();
+        nodes.sort();
+        nodes
+    };
+    let added = vec![location("mesh1.node", "1"), location("mesh1.node", "2"), location("mesh1.node", "3"), location("mesh1.node-admin", "2")];
+    assert_eq!(created(&recorded["record"]["fact"]["submitted_change"]), added, "the change is kept as history, as it came in: {recorded}");
+    assert_eq!(created(&built["submitted_change"]), added, "the Build read whole from the store carries its change: {built}");
 
     // 3. The accepted Build is never history; Day 0's is.
     let refused = estate.builds_obj().await.delete(&BuildId::parse(&a).unwrap()).await;

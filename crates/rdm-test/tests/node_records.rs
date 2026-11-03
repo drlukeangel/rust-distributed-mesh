@@ -9,12 +9,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 // @feature: node-records
-/// CONTRACT (i150 R3/R7/R8): Builds apply entry properties to an existing node; a subsequent
-/// own update stands through reattaching the same Build; a later Build overrides it. Publishing
-/// the own map is one node-owned durable write, with no upward config delivery or copied atlas.
+/// CONTRACT (i150 R3/R7; build.md §1, Q342: a Build states only the nodes it adds or removes): a node's
+/// own node.config.update stands through a later Build, which never states a node it does not touch.
+/// Node A updates its own config; a Create of node B follows; A's config and tags are what A wrote,
+/// and its node.id is unchanged. Publishing the own map is one node-owned durable write, with no upward
+/// config delivery or copied atlas. Must NOT happen: the Build putting back A's earlier values.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_build_applies_properties_and_a_nodes_later_update_stands() {
-    let test = "a_build_applies_properties_and_a_nodes_later_update_stands";
+async fn a_nodes_config_update_stands_through_a_later_build() {
+    let test = "a_nodes_config_update_stands_through_a_later_build";
     let owner = Owner {
         product: "mesh".into(),
         feature: "node-records".into(),
@@ -29,34 +31,7 @@ async fn a_build_applies_properties_and_a_nodes_later_update_stands() {
     estate.settled_views(&shape).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let subject: rdm_core::PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
-    let change = |value: &'static str| {
-        let subject = subject.clone();
-        move |current: &rdm_test::executables::Current, _: &rdm_test::executables::Executables| {
-            current
-                .topology
-                .values()
-                .flat_map(|mesh| mesh.values())
-                .cloned()
-                .map(|mut spec| {
-                    if spec.location() == subject {
-                        spec.config = [("entry".into(), value.into())].into();
-                        spec.tags = [value.into()].into();
-                    }
-                    spec
-                })
-                .collect()
-        }
-    };
-    let stream = estate
-        .submit_named(
-            "Build A applies an existing node's properties",
-            change("build-a"),
-        )
-        .await;
-    let applied = estate.follow(stream).await;
-    let before = estate.node_view(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
-    assert_eq!(before.config, [("entry".into(), "build-a".into())].into());
-    assert_eq!(before.tags, ["build-a".into()].into());
+    let before = estate.node_view(&subject).await;
     let answer = estate.probe(&[
         "own-config",
         "--target",
@@ -66,37 +41,17 @@ async fn a_build_applies_properties_and_a_nodes_later_update_stands() {
     ]);
     assert_eq!(answer["own_config"], "config-updated", "{answer}");
     let own: BTreeMap<String, String> = [("listener.data".into(), "127.0.0.1:45005".into())].into();
-    let again = estate
-        .carrier()
-        .await
-        .reattach(&applied.build_id)
-        .await
-        .expect("the same Build reattaches");
-    estate.follow(again.stream).await;
-    let after = estate.node_view(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
-    assert_eq!(
-        after.node_id, before.node_id,
-        "in-place property operations preserve identity"
-    );
-    assert_eq!(
-        after.config, own,
-        "reattaching the same Build preserves the later own map"
-    );
-    assert_eq!(after.tags, before.tags);
-    let stream = estate
-        .submit_named(
-            "Build B overrides the existing node's own properties",
-            change("build-b"),
-        )
-        .await;
-    estate.follow(stream).await;
-    let later = estate.node_view(&rdm_core::PathName::new("mesh1.node", "2").unwrap()).await;
-    assert_eq!(later.node_id, before.node_id);
-    assert_eq!(later.config, [("entry".into(), "build-b".into())].into());
-    assert_eq!(later.tags, ["build-b".into()].into());
+    // Node B: a Create of one more node, which states node A nowhere.
+    let mut created = estate.create_node("mesh1", "node").await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of node B: {e}"));
+    let applied = Estate::complete(&mut created).await.expect("the call opened a Build");
+    estate.settled_views(&[("mesh1", 1, 3)]).await;
+    let after = estate.node_view(&subject).await;
+    assert_eq!(after.node_id, before.node_id, "a Build that does not touch node A keeps its identity");
+    assert_eq!(after.config, own, "node A's own config stands through the Build of node B");
+    assert_eq!(after.tags, before.tags, "node A's tags stand through the Build of node B");
     estate.artifact(
         "build-property-readbacks",
-        &json!({"build_id": applied.build_id, "before": before, "own": after, "later": later}),
+        &json!({"build_id": applied.build_id, "before": before, "own": after}),
     );
     estate.stop().await;
     let spans = estate.spans();
