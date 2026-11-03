@@ -368,7 +368,7 @@ impl ControlPlane {
 
     /// [`ControlPlane::submit_in`], the stopped-node collector's candidate (when one) rechecked under
     /// the admission before anything is compiled or written (node-identity-and-state.md §6.9 Recheck).
-    pub(crate) async fn submit_checked(&self, span: tracing::Span, route: &'static str, change: TopologyChange, collect: Option<&crate::stopped_gc::Candidate>) -> Result<Opened, Refusal> {
+    pub(crate) async fn submit_checked(&self, span: tracing::Span, route: &'static str, mut change: TopologyChange, collect: Option<&crate::stopped_gc::Candidate>) -> Result<Opened, Refusal> {
         // The span is entered by the future on each poll, never by a guard held across an await
         // (a guard stays entered on the worker while the task is held). A refusal is reported
         // beside the request span, in the caller's span.
@@ -421,6 +421,10 @@ impl ControlPlane {
                 }
                 _ => crate::accepted::Recorded::new(),
             };
+            // The Fabric's types (Day 0's `RDM_NODE_TYPES` on its record): what a created node's type is
+            // read against, and what fills a created node's executable when it names none.
+            let declared = self.accepted.types().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
+            with_type_defaults(&current.topology, &mut change, &declared);
             if let Some(candidate) = collect {
                 if let Err(reject) = self.recheck_stopped(candidate).await {
                     outer.in_scope(|| reject_span(route, &reject));
@@ -477,7 +481,7 @@ impl ControlPlane {
             let build_id = BuildId::mint();
             // Every create names its executable (build-deployment.md §2.1): whatever change compiled it, a
             // path created with none is refused by name, nothing accepted.
-            if let Some(reject) = created_without_executable(&current.topology, &topology) {
+            if let Some(reject) = created_of_unknown_type(&current.topology, &topology, &declared).or_else(|| created_without_executable(&current.topology, &topology)) {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
@@ -1373,6 +1377,27 @@ async fn named_executable_refusal(current: &crate::accepted::FabricTopology, nex
         .iter()
         .find_map(|(path, b)| hashed.get(&(b.executable.as_path(), b.sha256.as_str())).and_then(|r| r.clone().err()).map(|detail| BuildReject::ExecutableRefused { node: (*path).clone(), detail }))
         .or(refused_unread)
+}
+
+/// A node a complete-topology request creates that names no executable of its own takes its declared
+/// type's (node-identity-and-state.md §2: each declared type overrides `node`'s defaults, `executable`
+/// among them), before the request is compiled.
+fn with_type_defaults(current: &crate::accepted::FabricTopology, change: &mut TopologyChange, declared: &[rdm_core::NodeType]) {
+    if let TopologyChange::Reconcile { nodes, .. } = change {
+        for spec in nodes.iter_mut().filter(|s| s.executable.is_none() && !current.contains(&s.path)) {
+            spec.executable = rdm_core::NodeType::of(declared, &spec.r#type).and_then(|t| t.executable.clone());
+        }
+    }
+}
+
+/// The first node `next` creates whose type is neither `node` nor `node-admin` and that `declared`, the
+/// Fabric's types, does not name: refused by name, nothing accepted (node-identity-and-state.md §2).
+fn created_of_unknown_type(current: &crate::accepted::FabricTopology, next: &crate::accepted::FabricTopology, declared: &[rdm_core::NodeType]) -> Option<BuildReject> {
+    next.meshes
+        .values()
+        .flat_map(|m| m.spec_by_path.iter())
+        .find(|(path, spec)| !current.contains(path) && rdm_core::NodeType::undeclared(declared, &spec.r#type).is_some())
+        .map(|(path, spec)| BuildReject::UnknownType { node: path.clone(), r#type: spec.r#type.clone() })
 }
 
 /// The first path `next` creates that names no executable (proposal executable-bindings-at-create.md

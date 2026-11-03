@@ -1604,7 +1604,7 @@ impl Channel {
                                             Frame::NodeDeleting { op, topology_version, .. } | Frame::NodeStopped { op, topology_version, .. } => Some(tracing::info_span!(
                                                 "rdm.mesh.topology.update.via-lifecycle-receipt",
                                                 node = %node, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation.action, operation_subject = ?op.operation.subject,
-                                                node_id = %op.node_id, incarnation_id = %op.incarnation, topology_version,
+                                                node_id = %op.node_id, incarnation_id = %op.incarnation, "type" = %op.r#type, topology_version,
                                             )),
                                             _ => None,
                                         };
@@ -4845,7 +4845,7 @@ impl DigestView {
         let carried_status = if matches!(door, "topology" | "forwarded") { format!("{:?}", d.status) } else { String::new() };
         let Some(held_seq) = held_seq else {
             self.end_stop(d.node.node_id.as_str());
-            tracing::info_span!("rdm.mesh.topology.update.via-node-started", node_path = %d.node.name.path, node_name = %d.node.name.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), node_state = ?d.node_state, digest_seq = d.digest_seq, door)
+            tracing::info_span!("rdm.mesh.topology.update.via-node-started", node_path = %d.node.name.path, node_name = %d.node.name.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), "type" = %d.node.r#type, node_state = ?d.node_state, digest_seq = d.digest_seq, door)
                 .in_scope(|| tracing::info!("a later birth of a stopped node is heard: the stop of the older birth is over"));
             return false;
         };
