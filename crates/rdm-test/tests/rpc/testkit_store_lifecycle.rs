@@ -212,25 +212,22 @@ async fn testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows
     estate.stop().await;
 
     let spans = estate.spans();
-    // Node recovery: an attempt of the accepted Build in the node's mesh's drift lane (reason
-    // recovery, R-BI7: the mesh-primary runs it in its own mesh's lane, numbered from 1 there),
-    // deleting the exited birth and creating this path again, and nothing after (node-recovery.md
-    // steps). The reconcile is the one in the recovery submit's own trace: a lane's attempt number
-    // also names an attempt of the fabric lane.
+    // Node recovery: the mesh-primary's own workflow, never a Build or part of one (Q342), deleting the
+    // exited birth and creating this path again under its submit, and nothing after (node-recovery.md
+    // steps).
     let recovery = named(&spans, "rdm.node_admin.node.update.via-node-recovery")
         .into_iter()
-        .find(|d| d["attributes"]["node_id"] == first["node_id"] && d["attributes"]["build_id"] == build_id.as_str() && s(&d["attributes"]["outcome"]).starts_with("complete"))
+        .find(|d| d["attributes"]["node_id"] == first["node_id"] && s(&d["attributes"]["outcome"]).starts_with("complete"))
         .cloned()
-        .unwrap_or_else(|| panic!("node recovery of the selected node completed under the accepted Build"));
-    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && r["trace_id"] == recovery["trace_id"] && r["attributes"]["lane"] == "mesh1").collect();
-    let replace = reconciles
-        .iter()
-        .find(|r| {
-            let children: Vec<_> = spans.iter().filter(|sp| s(&sp["name"]).ends_with(".via-build") && sp["parent_span_id"] == r["span_id"] && sp["trace_id"] == r["trace_id"]).collect();
-            r["attributes"]["reason"] == "recovery" && children.len() == 2 && ["rdm.node_admin.node.delete.via-build", "rdm.node_admin.node.create.via-build"].iter().all(|name| children.iter().filter(|sp| sp["name"] == *name && sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation_id"]).count() == 1)
-        })
-        .cloned()
-        .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting and creating the selected node, and nothing else, in the recovery's trace: {reconciles:?}"));
+        .unwrap_or_else(|| panic!("node recovery of the selected node completed"));
+    let under = |name: &str| -> Vec<Value> {
+        named(&spans, name).into_iter().filter(|sp| sp["parent_span_id"] == recovery["span_id"] && sp["attributes"]["node_id"] == first["node_id"] && sp["attributes"]["incarnation_id"] == first["incarnation_id"]).cloned().collect()
+    };
+    let (deletes, creates) = (under("rdm.node_admin.node.delete.via-node-recovery"), under("rdm.node_admin.node.create.via-node-recovery"));
+    assert!(deletes.len() == 1 && creates.len() == 1, "one delete and one create of the exited birth under the recovery's submit: {deletes:?} {creates:?}");
+    let replace = deletes[0].clone();
+    let ran: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["start_unix_nano"].as_u64() >= recovery["start_unix_nano"].as_u64() && s(&r["attributes"]["operations"]).contains(first["node_id"].as_str().unwrap_or("-"))).collect();
+    assert!(ran.is_empty(), "no section of any Build ran the recovery (Q342): {ran:?}");
     let served = named(&spans, "rdm.node_rpc.testkit_store.serve.via-request");
     // The old birth's own serve span of the put is not evidence here: the cell SIGKILLs that process,
     // and spans still queued in its batch exporter die with it (rafka-mesh-telemetry init_telemetry:
@@ -251,7 +248,7 @@ async fn testkit_store_replacement_inherits_the_data_dir_exact_old_never_follows
         "fresh": fresh["reply"],
         "exact_old_probe": old,
         "resolver": {"old": gone["reply"], "path": holder["reply"], "never_seen": never["reply"]},
-        "replace_attempt": {"build_id": build_id, "attempt": replace["attributes"]["attempt"], "reason": replace["attributes"]["reason"], "action": replace["attributes"]["action"], "operations": replace["attributes"]["operations"], "trace_id": replace["trace_id"], "span_id": replace["span_id"], "node_recovery": {"span_id": recovery["span_id"], "outcome": recovery["attributes"]["outcome"]}},
+        "recovery": {"build_id": build_id, "delete": {"trace_id": replace["trace_id"], "span_id": replace["span_id"]}, "create": {"span_id": creates[0]["span_id"], "created_node_id": creates[0]["attributes"]["created_node_id"]}, "node_recovery": {"span_id": recovery["span_id"], "outcome": recovery["attributes"]["outcome"]}},
         "spans": {
             "stored": {"trace_id": stored["trace_id"], "span_id": stored["span_id"], "parent_span_id": stored["parent_span_id"]},
             "inherited": {"trace_id": inherited["trace_id"], "span_id": inherited["span_id"], "parent_span_id": inherited["parent_span_id"]},

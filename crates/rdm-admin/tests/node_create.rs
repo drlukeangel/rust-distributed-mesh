@@ -593,6 +593,8 @@ fn node_create_pipeline_refuses_held_name_before_launch_and_completes_all_steps_
 
 struct StepFaultProvider {
     joins: Arc<Joins>,
+    /// The nodes store the birth writes its own part of its record to at its join.
+    store: Arc<rdm_admin::storage::MemoryNodesStorage>,
     deliver_join_on_inspect: Mutex<bool>,
     inspect_status: Mutex<DeploymentStatus>,
     find_result: Mutex<Found>,
@@ -687,8 +689,21 @@ impl DeploymentProvider for StepFaultProvider {
 
     async fn inspect(&self, _: &DeploymentHandle, _deadline: rdm_admin::deployment::deadline::Deadline) -> DeploymentStatus {
         if *self.deliver_join_on_inspect.lock().unwrap() {
-            if let Some(report) = self.pending_report.lock().unwrap().take() {
+            let report = self.pending_report.lock().unwrap().take();
+            if let Some(report) = report {
                 self.joins.report(&report);
+                let d = &report.digest;
+                let bound = rdm_node::node_records::NodeProperties {
+                    birth: rdm_node::node_records::RecordBirth { node_id: d.node.node_id.clone(), incarnation_id: d.node.incarnation.clone() },
+                    config: Default::default(),
+                    tags: Default::default(),
+                    endpoint_id: Some(d.node.endpoint_id.clone()),
+                    transport_addr: Some(d.node.transport_addr),
+                    listeners: report.listeners.clone(),
+                    app_types: None,
+                    held: Default::default(),
+                };
+                rdm_admin::storage::NodesStorage::put_properties(&*self.store, &bound).await.unwrap();
             }
         }
         self.inspect_status.lock().unwrap().clone()
@@ -799,7 +814,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             me.clone(),
             me_id.clone(),
             view,
-            store,
+            store.clone(),
         ));
         let sink = RecordingSink {
             rows: rows.clone(),
@@ -849,6 +864,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         let joins = Arc::new(Joins::default());
         let provider = Arc::new(StepFaultProvider {
             joins: joins.clone(),
+            store: store.clone(),
             deliver_join_on_inspect: Mutex::new(true),
             inspect_status: Mutex::new(DeploymentStatus::Running),
             find_result: Mutex::new(Found::NeverLaunched),
@@ -915,12 +931,13 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         //    then SIGSTOP (OsStopped) across attempts and resume to Complete:
         let fault_path: PathName = rdm_core::PathName::new("mesh1.node", "2").unwrap();
 
+        let lost_bind_build = accepted_case(&builds).await;
         // 2a. Lost reply at WaitForBind: join report never arrives within bind timeout -> DeadlineExceeded,
         //     and the name claim is withdrawn.
         *provider.deliver_join_on_inspect.lock().unwrap() = false;
         let lost_reply_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: Some(build_id.clone()),
+                build_id: Some(lost_bind_build.clone()),
                 path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -933,12 +950,13 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         assert_eq!(lost_reply_err.step, CreateStep::WaitForBind.name());
         assert_eq!(lost_reply_err.code, rdm_core::outcome::Code::DeadlineExceeded);
 
+        let kill_bind_build = accepted_case(&builds).await;
         // 2b. Kill at WaitForBind: runtime exits before reporting where it bound -> Unavailable,
         //     and the name claim is withdrawn.
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Exited { code: Some(137) };
         let kill_bind_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: Some(build_id.clone()),
+                build_id: Some(kill_bind_build.clone()),
                 path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -952,13 +970,14 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         assert_eq!(kill_bind_err.code, rdm_core::outcome::Code::Unavailable);
         assert!(kill_bind_err.reason.contains("runtime exited"));
 
+        let kill_ready_build = accepted_case(&builds).await;
         // 2c. Kill at WaitForNodeReady: join report arrives, then runtime exits while waiting for Ready.
         *provider.deliver_join_on_inspect.lock().unwrap() = true;
         *provider.inspect_status.lock().unwrap() = DeploymentStatus::Running;
         *observer.kill_on_first_ready_check.lock().unwrap() = Some(provider.clone());
         let kill_ready_err = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: Some(build_id.clone()),
+                build_id: Some(kill_ready_build.clone()),
                 path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -972,6 +991,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         assert_eq!(kill_ready_err.code, rdm_core::outcome::Code::Unavailable);
         assert!(kill_ready_err.reason.contains("runtime exited"));
 
+        let os_build = accepted_case(&builds).await;
         // 2d. SIGSTOP (OsStopped) then resume across an interrupted attempt:
         //     Attempt 4 launches a fresh birth, completes through WaitForMeshJoin, and is cut short
         //     during WaitForNodeReady while the runtime is held OsStopped; attempt 5 inspects the
@@ -981,7 +1001,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.ready_ok.lock().unwrap() = false;
         let entered = observer.ready_entered.notified();
         let req4 = CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
-            build_id: Some(build_id.clone()),
+            build_id: Some(os_build.clone()),
             path: fault_path.path.clone(), name: fault_path.name.clone(),
             spec: &NODE_SPEC,
             data_dir: None,
@@ -993,7 +1013,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
             res = pipeline.create(&req4) => panic!("attempt 4 must be cut at WaitForNodeReady before completing: {:?}", res.map(|c| c.node.node_id)),
         }
         let spawns_after_attempt4 = *provider.spawn_calls.lock().unwrap();
-        let proj4 = builds.read_build(&build_id).await.unwrap();
+        let proj4 = builds.read_build(&os_build).await.unwrap();
         assert!(
             proj4.steps.iter().any(|r| {
                 r.operation == rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&fault_path)).to_string()
@@ -1008,7 +1028,7 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
         *observer.ready_ok.lock().unwrap() = true;
         let resumed_created = pipeline
             .create(&CreateRequest { predecessor: None, operation: rdm_core::OperationId::node("node.create", &rdm_core::fixture_node_id(&(fault_path))), node_id: (rdm_core::fixture_node_id(&(fault_path))).clone(), mesh: "mesh1".into(), r#type: "node".into(),
-                build_id: Some(build_id.clone()),
+                build_id: Some(os_build.clone()),
                 path: fault_path.path.clone(), name: fault_path.name.clone(),
                 spec: &NODE_SPEC,
                 data_dir: None,
@@ -1036,4 +1056,15 @@ fn node_create_step_faults_recover_or_fail_as_the_page_specifies() {
     );
     let names = capture.all_names();
     crate::assert_own_story(names.iter().map(String::as_str));
+}
+
+/// A Build accepted for one case of a cell: each case's steps are its own (build.md §1: a step whose
+/// event ended complete is never run again).
+async fn accepted_case(builds: &dyn BuildStateAdapter) -> BuildId {
+    let build_id = BuildId::mint();
+    builds
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()), change: None, source: None, time: 0 })
+        .await
+        .unwrap();
+    build_id
 }
