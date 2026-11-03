@@ -149,6 +149,6 @@ jq -n --arg cand "$CANDIDATE" --arg url "$RDM_URL" --arg fixture_rev "$FIXTURE_R
     --argjson rdm "$(jq '[.packages[] | select((.source // "") | startswith("git+https://github.com/drlukeangel/rust-distributed-mesh")) | {name, version, source}] | sort_by(.name)' "$OUTPUT/metadata.json")" \
     '{candidate_sha:$cand, rdm_url:$url, fixture_pinned_rev:$fixture_rev, workspace:$ws, consumer_manifest_sha256:$toml, consumer_lockfile_sha256:$lock, consumer_source_sha256:$src,
       toolchain:{rustc:$rustc, cargo:$cargo}, bin_dir:$bindir, binaries:$bins,
-      executable_map:{node_admin:"rshape-node-admin", compute:"rshape-compute", gateway:"rshape-gateway", broker:"rshape-broker"},
+      executable_map:{"node-admin":"rshape-node-admin", compute:"rshape-compute", gateway:"rshape-gateway", broker:"rshape-broker"},
       rdm_packages:$rdm}' > "$OUTPUT/manifest.json"
 echo "i143-rshape-build-consumer: ok candidate=$CANDIDATE binaries=$BIN_DIR manifest=$OUTPUT/manifest.json"
